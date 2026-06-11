@@ -49,6 +49,9 @@ services:
     environment:
       LAIAI_DSN: "laiai:${MYSQL_PASSWORD}@tcp(mysql:3306)/laiai?parseTime=true&charset=utf8mb4&loc=UTC"
       LAIAI_AUTH_SECRET: ${LAIAI_AUTH_SECRET:?set in .env (>=32 chars)}
+      LAIAI_ADMIN_TOKEN: ${LAIAI_ADMIN_TOKEN:-}
+      LAIAI_DATA_KEYS: ${LAIAI_DATA_KEYS:-}
+      LAIAI_DATA_KEY_ACTIVE: ${LAIAI_DATA_KEY_ACTIVE:-}
       LAIAI_REDIS_ADDR: "redis:6379"
       LAIAI_LISTEN_ADDR: ":8080"
     read_only: true

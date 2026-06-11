@@ -45,8 +45,13 @@ func main() {
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
 	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           server.New(db, cfg.AuthSecret),
+		Addr: cfg.ListenAddr,
+		Handler: server.New(db, server.Options{
+			AuthSecret: cfg.AuthSecret,
+			AdminToken: cfg.AdminToken,
+			Keyring:    cfg.Keyring,
+			Log:        log,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
