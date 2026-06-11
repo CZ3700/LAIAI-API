@@ -1,0 +1,16 @@
+# secrets —— 永不入库（旧平台 Secret hygiene 红线）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# build artifacts
+dist/
+node_modules/
+*.exe
+coverage.out
+
+# OS / editor
+.DS_Store
+Thumbs.db
