@@ -4,6 +4,7 @@ package relay
 
 import (
 	"errors"
+	"math/rand/v2"
 	"strings"
 
 	"github.com/shopspring/decimal"
@@ -23,6 +24,7 @@ type Channel struct {
 	CredentialEnc string `gorm:"column:credential_enc"`
 	Models        string `gorm:"column:models"` // 逗号分隔
 	Weight        int    `gorm:"column:weight"`
+	Priority      int    `gorm:"column:priority"` // 大者先用（0004）
 	Status        int8   `gorm:"column:status"`
 }
 
@@ -55,18 +57,66 @@ func (p *ModelPrice) Cost(inputTokens, outputTokens int64) decimal.Decimal {
 	return in.Add(out)
 }
 
-// PickChannel 选择服务该模型的活跃渠道（权重大者优先；M2 引入健康分与会话黏性）。
-func PickChannel(db *gorm.DB, model string) (*Channel, error) {
+// PickChannelForAttempt 选择服务该模型的活跃渠道（知识库 §3，NewAPI channel_cache.go:96 算法）：
+//   - 优先级分层：attempt 0 用最高 priority 层，attempt n 用第 n 层，超出钳到最低层（保证重试永远有渠道可用）
+//   - 层内加权随机；**零权重语义**：weight=0 不是"别用我"，全零层均分，混合时低权重平滑
+//   - exclude：本次请求已失败的渠道（重试时排除）
+//
+// M2 后续：abilities 物化索引（渠道规模化后）、健康分（Diagnostics 探针喂）。
+func PickChannelForAttempt(db *gorm.DB, model string, attempt int, exclude map[uint64]bool) (*Channel, error) {
 	var channels []Channel
-	if err := db.Where("status = 1").Order("weight DESC, id").Find(&channels).Error; err != nil {
+	if err := db.Where("status = 1").Order("priority DESC, id").Find(&channels).Error; err != nil {
 		return nil, err
 	}
+	// 过滤：服务该模型且未被排除，按 priority 分层（保持降序）
+	var tiers [][]*Channel
+	var curPriority int
 	for i := range channels {
-		if channels[i].ServesModel(model) {
-			return &channels[i], nil
+		ch := &channels[i]
+		if exclude[ch.ID] || !ch.ServesModel(model) {
+			continue
+		}
+		if len(tiers) == 0 || ch.Priority != curPriority {
+			tiers = append(tiers, nil)
+			curPriority = ch.Priority
+		}
+		tiers[len(tiers)-1] = append(tiers[len(tiers)-1], ch)
+	}
+	if len(tiers) == 0 {
+		return nil, ErrNoChannel
+	}
+	tier := attempt
+	if tier >= len(tiers) {
+		tier = len(tiers) - 1 // 钳到最低层
+	}
+	return weightedPick(tiers[tier]), nil
+}
+
+// weightedPick 层内加权随机（零权重均分 + 低均值平滑，知识库 §3 烧出来的语义）。
+func weightedPick(tier []*Channel) *Channel {
+	if len(tier) == 1 {
+		return tier[0]
+	}
+	sum := 0
+	for _, ch := range tier {
+		sum += ch.Weight
+	}
+	smoothing := 0
+	if sum == 0 {
+		smoothing = 100 // 全零：均分
+		sum = len(tier) * 100
+	} else if sum/len(tier) < 10 {
+		smoothing = 100 // 低均值：平滑，防低权重渠道几乎永不被选
+		sum += len(tier) * 100
+	}
+	r := rand.IntN(sum)
+	for _, ch := range tier {
+		r -= ch.Weight + smoothing
+		if r < 0 {
+			return ch
 		}
 	}
-	return nil, ErrNoChannel
+	return tier[len(tier)-1]
 }
 
 func GetPrice(db *gorm.DB, model string) (*ModelPrice, error) {

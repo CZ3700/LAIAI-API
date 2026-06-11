@@ -21,6 +21,7 @@ const (
 	upstreamTimeout    = 5 * time.Minute
 	maxErrorBodyBytes  = 2048 // 超大上游错误体截断（NewAPI rc.10 教训）
 	maxRequestBodySize = 10 << 20
+	maxAttempts        = 3 // 1 次 + 2 次换渠道重试（知识库 §1）
 )
 
 type Relay struct {
@@ -84,25 +85,14 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		maxTokens = int64(mt)
 	}
 
-	// 3. 定价与渠道
+	// 3. 定价
 	price, err := GetPrice(r.DB, model)
 	if err != nil {
 		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", model))
 		return
 	}
-	ch, err := PickChannel(r.DB, model)
-	if err != nil {
-		relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
-		return
-	}
-	credential, err := r.Keyring.Decrypt(ch.CredentialEnc)
-	if err != nil {
-		r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "err", err)
-		relayErr(c, http.StatusServiceUnavailable, "upstream configuration error")
-		return
-	}
 
-	// 4. Hold：按 估算输入 + max_tokens 上限 冻结
+	// 4. Hold：按 估算输入 + max_tokens 上限 冻结（整个重试周期只 hold 一次）
 	estIn := EstimateTokens(len(body))
 	holdAmount := price.Cost(estIn, maxTokens)
 	var hold *ledger.Hold
@@ -131,38 +121,74 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		return
 	}
 
-	// 5. 协议适配 + 转发上游（adapter 负责统一格式 ↔ 厂商格式双向转换）
-	ad := adapterFor(ch.Provider)
-	upReq, err := ad.buildRequest(c.Request.Context(), ch, credential, req, stream)
-	if err != nil {
-		r.release(hold.ID)
-		relayErr(c, http.StatusInternalServerError, "upstream request build failed")
-		return
-	}
-
-	resp, err := r.Client.Do(upReq)
-	if err != nil {
-		r.release(hold.ID)
-		r.Log.Warn("upstream unreachable", "channel", ch.ID, "err", err)
-		relayErr(c, http.StatusBadGateway, "upstream unreachable")
-		return
-	}
-	defer resp.Body.Close()
-
-	// 上游非 2xx：release + 错误分类 + 按需禁用渠道 + 透传（错误体截断后记日志）
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		r.release(hold.ID)
+	// 5. 换渠道重试循环（知识库 §1/§2：分类驱动；hold 跨重试只此一份）。
+	// 请求体已在内存（req map），每次 attempt 由 adapter 重建上游请求——天然可重放，
+	// 不需要 NewAPI 的磁盘 BufStorage。
+	var resp *http.Response
+	var ch *Channel
+	exclude := map[uint64]bool{}
+	var lastStatus int
+	var lastBody []byte
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var pickErr error
+		ch, pickErr = PickChannelForAttempt(r.DB, model, attempt, exclude)
+		if pickErr != nil {
+			break // 无渠道可用：落到循环后的失败处理
+		}
+		credential, err := r.Keyring.Decrypt(ch.CredentialEnc)
+		if err != nil {
+			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "err", err)
+			exclude[ch.ID] = true
+			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
+			continue // 我方配置错误（知识库 channel: 前缀类）→ 换渠道
+		}
+		ad := adapterFor(ch.Provider)
+		upReq, err := ad.buildRequest(c.Request.Context(), ch, credential, req, stream)
+		if err != nil {
+			r.release(hold.ID)
+			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
+			return // 请求本身不合法，换渠道无意义
+		}
+		resp, err = r.Client.Do(upReq)
+		if err != nil {
+			r.Log.Warn("upstream unreachable", "channel", ch.ID, "attempt", attempt, "err", err)
+			exclude[ch.ID] = true
+			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
+			resp = nil
+			continue // 网络不可达 → 换渠道
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			break // 成功
+		}
+		// 非 2xx：分类 → 禁用/重试决策
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		resp.Body.Close()
 		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
-		r.Log.Warn("upstream error", "channel", ch.ID, "status", resp.StatusCode,
+		r.Log.Warn("upstream error", "channel", ch.ID, "attempt", attempt, "status", resp.StatusCode,
 			"disable", disp.DisableChannel, "retryable", disp.Retryable, "body", string(errBody))
 		if disp.DisableChannel {
 			// 异步禁用，不阻塞响应（知识库 §2.2：不能用 request context，直接传 channel id）
 			r.disableChannel(ch.ID, disp.Reason)
 		}
-		c.Data(resp.StatusCode, "application/json", errBody)
+		lastStatus, lastBody = resp.StatusCode, errBody
+		resp = nil
+		if !disp.Retryable {
+			break // 400/408/504/524 等：重试无意义，直接透传
+		}
+		exclude[ch.ID] = true
+	}
+	if resp == nil {
+		// 所有尝试失败：release 全额解冻，透传最后一个上游错误（或无渠道）
+		r.release(hold.ID)
+		if lastStatus == 0 {
+			relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
+			return
+		}
+		c.Data(lastStatus, "application/json", lastBody)
 		return
 	}
+	defer resp.Body.Close()
+	ad := adapterFor(ch.Provider)
 
 	// 成功响应：若渠道曾被 auto-disabled，自动重启用（知识库 §2.2）
 	r.enableChannelIfDisabled(ch)

@@ -1,9 +1,11 @@
 package relay
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -34,4 +36,55 @@ func sseHeaders(c *gin.Context) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Status(http.StatusOK)
+}
+
+// StreamChunkTimeout：流式 per-chunk 超时（知识库 §2.4：每收到一行重置，
+// 不是全局超时——全局超时会杀死合法的长思考响应）。测试可缩短。
+var StreamChunkTimeout = 90 * time.Second
+
+// pumpLines 从上游流逐行读并回调 handle，三路 select：
+//   - 新行到达 → 重置超时计时器
+//   - per-chunk 超时 → 返回 timedOut=true（上游 stall）
+//   - 客户端断连（ctx.Done）→ 停止（省上游 token，知识库 §2.4）
+//
+// 读 goroutine 在 caller 关闭 resp.Body 后解除阻塞退出，无泄漏。
+func pumpLines(ctx context.Context, body io.Reader, handle func(line string)) (timedOut bool) {
+	lines := make(chan string, 16)
+	stop := make(chan struct{})
+	go func() {
+		defer close(lines)
+		sc := bufio.NewScanner(body)
+		sc.Buffer(make([]byte, 64*1024), 1<<20)
+		for sc.Scan() {
+			select {
+			case lines <- sc.Text():
+			case <-stop:
+				return
+			}
+		}
+	}()
+	defer close(stop)
+
+	timer := time.NewTimer(StreamChunkTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				return false // 上游正常结束
+			}
+			handle(line)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(StreamChunkTimeout)
+		case <-timer.C:
+			return true // 上游 stall
+		case <-ctx.Done():
+			return false // 客户端断连
+		}
+	}
 }

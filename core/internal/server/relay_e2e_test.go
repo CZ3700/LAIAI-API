@@ -14,10 +14,18 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/laiai/laiai-next/core/internal/crypto"
 	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+// relaypkgTimeout 设置流式 per-chunk 超时并返回旧值（测试用）
+func relaypkgTimeout(d time.Duration) time.Duration {
+	old := relay.StreamChunkTimeout
+	relay.StreamChunkTimeout = d
+	return old
+}
 
 // 镜像 migrations/0002_ledger.sql + 0003_relay.sql（SQLite 方言）
 const relayTestSchema = `
@@ -47,7 +55,8 @@ CREATE TABLE channels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL, provider TEXT NOT NULL, base_url TEXT NOT NULL,
     credential_enc TEXT NOT NULL, models TEXT NOT NULL,
-    weight INTEGER NOT NULL DEFAULT 1, status INTEGER NOT NULL DEFAULT 1,
+    weight INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 0,
+    status INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE model_prices (
@@ -78,6 +87,10 @@ func setupRelayServer(t *testing.T) (*gin999, *gorm.DB) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Discard})
 	if err != nil {
 		t.Fatalf("open: %v", err)
+	}
+	// 单连接：:memory: 下每条连接是独立库，后台 goroutine（禁用/release）必须与主连接共享同一库
+	if sqlDB, e := db.DB(); e == nil {
+		sqlDB.SetMaxOpenConns(1)
 	}
 	for _, schema := range []string{testSchema, relayTestSchema} {
 		if err := db.Exec(schema).Error; err != nil {
@@ -250,6 +263,136 @@ func TestRelayUpstreamErrorReleasesHold(t *testing.T) {
 	db.Model(&ledger.JournalEntry{}).Where("kind = ?", ledger.KindCapture).Count(&captures)
 	if captures != 0 {
 		t.Fatalf("captures = %d after failed call", captures)
+	}
+}
+
+// 双渠道工具：ch1 优先级高（先被选中），ch2 兜底
+func setupTwoChannels(t *testing.T, srv *gin999, url1, url2 string) {
+	t.Helper()
+	for i, cfg := range []struct {
+		name, url string
+		priority  int
+	}{{"primary", url1, 10}, {"fallback", url2, 0}} {
+		w, out := srv.doAdmin(t, "POST", "/api/admin/channels", map[string]any{
+			"name": cfg.name, "provider": "openai", "base_url": cfg.url,
+			"api_key": "sk-upstream-secret", "models": []string{"test-model"}, "priority": cfg.priority,
+		})
+		if w.Code != 201 {
+			t.Fatalf("create channel %d = %d %v", i, w.Code, out)
+		}
+	}
+	w, out := srv.doAdmin(t, "POST", "/api/admin/model-prices", map[string]any{
+		"model": "test-model", "input_usd_per_1m": "2", "output_usd_per_1m": "6",
+	})
+	if w.Code != 200 {
+		t.Fatalf("upsert price = %d %v", w.Code, out)
+	}
+}
+
+// 重试核心：主渠道 500 → 自动切兜底渠道成功，计费精确，资金无残渣
+func TestRelayFailoverRetry(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"internal"}}`, http.StatusInternalServerError)
+	}))
+	defer bad.Close()
+	good := mockUpstreamJSON(t, 1000, 500)
+	defer good.Close()
+	setupTwoChannels(t, srv, bad.URL, good.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "failover@example.com", "10")
+
+	w, out := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "max_tokens": 100,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 200 || out["id"] != "cmpl-1" {
+		t.Fatalf("failover = %d %v, want success from fallback", w.Code, out)
+	}
+	acc := &ledger.Account{}
+	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("9.995")) || !acc.HeldAmount.IsZero() {
+		t.Fatalf("after failover: posted=%s held=%s", acc.PostedBalance, acc.HeldAmount)
+	}
+	// 500 不应禁用主渠道（仅重试，知识库 §2.1）
+	var s int8
+	db.Raw("SELECT status FROM channels WHERE name='primary'").Scan(&s)
+	if s != 1 {
+		t.Fatalf("primary channel status = %d after 500, want still enabled", s)
+	}
+}
+
+// 不可重试错误（400）必须直接透传，不烧第二个渠道
+func TestRelayNonRetryablePassthrough(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	var fallbackHits int
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"type":"invalid_request_error","message":"bad request"}}`, http.StatusBadRequest)
+	}))
+	defer bad.Close()
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits++
+		w.Write([]byte(`{}`))
+	}))
+	defer fallback.Close()
+	setupTwoChannels(t, srv, bad.URL, fallback.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "noretry@example.com", "10")
+
+	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 400 {
+		t.Fatalf("400 passthrough = %d", w.Code)
+	}
+	if fallbackHits != 0 {
+		t.Fatalf("fallback hit %d times on non-retryable error", fallbackHits)
+	}
+	acc := &ledger.Account{}
+	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("10")) || !acc.HeldAmount.IsZero() {
+		t.Fatalf("funds after 400: posted=%s held=%s", acc.PostedBalance, acc.HeldAmount)
+	}
+}
+
+// 流式 per-chunk 超时：上游 stall 不会挂死 relay，资金按已收数据结算
+func TestRelayStreamStallTimeout(t *testing.T) {
+	old := relaypkgTimeout(50 * time.Millisecond)
+	defer relaypkgTimeout(old)
+
+	srv, db := setupRelayServer(t)
+	release := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+		f.Flush()
+		<-release // stall：不再发任何数据
+	}))
+	defer up.Close()
+	defer close(release)
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "stall@example.com", "10")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+			"model": "test-model", "stream": true, "max_tokens": 50,
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		})
+		if !strings.Contains(w.Body.String(), "partial") {
+			t.Errorf("partial data not streamed before stall: %q", w.Body.String())
+		}
+	}()
+	select {
+	case <-done: // per-chunk 超时生效，handler 返回
+	case <-time.After(5 * time.Second):
+		t.Fatal("relay hung on stalled upstream — per-chunk timeout not working")
+	}
+	// 资金已结算（估算兜底），无活跃 hold
+	acc := &ledger.Account{}
+	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.HeldAmount.IsZero() {
+		t.Fatalf("held = %s after stall settle", acc.HeldAmount)
 	}
 }
 

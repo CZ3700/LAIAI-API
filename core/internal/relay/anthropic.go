@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -171,13 +170,10 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 	}
 
 	finishReason := "stop"
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
+	pumpLines(c.Request.Context(), body, func(line string) {
 		data, ok := strings.CutPrefix(line, "data: ")
 		if !ok {
-			continue // event: 行与空行不需要（data JSON 自带 type）
+			return // event: 行与空行不需要（data JSON 自带 type）
 		}
 		var ev struct {
 			Type    string `json:"type"`
@@ -192,7 +188,7 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 			Usage anthropicUsage `json:"usage"`
 		}
 		if json.Unmarshal([]byte(data), &ev) != nil {
-			continue
+			return
 		}
 		switch ev.Type {
 		case "message_start":
@@ -219,6 +215,6 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 			_, _ = w.WriteString("data: [DONE]\n\n")
 			w.Flush()
 		}
-	}
+	})
 	return u, outBytes
 }

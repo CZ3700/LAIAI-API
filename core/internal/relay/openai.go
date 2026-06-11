@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -53,10 +52,7 @@ func (openaiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 
 	var u usage
 	outBytes := 0
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
+	pumpLines(c.Request.Context(), body, func(line string) {
 		outBytes += len(line)
 		if data, ok := strings.CutPrefix(line, "data: "); ok && data != "[DONE]" {
 			var chunk struct {
@@ -69,6 +65,6 @@ func (openaiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 		}
 		_, _ = w.WriteString(line + "\n")
 		w.Flush()
-	}
+	})
 	return u, outBytes
 }
