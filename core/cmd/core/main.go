@@ -15,6 +15,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/config"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/server"
+	"github.com/laiai/laiai-next/core/internal/task"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -68,14 +69,35 @@ func main() {
 		}()
 	}
 
+	// 异步任务轮询循环（Seedance 类任务的状态同步与结算，设计 §4.4）
+	var taskSvc *task.Service
+	pollerCtx, pollerCancel := context.WithCancel(context.Background())
+	defer pollerCancel()
+	if cfg.Keyring != nil {
+		taskSvc = task.NewService(db, cfg.Keyring, log.With("component", "task"))
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					taskSvc.PollOnce(pollerCtx)
+				case <-pollerCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	srv := &http.Server{
 		Addr: cfg.ListenAddr,
 		Handler: server.New(db, server.Options{
-			AuthSecret: cfg.AuthSecret,
-			AdminToken: cfg.AdminToken,
-			Keyring:    cfg.Keyring,
-			Recorder:   rec,
-			Log:        log,
+			AuthSecret:  cfg.AuthSecret,
+			AdminToken:  cfg.AdminToken,
+			Keyring:     cfg.Keyring,
+			Recorder:    rec,
+			TaskService: taskSvc,
+			Log:         log,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

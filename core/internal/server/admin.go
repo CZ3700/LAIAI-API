@@ -84,7 +84,8 @@ type channelReq struct {
 	APIKey   string   `json:"api_key" binding:"required"`
 	Models   []string `json:"models" binding:"required"`
 	Weight   int      `json:"weight"`
-	Priority int      `json:"priority"` // 大者先用；重试降层
+	Priority int      `json:"priority"`             // 大者先用；重试降层
+	MaxConcurrentTasks int `json:"max_concurrent_tasks"` // 任务并发闸，默认 3
 }
 
 func (s *Server) adminCreateChannel(c *gin.Context) {
@@ -106,11 +107,16 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 	if weight <= 0 {
 		weight = 1
 	}
+	maxTasks := req.MaxConcurrentTasks
+	if maxTasks <= 0 {
+		maxTasks = 3 // Seedance 公测档默认
+	}
 	ch := &relay.Channel{
 		Name: req.Name, Provider: req.Provider,
 		BaseURL: strings.TrimRight(req.BaseURL, "/"),
 		CredentialEnc: enc, Models: strings.Join(req.Models, ","),
-		Weight: weight, Priority: req.Priority, Status: 1,
+		Weight: weight, Priority: req.Priority,
+		MaxConcurrentTasks: maxTasks, Status: 1,
 	}
 	if err := s.db.Create(ch).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "channel create failed")

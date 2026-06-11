@@ -24,7 +24,8 @@ type Channel struct {
 	CredentialEnc string `gorm:"column:credential_enc"`
 	Models        string `gorm:"column:models"` // 逗号分隔
 	Weight        int    `gorm:"column:weight"`
-	Priority      int    `gorm:"column:priority"` // 大者先用（0004）
+	Priority      int    `gorm:"column:priority"`             // 大者先用（0004）
+	MaxConcurrentTasks int `gorm:"column:max_concurrent_tasks"` // 任务并发闸（0006，Seedance 公测 3）
 	Status        int8   `gorm:"column:status"`
 }
 

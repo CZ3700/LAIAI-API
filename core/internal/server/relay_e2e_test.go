@@ -59,7 +59,22 @@ CREATE TABLE channels (
     name TEXT NOT NULL, provider TEXT NOT NULL, base_url TEXT NOT NULL,
     credential_enc TEXT NOT NULL, models TEXT NOT NULL,
     weight INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 0,
+    max_concurrent_tasks INTEGER NOT NULL DEFAULT 3,
     status INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL UNIQUE,
+    org_id INTEGER NOT NULL, user_id INTEGER, api_key_id INTEGER NOT NULL,
+    model TEXT NOT NULL, channel_id INTEGER NOT NULL, provider TEXT NOT NULL,
+    status TEXT NOT NULL, fail_reason TEXT NOT NULL DEFAULT '',
+    upstream_task_id TEXT NOT NULL DEFAULT '', result_url TEXT NOT NULL DEFAULT '',
+    hold_id INTEGER NOT NULL, est_tokens INTEGER NOT NULL DEFAULT 0,
+    actual_tokens INTEGER NOT NULL DEFAULT 0, cost_usd NUMERIC NOT NULL DEFAULT 0,
+    price_out_usd_per_1m NUMERIC NOT NULL,
+    submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    started_at DATETIME, finished_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE model_prices (

@@ -12,15 +12,17 @@ import (
 	"github.com/laiai/laiai-next/core/internal/crypto"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/relay"
+	"github.com/laiai/laiai-next/core/internal/task"
 	"gorm.io/gorm"
 )
 
 type Options struct {
-	AuthSecret []byte               // session token HMAC（必填）
-	AdminToken []byte               // X-Admin-Token；空 = admin API 整组禁用
-	Keyring    *crypto.Keyring      // 渠道凭证信封加密；nil = 渠道管理禁用
-	Recorder   *invocation.Recorder // 调用记录；nil = relay 不记录
-	Log        *slog.Logger
+	AuthSecret  []byte               // session token HMAC（必填）
+	AdminToken  []byte               // X-Admin-Token；空 = admin API 整组禁用
+	Keyring     *crypto.Keyring      // 渠道凭证信封加密；nil = 渠道管理禁用
+	Recorder    *invocation.Recorder // 调用记录；nil = relay 不记录
+	TaskService *task.Service        // 异步任务服务；nil = 按默认构造（main 传入以共享轮询实例）
+	Log         *slog.Logger
 }
 
 type Server struct {
@@ -76,6 +78,14 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 	if opts.Keyring != nil {
 		rl := relay.New(db, opts.Keyring, opts.Recorder, log.With("component", "relay"))
 		r.POST("/v1/chat/completions", rl.HandleChatCompletions)
+
+		// 异步任务（Seedance 类视频生成，设计 §4.4 Task API）
+		ts := opts.TaskService
+		if ts == nil {
+			ts = task.NewService(db, opts.Keyring, log.With("component", "task"))
+		}
+		r.POST("/v1/video/generations", ts.HandleCreate)
+		r.GET("/v1/video/generations/:id", ts.HandleGet)
 	}
 
 	return r

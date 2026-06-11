@@ -260,6 +260,41 @@ func Capture(tx *gorm.DB, holdID uint64, actual decimal.Decimal, reason string) 
 	return entry, nil
 }
 
+// SettleHoldExact 按真实成本结算 hold 的统一语义（relay 与 task 共用）：
+//   - actual ≤ hold：capture(actual)，差额自动解冻
+//   - actual > hold（overage）：capture 全额 + AllowNegative debit 补差——
+//     journal 必须记录真实成本，绝不"封顶少收"（系统性漏收）
+//
+// 返回 overage 金额（零值表示未发生超额），调用方据此告警。
+func SettleHoldExact(tx *gorm.DB, holdID uint64, actual decimal.Decimal, refType, refID, reason string) (decimal.Decimal, error) {
+	h, err := lockHold(tx, holdID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if h.Status != HoldActive {
+		return decimal.Zero, ErrHoldNotActive
+	}
+	if actual.LessThanOrEqual(h.Amount) {
+		_, err := Capture(tx, holdID, actual, reason)
+		return decimal.Zero, err
+	}
+	if _, err := Capture(tx, holdID, h.Amount, reason); err != nil {
+		return decimal.Zero, err
+	}
+	overage := actual.Sub(h.Amount)
+	_, _, err = Post(tx, PostInput{
+		IdempotencyKey: fmt.Sprintf("overage:%d", holdID),
+		AccountID:      h.AccountID,
+		Kind:           KindDebit,
+		Delta:          overage.Neg(),
+		RefType:        refType + "_overage",
+		RefID:          refID,
+		Reason:         reason,
+		AllowNegative:  true,
+	})
+	return overage, err
+}
+
 // Release 三原语之三：全额解冻（任务失败/超时回收）。
 func Release(tx *gorm.DB, holdID uint64) error {
 	h, err := lockHold(tx, holdID)

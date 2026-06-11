@@ -17,6 +17,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -280,33 +281,17 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 
 	actual := price.Cost(u.PromptTokens, u.CompletionTokens)
 	reason := fmt.Sprintf("model=%s in=%d out=%d", model, u.PromptTokens, u.CompletionTokens)
+	var overage = decimal.Zero
 	if err := r.DB.Transaction(func(tx *gorm.DB) error {
-		if actual.GreaterThan(hold.Amount) {
-			// Overage：估算被真实用量击穿。journal 必须记录真实成本——
-			// capture 全额 hold + 差额补一笔允许透支的 debit（轻微负余额下次充值补回）。
-			// 绝不"封顶少收"（那是系统性漏收）。
-			if _, err := ledger.Capture(tx, hold.ID, hold.Amount, reason); err != nil {
-				return err
-			}
-			overage := actual.Sub(hold.Amount)
-			r.Log.Warn("usage overage beyond hold", "hold", hold.Amount, "actual", actual, "overage", overage)
-			_, _, err := ledger.Post(tx, ledger.PostInput{
-				IdempotencyKey: fmt.Sprintf("overage:%d", hold.ID),
-				AccountID:      hold.AccountID,
-				Kind:           ledger.KindDebit,
-				Delta:          overage.Neg(),
-				RefType:        "usage_overage",
-				RefID:          model,
-				Reason:         reason,
-				AllowNegative:  true,
-			})
-			return err
-		}
-		_, err := ledger.Capture(tx, hold.ID, actual, reason)
+		var err error
+		overage, err = ledger.SettleHoldExact(tx, hold.ID, actual, "usage", model, reason)
 		return err
 	}); err != nil {
 		// 响应已发出，结算失败只能告警人工对账（journal 漂移自检会兜住）
 		r.Log.Error("SETTLE FAILED — manual reconcile needed", "hold", hold.ID, "err", err)
+	}
+	if overage.IsPositive() {
+		r.Log.Warn("usage overage beyond hold", "hold", hold.Amount, "actual", actual, "overage", overage)
 	}
 
 	inv.PromptTokens, inv.CompletionTokens, inv.CostUSD = u.PromptTokens, u.CompletionTokens, actual
