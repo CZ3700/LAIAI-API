@@ -35,6 +35,6 @@ Windows 本机注意：`GOPROXY=https://goproxy.cn,direct`（proxy.golang.org �
 5. org_id 隔离谓词在 repository 层强制
 6. 禁止 AutoMigrate；schema 变更只走 migrations/ 版本化 SQL
 7. 构建产物禁止嵌时间戳；部署只认镜像 digest
-8. 日志全链路禁止出现 API Key / PII 明文
+8. 操作日志禁止出现 API Key / PII / payload 明文；调用数据唯一合法落库点是 Invocation Store（加密 + 30 天滚动 + 访问审计，见设计 §6.1）；Key 明文任何层永不落库
 
 里程碑 M0-M5 见设计文档 §11。当前：**M0**（Ledger 内核已落地）。

@@ -14,7 +14,7 @@
 4. 支付引擎契约 = CreateOrder + HandleCallback + QueryOrder 三件套；fixture 用真实 raw response（epay 字段方言事故）
 5. **禁止 GORM AutoMigrate**（AlterColumn 静默损坏事故）；schema 只走 migrations/NNNN_*.sql 顺序递增
 6. org_id 多租户隔离谓词在 repository 层强制
-7. 日志禁止出现 API Key/PII 明文；被测 Key 信封加密（密文头带 key_id）
+7. 操作日志（stdout/Loki）禁止出现 API Key/PII/payload 明文；调用数据的唯一合法落库点是 **Invocation Store**（设计 §6.1：信封加密 + 30 天滚动过期 + org 隔离 + 解密读取必审计）；API Key 明文/密码/支付凭证任何层都永不落库（Key 只存 SHA-256 指纹）；被测 Key 信封加密（密文头带 key_id）
 8. 构建产物禁止嵌时间戳；部署只认镜像 digest
 
 ## 工程约定
