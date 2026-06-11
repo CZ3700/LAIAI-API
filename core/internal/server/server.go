@@ -10,14 +10,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/crypto"
+	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"gorm.io/gorm"
 )
 
 type Options struct {
-	AuthSecret []byte          // session token HMAC（必填）
-	AdminToken []byte          // X-Admin-Token；空 = admin API 整组禁用
-	Keyring    *crypto.Keyring // 渠道凭证信封加密；nil = 渠道管理禁用
+	AuthSecret []byte               // session token HMAC（必填）
+	AdminToken []byte               // X-Admin-Token；空 = admin API 整组禁用
+	Keyring    *crypto.Keyring      // 渠道凭证信封加密；nil = 渠道管理禁用
+	Recorder   *invocation.Recorder // 调用记录；nil = relay 不记录
 	Log        *slog.Logger
 }
 
@@ -56,6 +58,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			authed.POST("/keys", s.createKey)
 			authed.GET("/keys", s.listKeys)
 			authed.DELETE("/keys/:id", s.revokeKey)
+			authed.GET("/usage", s.getUsage)
 		}
 
 		admin := api.Group("/admin", s.adminRequired())
@@ -71,7 +74,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 
 	// Relay 数据面（M1 暂驻 core 进程，M2/M3 拆独立二进制）
 	if opts.Keyring != nil {
-		rl := relay.New(db, opts.Keyring, log.With("component", "relay"))
+		rl := relay.New(db, opts.Keyring, opts.Recorder, log.With("component", "relay"))
 		r.POST("/v1/chat/completions", rl.HandleChatCompletions)
 	}
 

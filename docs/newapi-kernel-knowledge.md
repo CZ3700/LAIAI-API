@@ -197,7 +197,7 @@ NewAPI logs 表核心列：user_id/created_at/type(consume=2 等枚举)/content/
 3. ✅ 换渠道重试循环（classify 驱动，hold 跨重试只一份，req map 内存可重放免磁盘缓存）+ 错误分类驱动的"是否换渠道"（commit 见下）。
 4. ✅ 流式 per-chunk 超时（pumpLines 三路 select：新行重置/超时/断连）+ 客户端断连检测（ctx.Done）。心跳（ping）留待有需求时补。
 5. tiktoken 精确化 hold 估算，降低 overage 频率（§4.2）。
-6. Invocation Store 元数据表按 §4.4 字段集落地（含 frt/upstream_request_id）。
+6. ✅ Invocation Store 元数据层落地（0005_invocations + Recorder 异步批量写 + GET /api/usage org 隔离查询 + 30 天 Purge 循环 + X-Request-Id 回传 + frt 首字节测量 + upstream_request_id 采集）。payload→R2 信封加密阶段待做（§6.1 第二期）。
 7. ✅ 渠道优先级分层 + 加权随机（PickChannelForAttempt，含零权重均分 + 低均值平滑 + 排除集）。
 8. 并发 tool calls 状态机（§5.1）。
 

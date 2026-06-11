@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/config"
+	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/server"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -44,12 +45,36 @@ func main() {
 	sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
+	// Invocation Store：异步记录器 + 保留期清理循环（设计 §6.1）
+	rec := invocation.NewRecorder(db, log)
+	retentionDone := make(chan struct{})
+	if cfg.InvocationRetentionDays > 0 {
+		go func() {
+			ticker := time.NewTicker(6 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					cutoff := time.Now().UTC().AddDate(0, 0, -cfg.InvocationRetentionDays)
+					if n, err := invocation.PurgeOlderThan(db, cutoff, 1000); err != nil {
+						log.Error("invocation retention purge failed", "err", err)
+					} else if n > 0 {
+						log.Info("invocation retention purged", "deleted", n, "cutoff", cutoff)
+					}
+				case <-retentionDone:
+					return
+				}
+			}
+		}()
+	}
+
 	srv := &http.Server{
 		Addr: cfg.ListenAddr,
 		Handler: server.New(db, server.Options{
 			AuthSecret: cfg.AuthSecret,
 			AdminToken: cfg.AdminToken,
 			Keyring:    cfg.Keyring,
+			Recorder:   rec,
 			Log:        log,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -72,6 +97,8 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Error("shutdown error", "err", err)
 	}
+	close(retentionDone)
+	rec.Close() // 排空调用记录队列后再关库
 	_ = sqlDB.Close()
 	log.Info("bye")
 }

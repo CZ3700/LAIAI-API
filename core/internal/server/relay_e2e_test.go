@@ -5,14 +5,17 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/laiai/laiai-next/core/internal/crypto"
+	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
@@ -65,6 +68,20 @@ CREATE TABLE model_prices (
     input_usd_per_1m NUMERIC NOT NULL, output_usd_per_1m NUMERIC NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE invocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL, user_id INTEGER, api_key_id INTEGER NOT NULL,
+    request_id TEXT NOT NULL UNIQUE, model TEXT NOT NULL,
+    channel_id INTEGER NOT NULL DEFAULT 0, provider TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL, status_code INTEGER NOT NULL DEFAULT 0,
+    is_stream INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd NUMERIC NOT NULL DEFAULT 0, usage_source TEXT NOT NULL DEFAULT '',
+    frt_ms INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0,
+    upstream_request_id TEXT NOT NULL DEFAULT '', error_brief TEXT NOT NULL DEFAULT '',
+    payload_object_key TEXT NOT NULL DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 var testAdminToken = "admin-token-0123456789abcdef-0123456789"
@@ -97,12 +114,29 @@ func setupRelayServer(t *testing.T) (*gin999, *gorm.DB) {
 			t.Fatalf("schema: %v", err)
 		}
 	}
+	rec := invocation.NewRecorder(db, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	t.Cleanup(rec.Close)
 	engine := New(db, Options{
 		AuthSecret: testSecret,
 		AdminToken: []byte(testAdminToken),
 		Keyring:    testKeyring(t),
+		Recorder:   rec,
 	})
 	return &gin999{engine: engine}, db
+}
+
+// waitInvocation 轮询等待异步落库的调用记录（flush 间隔 250ms）
+func waitInvocation(t *testing.T, db *gorm.DB, where string, args ...any) *invocation.Invocation {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		inv := &invocation.Invocation{}
+		if err := db.Where(where, args...).First(inv).Error; err == nil {
+			return inv
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("invocation not recorded: %s %v", where, args)
+	return nil
 }
 
 func (g *gin999) doAdmin(t *testing.T, method, path string, body any) (*httptest.ResponseRecorder, map[string]any) {
@@ -213,6 +247,69 @@ func TestRelayBillingFlow(t *testing.T) {
 	}
 	if !settled.Equal(decimal.RequireFromString("-0.005")) {
 		t.Fatalf("settled total = %s, want -0.005", settled)
+	}
+
+	// —— Invocation Store 断言（异步落库，元数据与 journal 同口径）——
+	reqID := w.Header().Get("X-Request-Id")
+	if reqID == "" {
+		t.Fatal("X-Request-Id header missing")
+	}
+	rec := waitInvocation(t, db, "request_id = ?", reqID)
+	if rec.Status != invocation.StatusSuccess || rec.StatusCode != 200 {
+		t.Fatalf("invocation status = %s/%d", rec.Status, rec.StatusCode)
+	}
+	if rec.PromptTokens != 1000 || rec.CompletionTokens != 500 {
+		t.Fatalf("invocation tokens = %d/%d", rec.PromptTokens, rec.CompletionTokens)
+	}
+	if !rec.CostUSD.Equal(decimal.RequireFromString("0.005")) {
+		t.Fatalf("invocation cost = %s, want 0.005 (journal 口径)", rec.CostUSD)
+	}
+	if rec.UsageSource != invocation.UsageSourceUpstream || rec.Attempts != 1 ||
+		rec.ChannelID == 0 || rec.Provider != "openai" || rec.OrgID != uint64(orgID) {
+		t.Fatalf("invocation meta: source=%s attempts=%d channel=%d provider=%s org=%d",
+			rec.UsageSource, rec.Attempts, rec.ChannelID, rec.Provider, rec.OrgID)
+	}
+}
+
+func TestUsageAPIOrgIsolation(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := mockUpstreamJSON(t, 10, 10)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKeyA, _ := seedUserWithCredit(t, srv, "usage-a@example.com", "10")
+
+	// B 只注册登录，不调用
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "usage-b@example.com", "password": "longenough1"})
+	_, loginB := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "usage-b@example.com", "password": "longenough1"})
+	tokenB := loginB["token"].(string)
+	_, loginA := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "usage-a@example.com", "password": "longenough1"})
+	tokenA := loginA["token"].(string)
+
+	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKeyA, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 200 {
+		t.Fatalf("call = %d", w.Code)
+	}
+	waitInvocation(t, db, "status = ?", invocation.StatusSuccess)
+
+	// A 能看到自己的记录
+	w, outA := srv.do(t, "GET", "/api/usage", tokenA, nil)
+	if w.Code != 200 || outA["total"].(float64) < 1 {
+		t.Fatalf("org A usage = %d %v", w.Code, outA)
+	}
+	items := outA["items"].([]any)
+	first := items[0].(map[string]any)
+	if first["model"] != "test-model" || first["request_id"] == "" {
+		t.Fatalf("usage item shape: %v", first)
+	}
+	if _, leaked := first["upstream_request_id"]; leaked {
+		t.Fatal("upstream_request_id leaked to user API (internal field)")
+	}
+	// B 看不到任何记录（org 隔离红线）
+	w, outB := srv.do(t, "GET", "/api/usage", tokenB, nil)
+	if w.Code != 200 || outB["total"].(float64) != 0 {
+		t.Fatalf("org B usage = %v, want empty", outB)
 	}
 }
 

@@ -1,17 +1,21 @@
 package relay
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/crypto"
 	"github.com/laiai/laiai-next/core/internal/identity"
+	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"gorm.io/gorm"
 )
@@ -29,17 +33,43 @@ type Relay struct {
 	Keyring *crypto.Keyring
 	Client  *http.Client
 	Log     *slog.Logger
+	Rec     *invocation.Recorder // nil = 不记录（测试或显式禁用）
 	Now     func() time.Time
 }
 
-func New(db *gorm.DB, kr *crypto.Keyring, log *slog.Logger) *Relay {
+func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Logger) *Relay {
 	return &Relay{
 		DB:      db,
 		Keyring: kr,
 		Client:  &http.Client{Timeout: upstreamTimeout},
 		Log:     log,
+		Rec:     rec,
 		Now:     time.Now,
 	}
+}
+
+// newRequestID：平台级请求 id（16 hex），回传 X-Request-Id 给客户端作支持工单锚点。
+func newRequestID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("t%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// firstByteReader 记录首字节到达时刻（frt，NewAPI logs 表的黄金指标），adapter 无感知。
+type firstByteReader struct {
+	inner   io.Reader
+	once    sync.Once
+	onFirst func()
+}
+
+func (f *firstByteReader) Read(p []byte) (int, error) {
+	n, err := f.inner.Read(p)
+	if n > 0 {
+		f.once.Do(f.onFirst)
+	}
+	return n, err
 }
 
 type usage struct {
@@ -51,6 +81,8 @@ type usage struct {
 // 计费时序 = hold（按估算上限冻结）→ 转发 → capture（按真实 usage 结算，差额自动解冻）。
 // 上游失败 → release 全额解冻。结构性消灭"预检黑盒"类问题（TrustQuota 事故）。
 func (r *Relay) HandleChatCompletions(c *gin.Context) {
+	t0 := r.Now()
+
 	// 1. API Key 认证
 	auth := c.GetHeader("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
@@ -61,6 +93,23 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	if err != nil {
 		relayErr(c, http.StatusUnauthorized, "invalid api key")
 		return
+	}
+
+	// 调用记录（Invocation Store 元数据，设计 §6.1）；finish 在每个终态出口调用一次
+	inv := &invocation.Invocation{
+		OrgID:     key.OrgID,
+		UserID:    key.UserID,
+		APIKeyID:  key.ID,
+		RequestID: newRequestID(),
+	}
+	c.Header("X-Request-Id", inv.RequestID)
+	finish := func(status string, code int, brief string) {
+		if r.Rec == nil {
+			return
+		}
+		inv.Status, inv.StatusCode, inv.ErrorBrief = status, code, brief
+		inv.DurationMs = int(r.Now().Sub(t0).Milliseconds())
+		r.Rec.Record(inv)
 	}
 
 	// 2. 读请求体，取 model / stream / max_tokens
@@ -84,6 +133,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	if mt, ok := req["max_tokens"].(float64); ok && mt > 0 {
 		maxTokens = int64(mt)
 	}
+	inv.Model, inv.IsStream = model, stream
 
 	// 3. 定价
 	price, err := GetPrice(r.DB, model)
@@ -113,6 +163,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "insufficient") {
+			finish(invocation.StatusInsufficientBalance, http.StatusPaymentRequired, "insufficient balance")
 			relayErr(c, http.StatusPaymentRequired, "insufficient balance")
 			return
 		}
@@ -126,6 +177,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	// 不需要 NewAPI 的磁盘 BufStorage。
 	var resp *http.Response
 	var ch *Channel
+	var attemptStart time.Time
 	exclude := map[uint64]bool{}
 	var lastStatus int
 	var lastBody []byte
@@ -135,6 +187,9 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		if pickErr != nil {
 			break // 无渠道可用：落到循环后的失败处理
 		}
+		inv.Attempts = attempt + 1
+		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
+		attemptStart = r.Now()
 		credential, err := r.Keyring.Decrypt(ch.CredentialEnc)
 		if err != nil {
 			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "err", err)
@@ -181,14 +236,27 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		// 所有尝试失败：release 全额解冻，透传最后一个上游错误（或无渠道）
 		r.release(hold.ID)
 		if lastStatus == 0 {
+			finish(invocation.StatusNoChannel, http.StatusServiceUnavailable, "no upstream available")
 			relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
 			return
 		}
+		// error_brief 只存状态摘要，不存上游错误体（红线 8：禁 payload 回流元数据）
+		finish(invocation.StatusUpstreamError, lastStatus, fmt.Sprintf("upstream status %d after %d attempts", lastStatus, inv.Attempts))
 		c.Data(lastStatus, "application/json", lastBody)
 		return
 	}
 	defer resp.Body.Close()
 	ad := adapterFor(ch.Provider)
+
+	// 上游 request-id（找厂商开工单的唯一凭证，rc.6）；frt = 最后一次尝试开始 → 首字节
+	if rid := resp.Header.Get("x-request-id"); rid != "" {
+		inv.UpstreamRequestID = rid
+	} else if rid := resp.Header.Get("request-id"); rid != "" {
+		inv.UpstreamRequestID = rid
+	}
+	respBody := &firstByteReader{inner: resp.Body, onFirst: func() {
+		inv.FRTMs = int(r.Now().Sub(attemptStart).Milliseconds())
+	}}
 
 	// 成功响应：若渠道曾被 auto-disabled，自动重启用（知识库 §2.2）
 	r.enableChannelIfDisabled(ch)
@@ -197,14 +265,16 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	var u usage
 	var outBytes int
 	if stream {
-		u, outBytes = ad.pipeSSE(c, resp.Body)
+		u, outBytes = ad.pipeSSE(c, respBody)
 	} else {
-		u, outBytes = ad.pipeJSON(c, resp.Body)
+		u, outBytes = ad.pipeJSON(c, respBody)
 	}
+	inv.UsageSource = invocation.UsageSourceUpstream
 	if u.PromptTokens == 0 && u.CompletionTokens == 0 {
 		// 第三档兜底：上游没给 usage，按字节估算（宁可少收不多收：输入用请求估算，输出用响应字节）
 		u.PromptTokens = estIn
 		u.CompletionTokens = EstimateTokens(outBytes)
+		inv.UsageSource = invocation.UsageSourceEstimated
 		r.Log.Warn("usage missing from upstream, estimated", "channel", ch.ID, "model", model)
 	}
 
@@ -238,6 +308,9 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		// 响应已发出，结算失败只能告警人工对账（journal 漂移自检会兜住）
 		r.Log.Error("SETTLE FAILED — manual reconcile needed", "hold", hold.ID, "err", err)
 	}
+
+	inv.PromptTokens, inv.CompletionTokens, inv.CostUSD = u.PromptTokens, u.CompletionTokens, actual
+	finish(invocation.StatusSuccess, http.StatusOK, "")
 }
 
 func (r *Relay) release(holdID uint64) {
