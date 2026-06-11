@@ -102,6 +102,8 @@ func mapStopReason(r string) string {
 		return "length"
 	case "tool_use":
 		return "tool_calls"
+	case "refusal":
+		return "content_filter" // 知识库 §5：Claude 拒绝 → OpenAI content_filter
 	default: // end_turn / stop_sequence
 		return "stop"
 	}

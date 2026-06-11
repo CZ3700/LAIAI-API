@@ -149,15 +149,23 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	// 上游非 2xx：release 并透传（错误体截断后记日志）
+	// 上游非 2xx：release + 错误分类 + 按需禁用渠道 + 透传（错误体截断后记日志）
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		r.release(hold.ID)
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
 		r.Log.Warn("upstream error", "channel", ch.ID, "status", resp.StatusCode,
-			"body", string(errBody))
+			"disable", disp.DisableChannel, "retryable", disp.Retryable, "body", string(errBody))
+		if disp.DisableChannel {
+			// 异步禁用，不阻塞响应（知识库 §2.2：不能用 request context，直接传 channel id）
+			r.disableChannel(ch.ID, disp.Reason)
+		}
 		c.Data(resp.StatusCode, "application/json", errBody)
 		return
 	}
+
+	// 成功响应：若渠道曾被 auto-disabled，自动重启用（知识库 §2.2）
+	r.enableChannelIfDisabled(ch)
 
 	// 7. 响应回传（adapter 转换）+ usage 抽取 + capture
 	var u usage
@@ -212,6 +220,32 @@ func (r *Relay) release(holdID uint64) {
 	}); err != nil {
 		r.Log.Error("RELEASE FAILED — funds stuck in hold", "hold", holdID, "err", err)
 	}
+}
+
+// disableChannel 异步禁用渠道（知识库 §2.2）。一次成功请求会自动重启用（见 enableChannelIfDisabled）。
+// 用独立 goroutine + 新 context，不依赖已可能结束的请求 context。
+func (r *Relay) disableChannel(channelID uint64, reason string) {
+	go func() {
+		if err := r.DB.Model(&Channel{}).Where("id = ? AND status = 1", channelID).
+			Update("status", 2).Error; err != nil { // 2 = auto-disabled
+			r.Log.Error("channel auto-disable failed", "channel", channelID, "err", err)
+			return
+		}
+		r.Log.Warn("channel auto-disabled", "channel", channelID, "reason", reason)
+	}()
+}
+
+// enableChannelIfDisabled：成功请求后，若渠道处于 auto-disabled 则自动重启用（知识库 §2.2）。
+func (r *Relay) enableChannelIfDisabled(ch *Channel) {
+	if ch.Status != 2 {
+		return
+	}
+	go func() {
+		if err := r.DB.Model(&Channel{}).Where("id = ? AND status = 2", ch.ID).
+			Update("status", 1).Error; err == nil {
+			r.Log.Info("channel auto-re-enabled after success", "channel", ch.ID)
+		}
+	}()
 }
 
 func relayErr(c *gin.Context, code int, msg string) {

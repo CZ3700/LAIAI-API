@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/laiai/laiai-next/core/internal/crypto"
@@ -249,6 +250,45 @@ func TestRelayUpstreamErrorReleasesHold(t *testing.T) {
 	db.Model(&ledger.JournalEntry{}).Where("kind = ?", ledger.KindCapture).Count(&captures)
 	if captures != 0 {
 		t.Fatalf("captures = %d after failed call", captures)
+	}
+}
+
+func TestRelayChannelAutoDisable(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	// 上游返回 401 invalid_api_key —— 应触发渠道自动禁用（知识库 §2.2）
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":{"code":"invalid_api_key","message":"bad key"}}`)
+	}))
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "disable@example.com", "10")
+
+	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("upstream 401 passthrough = %d, want 401", w.Code)
+	}
+	// 异步禁用，轮询断言渠道 status→2（不 sleep 固定值）
+	disabled := false
+	for i := 0; i < 100; i++ {
+		var s int8
+		db.Raw("SELECT status FROM channels LIMIT 1").Scan(&s)
+		if s == 2 {
+			disabled = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !disabled {
+		t.Fatal("channel was not auto-disabled after invalid_api_key")
+	}
+	// 资金未受损：401 已 release，余额完整
+	acc := &ledger.Account{}
+	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("10")) || !acc.HeldAmount.IsZero() {
+		t.Fatalf("funds after disable: posted=%s held=%s", acc.PostedBalance, acc.HeldAmount)
 	}
 }
 
