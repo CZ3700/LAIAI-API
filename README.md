@@ -1,7 +1,13 @@
 # LAIAI-NEXT
 
-全球化 AI 模型聚合平台。中西模型双轨聚合（Seedance/Doubao/Qwen/GLM + OpenAI/Anthropic/Gemini）、
-x402 按次微支付、ERC-8004 agent 信任、API Key 诊断工具站、Organizations/Teams 与白标。
+全球化 AI 模型聚合平台。中西模型双轨聚合、x402 按次微支付、ERC-8004 agent 信任、
+API Key 诊断工具站、Organizations/Teams 与白标。
+
+**已支持厂商（25+）**：专用协议 OpenAI / Anthropic Claude / Google Gemini / Azure OpenAI /
+字节豆包·方舟（含 bot 路由 + Seedance 视频任务）；OpenAI 兼容档案 DeepSeek / 通义千问 /
+智谱 GLM / Kimi / 百度千帆 / 腾讯混元 / MiniMax / 硅基流动 / 阶跃星辰 / 讯飞星火 / 零一万物 /
+xAI Grok / Mistral / Groq / OpenRouter / Together / Fireworks / Perplexity / Cohere / Ollama。
+完整清单与默认端点见 [providers.go](core/internal/relay/providers.go)。
 
 **完整架构设计 → [docs/整体架构设计.md](docs/整体架构设计.md)（活文档，改动先改文档再动代码）**
 

@@ -80,7 +80,7 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 type channelReq struct {
 	Name     string   `json:"name" binding:"required"`
 	Provider string   `json:"provider" binding:"required"`
-	BaseURL  string   `json:"base_url" binding:"required"`
+	BaseURL  string   `json:"base_url"` // 缺省取厂商档案默认端点（providers.go）
 	APIKey   string   `json:"api_key" binding:"required"`
 	Models   []string `json:"models" binding:"required"`
 	Weight   int      `json:"weight"`
@@ -95,8 +95,15 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 	}
 	var req channelReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, "name, provider, base_url, api_key, models required")
+		fail(c, http.StatusBadRequest, "name, provider, api_key, models required")
 		return
+	}
+	if req.BaseURL == "" {
+		req.BaseURL = relay.DefaultBaseURLFor(req.Provider)
+		if req.BaseURL == "" {
+			fail(c, http.StatusBadRequest, "base_url required for provider "+req.Provider)
+			return
+		}
 	}
 	enc, err := s.keyring.Encrypt(req.APIKey)
 	if err != nil {

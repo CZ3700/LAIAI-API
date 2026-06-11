@@ -202,8 +202,8 @@ NewAPI logs 表核心列：user_id/created_at/type(consume=2 等枚举)/content/
 8. ✅ 并发 tool calls 状态机（anthropic 全双向：请求侧 tools/tool_choice/历史 tool_use/tool_result-合并进-user；响应侧 tool_use→tool_calls（arguments 转 JSON 字符串、纯工具 content=null）；流式 block-index→tool-index 映射，多工具并行各自累积 partial_json）。**P1 全部完成。**
 
 **P2（M2/M3）**：
-9. Gemini adapter（§5）、ModelArk/Qwen/GLM/Kimi adapter（§6.1）。
-10. 异步 Task API（§6.2）——Seedance 核心，用 hold→capture 表达任务计费。
+9. ✅ 厂商覆盖 25+（2026-06-12）：专用适配器 5 个（openai/anthropic/gemini/azure/volcengine）+ 厂商档案注册表（providers.go，OpenAI 兼容厂商显式登记默认端点：deepseek/qwen/zhipu/moonshot/baidu千帆v2/hunyuan/minimax/siliconflow/stepfun/spark/yi + xai/mistral/groq/openrouter/together/fireworks/perplexity/cohere/ollama）。**工程判断**：2026 年中国系主流已全部提供 OpenAI 兼容端点，NewAPI 那些 JWT/OAuth/HMAC/WebSocket 旧协议适配器服务的是已淘汰的旧 API，刻意不移植。注册表数量与可解析性有测试钉死（≥15 + 必备名单逐一断言）。
+10. ✅ 异步 Task API（§6.2）——commit 339505b，hold→capture 任务计费 + CAS。
 11. abilities 物化索引（渠道规模化后）。
 12. violation fee 概念（moderation 拒绝的不可退费用，§4.5）。
 

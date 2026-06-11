@@ -21,12 +21,22 @@ type adapter interface {
 	pipeSSE(c *gin.Context, body io.Reader) (usage, int)
 }
 
-// adapterFor 按渠道 provider 选择适配器；未知 provider 按 OpenAI 兼容处理
-// （大量厂商与聚合上游本身就是 OpenAI 兼容协议）。
+// adapterFor 按渠道 provider 选择适配器：先查档案注册表（providers.go）的 Adapter 字段，
+// 未登记的 provider 按 OpenAI 兼容处理（自建/聚合上游大多说 OpenAI 方言）。
 func adapterFor(provider string) adapter {
-	switch provider {
+	name := provider
+	if p, ok := ProfileFor(provider); ok {
+		name = p.Adapter
+	}
+	switch name {
 	case "anthropic":
 		return anthropicAdapter{}
+	case "gemini":
+		return geminiAdapter{}
+	case "azure":
+		return azureAdapter{}
+	case "volcengine":
+		return volcengineChatAdapter{}
 	default:
 		return openaiAdapter{}
 	}
