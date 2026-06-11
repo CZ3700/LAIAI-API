@@ -1,0 +1,31 @@
+# LAIAI-NEXT 入口（M0 骨架）。
+# LAIAI_DOMAIN 未设置时退化为 :80 纯 HTTP（裸服务器首次验证用）；
+# 设置真实域名后 Caddy 自动 ACME 签证书。
+#
+# 移植的两个 Caddy 陷阱纪律：
+#  1. respond 必须包在 handle 块里（directive 顺序陷阱）
+#  2. 若前面还有一层反代/CDN，必须配置 servers>trusted_proxies，否则 X-Forwarded-* 被覆写
+
+{$LAIAI_DOMAIN} {
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	handle /healthz {
+		reverse_proxy core:8080
+	}
+
+	handle /api/* {
+		reverse_proxy core:8080
+	}
+
+	handle {
+		respond "LAIAI-NEXT — coming soon" 200
+	}
+}

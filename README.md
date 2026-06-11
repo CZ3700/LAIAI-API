@@ -26,6 +26,30 @@ make test      # 仅测试
 
 Windows 本机注意：`GOPROXY=https://goproxy.cn,direct`（proxy.golang.org 不可达）。
 
+## 部署（新服务器一键起栈）
+
+前置：Linux + Docker Engine + compose plugin。
+
+```bash
+git clone <repo> laiai-next && cd laiai-next/infra
+cp .env.example .env
+vim .env                 # 三个密码 + LAIAI_AUTH_SECRET（openssl rand -base64 32）
+docker compose up -d --build
+curl -s http://localhost/healthz   # → {"status":"ok"}
+```
+
+启动顺序由 compose 编排：MySQL 健康 → core 容器 entrypoint **自动应用 migrations/**（失败重试 60s 后响亮退出，绝不静默跳过 schema）→ HTTP 起服务 → Caddy 接流量。
+设置 `LAIAI_DOMAIN=api.example.com` 后 Caddy 自动 ACME 签发 TLS；留空则 :80 裸 HTTP（仅首次验证）。
+
+冒烟验证：
+
+```bash
+curl -X POST localhost/api/auth/register -d '{"email":"you@example.com","password":"yourpass123"}'
+curl -X POST localhost/api/auth/login    -d '{"email":"you@example.com","password":"yourpass123"}'
+# 用返回 token：
+curl -H "Authorization: Bearer <token>" -X POST localhost/api/keys -d '{"name":"first"}'
+```
+
 ## 平台红线（违反即 review 驳回）
 
 1. 资金动作必须在事务内 + ledger journal 同写；余额永不直接 UPDATE（唯一写点：`ledger.setBalances`）

@@ -1,0 +1,98 @@
+# LAIAI-NEXT 全栈一键部署
+# 用法：cp .env.example .env && 填密钥 && docker compose up -d --build
+# 纪律：无 ${VAR:-tag} 镜像 fallback 漂移（旧平台隐式回滚事故）；版本升级显式改本文件
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: laiai-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set in .env}
+      MYSQL_DATABASE: laiai
+      MYSQL_USER: laiai
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set in .env}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql/my.cnf:/etc/mysql/conf.d/laiai.cnf:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [laiai]
+
+  redis:
+    image: redis:7-alpine
+    container_name: laiai-redis
+    restart: unless-stopped
+    command: ["redis-server", "/etc/redis/redis.conf", "--requirepass", "${REDIS_PASSWORD:?set in .env}"]
+    volumes:
+      - redis-data:/data
+      - ./redis/redis.conf:/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks: [laiai]
+
+  core:
+    build:
+      context: ..
+      dockerfile: infra/core.Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    container_name: laiai-core
+    restart: unless-stopped
+    environment:
+      LAIAI_DSN: "laiai:${MYSQL_PASSWORD}@tcp(mysql:3306)/laiai?parseTime=true&charset=utf8mb4&loc=UTC"
+      LAIAI_AUTH_SECRET: ${LAIAI_AUTH_SECRET:?set in .env (>=32 chars)}
+      LAIAI_REDIS_ADDR: "redis:6379"
+      LAIAI_LISTEN_ADDR: ":8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=10M
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    networks: [laiai]
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: laiai-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      LAIAI_DOMAIN: ${LAIAI_DOMAIN:-:80}
+    depends_on:
+      - core
+    networks: [laiai]
+
+volumes:
+  mysql-data:
+  redis-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  laiai:
+    driver: bridge

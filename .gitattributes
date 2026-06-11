@@ -1,0 +1,5 @@
+# 强制 LF：Windows 开发 → Linux 容器，CRLF 会炸 shell 脚本与确定性构建
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
