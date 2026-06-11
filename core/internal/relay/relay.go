@@ -1,8 +1,6 @@
 package relay
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -133,26 +131,14 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		return
 	}
 
-	// 5. 流式请求注入 include_usage（usage 三档抽取第一档）
-	if stream {
-		req["stream_options"] = map[string]any{"include_usage": true}
-		if body, err = json.Marshal(req); err != nil {
-			r.release(hold.ID)
-			relayErr(c, http.StatusInternalServerError, "request rebuild failed")
-			return
-		}
-	}
-
-	// 6. 转发上游
-	upReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost,
-		strings.TrimRight(ch.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
+	// 5. 协议适配 + 转发上游（adapter 负责统一格式 ↔ 厂商格式双向转换）
+	ad := adapterFor(ch.Provider)
+	upReq, err := ad.buildRequest(c.Request.Context(), ch, credential, req, stream)
 	if err != nil {
 		r.release(hold.ID)
 		relayErr(c, http.StatusInternalServerError, "upstream request build failed")
 		return
 	}
-	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("Authorization", "Bearer "+credential)
 
 	resp, err := r.Client.Do(upReq)
 	if err != nil {
@@ -173,13 +159,13 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		return
 	}
 
-	// 7. 响应回传 + usage 抽取 + capture
+	// 7. 响应回传（adapter 转换）+ usage 抽取 + capture
 	var u usage
 	var outBytes int
 	if stream {
-		u, outBytes = r.pipeSSE(c, resp.Body)
+		u, outBytes = ad.pipeSSE(c, resp.Body)
 	} else {
-		u, outBytes = r.pipeJSON(c, resp.Body)
+		u, outBytes = ad.pipeJSON(c, resp.Body)
 	}
 	if u.PromptTokens == 0 && u.CompletionTokens == 0 {
 		// 第三档兜底：上游没给 usage，按字节估算（宁可少收不多收：输入用请求估算，输出用响应字节）
@@ -218,49 +204,6 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		// 响应已发出，结算失败只能告警人工对账（journal 漂移自检会兜住）
 		r.Log.Error("SETTLE FAILED — manual reconcile needed", "hold", hold.ID, "err", err)
 	}
-}
-
-// pipeJSON：非流式——读完上游响应转发，抽 usage（第二档）。
-func (r *Relay) pipeJSON(c *gin.Context, body io.Reader) (usage, int) {
-	raw, err := io.ReadAll(body)
-	if err != nil {
-		return usage{}, 0
-	}
-	var parsed struct {
-		Usage usage `json:"usage"`
-	}
-	_ = json.Unmarshal(raw, &parsed)
-	c.Data(http.StatusOK, "application/json", raw)
-	return parsed.Usage, len(raw)
-}
-
-// pipeSSE：流式——逐行透传并 flush，扫描末帧 usage（第一档）。
-func (r *Relay) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Status(http.StatusOK)
-	w := c.Writer
-
-	var u usage
-	outBytes := 0
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
-		outBytes += len(line)
-		if data, ok := strings.CutPrefix(line, "data: "); ok && data != "[DONE]" {
-			var chunk struct {
-				Usage *usage `json:"usage"`
-			}
-			if json.Unmarshal([]byte(data), &chunk) == nil && chunk.Usage != nil &&
-				(chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
-				u = *chunk.Usage
-			}
-		}
-		_, _ = w.WriteString(line + "\n")
-		w.Flush()
-	}
-	return u, outBytes
 }
 
 func (r *Relay) release(holdID uint64) {
