@@ -142,8 +142,8 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		return
 	}
 
-	// 4. Hold：按 估算输入 + max_tokens 上限 冻结（整个重试周期只 hold 一次）
-	estIn := EstimateTokens(len(body))
+	// 4. Hold：按 tiktoken 估算输入 + max_tokens 上限 冻结（整个重试周期只 hold 一次）
+	estIn := CountChatTokens(req, len(body))
 	holdAmount := price.Cost(estIn, maxTokens)
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {

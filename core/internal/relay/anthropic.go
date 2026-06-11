@@ -31,7 +31,9 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 	}
 	out["max_tokens"] = maxTokens
 
-	// system 消息提升 + 其余 role 直传
+	// 消息转换：system 提升；assistant tool_calls → tool_use 块；
+	// role=tool → tool_result 块，且必须附在 user 消息上（知识库 §5 边角 6：
+	// 连续 tool 结果合并进同一条 user 消息，孤立 tool_result 会被 Claude 拒绝）。
 	var systemParts []string
 	var messages []map[string]any
 	if rawMsgs, ok := req["messages"].([]any); ok {
@@ -41,13 +43,57 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 				continue
 			}
 			role, _ := m["role"].(string)
-			if role == "system" {
+			switch role {
+			case "system":
 				if s, ok := m["content"].(string); ok {
 					systemParts = append(systemParts, s)
 				}
-				continue
+			case "tool":
+				block := map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": m["tool_call_id"],
+					"content":     m["content"],
+				}
+				if n := len(messages); n > 0 && messages[n-1]["role"] == "user" {
+					if blocks, ok := messages[n-1]["content"].([]any); ok {
+						messages[n-1]["content"] = append(blocks, block)
+						continue
+					}
+				}
+				messages = append(messages, map[string]any{"role": "user", "content": []any{block}})
+			case "assistant":
+				tcs, _ := m["tool_calls"].([]any)
+				if len(tcs) == 0 {
+					messages = append(messages, map[string]any{"role": role, "content": m["content"]})
+					continue
+				}
+				var blocks []any
+				if s, ok := m["content"].(string); ok && s != "" {
+					blocks = append(blocks, map[string]any{"type": "text", "text": s})
+				}
+				for _, rtc := range tcs {
+					tc, ok := rtc.(map[string]any)
+					if !ok {
+						continue
+					}
+					fn, _ := tc["function"].(map[string]any)
+					if fn == nil {
+						continue
+					}
+					var input any = map[string]any{}
+					if args, ok := fn["arguments"].(string); ok && args != "" {
+						if json.Unmarshal([]byte(args), &input) != nil {
+							input = map[string]any{} // 历史里的坏 JSON 不致命：给空入参
+						}
+					}
+					blocks = append(blocks, map[string]any{
+						"type": "tool_use", "id": tc["id"], "name": fn["name"], "input": input,
+					})
+				}
+				messages = append(messages, map[string]any{"role": "assistant", "content": blocks})
+			default:
+				messages = append(messages, map[string]any{"role": role, "content": m["content"]})
 			}
-			messages = append(messages, map[string]any{"role": role, "content": m["content"]})
 		}
 	}
 	if len(messages) == 0 {
@@ -56,6 +102,44 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 	out["messages"] = messages
 	if len(systemParts) > 0 {
 		out["system"] = strings.Join(systemParts, "\n\n")
+	}
+
+	// 工具定义与 tool_choice（OpenAI → Claude 形态）
+	if tools, ok := req["tools"].([]any); ok && len(tools) > 0 {
+		var ctools []map[string]any
+		for _, rt := range tools {
+			t, ok := rt.(map[string]any)
+			if !ok {
+				continue
+			}
+			fn, ok := t["function"].(map[string]any)
+			if !ok {
+				continue
+			}
+			ct := map[string]any{"name": fn["name"], "input_schema": fn["parameters"]}
+			if d, ok := fn["description"]; ok {
+				ct["description"] = d
+			}
+			ctools = append(ctools, ct)
+		}
+		if len(ctools) > 0 {
+			out["tools"] = ctools
+		}
+	}
+	switch tc := req["tool_choice"].(type) {
+	case string:
+		switch tc {
+		case "auto":
+			out["tool_choice"] = map[string]any{"type": "auto"}
+		case "required":
+			out["tool_choice"] = map[string]any{"type": "any"}
+		case "none":
+			delete(out, "tools") // Claude 无 none 语义：撤掉工具定义等效
+		}
+	case map[string]any:
+		if fn, ok := tc["function"].(map[string]any); ok {
+			out["tool_choice"] = map[string]any{"type": "tool", "name": fn["name"]}
+		}
 	}
 
 	for from, to := range map[string]string{"temperature": "temperature", "top_p": "top_p"} {
@@ -117,8 +201,11 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int) {
 		ID      string `json:"id"`
 		Model   string `json:"model"`
 		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			ID    string          `json:"id"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
 		} `json:"content"`
 		StopReason string         `json:"stop_reason"`
 		Usage      anthropicUsage `json:"usage"`
@@ -129,9 +216,31 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int) {
 		return usage{}, len(raw)
 	}
 	var text strings.Builder
+	var toolCalls []gin.H
 	for _, block := range resp.Content {
-		if block.Type == "text" {
+		switch block.Type {
+		case "text":
 			text.WriteString(block.Text)
+		case "tool_use":
+			args := string(block.Input)
+			if args == "" {
+				args = "{}"
+			}
+			toolCalls = append(toolCalls, gin.H{
+				"id":   block.ID,
+				"type": "function",
+				"function": gin.H{
+					"name":      block.Name,
+					"arguments": args, // OpenAI 形态：JSON 字符串而非对象
+				},
+			})
+		}
+	}
+	message := gin.H{"role": "assistant", "content": text.String()}
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+		if text.Len() == 0 {
+			message["content"] = nil // OpenAI 惯例：纯工具调用时 content 为 null
 		}
 	}
 	converted := gin.H{
@@ -140,7 +249,7 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int) {
 		"model":  resp.Model,
 		"choices": []gin.H{{
 			"index":         0,
-			"message":       gin.H{"role": "assistant", "content": text.String()},
+			"message":       message,
 			"finish_reason": mapStopReason(resp.StopReason),
 		}},
 		"usage": gin.H{
@@ -170,6 +279,11 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 	}
 
 	finishReason := "stop"
+	// 并发 tool calls 状态机（知识库 §5 边角 1，NewAPI rc.10 同款问题）：
+	// Claude 的 content block index 含 text 块，OpenAI 的 tool_calls index 只数工具——
+	// 必须维护 block index → tool index 映射，多工具并行时各自累积 arguments。
+	toolIdxByBlock := map[int]int{}
+	toolCount := 0
 	pumpLines(c.Request.Context(), body, func(line string) {
 		data, ok := strings.CutPrefix(line, "data: ")
 		if !ok {
@@ -177,13 +291,20 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 		}
 		var ev struct {
 			Type    string `json:"type"`
+			Index   int    `json:"index"`
 			Message struct {
 				Usage anthropicUsage `json:"usage"`
 			} `json:"message"`
+			ContentBlock struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"content_block"`
 			Delta struct {
-				Type       string `json:"type"`
-				Text       string `json:"text"`
-				StopReason string `json:"stop_reason"`
+				Type        string `json:"type"`
+				Text        string `json:"text"`
+				PartialJSON string `json:"partial_json"`
+				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
 			Usage anthropicUsage `json:"usage"`
 		}
@@ -195,10 +316,31 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 			u.PromptTokens = ev.Message.Usage.InputTokens
 			emit(gin.H{"object": "chat.completion.chunk",
 				"choices": []gin.H{{"index": 0, "delta": gin.H{"role": "assistant"}}}})
-		case "content_block_delta":
-			if ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
+		case "content_block_start":
+			if ev.ContentBlock.Type == "tool_use" {
+				toolIdx := toolCount
+				toolCount++
+				toolIdxByBlock[ev.Index] = toolIdx
 				emit(gin.H{"object": "chat.completion.chunk",
-					"choices": []gin.H{{"index": 0, "delta": gin.H{"content": ev.Delta.Text}}}})
+					"choices": []gin.H{{"index": 0, "delta": gin.H{"tool_calls": []gin.H{{
+						"index": toolIdx, "id": ev.ContentBlock.ID, "type": "function",
+						"function": gin.H{"name": ev.ContentBlock.Name, "arguments": ""},
+					}}}}}})
+			}
+		case "content_block_delta":
+			switch ev.Delta.Type {
+			case "text_delta":
+				if ev.Delta.Text != "" {
+					emit(gin.H{"object": "chat.completion.chunk",
+						"choices": []gin.H{{"index": 0, "delta": gin.H{"content": ev.Delta.Text}}}})
+				}
+			case "input_json_delta":
+				if toolIdx, ok := toolIdxByBlock[ev.Index]; ok && ev.Delta.PartialJSON != "" {
+					emit(gin.H{"object": "chat.completion.chunk",
+						"choices": []gin.H{{"index": 0, "delta": gin.H{"tool_calls": []gin.H{{
+							"index": toolIdx, "function": gin.H{"arguments": ev.Delta.PartialJSON},
+						}}}}}})
+				}
 			}
 		case "message_delta":
 			if ev.Usage.OutputTokens > 0 {

@@ -196,10 +196,10 @@ NewAPI logs 表核心列：user_id/created_at/type(consume=2 等枚举)/content/
 **P1（M2）**：
 3. ✅ 换渠道重试循环（classify 驱动，hold 跨重试只一份，req map 内存可重放免磁盘缓存）+ 错误分类驱动的"是否换渠道"（commit 见下）。
 4. ✅ 流式 per-chunk 超时（pumpLines 三路 select：新行重置/超时/断连）+ 客户端断连检测（ctx.Done）。心跳（ping）留待有需求时补。
-5. tiktoken 精确化 hold 估算，降低 overage 频率（§4.2）。
+5. ✅ tiktoken 精确化 hold 估算（cl100k_base 离线词表内嵌、chat 消息计数惯例 +4/消息 +3 priming、tools 定义计入、解析失败回退 chars/4）。
 6. ✅ Invocation Store 元数据层落地（0005_invocations + Recorder 异步批量写 + GET /api/usage org 隔离查询 + 30 天 Purge 循环 + X-Request-Id 回传 + frt 首字节测量 + upstream_request_id 采集）。payload→R2 信封加密阶段待做（§6.1 第二期）。
 7. ✅ 渠道优先级分层 + 加权随机（PickChannelForAttempt，含零权重均分 + 低均值平滑 + 排除集）。
-8. 并发 tool calls 状态机（§5.1）。
+8. ✅ 并发 tool calls 状态机（anthropic 全双向：请求侧 tools/tool_choice/历史 tool_use/tool_result-合并进-user；响应侧 tool_use→tool_calls（arguments 转 JSON 字符串、纯工具 content=null）；流式 block-index→tool-index 映射，多工具并行各自累积 partial_json）。**P1 全部完成。**
 
 **P2（M2/M3）**：
 9. Gemini adapter（§5）、ModelArk/Qwen/GLM/Kimi adapter（§6.1）。
