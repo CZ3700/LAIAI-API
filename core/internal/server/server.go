@@ -74,6 +74,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 		// 认证端点限流（审查 H1）：挡暴力破解 + Argon2 内存放大
 		api.POST("/auth/register", s.authRateLimit(), s.register)
 		api.POST("/auth/login", s.authRateLimit(), s.login)
+		api.GET("/pricing", s.getPricing) // 公开价目（营销站/模型市场同源）
 
 		authed := api.Group("", s.authRequired())
 		{
@@ -83,6 +84,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			authed.DELETE("/keys/:id", s.revokeKey)
 			authed.GET("/usage", s.getUsage)
 			authed.GET("/usage/summary", s.getUsageSummary)
+			authed.GET("/balance", s.getBalance)
 			authed.GET("/orgs", s.listOrgs)
 			authed.POST("/orgs", s.createOrg)
 			authed.POST("/auth/switch", s.switchOrg)

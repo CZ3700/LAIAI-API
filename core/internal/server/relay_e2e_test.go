@@ -845,3 +845,56 @@ func TestUsageSummary(t *testing.T) {
 		t.Fatalf("summary day = %v", day)
 	}
 }
+
+// 余额端点：授信前 0/0，授信后精确，调用后反映扣费。
+func TestBalanceEndpoint(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "bal@example.com", "password": "longenough1"})
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "bal@example.com", "password": "longenough1"})
+	token := login["token"].(string)
+	orgID := login["org_id"].(float64)
+
+	// 授信前：0/0（无账户行是正常态，不报错）
+	w, out := srv.do(t, "GET", "/api/balance", token, nil)
+	if w.Code != 200 || out["balance"] != "0" {
+		t.Fatalf("pre-grant balance = %d %v", w.Code, out)
+	}
+	srv.doAdmin(t, "POST", "/api/admin/credits", map[string]any{
+		"org_id": orgID, "amount_usd": "3.5", "reason": "t", "idempotency_key": "bal-1",
+	})
+	w, out = srv.do(t, "GET", "/api/balance", token, nil)
+	if w.Code != 200 || out["balance"] != "3.5" || out["held"] != "0" {
+		t.Fatalf("post-grant balance = %d %v", w.Code, out)
+	}
+	// 未登录 → 401
+	w, _ = srv.do(t, "GET", "/api/balance", "", nil)
+	if w.Code != 401 {
+		t.Fatalf("unauthed balance = %d, want 401", w.Code)
+	}
+}
+
+// 公开价目：无需登录；只列"已定价且有活跃渠道"的模型（与 /v1/models 同规则）。
+func TestPublicPricing(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	up := mockUpstreamJSON(t, 1, 1)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL) // test-model 已定价已有渠道
+	// 孤儿定价（无渠道服务）不应出现
+	srv.doAdmin(t, "POST", "/api/admin/model-prices", map[string]any{
+		"model": "orphan-model", "input_usd_per_1m": "1", "output_usd_per_1m": "1",
+	})
+
+	w, out := srv.do(t, "GET", "/api/pricing", "", nil) // 无 token
+	if w.Code != 200 {
+		t.Fatalf("pricing = %d %v", w.Code, out)
+	}
+	models, _ := out["models"].([]any)
+	if len(models) != 1 {
+		t.Fatalf("pricing models = %d, want 1 (orphan hidden)", len(models))
+	}
+	m := models[0].(map[string]any)
+	if m["model"] != "test-model" || m["provider"] != "openai" ||
+		m["input_usd_per_1m"] != "2" || m["output_usd_per_1m"] != "6" {
+		t.Fatalf("pricing row = %v", m)
+	}
+}

@@ -16,6 +16,8 @@ export default {
     error: 'Une erreur est survenue',
   },
   nav: {
+    dashboard: 'Tableau de bord',
+    models: 'Modèles',
     keys: 'Clés API',
     usage: 'Utilisation',
     logout: 'Se déconnecter',
@@ -48,7 +50,22 @@ export default {
     createdWarning:
       "La clé complète n'est affichée qu'une seule fois. Conservez-la en lieu sûr — elle ne pourra pas être récupérée.",
   },
-  usage: {
+  dashboard: {
+    balance: 'Solde',
+    held: 'En attente',
+    todayCalls: "Appels aujourd'hui",
+    recent: 'Requêtes récentes',
+  },
+  models: {
+    title: 'Modèles',
+    search: 'Rechercher des modèles…',
+    model: 'Modèle',
+    provider: 'Fournisseur',
+    input: 'Entrée',
+    output: 'Sortie',
+    image: 'Image',
+    unitHint: "Les prix d'entrée/sortie sont en USD par million de tokens ; les images en USD par image. Cliquez sur un nom de modèle pour le copier.",
+  },  usage: {
     title: 'Utilisation',
     time: 'Heure',
     model: 'Modèle',

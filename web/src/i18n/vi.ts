@@ -16,6 +16,8 @@ export default {
     error: 'Đã xảy ra lỗi',
   },
   nav: {
+    dashboard: 'Bảng điều khiển',
+    models: 'Mô hình',
     keys: 'Khóa API',
     usage: 'Mức sử dụng',
     logout: 'Đăng xuất',
@@ -48,7 +50,22 @@ export default {
     createdWarning:
       'Khóa đầy đủ chỉ hiển thị một lần này. Hãy lưu trữ an toàn — không thể xem lại sau.',
   },
-  usage: {
+  dashboard: {
+    balance: 'Số dư',
+    held: 'Đang giữ',
+    todayCalls: 'Lượt gọi hôm nay',
+    recent: 'Yêu cầu gần đây',
+  },
+  models: {
+    title: 'Mô hình',
+    search: 'Tìm mô hình…',
+    model: 'Mô hình',
+    provider: 'Nhà cung cấp',
+    input: 'Đầu vào',
+    output: 'Đầu ra',
+    image: 'Hình ảnh',
+    unitHint: 'Giá đầu vào/đầu ra tính bằng USD trên 1 triệu token; hình ảnh tính bằng USD mỗi ảnh. Nhấp vào tên mô hình để sao chép.',
+  },  usage: {
     title: 'Mức sử dụng',
     time: 'Thời gian',
     model: 'Mô hình',

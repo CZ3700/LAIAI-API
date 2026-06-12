@@ -11,7 +11,8 @@ export const router = createRouter({
       component: () => import('@/layouts/Shell.vue'),
       meta: { auth: true },
       children: [
-        { path: '', redirect: '/keys' },
+        { path: '', component: () => import('@/pages/Dashboard.vue') },
+        { path: 'models', component: () => import('@/pages/Models.vue') },
         { path: 'keys', component: () => import('@/pages/Keys.vue') },
         { path: 'usage', component: () => import('@/pages/Usage.vue') },
         { path: 'team', component: () => import('@/pages/Team.vue') },

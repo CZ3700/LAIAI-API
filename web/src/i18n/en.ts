@@ -17,6 +17,8 @@ const messages = {
     error: 'Something went wrong',
   },
   nav: {
+    dashboard: 'Dashboard',
+    models: 'Models',
     keys: 'API Keys',
     usage: 'Usage',
     logout: 'Sign out',
@@ -49,7 +51,22 @@ const messages = {
     createdWarning:
       'This is the only time the full key is shown. Store it securely — it cannot be retrieved again.',
   },
-  usage: {
+  dashboard: {
+    balance: 'Balance',
+    held: 'On hold',
+    todayCalls: 'Calls today',
+    recent: 'Recent requests',
+  },
+  models: {
+    title: 'Models',
+    search: 'Search models…',
+    model: 'Model',
+    provider: 'Provider',
+    input: 'Input',
+    output: 'Output',
+    image: 'Image',
+    unitHint: 'Input/output prices are USD per 1M tokens; image prices are USD per image. Click a model name to copy it.',
+  },  usage: {
     title: 'Usage',
     time: 'Time',
     model: 'Model',

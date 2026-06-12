@@ -16,6 +16,8 @@ export default {
     error: 'エラーが発生しました',
   },
   nav: {
+    dashboard: 'ダッシュボード',
+    models: 'モデル',
     keys: 'APIキー',
     usage: '使用量',
     logout: 'サインアウト',
@@ -47,7 +49,22 @@ export default {
     createdTitle: '今すぐキーを保存してください',
     createdWarning: '完全なキーが表示されるのはこの一度だけです。安全に保管してください——後から再表示はできません。',
   },
-  usage: {
+  dashboard: {
+    balance: '残高',
+    held: '保留中',
+    todayCalls: '本日の呼び出し',
+    recent: '最近のリクエスト',
+  },
+  models: {
+    title: 'モデル',
+    search: 'モデルを検索…',
+    model: 'モデル',
+    provider: 'プロバイダー',
+    input: '入力',
+    output: '出力',
+    image: '画像',
+    unitHint: '入力/出力価格は 100 万トークンあたりの USD、画像は 1 枚あたりの USD です。モデル名をクリックするとコピーできます。',
+  },  usage: {
     title: '使用量',
     time: '時刻',
     model: 'モデル',

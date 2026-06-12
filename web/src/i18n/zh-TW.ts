@@ -16,6 +16,8 @@ export default {
     error: '發生錯誤',
   },
   nav: {
+    dashboard: '儀表板',
+    models: '模型',
     keys: 'API 金鑰',
     usage: '用量',
     logout: '登出',
@@ -47,7 +49,22 @@ export default {
     createdTitle: '立即保存你的金鑰',
     createdWarning: '完整金鑰只顯示這一次，請妥善保存——之後無法再次查看。',
   },
-  usage: {
+  dashboard: {
+    balance: '餘額',
+    held: '凍結中',
+    todayCalls: '今日呼叫',
+    recent: '最近請求',
+  },
+  models: {
+    title: '模型',
+    search: '搜尋模型…',
+    model: '模型',
+    provider: '廠商',
+    input: '輸入',
+    output: '輸出',
+    image: '圖像',
+    unitHint: '輸入/輸出價格為每 100 萬 token 的美元價；圖像為每張美元價。點擊模型名可複製。',
+  },  usage: {
     title: '用量',
     time: '時間',
     model: '模型',

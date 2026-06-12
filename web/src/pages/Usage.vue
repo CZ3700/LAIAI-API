@@ -2,6 +2,7 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
+import DailyBarChart, { type SummaryDay } from '@/components/DailyBarChart.vue'
 
 interface UsageRow {
   id: number
@@ -16,15 +17,6 @@ interface UsageRow {
   frt_ms: number
   duration_ms: number
   created_at: string
-}
-
-interface SummaryDay {
-  day: string
-  calls: number
-  succeeded: number
-  prompt_tokens: number
-  completion_tokens: number
-  cost_usd: string
 }
 
 const { t, n, d } = useI18n()
@@ -50,22 +42,6 @@ const totals = computed(() => {
   }
   return { calls, tokens, cost }
 })
-// SVG 柱状图数据：补齐无调用的日期为 0，柱高按当期最大值归一
-const chart = computed(() => {
-  const byDay = new Map(summary.value.map((s) => [s.day, s]))
-  const days: { label: string; calls: number; cost: string }[] = []
-  const today = new Date()
-  for (let i = summaryDays - 1; i >= 0; i--) {
-    const dt = new Date(today)
-    dt.setDate(today.getDate() - i)
-    const key = dt.toISOString().slice(0, 10)
-    const s = byDay.get(key)
-    days.push({ label: key.slice(5), calls: s?.calls ?? 0, cost: s?.cost_usd ?? '0' })
-  }
-  const max = Math.max(1, ...days.map((x) => x.calls))
-  return { days, max }
-})
-
 async function loadSummary() {
   try {
     const r = await api<{ items: SummaryDay[] }>('GET', `/api/usage/summary?days=${summaryDays}`)
@@ -138,21 +114,7 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
     </div>
 
     <!-- 日调用量柱状图 -->
-    <div class="card p-4">
-      <div class="flex h-28 items-end gap-1" role="img" :aria-label="t('usage.chartAlt')">
-        <div
-          v-for="dy in chart.days"
-          :key="dy.label"
-          class="group relative flex-1 rounded-t bg-accent/70 transition-colors hover:bg-accent min-h-[2px]"
-          :style="{ height: `${(dy.calls / chart.max) * 100}%` }"
-          :title="`${dy.label} · ${dy.calls} calls · $${dy.cost}`"
-        ></div>
-      </div>
-      <div class="mt-2 flex justify-between text-[10px] text-muted font-mono">
-        <span>{{ chart.days[0]?.label }}</span>
-        <span>{{ chart.days[chart.days.length - 1]?.label }}</span>
-      </div>
-    </div>
+    <DailyBarChart :items="summary" :days="summaryDays" />
 
     <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
     <p v-if="loading" class="text-sm text-muted">{{ t('common.loading') }}</p>

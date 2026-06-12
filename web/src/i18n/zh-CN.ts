@@ -17,6 +17,8 @@ export default {
     error: '出错了',
   },
   nav: {
+    dashboard: '仪表盘',
+    models: '模型',
     keys: 'API 密钥',
     usage: '用量',
     logout: '退出登录',
@@ -48,7 +50,22 @@ export default {
     createdTitle: '立即保存你的密钥',
     createdWarning: '完整密钥只显示这一次，请妥善保存——之后无法再次查看。',
   },
-  usage: {
+  dashboard: {
+    balance: '余额',
+    held: '冻结中',
+    todayCalls: '今日调用',
+    recent: '最近请求',
+  },
+  models: {
+    title: '模型',
+    search: '搜索模型…',
+    model: '模型',
+    provider: '厂商',
+    input: '输入',
+    output: '输出',
+    image: '图像',
+    unitHint: '输入/输出价格为每 100 万 token 的美元价；图像为每张美元价。点击模型名可复制。',
+  },  usage: {
     title: '用量',
     time: '时间',
     model: '模型',
