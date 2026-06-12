@@ -284,7 +284,7 @@ onMounted(() => {
 
 <template>
   <div class="max-w-4xl space-y-6">
-    <h1 class="text-xl font-semibold">{{ t('admin.title') }}</h1>
+    <h1 class="text-2xl font-semibold tracking-tight">{{ t('admin.title') }}</h1>
 
     <!-- token 门 -->
     <form v-if="!unlocked" class="card max-w-md p-6 space-y-4" @submit.prevent="unlock">
@@ -373,7 +373,7 @@ onMounted(() => {
         </div>
 
         <div class="card overflow-x-auto">
-          <table class="w-full text-sm whitespace-nowrap">
+          <table class="table w-full text-sm whitespace-nowrap">
             <thead>
               <tr class="border-b border-line text-left text-muted">
                 <th class="px-4 py-3 font-medium">ID</th>
@@ -396,7 +396,9 @@ onMounted(() => {
                 <td class="px-4 py-2.5 font-mono text-xs max-w-64 truncate" :title="c.models">{{ c.models }}</td>
                 <td class="px-4 py-2.5">{{ c.weight }} / {{ c.priority }}</td>
                 <td class="px-4 py-2.5">
-                  <span :class="c.status === 1 ? 'text-ok' : 'text-danger'">{{ statusLabel(c.status) }}</span>
+                  <span :class="c.status === 1 ? 'badge-ok' : c.status === 2 ? 'badge-danger' : 'badge-muted'">
+                    {{ statusLabel(c.status) }}
+                  </span>
                 </td>
                 <td class="px-4 py-2.5 text-right space-x-2">
                   <button class="btn-ghost !py-1 text-xs" :disabled="testingId === c.id" @click="testChannel(c)">
@@ -413,8 +415,8 @@ onMounted(() => {
         </div>
 
         <!-- 编辑渠道弹窗 -->
-        <div v-if="editing" class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" @click.self="editing = null">
-          <form class="card w-full max-w-md p-6 space-y-4" @submit.prevent="saveEdit">
+        <div v-if="editing" class="modal-backdrop" @click.self="editing = null">
+          <form class="card modal-panel w-full max-w-md p-6 space-y-4" @submit.prevent="saveEdit">
             <h2 class="font-semibold">{{ t('admin.chEdit') }} · {{ editing.name }}</h2>
             <div>
               <label class="label" for="edit-baseurl">{{ t('admin.chBaseUrl') }}</label>
@@ -488,7 +490,7 @@ onMounted(() => {
         </form>
 
         <div class="card overflow-hidden">
-          <table class="w-full text-sm">
+          <table class="table w-full text-sm">
             <thead>
               <tr class="border-b border-line text-left text-muted">
                 <th class="px-4 py-3 font-medium">{{ t('admin.prModel') }}</th>
@@ -538,7 +540,7 @@ onMounted(() => {
       <!-- 组织 -->
       <template v-if="tab === 'orgs'">
         <div class="card overflow-x-auto">
-          <table class="w-full text-sm whitespace-nowrap">
+          <table class="table w-full text-sm whitespace-nowrap">
             <thead>
               <tr class="border-b border-line text-left text-muted">
                 <th class="px-4 py-3 font-medium">ID</th>

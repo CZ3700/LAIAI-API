@@ -117,7 +117,7 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
 <template>
   <div class="space-y-6">
     <div class="flex items-center justify-between gap-4">
-      <h1 class="text-xl font-semibold">{{ t('usage.title') }}</h1>
+      <h1 class="text-2xl font-semibold tracking-tight">{{ t('usage.title') }}</h1>
       <input v-model="model" class="input max-w-xs" :placeholder="t('usage.filterModel')" />
     </div>
 
@@ -158,7 +158,7 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
     <p v-if="loading" class="text-sm text-muted">{{ t('common.loading') }}</p>
 
     <div v-else class="card overflow-x-auto">
-      <table class="w-full text-sm whitespace-nowrap">
+      <table class="table w-full text-sm whitespace-nowrap">
         <thead>
           <tr class="border-b border-line text-left text-muted">
             <th class="px-4 py-3 font-medium">{{ t('usage.time') }}</th>
@@ -177,7 +177,7 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
             <td class="px-4 py-2.5 text-muted">{{ d(new Date(r.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
             <td class="px-4 py-2.5 font-mono">{{ r.model }}</td>
             <td class="px-4 py-2.5">
-              <span :class="r.status === 'success' ? 'text-ok' : 'text-danger'">{{ r.status }}</span>
+              <span :class="r.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ r.status }}</span>
             </td>
             <td class="px-4 py-2.5 text-right font-mono">
               {{ n(r.prompt_tokens) }} / {{ n(r.completion_tokens) }}

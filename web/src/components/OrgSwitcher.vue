@@ -101,13 +101,13 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
     </div>
     <p v-if="error" class="px-2 text-xs text-danger" role="alert">{{ error }}</p>
 
-    <div v-if="showCreate" class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" @click.self="showCreate = false">
+    <div v-if="showCreate" class="modal-backdrop" @click.self="showCreate = false">
       <form
         ref="createDialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-team-title"
-        class="card w-full max-w-sm p-6 space-y-4"
+        class="card modal-panel w-full max-w-sm p-6 space-y-4"
         @submit.prevent="createTeam"
       >
         <h2 id="new-team-title" class="font-semibold">{{ t('team.newTeam') }}</h2>

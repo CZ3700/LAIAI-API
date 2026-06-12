@@ -4,52 +4,162 @@
 
 /* Design tokens（设计 §5.6）：暗色一等公民；白标主题 = 覆盖这些变量，不是 CSS 注入 */
 :root {
-  --c-bg: 247 247 245;
+  --c-bg: 248 248 246;
   --c-panel: 255 255 255;
-  --c-line: 226 226 222;
+  --c-elev: 255 255 255;
+  --c-line: 228 228 224;
   --c-ink: 24 24 27;
-  --c-muted: 113 113 122;
+  --c-muted: 110 110 120;
   --c-accent: 99 102 241;
+  --c-accent-2: 168 85 247;
   --c-danger: 220 38 38;
   --c-ok: 22 163 74;
+  --shadow-card: 0 1px 2px 0 rgb(16 16 20 / 0.04), 0 1px 3px 0 rgb(16 16 20 / 0.06);
+  --shadow-pop: 0 12px 32px -8px rgb(16 16 20 / 0.18), 0 4px 12px -4px rgb(16 16 20 / 0.08);
 }
 .dark {
-  --c-bg: 14 14 16;
-  --c-panel: 24 24 27;
-  --c-line: 39 39 45;
-  --c-ink: 235 235 235;
-  --c-muted: 140 140 150;
+  --c-bg: 12 12 15;
+  --c-panel: 21 21 26;
+  --c-elev: 28 28 34;
+  --c-line: 39 39 47;
+  --c-ink: 232 232 236;
+  --c-muted: 142 142 155;
   --c-accent: 129 140 248;
+  --c-accent-2: 192 132 252;
   --c-danger: 248 113 113;
   --c-ok: 74 222 128;
+  --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.3), 0 1px 4px 0 rgb(0 0 0 / 0.25);
+  --shadow-pop: 0 16px 40px -8px rgb(0 0 0 / 0.55), 0 4px 16px -4px rgb(0 0 0 / 0.4);
 }
 
 body {
   @apply bg-bg text-ink antialiased;
+  font-feature-settings: 'cv02', 'cv03', 'cv11';
+}
+
+::selection {
+  background: rgb(var(--c-accent) / 0.25);
+}
+
+/* 细滚动条（暗色下默认滚动条非常突兀） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--c-line)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--c-line));
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* 基础控件（shadcn-vue 设计系统接入前的最小集；保持类名稳定便于替换） */
 .btn {
-  @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium
-    transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent
-    disabled:opacity-50 disabled:pointer-events-none;
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium
+    transition-all duration-150 focus-visible:outline focus-visible:outline-2
+    focus-visible:outline-offset-2 focus-visible:outline-accent
+    active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none;
 }
 .btn-primary {
-  @apply btn bg-accent text-white hover:opacity-90;
+  @apply btn text-white;
+  background: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)));
+  box-shadow: 0 2px 8px -2px rgb(var(--c-accent) / 0.45);
+}
+.btn-primary:hover {
+  filter: brightness(1.08);
+  box-shadow: 0 4px 14px -2px rgb(var(--c-accent) / 0.55);
 }
 .btn-ghost {
-  @apply btn border border-line bg-transparent hover:bg-panel;
+  @apply btn border border-line bg-transparent hover:bg-elev hover:border-muted/40;
 }
 .btn-danger {
-  @apply btn border border-danger/40 text-danger hover:bg-danger/10;
+  @apply btn border border-danger/40 text-danger hover:bg-danger/10 hover:border-danger/60;
 }
 .input {
-  @apply w-full rounded-md border border-line bg-panel px-3 py-2 text-sm
-    placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50;
+  @apply w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm
+    placeholder:text-muted/70 transition-colors duration-150
+    hover:border-muted/40 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/25;
 }
 .card {
-  @apply rounded-lg border border-line bg-panel;
+  @apply rounded-xl border border-line bg-panel;
+  box-shadow: var(--shadow-card);
 }
 .label {
   @apply block text-sm text-muted mb-1.5;
+}
+
+/* 状态徽章：表格内状态统一视觉语言 */
+.badge {
+  @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium;
+}
+.badge::before {
+  content: '';
+  @apply h-1.5 w-1.5 rounded-full bg-current;
+}
+.badge-ok {
+  @apply badge bg-ok/10 text-ok;
+}
+.badge-danger {
+  @apply badge bg-danger/10 text-danger;
+}
+.badge-muted {
+  @apply badge bg-muted/10 text-muted;
+}
+
+/* 数据表：挂 .table 即获得行 hover / 分隔线 / 表头样式（免每页重复工具类） */
+.table tbody tr {
+  @apply border-b border-line transition-colors;
+}
+.table tbody tr:last-child {
+  @apply border-0;
+}
+.table tbody tr:hover {
+  background: rgb(var(--c-elev) / 0.6);
+}
+
+/* 弹窗：淡入 + 缩放进场（prefers-reduced-motion 自动禁用） */
+.modal-backdrop {
+  @apply fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-[2px];
+  animation: fade-in 0.15s ease-out;
+}
+.modal-panel {
+  box-shadow: var(--shadow-pop);
+  animation: scale-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop,
+  .modal-panel {
+    animation: none;
+  }
+}
+
+/* 认证页背景光晕（aurora）：纯 CSS，不加资源 */
+.aurora {
+  position: relative;
+  isolation: isolate;
+}
+.aurora::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(560px 320px at 18% 8%, rgb(var(--c-accent) / 0.14), transparent 65%),
+    radial-gradient(640px 380px at 85% 92%, rgb(var(--c-accent-2) / 0.12), transparent 65%);
 }

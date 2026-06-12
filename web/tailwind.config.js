@@ -8,10 +8,12 @@ export default {
       colors: {
         bg: 'rgb(var(--c-bg) / <alpha-value>)',
         panel: 'rgb(var(--c-panel) / <alpha-value>)',
+        elev: 'rgb(var(--c-elev) / <alpha-value>)',
         line: 'rgb(var(--c-line) / <alpha-value>)',
         ink: 'rgb(var(--c-ink) / <alpha-value>)',
         muted: 'rgb(var(--c-muted) / <alpha-value>)',
         accent: 'rgb(var(--c-accent) / <alpha-value>)',
+        accent2: 'rgb(var(--c-accent-2) / <alpha-value>)',
         danger: 'rgb(var(--c-danger) / <alpha-value>)',
         ok: 'rgb(var(--c-ok) / <alpha-value>)',
       },

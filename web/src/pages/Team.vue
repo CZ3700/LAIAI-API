@@ -86,7 +86,7 @@ onMounted(load)
 
 <template>
   <div class="max-w-3xl space-y-6">
-    <h1 class="text-xl font-semibold">{{ t('team.title') }}</h1>
+    <h1 class="text-2xl font-semibold tracking-tight">{{ t('team.title') }}</h1>
 
     <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
     <p v-if="loading" class="text-sm text-muted">{{ t('common.loading') }}</p>
@@ -110,7 +110,7 @@ onMounted(load)
       </form>
 
       <div class="card overflow-hidden">
-        <table class="w-full text-sm">
+        <table class="table w-full text-sm">
           <thead>
             <tr class="border-b border-line text-left text-muted">
               <th class="px-4 py-3 font-medium">{{ t('team.email') }}</th>

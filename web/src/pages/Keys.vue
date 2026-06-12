@@ -140,7 +140,7 @@ onMounted(load)
 <template>
   <div class="max-w-3xl space-y-6">
     <div class="flex items-center justify-between">
-      <h1 class="text-xl font-semibold">{{ t('keys.title') }}</h1>
+      <h1 class="text-2xl font-semibold tracking-tight">{{ t('keys.title') }}</h1>
       <button class="btn-primary" @click="showCreate = true">{{ t('keys.create') }}</button>
     </div>
 
@@ -148,7 +148,7 @@ onMounted(load)
     <p v-if="loading" class="text-sm text-muted">{{ t('common.loading') }}</p>
 
     <div v-else class="card overflow-hidden">
-      <table class="w-full text-sm">
+      <table class="table w-full text-sm">
         <thead>
           <tr class="border-b border-line text-left text-muted">
             <th class="px-4 py-3 font-medium">{{ t('keys.name') }}</th>
@@ -165,7 +165,7 @@ onMounted(load)
             <td class="px-4 py-3">{{ k.name || '—' }}</td>
             <td class="px-4 py-3 font-mono text-muted">{{ k.prefix }}…</td>
             <td class="px-4 py-3">
-              <span :class="k.status === 1 ? 'text-ok' : 'text-muted'">
+              <span :class="k.status === 1 ? 'badge-ok' : 'badge-muted'">
                 {{ k.status === 1 ? t('keys.active') : t('keys.revoked') }}
               </span>
             </td>
@@ -185,13 +185,13 @@ onMounted(load)
     </div>
 
     <!-- 创建弹窗 -->
-    <div v-if="showCreate" class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" @click.self="showCreate = false">
+    <div v-if="showCreate" class="modal-backdrop" @click.self="showCreate = false">
       <form
         ref="createDialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-key-title"
-        class="card w-full max-w-sm p-6 space-y-4"
+        class="card modal-panel w-full max-w-sm p-6 space-y-4"
         @submit.prevent="create"
       >
         <h2 id="create-key-title" class="font-semibold">{{ t('keys.create') }}</h2>
@@ -207,13 +207,13 @@ onMounted(load)
     </div>
 
     <!-- 明文一次性展示 -->
-    <div v-if="createdKey" class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
+    <div v-if="createdKey" class="modal-backdrop">
       <div
         ref="createdDialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="created-key-title"
-        class="card w-full max-w-lg p-6 space-y-4"
+        class="card modal-panel w-full max-w-lg p-6 space-y-4"
       >
         <h2 id="created-key-title" class="font-semibold">{{ t('keys.createdTitle') }}</h2>
         <p class="text-sm text-danger">{{ t('keys.createdWarning') }}</p>
