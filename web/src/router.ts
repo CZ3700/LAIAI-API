@@ -1,0 +1,26 @@
+import { createRouter, createWebHistory } from 'vue-router'
+import { useAuth } from '@/stores/auth'
+
+export const router = createRouter({
+  history: createWebHistory(),
+  routes: [
+    { path: '/login', component: () => import('@/pages/Login.vue') },
+    { path: '/register', component: () => import('@/pages/Register.vue') },
+    {
+      path: '/',
+      component: () => import('@/layouts/Shell.vue'),
+      meta: { auth: true },
+      children: [
+        { path: '', redirect: '/keys' },
+        { path: 'keys', component: () => import('@/pages/Keys.vue') },
+        { path: 'usage', component: () => import('@/pages/Usage.vue') },
+      ],
+    },
+  ],
+})
+
+router.beforeEach((to) => {
+  const auth = useAuth()
+  if (to.meta.auth && !auth.isAuthed) return { path: '/login', query: { to: to.fullPath } }
+  if ((to.path === '/login' || to.path === '/register') && auth.isAuthed) return { path: '/' }
+})

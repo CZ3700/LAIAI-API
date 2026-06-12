@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens（设计 §5.6）：暗色一等公民；白标主题 = 覆盖这些变量，不是 CSS 注入 */
+:root {
+  --c-bg: 247 247 245;
+  --c-panel: 255 255 255;
+  --c-line: 226 226 222;
+  --c-ink: 24 24 27;
+  --c-muted: 113 113 122;
+  --c-accent: 99 102 241;
+  --c-danger: 220 38 38;
+  --c-ok: 22 163 74;
+}
+.dark {
+  --c-bg: 14 14 16;
+  --c-panel: 24 24 27;
+  --c-line: 39 39 45;
+  --c-ink: 235 235 235;
+  --c-muted: 140 140 150;
+  --c-accent: 129 140 248;
+  --c-danger: 248 113 113;
+  --c-ok: 74 222 128;
+}
+
+body {
+  @apply bg-bg text-ink antialiased;
+}
+
+/* 基础控件（shadcn-vue 设计系统接入前的最小集；保持类名稳定便于替换） */
+.btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium
+    transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent
+    disabled:opacity-50 disabled:pointer-events-none;
+}
+.btn-primary {
+  @apply btn bg-accent text-white hover:opacity-90;
+}
+.btn-ghost {
+  @apply btn border border-line bg-transparent hover:bg-panel;
+}
+.btn-danger {
+  @apply btn border border-danger/40 text-danger hover:bg-danger/10;
+}
+.input {
+  @apply w-full rounded-md border border-line bg-panel px-3 py-2 text-sm
+    placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50;
+}
+.card {
+  @apply rounded-lg border border-line bg-panel;
+}
+.label {
+  @apply block text-sm text-muted mb-1.5;
+}

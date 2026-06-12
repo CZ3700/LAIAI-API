@@ -18,5 +18,10 @@ build: ## 编译检查（不产出二进制）
 	cd core && go build ./...
 	cd relay && go build ./...
 
+web: ## Console 类型检查 + 构建（需要 Node 20+）
+	cd web && npm run build
+
+ci-all: ci web ## 全栈门禁（Go + Console）
+
 help:
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/'
