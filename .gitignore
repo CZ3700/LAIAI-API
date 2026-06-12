@@ -10,6 +10,7 @@ dist/
 node_modules/
 *.exe
 *.tsbuildinfo
+*.bundle
 coverage.out
 
 # OS / editor
