@@ -1,0 +1,258 @@
+package relay
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	"github.com/laiai/laiai-next/core/internal/identity"
+	"github.com/laiai/laiai-next/core/internal/invocation"
+	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+)
+
+// 图像生成模态（按张计价——Catalog 多单位计费第一例，设计 §4.3）。
+// 协议 OpenAI 兼容透传（dall-e/gpt-image/CogView/SiliconFlow/方舟 images 均同形态）。
+// 资金语义与 token 同构：hold = 请求张数 × 单价；capture = 实际返回张数 × 单价——
+// "请求 4 张实出 1 张"的差额自动解冻，多出（不应发生）走 overage。
+
+var errImagesUnsupported = fmt.Errorf("relay: provider does not serve openai-compatible image generation")
+
+func buildImagesRequest(ctx context.Context, ch *Channel, credential string, rawBody []byte, model string) (*http.Request, error) {
+	adapterName := ch.Provider
+	if p, ok := ProfileFor(ch.Provider); ok {
+		adapterName = p.Adapter
+	}
+	var url string
+	authHeader, authValue := "Authorization", "Bearer "+credential
+	switch adapterName {
+	case "azure":
+		url = strings.TrimRight(ch.BaseURL, "/") +
+			"/openai/deployments/" + model + "/images/generations?api-version=" + AzureAPIVersion
+		authHeader, authValue = "api-key", credential
+	case "anthropic", "gemini":
+		return nil, errImagesUnsupported
+	default: // openai 兼容（含方舟 /api/v3/images/generations）
+		url = strings.TrimRight(ch.BaseURL, "/") + "/images/generations"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(authHeader, authValue)
+	return req, nil
+}
+
+func (r *Relay) HandleImages(c *gin.Context) {
+	t0 := r.Now()
+
+	auth := c.GetHeader("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		relayErr(c, http.StatusUnauthorized, "missing api key")
+		return
+	}
+	key, err := identity.VerifyKey(r.DB, strings.TrimPrefix(auth, "Bearer "), r.Now())
+	if err != nil {
+		relayErr(c, http.StatusUnauthorized, "invalid api key")
+		return
+	}
+
+	inv := &invocation.Invocation{
+		OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID,
+		RequestID: newRequestID(),
+	}
+	c.Header("X-Request-Id", inv.RequestID)
+	finish := func(status string, code int, brief string) {
+		if r.Rec == nil {
+			return
+		}
+		inv.Status, inv.StatusCode, inv.ErrorBrief = status, code, brief
+		inv.DurationMs = int(r.Now().Sub(t0).Milliseconds())
+		r.Rec.Record(inv)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxRequestBodySize))
+	if err != nil {
+		relayErr(c, http.StatusBadRequest, "cannot read request body")
+		return
+	}
+	var req struct {
+		Model  string `json:"model"`
+		Prompt string `json:"prompt"`
+		N      int    `json:"n"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Model == "" || req.Prompt == "" {
+		relayErr(c, http.StatusBadRequest, "model and prompt are required")
+		return
+	}
+	n := req.N
+	if n <= 0 {
+		n = 1
+	}
+	if n > 10 { // OpenAI 上限同款；防按张 hold 被恶意撑爆
+		relayErr(c, http.StatusBadRequest, "n must be between 1 and 10")
+		return
+	}
+	inv.Model = req.Model
+
+	price, err := GetPrice(r.DB, req.Model)
+	if err != nil {
+		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", req.Model))
+		return
+	}
+	if !price.ImageUSD.IsPositive() {
+		relayErr(c, http.StatusBadRequest,
+			fmt.Sprintf("model %q is not priced for image generation", req.Model))
+		return
+	}
+
+	holdAmount := price.ImageUSD.Mul(decimal.NewFromInt(int64(n)))
+	var hold *ledger.Hold
+	err = r.DB.Transaction(func(tx *gorm.DB) error {
+		acc, err := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
+		if err != nil {
+			return err
+		}
+		h, _, err := ledger.CreateHold(tx, ledger.HoldInput{
+			IdempotencyKey: fmt.Sprintf("img:%d:%d", key.ID, r.Now().UnixNano()),
+			AccountID:      acc.ID,
+			Amount:         holdAmount,
+			RefType:        "usage",
+			RefID:          req.Model,
+		})
+		hold = h
+		return err
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "insufficient") {
+			finish(invocation.StatusInsufficientBalance, http.StatusPaymentRequired, "insufficient balance")
+			relayErr(c, http.StatusPaymentRequired, "insufficient balance")
+			return
+		}
+		r.Log.Error("images hold failed", "err", err)
+		relayErr(c, http.StatusInternalServerError, "billing error")
+		return
+	}
+
+	// 换渠道重试循环（同款分类驱动）
+	var resp *http.Response
+	exclude := map[uint64]bool{}
+	var lastStatus int
+	var lastBody []byte
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		ch, pickErr := PickChannelForAttempt(r.DB, req.Model, attempt, exclude)
+		if pickErr != nil {
+			break
+		}
+		inv.Attempts = attempt + 1
+		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
+		credential, err := r.Keyring.Decrypt(ch.CredentialEnc)
+		if err != nil {
+			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "err", err)
+			exclude[ch.ID] = true
+			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
+			continue
+		}
+		upReq, err := buildImagesRequest(c.Request.Context(), ch, credential, body, req.Model)
+		if err != nil {
+			r.release(hold.ID)
+			if err == errImagesUnsupported {
+				finish(invocation.StatusUpstreamError, http.StatusBadRequest, "provider lacks image generation")
+				relayErr(c, http.StatusBadRequest,
+					fmt.Sprintf("provider %q does not support image generation", ch.Provider))
+				return
+			}
+			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
+			return
+		}
+		resp, err = r.Client.Do(upReq)
+		if err != nil {
+			r.Log.Warn("images upstream unreachable", "channel", ch.ID, "err", err)
+			exclude[ch.ID] = true
+			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
+			resp = nil
+			continue
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			r.enableChannelIfDisabled(ch)
+			break
+		}
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		resp.Body.Close()
+		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
+		r.Log.Warn("images upstream error", "channel", ch.ID, "status", resp.StatusCode,
+			"disable", disp.DisableChannel, "retryable", disp.Retryable)
+		if disp.DisableChannel {
+			r.disableChannel(ch.ID, disp.Reason)
+		}
+		lastStatus, lastBody = resp.StatusCode, errBody
+		resp = nil
+		if !disp.Retryable {
+			break
+		}
+		exclude[ch.ID] = true
+	}
+	if resp == nil {
+		r.release(hold.ID)
+		if lastStatus == 0 {
+			finish(invocation.StatusNoChannel, http.StatusServiceUnavailable, "no upstream available")
+			relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
+			return
+		}
+		finish(invocation.StatusUpstreamError, lastStatus, fmt.Sprintf("upstream status %d after %d attempts", lastStatus, inv.Attempts))
+		c.Data(lastStatus, "application/json", lastBody)
+		return
+	}
+	defer resp.Body.Close()
+
+	if rid := resp.Header.Get("x-request-id"); rid != "" {
+		inv.UpstreamRequestID = rid
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		r.release(hold.ID)
+		relayErr(c, http.StatusBadGateway, "upstream read failed")
+		return
+	}
+	inv.FRTMs = int(r.Now().Sub(t0).Milliseconds())
+
+	// 按实际返回张数结算（data 数组长度）；解析失败按请求张数收（保守且有日志）
+	var parsed struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	actualN := n
+	inv.UsageSource = invocation.UsageSourceUpstream
+	if err := json.Unmarshal(raw, &parsed); err == nil && len(parsed.Data) > 0 {
+		actualN = len(parsed.Data)
+	} else {
+		inv.UsageSource = invocation.UsageSourceEstimated
+		r.Log.Warn("images response without data array, charged by requested n", "model", req.Model)
+	}
+
+	c.Data(http.StatusOK, "application/json", raw)
+
+	actual := price.ImageUSD.Mul(decimal.NewFromInt(int64(actualN)))
+	reason := fmt.Sprintf("images model=%s n=%d", req.Model, actualN)
+	var overage = decimal.Zero
+	if err := r.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		overage, err = ledger.SettleHoldExact(tx, hold.ID, actual, "usage", req.Model, reason)
+		return err
+	}); err != nil {
+		r.Log.Error("IMAGES SETTLE FAILED — manual reconcile needed", "hold", hold.ID, "err", err)
+	}
+	if overage.IsPositive() {
+		r.Log.Warn("images overage beyond hold", "overage", overage)
+	}
+
+	inv.CompletionTokens = int64(actualN) // 调用记录里张数记入 completion 槽位（语义：产出单位数）
+	inv.CostUSD = actual
+	finish(invocation.StatusSuccess, http.StatusOK, "")
+}

@@ -81,6 +81,7 @@ CREATE TABLE model_prices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     model TEXT NOT NULL UNIQUE,
     input_usd_per_1m NUMERIC NOT NULL, output_usd_per_1m NUMERIC NOT NULL,
+    image_usd NUMERIC NOT NULL DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE invocations (

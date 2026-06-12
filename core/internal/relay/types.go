@@ -45,6 +45,7 @@ type ModelPrice struct {
 	Model          string          `gorm:"column:model"`
 	InputUSDPer1M  decimal.Decimal `gorm:"column:input_usd_per_1m"`
 	OutputUSDPer1M decimal.Decimal `gorm:"column:output_usd_per_1m"`
+	ImageUSD       decimal.Decimal `gorm:"column:image_usd"` // 每张图 USD（0007，0=非图像模型）
 }
 
 func (ModelPrice) TableName() string { return "model_prices" }

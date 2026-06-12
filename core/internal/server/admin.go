@@ -168,6 +168,7 @@ type priceReq struct {
 	Model          string `json:"model" binding:"required"`
 	InputUSDPer1M  string `json:"input_usd_per_1m" binding:"required"`
 	OutputUSDPer1M string `json:"output_usd_per_1m" binding:"required"`
+	ImageUSD       string `json:"image_usd"` // 每张图 USD；图像模型必填，其他模型省略
 }
 
 // adminUpsertPrice：模型定价 upsert（uk_model_prices_model 兜底）。
@@ -183,10 +184,18 @@ func (s *Server) adminUpsertPrice(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "prices must be non-negative decimal strings")
 		return
 	}
-	p := &relay.ModelPrice{Model: req.Model, InputUSDPer1M: in, OutputUSDPer1M: out}
+	img := decimal.Zero
+	if req.ImageUSD != "" {
+		var err error
+		if img, err = decimal.NewFromString(req.ImageUSD); err != nil || img.IsNegative() {
+			fail(c, http.StatusBadRequest, "image_usd must be a non-negative decimal string")
+			return
+		}
+	}
+	p := &relay.ModelPrice{Model: req.Model, InputUSDPer1M: in, OutputUSDPer1M: out, ImageUSD: img}
 	err := s.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "model"}},
-		DoUpdates: clause.AssignmentColumns([]string{"input_usd_per_1m", "output_usd_per_1m"}),
+		DoUpdates: clause.AssignmentColumns([]string{"input_usd_per_1m", "output_usd_per_1m", "image_usd"}),
 	}).Create(p).Error
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "price upsert failed")
