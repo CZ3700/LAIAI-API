@@ -78,6 +78,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 	if opts.Keyring != nil {
 		rl := relay.New(db, opts.Keyring, opts.Recorder, log.With("component", "relay"))
 		r.POST("/v1/chat/completions", rl.HandleChatCompletions)
+		r.POST("/v1/embeddings", rl.HandleEmbeddings)
 
 		// 异步任务（Seedance 类视频生成，设计 §4.4 Task API）
 		ts := opts.TaskService
