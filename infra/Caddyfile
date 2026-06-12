@@ -1,9 +1,9 @@
-# LAIAI-NEXT 入口（M0 骨架）。
+# LAIAI-NEXT 入口。
 # LAIAI_DOMAIN 未设置时退化为 :80 纯 HTTP（裸服务器首次验证用）；
 # 设置真实域名后 Caddy 自动 ACME 签证书。
 #
 # 移植的两个 Caddy 陷阱纪律：
-#  1. respond 必须包在 handle 块里（directive 顺序陷阱）
+#  1. respond/file_server 必须包在 handle 块里（directive 顺序陷阱）
 #  2. 若前面还有一层反代/CDN，必须配置 servers>trusted_proxies，否则 X-Forwarded-* 被覆写
 
 {$LAIAI_DOMAIN} {
@@ -21,11 +21,25 @@
 		reverse_proxy core:8080
 	}
 
+	# 控制面 API（Console 用）
 	handle /api/* {
 		reverse_proxy core:8080
 	}
 
+	# 数据面 relay（chat/embeddings/images/video——对外统一 API）
+	handle /v1/* {
+		reverse_proxy core:8080
+	}
+
+	# Console SPA（产物烤在镜像内 /srv/console）
 	handle {
-		respond "LAIAI-NEXT — coming soon" 200
+		root * /srv/console
+		# 哈希命名资源永久缓存；index.html 永不缓存（发版即生效）
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		@index path / /index.html
+		header @index Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
 	}
 }

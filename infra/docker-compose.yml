@@ -75,14 +75,18 @@ services:
     networks: [laiai]
 
   caddy:
-    image: caddy:2-alpine
+    build:
+      context: ..
+      dockerfile: infra/caddy.Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     container_name: laiai-caddy
     restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro # 配置可挂载；前端产物在镜像内（绝不 bind mount）
       - caddy-data:/data
       - caddy-config:/config
     environment:

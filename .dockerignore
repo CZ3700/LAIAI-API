@@ -1,0 +1,10 @@
+# Docker 构建上下文瘦身（context = 仓库根目录）
+.git
+node_modules
+web/node_modules
+web/dist
+web/tsconfig.tsbuildinfo
+docs
+*.md
+.env
+.env.*

@@ -47,6 +47,9 @@ curl -s http://localhost/healthz   # → {"status":"ok"}
 启动顺序由 compose 编排：MySQL 健康 → core 容器 entrypoint **自动应用 migrations/**（失败重试 60s 后响亮退出，绝不静默跳过 schema）→ HTTP 起服务 → Caddy 接流量。
 设置 `LAIAI_DOMAIN=api.example.com` 后 Caddy 自动 ACME 签发 TLS；留空则 :80 裸 HTTP（仅首次验证）。
 
+起栈后浏览器访问 `http://<server>/` 即是 **Console**（注册/登录/Key 管理/用量，7 语种 + 双色系）——
+前端产物在 Caddy 镜像构建时由 node 阶段编译烤入（绝不 bind mount）。API 路由：`/api/*` 控制面、`/v1/*` 数据面。
+
 冒烟验证：
 
 ```bash
