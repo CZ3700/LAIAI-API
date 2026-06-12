@@ -7,6 +7,7 @@ export default {
     confirm: '確認',
     copy: 'コピー',
     copied: 'コピーしました',
+    copyFailed: 'コピーに失敗しました。テキストを選択して手動でコピーしてください',
     close: '閉じる',
     prev: '前へ',
     next: '次へ',

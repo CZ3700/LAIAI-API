@@ -7,6 +7,7 @@ export default {
     confirm: 'Confirmer',
     copy: 'Copier',
     copied: 'Copié',
+    copyFailed: 'Échec de la copie — sélectionnez le texte et copiez-le manuellement',
     close: 'Fermer',
     prev: 'Précédent',
     next: 'Suivant',

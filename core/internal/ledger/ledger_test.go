@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
@@ -395,5 +396,109 @@ func TestJournalReplayMatchesBalance(t *testing.T) {
 	}
 	if !got.PostedBalance.Equal(d("83.3")) {
 		t.Fatalf("posted = %s, want 83.3", got.PostedBalance)
+	}
+}
+
+// SettleHoldExact overage（审查指出的唯一无直接覆盖的资金不变量）：
+// 实际成本 > hold 时，capture 全额 + AllowNegative debit 补差，journal 记录真实成本，余额可负。
+func TestSettleHoldExactOverage(t *testing.T) {
+	db := setupDB(t)
+	acc := seedAccount(t, db, 10, "1") // 仅 $1 余额
+	var holdID uint64
+	_ = db.Transaction(func(tx *gorm.DB) error {
+		h, _, err := CreateHold(tx, HoldInput{IdempotencyKey: "h:ov", AccountID: acc.ID, Amount: d("1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		holdID = h.ID
+		return nil
+	})
+	// 实际 $3 > hold $1：必须记录全部 $3，绝不封顶少收
+	var overage decimal.Decimal
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		overage, e = SettleHoldExact(tx, holdID, d("3"), "usage", "m", "overage test")
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !overage.Equal(d("2")) {
+		t.Fatalf("overage = %s, want 2", overage)
+	}
+	got := reload(t, db, acc.ID)
+	// posted = 1 - 3 = -2（允许负，下次充值补回）；held 清零
+	if !got.PostedBalance.Equal(d("-2")) {
+		t.Fatalf("posted = %s, want -2 (true cost recorded, balance negative)", got.PostedBalance)
+	}
+	if !got.HeldAmount.IsZero() {
+		t.Fatalf("held = %s, want 0", got.HeldAmount)
+	}
+	// journal 重放 = posted（capture -1 + overage debit -2 + seed +1 = -2）
+	var sum decimal.Decimal
+	var entries []JournalEntry
+	db.Where("account_id = ?", acc.ID).Find(&entries)
+	for _, e := range entries {
+		sum = sum.Add(e.Delta)
+	}
+	if !sum.Equal(got.PostedBalance) {
+		t.Fatalf("journal replay %s != posted %s", sum, got.PostedBalance)
+	}
+}
+
+// SettleHoldExact 正好等于 hold：纯 capture，无 overage debit。
+func TestSettleHoldExactExact(t *testing.T) {
+	db := setupDB(t)
+	acc := seedAccount(t, db, 11, "10")
+	var holdID uint64
+	_ = db.Transaction(func(tx *gorm.DB) error {
+		h, _, _ := CreateHold(tx, HoldInput{IdempotencyKey: "h:ex", AccountID: acc.ID, Amount: d("4")})
+		holdID = h.ID
+		return nil
+	})
+	var overage decimal.Decimal
+	_ = db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		overage, e = SettleHoldExact(tx, holdID, d("4"), "usage", "m", "")
+		return e
+	})
+	if !overage.IsZero() {
+		t.Fatalf("overage = %s, want 0", overage)
+	}
+	got := reload(t, db, acc.ID)
+	if !got.PostedBalance.Equal(d("6")) || !got.HeldAmount.IsZero() {
+		t.Fatalf("posted=%s held=%s, want 6/0", got.PostedBalance, got.HeldAmount)
+	}
+}
+
+// SweepStuckHolds：超时仍 Active 的 usage hold 被释放，task hold 不受影响（ref_type 过滤）。
+func TestSweepStuckHolds(t *testing.T) {
+	db := setupDB(t)
+	acc := seedAccount(t, db, 12, "100")
+	mk := func(idem, refType string) {
+		_ = db.Transaction(func(tx *gorm.DB) error {
+			_, _, err := CreateHold(tx, HoldInput{
+				IdempotencyKey: idem, AccountID: acc.ID, Amount: d("10"), RefType: refType,
+			})
+			return err
+		})
+	}
+	mk("stuck1", "usage")
+	mk("stuck2", "usage")
+	mk("tasktype", "task") // 不应被 usage 清扫触及
+	// 把全部 hold 的 created_at 推到过去（绕过 autoCreateTime）
+	db.Exec("UPDATE ledger_holds SET created_at = ?", time.Now().UTC().Add(-time.Hour))
+
+	n, err := SweepStuckHolds(db, "usage", time.Now().UTC().Add(-15*time.Minute), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("released = %d, want 2 (only usage holds)", n)
+	}
+	got := reload(t, db, acc.ID)
+	// 2 个 usage hold 释放 ($20)，task hold ($10) 仍冻结 → held = 10
+	if !got.HeldAmount.Equal(d("10")) {
+		t.Fatalf("held = %s, want 10 (task hold untouched)", got.HeldAmount)
 	}
 }

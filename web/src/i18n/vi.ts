@@ -7,6 +7,7 @@ export default {
     confirm: 'Xác nhận',
     copy: 'Sao chép',
     copied: 'Đã sao chép',
+    copyFailed: 'Sao chép thất bại — hãy chọn văn bản và sao chép thủ công',
     close: 'Đóng',
     prev: 'Trước',
     next: 'Sau',

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,13 +92,14 @@ func countEmbeddingsTokens(input any, rawLen int) int64 {
 
 func (r *Relay) HandleEmbeddings(c *gin.Context) {
 	t0 := r.Now()
+	rdb := r.DB.WithContext(c.Request.Context()) // 纯读预检绑 ctx（审查 M-6）
 
 	auth := c.GetHeader("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
 		relayErr(c, http.StatusUnauthorized, "missing api key")
 		return
 	}
-	key, err := identity.VerifyKey(r.DB, strings.TrimPrefix(auth, "Bearer "), r.Now())
+	key, err := identity.VerifyKey(rdb, strings.TrimPrefix(auth, "Bearer "), r.Now())
 	if err != nil {
 		relayErr(c, http.StatusUnauthorized, "invalid api key")
 		return
@@ -132,7 +134,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 	}
 	inv.Model = req.Model
 
-	price, err := GetPrice(r.DB, req.Model)
+	price, err := GetPrice(rdb, req.Model)
 	if err != nil {
 		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", req.Model))
 		return
@@ -157,7 +159,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 		return err
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "insufficient") {
+		if errors.Is(err, ledger.ErrInsufficientBalance) {
 			finish(invocation.StatusInsufficientBalance, http.StatusPaymentRequired, "insufficient balance")
 			relayErr(c, http.StatusPaymentRequired, "insufficient balance")
 			return
@@ -173,7 +175,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 	var lastStatus int
 	var lastBody []byte
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		ch, pickErr := PickChannelForAttempt(r.DB, req.Model, attempt, exclude)
+		ch, pickErr := PickChannelForAttempt(rdb, req.Model, attempt, exclude)
 		if pickErr != nil {
 			break
 		}

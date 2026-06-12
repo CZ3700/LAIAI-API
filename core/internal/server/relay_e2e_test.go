@@ -133,10 +133,11 @@ func setupRelayServer(t *testing.T) (*gin999, *gorm.DB) {
 	rec := invocation.NewRecorder(db, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	t.Cleanup(rec.Close)
 	engine := New(db, Options{
-		AuthSecret: testSecret,
-		AdminToken: []byte(testAdminToken),
-		Keyring:    testKeyring(t),
-		Recorder:   rec,
+		AuthSecret:    testSecret,
+		AdminToken:    []byte(testAdminToken),
+		Keyring:       testKeyring(t),
+		Recorder:      rec,
+		AuthRateBurst: 100000, // 测试不限流（功能流密集发起 auth 调用）
 	})
 	return &gin999{engine: engine}, db
 }

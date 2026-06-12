@@ -14,6 +14,7 @@ import (
 
 	"github.com/laiai/laiai-next/core/internal/config"
 	"github.com/laiai/laiai-next/core/internal/invocation"
+	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/server"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"gorm.io/driver/mysql"
@@ -49,25 +50,33 @@ func main() {
 	// Invocation Store：异步记录器 + 保留期清理循环（设计 §6.1）
 	rec := invocation.NewRecorder(db, log)
 	retentionDone := make(chan struct{})
-	if cfg.InvocationRetentionDays > 0 {
-		go func() {
-			ticker := time.NewTicker(6 * time.Hour)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
+	// 后台维护循环：调用记录保留期清理 + relay 卡死 hold 清扫（审查 H-1）
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if cfg.InvocationRetentionDays > 0 {
 					cutoff := time.Now().UTC().AddDate(0, 0, -cfg.InvocationRetentionDays)
 					if n, err := invocation.PurgeOlderThan(db, cutoff, 1000); err != nil {
 						log.Error("invocation retention purge failed", "err", err)
 					} else if n > 0 {
 						log.Info("invocation retention purged", "deleted", n, "cutoff", cutoff)
 					}
-				case <-retentionDone:
-					return
 				}
+				// 兜底同步结算失败留下的孤儿 usage hold（远早于任何正常请求时长）
+				stuckCutoff := time.Now().UTC().Add(-15 * time.Minute)
+				if n, err := ledger.SweepStuckHolds(db, "usage", stuckCutoff, 500); err != nil {
+					log.Error("stuck hold sweep failed", "err", err)
+				} else if n > 0 {
+					log.Warn("released stuck relay holds", "count", n)
+				}
+			case <-retentionDone:
+				return
 			}
-		}()
-	}
+		}
+	}()
 
 	// 异步任务轮询循环（Seedance 类任务的状态同步与结算，设计 §4.4）
 	var taskSvc *task.Service

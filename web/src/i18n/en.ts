@@ -8,6 +8,7 @@ const messages = {
     confirm: 'Confirm',
     copy: 'Copy',
     copied: 'Copied',
+    copyFailed: 'Copy failed — select the text and copy manually',
     close: 'Close',
     prev: 'Previous',
     next: 'Next',

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, ApiError } from '@/lib/api'
+import { api, errorMessage } from '@/lib/api'
 
 interface UsageRow {
   id: number
@@ -27,19 +27,24 @@ const model = ref('')
 const loading = ref(true)
 const error = ref('')
 
+// 请求序号守卫：分页/过滤快速切换时，慢的旧响应不得覆盖新响应
+let reqSeq = 0
 async function load() {
+  const seq = ++reqSeq
   loading.value = true
   try {
     const q = new URLSearchParams({ page: String(page.value), page_size: String(pageSize) })
     if (model.value) q.set('model', model.value)
     const r = await api<{ total: number; items: UsageRow[] }>('GET', `/api/usage?${q}`)
+    if (seq !== reqSeq) return // 已有更新的请求在途，丢弃本次结果
     rows.value = r.items
     total.value = r.total
     error.value = ''
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : t('common.error')
+    if (seq !== reqSeq) return
+    error.value = errorMessage(e, t('common.error'))
   } finally {
-    loading.value = false
+    if (seq === reqSeq) loading.value = false
   }
 }
 
@@ -53,6 +58,8 @@ watch(model, () => {
 })
 watch(page, () => void load())
 onMounted(load)
+// 防抖定时器在卸载时清理：避免组件销毁后 setTimeout 仍触发 load（陈旧请求 + 内存泄漏）
+onBeforeUnmount(() => clearTimeout(filterTimer))
 </script>
 
 <template>

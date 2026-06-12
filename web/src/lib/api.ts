@@ -5,9 +5,19 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    // 后端在每个响应上回传的 X-Request-Id：报错时透出给用户，便于工单溯源
+    public requestId: string | null = null,
   ) {
     super(message)
   }
+}
+
+// 统一错误文案：ApiError 带 requestId 时追加 (ID: …)，便于用户报工单时溯源
+export function errorMessage(e: unknown, fallback: string): string {
+  if (e instanceof ApiError) {
+    return e.requestId ? `${e.message} (ID: ${e.requestId})` : e.message
+  }
+  return fallback
 }
 
 export async function api<T>(
@@ -35,7 +45,7 @@ export async function api<T>(
       typeof data === 'object' && data !== null && 'error' in data
         ? String((data as { error: unknown }).error)
         : `request failed (${resp.status})`
-    throw new ApiError(resp.status, msg)
+    throw new ApiError(resp.status, msg, resp.headers.get('X-Request-Id'))
   }
   return data as T
 }
@@ -65,7 +75,7 @@ export async function adminApi<T>(method: string, path: string, body?: unknown):
       typeof data === 'object' && data !== null && 'error' in data
         ? String((data as { error: unknown }).error)
         : `request failed (${resp.status})`
-    throw new ApiError(resp.status, msg)
+    throw new ApiError(resp.status, msg, resp.headers.get('X-Request-Id'))
   }
   return data as T
 }

@@ -8,6 +8,7 @@ export default {
     confirm: '确认',
     copy: '复制',
     copied: '已复制',
+    copyFailed: '复制失败 —— 请选中文本手动复制',
     close: '关闭',
     prev: '上一页',
     next: '下一页',

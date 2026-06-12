@@ -20,6 +20,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -107,27 +108,18 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		return nil, err
 	}
 
-	// 并发闸（诚实背压：超限 429，不本地排队打爆上游——Seedance 公测 3 并发）
-	var active int64
-	if err := s.DB.Model(&Task{}).
-		Where("channel_id = ? AND status IN ?", ch.ID, []string{StatusQueued, StatusRunning}).
-		Count(&active).Error; err != nil {
-		return nil, err
-	}
 	limit := ch.MaxConcurrentTasks
 	if limit <= 0 {
 		limit = 3 // 防御：历史行/手工插入未设值时不至于把渠道闸死
 	}
-	if int(active) >= limit {
-		return nil, ErrConcurrencyLimit
-	}
-
 	credential, err := s.Keyring.Decrypt(ch.CredentialEnc)
 	if err != nil {
 		return nil, fmt.Errorf("task: channel credential: %w", err)
 	}
 
-	// Hold：预估输出 token × 快照单价（估算偏差由 SettleHoldExact 的 overage/差额解冻兜底）
+	// 原子预占（审查 M-2）：渠道行 FOR UPDATE 串行化同渠道的所有 Submit →
+	// 同事务内重新计数 → hold + 插入 queued 任务行（即"占住槽位"，下一个 Submit 数得到它）。
+	// 消灭 count-then-act 竞态：N 个并发不会全部过闸。
 	estTokens := ad.EstimateOutputTokens(in.Model, in.Content)
 	holdAmount := price.Cost(0, estTokens)
 	t := &Task{
@@ -137,53 +129,74 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		Status: StatusQueued, EstTokens: estTokens,
 		PriceOutUSDPer1M: price.OutputUSDPer1M,
 	}
-	var hold *ledger.Hold
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
+		// 锁渠道行（MySQL FOR UPDATE；SQLite 测试靠单连接串行）
+		lockTx := tx
+		if tx.Dialector.Name() == "mysql" {
+			lockTx = tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		lockCh := &relay.Channel{}
+		if err := lockTx.First(lockCh, ch.ID).Error; err != nil {
+			return err
+		}
+		var active int64
+		if err := tx.Model(&Task{}).
+			Where("channel_id = ? AND status IN ?", ch.ID, []string{StatusQueued, StatusRunning}).
+			Count(&active).Error; err != nil {
+			return err
+		}
+		if int(active) >= limit {
+			return ErrConcurrencyLimit
+		}
 		acc, err := ledger.EnsureAccount(tx, in.OrgID, ledger.AccountUserCredit)
 		if err != nil {
 			return err
 		}
 		h, _, err := ledger.CreateHold(tx, ledger.HoldInput{
 			IdempotencyKey: "task:" + t.TaskID,
-			AccountID:      acc.ID,
-			Amount:         holdAmount,
-			RefType:        "task",
-			RefID:          t.TaskID,
+			AccountID:      acc.ID, Amount: holdAmount,
+			RefType: "task", RefID: t.TaskID,
 		})
-		hold = h
-		return err
+		if err != nil {
+			return err
+		}
+		t.HoldID = h.ID
+		return tx.Create(t).Error // 占住槽位
 	}); err != nil {
 		return nil, err
 	}
-	t.HoldID = hold.ID
 
-	// 上游提交
+	// 上游提交（槽位已占；失败 → release hold + 标记任务 failed，槽位随终态退出闸门）
 	upReq, err := ad.SubmitRequest(ctx, ch, credential, in)
 	if err != nil {
-		s.releaseHold(hold.ID)
+		s.abortSubmit(t, "request build failed")
 		return nil, err
 	}
 	resp, err := s.Client.Do(upReq)
 	if err != nil {
-		s.releaseHold(hold.ID)
+		s.abortSubmit(t, "upstream unreachable")
 		return nil, fmt.Errorf("task: upstream unreachable: %w", err)
 	}
 	defer resp.Body.Close()
 	upstreamID, err := ad.ParseSubmit(resp)
 	if err != nil {
-		s.releaseHold(hold.ID)
+		s.abortSubmit(t, "upstream rejected submit")
 		return nil, err
+	}
+	// 提交成功：回填上游 id
+	if err := s.DB.Model(&Task{}).Where("id = ?", t.ID).
+		Update("upstream_task_id", upstreamID).Error; err != nil {
+		s.Log.Error("task upstream_task_id backfill failed (poller will not find it)",
+			"task", t.TaskID, "upstream_id", upstreamID, "err", err)
 	}
 	t.UpstreamTaskID = upstreamID
-
-	if err := s.DB.Create(t).Error; err != nil {
-		// 任务行落库失败：资金必须回退；上游任务成为孤儿由上游自身超时回收
-		s.releaseHold(hold.ID)
-		s.Log.Error("task row insert failed after upstream submit — upstream task orphaned",
-			"upstream_id", upstreamID, "err", err)
-		return nil, err
-	}
 	return t, nil
+}
+
+// abortSubmit：预占后上游提交失败——CAS 把任务转 failed 并释放 hold（与轮询失败同款语义，
+// 保证槽位释放 + 资金退还，且不与并发轮询重复结算）。
+func (s *Service) abortSubmit(t *Task, reason string) {
+	s.settleFailure(t, "submit failed: "+reason)
 }
 
 // Get：org 隔离读取（红线 5）。

@@ -7,6 +7,7 @@ export default {
     confirm: '確認',
     copy: '複製',
     copied: '已複製',
+    copyFailed: '複製失敗 —— 請選取文字手動複製',
     close: '關閉',
     prev: '上一頁',
     next: '下一頁',

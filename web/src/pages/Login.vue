@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuth } from '@/stores/auth'
-import { ApiError } from '@/lib/api'
+import { errorMessage } from '@/lib/api'
 import ThemeLocale from '@/components/ThemeLocale.vue'
 
 const { t } = useI18n()
@@ -23,7 +23,7 @@ async function submit() {
     await auth.login(email.value, password.value)
     await router.replace(String(route.query.to ?? '/'))
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : t('common.error')
+    error.value = errorMessage(e, t('common.error'))
   } finally {
     busy.value = false
   }

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,11 +23,12 @@ import (
 )
 
 const (
-	defaultMaxTokens   = 4096
-	upstreamTimeout    = 5 * time.Minute
-	maxErrorBodyBytes  = 2048 // 超大上游错误体截断（NewAPI rc.10 教训）
-	maxRequestBodySize = 10 << 20
-	maxAttempts        = 3 // 1 次 + 2 次换渠道重试（知识库 §1）
+	defaultMaxTokens       = 4096
+	maxOutputTokensCeiling = 1 << 20 // 1M：max_tokens 上限（审查 L-2），远超任何真实模型上下文
+	upstreamTimeout        = 5 * time.Minute
+	maxErrorBodyBytes      = 2048 // 超大上游错误体截断（NewAPI rc.10 教训）
+	maxRequestBodySize     = 10 << 20
+	maxAttempts            = 3 // 1 次 + 2 次换渠道重试（知识库 §1）
 )
 
 type Relay struct {
@@ -83,6 +85,9 @@ type usage struct {
 // 上游失败 → release 全额解冻。结构性消灭"预检黑盒"类问题（TrustQuota 事故）。
 func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	t0 := r.Now()
+	// 纯读预检绑请求 context（审查 M-6）：客户端断连/超时即取消这些查询、卸载 DB 负载。
+	// 结算事务仍走裸 r.DB（必须完成，断连不可取消——否则资金冻死）。
+	rdb := r.DB.WithContext(c.Request.Context())
 
 	// 1. API Key 认证
 	auth := c.GetHeader("Authorization")
@@ -90,7 +95,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		relayErr(c, http.StatusUnauthorized, "missing api key")
 		return
 	}
-	key, err := identity.VerifyKey(r.DB, strings.TrimPrefix(auth, "Bearer "), r.Now())
+	key, err := identity.VerifyKey(rdb, strings.TrimPrefix(auth, "Bearer "), r.Now())
 	if err != nil {
 		relayErr(c, http.StatusUnauthorized, "invalid api key")
 		return
@@ -133,11 +138,14 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	maxTokens := int64(defaultMaxTokens)
 	if mt, ok := req["max_tokens"].(float64); ok && mt > 0 {
 		maxTokens = int64(mt)
+		if maxTokens > maxOutputTokensCeiling {
+			maxTokens = maxOutputTokensCeiling // 钳上限（审查 L-2）：防超大值把 hold 撑成误导性"余额不足"
+		}
 	}
 	inv.Model, inv.IsStream = model, stream
 
 	// 3. 定价
-	price, err := GetPrice(r.DB, model)
+	price, err := GetPrice(rdb, model)
 	if err != nil {
 		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", model))
 		return
@@ -163,7 +171,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		return err
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "insufficient") {
+		if errors.Is(err, ledger.ErrInsufficientBalance) {
 			finish(invocation.StatusInsufficientBalance, http.StatusPaymentRequired, "insufficient balance")
 			relayErr(c, http.StatusPaymentRequired, "insufficient balance")
 			return
@@ -184,7 +192,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	var lastBody []byte
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		var pickErr error
-		ch, pickErr = PickChannelForAttempt(r.DB, model, attempt, exclude)
+		ch, pickErr = PickChannelForAttempt(rdb, model, attempt, exclude)
 		if pickErr != nil {
 			break // 无渠道可用：落到循环后的失败处理
 		}
@@ -220,8 +228,10 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		resp.Body.Close()
 		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
+		// 不记原始上游错误体（审查 M-5）：可能回显请求片段/org 标识/prompt 碎片，
+		// 违反"操作日志禁 payload/PII"红线。只记分类后的 reason。
 		r.Log.Warn("upstream error", "channel", ch.ID, "attempt", attempt, "status", resp.StatusCode,
-			"disable", disp.DisableChannel, "retryable", disp.Retryable, "body", string(errBody))
+			"disable", disp.DisableChannel, "retryable", disp.Retryable, "reason", disp.Reason)
 		if disp.DisableChannel {
 			// 异步禁用，不阻塞响应（知识库 §2.2：不能用 request context，直接传 channel id）
 			r.disableChannel(ch.ID, disp.Reason)

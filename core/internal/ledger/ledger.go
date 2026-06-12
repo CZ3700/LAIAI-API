@@ -13,8 +13,9 @@ package ledger
 import (
 	"errors"
 	"fmt"
-	"strings"
+	"time"
 
+	"github.com/laiai/laiai-next/core/internal/dberr"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -315,6 +316,34 @@ func Release(tx *gorm.DB, holdID uint64) error {
 	return setBalances(tx, acc.ID, acc.PostedBalance, acc.HeldAmount.Sub(h.Amount))
 }
 
+// SweepStuckHolds 释放超时仍 Active 的 hold（审查 H-1）。
+// 兜底 relay 同步结算失败（响应已发但 capture 事务失败）留下的孤儿 hold——
+// 否则这类 hold 永久冻结用户余额、无人回收。按 ref_type 过滤，避免误伤 task hold
+// （task 有自己的 sweepTimedOut）。返回释放数量。
+//
+// 注意：这是"宁可漏收不可冻死"——结算失败的那笔 usage 收不回了（journal 漂移自检会标记），
+// 但用户余额必须解冻。relay 结算失败是罕见事件（DB 瞬断），漏收可接受。
+func SweepStuckHolds(db *gorm.DB, refType string, olderThan time.Time, limit int) (int, error) {
+	var holds []Hold
+	if err := db.Where("status = ? AND ref_type = ? AND created_at < ?",
+		HoldActive, refType, olderThan).Limit(limit).Find(&holds).Error; err != nil {
+		return 0, err
+	}
+	released := 0
+	for i := range holds {
+		h := &holds[i]
+		err := db.Transaction(func(tx *gorm.DB) error { return Release(tx, h.ID) })
+		if err != nil {
+			if errors.Is(err, ErrHoldNotActive) {
+				continue // 已被并发结算，跳过
+			}
+			return released, err
+		}
+		released++
+	}
+	return released, nil
+}
+
 // ---- internal ----
 
 // lockAccount 行锁取账户（MySQL: SELECT ... FOR UPDATE；SQLite 测试方言无行锁，事务串行化兜底）。
@@ -359,11 +388,4 @@ func findEntryByIdem(tx *gorm.DB, key string) (*JournalEntry, error) {
 	return e, nil
 }
 
-func isDuplicate(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "Duplicate entry") || // MySQL 1062
-		strings.Contains(s, "UNIQUE constraint failed") // SQLite
-}
+func isDuplicate(err error) bool { return dberr.IsDuplicate(err) }

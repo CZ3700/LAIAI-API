@@ -13,6 +13,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/task"
+	"golang.org/x/time/rate"
 	"gorm.io/gorm"
 )
 
@@ -22,26 +23,36 @@ type Options struct {
 	Keyring     *crypto.Keyring      // 渠道凭证信封加密；nil = 渠道管理禁用
 	Recorder    *invocation.Recorder // 调用记录；nil = relay 不记录
 	TaskService *task.Service        // 异步任务服务；nil = 按默认构造（main 传入以共享轮询实例）
-	Log         *slog.Logger
+	// AuthRateBurst：认证端点 per-IP 突发上限；0 = 生产默认 5。测试设大值绕开。
+	AuthRateBurst int
+	Log           *slog.Logger
 }
 
 type Server struct {
-	db         *gorm.DB
-	secret     []byte
-	adminToken []byte
-	keyring    *crypto.Keyring
-	now        func() time.Time // 可注入时钟，测试用
+	db          *gorm.DB
+	secret      []byte
+	adminToken  []byte
+	keyring     *crypto.Keyring
+	authLimiter *ipLimiter
+	now         func() time.Time // 可注入时钟，测试用
 }
+
+const controlPlaneBodyLimit = 1 << 20 // 1MB：控制面 JSON 足够（审查 M2）
 
 func New(db *gorm.DB, opts Options) *gin.Engine {
 	log := opts.Log
 	if log == nil {
 		log = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
+	authBurst := opts.AuthRateBurst
+	if authBurst == 0 {
+		authBurst = 5 // 生产默认：5 突发 + 1/秒补充
+	}
 	s := &Server{
 		db: db, secret: opts.AuthSecret,
 		adminToken: opts.AdminToken, keyring: opts.Keyring,
-		now: time.Now,
+		authLimiter: newIPLimiter(rate.Every(time.Second), authBurst),
+		now:         time.Now,
 	}
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -50,9 +61,11 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 	r.GET("/healthz", s.healthz)
 
 	api := r.Group("/api")
+	api.Use(bodyLimit(controlPlaneBodyLimit)) // 控制面体上限（审查 M2）
 	{
-		api.POST("/auth/register", s.register)
-		api.POST("/auth/login", s.login)
+		// 认证端点限流（审查 H1）：挡暴力破解 + Argon2 内存放大
+		api.POST("/auth/register", s.authRateLimit(), s.register)
+		api.POST("/auth/login", s.authRateLimit(), s.login)
 
 		authed := api.Group("", s.authRequired())
 		{

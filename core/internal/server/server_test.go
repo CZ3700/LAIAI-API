@@ -57,7 +57,7 @@ func setupServer(t *testing.T) (*gin999, *gorm.DB) {
 	if err := db.Exec(testSchema).Error; err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	return &gin999{engine: New(db, Options{AuthSecret: testSecret})}, db
+	return &gin999{engine: New(db, Options{AuthSecret: testSecret, AuthRateBurst: 100000})}, db
 }
 
 // 轻薄的请求辅助

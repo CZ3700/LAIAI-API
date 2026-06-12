@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // org 切换器：切换 = 服务端签发该 org 的新 token → 整页刷新（所有页面数据随 org 重载，
 // 比逐页响应式重拉简单且不会漏——org 上下文变更是全局事件）
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, ApiError } from '@/lib/api'
+import { api, errorMessage } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
 
 interface Org {
@@ -37,7 +37,7 @@ async function onSwitch(event: Event) {
     await auth.switchOrg(orgId)
     location.reload()
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : t('common.error')
+    error.value = errorMessage(e, t('common.error'))
   }
 }
 
@@ -50,7 +50,7 @@ async function createTeam() {
     await auth.switchOrg(r.org_id)
     location.reload()
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : t('common.error')
+    error.value = errorMessage(e, t('common.error'))
   } finally {
     busy.value = false
   }
@@ -60,23 +60,57 @@ function orgLabel(o: Org): string {
   return o.kind === 0 ? `${t('team.personal')} · ${o.name}` : o.name
 }
 
-onMounted(load)
+// 创建弹窗：焦点管理 + Escape 关闭
+const createDialog = ref<HTMLElement | null>(null)
+let lastFocused: HTMLElement | null = null
+watch(showCreate, async (open) => {
+  if (open) {
+    lastFocused = document.activeElement as HTMLElement
+    await nextTick()
+    createDialog.value?.querySelector<HTMLElement>('input')?.focus()
+  } else {
+    lastFocused?.focus()
+    lastFocused = null
+  }
+})
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && showCreate.value) showCreate.value = false
+}
+onMounted(() => {
+  load()
+  document.addEventListener('keydown', onKeydown)
+})
+onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
   <div class="space-y-1.5">
-    <label class="px-2 text-xs text-muted">{{ t('team.switcher') }}</label>
+    <label for="org-switcher" class="block px-2 text-xs text-muted">{{ t('team.switcher') }}</label>
     <div class="flex gap-1">
-      <select class="input !py-1.5 text-xs flex-1 cursor-pointer" :value="auth.orgId" @change="onSwitch">
+      <select id="org-switcher" class="input !py-1.5 text-xs flex-1 cursor-pointer" :value="auth.orgId" @change="onSwitch">
         <option v-for="o in orgs" :key="o.org_id" :value="o.org_id">{{ orgLabel(o) }}</option>
       </select>
-      <button class="btn-ghost !px-2.5 !py-1.5 text-xs shrink-0" :title="t('team.newTeam')" @click="showCreate = true">＋</button>
+      <button
+        class="btn-ghost !px-2.5 !py-1.5 text-xs shrink-0"
+        :title="t('team.newTeam')"
+        :aria-label="t('team.newTeam')"
+        @click="showCreate = true"
+      >
+        <span aria-hidden="true">＋</span>
+      </button>
     </div>
     <p v-if="error" class="px-2 text-xs text-danger" role="alert">{{ error }}</p>
 
     <div v-if="showCreate" class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" @click.self="showCreate = false">
-      <form class="card w-full max-w-sm p-6 space-y-4" @submit.prevent="createTeam">
-        <h2 class="font-semibold">{{ t('team.newTeam') }}</h2>
+      <form
+        ref="createDialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-team-title"
+        class="card w-full max-w-sm p-6 space-y-4"
+        @submit.prevent="createTeam"
+      >
+        <h2 id="new-team-title" class="font-semibold">{{ t('team.newTeam') }}</h2>
         <div>
           <label class="label" for="teamname">{{ t('team.teamName') }}</label>
           <input id="teamname" v-model="newName" class="input" required maxlength="64" />

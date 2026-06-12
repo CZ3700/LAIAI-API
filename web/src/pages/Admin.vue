@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { adminApi, adminToken, ApiError } from '@/lib/api'
+import { adminApi, adminToken, ApiError, errorMessage } from '@/lib/api'
 
 interface Provider {
   name: string
@@ -46,7 +46,7 @@ function lock() {
 }
 
 function showError(e: unknown) {
-  error.value = e instanceof ApiError ? e.message : t('common.error')
+  error.value = errorMessage(e, t('common.error'))
   if (e instanceof ApiError && e.status === 401) unlocked.value = false
 }
 
@@ -187,10 +187,13 @@ onMounted(() => {
 
     <template v-else>
       <div class="flex items-center justify-between">
-        <div class="flex gap-1">
+        <div class="flex gap-1" role="tablist">
           <button
             v-for="tb in ['channels', 'prices', 'credits'] as const"
             :key="tb"
+            type="button"
+            role="tab"
+            :aria-selected="tab === tb"
             class="btn-ghost !py-1.5"
             :class="tab === tb ? '!bg-panel !text-ink' : '!border-transparent text-muted'"
             @click="tab = tb"
@@ -207,37 +210,37 @@ onMounted(() => {
       <template v-if="tab === 'channels'">
         <form class="card p-5 grid grid-cols-2 gap-4" @submit.prevent="addChannel">
           <div>
-            <label class="label">{{ t('admin.chName') }}</label>
-            <input v-model="ch.name" class="input" required />
+            <label class="label" for="ch-name">{{ t('admin.chName') }}</label>
+            <input id="ch-name" v-model="ch.name" class="input" required />
           </div>
           <div>
-            <label class="label">{{ t('admin.chProvider') }}</label>
-            <select v-model="ch.provider" class="input">
+            <label class="label" for="ch-provider">{{ t('admin.chProvider') }}</label>
+            <select id="ch-provider" v-model="ch.provider" class="input">
               <option v-for="p in providers" :key="p.name" :value="p.name">
                 {{ p.display_name }} ({{ p.name }})
               </option>
             </select>
           </div>
           <div class="col-span-2">
-            <label class="label">{{ t('admin.chBaseUrl') }}</label>
-            <input v-model="ch.base_url" class="input font-mono text-xs" :placeholder="providerDefault || 'https://…'" />
+            <label class="label" for="ch-baseurl">{{ t('admin.chBaseUrl') }}</label>
+            <input id="ch-baseurl" v-model="ch.base_url" class="input font-mono text-xs" :placeholder="providerDefault || 'https://…'" />
             <p class="mt-1 text-xs text-muted">{{ t('admin.chBaseUrlHint') }}</p>
           </div>
           <div class="col-span-2">
-            <label class="label">{{ t('admin.chKey') }}</label>
-            <input v-model="ch.api_key" class="input font-mono text-xs" type="password" required autocomplete="off" />
+            <label class="label" for="ch-key">{{ t('admin.chKey') }}</label>
+            <input id="ch-key" v-model="ch.api_key" class="input font-mono text-xs" type="password" required autocomplete="off" />
           </div>
           <div class="col-span-2">
-            <label class="label">{{ t('admin.chModels') }}</label>
-            <input v-model="ch.models" class="input font-mono text-xs" placeholder="gpt-4o-mini, gpt-4o" required />
+            <label class="label" for="ch-models">{{ t('admin.chModels') }}</label>
+            <input id="ch-models" v-model="ch.models" class="input font-mono text-xs" placeholder="gpt-4o-mini, gpt-4o" required />
           </div>
           <div>
-            <label class="label">{{ t('admin.chWeight') }}</label>
-            <input v-model.number="ch.weight" class="input" type="number" min="0" />
+            <label class="label" for="ch-weight">{{ t('admin.chWeight') }}</label>
+            <input id="ch-weight" v-model.number="ch.weight" class="input" type="number" min="0" />
           </div>
           <div>
-            <label class="label">{{ t('admin.chPriority') }}</label>
-            <input v-model.number="ch.priority" class="input" type="number" />
+            <label class="label" for="ch-priority">{{ t('admin.chPriority') }}</label>
+            <input id="ch-priority" v-model.number="ch.priority" class="input" type="number" />
           </div>
           <div class="col-span-2">
             <button class="btn-primary" :disabled="chBusy">{{ t('admin.chAdd') }}</button>
@@ -285,20 +288,20 @@ onMounted(() => {
       <template v-if="tab === 'prices'">
         <form class="card p-5 grid grid-cols-4 gap-4 items-end" @submit.prevent="upsertPrice">
           <div>
-            <label class="label">{{ t('admin.prModel') }}</label>
-            <input v-model="pr.model" class="input font-mono text-xs" required />
+            <label class="label" for="pr-model">{{ t('admin.prModel') }}</label>
+            <input id="pr-model" v-model="pr.model" class="input font-mono text-xs" required />
           </div>
           <div>
-            <label class="label">{{ t('admin.prInput') }}</label>
-            <input v-model="pr.input_usd_per_1m" class="input" required />
+            <label class="label" for="pr-input">{{ t('admin.prInput') }}</label>
+            <input id="pr-input" v-model="pr.input_usd_per_1m" class="input" required />
           </div>
           <div>
-            <label class="label">{{ t('admin.prOutput') }}</label>
-            <input v-model="pr.output_usd_per_1m" class="input" required />
+            <label class="label" for="pr-output">{{ t('admin.prOutput') }}</label>
+            <input id="pr-output" v-model="pr.output_usd_per_1m" class="input" required />
           </div>
           <div>
-            <label class="label">{{ t('admin.prImage') }}</label>
-            <input v-model="pr.image_usd" class="input" placeholder="0" />
+            <label class="label" for="pr-image">{{ t('admin.prImage') }}</label>
+            <input id="pr-image" v-model="pr.image_usd" class="input" placeholder="0" />
           </div>
           <div class="col-span-4">
             <button class="btn-primary" :disabled="prBusy">{{ t('admin.prUpsert') }}</button>
@@ -334,19 +337,19 @@ onMounted(() => {
       <template v-if="tab === 'credits'">
         <form class="card max-w-md p-5 space-y-4" @submit.prevent="grant">
           <div>
-            <label class="label">{{ t('admin.crOrg') }}</label>
-            <input v-model="cr.org_id" class="input" type="number" min="1" required />
+            <label class="label" for="cr-org">{{ t('admin.crOrg') }}</label>
+            <input id="cr-org" v-model="cr.org_id" class="input" type="number" min="1" required />
           </div>
           <div>
-            <label class="label">{{ t('admin.crAmount') }}</label>
-            <input v-model="cr.amount_usd" class="input" required placeholder="10.00" />
+            <label class="label" for="cr-amount">{{ t('admin.crAmount') }}</label>
+            <input id="cr-amount" v-model="cr.amount_usd" class="input" required placeholder="10.00" />
           </div>
           <div>
-            <label class="label">{{ t('admin.crReason') }}</label>
-            <input v-model="cr.reason" class="input" required />
+            <label class="label" for="cr-reason">{{ t('admin.crReason') }}</label>
+            <input id="cr-reason" v-model="cr.reason" class="input" required />
           </div>
           <button class="btn-primary" :disabled="crBusy">{{ t('admin.crGrant') }}</button>
-          <div v-if="crResult" class="text-sm space-y-1">
+          <div v-if="crResult" class="text-sm space-y-1" role="status" aria-live="polite">
             <p class="text-ok">{{ t('admin.crBalance', { balance: crResult.balance_after }) }}</p>
             <p v-if="crResult.already_applied" class="text-muted">{{ t('admin.crReplayed') }}</p>
           </div>

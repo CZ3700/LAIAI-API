@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, ApiError } from '@/lib/api'
+import { api, errorMessage } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
 
 interface Member {
@@ -51,7 +51,7 @@ async function load() {
     myRole.value = o.orgs.find((x) => x.org_id === auth.orgId)?.role ?? ''
     error.value = ''
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : t('common.error')
+    error.value = errorMessage(e, t('common.error'))
   } finally {
     loading.value = false
   }
@@ -65,7 +65,7 @@ async function addMember() {
     await load()
     error.value = ''
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : t('common.error')
+    error.value = errorMessage(e, t('common.error'))
   } finally {
     adding.value = false
   }
@@ -77,7 +77,7 @@ async function removeMember(userID: number) {
     await api('DELETE', `/api/org/members/${userID}`)
     await load()
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : t('common.error')
+    error.value = errorMessage(e, t('common.error'))
   }
 }
 

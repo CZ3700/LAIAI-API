@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/laiai/laiai-next/core/internal/dberr"
 	"gorm.io/gorm"
 )
 
@@ -126,11 +127,4 @@ func FindUserByEmail(db *gorm.DB, email string) (*User, error) {
 	return u, nil
 }
 
-func isDuplicate(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "Duplicate entry") ||
-		strings.Contains(s, "UNIQUE constraint failed")
-}
+func isDuplicate(err error) bool { return dberr.IsDuplicate(err) }

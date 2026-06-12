@@ -11,23 +11,24 @@ import (
 // GET /v1/models（OpenAI 兼容必备端点——LangChain/SDK 工具链普遍依赖）。
 // 口径：已定价 且 至少有一个活跃渠道服务 的模型才对外可见（没渠道的模型列出来只会 503）。
 func (r *Relay) HandleListModels(c *gin.Context) {
+	rdb := r.DB.WithContext(c.Request.Context()) // 纯读端点绑 ctx（审查 M-6）
 	auth := c.GetHeader("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
 		relayErr(c, http.StatusUnauthorized, "missing api key")
 		return
 	}
-	if _, err := identity.VerifyKey(r.DB, strings.TrimPrefix(auth, "Bearer "), r.Now()); err != nil {
+	if _, err := identity.VerifyKey(rdb, strings.TrimPrefix(auth, "Bearer "), r.Now()); err != nil {
 		relayErr(c, http.StatusUnauthorized, "invalid api key")
 		return
 	}
 
 	var prices []ModelPrice
-	if err := r.DB.Order("model").Find(&prices).Error; err != nil {
+	if err := rdb.Order("model").Find(&prices).Error; err != nil {
 		relayErr(c, http.StatusInternalServerError, "model list failed")
 		return
 	}
 	var channels []Channel
-	if err := r.DB.Where("status = 1").Find(&channels).Error; err != nil {
+	if err := rdb.Where("status = 1").Find(&channels).Error; err != nil {
 		relayErr(c, http.StatusInternalServerError, "model list failed")
 		return
 	}
