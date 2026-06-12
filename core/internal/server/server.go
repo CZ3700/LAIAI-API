@@ -61,6 +61,12 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			authed.GET("/keys", s.listKeys)
 			authed.DELETE("/keys/:id", s.revokeKey)
 			authed.GET("/usage", s.getUsage)
+			authed.GET("/orgs", s.listOrgs)
+			authed.POST("/orgs", s.createOrg)
+			authed.POST("/auth/switch", s.switchOrg)
+			authed.GET("/org/members", s.listMembers)
+			authed.POST("/org/members", s.addMember)
+			authed.DELETE("/org/members/:user_id", s.removeMember)
 		}
 
 		admin := api.Group("/admin", s.adminRequired())
@@ -78,6 +84,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 	// Relay 数据面（M1 暂驻 core 进程，M2/M3 拆独立二进制）
 	if opts.Keyring != nil {
 		rl := relay.New(db, opts.Keyring, opts.Recorder, log.With("component", "relay"))
+		r.GET("/v1/models", rl.HandleListModels)
 		r.POST("/v1/chat/completions", rl.HandleChatCompletions)
 		r.POST("/v1/embeddings", rl.HandleEmbeddings)
 		r.POST("/v1/images/generations", rl.HandleImages)
