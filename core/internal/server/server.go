@@ -34,6 +34,7 @@ type Server struct {
 	adminToken  []byte
 	keyring     *crypto.Keyring
 	authLimiter *ipLimiter
+	relay       *relay.Relay     // 渠道一键测试用；nil = 测试端点 503
 	now         func() time.Time // 可注入时钟，测试用
 }
 
@@ -58,6 +59,13 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
+	// relay 实例先建（admin 渠道测试 + 数据面共用）；keyring 缺失则两者一并禁用
+	var rl *relay.Relay
+	if opts.Keyring != nil {
+		rl = relay.New(db, opts.Keyring, opts.Recorder, log.With("component", "relay"))
+		s.relay = rl
+	}
+
 	r.GET("/healthz", s.healthz)
 
 	api := r.Group("/api")
@@ -74,6 +82,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			authed.GET("/keys", s.listKeys)
 			authed.DELETE("/keys/:id", s.revokeKey)
 			authed.GET("/usage", s.getUsage)
+			authed.GET("/usage/summary", s.getUsageSummary)
 			authed.GET("/orgs", s.listOrgs)
 			authed.POST("/orgs", s.createOrg)
 			authed.POST("/auth/switch", s.switchOrg)
@@ -89,15 +98,16 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			admin.GET("/channels", s.adminListChannels)
 			admin.PUT("/channels/:id", s.adminUpdateChannel)
 			admin.DELETE("/channels/:id", s.adminDisableChannel)
+			admin.POST("/channels/:id/test", s.adminTestChannel)
 			admin.POST("/model-prices", s.adminUpsertPrice)
 			admin.GET("/model-prices", s.adminListPrices)
 			admin.GET("/providers", s.adminListProviders)
+			admin.GET("/orgs", s.adminListOrgs)
 		}
 	}
 
 	// Relay 数据面（M1 暂驻 core 进程，M2/M3 拆独立二进制）
-	if opts.Keyring != nil {
-		rl := relay.New(db, opts.Keyring, opts.Recorder, log.With("component", "relay"))
+	if rl != nil {
 		r.GET("/v1/models", rl.HandleListModels)
 		r.POST("/v1/chat/completions", rl.HandleChatCompletions)
 		r.POST("/v1/embeddings", rl.HandleEmbeddings)

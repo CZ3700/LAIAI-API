@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/subtle"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -86,6 +87,19 @@ type channelReq struct {
 	Weight   int      `json:"weight"`
 	Priority int      `json:"priority"`             // 大者先用；重试降层
 	MaxConcurrentTasks int `json:"max_concurrent_tasks"` // 任务并发闸，默认 3
+	ModelMapping map[string]string `json:"model_mapping"` // 对外名→上游名（可选）
+}
+
+// marshalMapping：映射序列化为存储格式（空 map → 空串 = 不映射）。
+func marshalMapping(m map[string]string) (string, bool) {
+	if len(m) == 0 {
+		return "", true
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 func (s *Server) adminCreateChannel(c *gin.Context) {
@@ -118,12 +132,18 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 	if maxTasks <= 0 {
 		maxTasks = 3 // Seedance 公测档默认
 	}
+	mapping, ok := marshalMapping(req.ModelMapping)
+	if !ok {
+		fail(c, http.StatusBadRequest, "invalid model_mapping")
+		return
+	}
 	ch := &relay.Channel{
 		Name: req.Name, Provider: req.Provider,
 		BaseURL: strings.TrimRight(req.BaseURL, "/"),
 		CredentialEnc: enc, Models: strings.Join(req.Models, ","),
 		Weight: weight, Priority: req.Priority,
-		MaxConcurrentTasks: maxTasks, StrictResponse: 1, Status: 1,
+		MaxConcurrentTasks: maxTasks, StrictResponse: 1,
+		ModelMapping: mapping, Status: 1,
 	}
 	if err := s.db.Create(ch).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "channel create failed")
@@ -139,6 +159,7 @@ type updateChannelReq struct {
 	Weight   *int     `json:"weight"`
 	Priority *int     `json:"priority"`
 	StrictResponse *bool `json:"strict_response"`
+	ModelMapping *map[string]string `json:"model_mapping"` // 指针区分"不改"与"清空"
 }
 
 // adminUpdateChannel：PUT /api/admin/channels/:id —— 编辑渠道（部署冒烟暴露的高频缺口）。
@@ -178,6 +199,14 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 			updates["strict_response"] = 0
 		}
 	}
+	if req.ModelMapping != nil {
+		mapping, ok := marshalMapping(*req.ModelMapping)
+		if !ok {
+			fail(c, http.StatusBadRequest, "invalid model_mapping")
+			return
+		}
+		updates["model_mapping"] = mapping
+	}
 	if req.APIKey != nil && *req.APIKey != "" {
 		enc, err := s.keyring.Encrypt(*req.APIKey)
 		if err != nil {
@@ -214,7 +243,8 @@ func (s *Server) adminListChannels(c *gin.Context) {
 			"id": ch.ID, "name": ch.Name, "provider": ch.Provider,
 			"base_url": ch.BaseURL, "models": ch.Models,
 			"weight": ch.Weight, "priority": ch.Priority,
-			"strict_response": ch.EnforcesStrictResponse(), "status": ch.Status,
+			"strict_response": ch.EnforcesStrictResponse(),
+			"model_mapping": ch.ModelMapping, "status": ch.Status,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": out})
@@ -287,4 +317,67 @@ func (s *Server) adminListPrices(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"prices": prices})
+}
+
+// adminTestChannel：POST /api/admin/channels/:id/test {model?}
+// 真实最小请求探活（不计费不记录不触发禁用）。model 缺省取渠道模型列表第一个。
+func (s *Server) adminTestChannel(c *gin.Context) {
+	if s.relay == nil {
+		fail(c, http.StatusServiceUnavailable, "relay not configured")
+		return
+	}
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	ch := &relay.Channel{}
+	if err := s.db.First(ch, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "channel not found")
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+	}
+	_ = c.ShouldBindJSON(&req) // body 可空
+	model := req.Model
+	if model == "" {
+		model = strings.TrimSpace(strings.Split(ch.Models, ",")[0])
+	}
+	if model == "" {
+		fail(c, http.StatusBadRequest, "channel has no models configured")
+		return
+	}
+	c.JSON(http.StatusOK, s.relay.TestChannel(c.Request.Context(), ch, model))
+}
+
+// adminListOrgs：GET /api/admin/orgs —— 组织清单 + 余额/冻结/成员数（运营视图）。
+// 只读聚合，不回显任何 PII 之外字段（email 是运营定位用户的必需最小集）。
+func (s *Server) adminListOrgs(c *gin.Context) {
+	var rows []struct {
+		ID            uint64          `json:"id"`
+		Name          string          `json:"name"`
+		Kind          int8            `json:"kind"`
+		Status        int8            `json:"status"`
+		OwnerEmail    string          `json:"owner_email"`
+		Members       int64           `json:"members"`
+		PostedBalance decimal.Decimal `json:"balance"`
+		HeldAmount    decimal.Decimal `json:"held"`
+	}
+	err := s.db.Raw(`
+		SELECT o.id, o.name, o.kind, o.status,
+		       COALESCE(u.email, '') AS owner_email,
+		       (SELECT COUNT(*) FROM org_members m WHERE m.org_id = o.id) AS members,
+		       COALESCE(a.posted_balance, 0) AS posted_balance,
+		       COALESCE(a.held_amount, 0) AS held_amount
+		FROM organizations o
+		LEFT JOIN org_members om ON om.org_id = o.id AND om.role = 'owner'
+		LEFT JOIN users u ON u.id = om.user_id
+		LEFT JOIN ledger_accounts a ON a.org_id = o.id AND a.type = 'user_credit'
+		ORDER BY o.id`).Scan(&rows).Error
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "query failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"orgs": rows})
 }

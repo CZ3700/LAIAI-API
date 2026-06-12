@@ -207,6 +207,9 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			continue // 我方配置错误（知识库 channel: 前缀类）→ 换渠道
 		}
 		ad := adapterFor(ch.Provider)
+		// 模型映射（0009）：每次 attempt 按当前渠道覆盖写，无跨渠道残留；
+		// 计费/记录/对外响应仍用对外名（inv.Model / price 已定）。
+		req["model"] = ch.UpstreamModel(model)
 		upReq, err := ad.buildRequest(c.Request.Context(), ch, credential, req, stream)
 		if err != nil {
 			r.release(hold.ID)

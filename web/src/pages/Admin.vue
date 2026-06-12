@@ -18,6 +18,23 @@ interface Channel {
   weight: number
   priority: number
   strict_response: boolean
+  model_mapping: string
+  status: number
+}
+interface TestResult {
+  ok: boolean
+  status: number
+  latency_ms: number
+  model: string
+  message: string
+}
+interface OrgRow {
+  id: number
+  name: string
+  owner_email: string
+  members: number
+  balance: string
+  held: string
   status: number
 }
 interface Price {
@@ -52,7 +69,7 @@ function showError(e: unknown) {
 }
 
 // —— tabs ——
-const tab = ref<'channels' | 'prices' | 'credits'>('channels')
+const tab = ref<'channels' | 'prices' | 'credits' | 'orgs'>('channels')
 
 // —— 渠道 ——
 const providers = ref<Provider[]>([])
@@ -102,9 +119,50 @@ function statusLabel(s: number): string {
   return t('admin.chStatusDisabled')
 }
 
+// —— 渠道一键测试 ——
+const testingId = ref<number | null>(null)
+const testResult = ref<{ name: string; r: TestResult } | null>(null)
+
+async function testChannel(c: Channel) {
+  testingId.value = c.id
+  testResult.value = null
+  try {
+    const r = await adminApi<TestResult>('POST', `/api/admin/channels/${c.id}/test`)
+    testResult.value = { name: c.name, r }
+    error.value = ''
+  } catch (e) {
+    showError(e)
+  } finally {
+    testingId.value = null
+  }
+}
+
+// 模型映射 ⇄ 行文本（每行 对外名=上游名）；textarea 比 JSON 输入友好
+function mappingToLines(json: string): string {
+  if (!json) return ''
+  try {
+    return Object.entries(JSON.parse(json) as Record<string, string>)
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n')
+  } catch {
+    return ''
+  }
+}
+function linesToMapping(lines: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of lines.split('\n')) {
+    const i = line.indexOf('=')
+    if (i <= 0) continue
+    const k = line.slice(0, i).trim()
+    const v = line.slice(i + 1).trim()
+    if (k && v) out[k] = v
+  }
+  return out
+}
+
 // —— 编辑渠道 ——
 const editing = ref<Channel | null>(null)
-const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true })
+const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '' })
 const editBusy = ref(false)
 
 function openEdit(ch: Channel) {
@@ -116,6 +174,7 @@ function openEdit(ch: Channel) {
     weight: ch.weight,
     priority: ch.priority,
     strict_response: ch.strict_response,
+    mapping: mappingToLines(ch.model_mapping),
   }
 }
 async function saveEdit() {
@@ -128,6 +187,7 @@ async function saveEdit() {
       weight: editForm.value.weight,
       priority: editForm.value.priority,
       strict_response: editForm.value.strict_response,
+      model_mapping: linesToMapping(editForm.value.mapping), // 空对象 = 清空映射
     }
     if (editForm.value.api_key) body.api_key = editForm.value.api_key
     await adminApi('PUT', `/api/admin/channels/${editing.value.id}`, body)
@@ -139,6 +199,17 @@ async function saveEdit() {
   } finally {
     editBusy.value = false
   }
+}
+
+// —— 组织 ——
+const orgs = ref<OrgRow[]>([])
+async function loadOrgs() {
+  orgs.value = (await adminApi<{ orgs: OrgRow[] }>('GET', '/api/admin/orgs')).orgs
+}
+// 从组织行一键带入授信表单
+function grantTo(o: OrgRow) {
+  cr.value.org_id = String(o.id)
+  tab.value = 'credits'
 }
 
 // —— 定价 ——
@@ -201,7 +272,7 @@ async function grant() {
 
 async function loadAll() {
   try {
-    await Promise.all([loadChannels(), loadPrices()])
+    await Promise.all([loadChannels(), loadPrices(), loadOrgs()])
   } catch (e) {
     showError(e)
   }
@@ -229,7 +300,7 @@ onMounted(() => {
       <div class="flex items-center justify-between">
         <div class="flex gap-1" role="tablist">
           <button
-            v-for="tb in ['channels', 'prices', 'credits'] as const"
+            v-for="tb in ['channels', 'prices', 'credits', 'orgs'] as const"
             :key="tb"
             type="button"
             role="tab"
@@ -287,6 +358,20 @@ onMounted(() => {
           </div>
         </form>
 
+        <!-- 测试结果条 -->
+        <div
+          v-if="testResult"
+          class="card p-4 text-sm flex items-start gap-3"
+          role="status"
+          aria-live="polite"
+        >
+          <span :class="testResult.r.ok ? 'text-ok' : 'text-danger'" class="font-medium shrink-0">
+            {{ testResult.name }} · {{ testResult.r.ok ? t('admin.chTestOk', { ms: testResult.r.latency_ms }) : t('admin.chTestFail') }}
+          </span>
+          <span v-if="!testResult.r.ok" class="text-muted break-all">{{ testResult.r.message }}</span>
+          <button class="btn-ghost !py-0.5 ml-auto text-xs shrink-0" @click="testResult = null">✕</button>
+        </div>
+
         <div class="card overflow-x-auto">
           <table class="w-full text-sm whitespace-nowrap">
             <thead>
@@ -314,6 +399,9 @@ onMounted(() => {
                   <span :class="c.status === 1 ? 'text-ok' : 'text-danger'">{{ statusLabel(c.status) }}</span>
                 </td>
                 <td class="px-4 py-2.5 text-right space-x-2">
+                  <button class="btn-ghost !py-1 text-xs" :disabled="testingId === c.id" @click="testChannel(c)">
+                    {{ testingId === c.id ? t('admin.chTesting') : t('admin.chTest') }}
+                  </button>
                   <button class="btn-ghost !py-1 text-xs" @click="openEdit(c)">{{ t('admin.chEdit') }}</button>
                   <button v-if="c.status === 1" class="btn-danger !py-1 text-xs" @click="disableChannel(c.id)">
                     {{ t('admin.chDisable') }}
@@ -350,6 +438,17 @@ onMounted(() => {
                 <label class="label" for="edit-priority">{{ t('admin.chPriority') }}</label>
                 <input id="edit-priority" v-model.number="editForm.priority" class="input" type="number" />
               </div>
+            </div>
+            <div>
+              <label class="label" for="edit-mapping">{{ t('admin.chMapping') }}</label>
+              <textarea
+                id="edit-mapping"
+                v-model="editForm.mapping"
+                class="input font-mono text-xs"
+                rows="3"
+                :placeholder="'gpt-5.2=gpt-5.2-internal'"
+              ></textarea>
+              <p class="mt-1 text-xs text-muted">{{ t('admin.chMappingHint') }}</p>
             </div>
             <label class="flex items-center gap-2 text-sm">
               <input v-model="editForm.strict_response" type="checkbox" class="accent-accent" />
@@ -434,6 +533,41 @@ onMounted(() => {
             <p v-if="crResult.already_applied" class="text-muted">{{ t('admin.crReplayed') }}</p>
           </div>
         </form>
+      </template>
+
+      <!-- 组织 -->
+      <template v-if="tab === 'orgs'">
+        <div class="card overflow-x-auto">
+          <table class="w-full text-sm whitespace-nowrap">
+            <thead>
+              <tr class="border-b border-line text-left text-muted">
+                <th class="px-4 py-3 font-medium">ID</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.orgName') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.orgOwner') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgMembers') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgBalance') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgHeld') }}</th>
+                <th class="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="orgs.length === 0">
+                <td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+              </tr>
+              <tr v-for="o in orgs" :key="o.id" class="border-b border-line last:border-0">
+                <td class="px-4 py-2.5 text-muted">{{ o.id }}</td>
+                <td class="px-4 py-2.5">{{ o.name }}</td>
+                <td class="px-4 py-2.5 font-mono text-xs">{{ o.owner_email }}</td>
+                <td class="px-4 py-2.5 text-right">{{ o.members }}</td>
+                <td class="px-4 py-2.5 text-right font-mono">${{ o.balance }}</td>
+                <td class="px-4 py-2.5 text-right font-mono text-muted">${{ o.held }}</td>
+                <td class="px-4 py-2.5 text-right">
+                  <button class="btn-ghost !py-1 text-xs" @click="grantTo(o)">{{ t('admin.orgGrant') }}</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </template>
     </template>
   </div>

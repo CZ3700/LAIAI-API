@@ -3,6 +3,7 @@
 package relay
 
 import (
+	"encoding/json"
 	"errors"
 	"math/rand/v2"
 	"strings"
@@ -27,7 +28,43 @@ type Channel struct {
 	Priority      int    `gorm:"column:priority"`             // 大者先用（0004）
 	MaxConcurrentTasks int `gorm:"column:max_concurrent_tasks"` // 任务并发闸（0006，Seedance 公测 3）
 	StrictResponse int8  `gorm:"column:strict_response"`      // 1=校验上游响应 content-type（0008）
+	ModelMapping  string `gorm:"column:model_mapping"`        // JSON {对外名:上游名}（0009，空=不映射）
 	Status        int8   `gorm:"column:status"`
+}
+
+// UpstreamModel 返回该渠道上游实际使用的模型名（无映射/解析失败 → 原名）。
+// 计费、调用记录、对外响应一律用对外名；映射只影响上游请求体。
+func (c *Channel) UpstreamModel(model string) string {
+	if c.ModelMapping == "" {
+		return model
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(c.ModelMapping), &m); err != nil {
+		return model
+	}
+	if v, ok := m[model]; ok && v != "" {
+		return v
+	}
+	return model
+}
+
+// mappedRawBody：embeddings/images 等透传 rawBody 的路径上应用模型映射。
+// 返回（可能改写后的 body, 上游模型名）；无映射时零开销原样返回。
+func mappedRawBody(ch *Channel, rawBody []byte, model string) ([]byte, string) {
+	up := ch.UpstreamModel(model)
+	if up == model {
+		return rawBody, model
+	}
+	var m map[string]any
+	if err := json.Unmarshal(rawBody, &m); err != nil {
+		return rawBody, model
+	}
+	m["model"] = up
+	b, err := json.Marshal(m)
+	if err != nil {
+		return rawBody, model
+	}
+	return b, up
 }
 
 // EnforcesStrictResponse 返回是否启用上游响应校验（默认开；历史/手工行未设值视为开）。

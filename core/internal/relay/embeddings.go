@@ -190,7 +190,8 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
 			continue
 		}
-		upReq, err := buildEmbeddingsRequest(c.Request.Context(), ch, credential, body, req.Model)
+		upBody, upModel := mappedRawBody(ch, body, req.Model) // 模型映射（0009）
+		upReq, err := buildEmbeddingsRequest(c.Request.Context(), ch, credential, upBody, upModel)
 		if err != nil {
 			r.release(hold.ID)
 			if err == errEmbeddingsUnsupported {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
 
@@ -18,6 +18,15 @@ interface UsageRow {
   created_at: string
 }
 
+interface SummaryDay {
+  day: string
+  calls: number
+  succeeded: number
+  prompt_tokens: number
+  completion_tokens: number
+  cost_usd: string
+}
+
 const { t, n, d } = useI18n()
 const rows = ref<UsageRow[]>([])
 const total = ref(0)
@@ -26,6 +35,46 @@ const pageSize = 20
 const model = ref('')
 const loading = ref(true)
 const error = ref('')
+
+// —— 近 14 天日聚合（仪表盘）——
+const summary = ref<SummaryDay[]>([])
+const summaryDays = 14
+const totals = computed(() => {
+  let calls = 0
+  let tokens = 0
+  let cost = 0
+  for (const s of summary.value) {
+    calls += s.calls
+    tokens += s.prompt_tokens + s.completion_tokens
+    cost += Number(s.cost_usd)
+  }
+  return { calls, tokens, cost }
+})
+// SVG 柱状图数据：补齐无调用的日期为 0，柱高按当期最大值归一
+const chart = computed(() => {
+  const byDay = new Map(summary.value.map((s) => [s.day, s]))
+  const days: { label: string; calls: number; cost: string }[] = []
+  const today = new Date()
+  for (let i = summaryDays - 1; i >= 0; i--) {
+    const dt = new Date(today)
+    dt.setDate(today.getDate() - i)
+    const key = dt.toISOString().slice(0, 10)
+    const s = byDay.get(key)
+    days.push({ label: key.slice(5), calls: s?.calls ?? 0, cost: s?.cost_usd ?? '0' })
+  }
+  const max = Math.max(1, ...days.map((x) => x.calls))
+  return { days, max }
+})
+
+async function loadSummary() {
+  try {
+    const r = await api<{ items: SummaryDay[] }>('GET', `/api/usage/summary?days=${summaryDays}`)
+    // day 统一为 YYYY-MM-DD（不同驱动对 DATE() 的序列化可能带时间后缀）
+    summary.value = r.items.map((s) => ({ ...s, day: s.day.slice(0, 10) }))
+  } catch {
+    // 仪表盘失败不阻塞明细表（明细自身有错误展示）
+  }
+}
 
 // 请求序号守卫：分页/过滤快速切换时，慢的旧响应不得覆盖新响应
 let reqSeq = 0
@@ -57,7 +106,10 @@ watch(model, () => {
   }, 300)
 })
 watch(page, () => void load())
-onMounted(load)
+onMounted(() => {
+  void load()
+  void loadSummary()
+})
 // 防抖定时器在卸载时清理：避免组件销毁后 setTimeout 仍触发 load（陈旧请求 + 内存泄漏）
 onBeforeUnmount(() => clearTimeout(filterTimer))
 </script>
@@ -67,6 +119,39 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
     <div class="flex items-center justify-between gap-4">
       <h1 class="text-xl font-semibold">{{ t('usage.title') }}</h1>
       <input v-model="model" class="input max-w-xs" :placeholder="t('usage.filterModel')" />
+    </div>
+
+    <!-- 近 14 天概览 -->
+    <div class="grid grid-cols-3 gap-4">
+      <div class="card p-4">
+        <p class="text-xs text-muted">{{ t('usage.sumCalls', { days: summaryDays }) }}</p>
+        <p class="mt-1 text-2xl font-semibold font-mono">{{ n(totals.calls) }}</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-muted">{{ t('usage.sumTokens', { days: summaryDays }) }}</p>
+        <p class="mt-1 text-2xl font-semibold font-mono">{{ n(totals.tokens) }}</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-muted">{{ t('usage.sumCost', { days: summaryDays }) }}</p>
+        <p class="mt-1 text-2xl font-semibold font-mono">${{ totals.cost.toFixed(4) }}</p>
+      </div>
+    </div>
+
+    <!-- 日调用量柱状图 -->
+    <div class="card p-4">
+      <div class="flex h-28 items-end gap-1" role="img" :aria-label="t('usage.chartAlt')">
+        <div
+          v-for="dy in chart.days"
+          :key="dy.label"
+          class="group relative flex-1 rounded-t bg-accent/70 transition-colors hover:bg-accent min-h-[2px]"
+          :style="{ height: `${(dy.calls / chart.max) * 100}%` }"
+          :title="`${dy.label} · ${dy.calls} calls · $${dy.cost}`"
+        ></div>
+      </div>
+      <div class="mt-2 flex justify-between text-[10px] text-muted font-mono">
+        <span>{{ chart.days[0]?.label }}</span>
+        <span>{{ chart.days[chart.days.length - 1]?.label }}</span>
+      </div>
     </div>
 
     <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>

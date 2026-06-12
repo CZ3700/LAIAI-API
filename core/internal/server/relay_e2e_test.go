@@ -59,7 +59,7 @@ CREATE TABLE channels (
     name TEXT NOT NULL, provider TEXT NOT NULL, base_url TEXT NOT NULL,
     credential_enc TEXT NOT NULL, models TEXT NOT NULL,
     weight INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 0,
-    max_concurrent_tasks INTEGER NOT NULL DEFAULT 3, strict_response INTEGER NOT NULL DEFAULT 1,
+    max_concurrent_tasks INTEGER NOT NULL DEFAULT 3, strict_response INTEGER NOT NULL DEFAULT 1, model_mapping TEXT NOT NULL DEFAULT '',
     status INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -713,5 +713,135 @@ func TestAdminUpdateChannel(t *testing.T) {
 	w, _ = srv.doAdmin(t, "PUT", "/api/admin/channels/9999", map[string]any{"weight": 5})
 	if w.Code != 404 {
 		t.Fatalf("update missing = %d, want 404", w.Code)
+	}
+}
+
+// 模型映射（0009）：上游收到映射后的名字，计费/记录用对外名。
+func TestRelayModelMapping(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	var upstreamSawModel string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		upstreamSawModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`)
+	}))
+	defer up.Close()
+	w, out := srv.doAdmin(t, "POST", "/api/admin/channels", map[string]any{
+		"name": "mapped", "provider": "openai", "base_url": up.URL,
+		"api_key": "sk-x", "models": []string{"public-name"},
+		"model_mapping": map[string]string{"public-name": "internal-deploy-7"},
+	})
+	if w.Code != 201 {
+		t.Fatalf("create = %d %v", w.Code, out)
+	}
+	srv.doAdmin(t, "POST", "/api/admin/model-prices", map[string]any{
+		"model": "public-name", "input_usd_per_1m": "2", "output_usd_per_1m": "6",
+	})
+	apiKey, orgID := seedUserWithCredit(t, srv, "mapping@example.com", "10")
+
+	w, _ = srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "public-name", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 200 {
+		t.Fatalf("relay = %d %s", w.Code, w.Body.String())
+	}
+	if upstreamSawModel != "internal-deploy-7" {
+		t.Fatalf("upstream saw model %q, want internal-deploy-7", upstreamSawModel)
+	}
+	// 调用记录用对外名
+	rec := waitInvocation(t, db, "org_id = ?", uint64(orgID))
+	if rec.Model != "public-name" {
+		t.Fatalf("invocation model = %q, want public-name", rec.Model)
+	}
+}
+
+// 渠道一键测试：健康上游 ok=true 带延迟；HTML 上游 ok=false 给出 base_url 提示。
+func TestAdminTestChannel(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	good := mockUpstreamJSON(t, 3, 2)
+	defer good.Close()
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<html>home</html>")
+	}))
+	defer bad.Close()
+
+	_, out := srv.doAdmin(t, "POST", "/api/admin/channels", map[string]any{
+		"name": "good", "provider": "openai", "base_url": good.URL,
+		"api_key": "sk-upstream-secret", "models": []string{"test-model"},
+	})
+	goodID := out["id"]
+	_, out = srv.doAdmin(t, "POST", "/api/admin/channels", map[string]any{
+		"name": "bad", "provider": "openai", "base_url": bad.URL,
+		"api_key": "sk-x", "models": []string{"test-model"},
+	})
+	badID := out["id"]
+
+	w, res := srv.doAdmin(t, "POST", fmt.Sprintf("/api/admin/channels/%v/test", goodID), nil)
+	if w.Code != 200 || res["ok"] != true {
+		t.Fatalf("good channel test = %d %v", w.Code, res)
+	}
+	w, res = srv.doAdmin(t, "POST", fmt.Sprintf("/api/admin/channels/%v/test", badID), nil)
+	if w.Code != 200 || res["ok"] != false {
+		t.Fatalf("bad channel test = %d %v", w.Code, res)
+	}
+	if msg, _ := res["message"].(string); !strings.Contains(msg, "base_url") {
+		t.Fatalf("bad test message %q should hint base_url", res["message"])
+	}
+}
+
+// admin orgs：余额/成员数/owner email 聚合视图。
+func TestAdminListOrgs(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	_, orgID := seedUserWithCredit(t, srv, "orgview@example.com", "7.5")
+
+	w, out := srv.doAdmin(t, "GET", "/api/admin/orgs", nil)
+	if w.Code != 200 {
+		t.Fatalf("orgs = %d %v", w.Code, out)
+	}
+	orgs, _ := out["orgs"].([]any)
+	if len(orgs) != 1 {
+		t.Fatalf("orgs len = %d, want 1", len(orgs))
+	}
+	o := orgs[0].(map[string]any)
+	if o["id"] != float64(orgID) || o["owner_email"] != "orgview@example.com" ||
+		o["balance"] != "7.5" || o["members"] != float64(1) {
+		t.Fatalf("org row = %v", o)
+	}
+}
+
+// 用量日聚合：1 次成功调用 → 当日 calls=1 succeeded=1 token/费用一致。
+func TestUsageSummary(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := mockUpstreamJSON(t, 1000, 500)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "summary@example.com", "10")
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{
+		"email": "summary@example.com", "password": "longenough1"})
+	token := login["token"].(string)
+
+	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 200 {
+		t.Fatalf("relay = %d", w.Code)
+	}
+	waitInvocation(t, db, "org_id = ?", uint64(orgID)) // 等异步落库
+
+	w, out := srv.do(t, "GET", "/api/usage/summary?days=7", token, nil)
+	if w.Code != 200 {
+		t.Fatalf("summary = %d %v", w.Code, out)
+	}
+	items, _ := out["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("summary items = %d, want 1", len(items))
+	}
+	day := items[0].(map[string]any)
+	if day["calls"] != float64(1) || day["succeeded"] != float64(1) ||
+		day["prompt_tokens"] != float64(1000) || day["completion_tokens"] != float64(500) {
+		t.Fatalf("summary day = %v", day)
 	}
 }
