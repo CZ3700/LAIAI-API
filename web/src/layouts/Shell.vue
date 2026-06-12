@@ -2,6 +2,7 @@
 import { useI18n } from 'vue-i18n'
 import { useAuth } from '@/stores/auth'
 import ThemeLocale from '@/components/ThemeLocale.vue'
+import OrgSwitcher from '@/components/OrgSwitcher.vue'
 
 const { t } = useI18n()
 const auth = useAuth()
@@ -11,11 +12,15 @@ const auth = useAuth()
   <div class="min-h-screen flex">
     <aside class="w-56 shrink-0 border-r border-line flex flex-col">
       <div class="px-5 py-4 text-lg font-semibold tracking-tight">LAIAI</div>
+      <div class="px-3 pb-3">
+        <OrgSwitcher />
+      </div>
       <nav class="flex-1 px-3 space-y-1">
         <router-link
           v-for="item in [
             { to: '/keys', label: t('nav.keys') },
             { to: '/usage', label: t('nav.usage') },
+            { to: '/team', label: t('team.title') },
             { to: '/admin', label: t('admin.title') },
           ]"
           :key="item.to"

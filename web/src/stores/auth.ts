@@ -30,6 +30,7 @@ export const useAuth = defineStore('auth', {
   getters: {
     token: (s) => s.session?.token ?? '',
     email: (s) => s.session?.email ?? '',
+    orgId: (s) => s.session?.orgId ?? 0,
     isAuthed: (s) => s.session !== null,
   },
   actions: {
@@ -46,6 +47,18 @@ export const useAuth = defineStore('auth', {
     async register(email: string, password: string) {
       await api('POST', '/api/auth/register', { email, password }, { auth: false })
       await this.login(email, password)
+    },
+    // org 切换：服务端验证成员资格后签发的新 token 落地到会话
+    async switchOrg(orgId: number) {
+      const r = await api<{ token: string; expires_at: number; org_id: number }>(
+        'POST',
+        '/api/auth/switch',
+        { org_id: orgId },
+      )
+      if (this.session) {
+        this.session = { ...this.session, token: r.token, expiresAt: r.expires_at, orgId: r.org_id }
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.session))
+      }
     },
     logout() {
       this.session = null
