@@ -14,6 +14,7 @@ export const router = createRouter({
         { path: '', redirect: '/keys' },
         { path: 'keys', component: () => import('@/pages/Keys.vue') },
         { path: 'usage', component: () => import('@/pages/Usage.vue') },
+        { path: 'admin', component: () => import('@/pages/Admin.vue') },
       ],
     },
   ],

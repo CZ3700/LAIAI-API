@@ -39,3 +39,33 @@ export async function api<T>(
   }
   return data as T
 }
+
+// —— 管理 API（X-Admin-Token）——
+// root 级凭证只存 sessionStorage：关标签页即失效，不落 localStorage
+const ADMIN_KEY = 'laiai.adminToken'
+
+export const adminToken = {
+  get: () => sessionStorage.getItem(ADMIN_KEY) ?? '',
+  set: (v: string) => sessionStorage.setItem(ADMIN_KEY, v),
+  clear: () => sessionStorage.removeItem(ADMIN_KEY),
+}
+
+export async function adminApi<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const resp = await fetch(path, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Admin-Token': adminToken.get(),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  const data: unknown = await resp.json().catch(() => ({}))
+  if (!resp.ok) {
+    const msg =
+      typeof data === 'object' && data !== null && 'error' in data
+        ? String((data as { error: unknown }).error)
+        : `request failed (${resp.status})`
+    throw new ApiError(resp.status, msg)
+  }
+  return data as T
+}

@@ -16,6 +16,7 @@ const auth = useAuth()
           v-for="item in [
             { to: '/keys', label: t('nav.keys') },
             { to: '/usage', label: t('nav.usage') },
+            { to: '/admin', label: t('admin.title') },
           ]"
           :key="item.to"
           :to="item.to"

@@ -204,6 +204,11 @@ func (s *Server) adminUpsertPrice(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"model": p.Model})
 }
 
+// adminListProviders：厂商注册表（Console 下拉数据源）。
+func (s *Server) adminListProviders(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"providers": relay.ListProviders()})
+}
+
 func (s *Server) adminListPrices(c *gin.Context) {
 	var prices []relay.ModelPrice
 	if err := s.db.Order("model").Find(&prices).Error; err != nil {

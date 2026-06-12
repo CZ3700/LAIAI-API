@@ -71,6 +71,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			admin.DELETE("/channels/:id", s.adminDisableChannel)
 			admin.POST("/model-prices", s.adminUpsertPrice)
 			admin.GET("/model-prices", s.adminListPrices)
+			admin.GET("/providers", s.adminListProviders)
 		}
 	}
 

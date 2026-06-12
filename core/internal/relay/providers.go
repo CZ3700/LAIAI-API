@@ -1,5 +1,7 @@
 package relay
 
+import "sort"
+
 // 厂商档案注册表（设计 §4.4 适配器池）。
 //
 // 工程判断（知识库 §5/§6 + 2026 现状）：绝大多数厂商已提供 OpenAI 兼容端点，
@@ -74,5 +76,27 @@ func SupportedProviders() []string {
 	for name := range providerProfiles {
 		out = append(out, name)
 	}
+	return out
+}
+
+// ProviderInfo：注册表对外形态（admin API / Console 厂商下拉的数据源——UI 不重复维护清单）。
+type ProviderInfo struct {
+	Name           string `json:"name"`
+	DisplayName    string `json:"display_name"`
+	DefaultBaseURL string `json:"default_base_url"`
+	Adapter        string `json:"adapter"`
+	Notes          string `json:"notes,omitempty"`
+}
+
+// ListProviders 按名称排序返回全部档案。
+func ListProviders() []ProviderInfo {
+	out := make([]ProviderInfo, 0, len(providerProfiles))
+	for name, p := range providerProfiles {
+		out = append(out, ProviderInfo{
+			Name: name, DisplayName: p.DisplayName,
+			DefaultBaseURL: p.DefaultBaseURL, Adapter: p.Adapter, Notes: p.Notes,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
