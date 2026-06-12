@@ -259,6 +259,17 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	defer resp.Body.Close()
 	ad := adapterFor(ch.Provider)
 
+	// 上游响应校验（部署冒烟暴露）：200 但 content-type 非 JSON/SSE（如中转站返回 HTML 首页）
+	// 判为上游异常——不透传垃圾、不误计费成 success。渠道级开关可放宽。
+	if ch.EnforcesStrictResponse() && !IsLLMContentType(resp.Header.Get("Content-Type")) {
+		r.release(hold.ID)
+		r.Log.Warn("upstream returned non-LLM content-type, rejecting",
+			"channel", ch.ID, "content_type", resp.Header.Get("Content-Type"))
+		finish(invocation.StatusUpstreamError, http.StatusBadGateway, "upstream returned invalid response type")
+		relayErr(c, http.StatusBadGateway, "upstream returned an invalid response (check channel base_url)")
+		return
+	}
+
 	// 上游 request-id（找厂商开工单的唯一凭证，rc.6）；frt = 最后一次尝试开始 → 首字节
 	if rid := resp.Header.Get("x-request-id"); rid != "" {
 		inv.UpstreamRequestID = rid

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { adminApi, adminToken, ApiError, errorMessage } from '@/lib/api'
+import { adminApi, adminToken, ApiError, errorMessage, uuid } from '@/lib/api'
 
 interface Provider {
   name: string
@@ -17,6 +17,7 @@ interface Channel {
   models: string
   weight: number
   priority: number
+  strict_response: boolean
   status: number
 }
 interface Price {
@@ -101,6 +102,45 @@ function statusLabel(s: number): string {
   return t('admin.chStatusDisabled')
 }
 
+// —— 编辑渠道 ——
+const editing = ref<Channel | null>(null)
+const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true })
+const editBusy = ref(false)
+
+function openEdit(ch: Channel) {
+  editing.value = ch
+  editForm.value = {
+    base_url: ch.base_url,
+    models: ch.models,
+    api_key: '', // 留空=保留原凭证
+    weight: ch.weight,
+    priority: ch.priority,
+    strict_response: ch.strict_response,
+  }
+}
+async function saveEdit() {
+  if (!editing.value) return
+  editBusy.value = true
+  try {
+    const body: Record<string, unknown> = {
+      base_url: editForm.value.base_url,
+      models: editForm.value.models.split(',').map((m) => m.trim()).filter(Boolean),
+      weight: editForm.value.weight,
+      priority: editForm.value.priority,
+      strict_response: editForm.value.strict_response,
+    }
+    if (editForm.value.api_key) body.api_key = editForm.value.api_key
+    await adminApi('PUT', `/api/admin/channels/${editing.value.id}`, body)
+    editing.value = null
+    await loadChannels()
+    error.value = ''
+  } catch (e) {
+    showError(e)
+  } finally {
+    editBusy.value = false
+  }
+}
+
 // —— 定价 ——
 const prices = ref<Price[]>([])
 const pr = ref({ model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '' })
@@ -147,7 +187,7 @@ async function grant() {
         org_id: Number(cr.value.org_id),
         amount_usd: cr.value.amount_usd,
         reason: cr.value.reason,
-        idempotency_key: crypto.randomUUID(),
+        idempotency_key: uuid(),
       },
     )
     crResult.value = r
@@ -273,7 +313,8 @@ onMounted(() => {
                 <td class="px-4 py-2.5">
                   <span :class="c.status === 1 ? 'text-ok' : 'text-danger'">{{ statusLabel(c.status) }}</span>
                 </td>
-                <td class="px-4 py-2.5 text-right">
+                <td class="px-4 py-2.5 text-right space-x-2">
+                  <button class="btn-ghost !py-1 text-xs" @click="openEdit(c)">{{ t('admin.chEdit') }}</button>
                   <button v-if="c.status === 1" class="btn-danger !py-1 text-xs" @click="disableChannel(c.id)">
                     {{ t('admin.chDisable') }}
                   </button>
@@ -281,6 +322,45 @@ onMounted(() => {
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <!-- 编辑渠道弹窗 -->
+        <div v-if="editing" class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" @click.self="editing = null">
+          <form class="card w-full max-w-md p-6 space-y-4" @submit.prevent="saveEdit">
+            <h2 class="font-semibold">{{ t('admin.chEdit') }} · {{ editing.name }}</h2>
+            <div>
+              <label class="label" for="edit-baseurl">{{ t('admin.chBaseUrl') }}</label>
+              <input id="edit-baseurl" v-model="editForm.base_url" class="input font-mono text-xs" />
+            </div>
+            <div>
+              <label class="label" for="edit-models">{{ t('admin.chModels') }}</label>
+              <input id="edit-models" v-model="editForm.models" class="input font-mono text-xs" />
+            </div>
+            <div>
+              <label class="label" for="edit-key">{{ t('admin.chKey') }}</label>
+              <input id="edit-key" v-model="editForm.api_key" class="input font-mono text-xs" type="password"
+                autocomplete="off" :placeholder="t('admin.chKeyKeep')" />
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="label" for="edit-weight">{{ t('admin.chWeight') }}</label>
+                <input id="edit-weight" v-model.number="editForm.weight" class="input" type="number" min="0" />
+              </div>
+              <div>
+                <label class="label" for="edit-priority">{{ t('admin.chPriority') }}</label>
+                <input id="edit-priority" v-model.number="editForm.priority" class="input" type="number" />
+              </div>
+            </div>
+            <label class="flex items-center gap-2 text-sm">
+              <input v-model="editForm.strict_response" type="checkbox" class="accent-accent" />
+              {{ t('admin.chStrict') }}
+            </label>
+            <p class="text-xs text-muted">{{ t('admin.chStrictHint') }}</p>
+            <div class="flex justify-end gap-2">
+              <button type="button" class="btn-ghost" @click="editing = null">{{ t('common.cancel') }}</button>
+              <button class="btn-primary" :disabled="editBusy">{{ t('common.confirm') }}</button>
+            </div>
+          </form>
         </div>
       </template>
 

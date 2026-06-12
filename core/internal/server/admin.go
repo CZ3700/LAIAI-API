@@ -123,13 +123,83 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		BaseURL: strings.TrimRight(req.BaseURL, "/"),
 		CredentialEnc: enc, Models: strings.Join(req.Models, ","),
 		Weight: weight, Priority: req.Priority,
-		MaxConcurrentTasks: maxTasks, Status: 1,
+		MaxConcurrentTasks: maxTasks, StrictResponse: 1, Status: 1,
 	}
 	if err := s.db.Create(ch).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "channel create failed")
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"id": ch.ID, "name": ch.Name})
+}
+
+type updateChannelReq struct {
+	BaseURL  *string  `json:"base_url"`
+	APIKey   *string  `json:"api_key"` // 省略=不改凭证
+	Models   []string `json:"models"`
+	Weight   *int     `json:"weight"`
+	Priority *int     `json:"priority"`
+	StrictResponse *bool `json:"strict_response"`
+}
+
+// adminUpdateChannel：PUT /api/admin/channels/:id —— 编辑渠道（部署冒烟暴露的高频缺口）。
+// 只更新提供的字段；api_key 省略则保留原凭证。
+func (s *Server) adminUpdateChannel(c *gin.Context) {
+	if s.keyring == nil {
+		fail(c, http.StatusServiceUnavailable, "LAIAI_DATA_KEYS not configured")
+		return
+	}
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	var req updateChannelReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	updates := map[string]any{}
+	if req.BaseURL != nil {
+		updates["base_url"] = strings.TrimRight(*req.BaseURL, "/")
+	}
+	if len(req.Models) > 0 {
+		updates["models"] = strings.Join(req.Models, ",")
+	}
+	if req.Weight != nil {
+		updates["weight"] = *req.Weight
+	}
+	if req.Priority != nil {
+		updates["priority"] = *req.Priority
+	}
+	if req.StrictResponse != nil {
+		if *req.StrictResponse {
+			updates["strict_response"] = 1
+		} else {
+			updates["strict_response"] = 0
+		}
+	}
+	if req.APIKey != nil && *req.APIKey != "" {
+		enc, err := s.keyring.Encrypt(*req.APIKey)
+		if err != nil {
+			fail(c, http.StatusInternalServerError, "credential encrypt failed")
+			return
+		}
+		updates["credential_enc"] = enc
+	}
+	if len(updates) == 0 {
+		fail(c, http.StatusBadRequest, "nothing to update")
+		return
+	}
+	res := s.db.Model(&relay.Channel{}).Where("id = ?", id).Updates(updates)
+	if res.Error != nil {
+		fail(c, http.StatusInternalServerError, "channel update failed")
+		return
+	}
+	if res.RowsAffected == 0 {
+		fail(c, http.StatusNotFound, "channel not found")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"updated": id})
 }
 
 func (s *Server) adminListChannels(c *gin.Context) {
@@ -143,7 +213,8 @@ func (s *Server) adminListChannels(c *gin.Context) {
 		out = append(out, gin.H{ // 凭证永不回显，连密文都不给
 			"id": ch.ID, "name": ch.Name, "provider": ch.Provider,
 			"base_url": ch.BaseURL, "models": ch.Models,
-			"weight": ch.Weight, "status": ch.Status,
+			"weight": ch.Weight, "priority": ch.Priority,
+			"strict_response": ch.EnforcesStrictResponse(), "status": ch.Status,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": out})

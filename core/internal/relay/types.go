@@ -26,7 +26,18 @@ type Channel struct {
 	Weight        int    `gorm:"column:weight"`
 	Priority      int    `gorm:"column:priority"`             // 大者先用（0004）
 	MaxConcurrentTasks int `gorm:"column:max_concurrent_tasks"` // 任务并发闸（0006，Seedance 公测 3）
+	StrictResponse int8  `gorm:"column:strict_response"`      // 1=校验上游响应 content-type（0008）
 	Status        int8   `gorm:"column:status"`
+}
+
+// EnforcesStrictResponse 返回是否启用上游响应校验（默认开；历史/手工行未设值视为开）。
+func (c *Channel) EnforcesStrictResponse() bool { return c.StrictResponse != 0 }
+
+// IsLLMContentType 判断上游响应 content-type 是否为合法的 LLM 响应类型
+// （JSON 或 SSE）。HTML/纯文本等被判为上游异常（中转站返回首页、网关错误页等）。
+func IsLLMContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.Contains(ct, "json") || strings.Contains(ct, "event-stream")
 }
 
 func (Channel) TableName() string { return "channels" }

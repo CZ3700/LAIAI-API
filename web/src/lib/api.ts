@@ -12,6 +12,17 @@ export class ApiError extends Error {
   }
 }
 
+// uuid：幂等键生成。crypto.randomUUID 在非安全上下文（http+IP）被禁用，
+// 改用 crypto.getRandomValues（任何上下文可用）手工构造 v4 UUID。
+export function uuid(): string {
+  const b = new Uint8Array(16)
+  crypto.getRandomValues(b)
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
 // 统一错误文案：ApiError 带 requestId 时追加 (ID: …)，便于用户报工单时溯源
 export function errorMessage(e: unknown, fallback: string): string {
   if (e instanceof ApiError) {

@@ -145,11 +145,13 @@ func (r *Relay) HandleImages(c *gin.Context) {
 
 	// 换渠道重试循环（同款分类驱动）
 	var resp *http.Response
+	var ch *Channel
 	exclude := map[uint64]bool{}
 	var lastStatus int
 	var lastBody []byte
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		ch, pickErr := PickChannelForAttempt(rdb, req.Model, attempt, exclude)
+		var pickErr error
+		ch, pickErr = PickChannelForAttempt(rdb, req.Model, attempt, exclude)
 		if pickErr != nil {
 			break
 		}
@@ -214,6 +216,12 @@ func (r *Relay) HandleImages(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
+	if ch.EnforcesStrictResponse() && !IsLLMContentType(resp.Header.Get("Content-Type")) {
+		r.release(hold.ID)
+		finish(invocation.StatusUpstreamError, http.StatusBadGateway, "upstream returned invalid response type")
+		relayErr(c, http.StatusBadGateway, "upstream returned an invalid response (check channel base_url)")
+		return
+	}
 	if rid := resp.Header.Get("x-request-id"); rid != "" {
 		inv.UpstreamRequestID = rid
 	}

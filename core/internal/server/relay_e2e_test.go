@@ -59,7 +59,7 @@ CREATE TABLE channels (
     name TEXT NOT NULL, provider TEXT NOT NULL, base_url TEXT NOT NULL,
     credential_enc TEXT NOT NULL, models TEXT NOT NULL,
     weight INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 0,
-    max_concurrent_tasks INTEGER NOT NULL DEFAULT 3,
+    max_concurrent_tasks INTEGER NOT NULL DEFAULT 3, strict_response INTEGER NOT NULL DEFAULT 1,
     status INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -644,5 +644,74 @@ func TestGrantIdempotency(t *testing.T) {
 	_ = db.Where("org_id = ?", uint64(orgID)).First(acc)
 	if !acc.PostedBalance.Equal(decimal.RequireFromString("5")) {
 		t.Fatalf("balance = %s after 3 replays, want 5", acc.PostedBalance)
+	}
+}
+
+// 上游响应校验（部署冒烟暴露）：上游 200 但返回 HTML（中转站首页）→ 判上游异常，不计费。
+func TestRelayRejectsNonLLMResponse(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, "<!doctype html><html><body>relay station homepage</body></html>")
+	}))
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "htmlresp@example.com", "10")
+
+	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("HTML response = %d, want 502", w.Code)
+	}
+	// 资金完整退还，不被误计费
+	acc := &ledger.Account{}
+	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("10")) || !acc.HeldAmount.IsZero() {
+		t.Fatalf("after HTML reject: posted=%s held=%s, want 10/0", acc.PostedBalance, acc.HeldAmount)
+	}
+	// 调用记录为 upstream_error，不是 success
+	rec := waitInvocation(t, db, "org_id = ?", uint64(orgID))
+	if rec.Status != invocation.StatusUpstreamError {
+		t.Fatalf("invocation status = %s, want upstream_error", rec.Status)
+	}
+}
+
+// 编辑渠道：改 base_url + 关 strict_response。
+func TestAdminUpdateChannel(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	w, out := srv.doAdmin(t, "POST", "/api/admin/channels", map[string]any{
+		"name": "edit-me", "provider": "openai", "base_url": "https://old.example.com",
+		"api_key": "sk-old", "models": []string{"m1"},
+	})
+	if w.Code != 201 {
+		t.Fatalf("create = %d %v", w.Code, out)
+	}
+	id := out["id"]
+
+	// 改 base_url、模型、关 strict_response；不传 api_key（保留原凭证）
+	w, _ = srv.doAdmin(t, "PUT", fmt.Sprintf("/api/admin/channels/%v", id), map[string]any{
+		"base_url": "https://new.example.com/v1", "models": []string{"m1", "m2"}, "strict_response": false,
+	})
+	if w.Code != 200 {
+		t.Fatalf("update = %d", w.Code)
+	}
+	var ch struct {
+		BaseURL        string
+		Models         string
+		StrictResponse int8
+		CredentialEnc  string
+	}
+	db.Raw("SELECT base_url, models, strict_response, credential_enc FROM channels WHERE id = ?", id).Scan(&ch)
+	if ch.BaseURL != "https://new.example.com/v1" || ch.Models != "m1,m2" || ch.StrictResponse != 0 {
+		t.Fatalf("update not applied: %+v", ch)
+	}
+	if ch.CredentialEnc == "" {
+		t.Fatal("credential wiped when api_key omitted")
+	}
+	// 不存在的 id → 404
+	w, _ = srv.doAdmin(t, "PUT", "/api/admin/channels/9999", map[string]any{"weight": 5})
+	if w.Code != 404 {
+		t.Fatalf("update missing = %d, want 404", w.Code)
 	}
 }
