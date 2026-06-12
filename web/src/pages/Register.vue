@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useAuth } from '@/stores/auth'
 import { ApiError } from '@/lib/api'
+import ThemeLocale from '@/components/ThemeLocale.vue'
 
 const { t } = useI18n()
 const auth = useAuth()
@@ -30,6 +31,7 @@ async function submit() {
 
 <template>
   <div class="min-h-screen grid place-items-center p-6">
+    <div class="fixed top-4 right-4"><ThemeLocale /></div>
     <form class="card w-full max-w-sm p-8 space-y-5" @submit.prevent="submit">
       <h1 class="text-xl font-semibold">{{ t('auth.signupTitle') }}</h1>
       <div>

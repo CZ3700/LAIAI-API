@@ -1,4 +1,6 @@
-// zh-CN：一等翻译（与 en 键集一一对应；缺键由 CI/构建期发现，不允许运行时静默回退）
+// zh-CN：一等翻译。`satisfies Messages` = 键集与 en 不一致时构建期报错
+import type { Messages } from './en'
+
 export default {
   common: {
     loading: '加载中…',
@@ -18,6 +20,7 @@ export default {
     usage: '用量',
     logout: '退出登录',
     theme: '切换主题',
+    language: '语言',
   },
   auth: {
     signin: '登录',
@@ -55,4 +58,4 @@ export default {
     filterModel: '按模型筛选…',
     total: '共 {total} 次调用',
   },
-}
+} satisfies Messages
