@@ -2,7 +2,7 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
-import DailyBarChart, { type SummaryDay } from '@/components/DailyBarChart.vue'
+import DailyBarChart, { type SummaryDay, type ChartMetric } from '@/components/DailyBarChart.vue'
 
 interface UsageRow {
   id: number
@@ -38,6 +38,8 @@ function toggle(id: number) {
 // —— 近 14 天日聚合（仪表盘）——
 const summary = ref<SummaryDay[]>([])
 const summaryDays = 14
+const chartMetric = ref<ChartMetric>('calls')
+const CHART_METRICS: ChartMetric[] = ['calls', 'tokens', 'cost', 'success']
 const totals = computed(() => {
   let calls = 0
   let tokens = 0
@@ -134,8 +136,22 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
       </div>
     </div>
 
-    <!-- 日调用量柱状图 -->
-    <DailyBarChart :items="summary" :days="summaryDays" />
+    <!-- 日趋势柱状图：可切换指标（调用/Token/花费/成功率） -->
+    <div>
+      <div class="mb-2 flex gap-1">
+        <button
+          v-for="m in CHART_METRICS"
+          :key="m"
+          type="button"
+          class="btn-ghost !py-1 text-xs"
+          :class="chartMetric === m ? '!bg-panel !text-ink' : '!border-transparent text-muted'"
+          @click="chartMetric = m"
+        >
+          {{ t(`usage.metric_${m}`) }}
+        </button>
+      </div>
+      <DailyBarChart :items="summary" :days="summaryDays" :metric="chartMetric" />
+    </div>
 
     <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
     <p v-if="loading" class="text-sm text-muted">{{ t('common.loading') }}</p>
