@@ -60,6 +60,9 @@ const messages = {
     balance: 'Balance',
     held: 'On hold',
     todayCalls: 'Calls today',
+    tokens: 'Tokens',
+    successRate: '{rate}% success',
+    byModel: 'By model',
     recent: 'Recent requests',
   },
   models: {

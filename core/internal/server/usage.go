@@ -52,6 +52,41 @@ func (s *Server) getUsage(c *gin.Context) {
 	})
 }
 
+// getUsageByModel：GET /api/usage/by-model?days=N —— 当前 org 近 N 天按模型聚合。
+// 调用数/成功数/输入输出 token/费用，按调用量降序。仪表盘"模型分布"用。
+func (s *Server) getUsageByModel(c *gin.Context) {
+	claims := mustClaims(c)
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "14"))
+	if days < 1 || days > 90 {
+		days = 14
+	}
+	since := s.now().AddDate(0, 0, -days+1).Format("2006-01-02")
+	var rows []struct {
+		Model            string          `json:"model"`
+		Calls            int64           `json:"calls"`
+		Succeeded        int64           `json:"succeeded"`
+		PromptTokens     int64           `json:"prompt_tokens"`
+		CompletionTokens int64           `json:"completion_tokens"`
+		CostUSD          decimal.Decimal `json:"cost_usd"`
+	}
+	err := s.db.WithContext(c.Request.Context()).Raw(`
+		SELECT model,
+		       COUNT(*) AS calls,
+		       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS succeeded,
+		       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+		       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+		       COALESCE(SUM(cost_usd), 0) AS cost_usd
+		FROM invocations
+		WHERE org_id = ? AND created_at >= ?
+		GROUP BY model
+		ORDER BY calls DESC`, claims.OrgID, since).Scan(&rows).Error
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "by-model query failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"days": days, "items": rows})
+}
+
 // getUsageSummary：GET /api/usage/summary?days=N —— 当前 org 近 N 天按日聚合
 // （调用数/成功数/token/费用），供 Console 仪表盘图表。DATE() 在 MySQL 与 SQLite 同义。
 func (s *Server) getUsageSummary(c *gin.Context) {

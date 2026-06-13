@@ -59,6 +59,9 @@ export default {
     balance: 'Số dư',
     held: 'Đang giữ',
     todayCalls: 'Lượt gọi hôm nay',
+    tokens: 'Token',
+    successRate: '{rate}% thành công',
+    byModel: 'Theo mô hình',
     recent: 'Yêu cầu gần đây',
   },
   models: {

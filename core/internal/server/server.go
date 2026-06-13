@@ -87,6 +87,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			authed.DELETE("/keys/:id/purge", s.deleteKey)
 			authed.GET("/usage", s.getUsage)
 			authed.GET("/usage/summary", s.getUsageSummary)
+			authed.GET("/usage/by-model", s.getUsageByModel)
 			authed.GET("/balance", s.getBalance)
 			authed.GET("/orgs", s.listOrgs)
 			authed.POST("/orgs", s.createOrg)

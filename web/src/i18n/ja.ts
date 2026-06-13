@@ -58,6 +58,9 @@ export default {
     balance: '残高',
     held: '保留中',
     todayCalls: '本日の呼び出し',
+    tokens: 'トークン',
+    successRate: '成功率 {rate}%',
+    byModel: 'モデル別',
     recent: '最近のリクエスト',
   },
   models: {

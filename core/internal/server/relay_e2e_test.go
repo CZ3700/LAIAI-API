@@ -1003,3 +1003,32 @@ func TestAdminListInvocations(t *testing.T) {
 		t.Fatal("channel_id=999 should be empty")
 	}
 }
+
+// 用量按模型聚合：模型分布 + token + 成本 + 成功数。
+func TestUsageByModel(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := mockUpstreamJSON(t, 1000, 500)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "bymodel@example.com", "10")
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "bymodel@example.com", "password": "longenough1"})
+	token := login["token"].(string)
+	srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	waitInvocation(t, db, "org_id = ?", uint64(orgID))
+
+	w, out := srv.do(t, "GET", "/api/usage/by-model?days=7", token, nil)
+	if w.Code != 200 {
+		t.Fatalf("by-model = %d %v", w.Code, out)
+	}
+	items := out["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	m := items[0].(map[string]any)
+	if m["model"] != "test-model" || m["calls"] != float64(1) || m["succeeded"] != float64(1) ||
+		m["prompt_tokens"] != float64(1000) || m["completion_tokens"] != float64(500) {
+		t.Fatalf("by-model row = %v", m)
+	}
+}

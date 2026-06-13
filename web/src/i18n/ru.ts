@@ -59,6 +59,9 @@ export default {
     balance: 'Баланс',
     held: 'Заморожено',
     todayCalls: 'Вызовов сегодня',
+    tokens: 'Токены',
+    successRate: '{rate}% успешно',
+    byModel: 'По моделям',
     recent: 'Недавние запросы',
   },
   models: {

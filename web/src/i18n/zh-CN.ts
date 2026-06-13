@@ -59,6 +59,9 @@ export default {
     balance: '余额',
     held: '冻结中',
     todayCalls: '今日调用',
+    tokens: 'Token',
+    successRate: '成功率 {rate}%',
+    byModel: '按模型',
     recent: '最近请求',
   },
   models: {

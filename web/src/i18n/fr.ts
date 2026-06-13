@@ -59,6 +59,9 @@ export default {
     balance: 'Solde',
     held: 'En attente',
     todayCalls: "Appels aujourd'hui",
+    tokens: 'Jetons',
+    successRate: '{rate}% de réussite',
+    byModel: 'Par modèle',
     recent: 'Requêtes récentes',
   },
   models: {
