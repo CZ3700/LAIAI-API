@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/laiai/laiai-next/core/internal/crypto"
 )
@@ -36,6 +37,11 @@ func Load() (*Config, error) {
 	}
 	if c.DSN == "" {
 		return nil, fmt.Errorf("config: LAIAI_DSN is required")
+	}
+	// MySQL DSN 必须带 parseTime=true：否则 DATETIME 列扫成 []byte，ledger/analytics 静默损坏。
+	// 失败要响——宁可启动即报错，不要上线后资金流水悄悄读不出。
+	if strings.Contains(c.DSN, "@tcp(") && !strings.Contains(c.DSN, "parseTime=true") {
+		return nil, fmt.Errorf("config: MySQL LAIAI_DSN must include parseTime=true (DATETIME scanning; ledger/analytics break silently without it)")
 	}
 	secret := os.Getenv("LAIAI_AUTH_SECRET")
 	if len(secret) < 32 {
