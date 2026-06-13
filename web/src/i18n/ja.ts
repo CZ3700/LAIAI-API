@@ -47,6 +47,8 @@ export default {
     status: 'ステータス',
     active: '有効',
     revoked: '失効済み',
+    delete: '削除',
+    deleteConfirm: 'この失効済みキーを完全に削除しますか？元に戻せません。',
     revoke: '失効',
     revokeConfirm: 'このキーを失効させますか？このキーを使うリクエストは直ちに失敗します。',
     createdTitle: '今すぐキーを保存してください',

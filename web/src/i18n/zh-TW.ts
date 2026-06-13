@@ -47,6 +47,8 @@ export default {
     status: '狀態',
     active: '有效',
     revoked: '已撤銷',
+    delete: '刪除',
+    deleteConfirm: '永久刪除這個已吊銷的金鑰？此操作無法復原。',
     revoke: '撤銷',
     revokeConfirm: '確認撤銷該金鑰？使用它的請求將立即失敗。',
     createdTitle: '立即保存你的金鑰',

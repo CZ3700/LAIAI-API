@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, errorMessage } from '@/lib/api'
+import { api, copyText, errorMessage } from '@/lib/api'
 
 interface KeyRow {
   id: number
@@ -110,13 +110,11 @@ async function create() {
 
 async function copyKey() {
   copyError.value = false
-  try {
-    await navigator.clipboard.writeText(createdKey.value)
+  if (await copyText(createdKey.value)) {
     copied.value = true
     clearTimeout(copyResetTimer)
     copyResetTimer = setTimeout(() => (copied.value = false), 1500)
-  } catch {
-    // clipboard 在非安全上下文 / 权限拒绝时会 reject —— 提示用户手动复制
+  } else {
     copyError.value = true
   }
 }
@@ -126,6 +124,19 @@ async function revoke(id: number) {
   revoking.value = id
   try {
     await api('DELETE', `/api/keys/${id}`)
+    await load()
+  } catch (e) {
+    error.value = errorMessage(e, t('common.error'))
+  } finally {
+    revoking.value = null
+  }
+}
+
+async function remove(id: number) {
+  if (!confirm(t('keys.deleteConfirm'))) return
+  revoking.value = id
+  try {
+    await api('DELETE', `/api/keys/${id}/purge`)
     await load()
   } catch (e) {
     error.value = errorMessage(e, t('common.error'))
@@ -177,6 +188,14 @@ onMounted(load)
                 @click="revoke(k.id)"
               >
                 {{ t('keys.revoke') }}
+              </button>
+              <button
+                v-else
+                class="btn-ghost !py-1 text-xs"
+                :disabled="revoking === k.id"
+                @click="remove(k.id)"
+              >
+                {{ t('keys.delete') }}
               </button>
             </td>
           </tr>

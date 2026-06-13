@@ -243,3 +243,31 @@ func TestProfileAndPassword(t *testing.T) {
 		t.Fatalf("new password login = %d", w.Code)
 	}
 }
+
+// 密钥硬删除：活跃 key 不可删（需先吊销），吊销后可删。
+func TestDeleteKey(t *testing.T) {
+	srv, _ := setupServer(t)
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "del@example.com", "password": "longenough1"})
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "del@example.com", "password": "longenough1"})
+	token := login["token"].(string)
+	_, k := srv.do(t, "POST", "/api/keys", token, map[string]any{"name": "tmp"})
+	_ = k
+	_, list := srv.do(t, "GET", "/api/keys", token, nil)
+	id := list["keys"].([]any)[0].(map[string]any)["id"]
+
+	// 活跃 → 删除被拒
+	w, _ := srv.do(t, "DELETE", fmt.Sprintf("/api/keys/%v/purge", id), token, nil)
+	if w.Code != 400 {
+		t.Fatalf("delete active key = %d, want 400", w.Code)
+	}
+	// 吊销后可删
+	srv.do(t, "DELETE", fmt.Sprintf("/api/keys/%v", id), token, nil)
+	w, _ = srv.do(t, "DELETE", fmt.Sprintf("/api/keys/%v/purge", id), token, nil)
+	if w.Code != 200 {
+		t.Fatalf("delete revoked key = %d, want 200", w.Code)
+	}
+	_, list = srv.do(t, "GET", "/api/keys", token, nil)
+	if len(list["keys"].([]any)) != 0 {
+		t.Fatal("key list should be empty after purge")
+	}
+}

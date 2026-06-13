@@ -47,6 +47,8 @@ export default {
     status: 'Trạng thái',
     active: 'Hoạt động',
     revoked: 'Đã thu hồi',
+    delete: 'Xóa',
+    deleteConfirm: 'Xóa vĩnh viễn khóa đã thu hồi này? Không thể hoàn tác.',
     revoke: 'Thu hồi',
     revokeConfirm: 'Thu hồi khóa này? Các yêu cầu dùng khóa sẽ thất bại ngay lập tức.',
     createdTitle: 'Lưu khóa của bạn ngay',

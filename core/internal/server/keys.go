@@ -88,3 +88,28 @@ func (s *Server) revokeKey(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"revoked": k.ID})
 }
+
+// deleteKey：DELETE /api/keys/:id/purge —— 物理删除（仅限已吊销的 key）。
+// 活跃 key 必须先吊销再删，避免误删导致在用凭证瞬间失效（吊销是软态可审计）。
+func (s *Server) deleteKey(c *gin.Context) {
+	claims := mustClaims(c)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid key id")
+		return
+	}
+	k := &identity.APIKey{}
+	if err := s.db.Where("id = ? AND org_id = ?", id, claims.OrgID).First(k).Error; err != nil {
+		fail(c, http.StatusNotFound, "key not found")
+		return
+	}
+	if k.Status == 1 {
+		fail(c, http.StatusBadRequest, "revoke the key before deleting it")
+		return
+	}
+	if err := s.db.Where("id = ? AND org_id = ?", id, claims.OrgID).Delete(&identity.APIKey{}).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": k.ID})
+}

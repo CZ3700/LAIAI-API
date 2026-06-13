@@ -48,6 +48,8 @@ const messages = {
     status: 'Status',
     active: 'Active',
     revoked: 'Revoked',
+    delete: 'Delete',
+    deleteConfirm: 'Permanently delete this revoked key? This cannot be undone.',
     revoke: 'Revoke',
     revokeConfirm: 'Revoke this key? Requests using it will fail immediately.',
     createdTitle: 'Save your key now',

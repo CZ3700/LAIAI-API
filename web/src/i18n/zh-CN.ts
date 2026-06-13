@@ -48,6 +48,8 @@ export default {
     status: '状态',
     active: '有效',
     revoked: '已吊销',
+    delete: '删除',
+    deleteConfirm: '永久删除这个已吊销的密钥？此操作不可恢复。',
     revoke: '吊销',
     revokeConfirm: '确认吊销该密钥？使用它的请求将立即失败。',
     createdTitle: '立即保存你的密钥',

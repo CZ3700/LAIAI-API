@@ -47,6 +47,8 @@ export default {
     status: 'Statut',
     active: 'Active',
     revoked: 'Révoquée',
+    delete: 'Supprimer',
+    deleteConfirm: 'Supprimer définitivement cette clé révoquée ? Action irréversible.',
     revoke: 'Révoquer',
     revokeConfirm: "Révoquer cette clé ? Les requêtes l'utilisant échoueront immédiatement.",
     createdTitle: 'Enregistrez votre clé maintenant',

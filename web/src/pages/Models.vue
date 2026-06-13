@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, errorMessage } from '@/lib/api'
+import { api, copyText, errorMessage } from '@/lib/api'
 
 interface PricedModel {
   model: string
@@ -28,13 +28,10 @@ const filtered = computed(() => {
 })
 
 async function copyName(model: string) {
-  try {
-    await navigator.clipboard.writeText(model)
+  if (await copyText(model)) {
     copiedModel.value = model
     clearTimeout(copyTimer)
     copyTimer = setTimeout(() => (copiedModel.value = ''), 1200)
-  } catch {
-    // 非安全上下文 clipboard 不可用：模型名本身可选中，静默降级
   }
 }
 

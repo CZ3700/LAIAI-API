@@ -23,6 +23,34 @@ export function uuid(): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
 }
 
+// copyText：剪贴板复制 + 非安全上下文兜底。
+// navigator.clipboard 仅在 HTTPS/localhost 可用（http+IP 被禁），失败时
+// 退到隐藏 textarea + execCommand('copy')，这在非安全上下文仍可工作。
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // 落到下面的兜底
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
 // 统一错误文案：ApiError 带 requestId 时追加 (ID: …)，便于用户报工单时溯源
 export function errorMessage(e: unknown, fallback: string): string {
   if (e instanceof ApiError) {
