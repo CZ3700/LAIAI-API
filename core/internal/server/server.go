@@ -90,6 +90,9 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 		api.POST("/auth/login", s.authRateLimit(), s.login)
 		api.POST("/auth/send-verification", s.authRateLimit(), s.sendVerification)
 		api.POST("/auth/2fa", s.authRateLimit(), s.twofaVerifyLogin) // 登录二阶段
+		api.GET("/auth/oauth", s.getOAuthProviders)                  // 已配置的 OAuth 提供方
+		api.GET("/auth/oauth/:provider/start", s.oauthStart)
+		api.GET("/auth/oauth/:provider/callback", s.oauthCallback)
 		api.GET("/pricing", s.getPricing) // 公开价目（营销站/模型市场同源）
 		api.GET("/config", s.getConfig)       // 公开运营配置（站名/注册开关/公告/法务）
 		api.GET("/rankings", s.getRankings)   // 公开模型/厂商调用量排行（营销/SEO）

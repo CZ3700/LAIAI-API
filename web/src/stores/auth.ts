@@ -50,6 +50,11 @@ export const useAuth = defineStore('auth', {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.session))
       return 'ok'
     },
+    // setSession：OAuth 回调落地后直接写入会话（token 已由后端签发）。
+    setSession(s: Session) {
+      this.session = s
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(s))
+    },
     async verify2fa(code: string) {
       if (!this.pending2fa) throw new Error('no pending 2fa')
       const r = await api<{ token: string; expires_at: number; org_id: number }>(

@@ -1471,3 +1471,20 @@ func TestTwoFactorFlow(t *testing.T) {
 func genTOTP(secret string) string {
 	return totp.CurrentCode(secret)
 }
+
+// OAuth：未配置时无提供方；state 签名验证防 CSRF。
+func TestOAuthProvidersAndState(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	// 未配置 → 空列表
+	_, out := srv.do(t, "GET", "/api/auth/oauth", "", nil)
+	if out["providers"] != nil {
+		if ps, ok := out["providers"].([]any); ok && len(ps) != 0 {
+			t.Fatalf("providers should be empty when unconfigured: %v", ps)
+		}
+	}
+	// 未配置 start → 400
+	w, _ := srv.do(t, "GET", "/api/auth/oauth/github/start", "", nil)
+	if w.Code != 400 {
+		t.Fatalf("unconfigured start = %d, want 400", w.Code)
+	}
+}

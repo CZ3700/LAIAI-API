@@ -1,15 +1,31 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuth } from '@/stores/auth'
-import { errorMessage } from '@/lib/api'
+import { api, errorMessage } from '@/lib/api'
 import ThemeLocale from '@/components/ThemeLocale.vue'
 
 const { t } = useI18n()
 const auth = useAuth()
 const router = useRouter()
 const route = useRoute()
+
+const oauthProviders = ref<string[]>([])
+onMounted(async () => {
+  try {
+    const r = await api<{ providers: string[] }>('GET', '/api/auth/oauth', undefined, { auth: false })
+    oauthProviders.value = r.providers ?? []
+  } catch {
+    // 无 OAuth 不影响密码登录
+  }
+})
+function oauthLogin(provider: string) {
+  window.location.href = `/api/auth/oauth/${provider}/start`
+}
+function providerLabel(p: string): string {
+  return p === 'github' ? 'GitHub' : p === 'google' ? 'Google' : p
+}
 
 const email = ref('')
 const password = ref('')
@@ -88,6 +104,22 @@ async function submit2fa() {
       </div>
       <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
       <button class="btn-primary w-full" :disabled="busy">{{ t('auth.signin') }}</button>
+
+      <template v-if="oauthProviders.length">
+        <div class="flex items-center gap-3 text-xs text-muted">
+          <span class="h-px flex-1 bg-line"></span>{{ t('auth.or') }}<span class="h-px flex-1 bg-line"></span>
+        </div>
+        <button
+          v-for="p in oauthProviders"
+          :key="p"
+          type="button"
+          class="btn-ghost w-full"
+          @click="oauthLogin(p)"
+        >
+          {{ t('auth.continueWith', { provider: providerLabel(p) }) }}
+        </button>
+      </template>
+
         <p class="text-sm text-muted text-center">
           {{ t('auth.noAccount') }}
           <router-link class="text-accent hover:underline" to="/register">{{ t('auth.signup') }}</router-link>

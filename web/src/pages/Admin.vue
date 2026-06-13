@@ -1203,6 +1203,29 @@ onMounted(() => {
             <p class="mt-1 text-xs text-muted">{{ t('admin.setAffHint') }}</p>
           </div>
 
+          <div class="border-t border-line pt-5">
+            <h3 class="mb-3 font-semibold">{{ t('admin.setOAuth') }}</h3>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label class="label" for="set-gh-id">GitHub Client ID</label>
+                <input id="set-gh-id" v-model="settings.github_client_id" class="input font-mono text-xs" />
+              </div>
+              <div>
+                <label class="label" for="set-gh-sec">GitHub Client Secret</label>
+                <input id="set-gh-sec" v-model="settings.github_client_secret" class="input font-mono text-xs" type="password" autocomplete="off" />
+              </div>
+              <div>
+                <label class="label" for="set-gg-id">Google Client ID</label>
+                <input id="set-gg-id" v-model="settings.google_client_id" class="input font-mono text-xs" />
+              </div>
+              <div>
+                <label class="label" for="set-gg-sec">Google Client Secret</label>
+                <input id="set-gg-sec" v-model="settings.google_client_secret" class="input font-mono text-xs" type="password" autocomplete="off" />
+              </div>
+            </div>
+            <p class="mt-2 text-xs text-muted">{{ t('admin.setOAuthHint') }}</p>
+          </div>
+
           <div class="flex items-center gap-3">
             <button class="btn-primary" :disabled="settingsBusy">{{ t('settings.save') }}</button>
             <span v-if="settingsMsg" class="text-sm text-ok">{{ settingsMsg }}</span>
