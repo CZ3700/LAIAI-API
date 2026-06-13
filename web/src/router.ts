@@ -12,6 +12,7 @@ export const router = createRouter({
       meta: { auth: true },
       children: [
         { path: '', component: () => import('@/pages/Dashboard.vue') },
+        { path: 'playground', component: () => import('@/pages/Playground.vue') },
         { path: 'models', component: () => import('@/pages/Models.vue') },
         { path: 'keys', component: () => import('@/pages/Keys.vue') },
         { path: 'usage', component: () => import('@/pages/Usage.vue') },
