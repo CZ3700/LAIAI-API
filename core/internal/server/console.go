@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/ledger"
@@ -63,7 +64,7 @@ func (s *Server) getLedger(c *gin.Context) {
 		RefType      string          `json:"ref_type"`
 		RefID        string          `json:"ref_id"`
 		Reason       string          `json:"reason"`
-		CreatedAt    string          `json:"created_at"`
+		CreatedAt    time.Time       `json:"created_at"` // RFC3339；前端 new Date() 直接可解析（修复 ZZ 崩溃）
 	}
 	rdb.Raw(`SELECT id, kind, delta, balance_after, ref_type, ref_id, reason, created_at
 		FROM ledger_journal WHERE account_id = ?

@@ -199,7 +199,7 @@ onMounted(load)
               <td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
             </tr>
             <tr v-for="e in ledger" :key="e.id" class="border-b border-line last:border-0">
-              <td class="px-4 py-2.5 text-muted">{{ d(new Date(e.created_at.replace(' ', 'T') + 'Z'), { dateStyle: 'short', timeStyle: 'short' }) }}</td>
+              <td class="px-4 py-2.5 text-muted">{{ d(new Date(e.created_at), { dateStyle: 'short', timeStyle: 'short' }) }}</td>
               <td class="px-4 py-2.5"><span class="badge-muted">{{ kindLabel(e.kind) }}</span></td>
               <td class="px-4 py-2.5 text-muted">{{ e.reason || e.ref_type }}</td>
               <td class="px-4 py-2.5 text-right font-mono" :class="Number(e.delta) >= 0 ? 'text-ok' : 'text-danger'">
