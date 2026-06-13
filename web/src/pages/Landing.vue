@@ -35,20 +35,20 @@ const features = [
     <!-- Hero -->
     <section class="aurora">
       <div class="mx-auto max-w-4xl px-6 py-24 text-center sm:py-32">
-        <span class="badge-muted">{{ t('landing.tag') }}</span>
-        <h1 class="mt-6 text-4xl font-bold tracking-tight sm:text-6xl">
+        <span class="enter badge-muted" style="animation-delay: 0ms">{{ t('landing.tag') }}</span>
+        <h1 class="enter mt-6 text-4xl font-bold tracking-tight sm:text-6xl" style="animation-delay: 70ms">
           {{ t('landing.h1a') }}
           <span
             class="bg-clip-text text-transparent"
             style="background-image: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)))"
           >{{ t('landing.h1b') }}</span>
         </h1>
-        <p class="mx-auto mt-6 max-w-2xl text-lg text-muted">{{ t('landing.sub') }}</p>
-        <div class="mt-10 flex flex-wrap justify-center gap-3">
+        <p class="enter mx-auto mt-6 max-w-2xl text-lg text-muted" style="animation-delay: 140ms">{{ t('landing.sub') }}</p>
+        <div class="enter mt-10 flex flex-wrap justify-center gap-3" style="animation-delay: 210ms">
           <router-link to="/register" class="btn-primary px-6 !py-2.5">{{ t('landing.ctaStart') }}</router-link>
           <router-link to="/models" class="btn-ghost px-6 !py-2.5">{{ t('landing.ctaModels') }}</router-link>
         </div>
-        <p v-if="models.length" class="mt-8 text-sm text-muted">
+        <p v-if="models.length" class="enter mt-8 text-sm text-muted" style="animation-delay: 280ms">
           {{ t('landing.stat', { models: models.length, providers: providerCount }) }}
         </p>
       </div>
@@ -57,7 +57,12 @@ const features = [
     <!-- Features -->
     <section class="mx-auto max-w-6xl px-6 py-16">
       <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-        <div v-for="f in features" :key="f.key" class="card p-6">
+        <div
+          v-for="(f, i) in features"
+          :key="f.key"
+          v-reveal="i * 90"
+          class="card card-lift p-6"
+        >
           <div
             class="grid h-10 w-10 place-items-center rounded-lg text-accent"
             style="background: rgb(var(--c-accent) / 0.12)"
@@ -74,8 +79,13 @@ const features = [
 
     <!-- Code sample -->
     <section class="mx-auto max-w-4xl px-6 pb-16">
-      <div class="card overflow-hidden">
-        <div class="border-b border-line px-4 py-2 text-xs text-muted">{{ t('landing.codeTitle') }}</div>
+      <div v-reveal class="card overflow-hidden">
+        <div class="flex items-center gap-1.5 border-b border-line px-4 py-2.5">
+          <span class="h-2.5 w-2.5 rounded-full bg-danger/60"></span>
+          <span class="h-2.5 w-2.5 rounded-full bg-muted/40"></span>
+          <span class="h-2.5 w-2.5 rounded-full bg-ok/50"></span>
+          <span class="ml-2 text-xs text-muted">{{ t('landing.codeTitle') }}</span>
+        </div>
         <pre class="overflow-x-auto p-5 text-xs leading-relaxed"><code>curl https://your-domain/v1/chat/completions \
   -H "Authorization: Bearer sk-laiai-..." \
   -H "Content-Type: application/json" \
@@ -88,7 +98,11 @@ const features = [
 
     <!-- CTA -->
     <section class="mx-auto max-w-4xl px-6 pb-24 text-center">
-      <div class="card p-12" style="background: linear-gradient(135deg, rgb(var(--c-accent) / 0.08), rgb(var(--c-accent-2) / 0.08))">
+      <div
+        v-reveal
+        class="card overflow-hidden p-12"
+        style="background: linear-gradient(135deg, rgb(var(--c-accent) / 0.08), rgb(var(--c-accent-2) / 0.08))"
+      >
         <h2 class="text-2xl font-semibold tracking-tight">{{ t('landing.ctaTitle') }}</h2>
         <p class="mx-auto mt-3 max-w-xl text-muted">{{ t('landing.ctaSub') }}</p>
         <router-link to="/register" class="btn-primary mt-6 inline-flex px-6 !py-2.5">{{ t('landing.ctaStart') }}</router-link>

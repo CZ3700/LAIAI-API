@@ -25,17 +25,24 @@ const nav = [
 <template>
   <div class="min-h-screen flex">
     <aside class="w-60 shrink-0 border-r border-line flex flex-col bg-panel/40">
-      <!-- 品牌：渐变标记 + 字标 -->
-      <div class="flex items-center gap-2.5 px-5 pt-5 pb-4">
+      <!-- 品牌：点击回公开首页 -->
+      <router-link
+        to="/"
+        class="group flex items-center gap-2.5 px-5 pt-5 pb-4 transition-opacity hover:opacity-80"
+        :title="t('nav.home')"
+      >
         <div
-          class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-sm font-bold text-white"
+          class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-sm font-bold text-white transition-transform group-hover:scale-105"
           style="background: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)))"
           aria-hidden="true"
         >
           L
         </div>
         <span class="text-lg font-semibold tracking-tight">LAIAI</span>
-      </div>
+        <svg class="ml-auto h-4 w-4 text-muted opacity-0 transition-opacity group-hover:opacity-100" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 6l6 6-6 6" />
+        </svg>
+      </router-link>
       <div class="px-3 pb-3">
         <OrgSwitcher />
       </div>
@@ -81,7 +88,11 @@ const nav = [
       </div>
     </aside>
     <main class="flex-1 min-w-0 p-8">
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <transition name="page" mode="out-in">
+          <component :is="Component" :key="$route.path" />
+        </transition>
+      </router-view>
     </main>
   </div>
 </template>

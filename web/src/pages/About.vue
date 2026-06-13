@@ -9,15 +9,15 @@ const { t } = useI18n()
     <p class="mt-6 text-lg text-muted">{{ t('about.lead') }}</p>
 
     <div class="mt-10 space-y-8">
-      <section>
+      <section v-reveal class="card card-lift p-6">
         <h2 class="font-semibold">{{ t('about.missionTitle') }}</h2>
         <p class="mt-2 text-muted">{{ t('about.missionBody') }}</p>
       </section>
-      <section>
+      <section v-reveal="80" class="card card-lift p-6">
         <h2 class="font-semibold">{{ t('about.howTitle') }}</h2>
         <p class="mt-2 text-muted">{{ t('about.howBody') }}</p>
       </section>
-      <section>
+      <section v-reveal="160" class="card card-lift p-6">
         <h2 class="font-semibold">{{ t('about.contactTitle') }}</h2>
         <p class="mt-2 text-muted">{{ t('about.contactBody') }}</p>
       </section>

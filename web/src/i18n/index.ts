@@ -6,8 +6,10 @@ import ja from './ja'
 import fr from './fr'
 import ru from './ru'
 import vi from './vi'
+import ms from './ms'
+import th from './th'
 
-// 语种对标 NewAPI（en/zh-CN/zh-TW/ja/fr/ru/vi）；label 用各语种自称（语言选择器惯例）
+// 语种对标 NewAPI（en/zh-CN/zh-TW/ja/fr/ru/vi/ms/th）；label 用各语种自称（语言选择器惯例）
 export const SUPPORTED_LOCALES = [
   { code: 'en', label: 'English' },
   { code: 'zh-CN', label: '简体中文' },
@@ -16,6 +18,8 @@ export const SUPPORTED_LOCALES = [
   { code: 'fr', label: 'Français' },
   { code: 'ru', label: 'Русский' },
   { code: 'vi', label: 'Tiếng Việt' },
+  { code: 'ms', label: 'Bahasa Melayu' },
+  { code: 'th', label: 'ไทย' },
 ] as const
 
 export type LocaleCode = (typeof SUPPORTED_LOCALES)[number]['code']
@@ -38,7 +42,7 @@ export const i18n = createI18n({
   legacy: false,
   locale: detectLocale(),
   fallbackLocale: 'en',
-  messages: { en, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, fr, ru, vi },
+  messages: { en, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, fr, ru, vi, ms, th },
 })
 
 document.documentElement.lang = i18n.global.locale.value

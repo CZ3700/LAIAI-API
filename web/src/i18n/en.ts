@@ -19,6 +19,7 @@ const messages = {
     error: 'Something went wrong',
   },
   nav: {
+    home: 'Home',
     playground: 'Playground',
     dashboard: 'Dashboard',
     models: 'Models',

@@ -56,7 +56,15 @@ onMounted(async () => {
     </div>
 
     <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
-    <p v-if="loading" class="text-sm text-muted">{{ t('common.loading') }}</p>
+    <!-- 加载骨架屏 -->
+    <div v-if="loading" class="card p-4 space-y-3">
+      <div v-for="i in 6" :key="i" class="flex items-center gap-4">
+        <div class="skeleton h-4 flex-1" :style="{ maxWidth: `${50 + ((i * 13) % 40)}%` }"></div>
+        <div class="skeleton h-4 w-20"></div>
+        <div class="skeleton h-4 w-16"></div>
+        <div class="skeleton h-4 w-16"></div>
+      </div>
+    </div>
 
     <div v-else class="card overflow-x-auto">
       <table class="table w-full text-sm whitespace-nowrap">

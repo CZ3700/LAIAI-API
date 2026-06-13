@@ -19,6 +19,7 @@ export default {
     error: '出错了',
   },
   nav: {
+    home: '首页',
     playground: '体验场',
     dashboard: '仪表盘',
     models: '模型',

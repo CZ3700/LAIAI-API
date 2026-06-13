@@ -149,17 +149,148 @@ body {
   }
 }
 
-/* 认证页背景光晕（aurora）：纯 CSS，不加资源 */
+/* 认证/营销页背景光晕（aurora）：纯 CSS 动画 blob，缓慢漂浮 */
 .aurora {
   position: relative;
   isolation: isolate;
+  overflow: hidden;
+}
+.aurora::before,
+.aurora::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.55;
+  will-change: transform;
 }
 .aurora::before {
+  width: 46vw;
+  height: 46vw;
+  top: -12%;
+  left: -6%;
+  background: radial-gradient(circle, rgb(var(--c-accent) / 0.5), transparent 70%);
+  animation: aurora-a 22s ease-in-out infinite;
+}
+.aurora::after {
+  width: 42vw;
+  height: 42vw;
+  bottom: -16%;
+  right: -8%;
+  background: radial-gradient(circle, rgb(var(--c-accent-2) / 0.45), transparent 70%);
+  animation: aurora-b 26s ease-in-out infinite;
+}
+@keyframes aurora-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(8vw, 6vh) scale(1.15); }
+}
+@keyframes aurora-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-7vw, -5vh) scale(1.1); }
+}
+
+/* 卡片悬浮提升：交互卡片挂 .card-lift（列表/特性卡），hover 抬起 + 加深阴影 */
+.card-lift {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, border-color 0.2s ease;
+  will-change: transform;
+}
+.card-lift:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-pop);
+  border-color: rgb(var(--c-accent) / 0.35);
+}
+
+/* 主按钮光泽：hover 时一道高光扫过 */
+.btn-primary {
+  position: relative;
+  overflow: hidden;
+}
+.btn-primary::after {
   content: '';
   position: absolute;
   inset: 0;
-  z-index: -1;
-  background:
-    radial-gradient(560px 320px at 18% 8%, rgb(var(--c-accent) / 0.14), transparent 65%),
-    radial-gradient(640px 380px at 85% 92%, rgb(var(--c-accent-2) / 0.12), transparent 65%);
+  background: linear-gradient(110deg, transparent 30%, rgb(255 255 255 / 0.25) 50%, transparent 70%);
+  transform: translateX(-130%);
+  transition: transform 0.6s ease;
+}
+.btn-primary:hover::after {
+  transform: translateX(130%);
+}
+
+/* 进场动画：元素挂 .enter（+ 可选 inline animation-delay 做 stagger） */
+.enter {
+  animation: enter-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes enter-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+/* 滚动渐入：v-reveal 指令初始挂 .reveal，进入视口时加 .reveal-in */
+.reveal {
+  opacity: 0;
+  transform: translateY(20px);
+}
+.reveal-in {
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 骨架屏：加载占位的微光扫动 */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: rgb(var(--c-line) / 0.5);
+  border-radius: 0.5rem;
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(var(--c-elev) / 0.6), transparent);
+  transform: translateX(-100%);
+  animation: shimmer 1.4s infinite;
+}
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* 路由切换淡入淡出（App.vue <transition name="page">） */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.page-leave-to {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora::before,
+  .aurora::after,
+  .btn-primary::after,
+  .enter,
+  .skeleton::after {
+    animation: none;
+  }
+  .reveal {
+    opacity: 1;
+    transform: none;
+  }
+  .card-lift:hover {
+    transform: none;
+  }
+  .page-enter-from,
+  .page-leave-to {
+    transform: none;
+  }
 }

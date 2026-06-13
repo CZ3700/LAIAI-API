@@ -85,24 +85,24 @@ onMounted(async () => {
     <!-- 主统计：余额 + 调用 + token + 费用 -->
     <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
       <div
-        class="card relative overflow-hidden p-5 text-white"
-        style="background: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)))"
+        class="enter card relative overflow-hidden p-5 text-white"
+        style="background: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent-2))); animation-delay: 0ms"
       >
         <p class="text-xs opacity-80">{{ t('dashboard.balance') }}</p>
         <p class="mt-1 text-3xl font-semibold font-mono">${{ balance }}</p>
         <p v-if="held !== '0'" class="mt-1 text-xs opacity-80">{{ t('dashboard.held') }}: ${{ held }}</p>
       </div>
-      <div class="card p-5">
+      <div class="enter card p-5" style="animation-delay: 70ms">
         <p class="text-xs text-muted">{{ t('dashboard.todayCalls') }}</p>
         <p class="mt-1 text-3xl font-semibold font-mono">{{ n(todayCalls) }}</p>
         <p class="mt-1 text-xs text-muted">{{ t('admin.ovWindowCalls', { n: totals.calls, days: summaryDays }) }}</p>
       </div>
-      <div class="card p-5">
+      <div class="enter card p-5" style="animation-delay: 140ms">
         <p class="text-xs text-muted">{{ t('dashboard.tokens') }}</p>
         <p class="mt-1 text-3xl font-semibold font-mono">{{ fmtTokens(totals.inTok + totals.outTok) }}</p>
         <p class="mt-1 text-xs text-muted">{{ fmtTokens(totals.inTok) }} → / {{ fmtTokens(totals.outTok) }} ←</p>
       </div>
-      <div class="card p-5">
+      <div class="enter card p-5" style="animation-delay: 210ms">
         <p class="text-xs text-muted">{{ t('usage.sumCost', { days: summaryDays }) }}</p>
         <p class="mt-1 text-3xl font-semibold font-mono">${{ totals.cost.toFixed(4) }}</p>
         <p class="mt-1 text-xs" :class="totals.rate >= 0.95 ? 'text-ok' : 'text-danger'">
