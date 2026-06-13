@@ -14,9 +14,10 @@ import (
 const sessionTTL = 24 * time.Hour
 
 type registerReq struct {
-	Email       string `json:"email" binding:"required"`
-	Password    string `json:"password" binding:"required"`
-	DisplayName string `json:"display_name"`
+	Email            string `json:"email" binding:"required"`
+	Password         string `json:"password" binding:"required"`
+	DisplayName      string `json:"display_name"`
+	VerificationCode string `json:"verification_code"` // email_verification_enabled 时必填
 }
 
 // register：去重由 users.email_canonical UNIQUE 兜底（schema 层红线）。
@@ -31,6 +32,18 @@ func (s *Server) register(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "email and password are required")
 		return
+	}
+	// 邮箱验证（0014）：开启时必须先通过验证码（堵同邮箱薅羊毛）
+	if s.getBoolSetting("email_verification_enabled") {
+		canonical, err := identity.CanonicalizeEmail(req.Email)
+		if err != nil {
+			fail(c, http.StatusBadRequest, "invalid email")
+			return
+		}
+		if !s.verifyEmailCode(canonical, req.VerificationCode) {
+			fail(c, http.StatusBadRequest, "invalid or expired verification code")
+			return
+		}
 	}
 	var user *identity.User
 	var org *identity.Organization

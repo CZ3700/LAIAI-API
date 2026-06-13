@@ -15,6 +15,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/config"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/laiai/laiai-next/core/internal/mailer"
 	"github.com/laiai/laiai-next/core/internal/server"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"gorm.io/driver/mysql"
@@ -106,7 +107,11 @@ func main() {
 			Keyring:     cfg.Keyring,
 			Recorder:    rec,
 			TaskService: taskSvc,
-			Log:         log,
+			Mailer: mailer.New(mailer.Config{
+				Host: cfg.SMTPHost, Port: cfg.SMTPPort,
+				Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
+			}, log.With("component", "mailer")),
+			Log: log,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

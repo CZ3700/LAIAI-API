@@ -23,6 +23,10 @@ CREATE TABLE organizations (
     status INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE email_verifications (
+    email_canonical TEXT PRIMARY KEY, code TEXT NOT NULL,
+    expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+);
 CREATE TABLE ext_settings (
     name TEXT PRIMARY KEY, value TEXT NOT NULL
 );
@@ -71,7 +75,16 @@ func setupServer(t *testing.T) (*gin999, *gorm.DB) {
 	if err := db.Exec(testSchema).Error; err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	return &gin999{engine: New(db, Options{AuthSecret: testSecret, AuthRateBurst: 100000})}, db
+	return &gin999{engine: New(db, Options{AuthSecret: testSecret, AuthRateBurst: 100000, Mailer: &captureMailer{}})}, db
+}
+
+// captureMailer：测试用，记录最后一封邮件正文（从中抠验证码）。
+type captureMailer struct{ lastBody string }
+
+func (m *captureMailer) Active() bool { return true }
+func (m *captureMailer) Send(to, subject, body string) error {
+	m.lastBody = body
+	return nil
 }
 
 // 轻薄的请求辅助
@@ -283,5 +296,47 @@ func TestDeleteKey(t *testing.T) {
 	_, list = srv.do(t, "GET", "/api/keys", token, nil)
 	if len(list["keys"].([]any)) != 0 {
 		t.Fatal("key list should be empty after purge")
+	}
+}
+
+// 邮箱验证：开启后注册必须带有效验证码（防薅羊毛）。
+func TestEmailVerification(t *testing.T) {
+	srv, db := setupServer(t)
+	// 开启邮箱验证
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "admin@example.com", "password": "longenough1"})
+	// 借 admin token 开关——server_test 的 setupServer 无 admin token，改用 DB 直接写设置
+	db.Exec("INSERT INTO ext_settings (name, value) VALUES ('email_verification_enabled', 'true')")
+
+	// 不带验证码注册 → 400
+	w, _ := srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "new@example.com", "password": "longenough1"})
+	if w.Code != 400 {
+		t.Fatalf("register without code = %d, want 400", w.Code)
+	}
+	// 发验证码
+	w, _ = srv.do(t, "POST", "/api/auth/send-verification", "", map[string]string{"email": "new@example.com"})
+	if w.Code != 200 {
+		t.Fatalf("send-verification = %d", w.Code)
+	}
+	// 从 DB 取码（生产从邮件，测试从库）
+	var rec struct{ Code string }
+	db.Raw("SELECT code FROM email_verifications WHERE email_canonical = ?", "new@example.com").Scan(&rec)
+	if len(rec.Code) != 6 {
+		t.Fatalf("code = %q, want 6 digits", rec.Code)
+	}
+	// 错码 → 400
+	w, _ = srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "new@example.com", "password": "longenough1", "verification_code": "000000"})
+	if w.Code != 400 {
+		t.Fatalf("wrong code register = %d, want 400", w.Code)
+	}
+	// 正确码 → 201
+	w, _ = srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "new@example.com", "password": "longenough1", "verification_code": rec.Code})
+	if w.Code != 201 {
+		t.Fatalf("correct code register = %d, want 201", w.Code)
+	}
+	// 码用后即焚：再用同码 → 行已删
+	var n int64
+	db.Raw("SELECT COUNT(*) FROM email_verifications WHERE email_canonical = ?", "new@example.com").Scan(&n)
+	if n != 0 {
+		t.Fatal("verification code should be consumed after use")
 	}
 }

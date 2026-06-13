@@ -19,6 +19,12 @@ type Config struct {
 	RedisAddr  string          // LAIAI_REDIS_ADDR，可选（M2 起 asynq/限流需要）
 	// LAIAI_INVOCATION_RETENTION_DAYS：Invocation Store 保留天数（设计 §6.1 默认 30；0 = 关闭清理）
 	InvocationRetentionDays int
+	// SMTP（0014，可选）：全空 = 邮件退化为日志，不真实发送
+	SMTPHost     string // LAIAI_SMTP_HOST
+	SMTPPort     int    // LAIAI_SMTP_PORT，默认 587
+	SMTPUsername string // LAIAI_SMTP_USERNAME
+	SMTPPassword string // LAIAI_SMTP_PASSWORD
+	SMTPFrom     string // LAIAI_SMTP_FROM，默认取 username
 }
 
 // Load 读取并校验配置；任何关键项非法返回 error（调用方应直接退出）。
@@ -64,6 +70,17 @@ func Load() (*Config, error) {
 		}
 		c.Keyring = kr
 	}
+
+	c.SMTPHost = os.Getenv("LAIAI_SMTP_HOST")
+	c.SMTPPort = 587
+	if v := os.Getenv("LAIAI_SMTP_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.SMTPPort = n
+		}
+	}
+	c.SMTPUsername = os.Getenv("LAIAI_SMTP_USERNAME")
+	c.SMTPPassword = os.Getenv("LAIAI_SMTP_PASSWORD")
+	c.SMTPFrom = os.Getenv("LAIAI_SMTP_FROM")
 	return c, nil
 }
 

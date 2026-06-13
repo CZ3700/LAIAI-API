@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/crypto"
 	"github.com/laiai/laiai-next/core/internal/invocation"
+	"github.com/laiai/laiai-next/core/internal/mailer"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"golang.org/x/time/rate"
@@ -25,6 +26,7 @@ type Options struct {
 	TaskService *task.Service        // 异步任务服务；nil = 按默认构造（main 传入以共享轮询实例）
 	// AuthRateBurst：认证端点 per-IP 突发上限；0 = 生产默认 5。测试设大值绕开。
 	AuthRateBurst int
+	Mailer        mailer.Mailer // 邮件发送；nil = 邮件功能禁用（验证端点 503）
 	Log           *slog.Logger
 }
 
@@ -35,6 +37,7 @@ type Server struct {
 	keyring     *crypto.Keyring
 	authLimiter *ipLimiter
 	relay       *relay.Relay     // 渠道一键测试用；nil = 测试端点 503
+	mailer      mailer.Mailer    // 邮件发送；nil = 邮件功能禁用
 	now         func() time.Time // 可注入时钟，测试用
 }
 
@@ -53,6 +56,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 		db: db, secret: opts.AuthSecret,
 		adminToken: opts.AdminToken, keyring: opts.Keyring,
 		authLimiter: newIPLimiter(rate.Every(time.Second), authBurst),
+		mailer:      opts.Mailer,
 		now:         time.Now,
 	}
 	gin.SetMode(gin.ReleaseMode)
@@ -74,6 +78,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 		// 认证端点限流（审查 H1）：挡暴力破解 + Argon2 内存放大
 		api.POST("/auth/register", s.authRateLimit(), s.register)
 		api.POST("/auth/login", s.authRateLimit(), s.login)
+		api.POST("/auth/send-verification", s.authRateLimit(), s.sendVerification)
 		api.GET("/pricing", s.getPricing) // 公开价目（营销站/模型市场同源）
 		api.GET("/config", s.getConfig)   // 公开运营配置（站名/注册开关/公告/法务）
 

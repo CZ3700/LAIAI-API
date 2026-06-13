@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useAuth } from '@/stores/auth'
-import { errorMessage } from '@/lib/api'
+import { api, errorMessage } from '@/lib/api'
 import ThemeLocale from '@/components/ThemeLocale.vue'
 
 const { t } = useI18n()
@@ -12,14 +12,46 @@ const router = useRouter()
 
 const email = ref('')
 const password = ref('')
+const code = ref('')
 const busy = ref(false)
 const error = ref('')
+
+// 是否要求邮箱验证（运营开关）
+const needVerify = ref(false)
+const sending = ref(false)
+const sentMsg = ref('')
+onMounted(async () => {
+  try {
+    const cfg = await api<{ email_verification_enabled: boolean }>('GET', '/api/config', undefined, { auth: false })
+    needVerify.value = cfg.email_verification_enabled
+  } catch {
+    // 拉不到 config 当作不需验证
+  }
+})
+
+async function sendCode() {
+  if (!email.value) {
+    error.value = t('auth.emailFirst')
+    return
+  }
+  sending.value = true
+  sentMsg.value = ''
+  error.value = ''
+  try {
+    await api('POST', '/api/auth/send-verification', { email: email.value }, { auth: false })
+    sentMsg.value = t('auth.codeSent')
+  } catch (e) {
+    error.value = errorMessage(e, t('common.error'))
+  } finally {
+    sending.value = false
+  }
+}
 
 async function submit() {
   busy.value = true
   error.value = ''
   try {
-    await auth.register(email.value, password.value)
+    await auth.register(email.value, password.value, needVerify.value ? code.value : undefined)
     await router.replace('/app')
   } catch (e) {
     error.value = errorMessage(e, t('common.error'))
@@ -55,6 +87,16 @@ async function submit() {
           id="password" v-model="password" class="input" type="password"
           required minlength="8" autocomplete="new-password" :placeholder="t('auth.passwordHint')"
         />
+      </div>
+      <div v-if="needVerify">
+        <label class="label" for="code">{{ t('auth.verifyCode') }}</label>
+        <div class="flex gap-2">
+          <input id="code" v-model="code" class="input font-mono" inputmode="numeric" maxlength="6" required />
+          <button type="button" class="btn-ghost shrink-0" :disabled="sending" @click="sendCode">
+            {{ sending ? t('auth.sending') : t('auth.sendCode') }}
+          </button>
+        </div>
+        <p v-if="sentMsg" class="mt-1 text-xs text-ok">{{ sentMsg }}</p>
       </div>
       <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
       <button class="btn-primary w-full" :disabled="busy">{{ t('auth.signup') }}</button>

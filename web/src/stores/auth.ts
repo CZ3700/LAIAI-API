@@ -44,8 +44,10 @@ export const useAuth = defineStore('auth', {
       this.session = { token: r.token, expiresAt: r.expires_at, orgId: r.org_id, email }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.session))
     },
-    async register(email: string, password: string) {
-      await api('POST', '/api/auth/register', { email, password }, { auth: false })
+    async register(email: string, password: string, code?: string) {
+      const body: Record<string, string> = { email, password }
+      if (code) body.verification_code = code
+      await api('POST', '/api/auth/register', body, { auth: false })
       await this.login(email, password)
     },
     // org 切换：服务端验证成员资格后签发的新 token 落地到会话
