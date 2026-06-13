@@ -29,9 +29,12 @@ func (s *Server) getUsage(c *gin.Context) {
 		pageSize = usageDefaultPageSize
 	}
 
-	q := s.db.Model(&invocation.Invocation{}).Where("org_id = ?", claims.OrgID)
+	q := s.db.WithContext(c.Request.Context()).Model(&invocation.Invocation{}).Where("org_id = ?", claims.OrgID)
 	if model := c.Query("model"); model != "" {
 		q = q.Where("model = ?", model)
+	}
+	if status := c.Query("status"); status != "" {
+		q = q.Where("status = ?", status)
 	}
 
 	var total int64

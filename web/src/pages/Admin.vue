@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminApi, adminToken, ApiError, errorMessage, uuid } from '@/lib/api'
 
@@ -55,8 +55,27 @@ interface Price {
   OutputUSDPer1M: string
   ImageUSD: string
 }
-
-const { t } = useI18n()
+interface LogRow {
+  id: number
+  created_at: string
+  request_id: string
+  org_id: number
+  model: string
+  channel_id: number
+  provider: string
+  status: string
+  status_code: number
+  is_stream: boolean
+  attempts: number
+  prompt_tokens: number
+  completion_tokens: number
+  cost_usd: string
+  usage_source: string
+  frt_ms: number
+  duration_ms: number
+  upstream_request_id: string
+  error_brief: string
+}
 
 // —— token 门 ——
 const tokenInput = ref('')
@@ -80,8 +99,38 @@ function showError(e: unknown) {
   if (e instanceof ApiError && e.status === 401) unlocked.value = false
 }
 
+const { t, d } = useI18n()
+
 // —— tabs ——
-const tab = ref<'overview' | 'channels' | 'prices' | 'credits' | 'orgs'>('overview')
+const tab = ref<'overview' | 'channels' | 'prices' | 'credits' | 'orgs' | 'logs'>('overview')
+
+// —— 日志（全局调用） ——
+const logs = ref<LogRow[]>([])
+const logTotal = ref(0)
+const logPage = ref(1)
+const logFilter = ref({ status: '', model: '', channel_id: '', org_id: '', since: '', until: '' })
+const expandedLog = ref<number | null>(null)
+const LOG_PAGE_SIZE = 20
+
+async function loadLogs() {
+  const q = new URLSearchParams({ page: String(logPage.value), page_size: String(LOG_PAGE_SIZE) })
+  for (const [k, v] of Object.entries(logFilter.value)) if (v) q.set(k, v)
+  const r = await adminApi<{ total: number; items: LogRow[] }>('GET', `/api/admin/invocations?${q}`)
+  logs.value = r.items
+  logTotal.value = r.total
+}
+function applyLogFilter() {
+  logPage.value = 1
+  void loadLogs().catch(showError)
+}
+function toggleLog(id: number) {
+  expandedLog.value = expandedLog.value === id ? null : id
+}
+watch(logPage, () => void loadLogs().catch(showError))
+// 切到日志 tab 时首次加载
+watch(tab, (v) => {
+  if (v === 'logs' && logs.value.length === 0) void loadLogs().catch(showError)
+})
 
 // —— 平台概览 ——
 const overview = ref<Overview | null>(null)
@@ -324,7 +373,7 @@ onMounted(() => {
       <div class="flex items-center justify-between">
         <div class="flex gap-1" role="tablist">
           <button
-            v-for="tb in ['overview', 'channels', 'prices', 'credits', 'orgs'] as const"
+            v-for="tb in ['overview', 'channels', 'prices', 'credits', 'orgs', 'logs'] as const"
             :key="tb"
             type="button"
             role="tab"
@@ -679,6 +728,104 @@ onMounted(() => {
               </tr>
             </tbody>
           </table>
+        </div>
+      </template>
+
+      <!-- 日志（全局调用） -->
+      <template v-if="tab === 'logs'">
+        <form class="card flex flex-wrap items-end gap-3 p-4" @submit.prevent="applyLogFilter">
+          <div>
+            <label class="label" for="lg-status">{{ t('usage.status') }}</label>
+            <select id="lg-status" v-model="logFilter.status" class="input !w-36">
+              <option value="">{{ t('admin.lgAny') }}</option>
+              <option value="success">success</option>
+              <option value="upstream_error">upstream_error</option>
+              <option value="insufficient_balance">insufficient_balance</option>
+              <option value="no_channel">no_channel</option>
+            </select>
+          </div>
+          <div>
+            <label class="label" for="lg-model">{{ t('usage.model') }}</label>
+            <input id="lg-model" v-model="logFilter.model" class="input !w-40 font-mono text-xs" />
+          </div>
+          <div>
+            <label class="label" for="lg-ch">{{ t('admin.lgChannel') }}</label>
+            <input id="lg-ch" v-model="logFilter.channel_id" class="input !w-24" type="number" min="1" />
+          </div>
+          <div>
+            <label class="label" for="lg-org">{{ t('admin.lgOrg') }}</label>
+            <input id="lg-org" v-model="logFilter.org_id" class="input !w-24" type="number" min="1" />
+          </div>
+          <div>
+            <label class="label" for="lg-since">{{ t('admin.lgSince') }}</label>
+            <input id="lg-since" v-model="logFilter.since" class="input !w-40" type="date" />
+          </div>
+          <div>
+            <label class="label" for="lg-until">{{ t('admin.lgUntil') }}</label>
+            <input id="lg-until" v-model="logFilter.until" class="input !w-40" type="date" />
+          </div>
+          <button class="btn-primary">{{ t('admin.lgApply') }}</button>
+        </form>
+
+        <div class="card overflow-x-auto">
+          <table class="table w-full text-sm whitespace-nowrap">
+            <thead>
+              <tr class="border-b border-line text-left text-muted">
+                <th class="px-4 py-3 font-medium">{{ t('usage.time') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.lgOrg') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('usage.model') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.lgChannel') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('usage.status') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('usage.tokens') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('usage.cost') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="logs.length === 0">
+                <td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+              </tr>
+              <template v-for="l in logs" :key="l.id">
+                <tr class="cursor-pointer border-b border-line last:border-0" @click="toggleLog(l.id)">
+                  <td class="px-4 py-2.5 text-muted">{{ d(new Date(l.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
+                  <td class="px-4 py-2.5 font-mono text-xs">{{ l.org_id }}</td>
+                  <td class="px-4 py-2.5 font-mono text-xs">{{ l.model }}</td>
+                  <td class="px-4 py-2.5 font-mono text-xs">#{{ l.channel_id }} {{ l.provider }}</td>
+                  <td class="px-4 py-2.5">
+                    <span :class="l.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ l.status }}</span>
+                  </td>
+                  <td class="px-4 py-2.5 text-right font-mono">{{ l.prompt_tokens }} / {{ l.completion_tokens }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono">{{ l.cost_usd }}</td>
+                </tr>
+                <tr v-if="expandedLog === l.id" class="!border-0 bg-elev/40">
+                  <td colspan="7" class="px-4 pb-4 pt-1">
+                    <dl class="grid grid-cols-2 gap-x-8 gap-y-1.5 text-xs sm:grid-cols-4">
+                      <div><dt class="text-muted">{{ t('usage.requestId') }}</dt><dd class="font-mono select-all">{{ l.request_id }}</dd></div>
+                      <div><dt class="text-muted">{{ t('usage.dStatusCode') }}</dt><dd class="font-mono">{{ l.status_code }}</dd></div>
+                      <div><dt class="text-muted">{{ t('admin.lgAttempts') }}</dt><dd class="font-mono">{{ l.attempts }}</dd></div>
+                      <div><dt class="text-muted">{{ t('usage.dStream') }}</dt><dd class="font-mono">{{ l.is_stream ? t('common.yes') : t('common.no') }}</dd></div>
+                      <div><dt class="text-muted">{{ t('usage.dFrt') }}</dt><dd class="font-mono">{{ l.frt_ms }} ms</dd></div>
+                      <div><dt class="text-muted">{{ t('usage.dDuration') }}</dt><dd class="font-mono">{{ l.duration_ms }} ms</dd></div>
+                      <div v-if="l.usage_source"><dt class="text-muted">{{ t('usage.dUsageSource') }}</dt><dd class="font-mono">{{ l.usage_source }}</dd></div>
+                      <div v-if="l.upstream_request_id"><dt class="text-muted">{{ t('admin.lgUpstreamId') }}</dt><dd class="font-mono select-all break-all">{{ l.upstream_request_id }}</dd></div>
+                      <div v-if="l.error_brief" class="col-span-2 sm:col-span-4">
+                        <dt class="text-muted">{{ t('usage.dError') }}</dt>
+                        <dd class="font-mono text-danger break-all">{{ l.error_brief }}</dd>
+                      </div>
+                    </dl>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="flex items-center justify-between text-sm text-muted">
+          <span>{{ t('usage.total', { total: logTotal }) }}</span>
+          <div class="flex items-center gap-2">
+            <button class="btn-ghost !py-1" :disabled="logPage <= 1" @click="logPage--">{{ t('common.prev') }}</button>
+            <span>{{ t('common.page', { page: logPage }) }}</span>
+            <button class="btn-ghost !py-1" :disabled="logPage * LOG_PAGE_SIZE >= logTotal" @click="logPage++">{{ t('common.next') }}</button>
+          </div>
         </div>
       </template>
     </template>

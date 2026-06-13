@@ -491,3 +491,66 @@ func (s *Server) adminOverview(c *gin.Context) {
 		"channel_health": health,
 	})
 }
+
+// adminListInvocations：GET /api/admin/invocations —— 全局调用日志（不受 org 隔离）。
+// 筛选：status / model / channel_id / org_id / since / until（YYYY-MM-DD）。分页。
+// admin 视图回显平台内部字段（org/channel/provider/上游 id），普通 /api/usage 仍隐藏这些。
+func (s *Server) adminListInvocations(c *gin.Context) {
+	rdb := s.db.WithContext(c.Request.Context())
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	q := rdb.Model(&invocation.Invocation{})
+	if v := c.Query("status"); v != "" {
+		q = q.Where("status = ?", v)
+	}
+	if v := c.Query("model"); v != "" {
+		q = q.Where("model = ?", v)
+	}
+	if v := c.Query("channel_id"); v != "" {
+		if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+			q = q.Where("channel_id = ?", id)
+		}
+	}
+	if v := c.Query("org_id"); v != "" {
+		if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+			q = q.Where("org_id = ?", id)
+		}
+	}
+	if v := c.Query("since"); v != "" {
+		q = q.Where("created_at >= ?", v)
+	}
+	if v := c.Query("until"); v != "" {
+		q = q.Where("created_at < ?", v+" 23:59:59")
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "invocation query failed")
+		return
+	}
+	var rows []invocation.Invocation
+	if err := q.Order("id DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&rows).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "invocation query failed")
+		return
+	}
+	out := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, gin.H{
+			"id": r.ID, "created_at": r.CreatedAt, "request_id": r.RequestID,
+			"org_id": r.OrgID, "model": r.Model,
+			"channel_id": r.ChannelID, "provider": r.Provider,
+			"status": r.Status, "status_code": r.StatusCode, "is_stream": r.IsStream,
+			"attempts": r.Attempts, "prompt_tokens": r.PromptTokens, "completion_tokens": r.CompletionTokens,
+			"cost_usd": r.CostUSD, "usage_source": r.UsageSource,
+			"frt_ms": r.FRTMs, "duration_ms": r.DurationMs,
+			"upstream_request_id": r.UpstreamRequestID, "error_brief": r.ErrorBrief,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"total": total, "page": page, "page_size": pageSize, "items": out})
+}

@@ -27,6 +27,7 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = 20
 const model = ref('')
+const status = ref('')
 const loading = ref(true)
 const error = ref('')
 const expanded = ref<number | null>(null)
@@ -66,6 +67,7 @@ async function load() {
   try {
     const q = new URLSearchParams({ page: String(page.value), page_size: String(pageSize) })
     if (model.value) q.set('model', model.value)
+    if (status.value) q.set('status', status.value)
     const r = await api<{ total: number; items: UsageRow[] }>('GET', `/api/usage?${q}`)
     if (seq !== reqSeq) return // 已有更新的请求在途，丢弃本次结果
     rows.value = r.items
@@ -87,6 +89,10 @@ watch(model, () => {
     void load()
   }, 300)
 })
+watch(status, () => {
+  page.value = 1
+  void load()
+})
 watch(page, () => void load())
 onMounted(() => {
   void load()
@@ -98,9 +104,18 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between gap-4">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-2xl font-semibold tracking-tight">{{ t('usage.title') }}</h1>
-      <input v-model="model" class="input max-w-xs" :placeholder="t('usage.filterModel')" />
+      <div class="flex gap-2">
+        <select v-model="status" class="input !w-40">
+          <option value="">{{ t('usage.allStatuses') }}</option>
+          <option value="success">success</option>
+          <option value="upstream_error">upstream_error</option>
+          <option value="insufficient_balance">insufficient_balance</option>
+          <option value="no_channel">no_channel</option>
+        </select>
+        <input v-model="model" class="input max-w-xs" :placeholder="t('usage.filterModel')" />
+      </div>
     </div>
 
     <!-- 近 14 天概览 -->

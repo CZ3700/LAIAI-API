@@ -962,3 +962,44 @@ func TestAdminListChannelsEnriched(t *testing.T) {
 		t.Fatalf("enriched channel = %v", c0)
 	}
 }
+
+// admin 全局调用日志：跨 org 可见 + 内部字段回显 + status 筛选。
+func TestAdminListInvocations(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := mockUpstreamJSON(t, 100, 50)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "logs@example.com", "10")
+	srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	waitInvocation(t, db, "org_id = ?", uint64(orgID))
+
+	// 全局可见 + 内部字段（channel_id/provider/org_id）回显
+	w, out := srv.doAdmin(t, "GET", "/api/admin/invocations", nil)
+	if w.Code != 200 {
+		t.Fatalf("invocations = %d %v", w.Code, out)
+	}
+	items := out["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	row := items[0].(map[string]any)
+	if row["org_id"] != orgID || row["provider"] != "openai" || row["channel_id"] != float64(1) {
+		t.Fatalf("admin row missing internal fields: %v", row)
+	}
+	// status 筛选：success 命中，failed 落空
+	_, out = srv.doAdmin(t, "GET", "/api/admin/invocations?status=success", nil)
+	if len(out["items"].([]any)) != 1 {
+		t.Fatal("status=success should match")
+	}
+	_, out = srv.doAdmin(t, "GET", "/api/admin/invocations?status=upstream_error", nil)
+	if len(out["items"].([]any)) != 0 {
+		t.Fatal("status=upstream_error should be empty")
+	}
+	// channel 筛选：错的 channel 落空
+	_, out = srv.doAdmin(t, "GET", "/api/admin/invocations?channel_id=999", nil)
+	if len(out["items"].([]any)) != 0 {
+		t.Fatal("channel_id=999 should be empty")
+	}
+}
