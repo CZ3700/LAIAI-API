@@ -333,6 +333,7 @@ export default {
     chStrictHint: '拒绝上游返回 200 但非合法 JSON/SSE 的响应（如 HTML 页面）。仅对非标准上游才关闭。',
     chTest: '测试',
     chTesting: '测试中…',
+    chQuality: '质量(14天)',
     chTestOk: '正常 · {ms} ms',
     chTestFail: '失败',
     chMapping: '模型映射',

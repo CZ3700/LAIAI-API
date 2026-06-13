@@ -332,6 +332,7 @@ export default {
     chStrictHint: '200 だが正当な JSON/SSE でない上流レスポンス（HTML ページ等）を拒否します。非標準の上流のみオフにしてください。',
     chTest: 'テスト',
     chTesting: 'テスト中…',
+    chQuality: '品質(14日)',
     chTestOk: '正常 · {ms} ms',
     chTestFail: '失敗',
     chMapping: 'モデルマッピング',

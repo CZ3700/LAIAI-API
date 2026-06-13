@@ -23,6 +23,9 @@ interface Channel {
   model_mapping: string
   calls: number
   status: number
+  success_rate: number
+  avg_latency_ms: number
+  errors: number
 }
 interface Overview {
   window_days: number
@@ -916,13 +919,14 @@ onMounted(() => {
                 <th class="px-4 py-3 font-medium">{{ t('admin.chModels') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.chWeight') }}/{{ t('admin.chPriority') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.ovCalls') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.chQuality') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('keys.status') }}</th>
                 <th class="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="channels.length === 0">
-                <td colspan="9" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+                <td colspan="10" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <tr v-for="c in channels" :key="c.id" class="border-b border-line last:border-0">
                 <td class="px-4 py-2.5 text-muted">{{ c.id }}</td>
@@ -939,6 +943,16 @@ onMounted(() => {
                 </td>
                 <td class="px-4 py-2.5 text-right font-mono">{{ c.weight }} / {{ c.priority }}</td>
                 <td class="px-4 py-2.5 text-right font-mono" :class="c.calls ? '' : 'text-muted'">{{ c.calls }}</td>
+                <td class="px-4 py-2.5">
+                  <div v-if="c.calls" class="text-xs">
+                    <span :class="c.success_rate >= 0.95 ? 'text-ok' : c.success_rate >= 0.8 ? 'text-amber-500' : 'text-danger'">
+                      {{ (c.success_rate * 100).toFixed(1) }}%
+                    </span>
+                    <span class="text-muted"> · {{ Math.round(c.avg_latency_ms) }}ms</span>
+                    <span v-if="c.errors" class="text-danger"> · {{ c.errors }}✕</span>
+                  </div>
+                  <span v-else class="text-xs text-muted">—</span>
+                </td>
                 <td class="px-4 py-2.5">
                   <span :class="c.status === 1 ? 'badge-ok' : c.status === 2 ? 'badge-danger' : 'badge-muted'">
                     {{ statusLabel(c.status) }}

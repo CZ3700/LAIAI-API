@@ -333,6 +333,7 @@ export default {
     chStrictHint: 'Rejeter les réponses amont 200 qui ne sont pas du JSON/SSE valide (ex. une page HTML). À désactiver uniquement pour des amonts non standard.',
     chTest: 'Tester',
     chTesting: 'Test en cours…',
+    chQuality: 'Qualité (14j)',
     chTestOk: 'OK · {ms} ms',
     chTestFail: 'Échec',
     chMapping: 'Mappage de modèles',

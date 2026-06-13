@@ -334,6 +334,7 @@ const messages = {
     chStrictHint: 'Reject upstream 200 responses that are not valid JSON/SSE (e.g. an HTML page). Turn off only for non-standard upstreams.',
     chTest: 'Test',
     chTesting: 'Testing…',
+    chQuality: 'Quality (14d)',
     chTestOk: 'OK · {ms} ms',
     chTestFail: 'Failed',
     chMapping: 'Model mapping',

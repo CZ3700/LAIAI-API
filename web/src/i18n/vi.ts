@@ -333,6 +333,7 @@ export default {
     chStrictHint: 'Từ chối phản hồi 200 nhưng không phải JSON/SSE hợp lệ (vd. trang HTML). Chỉ tắt cho upstream phi tiêu chuẩn.',
     chTest: 'Kiểm tra',
     chTesting: 'Đang kiểm tra…',
+    chQuality: 'Chất lượng (14n)',
     chTestOk: 'OK · {ms} ms',
     chTestFail: 'Thất bại',
     chMapping: 'Ánh xạ mô hình',

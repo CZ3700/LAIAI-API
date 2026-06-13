@@ -244,21 +244,29 @@ func (s *Server) adminListChannels(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "list failed")
 		return
 	}
-	// 累计调用数（14 天窗口，与 overview 同口径）
+	// 累计调用数 + 质量（14 天窗口，与 overview 同口径）
 	since := s.now().AddDate(0, 0, -13).Format("2006-01-02")
 	calls := s.channelCallCounts(rdb, since)
+	quality := s.channelQualityStats(rdb, since)
 	out := make([]gin.H, 0, len(channels))
 	for _, ch := range channels {
 		modelCount := 0
 		if ch.Models != "" {
 			modelCount = len(strings.Split(ch.Models, ","))
 		}
+		total := calls[ch.ID]
+		q := quality[ch.ID]
+		successRate := 1.0 // 无调用视作健康（不误报红）
+		if total > 0 {
+			successRate = float64(q.Succeeded) / float64(total)
+		}
 		out = append(out, gin.H{ // 凭证永不回显，连密文都不给
 			"id": ch.ID, "name": ch.Name, "provider": ch.Provider,
 			"base_url": ch.BaseURL, "models": ch.Models, "model_count": modelCount,
 			"weight": ch.Weight, "priority": ch.Priority,
 			"strict_response": ch.EnforcesStrictResponse(),
-			"model_mapping": ch.ModelMapping, "calls": calls[ch.ID], "status": ch.Status,
+			"model_mapping": ch.ModelMapping, "calls": total, "status": ch.Status,
+			"success_rate": successRate, "avg_latency_ms": q.AvgDuration, "errors": q.Errors,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": out})
@@ -432,6 +440,37 @@ func (s *Server) channelCallCounts(rdb *gorm.DB, since string) map[uint64]int64 
 	out := make(map[uint64]int64, len(rows))
 	for _, r := range rows {
 		out[r.ChannelID] = r.Calls
+	}
+	return out
+}
+
+// chQuality：渠道窗口质量（成功数 / 平均时延 / 错误数）。
+type chQuality struct {
+	Succeeded   int64
+	AvgDuration float64
+	Errors      int64
+}
+
+// channelQualityStats：各渠道窗口内质量聚合（channel_id → chQuality）。
+// 与 channelCallCounts 同 since 口径，便于用 calls 当分母算成功率。
+func (s *Server) channelQualityStats(rdb *gorm.DB, since string) map[uint64]chQuality {
+	type row struct {
+		ChannelID   uint64
+		Succeeded   int64
+		AvgDuration float64
+		Errors      int64
+	}
+	var rows []row
+	rdb.Model(&invocation.Invocation{}).
+		Select("channel_id, "+
+			"SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS succeeded, "+
+			"COALESCE(AVG(duration_ms), 0) AS avg_duration, "+
+			"SUM(CASE WHEN status <> 'success' THEN 1 ELSE 0 END) AS errors").
+		Where("created_at >= ? AND channel_id > 0", since).
+		Group("channel_id").Scan(&rows)
+	out := make(map[uint64]chQuality, len(rows))
+	for _, r := range rows {
+		out[r.ChannelID] = chQuality{Succeeded: r.Succeeded, AvgDuration: r.AvgDuration, Errors: r.Errors}
 	}
 	return out
 }

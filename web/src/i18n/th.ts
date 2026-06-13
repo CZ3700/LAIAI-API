@@ -333,6 +333,7 @@ export default {
     chStrictHint: 'ปฏิเสธการตอบกลับต้นทาง 200 ที่ไม่ใช่ JSON/SSE ที่ถูกต้อง (เช่น หน้า HTML) ปิดเฉพาะสำหรับต้นทางที่ไม่เป็นมาตรฐาน',
     chTest: 'ทดสอบ',
     chTesting: 'กำลังทดสอบ…',
+    chQuality: 'คุณภาพ (14ว)',
     chTestOk: 'ปกติ · {ms} ms',
     chTestFail: 'ล้มเหลว',
     chMapping: 'การจับคู่โมเดล',

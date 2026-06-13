@@ -333,6 +333,7 @@ export default {
     chStrictHint: 'Tolak respons huluan 200 yang bukan JSON/SSE sah (cth. halaman HTML). Matikan hanya untuk huluan tidak standard.',
     chTest: 'Uji',
     chTesting: 'Menguji…',
+    chQuality: 'Kualiti (14h)',
     chTestOk: 'OK · {ms} ms',
     chTestFail: 'Gagal',
     chMapping: 'Pemetaan model',
