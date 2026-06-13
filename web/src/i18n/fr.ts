@@ -3,6 +3,7 @@ import type { Messages } from './en'
 export default {
   common: {
     loading: 'Chargement…',
+    retry: 'Réessayer',
     cancel: 'Annuler',
     confirm: 'Confirmer',
     copy: 'Copier',
@@ -352,6 +353,8 @@ export default {
     pcKeep: 'laisser vide pour conserver',
     pcEnabled: 'Activé',
     pcTest: 'Tester',
+    payGlobalsTitle: 'Réglages de règlement',
+    payGlobalsHint: 'Taux / minimum / parrainage globaux — appliqués à tous les canaux.',
     prices: 'Tarifs',
     credits: 'Crédits',
     chName: 'Nom',

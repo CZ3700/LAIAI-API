@@ -3,6 +3,7 @@ import type { Messages } from './en'
 export default {
   common: {
     loading: 'Memuatkan…',
+    retry: 'Cuba semula',
     cancel: 'Batal',
     confirm: 'Sahkan',
     copy: 'Salin',
@@ -352,6 +353,8 @@ export default {
     pcKeep: 'biar kosong untuk kekal',
     pcEnabled: 'Aktif',
     pcTest: 'Uji',
+    payGlobalsTitle: 'Tetapan penyelesaian',
+    payGlobalsHint: 'Kadar / minimum / rujukan global — terpakai pada semua saluran pembayaran.',
     prices: 'Harga',
     credits: 'Kredit',
     chName: 'Nama',

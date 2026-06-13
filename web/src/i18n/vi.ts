@@ -3,6 +3,7 @@ import type { Messages } from './en'
 export default {
   common: {
     loading: 'Đang tải…',
+    retry: 'Thử lại',
     cancel: 'Hủy',
     confirm: 'Xác nhận',
     copy: 'Sao chép',
@@ -352,6 +353,8 @@ export default {
     pcKeep: 'để trống để giữ nguyên',
     pcEnabled: 'Bật',
     pcTest: 'Kiểm tra',
+    payGlobalsTitle: 'Cài đặt quyết toán',
+    payGlobalsHint: 'Tỷ giá / tối thiểu / giới thiệu toàn cục — áp dụng cho mọi kênh thanh toán.',
     prices: 'Giá',
     credits: 'Tín dụng',
     chName: 'Tên',

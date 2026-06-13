@@ -3,6 +3,7 @@ import type { Messages } from './en'
 export default {
   common: {
     loading: 'Загрузка…',
+    retry: 'Повторить',
     cancel: 'Отмена',
     confirm: 'Подтвердить',
     copy: 'Копировать',
@@ -352,6 +353,8 @@ export default {
     pcKeep: 'пусто — оставить как есть',
     pcEnabled: 'Включён',
     pcTest: 'Тест',
+    payGlobalsTitle: 'Настройки расчётов',
+    payGlobalsHint: 'Глобальный курс / минимум / реферал — для всех платёжных каналов.',
     prices: 'Цены',
     credits: 'Кредиты',
     chName: 'Название',

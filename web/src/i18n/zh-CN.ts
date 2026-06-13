@@ -4,6 +4,7 @@ import type { Messages } from './en'
 export default {
   common: {
     loading: '加载中…',
+    retry: '重试',
     cancel: '取消',
     confirm: '确认',
     copy: '复制',
@@ -352,6 +353,8 @@ export default {
     pcKeep: '留空则保留原值',
     pcEnabled: '启用',
     pcTest: '测试',
+    payGlobalsTitle: '结算设置',
+    payGlobalsHint: '全局汇率 / 最低充值 / 返佣——对所有支付渠道生效。',
     prices: '定价',
     credits: '授信',
     chName: '名称',

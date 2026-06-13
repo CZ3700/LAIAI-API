@@ -3,6 +3,7 @@ import type { Messages } from './en'
 export default {
   common: {
     loading: 'กำลังโหลด…',
+    retry: 'ลองใหม่',
     cancel: 'ยกเลิก',
     confirm: 'ยืนยัน',
     copy: 'คัดลอก',
@@ -352,6 +353,8 @@ export default {
     pcKeep: 'เว้นว่างเพื่อคงเดิม',
     pcEnabled: 'เปิดใช้',
     pcTest: 'ทดสอบ',
+    payGlobalsTitle: 'การตั้งค่าการชำระบัญชี',
+    payGlobalsHint: 'อัตรา / ขั้นต่ำ / ค่าแนะนำส่วนกลาง — ใช้กับทุกช่องทางชำระเงิน',
     prices: 'ราคา',
     credits: 'เครดิต',
     chName: 'ชื่อ',

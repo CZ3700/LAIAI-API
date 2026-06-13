@@ -3,6 +3,7 @@ import type { Messages } from './en'
 export default {
   common: {
     loading: '載入中…',
+    retry: '重試',
     cancel: '取消',
     confirm: '確認',
     copy: '複製',
@@ -353,6 +354,8 @@ export default {
     pcKeep: '留空則保留原值',
     pcEnabled: '啟用',
     pcTest: '測試',
+    payGlobalsTitle: '結算設定',
+    payGlobalsHint: '全域匯率 / 最低儲值 / 返佣——對所有支付渠道生效。',
     prices: '定價',
     credits: '授信',
     chName: '名稱',

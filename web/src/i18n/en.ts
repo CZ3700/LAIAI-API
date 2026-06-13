@@ -4,6 +4,7 @@
 const messages = {
   common: {
     loading: 'Loading…',
+    retry: 'Retry',
     cancel: 'Cancel',
     confirm: 'Confirm',
     copy: 'Copy',
@@ -353,6 +354,8 @@ const messages = {
     pcKeep: 'leave blank to keep',
     pcEnabled: 'Enabled',
     pcTest: 'Test',
+    payGlobalsTitle: 'Settlement settings',
+    payGlobalsHint: 'Global rate / minimum / referral — applied across all payment channels.',
     prices: 'Prices',
     credits: 'Credits',
     chName: 'Name',

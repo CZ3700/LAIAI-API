@@ -3,6 +3,7 @@ import type { Messages } from './en'
 export default {
   common: {
     loading: '読み込み中…',
+    retry: '再試行',
     cancel: 'キャンセル',
     confirm: '確認',
     copy: 'コピー',
@@ -351,6 +352,8 @@ export default {
     pcKeep: '空欄で現状維持',
     pcEnabled: '有効',
     pcTest: 'テスト',
+    payGlobalsTitle: '決済設定',
+    payGlobalsHint: '共通レート / 最低チャージ / 紹介報酬——全決済チャネルに適用。',
     prices: '価格',
     credits: 'クレジット',
     chName: '名前',

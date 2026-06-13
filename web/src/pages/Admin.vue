@@ -140,8 +140,15 @@ interface Analytics {
 }
 const analytics = ref<Analytics | null>(null)
 const analyticsDays = ref(14)
+const analyticsErr = ref('')
 async function loadAnalytics() {
-  analytics.value = await adminApi<Analytics>('GET', `/api/admin/analytics?days=${analyticsDays.value}`)
+  analyticsErr.value = ''
+  try {
+    analytics.value = await adminApi<Analytics>('GET', `/api/admin/analytics?days=${analyticsDays.value}`)
+  } catch (e) {
+    analyticsErr.value = errorMessage(e, t('common.error')) // 让失败可见而非空白
+    throw e
+  }
 }
 // 序列抽取成 number[]，喂给 Sparkline
 const cashSeries = computed(() => (analytics.value?.series ?? []).map((p) => Number(p.cash_in)))
@@ -175,6 +182,27 @@ async function loadPayChannels() {
   payChannels.value = cs.channels
   payRoutes.value = rs.routes
   payLoaded.value = true
+  // 结算全局设置（汇率/最低充值/返佣）从 settings 取——支付相关统一收到支付页（#2 去重）
+  if (Object.keys(settings.value).length === 0) await loadSettings()
+}
+// 保存支付页里的全局结算设置（仅这 3 个键）
+const payGlobalsBusy = ref(false)
+const payGlobalsMsg = ref('')
+async function savePayGlobals() {
+  payGlobalsBusy.value = true
+  payGlobalsMsg.value = ''
+  try {
+    await adminApi('PUT', '/api/admin/settings', {
+      cny_per_usd: settings.value.cny_per_usd ?? '',
+      min_topup_usd: settings.value.min_topup_usd ?? '',
+      affiliate_rate: settings.value.affiliate_rate ?? '',
+    })
+    payGlobalsMsg.value = t('settings.saved')
+  } catch (e) {
+    showError(e)
+  } finally {
+    payGlobalsBusy.value = false
+  }
 }
 // 渠道编辑器（新建/编辑共用）。密钥字段编辑时留空 = 保留原配置。
 interface PayChannelEdit {
@@ -248,8 +276,8 @@ const callbackBase = `${window.location.origin}/api/payment/callback`
 const settings = ref<Record<string, string>>({})
 const settingsBusy = ref(false)
 // 设置分区子导航（避免一页拉太长）
-const setSec = ref<'general' | 'signup' | 'payment' | 'channels' | 'oauth'>('general')
-const SET_SECTIONS = ['general', 'signup', 'payment', 'channels', 'oauth'] as const
+const setSec = ref<'general' | 'signup' | 'channels' | 'oauth'>('general')
+const SET_SECTIONS = ['general', 'signup', 'channels', 'oauth'] as const
 const settingsMsg = ref('')
 async function loadSettings() {
   settings.value = (await adminApi<{ settings: Record<string, string> }>('GET', '/api/admin/settings')).settings
@@ -407,13 +435,20 @@ const providerDefault = computed(
   () => providers.value.find((p) => p.name === ch.value.provider)?.default_base_url ?? '',
 )
 
+const channelsErr = ref('')
 async function loadChannels() {
-  const [chs, provs] = await Promise.all([
-    adminApi<{ channels: Channel[] }>('GET', '/api/admin/channels'),
-    adminApi<{ providers: Provider[] }>('GET', '/api/admin/providers'),
-  ])
-  channels.value = chs.channels
-  providers.value = provs.providers
+  channelsErr.value = ''
+  try {
+    const [chs, provs] = await Promise.all([
+      adminApi<{ channels: Channel[] }>('GET', '/api/admin/channels'),
+      adminApi<{ providers: Provider[] }>('GET', '/api/admin/providers'),
+    ])
+    channels.value = chs.channels
+    providers.value = provs.providers
+  } catch (e) {
+    channelsErr.value = errorMessage(e, t('common.error')) // 让失败可见而非空表
+    throw e
+  }
 }
 async function addChannel() {
   chBusy.value = true
@@ -933,11 +968,19 @@ onMounted(() => {
             <Sparkline :data="callsSeries" :width="640" :height="48" class="w-full" />
           </div>
         </div>
+        <div v-else-if="analyticsErr" class="card p-6 text-sm">
+          <p class="text-danger">{{ analyticsErr }}</p>
+          <button class="btn-ghost mt-3 !py-1.5 text-sm" @click="loadAnalytics().catch(showError)">{{ t('common.retry') }}</button>
+        </div>
         <p v-else class="text-sm text-muted">{{ t('common.loading') }}</p>
       </template>
 
       <!-- 渠道 -->
       <template v-if="tab === 'channels'">
+        <div v-if="channelsErr" class="card mb-3 flex items-center gap-3 p-4 text-sm">
+          <span class="text-danger">{{ channelsErr }}</span>
+          <button class="btn-ghost !py-1 text-xs" @click="loadChannels().catch(showError)">{{ t('common.retry') }}</button>
+        </div>
         <div class="flex items-center justify-between">
           <p class="text-sm text-muted">{{ t('admin.chIntro') }}</p>
           <button class="btn-ghost" @click="showProbe = true">{{ t('admin.probe') }}</button>
@@ -1338,9 +1381,30 @@ onMounted(() => {
             </form>
           </div>
 
-          <p class="text-xs text-muted">{{ t('admin.payConfigHint') }}
-            <button type="button" class="text-accent underline-offset-2 hover:underline" @click="tab = 'settings'">{{ t('admin.settings') }}</button>
-          </p>
+          <!-- 全局结算设置（汇率 / 最低充值 / 返佣）—— 从「设置」迁来，统一在支付页 (#2) -->
+          <div class="card p-5">
+            <h3 class="mb-1 font-semibold">{{ t('admin.payGlobalsTitle') }}</h3>
+            <p class="mb-4 text-xs text-muted">{{ t('admin.payGlobalsHint') }}</p>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label class="label" for="pg-cny">{{ t('admin.setCnyRate') }}</label>
+                <input id="pg-cny" v-model="settings.cny_per_usd" class="input" placeholder="7.3" />
+              </div>
+              <div>
+                <label class="label" for="pg-min">{{ t('admin.setMinTopup') }}</label>
+                <input id="pg-min" v-model="settings.min_topup_usd" class="input" placeholder="1" />
+              </div>
+              <div>
+                <label class="label" for="pg-aff">{{ t('admin.setAffRate') }}</label>
+                <input id="pg-aff" v-model="settings.affiliate_rate" class="input" placeholder="0" />
+              </div>
+            </div>
+            <p class="mt-2 text-xs text-muted">{{ t('admin.setAffHint') }}</p>
+            <div class="mt-4 flex items-center gap-3">
+              <button class="btn-primary !py-1.5 text-sm" :disabled="payGlobalsBusy" @click="savePayGlobals">{{ t('settings.save') }}</button>
+              <span v-if="payGlobalsMsg" class="text-sm text-ok">{{ payGlobalsMsg }}</span>
+            </div>
+          </div>
         </div>
       </template>
 
@@ -1806,45 +1870,6 @@ onMounted(() => {
                 <input id="set-grant" v-model="settings.new_user_grant_usd" class="input" placeholder="0" />
                 <p class="mt-1 text-xs text-muted">{{ t('admin.setWelcomeGrantHint') }}</p>
               </div>
-          </div>
-
-          <div v-show="setSec === 'payment'">
-            <div class="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label class="label" for="set-stripe-sk">Stripe Secret Key</label>
-                <input id="set-stripe-sk" v-model="settings.stripe_secret_key" class="input font-mono text-xs" type="password" autocomplete="off" placeholder="sk_live_…" />
-              </div>
-              <div>
-                <label class="label" for="set-stripe-wh">Stripe Webhook Secret</label>
-                <input id="set-stripe-wh" v-model="settings.stripe_webhook_secret" class="input font-mono text-xs" type="password" autocomplete="off" placeholder="whsec_…" />
-              </div>
-              <div>
-                <label class="label" for="set-epay-pid">EPay PID</label>
-                <input id="set-epay-pid" v-model="settings.epay_pid" class="input font-mono text-xs" />
-              </div>
-              <div>
-                <label class="label" for="set-epay-key">EPay Key</label>
-                <input id="set-epay-key" v-model="settings.epay_key" class="input font-mono text-xs" type="password" autocomplete="off" />
-              </div>
-              <div>
-                <label class="label" for="set-epay-url">EPay API URL</label>
-                <input id="set-epay-url" v-model="settings.epay_api_url" class="input font-mono text-xs" placeholder="https://pay.example.com" />
-              </div>
-              <div>
-                <label class="label" for="set-cny">{{ t('admin.setCnyRate') }}</label>
-                <input id="set-cny" v-model="settings.cny_per_usd" class="input" placeholder="7.3" />
-              </div>
-              <div>
-                <label class="label" for="set-min">{{ t('admin.setMinTopup') }}</label>
-                <input id="set-min" v-model="settings.min_topup_usd" class="input" placeholder="1" />
-              </div>
-              <div>
-                <label class="label" for="set-aff">{{ t('admin.setAffRate') }}</label>
-                <input id="set-aff" v-model="settings.affiliate_rate" class="input" placeholder="0" />
-              </div>
-            </div>
-            <p class="mt-2 text-xs text-muted">{{ t('admin.setPaymentHint') }}</p>
-            <p class="mt-1 text-xs text-muted">{{ t('admin.setAffHint') }}</p>
           </div>
 
           <div v-show="setSec === 'channels'">
