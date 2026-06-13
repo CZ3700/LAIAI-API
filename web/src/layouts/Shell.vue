@@ -43,7 +43,8 @@ const sections = [
 
 <template>
   <div class="min-h-screen flex">
-    <aside class="w-60 shrink-0 border-r border-line flex flex-col bg-panel/40">
+    <aside class="w-60 shrink-0 border-r border-line/60 flex flex-col backdrop-blur-xl"
+      style="background: rgb(var(--c-glass) / 0.5)">
       <!-- 品牌：点击回公开首页 -->
       <router-link
         to="/"
