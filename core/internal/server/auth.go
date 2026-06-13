@@ -18,6 +18,7 @@ type registerReq struct {
 	Password         string `json:"password" binding:"required"`
 	DisplayName      string `json:"display_name"`
 	VerificationCode string `json:"verification_code"` // email_verification_enabled 时必填
+	InviterCode      string `json:"inviter_code"`      // 邀请码（0016，可选）
 }
 
 // register：去重由 users.email_canonical UNIQUE 兜底（schema 层红线）。
@@ -51,6 +52,7 @@ func (s *Server) register(c *gin.Context) {
 		var err error
 		user, org, err = identity.Register(tx, identity.RegisterInput{
 			Email: req.Email, Password: req.Password, DisplayName: req.DisplayName,
+			InviterCode: req.InviterCode,
 		})
 		return err
 	})

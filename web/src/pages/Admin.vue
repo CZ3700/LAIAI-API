@@ -1194,8 +1194,13 @@ onMounted(() => {
                 <label class="label" for="set-cny">{{ t('admin.setCnyRate') }}</label>
                 <input id="set-cny" v-model="settings.cny_per_usd" class="input" placeholder="7.3" />
               </div>
+              <div>
+                <label class="label" for="set-aff">{{ t('admin.setAffRate') }}</label>
+                <input id="set-aff" v-model="settings.affiliate_rate" class="input" placeholder="0" />
+              </div>
             </div>
             <p class="mt-2 text-xs text-muted">{{ t('admin.setPaymentHint') }}</p>
+            <p class="mt-1 text-xs text-muted">{{ t('admin.setAffHint') }}</p>
           </div>
 
           <div class="flex items-center gap-3">

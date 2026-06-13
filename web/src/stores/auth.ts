@@ -44,9 +44,10 @@ export const useAuth = defineStore('auth', {
       this.session = { token: r.token, expiresAt: r.expires_at, orgId: r.org_id, email }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.session))
     },
-    async register(email: string, password: string, code?: string) {
+    async register(email: string, password: string, code?: string, inviterCode?: string) {
       const body: Record<string, string> = { email, password }
       if (code) body.verification_code = code
+      if (inviterCode) body.inviter_code = inviterCode
       await api('POST', '/api/auth/register', body, { auth: false })
       await this.login(email, password)
     },

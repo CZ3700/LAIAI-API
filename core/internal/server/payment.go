@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/payment"
 	"github.com/shopspring/decimal"
@@ -228,8 +229,73 @@ func (s *Server) paymentCallback(c *gin.Context) {
 		c.String(http.StatusInternalServerError, "credit failed")
 		return
 	}
+	s.payAffiliateRebate(res.OrderNo) // 邀请返佣（0016，尽力而为，失败不影响入金）
 	s.writeAudit(c, "topup_paid", res.OrderNo, "topup credited via "+provider)
 	c.String(http.StatusOK, engine.AckBody())
+}
+
+// payAffiliateRebate：充值入账后给邀请组织返佣（affiliate_rate × 充值额，settings 热更新）。
+// 幂等键 affiliate:<order_no> 防重复；rate=0 或无邀请人则跳过。
+func (s *Server) payAffiliateRebate(orderNo string) {
+	rateStr := s.getSetting("affiliate_rate")
+	if rateStr == "" {
+		return
+	}
+	rate, err := decimal.NewFromString(rateStr)
+	if err != nil || !rate.IsPositive() {
+		return
+	}
+	var order TopupOrder
+	if s.db.Where("order_no = ?", orderNo).First(&order).Error != nil {
+		return
+	}
+	var org identity.Organization
+	if s.db.First(&org, order.OrgID).Error != nil || org.InviterOrgID == 0 {
+		return
+	}
+	rebate := order.AmountUSD.Mul(rate)
+	if !rebate.IsPositive() {
+		return
+	}
+	_ = s.db.Transaction(func(tx *gorm.DB) error {
+		acc, e := ledger.EnsureAccount(tx, org.InviterOrgID, ledger.AccountUserCredit)
+		if e != nil {
+			return e
+		}
+		_, _, e = ledger.Post(tx, ledger.PostInput{
+			IdempotencyKey: "affiliate:" + orderNo,
+			AccountID:      acc.ID,
+			Kind:           ledger.KindCredit,
+			Delta:          rebate,
+			RefType:        "affiliate",
+			Reason:         "affiliate rebate from topup " + orderNo,
+		})
+		return e
+	})
+}
+
+// getAffiliate：GET /api/affiliate —— 当前 org 的邀请码 + 统计（已邀请数/累计返佣）。
+func (s *Server) getAffiliate(c *gin.Context) {
+	claims := mustClaims(c)
+	var org identity.Organization
+	if s.db.First(&org, claims.OrgID).Error != nil {
+		fail(c, http.StatusInternalServerError, "could not load org")
+		return
+	}
+	code := ""
+	if org.AffCode != nil {
+		code = *org.AffCode
+	}
+	var invited int64
+	s.db.Model(&identity.Organization{}).Where("inviter_org_id = ?", claims.OrgID).Count(&invited)
+	var earned decimal.Decimal
+	s.db.Raw(`SELECT COALESCE(SUM(j.delta), 0) FROM ledger_journal j
+		JOIN ledger_accounts a ON a.id = j.account_id
+		WHERE a.org_id = ? AND j.ref_type = 'affiliate'`, claims.OrgID).Scan(&earned)
+	c.JSON(http.StatusOK, gin.H{
+		"aff_code": code, "invited": invited, "earned": earned,
+		"rate": s.getSetting("affiliate_rate"),
+	})
 }
 
 // listTopups：GET /api/payment/orders —— 当前 org 充值记录。
@@ -257,6 +323,7 @@ func init() {
 	for _, k := range []string{
 		"stripe_secret_key", "stripe_webhook_secret",
 		"epay_pid", "epay_key", "epay_api_url", "cny_per_usd",
+		"affiliate_rate", // 邀请返佣比例（0016），如 "0.05" = 5%；空/0=关闭
 	} {
 		settingDefaults[k] = ""
 	}

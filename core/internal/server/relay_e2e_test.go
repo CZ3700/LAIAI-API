@@ -1373,3 +1373,52 @@ func TestPaymentCreditFlow(t *testing.T) {
 		t.Fatalf("balance after low-amount = %s, want 50 (rejected)", acc.PostedBalance)
 	}
 }
+
+// 邀请返佣：被邀请人充值 → 邀请人按 rate 返佣入账。
+func TestAffiliateRebate(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	mock := &mockPayEngine{}
+	engineForTest = func(p string) payment.Engine {
+		if p == "stripe" {
+			return mock
+		}
+		return nil
+	}
+	defer func() { engineForTest = nil }()
+	// 开启返佣 5%
+	db.Exec("INSERT INTO ext_settings (name, value) VALUES ('affiliate_rate', '0.05')")
+
+	// 邀请人注册，拿邀请码
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "inviter@example.com", "password": "longenough1"})
+	_, il := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "inviter@example.com", "password": "longenough1"})
+	inviterToken := il["token"].(string)
+	inviterOrg := uint64(il["org_id"].(float64))
+	_, aff := srv.do(t, "GET", "/api/affiliate", inviterToken, nil)
+	code := aff["aff_code"].(string)
+	if len(code) != 8 {
+		t.Fatalf("aff_code = %q", code)
+	}
+
+	// 被邀请人用邀请码注册
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "invitee@example.com", "password": "longenough1", "inviter_code": code})
+	_, vl := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "invitee@example.com", "password": "longenough1"})
+	inviteeToken := vl["token"].(string)
+
+	// 被邀请人充值 $100
+	_, out := srv.do(t, "POST", "/api/payment/create", inviteeToken, map[string]any{"provider": "stripe", "amount_usd": "100"})
+	orderNo := out["order_no"].(string)
+	mock.orderNo, mock.tradeNo, mock.amount, mock.success = orderNo, "pi", decimal.RequireFromString("100"), true
+	srv.do(t, "POST", "/api/payment/callback/stripe", "", nil)
+
+	// 邀请人余额应有返佣 $5（100 × 0.05）
+	acc := &ledger.Account{}
+	db.Where("org_id = ? AND type = ?", inviterOrg, ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("5")) {
+		t.Fatalf("inviter rebate balance = %s, want 5", acc.PostedBalance)
+	}
+	// affiliate 统计反映
+	_, aff = srv.do(t, "GET", "/api/affiliate", inviterToken, nil)
+	if aff["invited"].(float64) != 1 || aff["earned"] != "5" {
+		t.Fatalf("affiliate stats = %v", aff)
+	}
+}

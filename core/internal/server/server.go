@@ -110,6 +110,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			authed.GET("/payment/methods", s.getPaymentMethods)
 			authed.POST("/payment/create", s.createTopup)
 			authed.GET("/payment/orders", s.listTopups)
+			authed.GET("/affiliate", s.getAffiliate)
 			authed.GET("/orgs", s.listOrgs)
 			authed.POST("/orgs", s.createOrg)
 			authed.POST("/auth/switch", s.switchOrg)

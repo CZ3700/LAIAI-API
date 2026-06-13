@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuth } from '@/stores/auth'
 import { api, errorMessage } from '@/lib/api'
 import ThemeLocale from '@/components/ThemeLocale.vue'
@@ -9,6 +9,8 @@ import ThemeLocale from '@/components/ThemeLocale.vue'
 const { t } = useI18n()
 const auth = useAuth()
 const router = useRouter()
+const route = useRoute()
+const inviterCode = String(route.query.ref ?? '')
 
 const email = ref('')
 const password = ref('')
@@ -51,7 +53,7 @@ async function submit() {
   busy.value = true
   error.value = ''
   try {
-    await auth.register(email.value, password.value, needVerify.value ? code.value : undefined)
+    await auth.register(email.value, password.value, needVerify.value ? code.value : undefined, inviterCode || undefined)
     await router.replace('/app')
   } catch (e) {
     error.value = errorMessage(e, t('common.error'))

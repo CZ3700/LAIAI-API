@@ -3,6 +3,8 @@
 package identity
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -42,13 +44,15 @@ type User struct {
 func (User) TableName() string { return "users" }
 
 type Organization struct {
-	ID         uint64 `gorm:"primaryKey"`
-	Slug       string `gorm:"column:slug"`
-	Name       string `gorm:"column:name"`
-	Kind       int8   `gorm:"column:kind"`
-	WhiteLabel int8   `gorm:"column:white_label"`
-	Group      string `gorm:"column:group_name"` // 计费分组（0011，差异化定价）
-	Status     int8   `gorm:"column:status"`
+	ID           uint64  `gorm:"primaryKey"`
+	Slug         string  `gorm:"column:slug"`
+	Name         string  `gorm:"column:name"`
+	Kind         int8    `gorm:"column:kind"`
+	WhiteLabel   int8    `gorm:"column:white_label"`
+	Group        string  `gorm:"column:group_name"`     // 计费分组（0011，差异化定价）
+	AffCode      *string `gorm:"column:aff_code"`       // 邀请码（0016，NULL=未生成）
+	InviterOrgID uint64  `gorm:"column:inviter_org_id"` // 邀请来源组织（0016）
+	Status       int8    `gorm:"column:status"`
 }
 
 func (Organization) TableName() string { return "organizations" }
@@ -66,6 +70,14 @@ type RegisterInput struct {
 	Email       string
 	Password    string
 	DisplayName string
+	InviterCode string // 邀请码（0016，可选）
+}
+
+// genAffCode：8 hex 邀请码（crypto/rand）。碰撞概率可忽略，UNIQUE 兜底。
+func genAffCode() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // Register 创建用户 + 隐式个人 org + owner 成员关系。
@@ -99,12 +111,23 @@ func Register(tx *gorm.DB, in RegisterInput) (*User, *Organization, error) {
 		return nil, nil, err
 	}
 
+	// 邀请来源（0016）：邀请码 → 邀请组织 id（无效码静默忽略，不阻断注册）
+	var inviterOrgID uint64
+	if code := strings.TrimSpace(in.InviterCode); code != "" {
+		var inviter Organization
+		if tx.Where("aff_code = ?", code).First(&inviter).Error == nil {
+			inviterOrgID = inviter.ID
+		}
+	}
+	affCode := genAffCode()
 	org := &Organization{
-		Slug:   fmt.Sprintf("u-%d", u.ID), // 用户 ID 派生，天然唯一
-		Name:   name,
-		Kind:   OrgKindPersonal,
-		Group:  "default", // 默认计费分组（0011）；显式设避免 GORM 零值覆盖 DB 默认
-		Status: StatusActive,
+		Slug:         fmt.Sprintf("u-%d", u.ID), // 用户 ID 派生，天然唯一
+		Name:         name,
+		Kind:         OrgKindPersonal,
+		Group:        "default", // 默认计费分组（0011）；显式设避免 GORM 零值覆盖 DB 默认
+		AffCode:      &affCode,
+		InviterOrgID: inviterOrgID,
+		Status:       StatusActive,
 	}
 	if err := tx.Create(org).Error; err != nil {
 		return nil, nil, err

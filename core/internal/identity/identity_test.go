@@ -18,7 +18,7 @@ CREATE TABLE organizations (
     name TEXT NOT NULL,
     kind INTEGER NOT NULL DEFAULT 0,
     white_label INTEGER NOT NULL DEFAULT 0,
-    group_name TEXT NOT NULL DEFAULT 'default',
+    group_name TEXT NOT NULL DEFAULT 'default', aff_code TEXT, inviter_org_id INTEGER NOT NULL DEFAULT 0,
     status INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
