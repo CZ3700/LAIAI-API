@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminApi, adminToken, ApiError, copyText, errorMessage, uuid } from '@/lib/api'
+import Sparkline from '@/components/Sparkline.vue'
 
 interface Provider {
   name: string
@@ -108,7 +109,42 @@ function showError(e: unknown) {
 const { t, d } = useI18n()
 
 // —— tabs ——
-const tab = ref<'overview' | 'channels' | 'payments' | 'prices' | 'groups' | 'credits' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
+const tab = ref<'overview' | 'analytics' | 'channels' | 'payments' | 'prices' | 'groups' | 'credits' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
+
+// —— 运营分析（资金 / 用户 / 质量 颗粒度） ——
+interface Analytics {
+  days: number
+  finance: {
+    cash_in: string; consumption: string; float: string
+    topup_paid: number; topup_pending: number; topup_failed: number; topup_conversion: number
+    by_provider: { provider: string; paid_count: number; amount: string }[]
+  }
+  users: { total_users: number; new_users: number; total_orgs: number; active_orgs: number; arpu: string }
+  quality: {
+    avg_duration_ms: number; avg_frt_ms: number
+    errors: { status: string; n: number }[]
+    by_provider: { provider: string; calls: number; cost: string }[]
+  }
+  top_orgs: { org_id: number; name: string; calls: number; cost: string }[]
+  series: { day: string; calls: number; cost: string; cash_in: string }[]
+}
+const analytics = ref<Analytics | null>(null)
+const analyticsDays = ref(14)
+async function loadAnalytics() {
+  analytics.value = await adminApi<Analytics>('GET', `/api/admin/analytics?days=${analyticsDays.value}`)
+}
+// 序列抽取成 number[]，喂给 Sparkline
+const cashSeries = computed(() => (analytics.value?.series ?? []).map((p) => Number(p.cash_in)))
+const costSeries = computed(() => (analytics.value?.series ?? []).map((p) => Number(p.cost)))
+const callsSeries = computed(() => (analytics.value?.series ?? []).map((p) => p.calls))
+// 错误率：非 success 占比
+const errorRate = computed(() => {
+  const errs = analytics.value?.quality.errors ?? []
+  const total = errs.reduce((s, e) => s + e.n, 0)
+  if (total === 0) return 0
+  const ok = errs.find((e) => e.status === 'success')?.n ?? 0
+  return (total - ok) / total
+})
 
 // —— 支付渠道总览（脱敏状态 + 路由预览） ——
 interface PayChannel { configured: boolean; secret?: string; webhook?: boolean; pid?: string; key?: string; api_url?: string }
@@ -166,6 +202,7 @@ async function loadAudit() {
 // 切到这些 tab 时懒加载
 watch(tab, (v) => {
   if (v === 'settings' && Object.keys(settings.value).length === 0) void loadSettings().catch(showError)
+  if (v === 'analytics' && !analytics.value) void loadAnalytics().catch(showError)
   if (v === 'payments' && !payConfig.value) void loadPayConfig().catch(showError)
   if (v === 'users' && users.value.length === 0) void loadUsers().catch(showError)
   if (v === 'audit' && audit.value.length === 0) void loadAudit().catch(showError)
@@ -522,7 +559,7 @@ onMounted(() => {
       <div class="flex items-center justify-between">
         <div class="flex gap-1" role="tablist">
           <button
-            v-for="tb in ['overview', 'channels', 'payments', 'prices', 'groups', 'credits', 'orgs', 'users', 'logs', 'settings', 'audit'] as const"
+            v-for="tb in ['overview', 'analytics', 'channels', 'payments', 'prices', 'groups', 'credits', 'orgs', 'users', 'logs', 'settings', 'audit'] as const"
             :key="tb"
             type="button"
             role="tab"
@@ -612,6 +649,131 @@ onMounted(() => {
             </div>
           </div>
         </div>
+      </template>
+
+      <!-- 运营分析：资金 / 用户 / 质量 颗粒度 -->
+      <template v-if="tab === 'analytics'">
+        <div v-if="analytics" class="space-y-6">
+          <div class="flex items-center justify-between">
+            <p class="text-sm text-muted">{{ t('admin.anIntro') }}</p>
+            <select v-model.number="analyticsDays" class="input !w-auto !py-1.5 text-sm" @change="loadAnalytics().catch(showError)">
+              <option :value="7">{{ t('admin.anDays', { n: 7 }) }}</option>
+              <option :value="14">{{ t('admin.anDays', { n: 14 }) }}</option>
+              <option :value="30">{{ t('admin.anDays', { n: 30 }) }}</option>
+              <option :value="90">{{ t('admin.anDays', { n: 90 }) }}</option>
+            </select>
+          </div>
+
+          <!-- 资金大卡 -->
+          <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <div class="card p-4">
+              <p class="text-xs text-muted">{{ t('admin.anCashIn') }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono text-ok">${{ Number(analytics.finance.cash_in).toFixed(2) }}</p>
+              <Sparkline :data="cashSeries" :width="140" :height="34" class="mt-2" />
+            </div>
+            <div class="card p-4">
+              <p class="text-xs text-muted">{{ t('admin.anConsumption') }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.finance.consumption).toFixed(4) }}</p>
+              <Sparkline :data="costSeries" :width="140" :height="34" class="mt-2" />
+            </div>
+            <div class="card p-4">
+              <p class="text-xs text-muted">{{ t('admin.anFloat') }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.finance.float).toFixed(2) }}</p>
+              <p class="mt-1 text-xs text-muted">{{ t('admin.anFloatHint') }}</p>
+            </div>
+            <div class="card p-4">
+              <p class="text-xs text-muted">{{ t('admin.anConversion') }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono">{{ (analytics.finance.topup_conversion * 100).toFixed(1) }}%</p>
+              <p class="mt-1 text-xs text-muted">
+                <span class="text-ok">{{ analytics.finance.topup_paid }} {{ t('admin.anPaid') }}</span> ·
+                {{ analytics.finance.topup_pending }} {{ t('admin.anPending') }} ·
+                <span class="text-danger">{{ analytics.finance.topup_failed }} {{ t('admin.anFailed') }}</span>
+              </p>
+            </div>
+          </div>
+
+          <!-- 用户指标 -->
+          <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <div class="card p-4">
+              <p class="text-xs text-muted">{{ t('admin.anUsers') }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono">{{ analytics.users.total_users }}</p>
+              <p class="mt-1 text-xs text-ok">+{{ analytics.users.new_users }} {{ t('admin.anNew') }}</p>
+            </div>
+            <div class="card p-4">
+              <p class="text-xs text-muted">{{ t('admin.anActiveOrgs') }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono">
+                {{ analytics.users.active_orgs }}<span class="text-base text-muted">/{{ analytics.users.total_orgs }}</span>
+              </p>
+              <p class="mt-1 text-xs text-muted">{{ t('admin.anActiveHint') }}</p>
+            </div>
+            <div class="card p-4">
+              <p class="text-xs text-muted">{{ t('admin.anArpu') }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.users.arpu).toFixed(4) }}</p>
+              <p class="mt-1 text-xs text-muted">{{ t('admin.anArpuHint') }}</p>
+            </div>
+            <div class="card p-4">
+              <p class="text-xs text-muted">{{ t('admin.anErrorRate') }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono" :class="errorRate > 0.05 ? 'text-danger' : ''">{{ (errorRate * 100).toFixed(2) }}%</p>
+              <p class="mt-1 text-xs text-muted">
+                {{ t('admin.anLatency') }} {{ Math.round(analytics.quality.avg_duration_ms) }}ms · FRT {{ Math.round(analytics.quality.avg_frt_ms) }}ms
+              </p>
+            </div>
+          </div>
+
+          <div class="grid gap-4 lg:grid-cols-2">
+            <!-- Top 消费组织 -->
+            <div class="card p-5">
+              <h2 class="mb-4 font-semibold">{{ t('admin.anTopOrgs') }}</h2>
+              <div v-if="analytics.top_orgs.length === 0" class="text-sm text-muted">{{ t('common.empty') }}</div>
+              <table v-else class="table w-full text-sm">
+                <thead>
+                  <tr><th class="text-left">{{ t('admin.anOrg') }}</th><th class="text-right">{{ t('admin.ovCalls') }}</th><th class="text-right">{{ t('admin.anSpend') }}</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="o in analytics.top_orgs" :key="o.org_id">
+                    <td class="truncate">{{ o.name || `#${o.org_id}` }}</td>
+                    <td class="text-right font-mono text-muted">{{ o.calls }}</td>
+                    <td class="text-right font-mono">${{ Number(o.cost).toFixed(4) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- 厂商分布 + 充值渠道 -->
+            <div class="space-y-4">
+              <div class="card p-5">
+                <h2 class="mb-3 font-semibold">{{ t('admin.anByProvider') }}</h2>
+                <div v-if="analytics.quality.by_provider.length === 0" class="text-sm text-muted">{{ t('common.empty') }}</div>
+                <div v-else class="space-y-2">
+                  <div v-for="p in analytics.quality.by_provider" :key="p.provider" class="flex items-center justify-between text-sm">
+                    <span class="font-mono">{{ p.provider || '—' }}</span>
+                    <span class="text-muted">{{ p.calls }} · ${{ Number(p.cost).toFixed(4) }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="card p-5">
+                <h2 class="mb-3 font-semibold">{{ t('admin.anCashByProvider') }}</h2>
+                <div v-if="analytics.finance.by_provider.length === 0" class="text-sm text-muted">{{ t('common.empty') }}</div>
+                <div v-else class="space-y-2">
+                  <div v-for="p in analytics.finance.by_provider" :key="p.provider" class="flex items-center justify-between text-sm">
+                    <span class="font-mono">{{ p.provider }}</span>
+                    <span class="text-muted">{{ p.paid_count }} · <span class="text-ok">${{ Number(p.amount).toFixed(2) }}</span></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 调用量日趋势 -->
+          <div class="card p-5">
+            <div class="mb-3 flex items-baseline justify-between">
+              <h2 class="font-semibold">{{ t('admin.anCallTrend') }}</h2>
+              <span class="text-xs text-muted">{{ t('admin.ovLastDays', { days: analytics.days }) }}</span>
+            </div>
+            <Sparkline :data="callsSeries" :width="640" :height="48" class="w-full" />
+          </div>
+        </div>
+        <p v-else class="text-sm text-muted">{{ t('common.loading') }}</p>
       </template>
 
       <!-- 渠道 -->

@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/invocation"
@@ -123,10 +124,12 @@ func (s *Server) getUsageSummary(c *gin.Context) {
 }
 
 // getUsagePerf：GET /api/usage/perf —— 当前 org 实时性能（近 60 秒 RPM/TPM）。
-// 仪表盘性能指标卡用。created_at 是毫秒时间戳（autoCreateTime:milli）。
+// 仪表盘性能指标卡用。invocations.created_at 是 DATETIME(3)（autoCreateTime:milli
+// 只设精度，列仍是 datetime），必须用时间串比较——不能用 epoch 整数（datetime 对
+// int 比较会退化成字符串比较，等于统计全表）。MySQL 与 SQLite 同义。
 func (s *Server) getUsagePerf(c *gin.Context) {
 	claims := mustClaims(c)
-	sinceMs := s.now().Add(-60 * 1e9).UnixMilli() // 近 60 秒
+	since := s.now().Add(-60 * time.Second).UTC().Format("2006-01-02 15:04:05") // 近 60 秒
 	var row struct {
 		Calls  int64 `json:"rpm"`
 		Tokens int64 `json:"tpm"`
@@ -135,6 +138,6 @@ func (s *Server) getUsagePerf(c *gin.Context) {
 		SELECT COUNT(*) AS calls,
 		       COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
 		FROM invocations WHERE org_id = ? AND created_at >= ?`,
-		claims.OrgID, sinceMs).Scan(&row)
+		claims.OrgID, since).Scan(&row)
 	c.JSON(http.StatusOK, gin.H{"rpm": row.Calls, "tpm": row.Tokens})
 }
