@@ -204,6 +204,15 @@ const audit = ref<AuditRow[]>([])
 async function loadAudit() {
   audit.value = (await adminApi<{ items: AuditRow[] }>('GET', '/api/admin/audit-logs')).items
 }
+// 动作码本身是英文（credit_grant 等），下划线转空格即可读；不为每个码做 9 语言键
+function auditActionLabel(a: string): string {
+  return a.replace(/_/g, ' ')
+}
+// 资金/封禁/安全类动作高亮，便于审计时一眼扫到敏感操作
+const AUDIT_SENSITIVE = new Set(['credit_grant', 'user_ban', 'user_unban', 'settings_update', '2fa_disable', 'channel_disable', 'topup_paid'])
+function auditSensitive(a: string): boolean {
+  return AUDIT_SENSITIVE.has(a)
+}
 
 // 切到这些 tab 时懒加载
 watch(tab, (v) => {
@@ -1568,6 +1577,15 @@ onMounted(() => {
 
       <!-- 审计日志 -->
       <template v-if="tab === 'audit'">
+        <div class="card mb-4 flex items-start gap-3 p-4">
+          <svg class="mt-0.5 h-5 w-5 shrink-0 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 12.75 11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 0 1-1.043 3.296 3.745 3.745 0 0 1-3.296 1.043A3.745 3.745 0 0 1 12 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 0 1-3.296-1.043 3.745 3.745 0 0 1-1.043-3.296A3.745 3.745 0 0 1 3 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 0 1 1.043-3.296 3.746 3.746 0 0 1 3.296-1.043A3.746 3.746 0 0 1 12 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 0 1 3.296 1.043 3.746 3.746 0 0 1 1.043 3.296A3.745 3.745 0 0 1 21 12Z" />
+          </svg>
+          <div>
+            <h2 class="font-semibold">{{ t('admin.auTitle') }}</h2>
+            <p class="mt-0.5 text-xs text-muted">{{ t('admin.auWhat') }}</p>
+          </div>
+        </div>
         <div class="card overflow-x-auto">
           <table class="table w-full text-sm whitespace-nowrap">
             <thead>
@@ -1575,18 +1593,20 @@ onMounted(() => {
                 <th class="px-4 py-3 font-medium">{{ t('usage.time') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.auActor') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.auAction') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.auTarget') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.auDetail') }}</th>
                 <th class="px-4 py-3 font-medium">IP</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="audit.length === 0">
-                <td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+                <td colspan="6" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <tr v-for="a in audit" :key="a.id" class="border-b border-line last:border-0">
                 <td class="px-4 py-2.5 text-muted">{{ d(new Date(a.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
                 <td class="px-4 py-2.5 font-mono text-xs">{{ a.actor }}</td>
-                <td class="px-4 py-2.5"><span class="badge-muted">{{ a.action }}</span></td>
+                <td class="px-4 py-2.5"><span :class="auditSensitive(a.action) ? 'badge-danger' : 'badge-muted'">{{ auditActionLabel(a.action) }}</span></td>
+                <td class="px-4 py-2.5 font-mono text-xs text-muted">{{ a.target || '—' }}</td>
                 <td class="px-4 py-2.5 text-muted">{{ a.detail }}</td>
                 <td class="px-4 py-2.5 font-mono text-xs text-muted">{{ a.ip }}</td>
               </tr>

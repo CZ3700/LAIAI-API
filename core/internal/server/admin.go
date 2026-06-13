@@ -234,6 +234,7 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 		fail(c, http.StatusNotFound, "channel not found")
 		return
 	}
+	s.writeAudit(c, "channel_update", strconv.FormatUint(id, 10), "channel config updated")
 	c.JSON(http.StatusOK, gin.H{"updated": id})
 }
 
@@ -284,6 +285,7 @@ func (s *Server) adminDisableChannel(c *gin.Context) {
 		fail(c, http.StatusNotFound, "channel not found")
 		return
 	}
+	s.writeAudit(c, "channel_disable", strconv.FormatUint(id, 10), "channel disabled")
 	c.JSON(http.StatusOK, gin.H{"disabled": id})
 }
 
@@ -333,6 +335,7 @@ func (s *Server) adminUpsertPrice(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "price upsert failed")
 		return
 	}
+	s.writeAudit(c, "price_upsert", p.Model, "set price in="+req.InputUSDPer1M+" out="+req.OutputUSDPer1M+" /1M USD")
 	c.JSON(http.StatusOK, gin.H{"model": p.Model})
 }
 
@@ -681,6 +684,7 @@ func (s *Server) adminUpsertGroupRatio(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "upsert failed")
 		return
 	}
+	s.writeAudit(c, "group_ratio_set", g.Name, "ratio = "+req.Ratio)
 	c.JSON(http.StatusOK, gin.H{"name": g.Name})
 }
 
@@ -695,6 +699,7 @@ func (s *Server) adminDeleteGroupRatio(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "delete failed")
 		return
 	}
+	s.writeAudit(c, "group_ratio_delete", name, "group ratio deleted")
 	c.JSON(http.StatusOK, gin.H{"deleted": name})
 }
 
@@ -721,6 +726,7 @@ func (s *Server) adminSetOrgGroup(c *gin.Context) {
 		fail(c, http.StatusNotFound, "org not found")
 		return
 	}
+	s.writeAudit(c, "org_group_set", strconv.FormatUint(id, 10), "group → "+req.Group)
 	c.JSON(http.StatusOK, gin.H{"id": id, "group": req.Group})
 }
 
