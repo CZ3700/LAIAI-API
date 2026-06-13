@@ -105,6 +105,12 @@ export default {
     output: 'Output',
     image: 'Imej',
     unitHint: 'Harga input/output ialah USD bagi setiap 1J token; harga imej ialah USD bagi setiap imej. Klik nama model untuk menyalinnya.',
+    consoleHint: 'Layari model yang tersedia dan buka satu dalam playground.',
+    modality: 'Modaliti',
+    modChat: 'Sembang',
+    modImage: 'Imej',
+    modEmbed: 'Embedding',
+    openPlayground: 'Buka dalam playground',
   },  play: {
     title: 'Playground',
     model: 'Model',

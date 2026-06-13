@@ -105,6 +105,12 @@ export default {
     output: '输出',
     image: '图像',
     unitHint: '输入/输出价格为每 100 万 token 的美元价；图像为每张美元价。点击模型名可复制。',
+    consoleHint: '浏览可用模型，并在 Playground 中打开。',
+    modality: '模态',
+    modChat: '对话',
+    modImage: '图像',
+    modEmbed: '向量',
+    openPlayground: '在 Playground 打开',
   },  play: {
     title: '体验场',
     model: '模型',

@@ -105,6 +105,12 @@ export default {
     output: 'Đầu ra',
     image: 'Hình ảnh',
     unitHint: 'Giá đầu vào/đầu ra tính bằng USD trên 1 triệu token; hình ảnh tính bằng USD mỗi ảnh. Nhấp vào tên mô hình để sao chép.',
+    consoleHint: 'Duyệt các mô hình khả dụng và mở một mô hình trong playground.',
+    modality: 'Phương thức',
+    modChat: 'Trò chuyện',
+    modImage: 'Hình ảnh',
+    modEmbed: 'Embedding',
+    openPlayground: 'Mở trong playground',
   },  play: {
     title: 'Thử nghiệm',
     model: 'Mô hình',

@@ -104,6 +104,12 @@ export default {
     output: '輸出',
     image: '圖像',
     unitHint: '輸入/輸出價格為每 100 萬 token 的美元價；圖像為每張美元價。點擊模型名可複製。',
+    consoleHint: '瀏覽可用模型，並在 Playground 中開啟。',
+    modality: '模態',
+    modChat: '對話',
+    modImage: '圖像',
+    modEmbed: '向量',
+    openPlayground: '在 Playground 開啟',
   },  play: {
     title: '體驗場',
     model: '模型',

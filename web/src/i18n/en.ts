@@ -106,6 +106,12 @@ const messages = {
     output: 'Output',
     image: 'Image',
     unitHint: 'Input/output prices are USD per 1M tokens; image prices are USD per image. Click a model name to copy it.',
+    consoleHint: 'Browse available models and open one in the playground.',
+    modality: 'Modality',
+    modChat: 'Chat',
+    modImage: 'Image',
+    modEmbed: 'Embedding',
+    openPlayground: 'Open in playground',
   },  play: {
     title: 'Playground',
     model: 'Model',

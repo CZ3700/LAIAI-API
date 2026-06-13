@@ -105,6 +105,12 @@ export default {
     output: 'Sortie',
     image: 'Image',
     unitHint: "Les prix d'entrée/sortie sont en USD par million de tokens ; les images en USD par image. Cliquez sur un nom de modèle pour le copier.",
+    consoleHint: 'Parcourez les modèles disponibles et ouvrez-en un dans le playground.',
+    modality: 'Modalité',
+    modChat: 'Chat',
+    modImage: 'Image',
+    modEmbed: 'Embedding',
+    openPlayground: 'Ouvrir dans le playground',
   },  play: {
     title: 'Playground',
     model: 'Modèle',

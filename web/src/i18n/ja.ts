@@ -104,6 +104,12 @@ export default {
     output: '出力',
     image: '画像',
     unitHint: '入力/出力価格は 100 万トークンあたりの USD、画像は 1 枚あたりの USD です。モデル名をクリックするとコピーできます。',
+    consoleHint: '利用可能なモデルを閲覧し、プレイグラウンドで開けます。',
+    modality: 'モダリティ',
+    modChat: 'チャット',
+    modImage: '画像',
+    modEmbed: '埋め込み',
+    openPlayground: 'プレイグラウンドで開く',
   },  play: {
     title: 'プレイグラウンド',
     model: 'モデル',
