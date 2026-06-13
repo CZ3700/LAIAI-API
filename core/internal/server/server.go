@@ -113,6 +113,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			authed.GET("/usage", s.getUsage)
 			authed.GET("/usage/summary", s.getUsageSummary)
 			authed.GET("/usage/by-model", s.getUsageByModel)
+			authed.GET("/usage/perf", s.getUsagePerf)
 			authed.GET("/balance", s.getBalance)
 			authed.GET("/payment/methods", s.getPaymentMethods)
 			authed.POST("/payment/create", s.createTopup)
@@ -150,6 +151,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			admin.GET("/audit-logs", s.adminListAuditLogs)
 			admin.GET("/users", s.adminListUsers)
 			admin.POST("/users/:id/manage", s.adminManageUser)
+			admin.GET("/payment-config", s.adminPaymentConfig)
 		}
 	}
 

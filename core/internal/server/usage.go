@@ -121,3 +121,20 @@ func (s *Server) getUsageSummary(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"days": days, "items": rows})
 }
+
+// getUsagePerf：GET /api/usage/perf —— 当前 org 实时性能（近 60 秒 RPM/TPM）。
+// 仪表盘性能指标卡用。created_at 是毫秒时间戳（autoCreateTime:milli）。
+func (s *Server) getUsagePerf(c *gin.Context) {
+	claims := mustClaims(c)
+	sinceMs := s.now().Add(-60 * 1e9).UnixMilli() // 近 60 秒
+	var row struct {
+		Calls  int64 `json:"rpm"`
+		Tokens int64 `json:"tpm"`
+	}
+	s.db.WithContext(c.Request.Context()).Raw(`
+		SELECT COUNT(*) AS calls,
+		       COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
+		FROM invocations WHERE org_id = ? AND created_at >= ?`,
+		claims.OrgID, sinceMs).Scan(&row)
+	c.JSON(http.StatusOK, gin.H{"rpm": row.Calls, "tpm": row.Tokens})
+}

@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/lib/api'
+import { useAuth } from '@/stores/auth'
 import DailyBarChart, { type SummaryDay } from '@/components/DailyBarChart.vue'
+import Sparkline from '@/components/Sparkline.vue'
+
+const auth = useAuth()
+const userName = computed(() => (auth.email || '').split('@')[0] || 'there')
 
 interface UsageRow {
   id: number
@@ -32,7 +37,9 @@ const held = ref('0')
 const summary = ref<SummaryDay[]>([])
 const byModel = ref<ModelStat[]>([])
 const recent = ref<UsageRow[]>([])
+const perf = ref({ rpm: 0, tpm: 0 })
 const summaryDays = 14
+let perfTimer: ReturnType<typeof setInterval> | undefined
 
 const totals = computed(() => {
   let calls = 0
@@ -53,12 +60,51 @@ const todayCalls = computed(() => {
   const key = new Date().toISOString().slice(0, 10)
   return summary.value.find((s) => s.day === key)?.calls ?? 0
 })
+// sparkline 序列：补齐 14 天为零
+const series = computed(() => {
+  const byDay = new Map(summary.value.map((s) => [s.day, s]))
+  const calls: number[] = []
+  const cost: number[] = []
+  const tokens: number[] = []
+  const today = new Date()
+  for (let i = summaryDays - 1; i >= 0; i--) {
+    const dt = new Date(today)
+    dt.setDate(today.getDate() - i)
+    const s = byDay.get(dt.toISOString().slice(0, 10))
+    calls.push(s?.calls ?? 0)
+    cost.push(s ? Number(s.cost_usd) : 0)
+    tokens.push(s ? s.prompt_tokens + s.completion_tokens : 0)
+  }
+  return { calls, cost, tokens }
+})
 const maxModelCalls = computed(() => Math.max(1, ...byModel.value.map((m) => m.calls)))
+const maxModelCost = computed(() => Math.max(0.0001, ...byModel.value.map((m) => Number(m.cost_usd))))
 
 function fmtTokens(x: number): string {
   if (x >= 1_000_000) return (x / 1_000_000).toFixed(2) + 'M'
   if (x >= 1_000) return (x / 1_000).toFixed(1) + 'K'
   return String(x)
+}
+
+// 模型分析多视图
+const modelView = ref<'cost' | 'calls' | 'rank'>('cost')
+const modelViews = [
+  { key: 'cost', label: () => t('dashboard.vCost') },
+  { key: 'calls', label: () => t('dashboard.vCalls') },
+  { key: 'rank', label: () => t('dashboard.vRank') },
+] as const
+// 一组稳定的分类色（与品牌呼应）
+const palette = [
+  '129 140 248', '192 132 252', '56 189 248', '52 211 153', '251 191 36',
+  '248 113 113', '244 114 182', '167 139 250', '34 211 238', '163 230 53',
+]
+
+async function loadPerf() {
+  try {
+    perf.value = await api<{ rpm: number; tpm: number }>('GET', '/api/usage/perf')
+  } catch {
+    // 静默
+  }
 }
 
 onMounted(async () => {
@@ -75,49 +121,117 @@ onMounted(async () => {
   if (sum.status === 'fulfilled') summary.value = sum.value.items.map((s) => ({ ...s, day: s.day.slice(0, 10) }))
   if (bm.status === 'fulfilled') byModel.value = bm.value.items
   if (use.status === 'fulfilled') recent.value = use.value.items
+  void loadPerf()
+  perfTimer = setInterval(loadPerf, 15000) // 15s 刷新实时指标
 })
+onBeforeUnmount(() => clearInterval(perfTimer))
 </script>
 
 <template>
   <div class="space-y-6">
-    <h1 class="text-2xl font-semibold tracking-tight">{{ t('nav.dashboard') }}</h1>
+    <h1 class="text-2xl font-semibold tracking-tight">
+      👋 {{ t('dashboard.greeting') }}, <span class="text-accent">{{ userName }}</span>
+    </h1>
 
-    <!-- 主统计：余额 + 调用 + token + 费用 -->
-    <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
-      <div
-        class="enter card relative overflow-hidden p-5 text-white"
-        style="background: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent-2))); animation-delay: 0ms"
-      >
-        <p class="text-xs opacity-80">{{ t('dashboard.balance') }}</p>
-        <p class="mt-1 text-3xl font-semibold font-mono">${{ balance }}</p>
-        <p v-if="held !== '0'" class="mt-1 text-xs opacity-80">{{ t('dashboard.held') }}: ${{ held }}</p>
-        <router-link to="/app/wallet" class="mt-2 inline-block text-xs underline opacity-90 hover:opacity-100">
-          {{ t('wallet.topup') }} →
-        </router-link>
+    <!-- 主统计：余额 / 调用 / token / 费用，每张带 sparkline -->
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div class="enter card relative overflow-hidden p-5" style="animation-delay: 0ms">
+        <div class="flex items-start justify-between">
+          <div>
+            <p class="text-xs text-muted">{{ t('dashboard.balance') }}</p>
+            <p class="mt-1 text-2xl font-semibold font-mono">${{ balance }}</p>
+          </div>
+          <router-link to="/app/wallet" class="badge-ok cursor-pointer">{{ t('wallet.topup') }}</router-link>
+        </div>
+        <p class="mt-2 text-xs text-muted">{{ t('dashboard.histSpend') }}: ${{ totals.cost.toFixed(2) }}</p>
       </div>
+
       <div class="enter card p-5" style="animation-delay: 70ms">
-        <p class="text-xs text-muted">{{ t('dashboard.todayCalls') }}</p>
-        <p class="mt-1 text-3xl font-semibold font-mono">{{ n(todayCalls) }}</p>
-        <p class="mt-1 text-xs text-muted">{{ t('admin.ovWindowCalls', { n: totals.calls, days: summaryDays }) }}</p>
+        <div class="flex items-start justify-between">
+          <div>
+            <p class="text-xs text-muted">{{ t('dashboard.todayCalls') }}</p>
+            <p class="mt-1 text-2xl font-semibold font-mono">{{ n(todayCalls) }}</p>
+          </div>
+          <Sparkline :data="series.calls" />
+        </div>
+        <p class="mt-2 text-xs text-muted">{{ t('admin.ovWindowCalls', { n: totals.calls, days: summaryDays }) }}</p>
       </div>
+
       <div class="enter card p-5" style="animation-delay: 140ms">
-        <p class="text-xs text-muted">{{ t('dashboard.tokens') }}</p>
-        <p class="mt-1 text-3xl font-semibold font-mono">{{ fmtTokens(totals.inTok + totals.outTok) }}</p>
-        <p class="mt-1 text-xs text-muted">{{ fmtTokens(totals.inTok) }} → / {{ fmtTokens(totals.outTok) }} ←</p>
-      </div>
-      <div class="enter card p-5" style="animation-delay: 210ms">
-        <p class="text-xs text-muted">{{ t('usage.sumCost', { days: summaryDays }) }}</p>
-        <p class="mt-1 text-3xl font-semibold font-mono">${{ totals.cost.toFixed(4) }}</p>
-        <p class="mt-1 text-xs" :class="totals.rate >= 0.95 ? 'text-ok' : 'text-danger'">
+        <div class="flex items-start justify-between">
+          <div>
+            <p class="text-xs text-muted">{{ t('usage.sumCost', { days: summaryDays }) }}</p>
+            <p class="mt-1 text-2xl font-semibold font-mono">${{ totals.cost.toFixed(2) }}</p>
+          </div>
+          <Sparkline :data="series.cost" />
+        </div>
+        <p class="mt-2 text-xs" :class="totals.rate >= 0.95 ? 'text-ok' : 'text-danger'">
           {{ t('dashboard.successRate', { rate: (totals.rate * 100).toFixed(1) }) }}
         </p>
       </div>
+
+      <div class="enter card p-5" style="animation-delay: 210ms">
+        <div class="flex items-start justify-between">
+          <div>
+            <p class="text-xs text-muted">{{ t('dashboard.tokens') }}</p>
+            <p class="mt-1 text-2xl font-semibold font-mono">{{ fmtTokens(totals.inTok + totals.outTok) }}</p>
+          </div>
+          <Sparkline :data="series.tokens" />
+        </div>
+        <div class="mt-2 flex gap-4 text-xs text-muted">
+          <span>RPM <span class="font-mono text-ink">{{ perf.rpm }}</span></span>
+          <span>TPM <span class="font-mono text-ink">{{ fmtTokens(perf.tpm) }}</span></span>
+        </div>
+      </div>
     </div>
 
-    <DailyBarChart :items="summary" :days="summaryDays" />
+    <!-- 模型数据分析：多视图 -->
+    <div class="card p-5">
+      <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <h2 class="font-semibold">{{ t('dashboard.modelAnalysis') }}</h2>
+        <div class="flex gap-1 rounded-lg bg-elev p-1">
+          <button
+            v-for="v in modelViews"
+            :key="v.key"
+            type="button"
+            class="rounded-md px-3 py-1 text-xs transition-colors"
+            :class="modelView === v.key ? 'bg-panel text-ink shadow-sm' : 'text-muted hover:text-ink'"
+            @click="modelView = v.key"
+          >
+            {{ v.label() }}
+          </button>
+        </div>
+      </div>
 
+      <!-- 趋势视图：14 天柱状 -->
+      <DailyBarChart v-if="modelView === 'calls'" :items="summary" :days="summaryDays" />
+
+      <!-- 消耗分布 / 调用排行：水平条 -->
+      <div v-else-if="byModel.length" class="space-y-2.5">
+        <div v-for="(m, i) in byModel" :key="m.model" class="flex items-center gap-3">
+          <span class="h-2.5 w-2.5 shrink-0 rounded-full" :style="{ background: `rgb(${palette[i % palette.length]})` }"></span>
+          <span class="w-40 shrink-0 truncate font-mono text-xs" :title="m.model">{{ m.model }}</span>
+          <div class="h-2 flex-1 overflow-hidden rounded-full bg-line">
+            <div
+              class="h-full rounded-full"
+              :style="{
+                width: modelView === 'cost'
+                  ? `${(Number(m.cost_usd) / maxModelCost) * 100}%`
+                  : `${(m.calls / maxModelCalls) * 100}%`,
+                background: `rgb(${palette[i % palette.length]})`,
+              }"
+            ></div>
+          </div>
+          <span class="w-20 shrink-0 text-right font-mono text-xs text-muted">
+            {{ modelView === 'cost' ? '$' + Number(m.cost_usd).toFixed(4) : n(m.calls) }}
+          </span>
+        </div>
+      </div>
+      <div v-else class="py-10 text-center text-sm text-muted">{{ t('common.empty') }}</div>
+    </div>
+
+    <!-- 模型明细 + 最近调用 -->
     <div class="grid gap-6 lg:grid-cols-2">
-      <!-- 模型分布 -->
       <div class="space-y-3">
         <h2 class="font-semibold">{{ t('dashboard.byModel') }}</h2>
         <div class="card overflow-hidden">
@@ -135,28 +249,16 @@ onMounted(async () => {
                 <td colspan="4" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <tr v-for="m in byModel" :key="m.model">
-                <td class="px-4 py-2.5">
-                  <div class="font-mono text-xs">{{ m.model }}</div>
-                  <div class="mt-1 h-1 rounded-full bg-line">
-                    <div
-                      class="h-full rounded-full"
-                      style="background: linear-gradient(90deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)))"
-                      :style="{ width: `${(m.calls / maxModelCalls) * 100}%` }"
-                    ></div>
-                  </div>
-                </td>
-                <td class="px-4 py-2.5 text-right font-mono align-top">{{ n(m.calls) }}</td>
-                <td class="px-4 py-2.5 text-right font-mono align-top text-muted">
-                  {{ fmtTokens(m.prompt_tokens + m.completion_tokens) }}
-                </td>
-                <td class="px-4 py-2.5 text-right font-mono align-top">${{ Number(m.cost_usd).toFixed(4) }}</td>
+                <td class="px-4 py-2.5 font-mono text-xs">{{ m.model }}</td>
+                <td class="px-4 py-2.5 text-right font-mono">{{ n(m.calls) }}</td>
+                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ fmtTokens(m.prompt_tokens + m.completion_tokens) }}</td>
+                <td class="px-4 py-2.5 text-right font-mono">${{ Number(m.cost_usd).toFixed(4) }}</td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- 最近调用 -->
       <div class="space-y-3">
         <div class="flex items-center justify-between">
           <h2 class="font-semibold">{{ t('dashboard.recent') }}</h2>

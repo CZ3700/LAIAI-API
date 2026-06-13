@@ -108,7 +108,16 @@ function showError(e: unknown) {
 const { t, d } = useI18n()
 
 // —— tabs ——
-const tab = ref<'overview' | 'channels' | 'prices' | 'groups' | 'credits' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
+const tab = ref<'overview' | 'channels' | 'payments' | 'prices' | 'groups' | 'credits' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
+
+// —— 支付渠道总览（脱敏状态 + 路由预览） ——
+interface PayChannel { configured: boolean; secret?: string; webhook?: boolean; pid?: string; key?: string; api_url?: string }
+const payConfig = ref<{ stripe: PayChannel; epay: PayChannel } | null>(null)
+async function loadPayConfig() {
+  payConfig.value = await adminApi<{ stripe: PayChannel; epay: PayChannel }>('GET', '/api/admin/payment-config')
+}
+// 回调地址预览（webhook 注册到网关后台用）：以当前站点为基准
+const callbackBase = `${window.location.origin}/api/payment/callback`
 
 // —— 运营设置 ——
 const settings = ref<Record<string, string>>({})
@@ -157,6 +166,7 @@ async function loadAudit() {
 // 切到这些 tab 时懒加载
 watch(tab, (v) => {
   if (v === 'settings' && Object.keys(settings.value).length === 0) void loadSettings().catch(showError)
+  if (v === 'payments' && !payConfig.value) void loadPayConfig().catch(showError)
   if (v === 'users' && users.value.length === 0) void loadUsers().catch(showError)
   if (v === 'audit' && audit.value.length === 0) void loadAudit().catch(showError)
 })
@@ -512,7 +522,7 @@ onMounted(() => {
       <div class="flex items-center justify-between">
         <div class="flex gap-1" role="tablist">
           <button
-            v-for="tb in ['overview', 'channels', 'prices', 'groups', 'credits', 'orgs', 'users', 'logs', 'settings', 'audit'] as const"
+            v-for="tb in ['overview', 'channels', 'payments', 'prices', 'groups', 'credits', 'orgs', 'users', 'logs', 'settings', 'audit'] as const"
             :key="tb"
             type="button"
             role="tab"
@@ -832,6 +842,126 @@ onMounted(() => {
             </div>
           </form>
         </div>
+      </template>
+
+      <!-- 支付渠道总览：渠道卡片 + 回调地址 + 路由预览 -->
+      <template v-if="tab === 'payments'">
+        <div v-if="payConfig" class="space-y-6">
+          <!-- 渠道卡片 -->
+          <div class="grid gap-4 lg:grid-cols-2">
+            <!-- Stripe -->
+            <div class="card p-5">
+              <div class="flex items-start justify-between">
+                <div class="flex items-center gap-2.5">
+                  <span class="grid h-9 w-9 place-items-center rounded-lg text-sm font-bold text-white" style="background:#635bff">S</span>
+                  <div>
+                    <p class="font-semibold leading-tight">Stripe</p>
+                    <p class="text-xs text-muted">{{ t('admin.payStripeDesc') }}</p>
+                  </div>
+                </div>
+                <span class="rounded-full px-2.5 py-0.5 text-xs font-medium"
+                  :class="payConfig.stripe.configured ? 'bg-ok/15 text-ok' : 'bg-muted/15 text-muted'">
+                  {{ payConfig.stripe.configured ? t('admin.payActive') : t('admin.payUnset') }}
+                </span>
+              </div>
+              <dl class="mt-4 space-y-2 text-sm">
+                <div class="flex justify-between gap-3">
+                  <dt class="text-muted">Secret Key</dt>
+                  <dd class="font-mono text-xs">{{ payConfig.stripe.secret || '—' }}</dd>
+                </div>
+                <div class="flex justify-between gap-3">
+                  <dt class="text-muted">Webhook Secret</dt>
+                  <dd>{{ payConfig.stripe.webhook ? '✓' : '—' }}</dd>
+                </div>
+                <div class="flex flex-col gap-1">
+                  <dt class="text-muted">{{ t('admin.payCallback') }}</dt>
+                  <dd class="break-all rounded bg-elev px-2 py-1 font-mono text-[11px]">{{ callbackBase }}/stripe</dd>
+                </div>
+              </dl>
+              <div class="mt-4 flex flex-wrap gap-1.5">
+                <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">USD</span>
+                <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">💳 Card</span>
+              </div>
+            </div>
+            <!-- EPay -->
+            <div class="card p-5">
+              <div class="flex items-start justify-between">
+                <div class="flex items-center gap-2.5">
+                  <span class="grid h-9 w-9 place-items-center rounded-lg text-sm font-bold text-white" style="background:#06f">E</span>
+                  <div>
+                    <p class="font-semibold leading-tight">EPay</p>
+                    <p class="text-xs text-muted">{{ t('admin.payEpayDesc') }}</p>
+                  </div>
+                </div>
+                <span class="rounded-full px-2.5 py-0.5 text-xs font-medium"
+                  :class="payConfig.epay.configured ? 'bg-ok/15 text-ok' : 'bg-muted/15 text-muted'">
+                  {{ payConfig.epay.configured ? t('admin.payActive') : t('admin.payUnset') }}
+                </span>
+              </div>
+              <dl class="mt-4 space-y-2 text-sm">
+                <div class="flex justify-between gap-3">
+                  <dt class="text-muted">PID</dt>
+                  <dd class="font-mono text-xs">{{ payConfig.epay.pid || '—' }}</dd>
+                </div>
+                <div class="flex justify-between gap-3">
+                  <dt class="text-muted">Key</dt>
+                  <dd class="font-mono text-xs">{{ payConfig.epay.key || '—' }}</dd>
+                </div>
+                <div class="flex justify-between gap-3">
+                  <dt class="text-muted">API URL</dt>
+                  <dd class="break-all font-mono text-[11px]">{{ payConfig.epay.api_url || '—' }}</dd>
+                </div>
+                <div class="flex flex-col gap-1">
+                  <dt class="text-muted">{{ t('admin.payCallback') }}</dt>
+                  <dd class="break-all rounded bg-elev px-2 py-1 font-mono text-[11px]">{{ callbackBase }}/epay</dd>
+                </div>
+              </dl>
+              <div class="mt-4 flex flex-wrap gap-1.5">
+                <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">CNY</span>
+                <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">支付宝</span>
+                <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">微信</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 支付路由预览 -->
+          <div class="card p-5">
+            <h3 class="mb-1 font-semibold">{{ t('admin.payRouteTitle') }}</h3>
+            <p class="mb-4 text-xs text-muted">{{ t('admin.payRouteHint') }}</p>
+            <table class="table w-full text-sm">
+              <thead>
+                <tr>
+                  <th class="text-left">{{ t('admin.payMethod') }}</th>
+                  <th class="text-left">{{ t('admin.payEngine') }}</th>
+                  <th class="text-left">{{ t('admin.payCurrency') }}</th>
+                  <th class="text-left">{{ t('admin.payStatus') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in [
+                  { m: '💳 ' + t('admin.payCard'), e: 'Stripe', c: 'USD', on: payConfig.stripe.configured },
+                  { m: '🟢 ' + t('admin.payAlipay'), e: 'EPay', c: 'CNY', on: payConfig.epay.configured },
+                  { m: '💬 ' + t('admin.payWechat'), e: 'EPay', c: 'CNY', on: payConfig.epay.configured },
+                ]" :key="r.m">
+                  <td>{{ r.m }}</td>
+                  <td class="text-muted">{{ r.e }}</td>
+                  <td class="font-mono text-xs text-muted">{{ r.c }}</td>
+                  <td>
+                    <span class="inline-flex items-center gap-1 text-xs" :class="r.on ? 'text-ok' : 'text-muted'">
+                      <span class="h-1.5 w-1.5 rounded-full" :class="r.on ? 'bg-ok' : 'bg-muted'"></span>
+                      {{ r.on ? t('admin.payActive') : t('admin.payUnset') }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="text-xs text-muted">{{ t('admin.payConfigHint') }}
+            <button type="button" class="text-accent underline-offset-2 hover:underline" @click="tab = 'settings'">{{ t('admin.settings') }}</button>
+          </p>
+        </div>
+        <p v-else class="text-sm text-muted">{{ t('common.loading') }}</p>
       </template>
 
       <!-- 定价 -->

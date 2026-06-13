@@ -328,3 +328,29 @@ func init() {
 		settingDefaults[k] = ""
 	}
 }
+
+// adminPaymentConfig：GET /api/admin/payment-config —— 支付渠道状态（脱敏，运营总览）。
+func (s *Server) adminPaymentConfig(c *gin.Context) {
+	mask := func(v string) string {
+		if v == "" {
+			return ""
+		}
+		if len(v) <= 8 {
+			return "****"
+		}
+		return v[:4] + "****" + v[len(v)-4:]
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"stripe": gin.H{
+			"configured": s.getSetting("stripe_secret_key") != "",
+			"secret":     mask(s.getSetting("stripe_secret_key")),
+			"webhook":    s.getSetting("stripe_webhook_secret") != "",
+		},
+		"epay": gin.H{
+			"configured": s.getSetting("epay_pid") != "",
+			"pid":        s.getSetting("epay_pid"),
+			"key":        mask(s.getSetting("epay_key")),
+			"api_url":    s.getSetting("epay_api_url"),
+		},
+	})
+}
