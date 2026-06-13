@@ -271,6 +271,8 @@ export default {
     probeModels: '{n} model boleh panggil (klik untuk salin)',
     probeUse: 'Guna tetapan ini',
     probeTried: 'Varian dicuba',    prModel: 'Model',
+    prCached: 'Cache $/1M',
+    prCachedHint: 'Harga input cache (biasanya ~0.1x input). Biar kosong untuk caj token cache pada harga input penuh.',
     prInput: 'Input $/1M',
     prOutput: 'Output $/1M',
     prImage: 'Imej $/satu',

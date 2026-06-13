@@ -272,6 +272,8 @@ export default {
     probeModels: '{n} 個可呼叫模型（點擊複製）',
     probeUse: '使用這些設定',
     probeTried: '嘗試過的格式',    prModel: '模型',
+    prCached: '快取 $/1M',
+    prCachedHint: '快取命中輸入價（通常約 0.1× 輸入價）。留空則快取 token 按輸入全價計費。',
     prInput: '輸入 $/1M',
     prOutput: '輸出 $/1M',
     prImage: '圖像 $/張',

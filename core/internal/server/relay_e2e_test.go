@@ -82,6 +82,7 @@ CREATE TABLE model_prices (
     model TEXT NOT NULL UNIQUE,
     input_usd_per_1m NUMERIC NOT NULL, output_usd_per_1m NUMERIC NOT NULL,
     image_usd NUMERIC NOT NULL DEFAULT 0,
+    cached_input_usd_per_1m NUMERIC NOT NULL DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE invocations (
@@ -1074,5 +1075,40 @@ func TestAdminProbeChannel(t *testing.T) {
 	})
 	if out["ok"] != false {
 		t.Fatalf("wrong key should fail: %v", out)
+	}
+}
+
+// 端到端缓存计费：上游返回 cached_tokens，命中部分按缓存价折扣结算。
+func TestRelayCachedBilling(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// 1000 prompt(800 cached) + 500 completion
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":1000,"completion_tokens":500,"prompt_tokens_details":{"cached_tokens":800}}}`)
+	}))
+	defer up.Close()
+	// 渠道
+	w, out := srv.doAdmin(t, "POST", "/api/admin/channels", map[string]any{
+		"name": "c", "provider": "openai", "base_url": up.URL, "api_key": "sk-x", "models": []string{"m"},
+	})
+	if w.Code != 201 {
+		t.Fatalf("channel = %d %v", w.Code, out)
+	}
+	// 定价：input $10/1M, output $30/1M, cached $1/1M
+	srv.doAdmin(t, "POST", "/api/admin/model-prices", map[string]any{
+		"model": "m", "input_usd_per_1m": "10", "output_usd_per_1m": "30", "cached_input_usd_per_1m": "1",
+	})
+	apiKey, orgID := seedUserWithCredit(t, srv, "cache@example.com", "10")
+
+	w, _ = srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "m", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 200 {
+		t.Fatalf("relay = %d", w.Code)
+	}
+	rec := waitInvocation(t, db, "org_id = ?", uint64(orgID))
+	// 期望 cost = 200×10/1M + 800×1/1M + 500×30/1M = 0.0178（而非全价 0.025）
+	if !rec.CostUSD.Equal(decimal.RequireFromString("0.0178")) {
+		t.Fatalf("cost = %s, want 0.0178 (cached discount applied)", rec.CostUSD)
 	}
 }

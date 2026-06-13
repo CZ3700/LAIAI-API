@@ -78,6 +78,19 @@ func (f *firstByteReader) Read(p []byte) (int, error) {
 type usage struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
+	// 缓存命中输入（OpenAI 兼容：prompt_tokens 的子集，按缓存价折扣计费）
+	PromptTokensDetails struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// Cached 返回命中提示缓存的输入 token 数（钳到 PromptTokens 内）。
+func (u usage) Cached() int64 {
+	c := u.PromptTokensDetails.CachedTokens
+	if c > u.PromptTokens {
+		return u.PromptTokens
+	}
+	return c
 }
 
 // HandleChatCompletions：POST /v1/chat/completions
@@ -153,7 +166,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 
 	// 4. Hold：按 tiktoken 估算输入 + max_tokens 上限 冻结（整个重试周期只 hold 一次）
 	estIn := CountChatTokens(req, len(body))
-	holdAmount := price.Cost(estIn, maxTokens)
+	holdAmount := price.Cost(estIn, 0, maxTokens)
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
 		acc, err := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
@@ -303,8 +316,8 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		r.Log.Warn("usage missing from upstream, estimated", "channel", ch.ID, "model", model)
 	}
 
-	actual := price.Cost(u.PromptTokens, u.CompletionTokens)
-	reason := fmt.Sprintf("model=%s in=%d out=%d", model, u.PromptTokens, u.CompletionTokens)
+	actual := price.Cost(u.PromptTokens, u.Cached(), u.CompletionTokens)
+	reason := fmt.Sprintf("model=%s in=%d cached=%d out=%d", model, u.PromptTokens, u.Cached(), u.CompletionTokens)
 	var overage = decimal.Zero
 	if err := r.DB.Transaction(func(tx *gorm.DB) error {
 		var err error

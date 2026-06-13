@@ -271,6 +271,8 @@ export default {
     probeModels: '{n} mô hình gọi được (nhấp để sao chép)',
     probeUse: 'Dùng cấu hình này',
     probeTried: 'Các định dạng đã thử',    prModel: 'Mô hình',
+    prCached: 'Cache $/1M',
+    prCachedHint: 'Giá đầu vào cache (thường ~0,1x đầu vào). Để trống thì token cache tính giá đầu vào đầy đủ.',
     prInput: 'Đầu vào $/1M',
     prOutput: 'Đầu ra $/1M',
     prImage: 'Ảnh $/tấm',

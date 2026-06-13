@@ -271,6 +271,8 @@ export default {
     probeModels: '{n} modèles appelables (cliquer pour copier)',
     probeUse: 'Utiliser ces paramètres',
     probeTried: 'Variantes essayées',    prModel: 'Modèle',
+    prCached: 'Cache $/1M',
+    prCachedHint: "Prix d'entrée en cache (typiquement ~0,1x entrée). Laisser vide pour facturer au prix plein.",
     prInput: 'Entrée $/1M',
     prOutput: 'Sortie $/1M',
     prImage: 'Image $/unité',

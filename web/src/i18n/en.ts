@@ -272,6 +272,8 @@ const messages = {
     probeModels: '{n} callable models (click to copy)',
     probeUse: 'Use these settings',
     probeTried: 'Variants tried',    prModel: 'Model',
+    prCached: 'Cached $/1M',
+    prCachedHint: 'Cached-input price (typically ~0.1x input). Leave blank to charge cached tokens at full input price.',
     prInput: 'Input $/1M',
     prOutput: 'Output $/1M',
     prImage: 'Image $/each',

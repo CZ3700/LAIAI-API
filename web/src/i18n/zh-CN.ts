@@ -271,6 +271,8 @@ export default {
     probeModels: '{n} 个可调模型（点击复制）',
     probeUse: '使用这些配置',
     probeTried: '尝试过的格式',    prModel: '模型',
+    prCached: '缓存 $/1M',
+    prCachedHint: '缓存命中输入价（通常约 0.1× 输入价）。留空则缓存 token 按输入全价计费。',
     prInput: '输入 $/1M',
     prOutput: '输出 $/1M',
     prImage: '图像 $/张',

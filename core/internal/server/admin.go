@@ -278,7 +278,8 @@ type priceReq struct {
 	Model          string `json:"model" binding:"required"`
 	InputUSDPer1M  string `json:"input_usd_per_1m" binding:"required"`
 	OutputUSDPer1M string `json:"output_usd_per_1m" binding:"required"`
-	ImageUSD       string `json:"image_usd"` // 每张图 USD；图像模型必填，其他模型省略
+	ImageUSD       string `json:"image_usd"`              // 每张图 USD；图像模型必填，其他模型省略
+	CachedInputUSDPer1M string `json:"cached_input_usd_per_1m"` // 缓存命中输入价（0010，省略=按 input 全价）
 }
 
 // adminUpsertPrice：模型定价 upsert（uk_model_prices_model 兜底）。
@@ -302,10 +303,18 @@ func (s *Server) adminUpsertPrice(c *gin.Context) {
 			return
 		}
 	}
-	p := &relay.ModelPrice{Model: req.Model, InputUSDPer1M: in, OutputUSDPer1M: out, ImageUSD: img}
+	cachedIn := decimal.Zero
+	if req.CachedInputUSDPer1M != "" {
+		var err error
+		if cachedIn, err = decimal.NewFromString(req.CachedInputUSDPer1M); err != nil || cachedIn.IsNegative() {
+			fail(c, http.StatusBadRequest, "cached_input_usd_per_1m must be a non-negative decimal string")
+			return
+		}
+	}
+	p := &relay.ModelPrice{Model: req.Model, InputUSDPer1M: in, OutputUSDPer1M: out, ImageUSD: img, CachedInputUSDPer1M: cachedIn}
 	err := s.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "model"}},
-		DoUpdates: clause.AssignmentColumns([]string{"input_usd_per_1m", "output_usd_per_1m", "image_usd"}),
+		DoUpdates: clause.AssignmentColumns([]string{"input_usd_per_1m", "output_usd_per_1m", "image_usd", "cached_input_usd_per_1m"}),
 	}).Create(p).Error
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "price upsert failed")

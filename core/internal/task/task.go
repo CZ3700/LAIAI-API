@@ -121,7 +121,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 	// 同事务内重新计数 → hold + 插入 queued 任务行（即"占住槽位"，下一个 Submit 数得到它）。
 	// 消灭 count-then-act 竞态：N 个并发不会全部过闸。
 	estTokens := ad.EstimateOutputTokens(in.Model, in.Content)
-	holdAmount := price.Cost(0, estTokens)
+	holdAmount := price.Cost(0, 0, estTokens)
 	t := &Task{
 		TaskID: "task_" + randHex(12),
 		OrgID:  in.OrgID, UserID: in.UserID, APIKeyID: in.APIKeyID,
@@ -279,10 +279,10 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 	actual := decimal.Zero
 	price := &relay.ModelPrice{OutputUSDPer1M: t.PriceOutUSDPer1M} // 计费快照，不读实时价
 	if result.CompletionTokens > 0 {
-		actual = price.Cost(0, result.CompletionTokens)
+		actual = price.Cost(0, 0, result.CompletionTokens)
 	} else {
 		// 上游没给 usage：按预估收（保守；上游 usage 缺失会在日志可见）
-		actual = price.Cost(0, t.EstTokens)
+		actual = price.Cost(0, 0, t.EstTokens)
 		s.Log.Warn("task usage missing from upstream, charged by estimate", "task", t.TaskID)
 	}
 	err := s.DB.Transaction(func(tx *gorm.DB) error {

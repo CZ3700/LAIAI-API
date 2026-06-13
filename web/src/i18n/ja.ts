@@ -270,6 +270,8 @@ export default {
     probeModels: '{n} 個の呼び出し可能モデル（クリックでコピー）',
     probeUse: 'この設定を使う',
     probeTried: '試した形式',    prModel: 'モデル',
+    prCached: 'キャッシュ $/1M',
+    prCachedHint: 'キャッシュ入力価格（通常 入力の約0.1倍）。空欄ならキャッシュトークンを入力全額で課金。',
     prInput: '入力 $/1M',
     prOutput: '出力 $/1M',
     prImage: '画像 $/枚',

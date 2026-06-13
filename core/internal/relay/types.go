@@ -93,18 +93,35 @@ type ModelPrice struct {
 	Model          string          `gorm:"column:model"`
 	InputUSDPer1M  decimal.Decimal `gorm:"column:input_usd_per_1m"`
 	OutputUSDPer1M decimal.Decimal `gorm:"column:output_usd_per_1m"`
-	ImageUSD       decimal.Decimal `gorm:"column:image_usd"` // 每张图 USD（0007，0=非图像模型）
+	ImageUSD       decimal.Decimal `gorm:"column:image_usd"`              // 每张图 USD（0007，0=非图像模型）
+	CachedInputUSDPer1M decimal.Decimal `gorm:"column:cached_input_usd_per_1m"` // 缓存命中输入价（0010，0=按 input 全价）
 }
 
 func (ModelPrice) TableName() string { return "model_prices" }
 
 var oneMillion = decimal.NewFromInt(1_000_000)
 
-// Cost 按 token 量计价（USD）。
-func (p *ModelPrice) Cost(inputTokens, outputTokens int64) decimal.Decimal {
-	in := p.InputUSDPer1M.Mul(decimal.NewFromInt(inputTokens)).Div(oneMillion)
+// cachedInputPrice：缓存命中 token 的单价。未配置（0）则回退 input 全价——
+// 向后兼容且永不少收：旧定价行没有缓存价时，缓存 token 仍按正常输入价计。
+func (p *ModelPrice) cachedInputPrice() decimal.Decimal {
+	if p.CachedInputUSDPer1M.IsPositive() {
+		return p.CachedInputUSDPer1M
+	}
+	return p.InputUSDPer1M
+}
+
+// Cost 按 token 量计价（USD）。cachedTokens 是 inputTokens 中命中提示缓存的子集
+// （OpenAI prompt_tokens_details.cached_tokens 语义），按折扣价单独计；
+// 非缓存输入 = inputTokens - cachedTokens 按全价。修正此前缓存 token 按全价多收的问题。
+func (p *ModelPrice) Cost(inputTokens, cachedTokens, outputTokens int64) decimal.Decimal {
+	if cachedTokens > inputTokens {
+		cachedTokens = inputTokens // 防御：上游异常数据不致算出负的非缓存量
+	}
+	nonCached := inputTokens - cachedTokens
+	in := p.InputUSDPer1M.Mul(decimal.NewFromInt(nonCached)).Div(oneMillion)
+	cached := p.cachedInputPrice().Mul(decimal.NewFromInt(cachedTokens)).Div(oneMillion)
 	out := p.OutputUSDPer1M.Mul(decimal.NewFromInt(outputTokens)).Div(oneMillion)
-	return in.Add(out)
+	return in.Add(cached).Add(out)
 }
 
 // PickChannelForAttempt 选择服务该模型的活跃渠道（知识库 §3，NewAPI channel_cache.go:96 算法）：

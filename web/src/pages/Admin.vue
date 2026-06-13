@@ -54,6 +54,7 @@ interface Price {
   InputUSDPer1M: string
   OutputUSDPer1M: string
   ImageUSD: string
+  CachedInputUSDPer1M: string
 }
 interface LogRow {
   id: number
@@ -333,7 +334,7 @@ function grantTo(o: OrgRow) {
 
 // —— 定价 ——
 const prices = ref<Price[]>([])
-const pr = ref({ model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '' })
+const pr = ref({ model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '' })
 const prBusy = ref(false)
 
 async function loadPrices() {
@@ -349,8 +350,9 @@ async function upsertPrice() {
       output_usd_per_1m: pr.value.output_usd_per_1m,
     }
     if (pr.value.image_usd) body.image_usd = pr.value.image_usd
+    if (pr.value.cached_input_usd_per_1m) body.cached_input_usd_per_1m = pr.value.cached_input_usd_per_1m
     await adminApi('POST', '/api/admin/model-prices', body)
-    pr.value = { model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '' }
+    pr.value = { model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '' }
     await loadPrices()
     error.value = ''
   } catch (e) {
@@ -743,7 +745,7 @@ onMounted(() => {
 
       <!-- 定价 -->
       <template v-if="tab === 'prices'">
-        <form class="card p-5 grid grid-cols-4 gap-4 items-end" @submit.prevent="upsertPrice">
+        <form class="card p-5 grid grid-cols-5 gap-4 items-end" @submit.prevent="upsertPrice">
           <div>
             <label class="label" for="pr-model">{{ t('admin.prModel') }}</label>
             <input id="pr-model" v-model="pr.model" class="input font-mono text-xs" required />
@@ -753,6 +755,10 @@ onMounted(() => {
             <input id="pr-input" v-model="pr.input_usd_per_1m" class="input" required />
           </div>
           <div>
+            <label class="label" for="pr-cached">{{ t('admin.prCached') }}</label>
+            <input id="pr-cached" v-model="pr.cached_input_usd_per_1m" class="input" placeholder="0" />
+          </div>
+          <div>
             <label class="label" for="pr-output">{{ t('admin.prOutput') }}</label>
             <input id="pr-output" v-model="pr.output_usd_per_1m" class="input" required />
           </div>
@@ -760,8 +766,9 @@ onMounted(() => {
             <label class="label" for="pr-image">{{ t('admin.prImage') }}</label>
             <input id="pr-image" v-model="pr.image_usd" class="input" placeholder="0" />
           </div>
-          <div class="col-span-4">
+          <div class="col-span-5 flex items-center gap-3">
             <button class="btn-primary" :disabled="prBusy">{{ t('admin.prUpsert') }}</button>
+            <span class="text-xs text-muted">{{ t('admin.prCachedHint') }}</span>
           </div>
         </form>
 
@@ -771,17 +778,19 @@ onMounted(() => {
               <tr class="border-b border-line text-left text-muted">
                 <th class="px-4 py-3 font-medium">{{ t('admin.prModel') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.prInput') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.prCached') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.prOutput') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.prImage') }}</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="prices.length === 0">
-                <td colspan="4" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+                <td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <tr v-for="p in prices" :key="p.Model" class="border-b border-line last:border-0">
                 <td class="px-4 py-2.5 font-mono text-xs">{{ p.Model }}</td>
                 <td class="px-4 py-2.5 text-right font-mono">{{ p.InputUSDPer1M }}</td>
+                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ p.CachedInputUSDPer1M !== '0' ? p.CachedInputUSDPer1M : '—' }}</td>
                 <td class="px-4 py-2.5 text-right font-mono">{{ p.OutputUSDPer1M }}</td>
                 <td class="px-4 py-2.5 text-right font-mono">{{ p.ImageUSD }}</td>
               </tr>

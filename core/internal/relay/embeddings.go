@@ -141,7 +141,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 	}
 
 	estIn := countEmbeddingsTokens(req.Input, len(body))
-	holdAmount := price.Cost(estIn, 0)
+	holdAmount := price.Cost(estIn, 0, 0)
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
 		acc, err := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
@@ -276,7 +276,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 
 	c.Data(http.StatusOK, "application/json", raw)
 
-	actual := price.Cost(inTokens, 0)
+	actual := price.Cost(inTokens, 0, 0)
 	reason := fmt.Sprintf("embeddings model=%s in=%d", req.Model, inTokens)
 	var overage = decimal.Zero
 	if err := r.DB.Transaction(func(tx *gorm.DB) error {
