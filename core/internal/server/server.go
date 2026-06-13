@@ -38,7 +38,16 @@ type Server struct {
 	authLimiter *ipLimiter
 	relay       *relay.Relay     // 渠道一键测试用；nil = 测试端点 503
 	mailer      mailer.Mailer    // 邮件发送；nil = 邮件功能禁用
+	log         *slog.Logger
 	now         func() time.Time // 可注入时钟，测试用
+}
+
+// Log 返回服务器 logger（payment/audit 等用）。
+func (s *Server) Log() *slog.Logger {
+	if s.log == nil {
+		return slog.Default()
+	}
+	return s.log
 }
 
 const controlPlaneBodyLimit = 1 << 20 // 1MB：控制面 JSON 足够（审查 M2）
@@ -57,6 +66,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 		adminToken: opts.AdminToken, keyring: opts.Keyring,
 		authLimiter: newIPLimiter(rate.Every(time.Second), authBurst),
 		mailer:      opts.Mailer,
+		log:         log,
 		now:         time.Now,
 	}
 	gin.SetMode(gin.ReleaseMode)
@@ -81,6 +91,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 		api.POST("/auth/send-verification", s.authRateLimit(), s.sendVerification)
 		api.GET("/pricing", s.getPricing) // 公开价目（营销站/模型市场同源）
 		api.GET("/config", s.getConfig)   // 公开运营配置（站名/注册开关/公告/法务）
+		api.POST("/payment/callback/:provider", s.paymentCallback) // 支付 webhook（验签入金，无需登录）
 
 		authed := api.Group("", s.authRequired())
 		{
@@ -95,6 +106,9 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			authed.GET("/usage/summary", s.getUsageSummary)
 			authed.GET("/usage/by-model", s.getUsageByModel)
 			authed.GET("/balance", s.getBalance)
+			authed.GET("/payment/methods", s.getPaymentMethods)
+			authed.POST("/payment/create", s.createTopup)
+			authed.GET("/payment/orders", s.listTopups)
 			authed.GET("/orgs", s.listOrgs)
 			authed.POST("/orgs", s.createOrg)
 			authed.POST("/auth/switch", s.switchOrg)

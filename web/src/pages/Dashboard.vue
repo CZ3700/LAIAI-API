@@ -91,6 +91,9 @@ onMounted(async () => {
         <p class="text-xs opacity-80">{{ t('dashboard.balance') }}</p>
         <p class="mt-1 text-3xl font-semibold font-mono">${{ balance }}</p>
         <p v-if="held !== '0'" class="mt-1 text-xs opacity-80">{{ t('dashboard.held') }}: ${{ held }}</p>
+        <router-link to="/app/wallet" class="mt-2 inline-block text-xs underline opacity-90 hover:opacity-100">
+          {{ t('wallet.topup') }} →
+        </router-link>
       </div>
       <div class="enter card p-5" style="animation-delay: 70ms">
         <p class="text-xs text-muted">{{ t('dashboard.todayCalls') }}</p>

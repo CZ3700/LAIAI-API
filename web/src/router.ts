@@ -25,6 +25,7 @@ export const router = createRouter({
       children: [
         { path: '', component: () => import('@/pages/Dashboard.vue') },
         { path: 'playground', component: () => import('@/pages/Playground.vue') },
+        { path: 'wallet', component: () => import('@/pages/Wallet.vue') },
         { path: 'keys', component: () => import('@/pages/Keys.vue') },
         { path: 'usage', component: () => import('@/pages/Usage.vue') },
         { path: 'team', component: () => import('@/pages/Team.vue') },

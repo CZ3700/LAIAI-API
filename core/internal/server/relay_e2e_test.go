@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/crypto"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/laiai/laiai-next/core/internal/payment"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -76,6 +78,13 @@ CREATE TABLE tasks (
     submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     started_at DATETIME, finished_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE topup_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_no TEXT NOT NULL UNIQUE, org_id INTEGER NOT NULL, user_id INTEGER,
+    provider TEXT NOT NULL, amount_usd NUMERIC NOT NULL, pay_amount NUMERIC NOT NULL,
+    pay_currency TEXT NOT NULL DEFAULT 'USD', status INTEGER NOT NULL DEFAULT 0,
+    trade_no TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, paid_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE model_prices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1289,5 +1298,78 @@ func TestUserManageAndAudit(t *testing.T) {
 	_, audit := srv.doAdmin(t, "GET", "/api/admin/audit-logs", nil)
 	if audit["total"].(float64) < 2 {
 		t.Fatalf("audit total = %v, want >=2", audit["total"])
+	}
+}
+
+// mockPayEngine：测试用支付引擎，回调结果可控。
+type mockPayEngine struct {
+	orderNo, tradeNo string
+	amount           decimal.Decimal
+	success          bool
+}
+
+func (m *mockPayEngine) Name() string { return "mock" }
+func (m *mockPayEngine) CreatePayment(_ context.Context, req *payment.CreateRequest) (*payment.CreateResult, error) {
+	return &payment.CreateResult{PayURL: "https://pay.test/" + req.OrderNo, ProviderRef: req.OrderNo}, nil
+}
+func (m *mockPayEngine) VerifyCallback(_ []byte, _, _ map[string]string) (*payment.CallbackResult, error) {
+	return &payment.CallbackResult{OrderNo: m.orderNo, TradeNo: m.tradeNo, Amount: m.amount, Currency: "USD", Success: m.success}, nil
+}
+func (m *mockPayEngine) AckBody() string { return "ok" }
+
+// 支付入金红线：成功入账一次 + 幂等不重复 + 终态保护 + 金额过低拒收。
+func TestPaymentCreditFlow(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	mock := &mockPayEngine{}
+	engineForTest = func(p string) payment.Engine {
+		if p == "stripe" {
+			return mock
+		}
+		return nil
+	}
+	defer func() { engineForTest = nil }()
+
+	apiKey, orgID := seedUserWithCredit(t, srv, "pay@example.com", "")
+	_ = apiKey
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "pay@example.com", "password": "longenough1"})
+	token := login["token"].(string)
+
+	// 建订单 $50
+	w, out := srv.do(t, "POST", "/api/payment/create", token, map[string]any{"provider": "stripe", "amount_usd": "50"})
+	if w.Code != 200 {
+		t.Fatalf("create topup = %d %v", w.Code, out)
+	}
+	orderNo := out["order_no"].(string)
+
+	// 回调成功入金
+	mock.orderNo, mock.tradeNo, mock.amount, mock.success = orderNo, "pi_1", decimal.RequireFromString("50"), true
+	w, _ = srv.do(t, "POST", "/api/payment/callback/stripe", "", nil)
+	if w.Code != 200 {
+		t.Fatalf("callback = %d", w.Code)
+	}
+	// 余额到账 $50
+	acc := &ledger.Account{}
+	db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("50")) {
+		t.Fatalf("balance after topup = %s, want 50", acc.PostedBalance)
+	}
+	// 幂等：重复回调不重复入账
+	srv.do(t, "POST", "/api/payment/callback/stripe", "", nil)
+	db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("50")) {
+		t.Fatalf("balance after duplicate callback = %s, want 50 (idempotent)", acc.PostedBalance)
+	}
+
+	// 新订单 + 金额过低回调 → 拒收（不入金）
+	w, out = srv.do(t, "POST", "/api/payment/create", token, map[string]any{"provider": "stripe", "amount_usd": "100"})
+	order2 := out["order_no"].(string)
+	mock.orderNo, mock.amount, mock.success = order2, decimal.RequireFromString("1"), true // 实付远低于应付
+	w, _ = srv.do(t, "POST", "/api/payment/callback/stripe", "", nil)
+	if w.Code == 200 {
+		t.Fatal("low-amount callback should be rejected")
+	}
+	db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("50")) {
+		t.Fatalf("balance after low-amount = %s, want 50 (rejected)", acc.PostedBalance)
 	}
 }

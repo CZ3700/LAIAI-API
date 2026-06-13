@@ -1166,6 +1166,38 @@ onMounted(() => {
             <label class="label" for="set-priv">{{ t('admin.setPrivacy') }}</label>
             <textarea id="set-priv" v-model="settings.privacy_policy" class="input" rows="3"></textarea>
           </div>
+
+          <div class="border-t border-line pt-5">
+            <h3 class="mb-3 font-semibold">{{ t('admin.setPayment') }}</h3>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label class="label" for="set-stripe-sk">Stripe Secret Key</label>
+                <input id="set-stripe-sk" v-model="settings.stripe_secret_key" class="input font-mono text-xs" type="password" autocomplete="off" placeholder="sk_live_…" />
+              </div>
+              <div>
+                <label class="label" for="set-stripe-wh">Stripe Webhook Secret</label>
+                <input id="set-stripe-wh" v-model="settings.stripe_webhook_secret" class="input font-mono text-xs" type="password" autocomplete="off" placeholder="whsec_…" />
+              </div>
+              <div>
+                <label class="label" for="set-epay-pid">EPay PID</label>
+                <input id="set-epay-pid" v-model="settings.epay_pid" class="input font-mono text-xs" />
+              </div>
+              <div>
+                <label class="label" for="set-epay-key">EPay Key</label>
+                <input id="set-epay-key" v-model="settings.epay_key" class="input font-mono text-xs" type="password" autocomplete="off" />
+              </div>
+              <div>
+                <label class="label" for="set-epay-url">EPay API URL</label>
+                <input id="set-epay-url" v-model="settings.epay_api_url" class="input font-mono text-xs" placeholder="https://pay.example.com" />
+              </div>
+              <div>
+                <label class="label" for="set-cny">{{ t('admin.setCnyRate') }}</label>
+                <input id="set-cny" v-model="settings.cny_per_usd" class="input" placeholder="7.3" />
+              </div>
+            </div>
+            <p class="mt-2 text-xs text-muted">{{ t('admin.setPaymentHint') }}</p>
+          </div>
+
           <div class="flex items-center gap-3">
             <button class="btn-primary" :disabled="settingsBusy">{{ t('settings.save') }}</button>
             <span v-if="settingsMsg" class="text-sm text-ok">{{ settingsMsg }}</span>
