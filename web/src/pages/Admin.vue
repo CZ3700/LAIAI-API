@@ -246,6 +246,9 @@ const callbackBase = `${window.location.origin}/api/payment/callback`
 // —— 运营设置 ——
 const settings = ref<Record<string, string>>({})
 const settingsBusy = ref(false)
+// 设置分区子导航（避免一页拉太长）
+const setSec = ref<'general' | 'signup' | 'payment' | 'channels' | 'oauth'>('general')
+const SET_SECTIONS = ['general', 'signup', 'payment', 'channels', 'oauth'] as const
 const settingsMsg = ref('')
 async function loadSettings() {
   settings.value = (await adminApi<{ settings: Record<string, string> }>('GET', '/api/admin/settings')).settings
@@ -1722,10 +1725,23 @@ onMounted(() => {
         <p class="text-xs text-muted">{{ t('admin.userTierHint') }}</p>
       </template>
 
-      <!-- 设置 -->
+      <!-- 设置（分区子导航，避免一页过长） -->
       <template v-if="tab === 'settings'">
-        <form class="card max-w-2xl p-6 space-y-5" @submit.prevent="saveSettings">
-          <h3 class="font-semibold">{{ t('admin.setGrpGeneral') }}</h3>
+        <form class="card max-w-3xl p-6 space-y-5" @submit.prevent="saveSettings">
+          <div class="flex flex-wrap gap-1 border-b border-line pb-4">
+            <button
+              v-for="sec in SET_SECTIONS"
+              :key="sec"
+              type="button"
+              class="btn-ghost !py-1.5 text-sm"
+              :class="setSec === sec ? '!bg-panel !text-ink' : '!border-transparent text-muted'"
+              @click="setSec = sec"
+            >
+              {{ t(`admin.setGrp_${sec}`) }}
+            </button>
+          </div>
+
+          <div v-show="setSec === 'general'" class="space-y-5">
           <div class="grid gap-3 sm:grid-cols-2">
             <div>
               <label class="label" for="set-site">{{ t('admin.setSiteName') }}</label>
@@ -1759,10 +1775,9 @@ onMounted(() => {
               <textarea id="set-priv" v-model="settings.privacy_policy" class="input" rows="3"></textarea>
             </div>
           </div>
+          </div>
 
-          <div class="border-t border-line pt-5">
-            <h3 class="mb-3 font-semibold">{{ t('admin.setGrpSignup') }}</h3>
-            <div class="space-y-3">
+          <div v-show="setSec === 'signup'" class="space-y-3">
               <label class="flex items-center gap-2 text-sm">
                 <input type="checkbox" class="accent-accent" :checked="settings.register_enabled === 'true'"
                   @change="settings.register_enabled = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
@@ -1778,11 +1793,9 @@ onMounted(() => {
                 <input id="set-grant" v-model="settings.new_user_grant_usd" class="input" placeholder="0" />
                 <p class="mt-1 text-xs text-muted">{{ t('admin.setWelcomeGrantHint') }}</p>
               </div>
-            </div>
           </div>
 
-          <div class="border-t border-line pt-5">
-            <h3 class="mb-3 font-semibold">{{ t('admin.setPayment') }}</h3>
+          <div v-show="setSec === 'payment'">
             <div class="grid gap-3 sm:grid-cols-2">
               <div>
                 <label class="label" for="set-stripe-sk">Stripe Secret Key</label>
@@ -1821,8 +1834,7 @@ onMounted(() => {
             <p class="mt-1 text-xs text-muted">{{ t('admin.setAffHint') }}</p>
           </div>
 
-          <div class="border-t border-line pt-5">
-            <h3 class="mb-3 font-semibold">{{ t('admin.setGrpChannels') }}</h3>
+          <div v-show="setSec === 'channels'">
             <label class="flex items-center gap-2 text-sm">
               <input type="checkbox" class="accent-accent" :checked="settings.channel_auto_disable === 'true'"
                 @change="settings.channel_auto_disable = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
@@ -1835,8 +1847,7 @@ onMounted(() => {
             <p class="mt-2 text-xs text-muted">{{ t('admin.setAutoDisableHint') }}</p>
           </div>
 
-          <div class="border-t border-line pt-5">
-            <h3 class="mb-3 font-semibold">{{ t('admin.setOAuth') }}</h3>
+          <div v-show="setSec === 'oauth'">
             <div class="grid gap-3 sm:grid-cols-2">
               <div>
                 <label class="label" for="set-gh-id">GitHub Client ID</label>
