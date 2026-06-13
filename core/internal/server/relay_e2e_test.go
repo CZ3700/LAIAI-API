@@ -1169,3 +1169,64 @@ func TestAdminGroupRatioCRUD(t *testing.T) {
 		t.Fatalf("delete svip = %d, want 200", w.Code)
 	}
 }
+
+// Key 精细管控：模型白名单拒绝 + quota 上限拒绝 + used_amount 累加。
+func TestKeyControls(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := mockUpstreamJSON(t, 1000, 500)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL) // test-model, input $2/1M out $6/1M
+
+	// 注册 + 登录 + 授信
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "kc@example.com", "password": "longenough1"})
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "kc@example.com", "password": "longenough1"})
+	token := login["token"].(string)
+	orgID := login["org_id"].(float64)
+	srv.doAdmin(t, "POST", "/api/admin/credits", map[string]any{
+		"org_id": orgID, "amount_usd": "10", "reason": "t", "idempotency_key": "kc",
+	})
+
+	// 建一个只允许 other-model、quota $0.004 的 key
+	_, keyOut := srv.do(t, "POST", "/api/keys", token, map[string]any{
+		"name": "limited", "model_limits": []string{"other-model"}, "quota_limit": "0.004",
+	})
+	apiKey := keyOut["key"].(string)
+
+	// 调 test-model（不在白名单）→ 403
+	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 403 {
+		t.Fatalf("non-whitelisted model = %d, want 403", w.Code)
+	}
+
+	// 换一个允许 test-model、quota $0.004 的 key（一次调用花 0.005 > 0.004）
+	_, keyOut = srv.do(t, "POST", "/api/keys", token, map[string]any{
+		"name": "q", "model_limits": []string{"test-model"}, "quota_limit": "0.004",
+	})
+	apiKey2 := keyOut["key"].(string)
+	keyID2 := keyOut["id"]
+	// 第一次成功（调用前 used=0 < limit）
+	w, _ = srv.do(t, "POST", "/v1/chat/completions", apiKey2, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 200 {
+		t.Fatalf("first call = %d, want 200", w.Code)
+	}
+	// 等 used_amount 累加（0.005 > 0.004）
+	for i := 0; i < 100; i++ {
+		var k struct{ UsedAmount string }
+		db.Raw("SELECT used_amount FROM api_keys WHERE id = ?", keyID2).Scan(&k)
+		if k.UsedAmount != "" && k.UsedAmount != "0" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// 第二次：used(0.005) >= limit(0.004) → 402
+	w, _ = srv.do(t, "POST", "/v1/chat/completions", apiKey2, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 402 {
+		t.Fatalf("over-quota call = %d, want 402", w.Code)
+	}
+}

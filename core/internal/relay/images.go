@@ -102,6 +102,10 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "n must be between 1 and 10")
 		return
 	}
+	if code, msg, ok := keyGate(key, c.ClientIP(), req.Model); !ok { // Key 精细管控（0012）
+		relayErr(c, code, msg)
+		return
+	}
 	inv.Model = req.Model
 
 	price, err := GetPrice(rdb, req.Model)
@@ -255,6 +259,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json", raw)
 
 	actual := price.ImageUSD.Mul(decimal.NewFromInt(int64(actualN))).Mul(groupRatio)
+	defer func() { _ = identity.AddKeyUsage(r.DB, key.ID, actual) }() // per-key 已用额度（0012）
 	reason := fmt.Sprintf("images model=%s n=%d ×%s", req.Model, actualN, groupRatio)
 	var overage = decimal.Zero
 	if err := r.DB.Transaction(func(tx *gorm.DB) error {

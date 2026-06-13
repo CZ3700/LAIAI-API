@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"net"
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -31,9 +33,51 @@ type APIKey struct {
 	Scopes    string     `gorm:"column:scopes"`
 	Status    int8       `gorm:"column:status"`
 	ExpiresAt *time.Time `gorm:"column:expires_at"`
+	// 精细管控（0012）
+	QuotaLimit  decimal.Decimal `gorm:"column:quota_limit"`  // 累计消费上限 USD，0=无限
+	UsedAmount  decimal.Decimal `gorm:"column:used_amount"`  // 已消费 USD
+	ModelLimits string          `gorm:"column:model_limits"` // 模型白名单，逗号分隔，空=不限
+	AllowIPs    string          `gorm:"column:allow_ips"`    // IP 白名单，逗号/换行分隔，支持 CIDR，空=不限
 }
 
 func (APIKey) TableName() string { return "api_keys" }
+
+// AllowsModel 返回该 Key 是否可调用某模型（空白名单=不限）。
+func (k *APIKey) AllowsModel(model string) bool {
+	if strings.TrimSpace(k.ModelLimits) == "" {
+		return true
+	}
+	for _, m := range strings.Split(k.ModelLimits, ",") {
+		if strings.TrimSpace(m) == model {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsIP 返回调用方 IP 是否在白名单内（空=不限）。支持精确 IP 与 CIDR。
+func (k *APIKey) AllowsIP(ip string) bool {
+	if strings.TrimSpace(k.AllowIPs) == "" {
+		return true
+	}
+	parsed := net.ParseIP(ip)
+	for _, entry := range strings.FieldsFunc(k.AllowIPs, func(r rune) bool {
+		return r == '\n' || r == ',' || r == ' ' || r == '\r' || r == '\t'
+	}) {
+		if entry == ip {
+			return true
+		}
+		if _, cidr, err := net.ParseCIDR(entry); err == nil && parsed != nil && cidr.Contains(parsed) {
+			return true
+		}
+	}
+	return false
+}
+
+// QuotaExhausted 返回该 Key 是否已用满累计额度（无限额度恒为 false）。
+func (k *APIKey) QuotaExhausted() bool {
+	return k.QuotaLimit.IsPositive() && k.UsedAmount.GreaterThanOrEqual(k.QuotaLimit)
+}
 
 type IssueKeyInput struct {
 	OrgID     uint64
@@ -41,6 +85,9 @@ type IssueKeyInput struct {
 	Name      string
 	Scopes    string
 	ExpiresAt *time.Time
+	QuotaLimit  decimal.Decimal // 累计消费上限 USD，0=无限
+	ModelLimits string          // 模型白名单
+	AllowIPs    string          // IP 白名单
 }
 
 // IssueKey 签发新 Key。返回 (明文, 记录)；明文此后不可再取。
@@ -64,6 +111,9 @@ func IssueKey(tx *gorm.DB, in IssueKeyInput) (string, *APIKey, error) {
 		Scopes:    in.Scopes,
 		Status:    StatusActive,
 		ExpiresAt: in.ExpiresAt,
+		QuotaLimit:  in.QuotaLimit,
+		ModelLimits: in.ModelLimits,
+		AllowIPs:    in.AllowIPs,
 	}
 	if err := tx.Create(k).Error; err != nil {
 		return "", nil, err
@@ -96,4 +146,14 @@ func VerifyKey(db *gorm.DB, plaintext string, now time.Time) (*APIKey, error) {
 // RevokeKey 吊销（幂等：重复吊销无害）。
 func RevokeKey(tx *gorm.DB, keyID uint64) error {
 	return tx.Model(&APIKey{}).Where("id = ?", keyID).Update("status", StatusDisabled).Error
+}
+
+// AddKeyUsage 原子累加 Key 的累计消费（capture 后调用，喂 quota_limit 判断）。
+// 尽力而为：失败只记日志不阻断（计费事实源仍是 journal），调用方忽略返回错误即可。
+func AddKeyUsage(db *gorm.DB, keyID uint64, amount decimal.Decimal) error {
+	if !amount.IsPositive() {
+		return nil
+	}
+	return db.Model(&APIKey{}).Where("id = ?", keyID).
+		Update("used_amount", gorm.Expr("used_amount + ?", amount)).Error
 }

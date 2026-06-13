@@ -51,6 +51,21 @@ func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Lo
 	}
 }
 
+// keyGate：API Key 精细管控校验（0012）。返回 (HTTP 码, 文案, 是否放行)。
+// IP 白名单 / 累计额度 / 模型白名单，任一不过即拒（被拒请求不计费不入上游）。
+func keyGate(key *identity.APIKey, clientIP, model string) (int, string, bool) {
+	if !key.AllowsIP(clientIP) {
+		return http.StatusForbidden, "this api key is not allowed from your ip address", false
+	}
+	if key.QuotaExhausted() {
+		return http.StatusPaymentRequired, "this api key has reached its quota limit", false
+	}
+	if !key.AllowsModel(model) {
+		return http.StatusForbidden, "this api key is not allowed to use model " + model, false
+	}
+	return 0, "", true
+}
+
 // newRequestID：平台级请求 id（16 hex），回传 X-Request-Id 给客户端作支持工单锚点。
 func newRequestID() string {
 	b := make([]byte, 8)
@@ -145,6 +160,10 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	model, _ := req["model"].(string)
 	if model == "" {
 		relayErr(c, http.StatusBadRequest, "model is required")
+		return
+	}
+	if code, msg, ok := keyGate(key, c.ClientIP(), model); !ok { // Key 精细管控（0012）
+		relayErr(c, code, msg)
 		return
 	}
 	stream, _ := req["stream"].(bool)
@@ -334,6 +353,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	}
 
 	inv.PromptTokens, inv.CompletionTokens, inv.CostUSD = u.PromptTokens, u.CompletionTokens, actual
+	_ = identity.AddKeyUsage(r.DB, key.ID, actual) // 累加 per-key 已用额度（0012，喂 quota_limit）
 	finish(invocation.StatusSuccess, http.StatusOK, "")
 }
 

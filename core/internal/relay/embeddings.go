@@ -132,6 +132,10 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model and input are required")
 		return
 	}
+	if code, msg, ok := keyGate(key, c.ClientIP(), req.Model); !ok { // Key 精细管控（0012）
+		relayErr(c, code, msg)
+		return
+	}
 	inv.Model = req.Model
 
 	price, err := GetPrice(rdb, req.Model)
@@ -278,6 +282,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json", raw)
 
 	actual := price.Cost(inTokens, 0, 0).Mul(groupRatio)
+	defer func() { _ = identity.AddKeyUsage(r.DB, key.ID, actual) }() // per-key 已用额度（0012）
 	reason := fmt.Sprintf("embeddings model=%s in=%d ×%s", req.Model, inTokens, groupRatio)
 	var overage = decimal.Zero
 	if err := r.DB.Transaction(func(tx *gorm.DB) error {

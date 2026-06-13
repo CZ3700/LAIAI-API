@@ -9,6 +9,10 @@ interface KeyRow {
   name: string
   status: number
   expires_at: string | null
+  quota_limit: string
+  used_amount: string
+  model_limits: string
+  allow_ips: string
 }
 
 const { t } = useI18n()
@@ -18,6 +22,10 @@ const error = ref('')
 
 const showCreate = ref(false)
 const newName = ref('')
+const newQuota = ref('')
+const newModels = ref('')
+const newIps = ref('')
+const newExpiry = ref(0)
 const creating = ref(false)
 // 明文只显示一次（红线 8 的 UI 面）：弹窗关闭即不可再取
 const createdKey = ref('')
@@ -96,10 +104,16 @@ async function load() {
 async function create() {
   creating.value = true
   try {
-    const r = await api<{ key: string }>('POST', '/api/keys', { name: newName.value })
+    const body: Record<string, unknown> = { name: newName.value }
+    if (newQuota.value) body.quota_limit = newQuota.value
+    if (newModels.value.trim()) body.model_limits = newModels.value.split(',').map((m) => m.trim()).filter(Boolean)
+    if (newIps.value.trim()) body.allow_ips = newIps.value.trim()
+    if (newExpiry.value > 0) body.expires_in_days = newExpiry.value
+    const r = await api<{ key: string }>('POST', '/api/keys', body)
     createdKey.value = r.key
     showCreate.value = false
-    newName.value = ''
+    newName.value = newQuota.value = newModels.value = newIps.value = ''
+    newExpiry.value = 0
     await load()
   } catch (e) {
     error.value = errorMessage(e, t('common.error'))
@@ -164,17 +178,27 @@ onMounted(load)
           <tr class="border-b border-line text-left text-muted">
             <th class="px-4 py-3 font-medium">{{ t('keys.name') }}</th>
             <th class="px-4 py-3 font-medium">{{ t('keys.prefix') }}</th>
+            <th class="px-4 py-3 font-medium">{{ t('keys.limits') }}</th>
+            <th class="px-4 py-3 font-medium text-right">{{ t('keys.used') }}</th>
             <th class="px-4 py-3 font-medium">{{ t('keys.status') }}</th>
             <th class="px-4 py-3"></th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="keys.length === 0">
-            <td colspan="4" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+            <td colspan="6" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
           </tr>
           <tr v-for="k in keys" :key="k.id" class="border-b border-line last:border-0">
             <td class="px-4 py-3">{{ k.name || '—' }}</td>
             <td class="px-4 py-3 font-mono text-muted">{{ k.prefix }}…</td>
+            <td class="px-4 py-3 text-xs">
+              <span v-if="k.model_limits" class="badge-muted" :title="k.model_limits">{{ t('keys.modelLimited') }}</span>
+              <span v-if="k.allow_ips" class="badge-muted ml-1" :title="k.allow_ips">IP</span>
+              <span v-if="!k.model_limits && !k.allow_ips" class="text-muted">—</span>
+            </td>
+            <td class="px-4 py-3 text-right font-mono text-xs">
+              ${{ Number(k.used_amount).toFixed(4) }}<span v-if="k.quota_limit !== '0'" class="text-muted"> / ${{ k.quota_limit }}</span>
+            </td>
             <td class="px-4 py-3">
               <span :class="k.status === 1 ? 'badge-ok' : 'badge-muted'">
                 {{ k.status === 1 ? t('keys.active') : t('keys.revoked') }}
@@ -218,6 +242,25 @@ onMounted(load)
           <label class="label" for="keyname">{{ t('keys.name') }}</label>
           <input id="keyname" v-model="newName" class="input" :placeholder="t('keys.namePlaceholder')" />
         </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="label" for="keyquota">{{ t('keys.quotaLimit') }}</label>
+            <input id="keyquota" v-model="newQuota" class="input" placeholder="∞" />
+          </div>
+          <div>
+            <label class="label" for="keyexp">{{ t('keys.expiry') }}</label>
+            <input id="keyexp" v-model.number="newExpiry" class="input" type="number" min="0" placeholder="0" />
+          </div>
+        </div>
+        <div>
+          <label class="label" for="keymodels">{{ t('keys.modelLimitsField') }}</label>
+          <input id="keymodels" v-model="newModels" class="input font-mono text-xs" placeholder="gpt-5.2, claude-4" />
+        </div>
+        <div>
+          <label class="label" for="keyips">{{ t('keys.allowIps') }}</label>
+          <input id="keyips" v-model="newIps" class="input font-mono text-xs" placeholder="1.2.3.4, 10.0.0.0/8" />
+        </div>
+        <p class="text-xs text-muted">{{ t('keys.controlsHint') }}</p>
         <div class="flex justify-end gap-2">
           <button type="button" class="btn-ghost" @click="showCreate = false">{{ t('common.cancel') }}</button>
           <button class="btn-primary" :disabled="creating">{{ t('common.confirm') }}</button>

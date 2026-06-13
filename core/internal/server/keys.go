@@ -3,17 +3,22 @@ package server
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
 type createKeyReq struct {
-	Name          string `json:"name"`
-	Scopes        string `json:"scopes"`
-	ExpiresInDays int    `json:"expires_in_days"` // 0 = 永不过期
+	Name          string   `json:"name"`
+	Scopes        string   `json:"scopes"`
+	ExpiresInDays int      `json:"expires_in_days"` // 0 = 永不过期
+	QuotaLimit    string   `json:"quota_limit"`     // 累计消费上限 USD，空/0=无限
+	ModelLimits   []string `json:"model_limits"`    // 模型白名单，空=不限
+	AllowIPs      string   `json:"allow_ips"`       // IP 白名单（逗号/换行），空=不限
 }
 
 func (s *Server) createKey(c *gin.Context) {
@@ -28,6 +33,14 @@ func (s *Server) createKey(c *gin.Context) {
 		t := s.now().AddDate(0, 0, req.ExpiresInDays)
 		expires = &t
 	}
+	quota := decimal.Zero
+	if req.QuotaLimit != "" {
+		var err error
+		if quota, err = decimal.NewFromString(req.QuotaLimit); err != nil || quota.IsNegative() {
+			fail(c, http.StatusBadRequest, "quota_limit must be a non-negative decimal string")
+			return
+		}
+	}
 	var plaintext string
 	var key *identity.APIKey
 	err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -36,6 +49,9 @@ func (s *Server) createKey(c *gin.Context) {
 		plaintext, key, err = identity.IssueKey(tx, identity.IssueKeyInput{
 			OrgID: claims.OrgID, UserID: &uid,
 			Name: req.Name, Scopes: req.Scopes, ExpiresAt: expires,
+			QuotaLimit:  quota,
+			ModelLimits: joinTrim(req.ModelLimits),
+			AllowIPs:    req.AllowIPs,
 		})
 		return err
 	})
@@ -62,9 +78,22 @@ func (s *Server) listKeys(c *gin.Context) {
 		out = append(out, gin.H{
 			"id": k.ID, "prefix": k.Prefix, "name": k.Name,
 			"scopes": k.Scopes, "status": k.Status, "expires_at": k.ExpiresAt,
+			"quota_limit": k.QuotaLimit, "used_amount": k.UsedAmount,
+			"model_limits": k.ModelLimits, "allow_ips": k.AllowIPs,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"keys": out})
+}
+
+// joinTrim：去空白后逗号连接（空切片 → 空串 = 不限）。
+func joinTrim(items []string) string {
+	cleaned := make([]string, 0, len(items))
+	for _, s := range items {
+		if t := strings.TrimSpace(s); t != "" {
+			cleaned = append(cleaned, t)
+		}
+	}
+	return strings.Join(cleaned, ",")
 }
 
 func (s *Server) revokeKey(c *gin.Context) {

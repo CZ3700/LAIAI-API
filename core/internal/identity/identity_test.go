@@ -52,6 +52,8 @@ CREATE TABLE api_keys (
     scopes TEXT NOT NULL DEFAULT '',
     status INTEGER NOT NULL DEFAULT 1,
     expires_at DATETIME,
+    quota_limit NUMERIC NOT NULL DEFAULT 0, used_amount NUMERIC NOT NULL DEFAULT 0,
+    model_limits TEXT NOT NULL DEFAULT '', allow_ips TEXT NOT NULL DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `
