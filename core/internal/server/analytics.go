@@ -27,7 +27,7 @@ func (s *Server) adminAnalytics(c *gin.Context) {
 	if days < 1 || days > 90 {
 		days = 14
 	}
-	now := s.now()
+	now := s.now().UTC() // 与 DATETIME 列的 UTC 存储口径一致（DSN loc=UTC），避免跨时区窗口偏移
 	sinceTime := now.AddDate(0, 0, -days+1)
 	sinceDate := sinceTime.Format("2006-01-02")                                             // datetime 列阈值
 	startOfDay := time.Date(sinceTime.Year(), sinceTime.Month(), sinceTime.Day(), 0, 0, 0, 0, sinceTime.Location())

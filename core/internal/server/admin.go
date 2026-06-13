@@ -246,7 +246,7 @@ func (s *Server) adminListChannels(c *gin.Context) {
 		return
 	}
 	// 累计调用数 + 质量（14 天窗口，与 overview 同口径）
-	since := s.now().AddDate(0, 0, -13).Format("2006-01-02")
+	since := s.now().UTC().AddDate(0, 0, -13).Format("2006-01-02")
 	calls := s.channelCallCounts(rdb, since)
 	quality := s.channelQualityStats(rdb, since)
 	out := make([]gin.H, 0, len(channels))

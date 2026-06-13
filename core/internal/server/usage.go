@@ -61,7 +61,7 @@ func (s *Server) getUsageByModel(c *gin.Context) {
 	if days < 1 || days > 90 {
 		days = 14
 	}
-	since := s.now().AddDate(0, 0, -days+1).Format("2006-01-02")
+	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
 	var rows []struct {
 		Model            string          `json:"model"`
 		Calls            int64           `json:"calls"`
@@ -96,7 +96,7 @@ func (s *Server) getUsageSummary(c *gin.Context) {
 	if days < 1 || days > 90 {
 		days = 14
 	}
-	since := s.now().AddDate(0, 0, -days+1).Format("2006-01-02")
+	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
 	var rows []struct {
 		Day              string          `json:"day"`
 		Calls            int64           `json:"calls"`
@@ -131,7 +131,7 @@ func (s *Server) getUsageByModelDaily(c *gin.Context) {
 	if days < 1 || days > 90 {
 		days = 14
 	}
-	since := s.now().AddDate(0, 0, -days+1).Format("2006-01-02")
+	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
 	var rows []struct {
 		Day     string          `json:"day"`
 		Model   string          `json:"model"`

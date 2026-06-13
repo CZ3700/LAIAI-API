@@ -88,10 +88,9 @@ func (r *Relay) noteFailure(channelID uint64, reason string) {
 	r.failMu.Lock()
 	r.failCounts[channelID]++
 	n := r.failCounts[channelID]
-	if n >= threshold {
-		delete(r.failCounts, channelID)
-	}
 	r.failMu.Unlock()
+	// 不在此处清零：disableChannel 是异步且可能失败的 DB 写。计数保留，
+	// 若禁用没落库，下次失败会再次触发禁用；真正清零只在成功请求时（resetFailures）。
 	if n >= threshold {
 		r.disableChannel(channelID, fmt.Sprintf("%s (%d consecutive failures)", reason, n))
 	}

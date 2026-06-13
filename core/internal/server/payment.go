@@ -54,10 +54,12 @@ func (s *Server) engineFor(provider string) payment.Engine {
 	if engineForTest != nil {
 		return engineForTest(provider)
 	}
-	// 表渠道优先
+	// 表渠道优先。注意：不过滤 enabled —— 渠道被停用后，已发起的支付仍需能在
+	// callback 里解析引擎完成入金（否则真金付款无法到账，资金黑洞）。新建充值的
+	// enabled 校验在 createTopup 里单独做。
 	if s.keyring != nil {
 		var ch PaymentChannel
-		if err := s.db.Where("code = ? AND enabled = 1", provider).First(&ch).Error; err == nil {
+		if err := s.db.Where("code = ?", provider).First(&ch).Error; err == nil {
 			if cfg, e := s.decryptChannelConfig(ch.ConfigEnc); e == nil {
 				if eng := buildPaymentEngine(ch.Protocol, cfg); eng != nil {
 					return eng
@@ -135,15 +137,21 @@ func (s *Server) createTopup(c *gin.Context) {
 			return
 		}
 	}
+	// 渠道协议 + 启用态：停用渠道不接新充值（但 callback 仍能完成在途支付，见 engineFor）
+	protocol, isTable, enabled := s.paymentChannelInfo(req.Provider)
+	if isTable && !enabled {
+		fail(c, http.StatusBadRequest, "payment channel is disabled: "+req.Provider)
+		return
+	}
 	engine := s.engineFor(req.Provider)
 	if engine == nil {
 		fail(c, http.StatusBadRequest, "payment provider not available: "+req.Provider)
 		return
 	}
 
-	// 实付金额/币种：stripe 直接 USD；epay 按汇率折 CNY
+	// 实付金额/币种：stripe 直接 USD；epay 按汇率折 CNY（按 protocol 判，非 code）
 	payAmount, payCurrency := amountUSD, "USD"
-	if req.Provider == "epay" {
+	if protocol == "epay" {
 		rate := decimal.RequireFromString("7.3")
 		if r := s.getSetting("cny_per_usd"); r != "" {
 			if rr, e := decimal.NewFromString(r); e == nil && rr.IsPositive() {

@@ -118,7 +118,7 @@ func (s *Server) getRankings(c *gin.Context) {
 	if n, err := strconv.Atoi(c.Query("days")); err == nil && n >= 1 && n <= 90 {
 		days = n
 	}
-	since := s.now().AddDate(0, 0, -days+1).Format("2006-01-02")
+	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
 
 	var models []struct {
 		Model  string `json:"model"`

@@ -29,6 +29,19 @@ type PaymentChannel struct {
 
 func (PaymentChannel) TableName() string { return "payment_channels" }
 
+// paymentChannelInfo：按 code 解析（协议, 是否表渠道, 是否启用）。
+// 设置回退时 code 即 protocol、视为启用。用于 createTopup 判断币种换算与停用拦截，
+// 不能再用「code == 'epay'」硬判（表渠道 code 可自定义如 epay_main）。
+func (s *Server) paymentChannelInfo(code string) (protocol string, isTable, enabled bool) {
+	if s.keyring != nil {
+		var ch PaymentChannel
+		if s.db.Where("code = ?", code).First(&ch).Error == nil {
+			return ch.Protocol, true, ch.Enabled == 1
+		}
+	}
+	return code, false, true
+}
+
 // buildPaymentEngine：按协议 + 解密后的配置 map 构造引擎。返回 nil = 必填项缺失。
 func buildPaymentEngine(protocol string, cfg map[string]string) payment.Engine {
 	switch protocol {
