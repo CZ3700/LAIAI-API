@@ -33,22 +33,22 @@
   --shadow-pop: 0 16px 40px -10px rgb(16 16 20 / 0.22), 0 4px 14px -4px rgb(16 16 20 / 0.1);
 }
 .dark {
-  --c-bg: 10 11 16;
-  --c-panel: 21 21 26;
-  --c-elev: 30 31 38;
-  --c-line: 42 43 54;
-  --c-ink: 233 233 238;
-  --c-muted: 146 147 160;
-  --c-accent: 129 140 248;
-  --c-accent-2: 192 132 252;
+  --c-bg: 8 9 13;
+  --c-panel: 19 20 26;
+  --c-elev: 28 30 38;
+  --c-line: 38 40 50;
+  --c-ink: 236 237 243;
+  --c-muted: 142 145 160;
+  --c-accent: 124 134 248;
+  --c-accent-2: 188 128 252;
   --c-danger: 248 113 113;
   --c-ok: 74 222 128;
 
-  --c-glass: 32 33 42;
-  --glass-alpha: 0.55;
-  --glass-blur: 22px;
+  --c-glass: 26 28 37;
+  --glass-alpha: 0.58;
+  --glass-blur: 24px;
   --glass-hi: 255 255 255;
-  --glass-hi-alpha: 0.12;
+  --glass-hi-alpha: 0.1;
 
   --grad-rainbow: linear-gradient(115deg, #818cf8 0%, #a78bfa 28%, #f472b6 58%, #fbbf24 100%);
 
@@ -58,7 +58,16 @@
 
 body {
   @apply bg-bg text-ink antialiased;
-  font-feature-settings: 'cv02', 'cv03', 'cv11';
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  letter-spacing: -0.011em; /* 细微紧排，更接近高端产品的字感 */
+}
+/* 标题统一更紧的字距 + 视觉权重，提升「高级感」 */
+h1, h2, h3 {
+  letter-spacing: -0.02em;
 }
 
 /* 彩虹背景网格：固定在视口后方，给玻璃面提供折射的色彩底。极淡，不抢内容。 */
@@ -69,14 +78,14 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(38% 46% at 14% 8%, rgb(99 102 241 / 0.20), transparent 72%),
-    radial-gradient(40% 48% at 86% 12%, rgb(168 85 247 / 0.18), transparent 72%),
-    radial-gradient(44% 52% at 78% 88%, rgb(236 72 153 / 0.14), transparent 72%),
-    radial-gradient(40% 50% at 8% 92%, rgb(45 212 191 / 0.13), transparent 72%);
+    radial-gradient(36% 44% at 12% 6%, rgb(99 102 241 / 0.13), transparent 70%),
+    radial-gradient(38% 46% at 88% 10%, rgb(168 85 247 / 0.11), transparent 70%),
+    radial-gradient(42% 50% at 80% 90%, rgb(236 72 153 / 0.08), transparent 72%),
+    radial-gradient(38% 48% at 6% 94%, rgb(45 212 191 / 0.07), transparent 72%);
 }
 .dark body::before,
 .dark::before {
-  opacity: 0.7;
+  opacity: 0.6;
 }
 
 ::selection {
