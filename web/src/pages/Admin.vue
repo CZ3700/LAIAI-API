@@ -73,6 +73,8 @@ interface LogRow {
   created_at: string
   request_id: string
   org_id: number
+  user_id: number | null
+  api_key_id: number
   model: string
   channel_id: number
   provider: string
@@ -88,6 +90,7 @@ interface LogRow {
   duration_ms: number
   upstream_request_id: string
   error_brief: string
+  payload_object_key: string
 }
 
 // —— token 门 ——
@@ -1497,10 +1500,13 @@ onMounted(() => {
                       <div><dt class="text-muted">{{ t('usage.dStatusCode') }}</dt><dd class="font-mono">{{ l.status_code }}</dd></div>
                       <div><dt class="text-muted">{{ t('admin.lgAttempts') }}</dt><dd class="font-mono">{{ l.attempts }}</dd></div>
                       <div><dt class="text-muted">{{ t('usage.dStream') }}</dt><dd class="font-mono">{{ l.is_stream ? t('common.yes') : t('common.no') }}</dd></div>
+                      <div><dt class="text-muted">{{ t('admin.lgUser') }}</dt><dd class="font-mono">{{ l.user_id ?? '—' }}</dd></div>
+                      <div><dt class="text-muted">{{ t('admin.lgApiKey') }}</dt><dd class="font-mono">#{{ l.api_key_id }}</dd></div>
                       <div><dt class="text-muted">{{ t('usage.dFrt') }}</dt><dd class="font-mono">{{ l.frt_ms }} ms</dd></div>
                       <div><dt class="text-muted">{{ t('usage.dDuration') }}</dt><dd class="font-mono">{{ l.duration_ms }} ms</dd></div>
                       <div v-if="l.usage_source"><dt class="text-muted">{{ t('usage.dUsageSource') }}</dt><dd class="font-mono">{{ l.usage_source }}</dd></div>
                       <div v-if="l.upstream_request_id"><dt class="text-muted">{{ t('admin.lgUpstreamId') }}</dt><dd class="font-mono select-all break-all">{{ l.upstream_request_id }}</dd></div>
+                      <div v-if="l.payload_object_key" class="col-span-2"><dt class="text-muted">{{ t('admin.lgPayloadKey') }}</dt><dd class="font-mono select-all break-all">{{ l.payload_object_key }}</dd></div>
                       <div v-if="l.error_brief" class="col-span-2 sm:col-span-4">
                         <dt class="text-muted">{{ t('usage.dError') }}</dt>
                         <dd class="font-mono text-danger break-all">{{ l.error_brief }}</dd>
