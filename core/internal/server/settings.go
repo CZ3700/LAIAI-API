@@ -42,8 +42,8 @@ var settingDefaults = map[string]string{
 	// —— 返佣 ——
 	"affiliate_rate": "0", // 邀请返佣比例（0..1）；payAffiliateRebate 消费
 	// —— 渠道治理 ——
-	"channel_auto_disable":      "false", // 上游连续失败自动禁用渠道
-	"channel_disable_threshold": "5",     // 连续失败次数阈值
+	"channel_auto_disable":      "true", // 上游连续失败自动禁用渠道（relay noteFailure 消费）
+	"channel_disable_threshold": "1",    // 连续失败次数阈值（1=判定性错误即禁用，与 relay 默认一致）
 	// —— OAuth（oauthStart/Callback 消费）——
 	"github_client_id":     "",
 	"github_client_secret": "",

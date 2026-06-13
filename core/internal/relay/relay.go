@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,17 +39,69 @@ type Relay struct {
 	Log     *slog.Logger
 	Rec     *invocation.Recorder // nil = 不记录（测试或显式禁用）
 	Now     func() time.Time
+
+	// 渠道连续失败计数（内存态，重启清零 = 保守）。达到运营配置的阈值才自动禁用，
+	// 避免单次瞬时抖动误禁；成功一次即清零。配置见 ext_settings.channel_auto_disable/threshold。
+	failMu     sync.Mutex
+	failCounts map[uint64]int
 }
 
 func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Logger) *Relay {
 	return &Relay{
-		DB:      db,
-		Keyring: kr,
-		Client:  &http.Client{Timeout: upstreamTimeout},
-		Log:     log,
-		Rec:     rec,
-		Now:     time.Now,
+		DB:         db,
+		Keyring:    kr,
+		Client:     &http.Client{Timeout: upstreamTimeout},
+		Log:        log,
+		Rec:        rec,
+		Now:        time.Now,
+		failCounts: map[uint64]int{},
 	}
+}
+
+// autoDisablePolicy：从 ext_settings 读取自动禁用策略（开关 + 阈值）。
+// 失败路径才调用（低频），不缓存以支持热更新。缺省：开启、阈值 1（= 沿用既有"判定性错误即禁用"行为）。
+// 运营可调高阈值以容忍瞬时抖动，或关闭开关交人工处理。
+func (r *Relay) autoDisablePolicy() (enabled bool, threshold int) {
+	enabled, threshold = true, 1
+	var rows []struct{ Name, Value string }
+	r.DB.Table("ext_settings").Where("name IN ?",
+		[]string{"channel_auto_disable", "channel_disable_threshold"}).Find(&rows)
+	for _, row := range rows {
+		switch row.Name {
+		case "channel_auto_disable":
+			enabled = row.Value == "true"
+		case "channel_disable_threshold":
+			if n, err := strconv.Atoi(row.Value); err == nil && n > 0 {
+				threshold = n
+			}
+		}
+	}
+	return
+}
+
+// noteFailure：渠道一次"应禁用"级失败 → 累加计数；达阈值才真正禁用（受总开关约束）。
+func (r *Relay) noteFailure(channelID uint64, reason string) {
+	enabled, threshold := r.autoDisablePolicy()
+	if !enabled {
+		return // 运营关闭了自动禁用：交人工处理
+	}
+	r.failMu.Lock()
+	r.failCounts[channelID]++
+	n := r.failCounts[channelID]
+	if n >= threshold {
+		delete(r.failCounts, channelID)
+	}
+	r.failMu.Unlock()
+	if n >= threshold {
+		r.disableChannel(channelID, fmt.Sprintf("%s (%d consecutive failures)", reason, n))
+	}
+}
+
+// resetFailures：渠道一次成功 → 清零连续失败计数。
+func (r *Relay) resetFailures(channelID uint64) {
+	r.failMu.Lock()
+	delete(r.failCounts, channelID)
+	r.failMu.Unlock()
 }
 
 // keyGate：API Key 精细管控校验（0012）。返回 (HTTP 码, 文案, 是否放行)。
@@ -270,8 +323,8 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		r.Log.Warn("upstream error", "channel", ch.ID, "attempt", attempt, "status", resp.StatusCode,
 			"disable", disp.DisableChannel, "retryable", disp.Retryable, "reason", disp.Reason)
 		if disp.DisableChannel {
-			// 异步禁用，不阻塞响应（知识库 §2.2：不能用 request context，直接传 channel id）
-			r.disableChannel(ch.ID, disp.Reason)
+			// 连续失败累加，达运营阈值才异步禁用（不阻塞响应；不能用请求 context）
+			r.noteFailure(ch.ID, disp.Reason)
 		}
 		lastStatus, lastBody = resp.StatusCode, errBody
 		resp = nil
@@ -378,8 +431,9 @@ func (r *Relay) disableChannel(channelID uint64, reason string) {
 	}()
 }
 
-// enableChannelIfDisabled：成功请求后，若渠道处于 auto-disabled 则自动重启用（知识库 §2.2）。
+// enableChannelIfDisabled：成功请求后清零失败计数；若渠道处于 auto-disabled 则自动重启用（知识库 §2.2）。
 func (r *Relay) enableChannelIfDisabled(ch *Channel) {
+	r.resetFailures(ch.ID)
 	if ch.Status != 2 {
 		return
 	}

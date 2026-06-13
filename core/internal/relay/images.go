@@ -200,7 +200,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		r.Log.Warn("images upstream error", "channel", ch.ID, "status", resp.StatusCode,
 			"disable", disp.DisableChannel, "retryable", disp.Retryable)
 		if disp.DisableChannel {
-			r.disableChannel(ch.ID, disp.Reason)
+			r.noteFailure(ch.ID, disp.Reason)
 		}
 		lastStatus, lastBody = resp.StatusCode, errBody
 		resp = nil
