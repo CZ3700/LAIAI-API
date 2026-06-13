@@ -489,6 +489,36 @@ const prices = ref<Price[]>([])
 const pr = ref({ model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '' })
 const prBusy = ref(false)
 
+// 模型目录：上游已上货模型 → 承载渠道 + 是否已定价（定价管理一眼看缺口）
+interface CatalogChannel { id: number; name: string; provider: string; status: number }
+interface CatalogModel { model: string; channels: CatalogChannel[]; priced: boolean; input_usd_per_1m?: string; output_usd_per_1m?: string }
+const catalog = ref<{ models: CatalogModel[]; total: number; priced: number; unpriced: number } | null>(null)
+const catalogQuery = ref('')
+const catalogOnlyUnpriced = ref(false)
+async function loadCatalog() {
+  catalog.value = await adminApi<{ models: CatalogModel[]; total: number; priced: number; unpriced: number }>('GET', '/api/admin/model-catalog')
+}
+const catalogFiltered = computed(() => {
+  const c = catalog.value
+  if (!c) return []
+  const q = catalogQuery.value.trim().toLowerCase()
+  return c.models.filter((m) => {
+    if (catalogOnlyUnpriced.value && m.priced) return false
+    if (q && !m.model.toLowerCase().includes(q)) return false
+    return true
+  })
+})
+// 从目录挑一个模型 → 填入定价表单（已定价的带回现价，便于改价）
+function pickModelForPricing(m: CatalogModel) {
+  pr.value = {
+    model: m.model,
+    input_usd_per_1m: m.input_usd_per_1m ?? '0',
+    output_usd_per_1m: m.output_usd_per_1m ?? '0',
+    image_usd: '',
+    cached_input_usd_per_1m: '',
+  }
+}
+
 async function loadPrices() {
   const r = await adminApi<{ prices: Price[] }>('GET', '/api/admin/model-prices')
   prices.value = r.prices
@@ -559,7 +589,7 @@ async function submitGrant() {
 
 async function loadAll() {
   try {
-    await Promise.all([loadOverview(), loadChannels(), loadPrices(), loadOrgs(), loadGroupRatios()])
+    await Promise.all([loadOverview(), loadChannels(), loadPrices(), loadCatalog(), loadOrgs(), loadGroupRatios()])
   } catch (e) {
     showError(e)
   }
@@ -1193,6 +1223,63 @@ onMounted(() => {
             <span class="text-xs text-muted">{{ t('admin.prCachedHint') }}</span>
           </div>
         </form>
+
+        <!-- 模型目录：上游已上货模型 + 所在渠道 + 是否漏配价 -->
+        <div v-if="catalog" class="card p-5">
+          <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="font-semibold">{{ t('admin.catTitle') }}</h2>
+              <p class="mt-0.5 text-xs text-muted">
+                {{ t('admin.catSummary', { total: catalog.total, priced: catalog.priced }) }}
+                <span v-if="catalog.unpriced" class="text-danger">· {{ t('admin.catUnpriced', { n: catalog.unpriced }) }}</span>
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <input v-model="catalogQuery" class="input !w-48 !py-1.5 text-sm" :placeholder="t('admin.catSearch')" />
+              <label class="flex items-center gap-1.5 text-xs text-muted whitespace-nowrap">
+                <input type="checkbox" v-model="catalogOnlyUnpriced" class="accent-accent" />
+                {{ t('admin.catOnlyUnpriced') }}
+              </label>
+            </div>
+          </div>
+          <div class="max-h-96 overflow-y-auto rounded-xl border border-line">
+            <table class="table w-full text-sm">
+              <thead class="sticky top-0 bg-panel/80 backdrop-blur">
+                <tr class="text-left text-muted">
+                  <th class="px-3 py-2 font-medium">{{ t('admin.prModel') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('admin.catChannels') }}</th>
+                  <th class="px-3 py-2 font-medium text-right">{{ t('admin.catPrice') }}</th>
+                  <th class="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="catalogFiltered.length === 0">
+                  <td colspan="4" class="px-3 py-6 text-center text-muted">{{ t('common.empty') }}</td>
+                </tr>
+                <tr v-for="m in catalogFiltered" :key="m.model" class="border-b border-line last:border-0">
+                  <td class="px-3 py-2 font-mono text-xs">{{ m.model }}</td>
+                  <td class="px-3 py-2">
+                    <span v-for="ch in m.channels" :key="ch.id"
+                      class="mr-1 inline-flex items-center gap-1 rounded bg-elev px-1.5 py-0.5 text-[11px]"
+                      :title="`#${ch.id} · ${ch.provider}`">
+                      <span class="h-1.5 w-1.5 rounded-full" :class="ch.status === 1 ? 'bg-ok' : 'bg-muted'"></span>
+                      {{ ch.name }}
+                    </span>
+                  </td>
+                  <td class="px-3 py-2 text-right font-mono text-xs">
+                    <span v-if="m.priced">{{ m.input_usd_per_1m }} / {{ m.output_usd_per_1m }}</span>
+                    <span v-else class="badge-danger">{{ t('admin.catNoPrice') }}</span>
+                  </td>
+                  <td class="px-3 py-2 text-right">
+                    <button class="btn-ghost !py-1 text-xs" @click="pickModelForPricing(m)">
+                      {{ m.priced ? t('admin.catEdit') : t('admin.catSetPrice') }}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
 
         <div class="card overflow-hidden">
           <table class="table w-full text-sm">
