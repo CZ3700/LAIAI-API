@@ -50,6 +50,9 @@ interface OrgRow {
   held: string
   group: string
   status: number
+  calls: number
+  spend: string
+  last_active: string
 }
 interface GroupRatio {
   name: string
@@ -1259,12 +1262,15 @@ onMounted(() => {
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgMembers') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgBalance') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgHeld') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgSpend') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgCalls') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.orgLastActive') }}</th>
                 <th class="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="orgs.length === 0">
-                <td colspan="8" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+                <td colspan="11" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <tr v-for="o in orgs" :key="o.id" class="border-b border-line last:border-0">
                 <td class="px-4 py-2.5 text-muted">{{ o.id }}</td>
@@ -1282,6 +1288,9 @@ onMounted(() => {
                 <td class="px-4 py-2.5 text-right">{{ o.members }}</td>
                 <td class="px-4 py-2.5 text-right font-mono">${{ o.balance }}</td>
                 <td class="px-4 py-2.5 text-right font-mono text-muted">${{ o.held }}</td>
+                <td class="px-4 py-2.5 text-right font-mono">${{ Number(o.spend).toFixed(4) }}</td>
+                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ o.calls }}</td>
+                <td class="px-4 py-2.5 text-xs text-muted">{{ o.last_active ? o.last_active.slice(0, 10) : '—' }}</td>
                 <td class="px-4 py-2.5 text-right">
                   <button class="btn-ghost !py-1 text-xs" @click="grantTo(o)">{{ t('admin.orgGrant') }}</button>
                 </td>

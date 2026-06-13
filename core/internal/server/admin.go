@@ -387,17 +387,29 @@ func (s *Server) adminListOrgs(c *gin.Context) {
 		Members       int64           `json:"members"`
 		PostedBalance decimal.Decimal `json:"balance"`
 		HeldAmount    decimal.Decimal `json:"held"`
+		Calls         int64           `json:"calls"`       // 生涯调用数
+		Spend         decimal.Decimal `json:"spend"`       // 生涯消耗
+		LastActive    string          `json:"last_active"` // 最近一次调用时间（空=从未调用）
 	}
+	// 活跃度子查询独立聚合（每 org 一行），避免与 members 子查询交叉相乘
 	err := s.db.Raw(`
 		SELECT o.id, o.name, o.kind, o.status, o.group_name AS ` + "`group`" + `,
 		       COALESCE(u.email, '') AS owner_email,
 		       (SELECT COUNT(*) FROM org_members m WHERE m.org_id = o.id) AS members,
 		       COALESCE(a.posted_balance, 0) AS posted_balance,
-		       COALESCE(a.held_amount, 0) AS held_amount
+		       COALESCE(a.held_amount, 0) AS held_amount,
+		       COALESCE(iv.calls, 0) AS calls,
+		       COALESCE(iv.spend, 0) AS spend,
+		       COALESCE(iv.last_active, '') AS last_active
 		FROM organizations o
 		LEFT JOIN org_members om ON om.org_id = o.id AND om.role = 'owner'
 		LEFT JOIN users u ON u.id = om.user_id
 		LEFT JOIN ledger_accounts a ON a.org_id = o.id AND a.type = 'user_credit'
+		LEFT JOIN (
+		    SELECT org_id, COUNT(*) AS calls,
+		           COALESCE(SUM(cost_usd), 0) AS spend, MAX(created_at) AS last_active
+		    FROM invocations GROUP BY org_id
+		) iv ON iv.org_id = o.id
 		ORDER BY o.id`).Scan(&rows).Error
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "query failed")

@@ -122,6 +122,49 @@ func TestAdminAnalytics(t *testing.T) {
 	}
 }
 
+// TestAdminOrgsEnriched：组织列表的活跃度聚合（calls/spend/last_active）不被
+// members 子查询交叉相乘——JOIN 正确性守卫。
+func TestAdminOrgsEnriched(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	_, orgID := seedUserWithCredit(t, srv, "orgs@gmail.com", "50")
+
+	now := time.Now()
+	insertInvocation(t, db, orgID, "e1", "success", "openai", 0.02, now)
+	insertInvocation(t, db, orgID, "e2", "success", "openai", 0.01, now)
+
+	w, out := srv.doAdmin(t, "GET", "/api/admin/orgs", nil)
+	if w.Code != 200 {
+		t.Fatalf("orgs = %d %v", w.Code, out)
+	}
+	rows := out["orgs"].([]any)
+	var found map[string]any
+	for _, r := range rows {
+		m := r.(map[string]any)
+		if m["id"].(float64) == orgID {
+			found = m
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("org %v not in list", orgID)
+	}
+	if got := found["calls"].(float64); got != 2 {
+		t.Errorf("calls = %v, want 2 (not multiplied by members)", got)
+	}
+	if got := decf(t, found["spend"]); got != 0.03 {
+		t.Errorf("spend = %v, want 0.03", got)
+	}
+	if got := decf(t, found["balance"]); got != 50 {
+		t.Errorf("balance = %v, want 50", got)
+	}
+	if got := found["members"].(float64); got != 1 {
+		t.Errorf("members = %v, want 1", got)
+	}
+	if found["last_active"].(string) == "" {
+		t.Error("last_active empty, want a timestamp")
+	}
+}
+
 // TestUsagePerfWindow：验证 /api/usage/perf 只统计近 60 秒（修复 epoch-vs-datetime bug）。
 func TestUsagePerfWindow(t *testing.T) {
 	srv, db := setupRelayServer(t)
