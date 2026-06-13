@@ -93,6 +93,7 @@ export default {
     tokens: 'Token',
     successRate: '成功率 {rate}%',
     byModel: '按模型',
+    otherModels: '其它',
     recent: '最近请求',
   },
   models: {

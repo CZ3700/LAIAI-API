@@ -94,6 +94,7 @@ const messages = {
     tokens: 'Tokens',
     successRate: '{rate}% success',
     byModel: 'By model',
+    otherModels: 'Other',
     recent: 'Recent requests',
   },
   models: {

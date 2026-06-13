@@ -92,6 +92,7 @@ export default {
     tokens: 'トークン',
     successRate: '成功率 {rate}%',
     byModel: 'モデル別',
+    otherModels: 'その他',
     recent: '最近のリクエスト',
   },
   models: {

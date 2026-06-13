@@ -3,7 +3,8 @@ import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
-import DailyBarChart, { type SummaryDay } from '@/components/DailyBarChart.vue'
+import { type SummaryDay } from '@/components/DailyBarChart.vue'
+import StackedBarChart, { type ModelDailyRow } from '@/components/StackedBarChart.vue'
 import Sparkline from '@/components/Sparkline.vue'
 
 const auth = useAuth()
@@ -36,6 +37,7 @@ const balance = ref('0')
 const held = ref('0')
 const summary = ref<SummaryDay[]>([])
 const byModel = ref<ModelStat[]>([])
+const byModelDaily = ref<ModelDailyRow[]>([])
 const recent = ref<UsageRow[]>([])
 const perf = ref({ rpm: 0, tpm: 0 })
 const summaryDays = 14
@@ -108,10 +110,11 @@ async function loadPerf() {
 }
 
 onMounted(async () => {
-  const [bal, sum, bm, use] = await Promise.allSettled([
+  const [bal, sum, bm, bmd, use] = await Promise.allSettled([
     api<{ balance: string; held: string }>('GET', '/api/balance'),
     api<{ items: SummaryDay[] }>('GET', `/api/usage/summary?days=${summaryDays}`),
     api<{ items: ModelStat[] }>('GET', `/api/usage/by-model?days=${summaryDays}`),
+    api<{ items: ModelDailyRow[] }>('GET', `/api/usage/by-model-daily?days=${summaryDays}`),
     api<{ items: UsageRow[] }>('GET', '/api/usage?page=1&page_size=8'),
   ])
   if (bal.status === 'fulfilled') {
@@ -120,6 +123,7 @@ onMounted(async () => {
   }
   if (sum.status === 'fulfilled') summary.value = sum.value.items.map((s) => ({ ...s, day: s.day.slice(0, 10) }))
   if (bm.status === 'fulfilled') byModel.value = bm.value.items
+  if (bmd.status === 'fulfilled') byModelDaily.value = bmd.value.items.map((r) => ({ ...r, day: r.day.slice(0, 10) }))
   if (use.status === 'fulfilled') recent.value = use.value.items
   void loadPerf()
   perfTimer = setInterval(loadPerf, 15000) // 15s 刷新实时指标
@@ -204,7 +208,7 @@ onBeforeUnmount(() => clearInterval(perfTimer))
       </div>
 
       <!-- 趋势视图：14 天柱状 -->
-      <DailyBarChart v-if="modelView === 'calls'" :items="summary" :days="summaryDays" />
+      <StackedBarChart v-if="modelView === 'calls'" :rows="byModelDaily" :days="summaryDays" metric="calls" />
 
       <!-- 消耗分布 / 调用排行：水平条 -->
       <div v-else-if="byModel.length" class="space-y-2.5">

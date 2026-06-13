@@ -93,6 +93,7 @@ export default {
     tokens: 'Token',
     successRate: '{rate}% thành công',
     byModel: 'Theo mô hình',
+    otherModels: 'Khác',
     recent: 'Yêu cầu gần đây',
   },
   models: {

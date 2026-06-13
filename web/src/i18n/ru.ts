@@ -93,6 +93,7 @@ export default {
     tokens: 'Токены',
     successRate: '{rate}% успешно',
     byModel: 'По моделям',
+    otherModels: 'Прочие',
     recent: 'Недавние запросы',
   },
   models: {

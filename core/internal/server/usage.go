@@ -123,6 +123,35 @@ func (s *Server) getUsageSummary(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"days": days, "items": rows})
 }
 
+// getUsageByModelDaily：GET /api/usage/by-model-daily?days=N —— 当前 org 近 N 天
+// 按(日, 模型)聚合，供仪表盘「按模型分色」的堆叠柱状图。DATE() 两库同义。
+func (s *Server) getUsageByModelDaily(c *gin.Context) {
+	claims := mustClaims(c)
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "14"))
+	if days < 1 || days > 90 {
+		days = 14
+	}
+	since := s.now().AddDate(0, 0, -days+1).Format("2006-01-02")
+	var rows []struct {
+		Day     string          `json:"day"`
+		Model   string          `json:"model"`
+		Calls   int64           `json:"calls"`
+		CostUSD decimal.Decimal `json:"cost_usd"`
+	}
+	err := s.db.WithContext(c.Request.Context()).Raw(`
+		SELECT DATE(created_at) AS day, model,
+		       COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS cost_usd
+		FROM invocations
+		WHERE org_id = ? AND created_at >= ?
+		GROUP BY DATE(created_at), model
+		ORDER BY day`, claims.OrgID, since).Scan(&rows).Error
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "by-model-daily query failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"days": days, "items": rows})
+}
+
 // getUsagePerf：GET /api/usage/perf —— 当前 org 实时性能（近 60 秒 RPM/TPM）。
 // 仪表盘性能指标卡用。invocations.created_at 是 DATETIME(3)（autoCreateTime:milli
 // 只设精度，列仍是 datetime），必须用时间串比较——不能用 epoch 整数（datetime 对

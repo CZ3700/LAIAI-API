@@ -93,6 +93,7 @@ export default {
     tokens: 'Token',
     successRate: '{rate}% berjaya',
     byModel: 'Mengikut model',
+    otherModels: 'Lain-lain',
     recent: 'Permintaan terkini',
   },
   models: {

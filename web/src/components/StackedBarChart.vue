@@ -1,0 +1,95 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+export interface ModelDailyRow {
+  day: string
+  model: string
+  calls: number
+  cost_usd: string
+}
+
+const props = withDefaults(defineProps<{ rows: ModelDailyRow[]; days: number; metric?: 'calls' | 'cost' }>(), {
+  metric: 'calls',
+})
+const { t } = useI18n()
+
+// 10 色调色板（与仪表盘其它分色视图一致）；超出 top-N 的模型归入「其它」灰
+const PALETTE = ['99 102 241', '168 85 247', '236 72 153', '245 158 11', '34 197 94', '14 165 233', '244 63 94', '139 92 246', '20 184 166', '234 179 8']
+const OTHER = '148 163 184'
+
+const val = (r: ModelDailyRow) => (props.metric === 'cost' ? Number(r.cost_usd) : r.calls)
+
+const data = computed(() => {
+  // 各模型总量 → 取 top 8 给独立色
+  const totals = new Map<string, number>()
+  for (const r of props.rows) totals.set(r.model, (totals.get(r.model) ?? 0) + val(r))
+  const topModels = [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map((e) => e[0])
+  const colorOf = new Map(topModels.map((m, i) => [m, PALETTE[i % PALETTE.length]]))
+
+  const byDay = new Map<string, ModelDailyRow[]>()
+  for (const r of props.rows) {
+    const a = byDay.get(r.day) ?? []
+    a.push(r)
+    byDay.set(r.day, a)
+  }
+  const today = new Date()
+  const days: { label: string; total: number; segs: { model: string; value: number; color: string }[] }[] = []
+  for (let i = props.days - 1; i >= 0; i--) {
+    const dt = new Date(today)
+    dt.setDate(today.getDate() - i)
+    const key = dt.toISOString().slice(0, 10)
+    const segMap = new Map<string, number>()
+    for (const r of byDay.get(key) ?? []) {
+      const m = colorOf.has(r.model) ? r.model : '__other'
+      segMap.set(m, (segMap.get(m) ?? 0) + val(r))
+    }
+    const segs = [...segMap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([m, v]) => ({
+        model: m === '__other' ? t('dashboard.otherModels') : m,
+        value: v,
+        color: m === '__other' ? OTHER : colorOf.get(m) ?? OTHER,
+      }))
+    days.push({ label: key.slice(5), total: segs.reduce((s, x) => s + x.value, 0), segs })
+  }
+  const max = Math.max(Number.EPSILON, ...days.map((d) => d.total))
+  const legend = topModels.map((m, i) => ({ model: m, color: PALETTE[i % PALETTE.length] }))
+  return { days, max, legend }
+})
+
+function fmt(v: number): string {
+  return props.metric === 'cost' ? '$' + v.toFixed(4) : v.toLocaleString()
+}
+</script>
+
+<template>
+  <div class="card p-4">
+    <div class="flex h-32 items-end gap-1" role="img" :aria-label="t('usage.chartAlt')">
+      <div
+        v-for="dy in data.days"
+        :key="dy.label"
+        class="group relative flex min-h-[2px] flex-1 flex-col"
+        :style="{ height: `${(dy.total / data.max) * 100}%` }"
+        :title="`${dy.label} · ${fmt(dy.total)}`"
+      >
+        <div
+          v-for="(s, si) in dy.segs"
+          :key="si"
+          class="first:rounded-t"
+          :style="{ height: `${dy.total ? (s.value / dy.total) * 100 : 0}%`, background: `rgb(${s.color})`, opacity: 0.85 }"
+          :title="`${s.model}: ${fmt(s.value)}`"
+        ></div>
+      </div>
+    </div>
+    <div class="mt-2 flex justify-between font-mono text-[10px] text-muted">
+      <span>{{ data.days[0]?.label }}</span>
+      <span>{{ data.days[data.days.length - 1]?.label }}</span>
+    </div>
+    <div class="mt-3 flex flex-wrap gap-x-3 gap-y-1">
+      <span v-for="l in data.legend" :key="l.model" class="inline-flex items-center gap-1 text-[11px] text-muted">
+        <span class="h-2 w-2 rounded-full" :style="{ background: `rgb(${l.color})` }"></span>{{ l.model }}
+      </span>
+    </div>
+  </div>
+</template>

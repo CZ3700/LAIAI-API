@@ -93,6 +93,7 @@ export default {
     tokens: 'โทเคน',
     successRate: 'สำเร็จ {rate}%',
     byModel: 'ตามโมเดล',
+    otherModels: 'อื่นๆ',
     recent: 'คำขอล่าสุด',
   },
   models: {

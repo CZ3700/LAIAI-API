@@ -93,6 +93,7 @@ export default {
     tokens: 'Jetons',
     successRate: '{rate}% de réussite',
     byModel: 'Par modèle',
+    otherModels: 'Autres',
     recent: 'Requêtes récentes',
   },
   models: {
