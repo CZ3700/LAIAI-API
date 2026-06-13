@@ -47,7 +47,12 @@ interface OrgRow {
   members: number
   balance: string
   held: string
+  group: string
   status: number
+}
+interface GroupRatio {
+  name: string
+  ratio: string
 }
 interface Price {
   Model: string
@@ -103,7 +108,42 @@ function showError(e: unknown) {
 const { t, d } = useI18n()
 
 // —— tabs ——
-const tab = ref<'overview' | 'channels' | 'prices' | 'credits' | 'orgs' | 'logs'>('overview')
+const tab = ref<'overview' | 'channels' | 'prices' | 'groups' | 'credits' | 'orgs' | 'logs'>('overview')
+
+// —— 分组倍率 ——
+const groupRatios = ref<GroupRatio[]>([])
+const gr = ref({ name: '', ratio: '1' })
+async function loadGroupRatios() {
+  groupRatios.value = (await adminApi<{ groups: GroupRatio[] }>('GET', '/api/admin/group-ratios')).groups
+}
+async function upsertGroupRatio() {
+  try {
+    await adminApi('POST', '/api/admin/group-ratios', { name: gr.value.name, ratio: gr.value.ratio })
+    gr.value = { name: '', ratio: '1' }
+    await loadGroupRatios()
+    error.value = ''
+  } catch (e) {
+    showError(e)
+  }
+}
+async function deleteGroupRatio(name: string) {
+  if (!confirm(t('admin.grDeleteConfirm', { name }))) return
+  try {
+    await adminApi('DELETE', `/api/admin/group-ratios/${encodeURIComponent(name)}`)
+    await loadGroupRatios()
+  } catch (e) {
+    showError(e)
+  }
+}
+async function setOrgGroup(o: OrgRow, group: string) {
+  try {
+    await adminApi('PUT', `/api/admin/orgs/${o.id}/group`, { group })
+    await loadOrgs()
+    error.value = ''
+  } catch (e) {
+    showError(e)
+  }
+}
 
 // —— 日志（全局调用） ——
 const logs = ref<LogRow[]>([])
@@ -393,7 +433,7 @@ async function grant() {
 
 async function loadAll() {
   try {
-    await Promise.all([loadOverview(), loadChannels(), loadPrices(), loadOrgs()])
+    await Promise.all([loadOverview(), loadChannels(), loadPrices(), loadOrgs(), loadGroupRatios()])
   } catch (e) {
     showError(e)
   }
@@ -421,7 +461,7 @@ onMounted(() => {
       <div class="flex items-center justify-between">
         <div class="flex gap-1" role="tablist">
           <button
-            v-for="tb in ['overview', 'channels', 'prices', 'credits', 'orgs', 'logs'] as const"
+            v-for="tb in ['overview', 'channels', 'prices', 'groups', 'credits', 'orgs', 'logs'] as const"
             :key="tb"
             type="button"
             role="tab"
@@ -799,6 +839,47 @@ onMounted(() => {
         </div>
       </template>
 
+      <!-- 分组倍率 -->
+      <template v-if="tab === 'groups'">
+        <form class="card p-5 grid grid-cols-3 gap-4 items-end" @submit.prevent="upsertGroupRatio">
+          <div>
+            <label class="label" for="gr-name">{{ t('admin.grName') }}</label>
+            <input id="gr-name" v-model="gr.name" class="input font-mono text-xs" placeholder="vip" required />
+          </div>
+          <div>
+            <label class="label" for="gr-ratio">{{ t('admin.grRatio') }}</label>
+            <input id="gr-ratio" v-model="gr.ratio" class="input" placeholder="1" required />
+          </div>
+          <div>
+            <button class="btn-primary w-full" type="submit">{{ t('admin.prUpsert') }}</button>
+          </div>
+          <p class="col-span-3 text-xs text-muted">{{ t('admin.grHint') }}</p>
+        </form>
+
+        <div class="card overflow-hidden">
+          <table class="table w-full text-sm">
+            <thead>
+              <tr class="border-b border-line text-left text-muted">
+                <th class="px-4 py-3 font-medium">{{ t('admin.grName') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.grRatio') }}</th>
+                <th class="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="g in groupRatios" :key="g.name" class="border-b border-line last:border-0">
+                <td class="px-4 py-2.5 font-mono">{{ g.name }}</td>
+                <td class="px-4 py-2.5 text-right font-mono">{{ g.ratio }}×</td>
+                <td class="px-4 py-2.5 text-right">
+                  <button v-if="g.name !== 'default'" class="btn-danger !py-1 text-xs" @click="deleteGroupRatio(g.name)">
+                    {{ t('keys.delete') }}
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+
       <!-- 授信 -->
       <template v-if="tab === 'credits'">
         <form class="card max-w-md p-5 space-y-4" @submit.prevent="grant">
@@ -831,6 +912,7 @@ onMounted(() => {
                 <th class="px-4 py-3 font-medium">ID</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.orgName') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.orgOwner') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.orgGroup') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgMembers') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgBalance') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgHeld') }}</th>
@@ -839,12 +921,21 @@ onMounted(() => {
             </thead>
             <tbody>
               <tr v-if="orgs.length === 0">
-                <td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+                <td colspan="8" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <tr v-for="o in orgs" :key="o.id" class="border-b border-line last:border-0">
                 <td class="px-4 py-2.5 text-muted">{{ o.id }}</td>
                 <td class="px-4 py-2.5">{{ o.name }}</td>
                 <td class="px-4 py-2.5 font-mono text-xs">{{ o.owner_email }}</td>
+                <td class="px-4 py-2.5">
+                  <select
+                    :value="o.group"
+                    class="input !w-28 !py-1 text-xs"
+                    @change="setOrgGroup(o, ($event.target as HTMLSelectElement).value)"
+                  >
+                    <option v-for="g in groupRatios" :key="g.name" :value="g.name">{{ g.name }} ({{ g.ratio }}×)</option>
+                  </select>
+                </td>
                 <td class="px-4 py-2.5 text-right">{{ o.members }}</td>
                 <td class="px-4 py-2.5 text-right font-mono">${{ o.balance }}</td>
                 <td class="px-4 py-2.5 text-right font-mono text-muted">${{ o.held }}</td>

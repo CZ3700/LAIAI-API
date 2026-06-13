@@ -115,7 +115,8 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		return
 	}
 
-	holdAmount := price.ImageUSD.Mul(decimal.NewFromInt(int64(n)))
+	groupRatio := GroupRatio(rdb, key.OrgID) // 分组倍率（0011），hold/capture 同值
+	holdAmount := price.ImageUSD.Mul(decimal.NewFromInt(int64(n))).Mul(groupRatio)
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
 		acc, err := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
@@ -253,8 +254,8 @@ func (r *Relay) HandleImages(c *gin.Context) {
 
 	c.Data(http.StatusOK, "application/json", raw)
 
-	actual := price.ImageUSD.Mul(decimal.NewFromInt(int64(actualN)))
-	reason := fmt.Sprintf("images model=%s n=%d", req.Model, actualN)
+	actual := price.ImageUSD.Mul(decimal.NewFromInt(int64(actualN))).Mul(groupRatio)
+	reason := fmt.Sprintf("images model=%s n=%d ×%s", req.Model, actualN, groupRatio)
 	var overage = decimal.Zero
 	if err := r.DB.Transaction(func(tx *gorm.DB) error {
 		var err error

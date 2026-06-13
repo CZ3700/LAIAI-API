@@ -47,6 +47,7 @@ type Organization struct {
 	Name       string `gorm:"column:name"`
 	Kind       int8   `gorm:"column:kind"`
 	WhiteLabel int8   `gorm:"column:white_label"`
+	Group      string `gorm:"column:group_name"` // 计费分组（0011，差异化定价）
 	Status     int8   `gorm:"column:status"`
 }
 
@@ -102,6 +103,7 @@ func Register(tx *gorm.DB, in RegisterInput) (*User, *Organization, error) {
 		Slug:   fmt.Sprintf("u-%d", u.ID), // 用户 ID 派生，天然唯一
 		Name:   name,
 		Kind:   OrgKindPersonal,
+		Group:  "default", // 默认计费分组（0011）；显式设避免 GORM 零值覆盖 DB 默认
 		Status: StatusActive,
 	}
 	if err := tx.Create(org).Error; err != nil {

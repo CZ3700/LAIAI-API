@@ -61,7 +61,7 @@ func CreateTeamOrg(tx *gorm.DB, ownerID uint64, name string) (*Organization, err
 	if name == "" || len(name) > 64 {
 		return nil, fmt.Errorf("%w: name required (max 64 chars)", ErrInvalidInput)
 	}
-	org := &Organization{Slug: "", Name: name, Kind: OrgKindTeam, Status: StatusActive}
+	org := &Organization{Slug: "", Name: name, Kind: OrgKindTeam, Group: "default", Status: StatusActive}
 	// slug 由 org id 派生（与个人 org 同款策略，天然唯一）：先建行再补 slug
 	if err := tx.Create(org).Error; err != nil {
 		return nil, err

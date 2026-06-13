@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/relay"
@@ -377,13 +378,14 @@ func (s *Server) adminListOrgs(c *gin.Context) {
 		Name          string          `json:"name"`
 		Kind          int8            `json:"kind"`
 		Status        int8            `json:"status"`
+		Group         string          `json:"group"`
 		OwnerEmail    string          `json:"owner_email"`
 		Members       int64           `json:"members"`
 		PostedBalance decimal.Decimal `json:"balance"`
 		HeldAmount    decimal.Decimal `json:"held"`
 	}
 	err := s.db.Raw(`
-		SELECT o.id, o.name, o.kind, o.status,
+		SELECT o.id, o.name, o.kind, o.status, o.group_name AS ` + "`group`" + `,
 		       COALESCE(u.email, '') AS owner_email,
 		       (SELECT COUNT(*) FROM org_members m WHERE m.org_id = o.id) AS members,
 		       COALESCE(a.posted_balance, 0) AS posted_balance,
@@ -580,4 +582,89 @@ func (s *Server) adminProbeChannel(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, s.relay.ProbeChannel(c.Request.Context(), req.APIKey, req.BaseURL))
+}
+
+// —— 分组倍率（0011，差异化定价） ——
+
+type GroupRatio struct {
+	Name  string          `gorm:"primaryKey;column:name" json:"name"`
+	Ratio decimal.Decimal `gorm:"column:ratio" json:"ratio"`
+}
+
+func (GroupRatio) TableName() string { return "group_ratios" }
+
+// adminListGroupRatios：GET /api/admin/group-ratios
+func (s *Server) adminListGroupRatios(c *gin.Context) {
+	var rows []GroupRatio
+	if err := s.db.Order("name").Find(&rows).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "list failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"groups": rows})
+}
+
+// adminUpsertGroupRatio：POST /api/admin/group-ratios {name, ratio}
+func (s *Server) adminUpsertGroupRatio(c *gin.Context) {
+	var req struct {
+		Name  string `json:"name" binding:"required"`
+		Ratio string `json:"ratio" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "name and ratio required")
+		return
+	}
+	ratio, err := decimal.NewFromString(req.Ratio)
+	if err != nil || ratio.IsNegative() {
+		fail(c, http.StatusBadRequest, "ratio must be a non-negative decimal string")
+		return
+	}
+	g := &GroupRatio{Name: req.Name, Ratio: ratio}
+	if err := s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "name"}},
+		DoUpdates: clause.AssignmentColumns([]string{"ratio"}),
+	}).Create(g).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "upsert failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"name": g.Name})
+}
+
+// adminDeleteGroupRatio：DELETE /api/admin/group-ratios/:name（default 不可删）
+func (s *Server) adminDeleteGroupRatio(c *gin.Context) {
+	name := c.Param("name")
+	if name == "default" {
+		fail(c, http.StatusBadRequest, "the default group cannot be deleted")
+		return
+	}
+	if err := s.db.Where("name = ?", name).Delete(&GroupRatio{}).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": name})
+}
+
+// adminSetOrgGroup：PUT /api/admin/orgs/:id/group {group}
+func (s *Server) adminSetOrgGroup(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid org id")
+		return
+	}
+	var req struct {
+		Group string `json:"group" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "group required")
+		return
+	}
+	res := s.db.Model(&identity.Organization{}).Where("id = ?", id).Update("group_name", req.Group)
+	if res.Error != nil {
+		fail(c, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if res.RowsAffected == 0 {
+		fail(c, http.StatusNotFound, "org not found")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"id": id, "group": req.Group})
 }

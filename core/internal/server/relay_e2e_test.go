@@ -1112,3 +1112,60 @@ func TestRelayCachedBilling(t *testing.T) {
 		t.Fatalf("cost = %s, want 0.0178 (cached discount applied)", rec.CostUSD)
 	}
 }
+
+// 分组倍率：VIP 组 0.5× 时计费减半，hold/capture 一致。
+func TestRelayGroupRatio(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := mockUpstreamJSON(t, 1000, 500)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL) // input $2/1M, output $6/1M
+	apiKey, orgID := seedUserWithCredit(t, srv, "vip@example.com", "10")
+
+	// 建 vip 分组 0.5×，把 org 划入 vip
+	if w, out := srv.doAdmin(t, "POST", "/api/admin/group-ratios", map[string]any{"name": "vip", "ratio": "0.5"}); w.Code != 200 {
+		t.Fatalf("upsert ratio = %d %v", w.Code, out)
+	}
+	if w, _ := srv.doAdmin(t, "PUT", fmt.Sprintf("/api/admin/orgs/%v/group", uint64(orgID)), map[string]any{"group": "vip"}); w.Code != 200 {
+		t.Fatal("set org group failed")
+	}
+
+	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 200 {
+		t.Fatalf("relay = %d", w.Code)
+	}
+	rec := waitInvocation(t, db, "org_id = ?", uint64(orgID))
+	// 基础 = 1000×2/1M + 500×6/1M = 0.002 + 0.003 = 0.005；×0.5 = 0.0025
+	if !rec.CostUSD.Equal(decimal.RequireFromString("0.0025")) {
+		t.Fatalf("cost = %s, want 0.0025 (vip 0.5x)", rec.CostUSD)
+	}
+}
+
+// 分组倍率 CRUD：default 不可删。
+func TestAdminGroupRatioCRUD(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	srv.doAdmin(t, "POST", "/api/admin/group-ratios", map[string]any{"name": "svip", "ratio": "0.3"})
+	w, out := srv.doAdmin(t, "GET", "/api/admin/group-ratios", nil)
+	if w.Code != 200 {
+		t.Fatalf("list = %d", w.Code)
+	}
+	groups := out["groups"].([]any)
+	found := false
+	for _, g := range groups {
+		if g.(map[string]any)["name"] == "svip" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("svip not in list")
+	}
+	// default 不可删
+	if w, _ := srv.doAdmin(t, "DELETE", "/api/admin/group-ratios/default", nil); w.Code != 400 {
+		t.Fatalf("delete default = %d, want 400", w.Code)
+	}
+	// svip 可删
+	if w, _ := srv.doAdmin(t, "DELETE", "/api/admin/group-ratios/svip", nil); w.Code != 200 {
+		t.Fatalf("delete svip = %d, want 200", w.Code)
+	}
+}
