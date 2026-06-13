@@ -754,18 +754,28 @@ func (s *Server) adminListUsers(c *gin.Context) {
 	// 每个用户带出其个人组织(kind=0)与余额——授信入账（加余额）的 ledger 目标。
 	// 相关子查询锁定唯一个人组织，避免 owner 多组织 JOIN 扇出导致行重复/分页错乱。
 	var rows []struct {
-		ID          uint64          `json:"id"`
-		Email       string          `json:"email"`
-		DisplayName string          `json:"display_name"`
-		Status      int8            `json:"status"`
-		OrgID       uint64          `json:"org_id"`
-		Balance     decimal.Decimal `json:"balance"`
+		ID           uint64          `json:"id"`
+		Email        string          `json:"email"`
+		DisplayName  string          `json:"display_name"`
+		Status       int8            `json:"status"`
+		OrgID        uint64          `json:"org_id"`
+		Balance      decimal.Decimal `json:"balance"`
+		Group        string          `json:"group"`          // 个人组织计费分组（=层级/tier）
+		Invited      int64           `json:"invited"`        // 该用户邀请的组织数
+		Earned       decimal.Decimal `json:"earned"`         // 累计返佣（affiliate ledger）
+		InviterOrgID uint64          `json:"inviter_org_id"` // 邀请来源组织（0=无）
 	}
 	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	rdb.Raw(`
 		SELECT u.id, u.email, u.display_name, u.status,
 		       COALESCE(o.id, 0) AS org_id,
-		       COALESCE(a.posted_balance, 0) AS balance
+		       COALESCE(a.posted_balance, 0) AS balance,
+		       COALESCE(o.group_name, 'default') AS `+"`group`"+`,
+		       COALESCE(o.inviter_org_id, 0) AS inviter_org_id,
+		       (SELECT COUNT(*) FROM organizations oi WHERE oi.inviter_org_id = o.id) AS invited,
+		       (SELECT COALESCE(SUM(j.delta), 0) FROM ledger_journal j
+		           JOIN ledger_accounts la ON la.id = j.account_id
+		           WHERE la.org_id = o.id AND j.ref_type = 'affiliate') AS earned
 		FROM users u
 		LEFT JOIN organizations o ON o.id = (
 		    SELECT om.org_id FROM org_members om

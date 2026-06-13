@@ -264,7 +264,11 @@ async function saveSettings() {
 }
 
 // —— 用户管理 ——
-interface AdminUser { id: number; email: string; display_name: string; status: number; org_id: number; balance: string }
+interface AdminUser {
+  id: number; email: string; display_name: string; status: number
+  org_id: number; balance: string; group: string
+  invited: number; earned: string; inviter_org_id: number
+}
 const users = ref<AdminUser[]>([])
 const userQuery = ref('')
 async function loadUsers() {
@@ -274,6 +278,16 @@ async function loadUsers() {
 async function manageUser(u: AdminUser, action: 'ban' | 'unban') {
   try {
     await adminApi('POST', `/api/admin/users/${u.id}/manage`, { action })
+    await loadUsers()
+  } catch (e) {
+    showError(e)
+  }
+}
+// 改用户分组（=层级/tier；复用组织分组端点，作用于用户的个人组织）
+async function setUserGroup(u: AdminUser, group: string) {
+  if (!u.org_id) return
+  try {
+    await adminApi('PUT', `/api/admin/orgs/${u.org_id}/group`, { group })
     await loadUsers()
   } catch (e) {
     showError(e)
@@ -1657,25 +1671,44 @@ onMounted(() => {
               <tr class="border-b border-line text-left text-muted">
                 <th class="px-4 py-3 font-medium">ID</th>
                 <th class="px-4 py-3 font-medium">{{ t('auth.email') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('settings.displayName') }}</th>
-                <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgBalance') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('keys.status') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.userBalance') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.orgGroup') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.userInvite') }}</th>
                 <th class="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="users.length === 0">
-                <td colspan="6" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+                <td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <tr v-for="u in users" :key="u.id" class="border-b border-line last:border-0">
                 <td class="px-4 py-2.5 text-muted">{{ u.id }}</td>
-                <td class="px-4 py-2.5 font-mono text-xs">{{ u.email }}</td>
-                <td class="px-4 py-2.5">{{ u.display_name || '—' }}</td>
-                <td class="px-4 py-2.5 text-right font-mono">${{ Number(u.balance).toFixed(2) }}</td>
+                <td class="px-4 py-2.5">
+                  <div class="font-mono text-xs">{{ u.email }}</div>
+                  <div v-if="u.display_name" class="text-xs text-muted">{{ u.display_name }}</div>
+                </td>
                 <td class="px-4 py-2.5">
                   <span :class="u.status === 1 ? 'badge-ok' : 'badge-danger'">
                     {{ u.status === 1 ? t('admin.userActive') : t('admin.userBanned') }}
                   </span>
+                </td>
+                <td class="px-4 py-2.5 text-right font-mono">${{ Number(u.balance).toFixed(2) }}</td>
+                <td class="px-4 py-2.5">
+                  <select
+                    :value="u.group"
+                    class="input !w-28 !py-1 text-xs"
+                    :disabled="!u.org_id"
+                    :title="t('admin.userTierHint')"
+                    @change="setUserGroup(u, ($event.target as HTMLSelectElement).value)"
+                  >
+                    <option v-for="g in groupRatios" :key="g.name" :value="g.name">{{ g.name }} ({{ g.ratio }}×)</option>
+                  </select>
+                </td>
+                <td class="px-4 py-2.5 text-xs text-muted whitespace-nowrap">
+                  <span :title="t('admin.userInvited')">👥 {{ u.invited }}</span>
+                  <span class="ml-2 text-ok" :title="t('admin.userEarned')">${{ Number(u.earned).toFixed(2) }}</span>
+                  <span v-if="u.inviter_org_id" class="ml-2" :title="t('admin.userInviter')">← #{{ u.inviter_org_id }}</span>
                 </td>
                 <td class="px-4 py-2.5 text-right space-x-2 whitespace-nowrap">
                   <button class="btn-ghost !py-1 text-xs" :disabled="!u.org_id" @click="openGrant(u.org_id, u.email)">{{ t('admin.crAdd') }}</button>
@@ -1686,6 +1719,7 @@ onMounted(() => {
             </tbody>
           </table>
         </div>
+        <p class="text-xs text-muted">{{ t('admin.userTierHint') }}</p>
       </template>
 
       <!-- 设置 -->
