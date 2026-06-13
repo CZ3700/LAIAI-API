@@ -157,7 +157,7 @@ onMounted(async () => {
       <div class="space-y-3">
         <div class="flex items-center justify-between">
           <h2 class="font-semibold">{{ t('dashboard.recent') }}</h2>
-          <router-link class="text-sm text-accent hover:underline" to="/usage">{{ t('usage.title') }} →</router-link>
+          <router-link class="text-sm text-accent hover:underline" to="/app/usage">{{ t('usage.title') }} →</router-link>
         </div>
         <div class="card overflow-x-auto">
           <table class="table w-full text-sm whitespace-nowrap">

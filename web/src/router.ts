@@ -4,16 +4,27 @@ import { useAuth } from '@/stores/auth'
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/login', component: () => import('@/pages/Login.vue') },
-    { path: '/register', component: () => import('@/pages/Register.vue') },
+    // 公开门面（无需登录）
     {
       path: '/',
+      component: () => import('@/layouts/PublicLayout.vue'),
+      children: [
+        { path: '', component: () => import('@/pages/Landing.vue') },
+        { path: 'models', component: () => import('@/pages/Models.vue') },
+        { path: 'docs', component: () => import('@/pages/Docs.vue') },
+        { path: 'about', component: () => import('@/pages/About.vue') },
+      ],
+    },
+    { path: '/login', component: () => import('@/pages/Login.vue') },
+    { path: '/register', component: () => import('@/pages/Register.vue') },
+    // 控制台（需登录）
+    {
+      path: '/app',
       component: () => import('@/layouts/Shell.vue'),
       meta: { auth: true },
       children: [
         { path: '', component: () => import('@/pages/Dashboard.vue') },
         { path: 'playground', component: () => import('@/pages/Playground.vue') },
-        { path: 'models', component: () => import('@/pages/Models.vue') },
         { path: 'keys', component: () => import('@/pages/Keys.vue') },
         { path: 'usage', component: () => import('@/pages/Usage.vue') },
         { path: 'team', component: () => import('@/pages/Team.vue') },
@@ -27,5 +38,5 @@ export const router = createRouter({
 router.beforeEach((to) => {
   const auth = useAuth()
   if (to.meta.auth && !auth.isAuthed) return { path: '/login', query: { to: to.fullPath } }
-  if ((to.path === '/login' || to.path === '/register') && auth.isAuthed) return { path: '/' }
+  if ((to.path === '/login' || to.path === '/register') && auth.isAuthed) return { path: '/app' }
 })

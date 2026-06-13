@@ -37,7 +37,7 @@ async function copyName(model: string) {
 
 onMounted(async () => {
   try {
-    const r = await api<{ models: PricedModel[] }>('GET', '/api/pricing')
+    const r = await api<{ models: PricedModel[] }>('GET', '/api/pricing', undefined, { auth: false })
     models.value = r.models
     error.value = ''
   } catch (e) {
@@ -49,7 +49,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="max-w-4xl space-y-6">
+  <div class="mx-auto max-w-4xl space-y-6 px-6 py-10">
     <div class="flex items-center justify-between gap-4">
       <h1 class="text-2xl font-semibold tracking-tight">{{ t('models.title') }}</h1>
       <input v-model="search" class="input max-w-xs" :placeholder="t('models.search')" />

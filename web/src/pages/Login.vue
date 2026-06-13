@@ -21,7 +21,7 @@ async function submit() {
   error.value = ''
   try {
     await auth.login(email.value, password.value)
-    await router.replace(String(route.query.to ?? '/'))
+    await router.replace(String(route.query.to ?? '/app'))
   } catch (e) {
     error.value = errorMessage(e, t('common.error'))
   } finally {

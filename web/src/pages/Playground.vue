@@ -182,7 +182,7 @@ async function send() {
 
     <p v-if="!apiKey" class="text-xs text-muted">
       {{ t('play.keyHint') }}
-      <router-link class="text-accent hover:underline" to="/keys">{{ t('nav.keys') }} →</router-link>
+      <router-link class="text-accent hover:underline" to="/app/keys">{{ t('nav.keys') }} →</router-link>
     </p>
 
     <!-- 设置面板 -->

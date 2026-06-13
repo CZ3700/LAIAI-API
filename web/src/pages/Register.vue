@@ -20,7 +20,7 @@ async function submit() {
   error.value = ''
   try {
     await auth.register(email.value, password.value)
-    await router.replace('/')
+    await router.replace('/app')
   } catch (e) {
     error.value = errorMessage(e, t('common.error'))
   } finally {
