@@ -365,7 +365,7 @@ export default {
     chWeight: '重み',
     chPriority: '優先度',
     chProxy: 'プロキシ（任意）',
-    chProxyHint: 'このチャネルの上流呼び出しをプロキシ経由にします。空＝直接。例 http://user:pass@host:port または socks5://host:port',
+    chProxyHint: 'このチャネルの上流呼び出しをプロキシ経由にします。空＝直接。例 http://host:port または socks5://host:port',
     chAdd: 'チャネルを追加',
     chDisable: '無効化',
     chDisableConfirm: 'このチャネルを無効化しますか？直ちにルーティングから外れます。',

@@ -366,7 +366,7 @@ export default {
     chWeight: 'Вес',
     chPriority: 'Приоритет',
     chProxy: 'Прокси (необязательно)',
-    chProxyHint: 'Направлять исходящие вызовы канала через прокси. Пусто = напрямую. напр. http://user:pass@host:port или socks5://host:port',
+    chProxyHint: 'Направлять исходящие вызовы канала через прокси. Пусто = напрямую. напр. http://host:port или socks5://host:port',
     chAdd: 'Добавить канал',
     chDisable: 'Отключить',
     chDisableConfirm: 'Отключить этот канал? Он немедленно выйдет из маршрутизации.',
