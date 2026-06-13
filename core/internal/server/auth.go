@@ -3,11 +3,14 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
+	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -46,6 +49,13 @@ func (s *Server) register(c *gin.Context) {
 			return
 		}
 	}
+	// 注册赠送额度（运营可配，热更新）：>0 时在同一事务内入账，保证「建号即到账」原子
+	welcome := decimal.Zero
+	if g := s.getSetting("new_user_grant_usd"); g != "" {
+		if v, e := decimal.NewFromString(g); e == nil && v.IsPositive() {
+			welcome = v
+		}
+	}
 	var user *identity.User
 	var org *identity.Organization
 	err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -54,7 +64,27 @@ func (s *Server) register(c *gin.Context) {
 			Email: req.Email, Password: req.Password, DisplayName: req.DisplayName,
 			InviterCode: req.InviterCode,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		if welcome.IsPositive() {
+			acc, e := ledger.EnsureAccount(tx, org.ID, ledger.AccountUserCredit)
+			if e != nil {
+				return e
+			}
+			// 幂等键含 org：同一新组织永不重复赠送
+			if _, _, e := ledger.Post(tx, ledger.PostInput{
+				IdempotencyKey: "welcome_grant:" + strconv.FormatUint(org.ID, 10),
+				AccountID:      acc.ID,
+				Kind:           ledger.KindGrant,
+				Delta:          welcome,
+				RefType:        "welcome_grant",
+				Reason:         "new user signup bonus",
+			}); e != nil {
+				return e
+			}
+		}
+		return nil
 	})
 	switch {
 	case errors.Is(err, identity.ErrEmailTaken):

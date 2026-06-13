@@ -1575,15 +1575,17 @@ onMounted(() => {
       <!-- 设置 -->
       <template v-if="tab === 'settings'">
         <form class="card max-w-2xl p-6 space-y-5" @submit.prevent="saveSettings">
-          <div>
-            <label class="label" for="set-site">{{ t('admin.setSiteName') }}</label>
-            <input id="set-site" v-model="settings.site_name" class="input max-w-sm" />
+          <h3 class="font-semibold">{{ t('admin.setGrpGeneral') }}</h3>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label class="label" for="set-site">{{ t('admin.setSiteName') }}</label>
+              <input id="set-site" v-model="settings.site_name" class="input" />
+            </div>
+            <div>
+              <label class="label" for="set-support">{{ t('admin.setSupportEmail') }}</label>
+              <input id="set-support" v-model="settings.support_email" class="input" type="email" placeholder="support@example.com" />
+            </div>
           </div>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" class="accent-accent" :checked="settings.register_enabled === 'true'"
-              @change="settings.register_enabled = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
-            {{ t('admin.setRegister') }}
-          </label>
           <label class="flex items-center gap-2 text-sm">
             <input type="checkbox" class="accent-accent" :checked="settings.maintenance_mode === 'true'"
               @change="settings.maintenance_mode = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
@@ -1594,12 +1596,39 @@ onMounted(() => {
             <input id="set-ann" v-model="settings.announcement" class="input" :placeholder="t('admin.setAnnouncementPh')" />
           </div>
           <div>
-            <label class="label" for="set-tos">{{ t('admin.setToS') }}</label>
-            <textarea id="set-tos" v-model="settings.terms_of_service" class="input" rows="3"></textarea>
+            <label class="label" for="set-footer">{{ t('admin.setFooter') }}</label>
+            <input id="set-footer" v-model="settings.footer_text" class="input" :placeholder="t('admin.setFooterPh')" />
           </div>
-          <div>
-            <label class="label" for="set-priv">{{ t('admin.setPrivacy') }}</label>
-            <textarea id="set-priv" v-model="settings.privacy_policy" class="input" rows="3"></textarea>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label class="label" for="set-tos">{{ t('admin.setToS') }}</label>
+              <textarea id="set-tos" v-model="settings.terms_of_service" class="input" rows="3"></textarea>
+            </div>
+            <div>
+              <label class="label" for="set-priv">{{ t('admin.setPrivacy') }}</label>
+              <textarea id="set-priv" v-model="settings.privacy_policy" class="input" rows="3"></textarea>
+            </div>
+          </div>
+
+          <div class="border-t border-line pt-5">
+            <h3 class="mb-3 font-semibold">{{ t('admin.setGrpSignup') }}</h3>
+            <div class="space-y-3">
+              <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" class="accent-accent" :checked="settings.register_enabled === 'true'"
+                  @change="settings.register_enabled = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
+                {{ t('admin.setRegister') }}
+              </label>
+              <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" class="accent-accent" :checked="settings.email_verification_enabled === 'true'"
+                  @change="settings.email_verification_enabled = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
+                {{ t('admin.setEmailVerify') }}
+              </label>
+              <div class="max-w-xs">
+                <label class="label" for="set-grant">{{ t('admin.setWelcomeGrant') }}</label>
+                <input id="set-grant" v-model="settings.new_user_grant_usd" class="input" placeholder="0" />
+                <p class="mt-1 text-xs text-muted">{{ t('admin.setWelcomeGrantHint') }}</p>
+              </div>
+            </div>
           </div>
 
           <div class="border-t border-line pt-5">
@@ -1630,12 +1659,30 @@ onMounted(() => {
                 <input id="set-cny" v-model="settings.cny_per_usd" class="input" placeholder="7.3" />
               </div>
               <div>
+                <label class="label" for="set-min">{{ t('admin.setMinTopup') }}</label>
+                <input id="set-min" v-model="settings.min_topup_usd" class="input" placeholder="1" />
+              </div>
+              <div>
                 <label class="label" for="set-aff">{{ t('admin.setAffRate') }}</label>
                 <input id="set-aff" v-model="settings.affiliate_rate" class="input" placeholder="0" />
               </div>
             </div>
             <p class="mt-2 text-xs text-muted">{{ t('admin.setPaymentHint') }}</p>
             <p class="mt-1 text-xs text-muted">{{ t('admin.setAffHint') }}</p>
+          </div>
+
+          <div class="border-t border-line pt-5">
+            <h3 class="mb-3 font-semibold">{{ t('admin.setGrpChannels') }}</h3>
+            <label class="flex items-center gap-2 text-sm">
+              <input type="checkbox" class="accent-accent" :checked="settings.channel_auto_disable === 'true'"
+                @change="settings.channel_auto_disable = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
+              {{ t('admin.setAutoDisable') }}
+            </label>
+            <div class="mt-3 max-w-xs">
+              <label class="label" for="set-thresh">{{ t('admin.setDisableThreshold') }}</label>
+              <input id="set-thresh" v-model="settings.channel_disable_threshold" class="input" type="number" min="1" placeholder="5" />
+            </div>
+            <p class="mt-2 text-xs text-muted">{{ t('admin.setAutoDisableHint') }}</p>
           </div>
 
           <div class="border-t border-line pt-5">

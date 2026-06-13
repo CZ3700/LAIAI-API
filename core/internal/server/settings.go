@@ -16,15 +16,39 @@ type Setting struct {
 
 func (Setting) TableName() string { return "ext_settings" }
 
-// 已知设置键（公开/admin 共用），含默认值。
+// 已知设置键（公开/admin 共用），含默认值。adminSetSettings 只接受这里登记的键，
+// 所以「前端表单/引擎用到的每个键」都必须在此登记，否则保存会被当未知键拒绝。
 var settingDefaults = map[string]string{
-	"site_name":                   "LAIAI",
-	"register_enabled":            "true",
-	"email_verification_enabled":  "false",
-	"maintenance_mode":            "false",
-	"announcement":                "",
-	"terms_of_service":            "",
-	"privacy_policy":              "",
+	// —— 通用 / 门面 ——
+	"site_name":          "LAIAI",
+	"announcement":       "",
+	"terms_of_service":   "",
+	"privacy_policy":     "",
+	"support_email":      "",
+	"footer_text":        "",
+	"maintenance_mode":   "false",
+	// —— 注册 / 登录 ——
+	"register_enabled":           "true",
+	"email_verification_enabled": "false",
+	"new_user_grant_usd":         "0", // 注册即赠送额度（USD，0=不送）；register 流程消费
+	// —— 支付（引擎 engineFor 消费；密钥服务端存，前端永不回显明文）——
+	"stripe_secret_key":     "",
+	"stripe_webhook_secret": "",
+	"epay_pid":              "",
+	"epay_key":              "",
+	"epay_api_url":          "",
+	"cny_per_usd":           "", // 空=默认 7.3
+	"min_topup_usd":         "1", // 最低充值额（USD）；createTopup 消费
+	// —— 返佣 ——
+	"affiliate_rate": "0", // 邀请返佣比例（0..1）；payAffiliateRebate 消费
+	// —— 渠道治理 ——
+	"channel_auto_disable":      "false", // 上游连续失败自动禁用渠道
+	"channel_disable_threshold": "5",     // 连续失败次数阈值
+	// —— OAuth（oauthStart/Callback 消费）——
+	"github_client_id":     "",
+	"github_client_secret": "",
+	"google_client_id":     "",
+	"google_client_secret": "",
 }
 
 func (s *Server) getSetting(name string) string {
@@ -89,6 +113,8 @@ func (s *Server) getConfig(c *gin.Context) {
 		"announcement":               s.getSetting("announcement"),
 		"terms_of_service":           s.getSetting("terms_of_service"),
 		"privacy_policy":             s.getSetting("privacy_policy"),
+		"support_email":              s.getSetting("support_email"),
+		"footer_text":                s.getSetting("footer_text"),
 	})
 }
 

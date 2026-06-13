@@ -100,6 +100,13 @@ func (s *Server) createTopup(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "amount_usd must be a positive decimal string")
 		return
 	}
+	// 最低充值额（运营可配，热更新）：低于阈值直接拒绝，省得建无效订单
+	if min := s.getSetting("min_topup_usd"); min != "" {
+		if m, e := decimal.NewFromString(min); e == nil && amountUSD.LessThan(m) {
+			fail(c, http.StatusBadRequest, "amount below minimum top-up of "+min+" USD")
+			return
+		}
+	}
 	engine := s.engineFor(req.Provider)
 	if engine == nil {
 		fail(c, http.StatusBadRequest, "payment provider not available: "+req.Provider)

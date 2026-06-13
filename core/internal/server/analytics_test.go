@@ -165,6 +165,24 @@ func TestAdminOrgsEnriched(t *testing.T) {
 	}
 }
 
+// TestWelcomeGrant：注册赠送额度（new_user_grant_usd）原子入账到新用户个人组织。
+func TestWelcomeGrant(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	if err := db.Exec(`INSERT INTO ext_settings (name, value) VALUES ('new_user_grant_usd', '5')`).Error; err != nil {
+		t.Fatal(err)
+	}
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "welcome@gmail.com", "password": "longenough1"})
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "welcome@gmail.com", "password": "longenough1"})
+	token := login["token"].(string)
+	w, out := srv.do(t, "GET", "/api/balance", token, nil)
+	if w.Code != 200 {
+		t.Fatalf("balance = %d %v", w.Code, out)
+	}
+	if got := decf(t, out["balance"]); got != 5 {
+		t.Errorf("balance = %v, want 5 (welcome grant)", got)
+	}
+}
+
 // TestAdminListUsersBalance：用户列表带出个人组织 + 余额（授信入账并入用户管理的前提）。
 func TestAdminListUsersBalance(t *testing.T) {
 	srv, _ := setupRelayServer(t)
