@@ -65,7 +65,17 @@ const nav = [
         </router-link>
       </nav>
       <div class="p-3 border-t border-line space-y-2.5">
-        <div class="px-2 text-xs text-muted truncate" :title="auth.email">{{ auth.email }}</div>
+        <router-link
+          to="/settings"
+          class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted transition-colors hover:bg-elev hover:text-ink"
+          active-class="!text-ink bg-elev"
+          :title="auth.email"
+        >
+          <svg class="h-4 w-4 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
+          </svg>
+          <span class="truncate">{{ auth.email }}</span>
+        </router-link>
         <ThemeLocale />
         <button class="btn-ghost w-full !py-1.5 text-xs" @click="auth.logout()">{{ t('nav.logout') }}</button>
       </div>

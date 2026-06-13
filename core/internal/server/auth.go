@@ -100,6 +100,62 @@ func (s *Server) me(c *gin.Context) {
 	})
 }
 
+type updateProfileReq struct {
+	DisplayName string `json:"display_name"`
+}
+
+// updateProfile：PATCH /api/me —— 改显示名。
+func (s *Server) updateProfile(c *gin.Context) {
+	claims := mustClaims(c)
+	var req updateProfileReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if err := s.db.Model(&identity.User{}).Where("id = ?", claims.UserID).
+		Update("display_name", req.DisplayName).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "update failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"display_name": req.DisplayName})
+}
+
+type changePasswordReq struct {
+	OldPassword string `json:"old_password" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required"`
+}
+
+// changePassword：POST /api/me/password —— 验证旧密码后改密。
+// 不使会话失效（无 token blocklist；session 短 TTL + 改密非高频，M2 上 Redis 后再撤销）。
+func (s *Server) changePassword(c *gin.Context) {
+	claims := mustClaims(c)
+	var req changePasswordReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "old_password and new_password required")
+		return
+	}
+	user := &identity.User{}
+	if err := s.db.First(user, claims.UserID).Error; err != nil {
+		fail(c, http.StatusNotFound, "user not found")
+		return
+	}
+	if err := identity.VerifyPassword(req.OldPassword, user.PasswordHash); err != nil {
+		fail(c, http.StatusUnauthorized, "current password is incorrect")
+		return
+	}
+	hash, err := identity.HashPassword(req.NewPassword)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "new password must be at least 8 characters")
+		return
+	}
+	if err := s.db.Model(&identity.User{}).Where("id = ?", claims.UserID).
+		Update("password_hash", hash).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "update failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 // authRequired：Bearer session token 校验中间件。
 func (s *Server) authRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {

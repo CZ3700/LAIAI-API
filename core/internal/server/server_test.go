@@ -200,3 +200,46 @@ func TestKeyOrgIsolation(t *testing.T) {
 		t.Fatalf("cross-org revoke = %d, want 404", w.Code)
 	}
 }
+
+// 账户设置：改显示名 + 改密码（旧密码校验）。
+func TestProfileAndPassword(t *testing.T) {
+	srv, _ := setupServer(t)
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "acct@example.com", "password": "origpass1"})
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "acct@example.com", "password": "origpass1"})
+	token := login["token"].(string)
+
+	// 改显示名
+	w, _ := srv.do(t, "PATCH", "/api/me", token, map[string]string{"display_name": "Alice"})
+	if w.Code != 200 {
+		t.Fatalf("patch me = %d", w.Code)
+	}
+	_, me := srv.do(t, "GET", "/api/me", token, nil)
+	if me["display_name"] != "Alice" {
+		t.Fatalf("display_name = %v", me["display_name"])
+	}
+
+	// 改密码：旧密码错 → 401
+	w, _ = srv.do(t, "POST", "/api/me/password", token, map[string]string{"old_password": "wrongpass", "new_password": "newpass12"})
+	if w.Code != 401 {
+		t.Fatalf("wrong old password = %d, want 401", w.Code)
+	}
+	// 改密码：新密码太短 → 400
+	w, _ = srv.do(t, "POST", "/api/me/password", token, map[string]string{"old_password": "origpass1", "new_password": "short"})
+	if w.Code != 400 {
+		t.Fatalf("short new password = %d, want 400", w.Code)
+	}
+	// 改密码：成功
+	w, _ = srv.do(t, "POST", "/api/me/password", token, map[string]string{"old_password": "origpass1", "new_password": "newpass12"})
+	if w.Code != 200 {
+		t.Fatalf("change password = %d", w.Code)
+	}
+	// 旧密码登录失败，新密码登录成功
+	w, _ = srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "acct@example.com", "password": "origpass1"})
+	if w.Code == 200 {
+		t.Fatal("old password should no longer work")
+	}
+	w, _ = srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "acct@example.com", "password": "newpass12"})
+	if w.Code != 200 {
+		t.Fatalf("new password login = %d", w.Code)
+	}
+}

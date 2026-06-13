@@ -79,6 +79,8 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 		authed := api.Group("", s.authRequired())
 		{
 			authed.GET("/me", s.me)
+			authed.PATCH("/me", s.updateProfile)
+			authed.POST("/me/password", s.changePassword)
 			authed.POST("/keys", s.createKey)
 			authed.GET("/keys", s.listKeys)
 			authed.DELETE("/keys/:id", s.revokeKey)

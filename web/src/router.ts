@@ -17,6 +17,7 @@ export const router = createRouter({
         { path: 'keys', component: () => import('@/pages/Keys.vue') },
         { path: 'usage', component: () => import('@/pages/Usage.vue') },
         { path: 'team', component: () => import('@/pages/Team.vue') },
+        { path: 'settings', component: () => import('@/pages/Settings.vue') },
         { path: 'admin', component: () => import('@/pages/Admin.vue') },
       ],
     },
