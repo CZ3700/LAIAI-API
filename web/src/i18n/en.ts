@@ -26,6 +26,7 @@ const messages = {
     wallet: 'Wallet',
     keys: 'API Keys',
     usage: 'Usage',
+    rankings: 'Rankings',
     docs: 'Docs',
     about: 'About',
     console: 'Console',
@@ -143,6 +144,11 @@ const messages = {
     paid: 'paid',
     failed: 'failed',
     expired: 'expired',
+  },  rankings: {
+    title: 'Model Rankings',
+    lead: 'The most-used models and providers across the platform.',
+    topModels: 'Top models',
+    topProviders: 'Top providers',
   },  settings: {
     title: 'Settings',
     account: 'Account',

@@ -25,6 +25,7 @@ export default {
     wallet: 'กระเป๋าเงิน',
     keys: 'คีย์ API',
     usage: 'การใช้งาน',
+    rankings: 'อันดับ',
     docs: 'เอกสาร',
     about: 'เกี่ยวกับ',
     console: 'คอนโซล',
@@ -142,6 +143,11 @@ export default {
     paid: 'ชำระแล้ว',
     failed: 'ล้มเหลว',
     expired: 'หมดอายุ',
+  },  rankings: {
+    title: 'อันดับโมเดล',
+    lead: 'โมเดลและผู้ให้บริการที่ใช้งานมากที่สุดบนแพลตฟอร์ม',
+    topModels: 'โมเดลยอดนิยม',
+    topProviders: 'ผู้ให้บริการยอดนิยม',
   },  settings: {
     title: 'การตั้งค่า',
     account: 'บัญชี',

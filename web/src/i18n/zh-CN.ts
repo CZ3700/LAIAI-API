@@ -26,6 +26,7 @@ export default {
     wallet: '钱包',
     keys: 'API 密钥',
     usage: '用量',
+    rankings: '排行榜',
     docs: '文档',
     about: '关于',
     console: '控制台',
@@ -142,6 +143,11 @@ export default {
     paid: '已到账',
     failed: '失败',
     expired: '已过期',
+  },  rankings: {
+    title: '模型排行榜',
+    lead: '全平台调用量最高的模型与厂商。',
+    topModels: '热门模型',
+    topProviders: '热门厂商',
   },  settings: {
     title: '设置',
     account: '账户',

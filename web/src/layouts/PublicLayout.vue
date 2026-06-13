@@ -20,6 +20,7 @@ onMounted(async () => {
 
 const links = [
   { to: '/models', label: () => t('nav.models') },
+  { to: '/rankings', label: () => t('nav.rankings') },
   { to: '/docs', label: () => t('nav.docs') },
   { to: '/about', label: () => t('nav.about') },
 ]

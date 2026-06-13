@@ -25,6 +25,7 @@ export default {
     wallet: 'Кошелёк',
     keys: 'API-ключи',
     usage: 'Использование',
+    rankings: 'Рейтинг',
     docs: 'Документация',
     about: 'О нас',
     console: 'Консоль',
@@ -142,6 +143,11 @@ export default {
     paid: 'оплачено',
     failed: 'ошибка',
     expired: 'истекло',
+  },  rankings: {
+    title: 'Рейтинг моделей',
+    lead: 'Самые используемые модели и провайдеры на платформе.',
+    topModels: 'Топ моделей',
+    topProviders: 'Топ провайдеров',
   },  settings: {
     title: 'Настройки',
     account: 'Аккаунт',

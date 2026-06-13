@@ -25,6 +25,7 @@ export default {
     wallet: 'Portefeuille',
     keys: 'Clés API',
     usage: 'Utilisation',
+    rankings: 'Classements',
     docs: 'Docs',
     about: 'À propos',
     console: 'Console',
@@ -142,6 +143,11 @@ export default {
     paid: 'paye',
     failed: 'echoue',
     expired: 'expire',
+  },  rankings: {
+    title: 'Classements des modeles',
+    lead: 'Les modeles et fournisseurs les plus utilises sur la plateforme.',
+    topModels: 'Top modeles',
+    topProviders: 'Top fournisseurs',
   },  settings: {
     title: 'Paramètres',
     account: 'Compte',

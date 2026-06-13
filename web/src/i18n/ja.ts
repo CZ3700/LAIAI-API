@@ -25,6 +25,7 @@ export default {
     wallet: 'ウォレット',
     keys: 'APIキー',
     usage: '使用量',
+    rankings: 'ランキング',
     docs: 'ドキュメント',
     about: '概要',
     console: 'コンソール',
@@ -141,6 +142,11 @@ export default {
     paid: '入金済',
     failed: '失敗',
     expired: '期限切れ',
+  },  rankings: {
+    title: 'モデルランキング',
+    lead: 'プラットフォーム全体で最も利用されているモデルとプロバイダー。',
+    topModels: '人気モデル',
+    topProviders: '人気プロバイダー',
   },  settings: {
     title: '設定',
     account: 'アカウント',

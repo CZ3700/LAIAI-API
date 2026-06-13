@@ -25,6 +25,7 @@ export default {
     wallet: '錢包',
     keys: 'API 金鑰',
     usage: '用量',
+    rankings: '排行榜',
     docs: '文件',
     about: '關於',
     console: '控制台',
@@ -141,6 +142,11 @@ export default {
     paid: '已入帳',
     failed: '失敗',
     expired: '已過期',
+  },  rankings: {
+    title: '模型排行榜',
+    lead: '全平台呼叫量最高的模型與廠商。',
+    topModels: '熱門模型',
+    topProviders: '熱門廠商',
   },  settings: {
     title: '設定',
     account: '帳戶',

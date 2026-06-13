@@ -25,6 +25,7 @@ export default {
     wallet: 'Ví',
     keys: 'Khóa API',
     usage: 'Mức sử dụng',
+    rankings: 'Xếp hạng',
     docs: 'Tài liệu',
     about: 'Giới thiệu',
     console: 'Bảng điều khiển',
@@ -142,6 +143,11 @@ export default {
     paid: 'đã thanh toán',
     failed: 'thất bại',
     expired: 'hết hạn',
+  },  rankings: {
+    title: 'Xếp hạng mô hình',
+    lead: 'Các mô hình và nhà cung cấp được dùng nhiều nhất trên nền tảng.',
+    topModels: 'Mô hình hàng đầu',
+    topProviders: 'Nhà cung cấp hàng đầu',
   },  settings: {
     title: 'Cài đặt',
     account: 'Tài khoản',

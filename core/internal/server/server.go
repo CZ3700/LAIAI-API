@@ -90,7 +90,8 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 		api.POST("/auth/login", s.authRateLimit(), s.login)
 		api.POST("/auth/send-verification", s.authRateLimit(), s.sendVerification)
 		api.GET("/pricing", s.getPricing) // 公开价目（营销站/模型市场同源）
-		api.GET("/config", s.getConfig)   // 公开运营配置（站名/注册开关/公告/法务）
+		api.GET("/config", s.getConfig)       // 公开运营配置（站名/注册开关/公告/法务）
+		api.GET("/rankings", s.getRankings)   // 公开模型/厂商调用量排行（营销/SEO）
 		api.POST("/payment/callback/:provider", s.paymentCallback) // 支付 webhook（验签入金，无需登录）
 
 		authed := api.Group("", s.authRequired())

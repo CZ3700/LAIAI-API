@@ -25,6 +25,7 @@ export default {
     wallet: 'Dompet',
     keys: 'Kunci API',
     usage: 'Penggunaan',
+    rankings: 'Ranking',
     docs: 'Dokumen',
     about: 'Perihal',
     console: 'Konsol',
@@ -142,6 +143,11 @@ export default {
     paid: 'dibayar',
     failed: 'gagal',
     expired: 'tamat tempoh',
+  },  rankings: {
+    title: 'Ranking Model',
+    lead: 'Model dan penyedia paling banyak digunakan di platform.',
+    topModels: 'Model teratas',
+    topProviders: 'Penyedia teratas',
   },  settings: {
     title: 'Tetapan',
     account: 'Akaun',

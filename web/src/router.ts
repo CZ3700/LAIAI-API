@@ -11,6 +11,7 @@ export const router = createRouter({
       children: [
         { path: '', component: () => import('@/pages/Landing.vue') },
         { path: 'models', component: () => import('@/pages/Models.vue') },
+        { path: 'rankings', component: () => import('@/pages/Rankings.vue') },
         { path: 'docs', component: () => import('@/pages/Docs.vue') },
         { path: 'about', component: () => import('@/pages/About.vue') },
       ],
