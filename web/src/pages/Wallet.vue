@@ -15,11 +15,24 @@ interface Order {
   created_at: number
 }
 
+interface LedgerEntry {
+  id: number
+  kind: string
+  delta: string
+  balance_after: string
+  ref_type: string
+  ref_id: string
+  reason: string
+  created_at: string
+}
+
 const { t, d } = useI18n()
 const balance = ref('0')
+const held = ref('0')
 const methods = ref<Method[]>([])
 const amountOptions = ref<number[]>([])
 const orders = ref<Order[]>([])
+const ledger = ref<LedgerEntry[]>([])
 const selectedAmount = ref(20)
 const selectedProvider = ref('')
 const creating = ref(false)
@@ -47,14 +60,25 @@ function statusLabel(s: number): string {
   return t('wallet.pending')
 }
 
+// 流水类型 → 友好标签（kind 是英文枚举，做本地化映射，未知回退原值）
+function kindLabel(kind: string): string {
+  const key = `wallet.kind_${kind}`
+  const tr = t(key)
+  return tr === key ? kind : tr
+}
+
 async function load() {
-  const [bal, m, o, a] = await Promise.allSettled([
-    api<{ balance: string }>('GET', '/api/balance'),
+  const [bal, m, o, a, lg] = await Promise.allSettled([
+    api<{ balance: string; held: string }>('GET', '/api/balance'),
     api<{ methods: Method[]; amount_options: number[] }>('GET', '/api/payment/methods'),
     api<{ orders: Order[] }>('GET', '/api/payment/orders'),
     api<{ aff_code: string; invited: number; earned: string; rate: string }>('GET', '/api/affiliate'),
+    api<{ items: LedgerEntry[] }>('GET', '/api/ledger'),
   ])
-  if (bal.status === 'fulfilled') balance.value = bal.value.balance
+  if (bal.status === 'fulfilled') {
+    balance.value = bal.value.balance
+    held.value = bal.value.held
+  }
   if (m.status === 'fulfilled') {
     methods.value = m.value.methods
     amountOptions.value = m.value.amount_options
@@ -62,6 +86,7 @@ async function load() {
   }
   if (o.status === 'fulfilled') orders.value = o.value.orders
   if (a.status === 'fulfilled') aff.value = a.value
+  if (lg.status === 'fulfilled') ledger.value = lg.value.items
 }
 
 async function topup() {
@@ -94,6 +119,9 @@ onMounted(load)
     >
       <p class="text-xs opacity-80">{{ t('dashboard.balance') }}</p>
       <p class="mt-1 text-4xl font-semibold font-mono">${{ balance }}</p>
+      <p v-if="Number(held) > 0" class="mt-1 text-xs opacity-80">
+        {{ t('wallet.held') }}: <span class="font-mono">${{ held }}</span>
+      </p>
     </div>
 
     <!-- 充值 -->
@@ -149,6 +177,38 @@ onMounted(load)
       <div class="flex gap-8 text-sm">
         <div><span class="text-muted">{{ t('wallet.affInvited') }}</span> <span class="font-mono">{{ aff.invited }}</span></div>
         <div><span class="text-muted">{{ t('wallet.affEarned') }}</span> <span class="font-mono">${{ aff.earned }}</span></div>
+      </div>
+    </div>
+
+    <!-- 资金流水（统一账本：充值/赠送/消费/释放） -->
+    <div class="space-y-3">
+      <h2 class="font-semibold">{{ t('wallet.transactions') }}</h2>
+      <div class="card overflow-x-auto">
+        <table class="table w-full text-sm whitespace-nowrap">
+          <thead>
+            <tr class="border-b border-line text-left text-muted">
+              <th class="px-4 py-3 font-medium">{{ t('usage.time') }}</th>
+              <th class="px-4 py-3 font-medium">{{ t('wallet.txType') }}</th>
+              <th class="px-4 py-3 font-medium">{{ t('wallet.txDetail') }}</th>
+              <th class="px-4 py-3 font-medium text-right">{{ t('wallet.txAmount') }}</th>
+              <th class="px-4 py-3 font-medium text-right">{{ t('wallet.txBalance') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="ledger.length === 0">
+              <td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+            </tr>
+            <tr v-for="e in ledger" :key="e.id" class="border-b border-line last:border-0">
+              <td class="px-4 py-2.5 text-muted">{{ d(new Date(e.created_at.replace(' ', 'T') + 'Z'), { dateStyle: 'short', timeStyle: 'short' }) }}</td>
+              <td class="px-4 py-2.5"><span class="badge-muted">{{ kindLabel(e.kind) }}</span></td>
+              <td class="px-4 py-2.5 text-muted">{{ e.reason || e.ref_type }}</td>
+              <td class="px-4 py-2.5 text-right font-mono" :class="Number(e.delta) >= 0 ? 'text-ok' : 'text-danger'">
+                {{ Number(e.delta) >= 0 ? '+' : '' }}{{ e.delta }}
+              </td>
+              <td class="px-4 py-2.5 text-right font-mono text-muted">${{ e.balance_after }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 

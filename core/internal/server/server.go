@@ -116,6 +116,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			authed.GET("/usage/by-model-daily", s.getUsageByModelDaily)
 			authed.GET("/usage/perf", s.getUsagePerf)
 			authed.GET("/balance", s.getBalance)
+			authed.GET("/ledger", s.getLedger)
 			authed.GET("/payment/methods", s.getPaymentMethods)
 			authed.POST("/payment/create", s.createTopup)
 			authed.GET("/payment/orders", s.listTopups)
