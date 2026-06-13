@@ -417,5 +417,10 @@ export default {
     crGrant: 'Accorder le crédit',
     crBalance: 'Solde après : {balance}',
     crReplayed: 'Rejeu idempotent — ce crédit a déjà été appliqué',
+    crTitle: 'Ajouter du solde',
+    crTarget: 'Cible',
+    crReasonPh: 'ex. crédit promo, remboursement support',
+    crAdd: 'Ajouter du solde',
+    crNoOrg: 'Cet utilisateur n’a pas d’organisation personnelle à créditer',
   },
 } satisfies Messages

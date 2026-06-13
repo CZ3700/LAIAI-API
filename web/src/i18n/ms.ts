@@ -417,5 +417,10 @@ export default {
     crGrant: 'Beri kredit',
     crBalance: 'Baki selepas: {balance}',
     crReplayed: 'Main semula idempoten — pemberian ini sudah pun digunakan',
+    crTitle: 'Tambah baki',
+    crTarget: 'Sasaran',
+    crReasonPh: 'cth. kredit promosi, bayaran balik sokongan',
+    crAdd: 'Tambah baki',
+    crNoOrg: 'Pengguna ini tiada organisasi peribadi untuk dikreditkan',
   },
 } satisfies Messages

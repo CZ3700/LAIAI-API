@@ -416,5 +416,10 @@ export default {
     crGrant: 'クレジット付与',
     crBalance: '付与後残高：{balance}',
     crReplayed: '冪等リプレイ——この付与はすでに適用済みです',
+    crTitle: '残高を追加',
+    crTarget: '対象',
+    crReasonPh: '例：キャンペーン付与、サポート返金',
+    crAdd: '残高追加',
+    crNoOrg: 'このユーザーには入金できる個人組織がありません',
   },
 } satisfies Messages

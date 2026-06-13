@@ -417,5 +417,10 @@ export default {
     crGrant: 'Cấp tín dụng',
     crBalance: 'Số dư sau: {balance}',
     crReplayed: 'Phát lại idempotent — khoản cấp này đã được áp dụng trước đó',
+    crTitle: 'Thêm số dư',
+    crTarget: 'Mục tiêu',
+    crReasonPh: 'vd: tín dụng khuyến mãi, hoàn tiền hỗ trợ',
+    crAdd: 'Thêm số dư',
+    crNoOrg: 'Người dùng này không có tổ chức cá nhân để ghi có',
   },
 } satisfies Messages

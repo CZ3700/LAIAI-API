@@ -417,5 +417,10 @@ export default {
     crGrant: 'มอบเครดิต',
     crBalance: 'ยอดคงเหลือหลังจาก: {balance}',
     crReplayed: 'การเล่นซ้ำแบบ idempotent — การมอบนี้ถูกนำไปใช้แล้ว',
+    crTitle: 'เพิ่มยอดเงิน',
+    crTarget: 'เป้าหมาย',
+    crReasonPh: 'เช่น เครดิตโปรโมชัน คืนเงินซัพพอร์ต',
+    crAdd: 'เพิ่มยอด',
+    crNoOrg: 'ผู้ใช้นี้ไม่มีองค์กรส่วนตัวให้เครดิต',
   },
 } satisfies Messages

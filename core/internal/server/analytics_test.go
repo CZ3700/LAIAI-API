@@ -165,6 +165,28 @@ func TestAdminOrgsEnriched(t *testing.T) {
 	}
 }
 
+// TestAdminListUsersBalance：用户列表带出个人组织 + 余额（授信入账并入用户管理的前提）。
+func TestAdminListUsersBalance(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	_, orgID := seedUserWithCredit(t, srv, "bal@gmail.com", "100")
+
+	w, out := srv.doAdmin(t, "GET", "/api/admin/users?q=bal@gmail.com", nil)
+	if w.Code != 200 {
+		t.Fatalf("users = %d %v", w.Code, out)
+	}
+	items := out["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	u := items[0].(map[string]any)
+	if got := u["org_id"].(float64); got != orgID {
+		t.Errorf("org_id = %v, want %v (personal org)", got, orgID)
+	}
+	if got := decf(t, u["balance"]); got != 100 {
+		t.Errorf("balance = %v, want 100", got)
+	}
+}
+
 // TestUsagePerfWindow：验证 /api/usage/perf 只统计近 60 秒（修复 epoch-vs-datetime bug）。
 func TestUsagePerfWindow(t *testing.T) {
 	srv, db := setupRelayServer(t)

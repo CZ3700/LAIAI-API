@@ -417,5 +417,10 @@ export default {
     crGrant: '授信入账',
     crBalance: '入账后余额：{balance}',
     crReplayed: '幂等重放——该笔授信此前已入账',
+    crTitle: '加余额',
+    crTarget: '目标',
+    crReasonPh: '如：活动赠送、客诉补偿',
+    crAdd: '加余额',
+    crNoOrg: '该用户没有可入账的个人组织',
   },
 } satisfies Messages

@@ -418,6 +418,11 @@ const messages = {
     crGrant: 'Grant credit',
     crBalance: 'Balance after: {balance}',
     crReplayed: 'Idempotent replay — this grant was already applied',
+    crTitle: 'Add balance',
+    crTarget: 'Target',
+    crReasonPh: 'e.g. promo credit, support refund',
+    crAdd: 'Add balance',
+    crNoOrg: 'This user has no personal organization to credit',
   },
 }
 

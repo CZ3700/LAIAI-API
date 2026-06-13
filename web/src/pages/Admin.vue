@@ -115,7 +115,7 @@ function showError(e: unknown) {
 const { t, d } = useI18n()
 
 // —— tabs ——
-const tab = ref<'overview' | 'analytics' | 'channels' | 'payments' | 'prices' | 'groups' | 'credits' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
+const tab = ref<'overview' | 'analytics' | 'channels' | 'payments' | 'prices' | 'groups' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
 
 // —— 运营分析（资金 / 用户 / 质量 颗粒度） ——
 interface Analytics {
@@ -182,7 +182,7 @@ async function saveSettings() {
 }
 
 // —— 用户管理 ——
-interface AdminUser { id: number; email: string; display_name: string; status: number }
+interface AdminUser { id: number; email: string; display_name: string; status: number; org_id: number; balance: string }
 const users = ref<AdminUser[]>([])
 const userQuery = ref('')
 async function loadUsers() {
@@ -470,10 +470,9 @@ const orgs = ref<OrgRow[]>([])
 async function loadOrgs() {
   orgs.value = (await adminApi<{ orgs: OrgRow[] }>('GET', '/api/admin/orgs')).orgs
 }
-// 从组织行一键带入授信表单
+// 从组织行打开授信弹窗
 function grantTo(o: OrgRow) {
-  cr.value.org_id = String(o.id)
-  tab.value = 'credits'
+  openGrant(o.id, o.name || `#${o.id}`)
 }
 
 // —— 定价 ——
@@ -506,32 +505,46 @@ async function upsertPrice() {
   }
 }
 
-// —— 授信 ——
-const cr = ref({ org_id: '', amount_usd: '', reason: '' })
-const crBusy = ref(false)
-const crResult = ref<{ balance_after: string; already_applied: boolean } | null>(null)
+// —— 授信入账（加余额）——
+// 统一弹窗，用户管理 / 组织列表共用。幂等键在「打开弹窗」时生成一次并固定，
+// 重复点击/网络重试用同一 key → 永不重复入账（旧实现每次 grant() 新 key 是漏洞）。
+const grantModal = ref<{ orgId: number; label: string; key: string } | null>(null)
+const grantForm = ref({ amount_usd: '', reason: '' })
+const grantBusy = ref(false)
+const grantResult = ref<{ balance_after: string; already_applied: boolean } | null>(null)
 
-async function grant() {
-  crBusy.value = true
-  crResult.value = null
+function openGrant(orgId: number, label: string) {
+  if (!orgId) {
+    showError(new Error(t('admin.crNoOrg')))
+    return
+  }
+  grantModal.value = { orgId, label, key: uuid() }
+  grantForm.value = { amount_usd: '', reason: '' }
+  grantResult.value = null
+}
+async function submitGrant() {
+  if (!grantModal.value) return
+  grantBusy.value = true
   try {
-    // 幂等键由前端生成并随表单存活：重复点击/网络重试不会重复入账
     const r = await adminApi<{ balance_after: string; already_applied: boolean }>(
       'POST',
       '/api/admin/credits',
       {
-        org_id: Number(cr.value.org_id),
-        amount_usd: cr.value.amount_usd,
-        reason: cr.value.reason,
-        idempotency_key: uuid(),
+        org_id: grantModal.value.orgId,
+        amount_usd: grantForm.value.amount_usd,
+        reason: grantForm.value.reason,
+        idempotency_key: grantModal.value.key, // 固定 key：重提不重复入账
       },
     )
-    crResult.value = r
+    grantResult.value = r
     error.value = ''
+    // 余额已变，刷新两处来源
+    if (tab.value === 'users') void loadUsers().catch(showError)
+    if (tab.value === 'orgs') void loadOrgs().catch(showError)
   } catch (e) {
     showError(e)
   } finally {
-    crBusy.value = false
+    grantBusy.value = false
   }
 }
 
@@ -565,7 +578,7 @@ onMounted(() => {
       <div class="flex items-center justify-between">
         <div class="flex gap-1" role="tablist">
           <button
-            v-for="tb in ['overview', 'analytics', 'channels', 'payments', 'prices', 'groups', 'credits', 'orgs', 'users', 'logs', 'settings', 'audit'] as const"
+            v-for="tb in ['overview', 'analytics', 'channels', 'payments', 'prices', 'groups', 'orgs', 'users', 'logs', 'settings', 'audit'] as const"
             :key="tb"
             type="button"
             role="tab"
@@ -1241,27 +1254,29 @@ onMounted(() => {
       </template>
 
       <!-- 授信 -->
-      <template v-if="tab === 'credits'">
-        <form class="card max-w-md p-5 space-y-4" @submit.prevent="grant">
-          <div>
-            <label class="label" for="cr-org">{{ t('admin.crOrg') }}</label>
-            <input id="cr-org" v-model="cr.org_id" class="input" type="number" min="1" required />
-          </div>
+      <!-- 授信入账弹窗（用户管理 / 组织列表共用） -->
+      <div v-if="grantModal" class="modal-backdrop" @click.self="grantModal = null">
+        <form class="card modal-panel w-full max-w-sm p-6 space-y-4" @submit.prevent="submitGrant">
+          <h2 class="font-semibold">{{ t('admin.crTitle') }}</h2>
+          <p class="text-xs text-muted">{{ t('admin.crTarget') }}: <span class="font-mono">{{ grantModal.label }}</span> · org #{{ grantModal.orgId }}</p>
           <div>
             <label class="label" for="cr-amount">{{ t('admin.crAmount') }}</label>
-            <input id="cr-amount" v-model="cr.amount_usd" class="input" required placeholder="10.00" />
+            <input id="cr-amount" v-model="grantForm.amount_usd" class="input" required placeholder="10.00" autofocus />
           </div>
           <div>
             <label class="label" for="cr-reason">{{ t('admin.crReason') }}</label>
-            <input id="cr-reason" v-model="cr.reason" class="input" required />
+            <input id="cr-reason" v-model="grantForm.reason" class="input" required :placeholder="t('admin.crReasonPh')" />
           </div>
-          <button class="btn-primary" :disabled="crBusy">{{ t('admin.crGrant') }}</button>
-          <div v-if="crResult" class="text-sm space-y-1" role="status" aria-live="polite">
-            <p class="text-ok">{{ t('admin.crBalance', { balance: crResult.balance_after }) }}</p>
-            <p v-if="crResult.already_applied" class="text-muted">{{ t('admin.crReplayed') }}</p>
+          <div v-if="grantResult" class="text-sm space-y-1" role="status" aria-live="polite">
+            <p class="text-ok">{{ t('admin.crBalance', { balance: grantResult.balance_after }) }}</p>
+            <p v-if="grantResult.already_applied" class="text-muted">{{ t('admin.crReplayed') }}</p>
+          </div>
+          <div class="flex justify-end gap-2">
+            <button type="button" class="btn-ghost" @click="grantModal = null">{{ grantResult ? t('common.close') : t('common.cancel') }}</button>
+            <button class="btn-primary" :disabled="grantBusy">{{ t('admin.crGrant') }}</button>
           </div>
         </form>
-      </template>
+      </div>
 
       <!-- 组织 -->
       <template v-if="tab === 'orgs'">
@@ -1425,24 +1440,27 @@ onMounted(() => {
                 <th class="px-4 py-3 font-medium">ID</th>
                 <th class="px-4 py-3 font-medium">{{ t('auth.email') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('settings.displayName') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.orgBalance') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('keys.status') }}</th>
                 <th class="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="users.length === 0">
-                <td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+                <td colspan="6" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <tr v-for="u in users" :key="u.id" class="border-b border-line last:border-0">
                 <td class="px-4 py-2.5 text-muted">{{ u.id }}</td>
                 <td class="px-4 py-2.5 font-mono text-xs">{{ u.email }}</td>
                 <td class="px-4 py-2.5">{{ u.display_name || '—' }}</td>
+                <td class="px-4 py-2.5 text-right font-mono">${{ Number(u.balance).toFixed(2) }}</td>
                 <td class="px-4 py-2.5">
                   <span :class="u.status === 1 ? 'badge-ok' : 'badge-danger'">
                     {{ u.status === 1 ? t('admin.userActive') : t('admin.userBanned') }}
                   </span>
                 </td>
-                <td class="px-4 py-2.5 text-right">
+                <td class="px-4 py-2.5 text-right space-x-2 whitespace-nowrap">
+                  <button class="btn-ghost !py-1 text-xs" :disabled="!u.org_id" @click="openGrant(u.org_id, u.email)">{{ t('admin.crAdd') }}</button>
                   <button v-if="u.status === 1" class="btn-danger !py-1 text-xs" @click="manageUser(u, 'ban')">{{ t('admin.userBan') }}</button>
                   <button v-else class="btn-ghost !py-1 text-xs" @click="manageUser(u, 'unban')">{{ t('admin.userUnban') }}</button>
                 </td>

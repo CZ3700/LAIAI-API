@@ -418,5 +418,10 @@ export default {
     crGrant: '授信入帳',
     crBalance: '入帳後餘額：{balance}',
     crReplayed: '冪等重放——該筆授信此前已入帳',
+    crTitle: '加餘額',
+    crTarget: '目標',
+    crReasonPh: '如：活動贈送、客訴補償',
+    crAdd: '加餘額',
+    crNoOrg: '該使用者沒有可入帳的個人組織',
   },
 } satisfies Messages

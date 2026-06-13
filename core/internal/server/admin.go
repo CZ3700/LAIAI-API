@@ -731,22 +731,42 @@ func (s *Server) adminListUsers(c *gin.Context) {
 		page = n
 	}
 	const pageSize = 30
-	q := s.db.Model(&identity.User{})
+	rdb := s.db.WithContext(c.Request.Context())
+
+	where, args := "", []any{}
 	if kw := c.Query("q"); kw != "" {
 		like := "%" + kw + "%"
-		q = q.Where("email LIKE ? OR display_name LIKE ?", like, like)
+		where = " WHERE u.email LIKE ? OR u.display_name LIKE ?"
+		args = append(args, like, like)
 	}
 	var total int64
-	q.Count(&total)
-	var users []identity.User
-	q.Order("id DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&users)
-	out := make([]gin.H, 0, len(users))
-	for _, u := range users {
-		out = append(out, gin.H{
-			"id": u.ID, "email": u.Email, "display_name": u.DisplayName, "status": u.Status,
-		})
+	rdb.Raw("SELECT COUNT(*) FROM users u"+where, args...).Scan(&total)
+
+	// 每个用户带出其个人组织(kind=0)与余额——授信入账（加余额）的 ledger 目标。
+	// 相关子查询锁定唯一个人组织，避免 owner 多组织 JOIN 扇出导致行重复/分页错乱。
+	var rows []struct {
+		ID          uint64          `json:"id"`
+		Email       string          `json:"email"`
+		DisplayName string          `json:"display_name"`
+		Status      int8            `json:"status"`
+		OrgID       uint64          `json:"org_id"`
+		Balance     decimal.Decimal `json:"balance"`
 	}
-	c.JSON(http.StatusOK, gin.H{"total": total, "page": page, "page_size": pageSize, "items": out})
+	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
+	rdb.Raw(`
+		SELECT u.id, u.email, u.display_name, u.status,
+		       COALESCE(o.id, 0) AS org_id,
+		       COALESCE(a.posted_balance, 0) AS balance
+		FROM users u
+		LEFT JOIN organizations o ON o.id = (
+		    SELECT om.org_id FROM org_members om
+		    JOIN organizations oo ON oo.id = om.org_id
+		    WHERE om.user_id = u.id AND om.role = 'owner' AND oo.kind = 0
+		    ORDER BY om.org_id LIMIT 1)
+		LEFT JOIN ledger_accounts a ON a.org_id = o.id AND a.type = 'user_credit'`+
+		where+` ORDER BY u.id DESC LIMIT ? OFFSET ?`, pageArgs...).Scan(&rows)
+
+	c.JSON(http.StatusOK, gin.H{"total": total, "page": page, "page_size": pageSize, "items": rows})
 }
 
 // adminManageUser：POST /api/admin/users/:id/manage {action: ban|unban}
