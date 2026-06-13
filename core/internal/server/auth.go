@@ -89,7 +89,16 @@ func (s *Server) login(c *gin.Context) {
 		fail(c, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	// 默认登入个人 org（owner 的第一个 org）；org 切换 M1 Console 做
+	// 2FA（0017）：密码通过后，若启用则返回中间票，要求二阶段验 TOTP
+	if user.TOTPEnabled != 0 {
+		c.JSON(http.StatusOK, gin.H{"requires_2fa": true, "token": s.make2FAToken(user.ID)})
+		return
+	}
+	s.issueSessionFor(c, user)
+}
+
+// issueSessionFor：为用户签发会话（登入其 owner 的第一个 org）。2FA 通过后复用。
+func (s *Server) issueSessionFor(c *gin.Context, user *identity.User) {
 	m := &identity.OrgMember{}
 	if err := s.db.Where("user_id = ? AND role = ?", user.ID, identity.RoleOwner).
 		Order("id").First(m).Error; err != nil {
@@ -116,6 +125,7 @@ func (s *Server) me(c *gin.Context) {
 		"email":        user.Email,
 		"display_name": user.DisplayName,
 		"org_id":       claims.OrgID,
+		"totp_enabled": user.TOTPEnabled != 0,
 	})
 }
 

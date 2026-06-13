@@ -19,6 +19,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/payment"
+	"github.com/laiai/laiai-next/core/internal/totp"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -1421,4 +1422,52 @@ func TestAffiliateRebate(t *testing.T) {
 	if aff["invited"].(float64) != 1 || aff["earned"] != "5" {
 		t.Fatalf("affiliate stats = %v", aff)
 	}
+}
+
+// 2FA 全流程：setup → enable → 登录二阶段验证。
+func TestTwoFactorFlow(t *testing.T) {
+	srv, _ := setupRelayServer(t) // 有 keyring
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "2fa@example.com", "password": "longenough1"})
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "2fa@example.com", "password": "longenough1"})
+	token := login["token"].(string)
+
+	// setup 拿 secret
+	_, setup := srv.do(t, "POST", "/api/me/2fa/setup", token, nil)
+	secret := setup["secret"].(string)
+	if len(secret) < 16 {
+		t.Fatalf("secret = %q", secret)
+	}
+	// 错码 enable 失败
+	w, _ := srv.do(t, "POST", "/api/me/2fa/enable", token, map[string]string{"code": "000000"})
+	if w.Code == 200 {
+		t.Fatal("wrong code should not enable")
+	}
+	// 正确码 enable
+	code := totp.Validate // 用包生成当前码
+	_ = code
+	curCode := genTOTP(secret)
+	w, _ = srv.do(t, "POST", "/api/me/2fa/enable", token, map[string]string{"code": curCode})
+	if w.Code != 200 {
+		t.Fatalf("enable = %d", w.Code)
+	}
+
+	// 重新登录 → 要求 2FA（不直接发 session）
+	_, l2 := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "2fa@example.com", "password": "longenough1"})
+	if l2["requires_2fa"] != true {
+		t.Fatalf("login should require 2fa: %v", l2)
+	}
+	twofaToken := l2["token"].(string)
+	if l2["token"] == nil {
+		t.Fatal("no 2fa token")
+	}
+	// 二阶段验证 → 真 session
+	w, l3 := srv.do(t, "POST", "/api/auth/2fa", "", map[string]any{"token": twofaToken, "code": genTOTP(secret)})
+	if w.Code != 200 || l3["token"] == nil {
+		t.Fatalf("2fa verify = %d %v", w.Code, l3)
+	}
+}
+
+// genTOTP：测试用，生成 secret 的当前有效码（暴力试 0-999999 不现实，改用 totp 包）。
+func genTOTP(secret string) string {
+	return totp.CurrentCode(secret)
 }

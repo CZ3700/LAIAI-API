@@ -38,6 +38,8 @@ type User struct {
 	EmailCanonical string `gorm:"column:email_canonical"`
 	PasswordHash   string `gorm:"column:password_hash"`
 	DisplayName    string `gorm:"column:display_name"`
+	TOTPSecretEnc  string `gorm:"column:totp_secret_enc"` // 2FA 共享密钥（信封加密，0017）
+	TOTPEnabled    int8   `gorm:"column:totp_enabled"`    // 2FA 是否启用
 	Status         int8   `gorm:"column:status"`
 }
 

@@ -27,11 +27,61 @@ const pwBusy = ref(false)
 const pwMsg = ref('')
 const pwErr = ref('')
 
+// —— 2FA ——
+const totpEnabled = ref(false)
+const setupUri = ref('')
+const setupSecret = ref('')
+const twofaCode = ref('')
+const twofaBusy = ref(false)
+const twofaErr = ref('')
+const twofaMsg = ref('')
+
+async function start2fa() {
+  twofaErr.value = ''
+  try {
+    const r = await api<{ secret: string; otpauth_uri: string }>('POST', '/api/me/2fa/setup')
+    setupSecret.value = r.secret
+    setupUri.value = r.otpauth_uri
+  } catch (e) {
+    twofaErr.value = errorMessage(e, t('common.error'))
+  }
+}
+async function enable2fa() {
+  twofaBusy.value = true
+  twofaErr.value = ''
+  try {
+    await api('POST', '/api/me/2fa/enable', { code: twofaCode.value })
+    totpEnabled.value = true
+    setupUri.value = ''
+    twofaCode.value = ''
+    twofaMsg.value = t('settings.twofaEnabled')
+  } catch (e) {
+    twofaErr.value = errorMessage(e, t('common.error'))
+  } finally {
+    twofaBusy.value = false
+  }
+}
+async function disable2fa() {
+  twofaBusy.value = true
+  twofaErr.value = ''
+  try {
+    await api('POST', '/api/me/2fa/disable', { code: twofaCode.value })
+    totpEnabled.value = false
+    twofaCode.value = ''
+    twofaMsg.value = t('settings.twofaDisabled')
+  } catch (e) {
+    twofaErr.value = errorMessage(e, t('common.error'))
+  } finally {
+    twofaBusy.value = false
+  }
+}
+
 onMounted(async () => {
   try {
-    const r = await api<Me>('GET', '/api/me')
+    const r = await api<Me & { totp_enabled?: boolean }>('GET', '/api/me')
     me.value = r
     displayName.value = r.display_name
+    totpEnabled.value = !!r.totp_enabled
   } catch (e) {
     profileErr.value = errorMessage(e, t('common.error'))
   }
@@ -119,5 +169,41 @@ async function changePassword() {
       <p v-if="pwErr" class="text-sm text-danger" role="alert">{{ pwErr }}</p>
       <button class="btn-primary" :disabled="pwBusy">{{ t('settings.changePassword') }}</button>
     </form>
+
+    <!-- 2FA -->
+    <div class="card p-6 space-y-4">
+      <div class="flex items-center justify-between">
+        <h2 class="font-semibold">{{ t('settings.twofa') }}</h2>
+        <span :class="totpEnabled ? 'badge-ok' : 'badge-muted'">
+          {{ totpEnabled ? t('settings.twofaOn') : t('settings.twofaOff') }}
+        </span>
+      </div>
+      <p class="text-sm text-muted">{{ t('settings.twofaDesc') }}</p>
+      <p v-if="twofaMsg" class="text-sm text-ok" role="status">{{ twofaMsg }}</p>
+      <p v-if="twofaErr" class="text-sm text-danger" role="alert">{{ twofaErr }}</p>
+
+      <!-- 未启用：setup 流程 -->
+      <template v-if="!totpEnabled">
+        <button v-if="!setupUri" class="btn-primary" @click="start2fa">{{ t('settings.twofaSetup') }}</button>
+        <div v-else class="space-y-4">
+          <p class="text-sm">{{ t('settings.twofaScan') }}</p>
+          <img
+            :src="`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(setupUri)}`"
+            alt="2FA QR" class="rounded-lg border border-line" width="180" height="180"
+          />
+          <p class="text-xs text-muted">{{ t('settings.twofaManual') }} <code class="select-all font-mono">{{ setupSecret }}</code></p>
+          <div class="flex gap-2">
+            <input v-model="twofaCode" class="input max-w-[10rem] font-mono" inputmode="numeric" maxlength="6" :placeholder="t('auth.verifyCode')" />
+            <button class="btn-primary shrink-0" :disabled="twofaBusy" @click="enable2fa">{{ t('settings.twofaEnable') }}</button>
+          </div>
+        </div>
+      </template>
+
+      <!-- 已启用：禁用流程 -->
+      <div v-else class="flex gap-2">
+        <input v-model="twofaCode" class="input max-w-[10rem] font-mono" inputmode="numeric" maxlength="6" :placeholder="t('auth.verifyCode')" />
+        <button class="btn-danger shrink-0" :disabled="twofaBusy" @click="disable2fa">{{ t('settings.twofaDisable') }}</button>
+      </div>
+    </div>
   </div>
 </template>

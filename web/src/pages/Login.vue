@@ -13,6 +13,8 @@ const route = useRoute()
 
 const email = ref('')
 const password = ref('')
+const code = ref('')
+const need2fa = ref(false)
 const busy = ref(false)
 const error = ref('')
 
@@ -20,7 +22,24 @@ async function submit() {
   busy.value = true
   error.value = ''
   try {
-    await auth.login(email.value, password.value)
+    const r = await auth.login(email.value, password.value)
+    if (r === '2fa') {
+      need2fa.value = true
+      return
+    }
+    await router.replace(String(route.query.to ?? '/app'))
+  } catch (e) {
+    error.value = errorMessage(e, t('common.error'))
+  } finally {
+    busy.value = false
+  }
+}
+
+async function submit2fa() {
+  busy.value = true
+  error.value = ''
+  try {
+    await auth.verify2fa(code.value)
     await router.replace(String(route.query.to ?? '/app'))
   } catch (e) {
     error.value = errorMessage(e, t('common.error'))
@@ -44,7 +63,20 @@ async function submit() {
         </div>
         <span class="text-2xl font-semibold tracking-tight">LAIAI</span>
       </div>
-      <form class="card modal-panel w-full p-8 space-y-5" @submit.prevent="submit">
+      <!-- 2FA 二阶段 -->
+      <form v-if="need2fa" class="card modal-panel w-full p-8 space-y-5" @submit.prevent="submit2fa">
+        <h1 class="text-xl font-semibold">{{ t('auth.twofaTitle') }}</h1>
+        <p class="text-sm text-muted">{{ t('auth.twofaHint') }}</p>
+        <div>
+          <label class="label" for="totp">{{ t('auth.verifyCode') }}</label>
+          <input id="totp" v-model="code" class="input font-mono text-center text-lg tracking-widest" inputmode="numeric" maxlength="6" autofocus required />
+        </div>
+        <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
+        <button class="btn-primary w-full" :disabled="busy">{{ t('auth.signin') }}</button>
+      </form>
+
+      <!-- 密码登录 -->
+      <form v-else class="card modal-panel w-full p-8 space-y-5" @submit.prevent="submit">
         <h1 class="text-xl font-semibold">{{ t('auth.signinTitle') }}</h1>
       <div>
         <label class="label" for="email">{{ t('auth.email') }}</label>

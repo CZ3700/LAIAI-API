@@ -26,7 +26,7 @@ function loadSession(): Session | null {
 }
 
 export const useAuth = defineStore('auth', {
-  state: () => ({ session: loadSession() }),
+  state: () => ({ session: loadSession(), pending2fa: null as { token: string; email: string } | null }),
   getters: {
     token: (s) => s.session?.token ?? '',
     email: (s) => s.session?.email ?? '',
@@ -34,15 +34,33 @@ export const useAuth = defineStore('auth', {
     isAuthed: (s) => s.session !== null,
   },
   actions: {
-    async login(email: string, password: string) {
-      const r = await api<{ token: string; expires_at: number; org_id: number }>(
+    // 返回 '2fa' 表示需要二阶段验证（此时 token 是中间票，调 verify2fa 完成）
+    async login(email: string, password: string): Promise<'ok' | '2fa'> {
+      const r = await api<{ token: string; expires_at?: number; org_id?: number; requires_2fa?: boolean }>(
         'POST',
         '/api/auth/login',
         { email, password },
         { auth: false },
       )
-      this.session = { token: r.token, expiresAt: r.expires_at, orgId: r.org_id, email }
+      if (r.requires_2fa) {
+        this.pending2fa = { token: r.token, email }
+        return '2fa'
+      }
+      this.session = { token: r.token, expiresAt: r.expires_at!, orgId: r.org_id!, email }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.session))
+      return 'ok'
+    },
+    async verify2fa(code: string) {
+      if (!this.pending2fa) throw new Error('no pending 2fa')
+      const r = await api<{ token: string; expires_at: number; org_id: number }>(
+        'POST',
+        '/api/auth/2fa',
+        { token: this.pending2fa.token, code },
+        { auth: false },
+      )
+      this.session = { token: r.token, expiresAt: r.expires_at, orgId: r.org_id, email: this.pending2fa.email }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.session))
+      this.pending2fa = null
     },
     async register(email: string, password: string, code?: string, inviterCode?: string) {
       const body: Record<string, string> = { email, password }

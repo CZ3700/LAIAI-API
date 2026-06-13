@@ -29,7 +29,7 @@ CREATE TABLE users (
     email_canonical TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL DEFAULT '',
     display_name TEXT NOT NULL DEFAULT '',
-    totp_secret_enc TEXT NOT NULL DEFAULT '',
+    totp_secret_enc TEXT NOT NULL DEFAULT '', totp_enabled INTEGER NOT NULL DEFAULT 0,
     status INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
