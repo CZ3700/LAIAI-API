@@ -45,12 +45,27 @@ func (TopupOrder) TableName() string { return "topup_orders" }
 // engineForTest：测试钩子，非 nil 时 engineFor 优先返回它（注入 mock 引擎）。
 var engineForTest func(provider string) payment.Engine
 
-// engineFor：按 provider 名从运营设置构造支付引擎（密钥存 settings，admin 配）。
-// 返回 nil 表示该 provider 未配置/未启用。
+// engineFor：按渠道 code/protocol 构造支付引擎。解析顺序（向后兼容）：
+//  1. 测试钩子（注入 mock）
+//  2. payment_channels 表里启用的同 code 渠道（信封加密配置，#5 灵活渠道）
+//  3. 退回扁平 ext_settings 单套 stripe/epay 配置（旧路径，未建表时仍可用）
+// 返回 nil 表示未配置/未启用。
 func (s *Server) engineFor(provider string) payment.Engine {
 	if engineForTest != nil {
 		return engineForTest(provider)
 	}
+	// 表渠道优先
+	if s.keyring != nil {
+		var ch PaymentChannel
+		if err := s.db.Where("code = ? AND enabled = 1", provider).First(&ch).Error; err == nil {
+			if cfg, e := s.decryptChannelConfig(ch.ConfigEnc); e == nil {
+				if eng := buildPaymentEngine(ch.Protocol, cfg); eng != nil {
+					return eng
+				}
+			}
+		}
+	}
+	// 设置回退（旧路径）
 	switch provider {
 	case "stripe":
 		sk := s.getSetting("stripe_secret_key")
@@ -69,13 +84,26 @@ func (s *Server) engineFor(provider string) payment.Engine {
 }
 
 // getPaymentMethods：GET /api/payment/methods —— 可用支付方式 + 充值档位（前端钱包页）。
+// 有启用的表渠道则列表渠道；否则退回设置里的 stripe/epay（向后兼容）。
 func (s *Server) getPaymentMethods(c *gin.Context) {
 	methods := []gin.H{}
-	if s.engineFor("stripe") != nil {
-		methods = append(methods, gin.H{"provider": "stripe", "currency": "USD", "label": "Card (Stripe)"})
-	}
-	if s.engineFor("epay") != nil {
-		methods = append(methods, gin.H{"provider": "epay", "currency": "CNY", "label": "支付宝/微信 (EPay)"})
+	chs := s.enabledPaymentChannels()
+	if len(chs) > 0 {
+		for _, ch := range chs {
+			if s.engineFor(ch.Code) != nil {
+				methods = append(methods, gin.H{
+					"provider": ch.Code, "currency": ch.Currency,
+					"label": ch.DisplayName, "pay_methods": ch.PayMethods,
+				})
+			}
+		}
+	} else {
+		if s.engineFor("stripe") != nil {
+			methods = append(methods, gin.H{"provider": "stripe", "currency": "USD", "label": "Card (Stripe)"})
+		}
+		if s.engineFor("epay") != nil {
+			methods = append(methods, gin.H{"provider": "epay", "currency": "CNY", "label": "支付宝/微信 (EPay)"})
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"methods": methods,

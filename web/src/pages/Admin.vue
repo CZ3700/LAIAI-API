@@ -156,10 +156,89 @@ const errorRate = computed(() => {
 })
 
 // —— 支付渠道总览（脱敏状态 + 路由预览） ——
-interface PayChannel { configured: boolean; secret?: string; webhook?: boolean; pid?: string; key?: string; api_url?: string }
-const payConfig = ref<{ stripe: PayChannel; epay: PayChannel } | null>(null)
-async function loadPayConfig() {
-  payConfig.value = await adminApi<{ stripe: PayChannel; epay: PayChannel }>('GET', '/api/admin/payment-config')
+// 灵活支付渠道（#5）：多实例、可启停、优先级、加密配置、连通性测试、路由预览
+interface PayChannelRow {
+  id: number; code: string; display_name: string; protocol: string
+  enabled: number; priority: number; pay_methods: string; currency: string
+  last_test_at: number; last_test_ok: number; last_test_msg: string
+}
+interface PayRoute { method: string; channel_code: string; channel_name: string; currency: string }
+const payChannels = ref<PayChannelRow[]>([])
+const payRoutes = ref<PayRoute[]>([])
+const payLoaded = ref(false)
+async function loadPayChannels() {
+  const [cs, rs] = await Promise.all([
+    adminApi<{ channels: PayChannelRow[] }>('GET', '/api/admin/payment-channels'),
+    adminApi<{ routes: PayRoute[] }>('GET', '/api/admin/payment-channels/route-preview'),
+  ])
+  payChannels.value = cs.channels
+  payRoutes.value = rs.routes
+  payLoaded.value = true
+}
+// 渠道编辑器（新建/编辑共用）。密钥字段编辑时留空 = 保留原配置。
+interface PayChannelEdit {
+  id: number; code: string; display_name: string; protocol: string
+  pay_methods: string; currency: string; priority: number; enabled: boolean
+  secret_key: string; webhook_secret: string; pid: string; key: string; api_url: string
+}
+const pcEdit = ref<PayChannelEdit | null>(null)
+const pcBusy = ref(false)
+function newPayChannel() {
+  pcEdit.value = { id: 0, code: '', display_name: '', protocol: 'stripe', pay_methods: 'card', currency: 'USD', priority: 0, enabled: true, secret_key: '', webhook_secret: '', pid: '', key: '', api_url: '' }
+}
+function editPayChannel(ch: PayChannelRow) {
+  pcEdit.value = { id: ch.id, code: ch.code, display_name: ch.display_name, protocol: ch.protocol, pay_methods: ch.pay_methods, currency: ch.currency, priority: ch.priority, enabled: ch.enabled === 1, secret_key: '', webhook_secret: '', pid: '', key: '', api_url: '' }
+}
+async function savePayChannel() {
+  const e = pcEdit.value
+  if (!e) return
+  pcBusy.value = true
+  try {
+    const config: Record<string, string> = {}
+    if (e.protocol === 'stripe') {
+      if (e.secret_key) config.secret_key = e.secret_key
+      if (e.webhook_secret) config.webhook_secret = e.webhook_secret
+    } else {
+      if (e.pid) config.pid = e.pid
+      if (e.key) config.key = e.key
+      if (e.api_url) config.api_url = e.api_url
+    }
+    const body: Record<string, unknown> = {
+      code: e.code, display_name: e.display_name, protocol: e.protocol,
+      pay_methods: e.pay_methods, currency: e.currency, priority: e.priority, enabled: e.enabled,
+    }
+    if (Object.keys(config).length) body.config = config
+    await adminApi('POST', '/api/admin/payment-channels', body)
+    pcEdit.value = null
+    await loadPayChannels()
+    error.value = ''
+  } catch (err) {
+    showError(err)
+  } finally {
+    pcBusy.value = false
+  }
+}
+async function togglePayChannel(ch: PayChannelRow) {
+  try {
+    await adminApi('POST', '/api/admin/payment-channels', {
+      code: ch.code, display_name: ch.display_name, protocol: ch.protocol,
+      pay_methods: ch.pay_methods, currency: ch.currency, priority: ch.priority, enabled: ch.enabled !== 1,
+    })
+    await loadPayChannels()
+  } catch (e) { showError(e) }
+}
+async function testPayChannel(ch: PayChannelRow) {
+  try {
+    await adminApi('POST', `/api/admin/payment-channels/${ch.id}/test`)
+    await loadPayChannels()
+  } catch (e) { showError(e) }
+}
+async function deletePayChannel(ch: PayChannelRow) {
+  if (!confirm(t('admin.pcDeleteConfirm', { code: ch.code }))) return
+  try {
+    await adminApi('DELETE', `/api/admin/payment-channels/${ch.id}`)
+    await loadPayChannels()
+  } catch (e) { showError(e) }
 }
 // 回调地址预览（webhook 注册到网关后台用）：以当前站点为基准
 const callbackBase = `${window.location.origin}/api/payment/callback`
@@ -221,7 +300,7 @@ function auditSensitive(a: string): boolean {
 watch(tab, (v) => {
   if (v === 'settings' && Object.keys(settings.value).length === 0) void loadSettings().catch(showError)
   if (v === 'analytics' && !analytics.value) void loadAnalytics().catch(showError)
-  if (v === 'payments' && !payConfig.value) void loadPayConfig().catch(showError)
+  if (v === 'payments' && !payLoaded.value) void loadPayChannels().catch(showError)
   if (v === 'users' && users.value.length === 0) void loadUsers().catch(showError)
   if (v === 'audit' && audit.value.length === 0) void loadAudit().catch(showError)
 })
@@ -1080,110 +1159,75 @@ onMounted(() => {
 
       <!-- 支付渠道总览：渠道卡片 + 回调地址 + 路由预览 -->
       <template v-if="tab === 'payments'">
-        <div v-if="payConfig" class="space-y-6">
+        <div class="space-y-6">
+          <div class="flex items-center justify-between">
+            <p class="text-sm text-muted">{{ t('admin.pcIntro') }}</p>
+            <button class="btn-primary !py-1.5 text-sm" @click="newPayChannel">{{ t('admin.pcAdd') }}</button>
+          </div>
+
           <!-- 渠道卡片 -->
-          <div class="grid gap-4 lg:grid-cols-2">
-            <!-- Stripe -->
-            <div class="card p-5">
+          <div v-if="payChannels.length" class="grid gap-4 lg:grid-cols-2">
+            <div v-for="ch in payChannels" :key="ch.id" class="card p-5">
               <div class="flex items-start justify-between">
                 <div class="flex items-center gap-2.5">
-                  <span class="grid h-9 w-9 place-items-center rounded-lg text-sm font-bold text-white" style="background:#635bff">S</span>
+                  <span class="grid h-9 w-9 place-items-center rounded-lg text-sm font-bold text-white"
+                    :style="{ background: ch.protocol === 'stripe' ? '#635bff' : '#06f' }">{{ ch.protocol[0].toUpperCase() }}</span>
                   <div>
-                    <p class="font-semibold leading-tight">Stripe</p>
-                    <p class="text-xs text-muted">{{ t('admin.payStripeDesc') }}</p>
+                    <p class="font-semibold leading-tight">{{ ch.display_name || ch.code }}</p>
+                    <p class="font-mono text-xs text-muted">{{ ch.code }} · {{ ch.protocol }}</p>
                   </div>
                 </div>
-                <span class="rounded-full px-2.5 py-0.5 text-xs font-medium"
-                  :class="payConfig.stripe.configured ? 'bg-ok/15 text-ok' : 'bg-muted/15 text-muted'">
-                  {{ payConfig.stripe.configured ? t('admin.payActive') : t('admin.payUnset') }}
-                </span>
+                <button class="rounded-full px-2.5 py-0.5 text-xs font-medium"
+                  :class="ch.enabled ? 'bg-ok/15 text-ok' : 'bg-muted/15 text-muted'"
+                  :title="t('admin.pcToggle')" @click="togglePayChannel(ch)">
+                  {{ ch.enabled ? t('admin.payActive') : t('admin.payUnset') }}
+                </button>
               </div>
-              <dl class="mt-4 space-y-2 text-sm">
-                <div class="flex justify-between gap-3">
-                  <dt class="text-muted">Secret Key</dt>
-                  <dd class="font-mono text-xs">{{ payConfig.stripe.secret || '—' }}</dd>
-                </div>
-                <div class="flex justify-between gap-3">
-                  <dt class="text-muted">Webhook Secret</dt>
-                  <dd>{{ payConfig.stripe.webhook ? '✓' : '—' }}</dd>
+              <div class="mt-4 space-y-2 text-sm">
+                <div class="flex flex-wrap gap-1.5">
+                  <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">{{ ch.currency }}</span>
+                  <span v-for="m in ch.pay_methods.split(',').filter(Boolean)" :key="m" class="rounded bg-elev px-2 py-0.5 text-xs text-muted">{{ m }}</span>
+                  <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">P{{ ch.priority }}</span>
                 </div>
                 <div class="flex flex-col gap-1">
-                  <dt class="text-muted">{{ t('admin.payCallback') }}</dt>
-                  <dd class="break-all rounded bg-elev px-2 py-1 font-mono text-[11px]">{{ callbackBase }}/stripe</dd>
+                  <span class="text-xs text-muted">{{ t('admin.payCallback') }}</span>
+                  <code class="break-all rounded bg-elev px-2 py-1 font-mono text-[11px]">{{ callbackBase }}/{{ ch.code }}</code>
                 </div>
-              </dl>
-              <div class="mt-4 flex flex-wrap gap-1.5">
-                <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">USD</span>
-                <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">💳 Card</span>
+                <p v-if="ch.last_test_at" class="text-xs" :class="ch.last_test_ok ? 'text-ok' : 'text-danger'">
+                  {{ ch.last_test_ok ? '✓' : '✕' }} {{ ch.last_test_msg }}
+                </p>
               </div>
-            </div>
-            <!-- EPay -->
-            <div class="card p-5">
-              <div class="flex items-start justify-between">
-                <div class="flex items-center gap-2.5">
-                  <span class="grid h-9 w-9 place-items-center rounded-lg text-sm font-bold text-white" style="background:#06f">E</span>
-                  <div>
-                    <p class="font-semibold leading-tight">EPay</p>
-                    <p class="text-xs text-muted">{{ t('admin.payEpayDesc') }}</p>
-                  </div>
-                </div>
-                <span class="rounded-full px-2.5 py-0.5 text-xs font-medium"
-                  :class="payConfig.epay.configured ? 'bg-ok/15 text-ok' : 'bg-muted/15 text-muted'">
-                  {{ payConfig.epay.configured ? t('admin.payActive') : t('admin.payUnset') }}
-                </span>
-              </div>
-              <dl class="mt-4 space-y-2 text-sm">
-                <div class="flex justify-between gap-3">
-                  <dt class="text-muted">PID</dt>
-                  <dd class="font-mono text-xs">{{ payConfig.epay.pid || '—' }}</dd>
-                </div>
-                <div class="flex justify-between gap-3">
-                  <dt class="text-muted">Key</dt>
-                  <dd class="font-mono text-xs">{{ payConfig.epay.key || '—' }}</dd>
-                </div>
-                <div class="flex justify-between gap-3">
-                  <dt class="text-muted">API URL</dt>
-                  <dd class="break-all font-mono text-[11px]">{{ payConfig.epay.api_url || '—' }}</dd>
-                </div>
-                <div class="flex flex-col gap-1">
-                  <dt class="text-muted">{{ t('admin.payCallback') }}</dt>
-                  <dd class="break-all rounded bg-elev px-2 py-1 font-mono text-[11px]">{{ callbackBase }}/epay</dd>
-                </div>
-              </dl>
-              <div class="mt-4 flex flex-wrap gap-1.5">
-                <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">CNY</span>
-                <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">支付宝</span>
-                <span class="rounded bg-elev px-2 py-0.5 text-xs text-muted">微信</span>
+              <div class="mt-4 flex gap-2">
+                <button class="btn-ghost !py-1 text-xs" @click="testPayChannel(ch)">{{ t('admin.pcTest') }}</button>
+                <button class="btn-ghost !py-1 text-xs" @click="editPayChannel(ch)">{{ t('admin.chEdit') }}</button>
+                <button class="btn-danger !py-1 text-xs" @click="deletePayChannel(ch)">{{ t('admin.chDisable') }}</button>
               </div>
             </div>
           </div>
+          <p v-else-if="payLoaded" class="card p-6 text-center text-sm text-muted">{{ t('admin.pcEmpty') }}</p>
 
           <!-- 支付路由预览 -->
-          <div class="card p-5">
+          <div v-if="payChannels.length" class="card p-5">
             <h3 class="mb-1 font-semibold">{{ t('admin.payRouteTitle') }}</h3>
             <p class="mb-4 text-xs text-muted">{{ t('admin.payRouteHint') }}</p>
             <table class="table w-full text-sm">
               <thead>
-                <tr>
-                  <th class="text-left">{{ t('admin.payMethod') }}</th>
-                  <th class="text-left">{{ t('admin.payEngine') }}</th>
-                  <th class="text-left">{{ t('admin.payCurrency') }}</th>
-                  <th class="text-left">{{ t('admin.payStatus') }}</th>
+                <tr class="text-left text-muted">
+                  <th class="py-2">{{ t('admin.payMethod') }}</th>
+                  <th class="py-2">{{ t('admin.payEngine') }}</th>
+                  <th class="py-2">{{ t('admin.payCurrency') }}</th>
+                  <th class="py-2">{{ t('admin.payStatus') }}</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="r in [
-                  { m: '💳 ' + t('admin.payCard'), e: 'Stripe', c: 'USD', on: payConfig.stripe.configured },
-                  { m: '🟢 ' + t('admin.payAlipay'), e: 'EPay', c: 'CNY', on: payConfig.epay.configured },
-                  { m: '💬 ' + t('admin.payWechat'), e: 'EPay', c: 'CNY', on: payConfig.epay.configured },
-                ]" :key="r.m">
-                  <td>{{ r.m }}</td>
-                  <td class="text-muted">{{ r.e }}</td>
-                  <td class="font-mono text-xs text-muted">{{ r.c }}</td>
-                  <td>
-                    <span class="inline-flex items-center gap-1 text-xs" :class="r.on ? 'text-ok' : 'text-muted'">
-                      <span class="h-1.5 w-1.5 rounded-full" :class="r.on ? 'bg-ok' : 'bg-muted'"></span>
-                      {{ r.on ? t('admin.payActive') : t('admin.payUnset') }}
+                <tr v-for="r in payRoutes" :key="r.method">
+                  <td class="py-2 font-mono text-xs">{{ r.method }}</td>
+                  <td class="py-2 text-muted">{{ r.channel_name || r.channel_code || '—' }}</td>
+                  <td class="py-2 font-mono text-xs text-muted">{{ r.currency || '—' }}</td>
+                  <td class="py-2">
+                    <span class="inline-flex items-center gap-1 text-xs" :class="r.channel_code ? 'text-ok' : 'text-muted'">
+                      <span class="h-1.5 w-1.5 rounded-full" :class="r.channel_code ? 'bg-ok' : 'bg-muted'"></span>
+                      {{ r.channel_code ? t('admin.payActive') : t('admin.payUnset') }}
                     </span>
                   </td>
                 </tr>
@@ -1191,11 +1235,83 @@ onMounted(() => {
             </table>
           </div>
 
+          <!-- 渠道编辑器 -->
+          <div v-if="pcEdit" class="modal-backdrop" @click.self="pcEdit = null">
+            <form class="card modal-panel w-full max-w-lg p-6 space-y-4" @submit.prevent="savePayChannel">
+              <h2 class="font-semibold">{{ pcEdit.id ? t('admin.chEdit') : t('admin.pcAdd') }}</h2>
+              <div class="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label class="label">{{ t('admin.pcCode') }}</label>
+                  <input v-model="pcEdit.code" class="input font-mono text-xs" :disabled="!!pcEdit.id" required placeholder="stripe_main" />
+                </div>
+                <div>
+                  <label class="label">{{ t('admin.pcProtocol') }}</label>
+                  <select v-model="pcEdit.protocol" class="input">
+                    <option value="stripe">Stripe</option>
+                    <option value="epay">EPay</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="label">{{ t('admin.pcDisplayName') }}</label>
+                  <input v-model="pcEdit.display_name" class="input" />
+                </div>
+                <div>
+                  <label class="label">{{ t('admin.pcPayMethods') }}</label>
+                  <input v-model="pcEdit.pay_methods" class="input font-mono text-xs" placeholder="card,alipay,wechat" />
+                </div>
+                <div>
+                  <label class="label">{{ t('admin.payCurrency') }}</label>
+                  <input v-model="pcEdit.currency" class="input" placeholder="USD" />
+                </div>
+                <div>
+                  <label class="label">{{ t('admin.pcPriority') }}</label>
+                  <input v-model.number="pcEdit.priority" type="number" class="input" />
+                </div>
+              </div>
+              <!-- 协议专属密钥（编辑留空=不改）-->
+              <template v-if="pcEdit.protocol === 'stripe'">
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label class="label">Secret Key</label>
+                    <input v-model="pcEdit.secret_key" class="input font-mono text-xs" type="password" autocomplete="off" :placeholder="pcEdit.id ? t('admin.pcKeep') : 'sk_live_…'" />
+                  </div>
+                  <div>
+                    <label class="label">Webhook Secret</label>
+                    <input v-model="pcEdit.webhook_secret" class="input font-mono text-xs" type="password" autocomplete="off" :placeholder="pcEdit.id ? t('admin.pcKeep') : 'whsec_…'" />
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label class="label">PID</label>
+                    <input v-model="pcEdit.pid" class="input font-mono text-xs" :placeholder="pcEdit.id ? t('admin.pcKeep') : ''" />
+                  </div>
+                  <div>
+                    <label class="label">Key</label>
+                    <input v-model="pcEdit.key" class="input font-mono text-xs" type="password" autocomplete="off" :placeholder="pcEdit.id ? t('admin.pcKeep') : ''" />
+                  </div>
+                  <div class="sm:col-span-2">
+                    <label class="label">API URL</label>
+                    <input v-model="pcEdit.api_url" class="input font-mono text-xs" placeholder="https://pay.example.com" />
+                  </div>
+                </div>
+              </template>
+              <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" class="accent-accent" v-model="pcEdit.enabled" />
+                {{ t('admin.pcEnabled') }}
+              </label>
+              <div class="flex justify-end gap-2">
+                <button type="button" class="btn-ghost" @click="pcEdit = null">{{ t('common.cancel') }}</button>
+                <button class="btn-primary" :disabled="pcBusy">{{ t('settings.save') }}</button>
+              </div>
+            </form>
+          </div>
+
           <p class="text-xs text-muted">{{ t('admin.payConfigHint') }}
             <button type="button" class="text-accent underline-offset-2 hover:underline" @click="tab = 'settings'">{{ t('admin.settings') }}</button>
           </p>
         </div>
-        <p v-else class="text-sm text-muted">{{ t('common.loading') }}</p>
       </template>
 
       <!-- 定价 -->

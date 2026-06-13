@@ -156,6 +156,11 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			admin.GET("/users", s.adminListUsers)
 			admin.POST("/users/:id/manage", s.adminManageUser)
 			admin.GET("/payment-config", s.adminPaymentConfig)
+			admin.GET("/payment-channels", s.adminListPaymentChannels)
+			admin.POST("/payment-channels", s.adminUpsertPaymentChannel)
+			admin.DELETE("/payment-channels/:id", s.adminDeletePaymentChannel)
+			admin.POST("/payment-channels/:id/test", s.adminTestPaymentChannel)
+			admin.GET("/payment-channels/route-preview", s.adminPaymentRoutePreview)
 		}
 	}
 
