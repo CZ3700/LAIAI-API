@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +45,35 @@ type Relay struct {
 	// 避免单次瞬时抖动误禁；成功一次即清零。配置见 ext_settings.channel_auto_disable/threshold。
 	failMu     sync.Mutex
 	failCounts map[uint64]int
+
+	// 渠道级代理客户端缓存（按 proxy URL 复用，避免每请求新建 Transport）。
+	proxyMu      sync.Mutex
+	proxyClients map[string]*http.Client
+}
+
+// clientFor：渠道无代理 → 共享 Client；有代理 → 按 proxy URL 复用一个带代理 Transport 的 Client。
+// 代理串无法解析时安全降级为直连（不阻断请求）。
+func (r *Relay) clientFor(ch *Channel) *http.Client {
+	if ch == nil || ch.Proxy == "" {
+		return r.Client
+	}
+	r.proxyMu.Lock()
+	defer r.proxyMu.Unlock()
+	if r.proxyClients == nil {
+		r.proxyClients = map[string]*http.Client{}
+	}
+	if cl, ok := r.proxyClients[ch.Proxy]; ok {
+		return cl
+	}
+	pu, err := url.Parse(ch.Proxy)
+	if err != nil || pu.Host == "" {
+		r.Log.Warn("invalid channel proxy, using direct", "channel", ch.ID, "proxy", ch.Proxy)
+		r.proxyClients[ch.Proxy] = r.Client // 缓存降级结果，避免反复解析
+		return r.Client
+	}
+	cl := &http.Client{Timeout: upstreamTimeout, Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
+	r.proxyClients[ch.Proxy] = cl
+	return cl
 }
 
 func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Logger) *Relay {
@@ -302,7 +332,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
 			return // 请求本身不合法，换渠道无意义
 		}
-		resp, err = r.Client.Do(upReq)
+		resp, err = r.clientFor(ch).Do(upReq)
 		if err != nil {
 			r.Log.Warn("upstream unreachable", "channel", ch.ID, "attempt", attempt, "err", err)
 			exclude[ch.ID] = true

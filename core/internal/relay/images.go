@@ -182,7 +182,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
 			return
 		}
-		resp, err = r.Client.Do(upReq)
+		resp, err = r.clientFor(ch).Do(upReq)
 		if err != nil {
 			r.Log.Warn("images upstream unreachable", "channel", ch.ID, "err", err)
 			exclude[ch.ID] = true

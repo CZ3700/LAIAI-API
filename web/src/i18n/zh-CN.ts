@@ -362,6 +362,8 @@ export default {
     chKey: '上游 API 密钥',
     chWeight: '权重',
     chPriority: '优先级',
+    chProxy: '代理（可选）',
+    chProxyHint: '该渠道的上游调用经此代理出网。留空=直连。如 http://user:pass@host:port 或 socks5://host:port',
     chAdd: '添加渠道',
     chDisable: '禁用',
     chDisableConfirm: '确认禁用该渠道？它将立即退出调度池。',

@@ -26,6 +26,7 @@ interface Channel {
   success_rate: number
   avg_latency_ms: number
   errors: number
+  proxy: string
 }
 interface Overview {
   window_days: number
@@ -400,7 +401,7 @@ function chStatusBadge(s: number): string {
 // —— 渠道 ——
 const providers = ref<Provider[]>([])
 const channels = ref<Channel[]>([])
-const ch = ref({ name: '', provider: 'openai', base_url: '', api_key: '', models: '', weight: 1, priority: 0 })
+const ch = ref({ name: '', provider: 'openai', base_url: '', api_key: '', models: '', weight: 1, priority: 0, proxy: '' })
 const chBusy = ref(false)
 const providerDefault = computed(
   () => providers.value.find((p) => p.name === ch.value.provider)?.default_base_url ?? '',
@@ -421,7 +422,7 @@ async function addChannel() {
       ...ch.value,
       models: ch.value.models.split(',').map((m) => m.trim()).filter(Boolean),
     })
-    ch.value = { name: '', provider: ch.value.provider, base_url: '', api_key: '', models: '', weight: 1, priority: 0 }
+    ch.value = { name: '', provider: ch.value.provider, base_url: '', api_key: '', models: '', weight: 1, priority: 0, proxy: '' }
     await loadChannels()
     error.value = ''
   } catch (e) {
@@ -534,7 +535,7 @@ function linesToMapping(lines: string): Record<string, string> {
 
 // —— 编辑渠道 ——
 const editing = ref<Channel | null>(null)
-const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '' })
+const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '', proxy: '' })
 const editBusy = ref(false)
 
 function openEdit(ch: Channel) {
@@ -547,6 +548,7 @@ function openEdit(ch: Channel) {
     priority: ch.priority,
     strict_response: ch.strict_response,
     mapping: mappingToLines(ch.model_mapping),
+    proxy: ch.proxy,
   }
 }
 async function saveEdit() {
@@ -560,6 +562,7 @@ async function saveEdit() {
       priority: editForm.value.priority,
       strict_response: editForm.value.strict_response,
       model_mapping: linesToMapping(editForm.value.mapping), // 空对象 = 清空映射
+      proxy: editForm.value.proxy, // 空串 = 清空代理（直连）
     }
     if (editForm.value.api_key) body.api_key = editForm.value.api_key
     await adminApi('PUT', `/api/admin/channels/${editing.value.id}`, body)
@@ -1041,6 +1044,11 @@ onMounted(() => {
             <input id="ch-priority" v-model.number="ch.priority" class="input" type="number" />
           </div>
           <div class="col-span-2">
+            <label class="label" for="ch-proxy">{{ t('admin.chProxy') }}</label>
+            <input id="ch-proxy" v-model="ch.proxy" class="input font-mono text-xs" placeholder="http://user:pass@host:port" />
+            <p class="mt-1 text-xs text-muted">{{ t('admin.chProxyHint') }}</p>
+          </div>
+          <div class="col-span-2">
             <button class="btn-primary" :disabled="chBusy">{{ t('admin.chAdd') }}</button>
           </div>
         </form>
@@ -1160,6 +1168,11 @@ onMounted(() => {
                 :placeholder="'gpt-5.2=gpt-5.2-internal'"
               ></textarea>
               <p class="mt-1 text-xs text-muted">{{ t('admin.chMappingHint') }}</p>
+            </div>
+            <div>
+              <label class="label" for="edit-proxy">{{ t('admin.chProxy') }}</label>
+              <input id="edit-proxy" v-model="editForm.proxy" class="input font-mono text-xs" placeholder="http://user:pass@host:port" />
+              <p class="mt-1 text-xs text-muted">{{ t('admin.chProxyHint') }}</p>
             </div>
             <label class="flex items-center gap-2 text-sm">
               <input v-model="editForm.strict_response" type="checkbox" class="accent-accent" />

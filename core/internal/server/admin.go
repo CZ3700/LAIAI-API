@@ -93,6 +93,7 @@ type channelReq struct {
 	Priority int      `json:"priority"`             // 大者先用；重试降层
 	MaxConcurrentTasks int `json:"max_concurrent_tasks"` // 任务并发闸，默认 3
 	ModelMapping map[string]string `json:"model_mapping"` // 对外名→上游名（可选）
+	Proxy        string `json:"proxy"`                 // 渠道级出网代理（0019，可选）
 }
 
 // marshalMapping：映射序列化为存储格式（空 map → 空串 = 不映射）。
@@ -148,7 +149,7 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		CredentialEnc: enc, Models: strings.Join(req.Models, ","),
 		Weight: weight, Priority: req.Priority,
 		MaxConcurrentTasks: maxTasks, StrictResponse: 1,
-		ModelMapping: mapping, Status: 1,
+		ModelMapping: mapping, Proxy: strings.TrimSpace(req.Proxy), Status: 1,
 	}
 	if err := s.db.Create(ch).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "channel create failed")
@@ -166,6 +167,7 @@ type updateChannelReq struct {
 	Priority *int     `json:"priority"`
 	StrictResponse *bool `json:"strict_response"`
 	ModelMapping *map[string]string `json:"model_mapping"` // 指针区分"不改"与"清空"
+	Proxy    *string  `json:"proxy"` // 指针区分"不改"与"清空代理"
 }
 
 // adminUpdateChannel：PUT /api/admin/channels/:id —— 编辑渠道（部署冒烟暴露的高频缺口）。
@@ -212,6 +214,9 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 			return
 		}
 		updates["model_mapping"] = mapping
+	}
+	if req.Proxy != nil {
+		updates["proxy"] = strings.TrimSpace(*req.Proxy)
 	}
 	if req.APIKey != nil && *req.APIKey != "" {
 		enc, err := s.keyring.Encrypt(*req.APIKey)
@@ -268,6 +273,7 @@ func (s *Server) adminListChannels(c *gin.Context) {
 			"strict_response": ch.EnforcesStrictResponse(),
 			"model_mapping": ch.ModelMapping, "calls": total, "status": ch.Status,
 			"success_rate": successRate, "avg_latency_ms": q.AvgDuration, "errors": q.Errors,
+			"proxy": ch.Proxy,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": out})

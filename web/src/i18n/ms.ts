@@ -362,6 +362,8 @@ export default {
     chKey: 'Kunci API huluan',
     chWeight: 'Pemberat',
     chPriority: 'Keutamaan',
+    chProxy: 'Proksi (pilihan)',
+    chProxyHint: 'Halakan panggilan huluan saluran ini melalui proksi. Kosong = terus. cth http://user:pass@host:port atau socks5://host:port',
     chAdd: 'Tambah saluran',
     chDisable: 'Lumpuhkan',
     chDisableConfirm: 'Lumpuhkan saluran ini? Ia meninggalkan kolam penghalaan serta-merta.',

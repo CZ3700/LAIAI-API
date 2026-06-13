@@ -15,6 +15,7 @@ CREATE TABLE channels (
     credential_enc TEXT NOT NULL DEFAULT '', models TEXT NOT NULL,
     weight INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 0,
     max_concurrent_tasks INTEGER NOT NULL DEFAULT 3, strict_response INTEGER NOT NULL DEFAULT 1, model_mapping TEXT NOT NULL DEFAULT '',
+    proxy TEXT NOT NULL DEFAULT '',
     status INTEGER NOT NULL DEFAULT 1
 );
 `

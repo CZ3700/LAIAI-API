@@ -40,7 +40,7 @@ func (r *Relay) TestChannel(ctx context.Context, ch *Channel, model string) *Cha
 		return res
 	}
 	t0 := time.Now()
-	resp, err := r.Client.Do(upReq)
+	resp, err := r.clientFor(ch).Do(upReq)
 	if err != nil {
 		res.LatencyMs = time.Since(t0).Milliseconds()
 		res.Message = "upstream unreachable: " + err.Error()

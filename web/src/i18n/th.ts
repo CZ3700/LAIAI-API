@@ -362,6 +362,8 @@ export default {
     chKey: 'คีย์ API ต้นทาง',
     chWeight: 'น้ำหนัก',
     chPriority: 'ลำดับความสำคัญ',
+    chProxy: 'พร็อกซี (ไม่บังคับ)',
+    chProxyHint: 'ส่งการเรียกต้นทางของช่องทางนี้ผ่านพร็อกซี ว่าง = เชื่อมตรง เช่น http://user:pass@host:port หรือ socks5://host:port',
     chAdd: 'เพิ่มช่องทาง',
     chDisable: 'ปิดใช้งาน',
     chDisableConfirm: 'ปิดใช้งานช่องทางนี้? จะออกจากพูลการกำหนดเส้นทางทันที',

@@ -363,6 +363,8 @@ const messages = {
     chKey: 'Upstream API key',
     chWeight: 'Weight',
     chPriority: 'Priority',
+    chProxy: 'Proxy (optional)',
+    chProxyHint: 'Route this channel’s upstream calls through a proxy. Empty = direct. e.g. http://user:pass@host:port or socks5://host:port',
     chAdd: 'Add channel',
     chDisable: 'Disable',
     chDisableConfirm: 'Disable this channel? It leaves the routing pool immediately.',

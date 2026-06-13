@@ -362,6 +362,8 @@ export default {
     chKey: 'Clé API amont',
     chWeight: 'Poids',
     chPriority: 'Priorité',
+    chProxy: 'Proxy (optionnel)',
+    chProxyHint: 'Acheminer les appels amont de ce canal via un proxy. Vide = direct. ex. http://user:pass@host:port ou socks5://host:port',
     chAdd: 'Ajouter un canal',
     chDisable: 'Désactiver',
     chDisableConfirm: 'Désactiver ce canal ? Il quitte immédiatement le routage.',

@@ -362,6 +362,8 @@ export default {
     chKey: 'Khóa API thượng nguồn',
     chWeight: 'Trọng số',
     chPriority: 'Ưu tiên',
+    chProxy: 'Proxy (tùy chọn)',
+    chProxyHint: 'Định tuyến lệnh gọi upstream của kênh qua proxy. Trống = trực tiếp. vd http://user:pass@host:port hoặc socks5://host:port',
     chAdd: 'Thêm kênh',
     chDisable: 'Vô hiệu hóa',
     chDisableConfirm: 'Vô hiệu hóa kênh này? Kênh sẽ rời khỏi định tuyến ngay lập tức.',

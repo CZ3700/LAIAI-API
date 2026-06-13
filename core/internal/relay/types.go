@@ -29,6 +29,7 @@ type Channel struct {
 	MaxConcurrentTasks int `gorm:"column:max_concurrent_tasks"` // 任务并发闸（0006，Seedance 公测 3）
 	StrictResponse int8  `gorm:"column:strict_response"`      // 1=校验上游响应 content-type（0008）
 	ModelMapping  string `gorm:"column:model_mapping"`        // JSON {对外名:上游名}（0009，空=不映射）
+	Proxy         string `gorm:"column:proxy"`                // 渠道级出网代理（0019，空=直连）
 	Status        int8   `gorm:"column:status"`
 }
 
