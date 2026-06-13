@@ -1,10 +1,22 @@
 <script setup lang="ts">
+import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAuth } from '@/stores/auth'
+import { api } from '@/lib/api'
 import ThemeLocale from '@/components/ThemeLocale.vue'
 
 const { t } = useI18n()
 const auth = useAuth()
+
+const announcement = ref('')
+onMounted(async () => {
+  try {
+    const cfg = await api<{ announcement: string }>('GET', '/api/config', undefined, { auth: false })
+    announcement.value = cfg.announcement
+  } catch {
+    // 公告失败不影响门面
+  }
+})
 
 const links = [
   { to: '/models', label: () => t('nav.models') },
@@ -50,6 +62,11 @@ const links = [
         </div>
       </div>
     </header>
+
+    <!-- 运营公告条 -->
+    <div v-if="announcement" class="border-b border-line bg-accent/10 px-6 py-2 text-center text-sm text-accent">
+      {{ announcement }}
+    </div>
 
     <main class="flex-1">
       <router-view v-slot="{ Component }">

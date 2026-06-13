@@ -1230,3 +1230,64 @@ func TestKeyControls(t *testing.T) {
 		t.Fatalf("over-quota call = %d, want 402", w.Code)
 	}
 }
+
+// 运营设置：注册开关关闭后注册被拒；公开 config 反映设置。
+func TestSettingsAndRegisterGate(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	// 默认可注册
+	w, _ := srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "s1@example.com", "password": "longenough1"})
+	if w.Code != 201 {
+		t.Fatalf("default register = %d, want 201", w.Code)
+	}
+	// 关闭注册
+	if w, _ := srv.doAdmin(t, "PUT", "/api/admin/settings", map[string]string{"register_enabled": "false", "announcement": "down for maintenance"}); w.Code != 200 {
+		t.Fatal("set settings failed")
+	}
+	// 注册被拒
+	w, _ = srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "s2@example.com", "password": "longenough1"})
+	if w.Code != 403 {
+		t.Fatalf("register when disabled = %d, want 403", w.Code)
+	}
+	// 公开 config 反映
+	_, cfg := srv.do(t, "GET", "/api/config", "", nil)
+	if cfg["register_enabled"] != false || cfg["announcement"] != "down for maintenance" {
+		t.Fatalf("config = %v", cfg)
+	}
+	// 未知键被拒
+	if w, _ := srv.doAdmin(t, "PUT", "/api/admin/settings", map[string]string{"bogus_key": "x"}); w.Code != 400 {
+		t.Fatalf("unknown setting = %d, want 400", w.Code)
+	}
+}
+
+// 用户管理 + 审计：封禁用户 + 操作留痕。
+func TestUserManageAndAudit(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "victim@example.com", "password": "longenough1"})
+	_, list := srv.doAdmin(t, "GET", "/api/admin/users", nil)
+	items := list["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("users = %d, want 1", len(items))
+	}
+	uid := items[0].(map[string]any)["id"]
+
+	// 封禁
+	if w, _ := srv.doAdmin(t, "POST", fmt.Sprintf("/api/admin/users/%v/manage", uid), map[string]any{"action": "ban"}); w.Code != 200 {
+		t.Fatal("ban failed")
+	}
+	// 被封用户无法登录
+	w, _ := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "victim@example.com", "password": "longenough1"})
+	if w.Code == 200 {
+		t.Fatal("banned user should not log in")
+	}
+	// 解封后可登录
+	srv.doAdmin(t, "POST", fmt.Sprintf("/api/admin/users/%v/manage", uid), map[string]any{"action": "unban"})
+	w, _ = srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "victim@example.com", "password": "longenough1"})
+	if w.Code != 200 {
+		t.Fatalf("unbanned login = %d, want 200", w.Code)
+	}
+	// 审计留痕（ban + unban）
+	_, audit := srv.doAdmin(t, "GET", "/api/admin/audit-logs", nil)
+	if audit["total"].(float64) < 2 {
+		t.Fatalf("audit total = %v, want >=2", audit["total"])
+	}
+}

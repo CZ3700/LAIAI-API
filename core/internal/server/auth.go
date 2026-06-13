@@ -23,6 +23,10 @@ type registerReq struct {
 // 旧平台的 Redis SETNX 前置锁不再需要——那是 NewAPI 不写 email、无法建 UNIQUE 时代的补丁；
 // 自有 schema 下并发注册竞态由数据库唯一约束干净解决。
 func (s *Server) register(c *gin.Context) {
+	if !s.getBoolSetting("register_enabled") { // 运营开关（0013）
+		fail(c, http.StatusForbidden, "registration is currently disabled")
+		return
+	}
 	var req registerReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "email and password are required")

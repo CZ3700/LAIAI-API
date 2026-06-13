@@ -75,6 +75,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 		api.POST("/auth/register", s.authRateLimit(), s.register)
 		api.POST("/auth/login", s.authRateLimit(), s.login)
 		api.GET("/pricing", s.getPricing) // 公开价目（营销站/模型市场同源）
+		api.GET("/config", s.getConfig)   // 公开运营配置（站名/注册开关/公告/法务）
 
 		authed := api.Group("", s.authRequired())
 		{
@@ -116,6 +117,11 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			admin.POST("/group-ratios", s.adminUpsertGroupRatio)
 			admin.DELETE("/group-ratios/:name", s.adminDeleteGroupRatio)
 			admin.PUT("/orgs/:id/group", s.adminSetOrgGroup)
+			admin.GET("/settings", s.adminGetSettings)
+			admin.PUT("/settings", s.adminSetSettings)
+			admin.GET("/audit-logs", s.adminListAuditLogs)
+			admin.GET("/users", s.adminListUsers)
+			admin.POST("/users/:id/manage", s.adminManageUser)
 		}
 	}
 

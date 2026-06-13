@@ -75,6 +75,9 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "grant failed")
 		return
 	}
+	if !applied {
+		s.writeAudit(c, "credit_grant", strconv.FormatUint(req.OrgID, 10), "granted "+req.AmountUSD+" USD: "+req.Reason)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"entry_id": entry.ID, "balance_after": entry.BalanceAfter, "already_applied": applied,
 	})
@@ -151,6 +154,7 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "channel create failed")
 		return
 	}
+	s.writeAudit(c, "channel_create", strconv.FormatUint(ch.ID, 10), "created channel "+ch.Name+" ("+ch.Provider+")")
 	c.JSON(http.StatusCreated, gin.H{"id": ch.ID, "name": ch.Name})
 }
 
@@ -667,4 +671,66 @@ func (s *Server) adminSetOrgGroup(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"id": id, "group": req.Group})
+}
+
+// adminListUsers：GET /api/admin/users?page=&q= —— 用户清单（含状态/注册时间，运营视图）。
+func (s *Server) adminListUsers(c *gin.Context) {
+	page := 1
+	if n, err := strconv.Atoi(c.Query("page")); err == nil && n > 0 {
+		page = n
+	}
+	const pageSize = 30
+	q := s.db.Model(&identity.User{})
+	if kw := c.Query("q"); kw != "" {
+		like := "%" + kw + "%"
+		q = q.Where("email LIKE ? OR display_name LIKE ?", like, like)
+	}
+	var total int64
+	q.Count(&total)
+	var users []identity.User
+	q.Order("id DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&users)
+	out := make([]gin.H, 0, len(users))
+	for _, u := range users {
+		out = append(out, gin.H{
+			"id": u.ID, "email": u.Email, "display_name": u.DisplayName, "status": u.Status,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"total": total, "page": page, "page_size": pageSize, "items": out})
+}
+
+// adminManageUser：POST /api/admin/users/:id/manage {action: ban|unban}
+func (s *Server) adminManageUser(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	var req struct {
+		Action string `json:"action" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "action required")
+		return
+	}
+	var status int8
+	switch req.Action {
+	case "ban":
+		status = identity.StatusDisabled
+	case "unban":
+		status = identity.StatusActive
+	default:
+		fail(c, http.StatusBadRequest, "action must be ban or unban")
+		return
+	}
+	res := s.db.Model(&identity.User{}).Where("id = ?", id).Update("status", status)
+	if res.Error != nil {
+		fail(c, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if res.RowsAffected == 0 {
+		fail(c, http.StatusNotFound, "user not found")
+		return
+	}
+	s.writeAudit(c, "user_"+req.Action, strconv.FormatUint(id, 10), "user "+req.Action)
+	c.JSON(http.StatusOK, gin.H{"id": id, "status": status})
 }

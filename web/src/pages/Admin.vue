@@ -108,7 +108,58 @@ function showError(e: unknown) {
 const { t, d } = useI18n()
 
 // —— tabs ——
-const tab = ref<'overview' | 'channels' | 'prices' | 'groups' | 'credits' | 'orgs' | 'logs'>('overview')
+const tab = ref<'overview' | 'channels' | 'prices' | 'groups' | 'credits' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
+
+// —— 运营设置 ——
+const settings = ref<Record<string, string>>({})
+const settingsBusy = ref(false)
+const settingsMsg = ref('')
+async function loadSettings() {
+  settings.value = (await adminApi<{ settings: Record<string, string> }>('GET', '/api/admin/settings')).settings
+}
+async function saveSettings() {
+  settingsBusy.value = true
+  settingsMsg.value = ''
+  try {
+    await adminApi('PUT', '/api/admin/settings', settings.value)
+    settingsMsg.value = t('settings.saved')
+  } catch (e) {
+    showError(e)
+  } finally {
+    settingsBusy.value = false
+  }
+}
+
+// —— 用户管理 ——
+interface AdminUser { id: number; email: string; display_name: string; status: number }
+const users = ref<AdminUser[]>([])
+const userQuery = ref('')
+async function loadUsers() {
+  const q = userQuery.value ? `?q=${encodeURIComponent(userQuery.value)}` : ''
+  users.value = (await adminApi<{ items: AdminUser[] }>('GET', `/api/admin/users${q}`)).items
+}
+async function manageUser(u: AdminUser, action: 'ban' | 'unban') {
+  try {
+    await adminApi('POST', `/api/admin/users/${u.id}/manage`, { action })
+    await loadUsers()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+// —— 审计日志 ——
+interface AuditRow { id: number; actor: string; action: string; target: string; detail: string; ip: string; created_at: number }
+const audit = ref<AuditRow[]>([])
+async function loadAudit() {
+  audit.value = (await adminApi<{ items: AuditRow[] }>('GET', '/api/admin/audit-logs')).items
+}
+
+// 切到这些 tab 时懒加载
+watch(tab, (v) => {
+  if (v === 'settings' && Object.keys(settings.value).length === 0) void loadSettings().catch(showError)
+  if (v === 'users' && users.value.length === 0) void loadUsers().catch(showError)
+  if (v === 'audit' && audit.value.length === 0) void loadAudit().catch(showError)
+})
 
 // —— 分组倍率 ——
 const groupRatios = ref<GroupRatio[]>([])
@@ -461,7 +512,7 @@ onMounted(() => {
       <div class="flex items-center justify-between">
         <div class="flex gap-1" role="tablist">
           <button
-            v-for="tb in ['overview', 'channels', 'prices', 'groups', 'credits', 'orgs', 'logs'] as const"
+            v-for="tb in ['overview', 'channels', 'prices', 'groups', 'credits', 'orgs', 'users', 'logs', 'settings', 'audit'] as const"
             :key="tb"
             type="button"
             role="tab"
@@ -1043,6 +1094,111 @@ onMounted(() => {
             <span>{{ t('common.page', { page: logPage }) }}</span>
             <button class="btn-ghost !py-1" :disabled="logPage * LOG_PAGE_SIZE >= logTotal" @click="logPage++">{{ t('common.next') }}</button>
           </div>
+        </div>
+      </template>
+
+      <!-- 用户 -->
+      <template v-if="tab === 'users'">
+        <form class="flex gap-2" @submit.prevent="loadUsers">
+          <input v-model="userQuery" class="input max-w-xs" :placeholder="t('admin.userSearch')" />
+          <button class="btn-ghost">{{ t('admin.lgApply') }}</button>
+        </form>
+        <div class="card overflow-x-auto">
+          <table class="table w-full text-sm">
+            <thead>
+              <tr class="border-b border-line text-left text-muted">
+                <th class="px-4 py-3 font-medium">ID</th>
+                <th class="px-4 py-3 font-medium">{{ t('auth.email') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('settings.displayName') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('keys.status') }}</th>
+                <th class="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="users.length === 0">
+                <td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+              </tr>
+              <tr v-for="u in users" :key="u.id" class="border-b border-line last:border-0">
+                <td class="px-4 py-2.5 text-muted">{{ u.id }}</td>
+                <td class="px-4 py-2.5 font-mono text-xs">{{ u.email }}</td>
+                <td class="px-4 py-2.5">{{ u.display_name || '—' }}</td>
+                <td class="px-4 py-2.5">
+                  <span :class="u.status === 1 ? 'badge-ok' : 'badge-danger'">
+                    {{ u.status === 1 ? t('admin.userActive') : t('admin.userBanned') }}
+                  </span>
+                </td>
+                <td class="px-4 py-2.5 text-right">
+                  <button v-if="u.status === 1" class="btn-danger !py-1 text-xs" @click="manageUser(u, 'ban')">{{ t('admin.userBan') }}</button>
+                  <button v-else class="btn-ghost !py-1 text-xs" @click="manageUser(u, 'unban')">{{ t('admin.userUnban') }}</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+
+      <!-- 设置 -->
+      <template v-if="tab === 'settings'">
+        <form class="card max-w-2xl p-6 space-y-5" @submit.prevent="saveSettings">
+          <div>
+            <label class="label" for="set-site">{{ t('admin.setSiteName') }}</label>
+            <input id="set-site" v-model="settings.site_name" class="input max-w-sm" />
+          </div>
+          <label class="flex items-center gap-2 text-sm">
+            <input type="checkbox" class="accent-accent" :checked="settings.register_enabled === 'true'"
+              @change="settings.register_enabled = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
+            {{ t('admin.setRegister') }}
+          </label>
+          <label class="flex items-center gap-2 text-sm">
+            <input type="checkbox" class="accent-accent" :checked="settings.maintenance_mode === 'true'"
+              @change="settings.maintenance_mode = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
+            {{ t('admin.setMaintenance') }}
+          </label>
+          <div>
+            <label class="label" for="set-ann">{{ t('admin.setAnnouncement') }}</label>
+            <input id="set-ann" v-model="settings.announcement" class="input" :placeholder="t('admin.setAnnouncementPh')" />
+          </div>
+          <div>
+            <label class="label" for="set-tos">{{ t('admin.setToS') }}</label>
+            <textarea id="set-tos" v-model="settings.terms_of_service" class="input" rows="3"></textarea>
+          </div>
+          <div>
+            <label class="label" for="set-priv">{{ t('admin.setPrivacy') }}</label>
+            <textarea id="set-priv" v-model="settings.privacy_policy" class="input" rows="3"></textarea>
+          </div>
+          <div class="flex items-center gap-3">
+            <button class="btn-primary" :disabled="settingsBusy">{{ t('settings.save') }}</button>
+            <span v-if="settingsMsg" class="text-sm text-ok">{{ settingsMsg }}</span>
+          </div>
+        </form>
+      </template>
+
+      <!-- 审计日志 -->
+      <template v-if="tab === 'audit'">
+        <div class="card overflow-x-auto">
+          <table class="table w-full text-sm whitespace-nowrap">
+            <thead>
+              <tr class="border-b border-line text-left text-muted">
+                <th class="px-4 py-3 font-medium">{{ t('usage.time') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.auActor') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.auAction') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.auDetail') }}</th>
+                <th class="px-4 py-3 font-medium">IP</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="audit.length === 0">
+                <td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+              </tr>
+              <tr v-for="a in audit" :key="a.id" class="border-b border-line last:border-0">
+                <td class="px-4 py-2.5 text-muted">{{ d(new Date(a.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
+                <td class="px-4 py-2.5 font-mono text-xs">{{ a.actor }}</td>
+                <td class="px-4 py-2.5"><span class="badge-muted">{{ a.action }}</span></td>
+                <td class="px-4 py-2.5 text-muted">{{ a.detail }}</td>
+                <td class="px-4 py-2.5 font-mono text-xs text-muted">{{ a.ip }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </template>
     </template>
