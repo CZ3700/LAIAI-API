@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { adminApi, adminToken, ApiError, errorMessage, uuid } from '@/lib/api'
+import { adminApi, adminToken, ApiError, copyText, errorMessage, uuid } from '@/lib/api'
 
 interface Provider {
   name: string
@@ -192,6 +192,52 @@ function statusLabel(s: number): string {
   return t('admin.chStatusDisabled')
 }
 
+// —— 渠道探测（上货前自检：补全 base_url + 拉模型） ——
+interface ProbeResult {
+  ok: boolean
+  detected_base_url: string
+  models: string[]
+  tried: { base_url: string; status: number; ok: boolean; note: string }[]
+  gateway: string
+  message: string
+}
+const showProbe = ref(false)
+const probeForm = ref({ api_key: '', base_url: '' })
+const probing = ref(false)
+const probeResult = ref<ProbeResult | null>(null)
+const probeErr = ref('')
+const copiedProbeModel = ref('')
+
+async function runProbe() {
+  probing.value = true
+  probeErr.value = ''
+  probeResult.value = null
+  try {
+    probeResult.value = await adminApi<ProbeResult>('POST', '/api/admin/channels/probe', {
+      api_key: probeForm.value.api_key,
+      base_url: probeForm.value.base_url,
+    })
+  } catch (e) {
+    probeErr.value = errorMessage(e, t('common.error'))
+  } finally {
+    probing.value = false
+  }
+}
+async function copyProbeModel(m: string) {
+  if (await copyText(m)) {
+    copiedProbeModel.value = m
+    setTimeout(() => (copiedProbeModel.value = ''), 1000)
+  }
+}
+// 探测成功 → 一键把结果填进"添加渠道"表单
+function useProbe() {
+  if (!probeResult.value?.ok) return
+  ch.value.base_url = probeResult.value.detected_base_url
+  ch.value.api_key = probeForm.value.api_key
+  ch.value.models = probeResult.value.models.join(', ')
+  showProbe.value = false
+}
+
 // —— 渠道一键测试 ——
 const testingId = ref<number | null>(null)
 const testResult = ref<{ name: string; r: TestResult } | null>(null)
@@ -356,7 +402,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="max-w-4xl space-y-6">
+  <div class="max-w-6xl space-y-6">
     <h1 class="text-2xl font-semibold tracking-tight">{{ t('admin.title') }}</h1>
 
     <!-- token 门 -->
@@ -467,6 +513,77 @@ onMounted(() => {
 
       <!-- 渠道 -->
       <template v-if="tab === 'channels'">
+        <div class="flex items-center justify-between">
+          <p class="text-sm text-muted">{{ t('admin.chIntro') }}</p>
+          <button class="btn-ghost" @click="showProbe = true">{{ t('admin.probe') }}</button>
+        </div>
+
+        <!-- 探测弹窗 -->
+        <div v-if="showProbe" class="modal-backdrop" @click.self="showProbe = false">
+          <div class="card modal-panel w-full max-w-lg p-6 space-y-4">
+            <h2 class="font-semibold">{{ t('admin.probeTitle') }}</h2>
+            <p class="text-xs text-muted">{{ t('admin.probeHint') }}</p>
+            <form class="space-y-3" @submit.prevent="runProbe">
+              <div>
+                <label class="label" for="pb-url">{{ t('admin.probeDomain') }}</label>
+                <input id="pb-url" v-model="probeForm.base_url" class="input font-mono text-xs" placeholder="api.example.com" required />
+              </div>
+              <div>
+                <label class="label" for="pb-key">{{ t('admin.chKey') }}</label>
+                <input id="pb-key" v-model="probeForm.api_key" class="input font-mono text-xs" type="password" autocomplete="off" required />
+              </div>
+              <div class="flex justify-end gap-2">
+                <button type="button" class="btn-ghost" @click="showProbe = false">{{ t('common.cancel') }}</button>
+                <button class="btn-primary" :disabled="probing">{{ probing ? t('admin.probing') : t('admin.probeRun') }}</button>
+              </div>
+            </form>
+
+            <p v-if="probeErr" class="text-sm text-danger" role="alert">{{ probeErr }}</p>
+
+            <!-- 探测结果 -->
+            <div v-if="probeResult" class="space-y-3 border-t border-line pt-4">
+              <div v-if="probeResult.ok" class="space-y-3">
+                <div class="text-sm">
+                  <span class="badge-ok">OK</span>
+                  <span class="ml-2 text-muted">{{ t('admin.probeDetected') }}</span>
+                  <code class="ml-1 font-mono text-xs select-all">{{ probeResult.detected_base_url }}</code>
+                </div>
+                <p v-if="probeResult.gateway" class="text-xs text-muted">
+                  {{ t('admin.probeGateway') }}: <span class="font-mono">{{ probeResult.gateway }}</span>
+                </p>
+                <div>
+                  <p class="mb-1 text-xs text-muted">{{ t('admin.probeModels', { n: probeResult.models.length }) }}</p>
+                  <div class="max-h-44 overflow-y-auto rounded-lg border border-line p-2">
+                    <button
+                      v-for="m in probeResult.models"
+                      :key="m"
+                      type="button"
+                      class="m-0.5 inline-flex items-center gap-1 rounded-md bg-elev px-2 py-1 font-mono text-xs hover:text-accent"
+                      :title="t('common.copy')"
+                      @click="copyProbeModel(m)"
+                    >
+                      {{ m }}
+                      <span v-if="copiedProbeModel === m" class="text-ok">✓</span>
+                    </button>
+                  </div>
+                </div>
+                <button class="btn-primary w-full" @click="useProbe">{{ t('admin.probeUse') }}</button>
+              </div>
+              <div v-else class="space-y-2">
+                <p class="text-sm text-danger">{{ probeResult.message }}</p>
+                <details class="text-xs text-muted">
+                  <summary class="cursor-pointer">{{ t('admin.probeTried') }}</summary>
+                  <ul class="mt-1 space-y-1">
+                    <li v-for="a in probeResult.tried" :key="a.base_url" class="font-mono">
+                      {{ a.base_url }} — {{ a.note }}
+                    </li>
+                  </ul>
+                </details>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <form class="card p-5 grid grid-cols-2 gap-4" @submit.prevent="addChannel">
           <div>
             <label class="label" for="ch-name">{{ t('admin.chName') }}</label>

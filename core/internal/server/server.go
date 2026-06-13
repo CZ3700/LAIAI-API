@@ -105,6 +105,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			admin.PUT("/channels/:id", s.adminUpdateChannel)
 			admin.DELETE("/channels/:id", s.adminDisableChannel)
 			admin.POST("/channels/:id/test", s.adminTestChannel)
+			admin.POST("/channels/probe", s.adminProbeChannel)
 			admin.POST("/model-prices", s.adminUpsertPrice)
 			admin.GET("/model-prices", s.adminListPrices)
 			admin.GET("/providers", s.adminListProviders)

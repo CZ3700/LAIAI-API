@@ -1032,3 +1032,47 @@ func TestUsageByModel(t *testing.T) {
 		t.Fatalf("by-model row = %v", m)
 	}
 }
+
+// 渠道探测：从主域名试出含 /v1 的 base_url + 拉模型列表。
+func TestAdminProbeChannel(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	// mock 上游：只有 /v1/models 返回模型，裸路径 /models 404
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" && r.Header.Get("Authorization") == "Bearer sk-probe" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Server", "test-gateway")
+			fmt.Fprint(w, `{"data":[{"id":"gpt-5.2"},{"id":"claude-4"},{"id":"glm-5"}]}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer up.Close()
+
+	// 只给主域名（无 /v1），探测应补全为 {url}/v1
+	w, out := srv.doAdmin(t, "POST", "/api/admin/channels/probe", map[string]any{
+		"api_key": "sk-probe", "base_url": up.URL,
+	})
+	if w.Code != 200 {
+		t.Fatalf("probe = %d %v", w.Code, out)
+	}
+	if out["ok"] != true {
+		t.Fatalf("probe not ok: %v", out)
+	}
+	if out["detected_base_url"] != up.URL+"/v1" {
+		t.Fatalf("detected = %v, want %s/v1", out["detected_base_url"], up.URL)
+	}
+	models := out["models"].([]any)
+	if len(models) != 3 || models[0] != "gpt-5.2" {
+		t.Fatalf("models = %v", models)
+	}
+	if out["gateway"] != "test-gateway" {
+		t.Fatalf("gateway = %v", out["gateway"])
+	}
+	// 错 key → 探测失败
+	w, out = srv.doAdmin(t, "POST", "/api/admin/channels/probe", map[string]any{
+		"api_key": "sk-wrong", "base_url": up.URL,
+	})
+	if out["ok"] != false {
+		t.Fatalf("wrong key should fail: %v", out)
+	}
+}

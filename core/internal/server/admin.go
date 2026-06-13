@@ -554,3 +554,21 @@ func (s *Server) adminListInvocations(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"total": total, "page": page, "page_size": pageSize, "items": out})
 }
+
+// adminProbeChannel：POST /api/admin/channels/probe {api_key, base_url}
+// 上货前自检：试出正确 base_url 格式 + 拉可调模型列表。不落库不计费。
+func (s *Server) adminProbeChannel(c *gin.Context) {
+	if s.relay == nil {
+		fail(c, http.StatusServiceUnavailable, "relay not configured")
+		return
+	}
+	var req struct {
+		APIKey  string `json:"api_key" binding:"required"`
+		BaseURL string `json:"base_url" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "api_key and base_url required")
+		return
+	}
+	c.JSON(http.StatusOK, s.relay.ProbeChannel(c.Request.Context(), req.APIKey, req.BaseURL))
+}
