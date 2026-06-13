@@ -37,6 +37,12 @@ const messages = {
     theme: 'Toggle theme',
     language: 'Language',
   },
+  legal: {
+    terms: 'Terms',
+    privacy: 'Privacy',
+    contact: 'Contact',
+    empty: 'Not configured yet.',
+  },
   auth: {
     signin: 'Sign in',
     signup: 'Create account',

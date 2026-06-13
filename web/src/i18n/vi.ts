@@ -36,6 +36,12 @@ export default {
     theme: 'Đổi giao diện',
     language: 'Ngôn ngữ',
   },
+  legal: {
+    terms: 'Điều khoản',
+    privacy: 'Quyền riêng tư',
+    contact: 'Liên hệ',
+    empty: 'Chưa được cấu hình.',
+  },
   auth: {
     signin: 'Đăng nhập',
     signup: 'Tạo tài khoản',

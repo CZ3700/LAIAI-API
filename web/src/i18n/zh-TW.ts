@@ -36,6 +36,12 @@ export default {
     theme: '切換主題',
     language: '語言',
   },
+  legal: {
+    terms: '服務條款',
+    privacy: '隱私政策',
+    contact: '聯絡我們',
+    empty: '尚未設定。',
+  },
   auth: {
     signin: '登入',
     signup: '建立帳號',

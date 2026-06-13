@@ -36,6 +36,12 @@ export default {
     theme: 'Сменить тему',
     language: 'Язык',
   },
+  legal: {
+    terms: 'Условия',
+    privacy: 'Конфиденциальность',
+    contact: 'Контакт',
+    empty: 'Ещё не настроено.',
+  },
   auth: {
     signin: 'Войти',
     signup: 'Создать аккаунт',

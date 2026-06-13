@@ -14,6 +14,8 @@ export const router = createRouter({
         { path: 'rankings', component: () => import('@/pages/Rankings.vue') },
         { path: 'docs', component: () => import('@/pages/Docs.vue') },
         { path: 'about', component: () => import('@/pages/About.vue') },
+        { path: 'terms', component: () => import('@/pages/Legal.vue') },
+        { path: 'privacy', component: () => import('@/pages/Legal.vue') },
       ],
     },
     { path: '/login', component: () => import('@/pages/Login.vue') },

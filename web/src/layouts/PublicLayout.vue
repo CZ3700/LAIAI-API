@@ -9,10 +9,23 @@ const { t } = useI18n()
 const auth = useAuth()
 
 const announcement = ref('')
+const siteName = ref('LAIAI')
+const supportEmail = ref('')
+const footerText = ref('')
+const hasTerms = ref(false)
+const hasPrivacy = ref(false)
 onMounted(async () => {
   try {
-    const cfg = await api<{ announcement: string }>('GET', '/api/config', undefined, { auth: false })
+    const cfg = await api<{
+      announcement: string; site_name: string; support_email: string
+      footer_text: string; terms_of_service: string; privacy_policy: string
+    }>('GET', '/api/config', undefined, { auth: false })
     announcement.value = cfg.announcement
+    siteName.value = cfg.site_name || 'LAIAI'
+    supportEmail.value = cfg.support_email
+    footerText.value = cfg.footer_text
+    hasTerms.value = !!cfg.terms_of_service
+    hasPrivacy.value = !!cfg.privacy_policy
   } catch {
     // 公告失败不影响门面
   }
@@ -78,13 +91,20 @@ const links = [
     </main>
 
     <footer class="border-t border-line">
-      <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-6 text-sm text-muted">
-        <span>© LAIAI</span>
-        <div class="flex gap-4">
-          <router-link class="hover:text-ink" to="/models">{{ t('nav.models') }}</router-link>
-          <router-link class="hover:text-ink" to="/docs">{{ t('nav.docs') }}</router-link>
-          <router-link class="hover:text-ink" to="/about">{{ t('nav.about') }}</router-link>
+      <div class="mx-auto max-w-6xl space-y-3 px-6 py-8">
+        <div class="flex flex-wrap items-center justify-between gap-4 text-sm text-muted">
+          <span>© {{ siteName }}</span>
+          <div class="flex flex-wrap gap-x-4 gap-y-2">
+            <router-link class="hover:text-ink" to="/models">{{ t('nav.models') }}</router-link>
+            <router-link class="hover:text-ink" to="/rankings">{{ t('nav.rankings') }}</router-link>
+            <router-link class="hover:text-ink" to="/docs">{{ t('nav.docs') }}</router-link>
+            <router-link class="hover:text-ink" to="/about">{{ t('nav.about') }}</router-link>
+            <router-link v-if="hasTerms" class="hover:text-ink" to="/terms">{{ t('legal.terms') }}</router-link>
+            <router-link v-if="hasPrivacy" class="hover:text-ink" to="/privacy">{{ t('legal.privacy') }}</router-link>
+            <a v-if="supportEmail" class="hover:text-ink" :href="`mailto:${supportEmail}`">{{ t('legal.contact') }}</a>
+          </div>
         </div>
+        <p v-if="footerText" class="text-xs text-muted">{{ footerText }}</p>
       </div>
     </footer>
   </div>

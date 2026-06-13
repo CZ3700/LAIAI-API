@@ -37,6 +37,12 @@ export default {
     theme: '切换主题',
     language: '语言',
   },
+  legal: {
+    terms: '服务条款',
+    privacy: '隐私政策',
+    contact: '联系我们',
+    empty: '尚未配置。',
+  },
   auth: {
     signin: '登录',
     signup: '注册账号',

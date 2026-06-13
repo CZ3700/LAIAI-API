@@ -36,6 +36,12 @@ export default {
     theme: 'สลับธีม',
     language: 'ภาษา',
   },
+  legal: {
+    terms: 'ข้อกำหนด',
+    privacy: 'ความเป็นส่วนตัว',
+    contact: 'ติดต่อ',
+    empty: 'ยังไม่ได้กำหนดค่า',
+  },
   auth: {
     signin: 'เข้าสู่ระบบ',
     signup: 'สร้างบัญชี',

@@ -36,6 +36,12 @@ export default {
     theme: 'Changer de thème',
     language: 'Langue',
   },
+  legal: {
+    terms: 'Conditions',
+    privacy: 'Confidentialité',
+    contact: 'Contact',
+    empty: 'Pas encore configuré.',
+  },
   auth: {
     signin: 'Se connecter',
     signup: 'Créer un compte',

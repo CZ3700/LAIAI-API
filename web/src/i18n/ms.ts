@@ -36,6 +36,12 @@ export default {
     theme: 'Tukar tema',
     language: 'Bahasa',
   },
+  legal: {
+    terms: 'Terma',
+    privacy: 'Privasi',
+    contact: 'Hubungi',
+    empty: 'Belum dikonfigurasikan.',
+  },
   auth: {
     signin: 'Log masuk',
     signup: 'Cipta akaun',

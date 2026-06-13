@@ -36,6 +36,12 @@ export default {
     theme: 'テーマ切替',
     language: '言語',
   },
+  legal: {
+    terms: '利用規約',
+    privacy: 'プライバシー',
+    contact: 'お問い合わせ',
+    empty: 'まだ設定されていません。',
+  },
   auth: {
     signin: 'サインイン',
     signup: 'アカウント作成',
