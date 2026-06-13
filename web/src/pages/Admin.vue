@@ -15,11 +15,23 @@ interface Channel {
   provider: string
   base_url: string
   models: string
+  model_count: number
   weight: number
   priority: number
   strict_response: boolean
   model_mapping: string
+  calls: number
   status: number
+}
+interface Overview {
+  window_days: number
+  channels: { total: number; active: number; disabled: number; auto_disabled: number }
+  calls_today: number
+  calls_window: number
+  success_rate: number
+  revenue_window: string
+  top_models: { model: string; calls: number; cost: string }[]
+  channel_health: { id: number; name: string; status: number; calls: number }[]
 }
 interface TestResult {
   ok: boolean
@@ -69,7 +81,19 @@ function showError(e: unknown) {
 }
 
 // —— tabs ——
-const tab = ref<'channels' | 'prices' | 'credits' | 'orgs'>('channels')
+const tab = ref<'overview' | 'channels' | 'prices' | 'credits' | 'orgs'>('overview')
+
+// —— 平台概览 ——
+const overview = ref<Overview | null>(null)
+async function loadOverview() {
+  overview.value = await adminApi<Overview>('GET', '/api/admin/overview')
+}
+const maxModelCalls = computed(() =>
+  Math.max(1, ...(overview.value?.top_models ?? []).map((m) => m.calls)),
+)
+function chStatusBadge(s: number): string {
+  return s === 1 ? 'badge-ok' : s === 2 ? 'badge-danger' : 'badge-muted'
+}
 
 // —— 渠道 ——
 const providers = ref<Provider[]>([])
@@ -272,7 +296,7 @@ async function grant() {
 
 async function loadAll() {
   try {
-    await Promise.all([loadChannels(), loadPrices(), loadOrgs()])
+    await Promise.all([loadOverview(), loadChannels(), loadPrices(), loadOrgs()])
   } catch (e) {
     showError(e)
   }
@@ -300,7 +324,7 @@ onMounted(() => {
       <div class="flex items-center justify-between">
         <div class="flex gap-1" role="tablist">
           <button
-            v-for="tb in ['channels', 'prices', 'credits', 'orgs'] as const"
+            v-for="tb in ['overview', 'channels', 'prices', 'credits', 'orgs'] as const"
             :key="tb"
             type="button"
             role="tab"
@@ -316,6 +340,81 @@ onMounted(() => {
       </div>
 
       <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
+
+      <!-- 概览 -->
+      <template v-if="tab === 'overview' && overview">
+        <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div class="card p-4">
+            <p class="text-xs text-muted">{{ t('admin.ovChannels') }}</p>
+            <p class="mt-1 text-2xl font-semibold font-mono">
+              {{ overview.channels.active }}<span class="text-base text-muted">/{{ overview.channels.total }}</span>
+            </p>
+            <p class="mt-1 text-xs text-muted">
+              <span v-if="overview.channels.auto_disabled" class="text-danger">
+                {{ overview.channels.auto_disabled }} {{ t('admin.chStatusAuto') }}
+              </span>
+              <span v-else>{{ t('admin.ovAllHealthy') }}</span>
+            </p>
+          </div>
+          <div class="card p-4">
+            <p class="text-xs text-muted">{{ t('dashboard.todayCalls') }}</p>
+            <p class="mt-1 text-2xl font-semibold font-mono">{{ overview.calls_today }}</p>
+            <p class="mt-1 text-xs text-muted">{{ t('admin.ovWindowCalls', { n: overview.calls_window, days: overview.window_days }) }}</p>
+          </div>
+          <div class="card p-4">
+            <p class="text-xs text-muted">{{ t('admin.ovSuccessRate') }}</p>
+            <p class="mt-1 text-2xl font-semibold font-mono">{{ (overview.success_rate * 100).toFixed(1) }}%</p>
+            <p class="mt-1 text-xs text-muted">{{ t('admin.ovLastDays', { days: overview.window_days }) }}</p>
+          </div>
+          <div class="card p-4">
+            <p class="text-xs text-muted">{{ t('admin.ovRevenue') }}</p>
+            <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(overview.revenue_window).toFixed(4) }}</p>
+            <p class="mt-1 text-xs text-muted">{{ t('admin.ovLastDays', { days: overview.window_days }) }}</p>
+          </div>
+        </div>
+
+        <div class="grid gap-4 lg:grid-cols-2">
+          <!-- 模型 top -->
+          <div class="card p-5">
+            <h2 class="mb-4 font-semibold">{{ t('admin.ovTopModels') }}</h2>
+            <div v-if="overview.top_models.length === 0" class="text-sm text-muted">{{ t('common.empty') }}</div>
+            <div v-else class="space-y-3">
+              <div v-for="m in overview.top_models" :key="m.model">
+                <div class="flex items-baseline justify-between text-sm">
+                  <span class="font-mono truncate pr-2">{{ m.model }}</span>
+                  <span class="shrink-0 text-muted">{{ m.calls }} · ${{ Number(m.cost).toFixed(4) }}</span>
+                </div>
+                <div class="mt-1 h-1.5 rounded-full bg-line">
+                  <div
+                    class="h-full rounded-full"
+                    style="background: linear-gradient(90deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)))"
+                    :style="{ width: `${(m.calls / maxModelCalls) * 100}%` }"
+                  ></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 渠道健康 -->
+          <div class="card p-5">
+            <h2 class="mb-4 font-semibold">{{ t('admin.ovChannelHealth') }}</h2>
+            <div v-if="overview.channel_health.length === 0" class="text-sm text-muted">{{ t('common.empty') }}</div>
+            <div v-else class="space-y-2">
+              <div
+                v-for="h in overview.channel_health"
+                :key="h.id"
+                class="flex items-center justify-between text-sm"
+              >
+                <span class="flex items-center gap-2 truncate pr-2">
+                  <span :class="chStatusBadge(h.status)">{{ statusLabel(h.status) }}</span>
+                  {{ h.name }}
+                </span>
+                <span class="shrink-0 font-mono text-muted">{{ h.calls }} {{ t('admin.ovCalls') }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
 
       <!-- 渠道 -->
       <template v-if="tab === 'channels'">
@@ -379,22 +478,33 @@ onMounted(() => {
                 <th class="px-4 py-3 font-medium">ID</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.chName') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.chProvider') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.chBaseUrl') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.chModels') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.chWeight') }}/{{ t('admin.chPriority') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.chWeight') }}/{{ t('admin.chPriority') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.ovCalls') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('keys.status') }}</th>
                 <th class="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="channels.length === 0">
-                <td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+                <td colspan="9" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <tr v-for="c in channels" :key="c.id" class="border-b border-line last:border-0">
                 <td class="px-4 py-2.5 text-muted">{{ c.id }}</td>
-                <td class="px-4 py-2.5">{{ c.name }}</td>
+                <td class="px-4 py-2.5">
+                  {{ c.name }}
+                  <span v-if="c.model_mapping" class="ml-1 badge-muted" :title="t('admin.chMapping')">map</span>
+                  <span v-if="!c.strict_response" class="ml-1 badge-danger" :title="t('admin.chStrict')">lax</span>
+                </td>
                 <td class="px-4 py-2.5 font-mono text-xs">{{ c.provider }}</td>
-                <td class="px-4 py-2.5 font-mono text-xs max-w-64 truncate" :title="c.models">{{ c.models }}</td>
-                <td class="px-4 py-2.5">{{ c.weight }} / {{ c.priority }}</td>
+                <td class="px-4 py-2.5 font-mono text-xs max-w-48 truncate text-muted" :title="c.base_url">{{ c.base_url }}</td>
+                <td class="px-4 py-2.5 font-mono text-xs max-w-48 truncate" :title="c.models">
+                  {{ c.models }}
+                  <span class="text-muted">({{ c.model_count }})</span>
+                </td>
+                <td class="px-4 py-2.5 text-right font-mono">{{ c.weight }} / {{ c.priority }}</td>
+                <td class="px-4 py-2.5 text-right font-mono" :class="c.calls ? '' : 'text-muted'">{{ c.calls }}</td>
                 <td class="px-4 py-2.5">
                   <span :class="c.status === 1 ? 'badge-ok' : c.status === 2 ? 'badge-danger' : 'badge-muted'">
                     {{ statusLabel(c.status) }}

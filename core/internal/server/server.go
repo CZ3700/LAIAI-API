@@ -105,6 +105,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			admin.GET("/model-prices", s.adminListPrices)
 			admin.GET("/providers", s.adminListProviders)
 			admin.GET("/orgs", s.adminListOrgs)
+			admin.GET("/overview", s.adminOverview)
 		}
 	}
 

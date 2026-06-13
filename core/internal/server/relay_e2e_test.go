@@ -898,3 +898,67 @@ func TestPublicPricing(t *testing.T) {
 		t.Fatalf("pricing row = %v", m)
 	}
 }
+
+// admin 概览：渠道分布 + 调用统计 + 模型 top + 渠道健康。
+func TestAdminOverview(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := mockUpstreamJSON(t, 1000, 500)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "overview@example.com", "10")
+
+	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 200 {
+		t.Fatalf("relay = %d", w.Code)
+	}
+	waitInvocation(t, db, "org_id = ?", uint64(orgID))
+
+	w, out := srv.doAdmin(t, "GET", "/api/admin/overview", nil)
+	if w.Code != 200 {
+		t.Fatalf("overview = %d %v", w.Code, out)
+	}
+	ch := out["channels"].(map[string]any)
+	if ch["total"] != float64(1) || ch["active"] != float64(1) {
+		t.Fatalf("channels = %v", ch)
+	}
+	if out["calls_today"] != float64(1) || out["calls_window"] != float64(1) {
+		t.Fatalf("calls = today %v window %v", out["calls_today"], out["calls_window"])
+	}
+	if out["success_rate"] != float64(1) {
+		t.Fatalf("success_rate = %v, want 1", out["success_rate"])
+	}
+	top := out["top_models"].([]any)
+	if len(top) != 1 || top[0].(map[string]any)["model"] != "test-model" ||
+		top[0].(map[string]any)["calls"] != float64(1) {
+		t.Fatalf("top_models = %v", top)
+	}
+	health := out["channel_health"].([]any)
+	if len(health) != 1 || health[0].(map[string]any)["calls"] != float64(1) {
+		t.Fatalf("channel_health = %v", health)
+	}
+}
+
+// 渠道列表带累计调用数 + 模型数。
+func TestAdminListChannelsEnriched(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := mockUpstreamJSON(t, 1, 1)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "chlist@example.com", "10")
+	srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	waitInvocation(t, db, "org_id = ?", uint64(orgID))
+
+	w, out := srv.doAdmin(t, "GET", "/api/admin/channels", nil)
+	if w.Code != 200 {
+		t.Fatalf("list = %d", w.Code)
+	}
+	chs := out["channels"].([]any)
+	c0 := chs[0].(map[string]any)
+	if c0["calls"] != float64(1) || c0["model_count"] != float64(1) {
+		t.Fatalf("enriched channel = %v", c0)
+	}
+}

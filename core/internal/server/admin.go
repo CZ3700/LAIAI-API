@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
@@ -232,19 +233,27 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 }
 
 func (s *Server) adminListChannels(c *gin.Context) {
+	rdb := s.db.WithContext(c.Request.Context())
 	var channels []relay.Channel
-	if err := s.db.Order("id").Find(&channels).Error; err != nil {
+	if err := rdb.Order("id").Find(&channels).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "list failed")
 		return
 	}
+	// 累计调用数（14 天窗口，与 overview 同口径）
+	since := s.now().AddDate(0, 0, -13).Format("2006-01-02")
+	calls := s.channelCallCounts(rdb, since)
 	out := make([]gin.H, 0, len(channels))
 	for _, ch := range channels {
+		modelCount := 0
+		if ch.Models != "" {
+			modelCount = len(strings.Split(ch.Models, ","))
+		}
 		out = append(out, gin.H{ // 凭证永不回显，连密文都不给
 			"id": ch.ID, "name": ch.Name, "provider": ch.Provider,
-			"base_url": ch.BaseURL, "models": ch.Models,
+			"base_url": ch.BaseURL, "models": ch.Models, "model_count": modelCount,
 			"weight": ch.Weight, "priority": ch.Priority,
 			"strict_response": ch.EnforcesStrictResponse(),
-			"model_mapping": ch.ModelMapping, "status": ch.Status,
+			"model_mapping": ch.ModelMapping, "calls": calls[ch.ID], "status": ch.Status,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": out})
@@ -380,4 +389,105 @@ func (s *Server) adminListOrgs(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"orgs": rows})
+}
+
+// channelCallCounts：各渠道窗口内累计调用数（channel_id → count）。
+func (s *Server) channelCallCounts(rdb *gorm.DB, since string) map[uint64]int64 {
+	type row struct {
+		ChannelID uint64
+		Calls     int64
+	}
+	var rows []row
+	rdb.Model(&invocation.Invocation{}).
+		Select("channel_id, COUNT(*) AS calls").
+		Where("created_at >= ? AND channel_id > 0", since).
+		Group("channel_id").Scan(&rows)
+	out := make(map[uint64]int64, len(rows))
+	for _, r := range rows {
+		out[r.ChannelID] = r.Calls
+	}
+	return out
+}
+
+// adminOverview：GET /api/admin/overview —— 平台级运营概览（admin 仪表盘）。
+// 渠道健康分布 + 调用量/成功率 + 总收入 + 模型 top + 各渠道调用。窗口 14 天。
+func (s *Server) adminOverview(c *gin.Context) {
+	rdb := s.db.WithContext(c.Request.Context())
+	const windowDays = 14
+	now := s.now()
+	since := now.AddDate(0, 0, -windowDays+1).Format("2006-01-02")
+	today := now.Format("2006-01-02")
+
+	// 渠道健康分布（status: 1=active, 0=disabled, 2=auto-disabled）
+	type chCount struct {
+		Status int8
+		N      int64
+	}
+	var chCounts []chCount
+	rdb.Model(&relay.Channel{}).Select("status, COUNT(*) AS n").Group("status").Scan(&chCounts)
+	var total, active, disabled, autoDisabled int64
+	for _, cc := range chCounts {
+		total += cc.N
+		switch cc.Status {
+		case 1:
+			active = cc.N
+		case 2:
+			autoDisabled = cc.N
+		default:
+			disabled = cc.N
+		}
+	}
+
+	var callsToday, callsWindow, succeeded int64
+	rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", today).Count(&callsToday)
+	rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", since).Count(&callsWindow)
+	rdb.Model(&invocation.Invocation{}).Where("created_at >= ? AND status = ?", since, "success").Count(&succeeded)
+
+	var revenue decimal.Decimal
+	rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", since).
+		Select("COALESCE(SUM(cost_usd), 0)").Scan(&revenue)
+
+	type modelStat struct {
+		Model string          `json:"model"`
+		Calls int64           `json:"calls"`
+		Cost  decimal.Decimal `json:"cost"`
+	}
+	var topModels []modelStat
+	rdb.Model(&invocation.Invocation{}).
+		Select("model, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS cost").
+		Where("created_at >= ?", since).
+		Group("model").Order("calls DESC").Limit(8).Scan(&topModels)
+	if topModels == nil {
+		topModels = []modelStat{}
+	}
+
+	// 各渠道调用（含禁用渠道，运营要看历史活跃度）
+	calls := s.channelCallCounts(rdb, since)
+	var channels []relay.Channel
+	rdb.Order("status DESC, id").Find(&channels)
+	type chHealth struct {
+		ID     uint64 `json:"id"`
+		Name   string `json:"name"`
+		Status int8   `json:"status"`
+		Calls  int64  `json:"calls"`
+	}
+	health := make([]chHealth, 0, len(channels))
+	for _, ch := range channels {
+		health = append(health, chHealth{ch.ID, ch.Name, ch.Status, calls[ch.ID]})
+	}
+
+	successRate := 1.0
+	if callsWindow > 0 {
+		successRate = float64(succeeded) / float64(callsWindow)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"window_days": windowDays,
+		"channels":    gin.H{"total": total, "active": active, "disabled": disabled, "auto_disabled": autoDisabled},
+		"calls_today": callsToday,
+		"calls_window": callsWindow,
+		"success_rate": successRate,
+		"revenue_window": revenue,
+		"top_models":    topModels,
+		"channel_health": health,
+	})
 }
