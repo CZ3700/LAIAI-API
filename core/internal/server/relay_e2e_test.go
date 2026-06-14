@@ -815,6 +815,74 @@ func TestAdminTestChannel(t *testing.T) {
 	}
 }
 
+// 渠道健康看板（M2）：从 invocations 派生每渠道成功率/时延/最近活跃；含零流量渠道。
+func TestChannelHealth(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := mockUpstreamJSON(t, 1000, 500)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL) // 渠道 1（mock），test-model 已定价
+	apiKey, orgID := seedUserWithCredit(t, srv, "health@example.com", "10")
+
+	// 一个闲置渠道（无流量）——看板必须也列出它
+	srv.doAdmin(t, "POST", "/api/admin/channels", map[string]any{
+		"name": "idle", "provider": "anthropic", "base_url": "https://idle.example.com",
+		"api_key": "sk-x", "models": []string{"unused-model"},
+	})
+
+	// 两次成功调用 → 渠道 1 calls=2 succeeded=2 success_rate=1
+	for i := 0; i < 2; i++ {
+		w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+			"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+		})
+		if w.Code != 200 {
+			t.Fatalf("relay call %d = %d", i, w.Code)
+		}
+	}
+	// 等两条 invocation 异步落库
+	for i := 0; i < 100; i++ {
+		var n int64
+		db.Model(&invocation.Invocation{}).Where("org_id = ?", uint64(orgID)).Count(&n)
+		if n >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	w, out := srv.doAdmin(t, "GET", "/api/admin/channel-health", nil)
+	if w.Code != 200 {
+		t.Fatalf("channel-health = %d %v", w.Code, out)
+	}
+	chs, _ := out["channels"].([]any)
+	if len(chs) != 2 {
+		t.Fatalf("health channels = %d, want 2 (incl idle)", len(chs))
+	}
+	var mock, idle map[string]any
+	for _, it := range chs {
+		m := it.(map[string]any)
+		switch m["name"] {
+		case "mock":
+			mock = m
+		case "idle":
+			idle = m
+		}
+	}
+	if mock == nil || idle == nil {
+		t.Fatalf("missing channel rows: %v", chs)
+	}
+	// 活跃渠道：真实聚合
+	if mock["calls"] != float64(2) || mock["succeeded"] != float64(2) ||
+		mock["failed"] != float64(0) || mock["success_rate"] != float64(1) {
+		t.Fatalf("mock health = %v", mock)
+	}
+	if mock["last_active"] == "" || mock["provider"] != "openai" || mock["status"] != float64(1) {
+		t.Fatalf("mock meta = %v", mock)
+	}
+	// 闲置渠道：零流量、默认满分、不报错
+	if idle["calls"] != float64(0) || idle["success_rate"] != float64(1) || idle["last_active"] != "" {
+		t.Fatalf("idle health = %v", idle)
+	}
+}
+
 // admin orgs：余额/成员数/owner email 聚合视图。
 func TestAdminListOrgs(t *testing.T) {
 	srv, _ := setupRelayServer(t)

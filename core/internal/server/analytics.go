@@ -226,3 +226,58 @@ func (s *Server) adminAnalytics(c *gin.Context) {
 		"series":   series,
 	})
 }
+
+// adminChannelHealth：GET /api/admin/channel-health?days=N —— 渠道健康看板（M2，2026-06-14）。
+// 从 Invocation Store 派生每渠道窗口健康：成功率/平均时延/平均首字节(frt)/近1h错误/最近活跃。
+// LEFT JOIN 含零流量的渠道（运营要看到闲置渠道）。**只读可观测，不反馈选路**（设计 §5.4）。
+// 口径：invocations 每请求一行、channel_id=终态命中渠道，故被重试绕过的中途失败不计入该渠道。
+func (s *Server) adminChannelHealth(c *gin.Context) {
+	rdb := s.db.WithContext(c.Request.Context())
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "7"))
+	if days < 1 || days > 90 {
+		days = 7
+	}
+	now := s.now().UTC() // 与 DATETIME 列 UTC 存储口径一致
+	since := now.AddDate(0, 0, -days+1).Format("2006-01-02")
+	hourAgo := now.Add(-time.Hour).Format("2006-01-02 15:04:05") // 近1h错误用全时间戳串比较（两库通用）
+
+	type chRow struct {
+		ID           uint64  `json:"id"`
+		Name         string  `json:"name"`
+		Provider     string  `json:"provider"`
+		Status       int8    `json:"status"`
+		Calls        int64   `json:"calls"`
+		Succeeded    int64   `json:"succeeded"`
+		Errors1h     int64   `json:"errors_1h"`
+		AvgLatencyMs float64 `json:"avg_latency_ms"`
+		AvgFrtMs     float64 `json:"avg_frt_ms"`
+		LastActive   string  `json:"last_active"`
+		Failed       int64   `json:"failed"`       // Go 派生
+		SuccessRate  float64 `json:"success_rate"` // Go 派生（避免 SQL 浮点除法两库差异）
+	}
+	var rows []chRow
+	rdb.Raw(`
+		SELECT c.id, c.name, c.provider, c.status,
+		       COUNT(i.id) AS calls,
+		       COALESCE(SUM(CASE WHEN i.status = 'success' THEN 1 ELSE 0 END), 0) AS succeeded,
+		       COALESCE(SUM(CASE WHEN i.status <> 'success' AND i.created_at >= ? THEN 1 ELSE 0 END), 0) AS errors1h,
+		       COALESCE(AVG(i.duration_ms), 0) AS avg_latency_ms,
+		       COALESCE(AVG(i.frt_ms), 0) AS avg_frt_ms,
+		       COALESCE(MAX(i.created_at), '') AS last_active
+		FROM channels c
+		LEFT JOIN invocations i ON i.channel_id = c.id AND i.created_at >= ?
+		GROUP BY c.id, c.name, c.provider, c.status
+		ORDER BY c.status DESC, calls DESC, c.id`, hourAgo, since).Scan(&rows)
+
+	for i := range rows {
+		rows[i].Failed = rows[i].Calls - rows[i].Succeeded
+		rows[i].SuccessRate = 1.0 // 零流量默认满分（避免新渠道被误判为不健康）
+		if rows[i].Calls > 0 {
+			rows[i].SuccessRate = float64(rows[i].Succeeded) / float64(rows[i].Calls)
+		}
+	}
+	if rows == nil {
+		rows = []chRow{}
+	}
+	c.JSON(http.StatusOK, gin.H{"window_days": days, "channels": rows})
+}

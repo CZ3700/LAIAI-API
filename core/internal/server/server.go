@@ -146,6 +146,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			admin.GET("/orgs", s.adminListOrgs)
 			admin.GET("/overview", s.adminOverview)
 			admin.GET("/analytics", s.adminAnalytics)
+			admin.GET("/channel-health", s.adminChannelHealth) // M2 渠道健康看板
 			admin.GET("/invocations", s.adminListInvocations)
 			admin.GET("/group-ratios", s.adminListGroupRatios)
 			admin.POST("/group-ratios", s.adminUpsertGroupRatio)

@@ -127,7 +127,7 @@ function showError(e: unknown) {
 const { t, d } = useI18n()
 
 // —— tabs ——
-const tab = ref<'overview' | 'analytics' | 'channels' | 'payments' | 'prices' | 'groups' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
+const tab = ref<'overview' | 'analytics' | 'health' | 'channels' | 'payments' | 'prices' | 'groups' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
 
 // —— 运营分析（资金 / 用户 / 质量 颗粒度） ——
 interface Analytics {
@@ -367,7 +367,28 @@ watch(tab, (v) => {
   if (v === 'payments' && !payLoaded.value) void loadPayChannels().catch(showError)
   if (v === 'users' && users.value.length === 0) void loadUsers().catch(showError)
   if (v === 'audit' && audit.value.length === 0) void loadAudit().catch(showError)
+  if (v === 'health') void loadHealth().catch(showError)
 })
+
+// —— 渠道健康看板（M2，只读可观测；不反馈选路）——
+interface HealthRow {
+  id: number
+  name: string
+  provider: string
+  status: number
+  calls: number
+  succeeded: number
+  failed: number
+  errors_1h: number
+  avg_latency_ms: number
+  avg_frt_ms: number
+  last_active: string
+  success_rate: number
+}
+const health = ref<HealthRow[]>([])
+async function loadHealth() {
+  health.value = (await adminApi<{ channels: HealthRow[] }>('GET', '/api/admin/channel-health')).channels
+}
 
 // —— 分组倍率 ——
 const groupRatios = ref<GroupRatio[]>([])
@@ -808,7 +829,7 @@ onMounted(async () => {
       <div class="flex items-center justify-between">
         <div class="flex gap-1" role="tablist">
           <button
-            v-for="tb in ['overview', 'analytics', 'channels', 'payments', 'prices', 'groups', 'orgs', 'users', 'logs', 'settings', 'audit'] as const"
+            v-for="tb in ['overview', 'analytics', 'health', 'channels', 'payments', 'prices', 'groups', 'orgs', 'users', 'logs', 'settings', 'audit'] as const"
             :key="tb"
             type="button"
             role="tab"
@@ -1640,6 +1661,52 @@ onMounted(async () => {
           </div>
         </form>
       </div>
+
+      <!-- 渠道健康看板（M2，只读可观测；不反馈选路） -->
+      <template v-if="tab === 'health'">
+        <p class="text-xs text-muted">{{ t('admin.healthHint') }}</p>
+        <div class="card overflow-x-auto">
+          <table class="table w-full text-sm whitespace-nowrap">
+            <thead>
+              <tr class="border-b border-line text-left text-muted">
+                <th class="px-4 py-3 font-medium">{{ t('admin.hChannel') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.hProvider') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.hStatus') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.hSuccess') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.hCalls') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.hErrors1h') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.hLatency') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.hFrt') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.hLastActive') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="health.length === 0">
+                <td colspan="9" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+              </tr>
+              <tr v-for="h in health" :key="h.id" class="border-b border-line last:border-0">
+                <td class="px-4 py-2.5">{{ h.name }}</td>
+                <td class="px-4 py-2.5 text-muted">{{ h.provider }}</td>
+                <td class="px-4 py-2.5">
+                  <span
+                    class="rounded px-1.5 py-0.5 text-xs"
+                    :class="h.status === 1 ? 'bg-ok/15 text-ok' : h.status === 2 ? 'bg-danger/15 text-danger' : 'bg-elev text-muted'"
+                  >{{ h.status === 1 ? t('admin.hActive') : h.status === 2 ? t('admin.hAutoDisabled') : t('admin.hDisabled') }}</span>
+                </td>
+                <td
+                  class="px-4 py-2.5 text-right font-mono"
+                  :class="h.calls === 0 ? 'text-muted' : h.success_rate >= 0.99 ? 'text-ok' : h.success_rate >= 0.9 ? 'text-ink' : 'text-danger'"
+                >{{ h.calls === 0 ? '—' : `${(h.success_rate * 100).toFixed(1)}%` }}</td>
+                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ h.calls }}</td>
+                <td class="px-4 py-2.5 text-right font-mono" :class="h.errors_1h > 0 ? 'text-danger' : 'text-muted'">{{ h.errors_1h }}</td>
+                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ h.calls === 0 ? '—' : `${Math.round(h.avg_latency_ms)}ms` }}</td>
+                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ h.calls === 0 ? '—' : `${Math.round(h.avg_frt_ms)}ms` }}</td>
+                <td class="px-4 py-2.5 text-xs text-muted">{{ h.last_active ? h.last_active.slice(0, 16).replace('T', ' ') : '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
 
       <!-- 组织 -->
       <template v-if="tab === 'orgs'">
