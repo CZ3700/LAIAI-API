@@ -212,6 +212,7 @@ export default {
     account: '帳戶',
     userId: '使用者 ID',
     orgId: '組織 ID',
+    identity: '身份',
     profile: '資料',
     displayName: '顯示名稱',
     displayNamePlaceholder: '你的名字',

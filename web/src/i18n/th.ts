@@ -213,6 +213,7 @@ export default {
     account: 'บัญชี',
     userId: 'รหัสผู้ใช้',
     orgId: 'รหัสองค์กร',
+    identity: 'บทบาท',
     profile: 'โปรไฟล์',
     displayName: 'ชื่อที่แสดง',
     displayNamePlaceholder: 'ชื่อของคุณ',

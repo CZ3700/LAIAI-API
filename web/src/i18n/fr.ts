@@ -213,6 +213,7 @@ export default {
     account: 'Compte',
     userId: 'ID utilisateur',
     orgId: 'ID organisation',
+    identity: 'Rôle',
     profile: 'Profil',
     displayName: "Nom d'affichage",
     displayNamePlaceholder: 'Votre nom',

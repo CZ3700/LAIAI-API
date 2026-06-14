@@ -213,6 +213,7 @@ export default {
     account: 'Аккаунт',
     userId: 'ID пользователя',
     orgId: 'ID организации',
+    identity: 'Роль',
     profile: 'Профиль',
     displayName: 'Отображаемое имя',
     displayNamePlaceholder: 'Ваше имя',

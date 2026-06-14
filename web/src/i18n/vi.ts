@@ -213,6 +213,7 @@ export default {
     account: 'Tài khoản',
     userId: 'ID người dùng',
     orgId: 'ID tổ chức',
+    identity: 'Vai trò',
     profile: 'Hồ sơ',
     displayName: 'Tên hiển thị',
     displayNamePlaceholder: 'Tên của bạn',

@@ -212,6 +212,7 @@ export default {
     account: 'アカウント',
     userId: 'ユーザー ID',
     orgId: '組織 ID',
+    identity: '権限',
     profile: 'プロフィール',
     displayName: '表示名',
     displayNamePlaceholder: 'お名前',

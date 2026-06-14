@@ -8,6 +8,7 @@ interface Me {
   email: string
   display_name: string
   org_id: number
+  role: string
 }
 
 const { t } = useI18n()
@@ -135,6 +136,13 @@ async function changePassword() {
         <dd class="font-mono">{{ me?.user_id }}</dd>
         <dt class="text-muted">{{ t('settings.orgId') }}</dt>
         <dd class="font-mono">{{ me?.org_id }}</dd>
+        <dt class="text-muted">{{ t('settings.identity') }}</dt>
+        <dd>
+          <span
+            class="rounded px-2 py-0.5 text-xs font-medium"
+            :class="me?.role === 'superadmin' || me?.role === 'admin' ? 'bg-accent/15 text-accent' : 'bg-elev text-muted'"
+          >{{ t(`admin.role_${me?.role || 'user'}`) }}</span>
+        </dd>
       </dl>
     </div>
 

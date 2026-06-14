@@ -214,6 +214,7 @@ const messages = {
     account: 'Account',
     userId: 'User ID',
     orgId: 'Org ID',
+    identity: 'Role',
     profile: 'Profile',
     displayName: 'Display name',
     displayNamePlaceholder: 'Your name',

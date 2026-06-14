@@ -213,6 +213,7 @@ export default {
     account: '账户',
     userId: '用户 ID',
     orgId: '组织 ID',
+    identity: '身份',
     profile: '资料',
     displayName: '显示名',
     displayNamePlaceholder: '你的名字',
