@@ -100,12 +100,17 @@ export const adminToken = {
 }
 
 export async function adminApi<T>(method: string, path: string, body?: unknown): Promise<T> {
+  // 后台访问可由两种身份放行（RBAC 0020）：
+  //   1. X-Admin-Token（root 破玻璃）  2. 会话 Bearer + 用户角色≥admin
+  // 两者都带上，后端择一通过；普通用户没 admin-token 时靠会话角色进入。
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const t = adminToken.get()
+  if (t) headers['X-Admin-Token'] = t
+  const auth = useAuth()
+  if (auth.token) headers.Authorization = `Bearer ${auth.token}`
   const resp = await fetch(path, {
     method,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Admin-Token': adminToken.get(),
-    },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const data: unknown = await resp.json().catch(() => ({}))

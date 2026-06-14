@@ -26,12 +26,18 @@ function loadSession(): Session | null {
 }
 
 export const useAuth = defineStore('auth', {
-  state: () => ({ session: loadSession(), pending2fa: null as { token: string; email: string } | null }),
+  state: () => ({
+    session: loadSession(),
+    pending2fa: null as { token: string; email: string } | null,
+    role: '', // 平台角色（RBAC 0020），运行时从 /api/me 取，不持久化（避免越权陈旧）
+  }),
   getters: {
     token: (s) => s.session?.token ?? '',
     email: (s) => s.session?.email ?? '',
     orgId: (s) => s.session?.orgId ?? 0,
     isAuthed: (s) => s.session !== null,
+    isAdmin: (s) => s.role === 'admin' || s.role === 'superadmin',
+    isSuperadmin: (s) => s.role === 'superadmin',
   },
   actions: {
     // 返回 '2fa' 表示需要二阶段验证（此时 token 是中间票，调 verify2fa 完成）
@@ -86,8 +92,19 @@ export const useAuth = defineStore('auth', {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(this.session))
       }
     },
+    // 取当前用户角色（进后台前调用，决定是否放行/显示管理员入口）
+    async fetchMe() {
+      try {
+        const r = await api<{ role?: string }>('GET', '/api/me')
+        this.role = r.role ?? 'user'
+      } catch {
+        this.role = ''
+      }
+      return this.role
+    },
     logout() {
       this.session = null
+      this.role = ''
       localStorage.removeItem(STORAGE_KEY)
       // 避免循环依赖，用 location 而非 router 实例
       if (!location.pathname.startsWith('/login')) location.href = '/login'

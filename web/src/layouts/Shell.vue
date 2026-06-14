@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAuth } from '@/stores/auth'
 import ThemeLocale from '@/components/ThemeLocale.vue'
@@ -34,11 +35,18 @@ const sections = [
   },
   {
     title: () => t('nav.grpAdmin'),
+    admin: true,
     items: [
       { to: '/app/admin', label: () => t('admin.title'), icon: 'M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21' },
     ],
   },
 ]
+
+// 管理分组仅对 admin/superadmin 可见——非管理员看不到也点不到入口（后端 RBAC 仍是真正的强制层）。
+const visibleSections = computed(() => sections.filter((s) => !s.admin || auth.isAdmin))
+
+// 进入控制台外壳时拉取自身平台角色，决定管理入口可见性。
+onMounted(() => { void auth.fetchMe() })
 </script>
 
 <template>
@@ -67,7 +75,7 @@ const sections = [
         <OrgSwitcher />
       </div>
       <nav class="flex-1 overflow-y-auto px-3 pb-2 space-y-4">
-        <div v-for="(sec, si) in sections" :key="si">
+        <div v-for="(sec, si) in visibleSections" :key="si">
           <p class="px-3 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted/70">{{ sec.title() }}</p>
           <div class="space-y-0.5">
             <router-link

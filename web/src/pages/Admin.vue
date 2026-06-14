@@ -2,7 +2,10 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminApi, adminToken, ApiError, copyText, errorMessage, uuid } from '@/lib/api'
+import { useAuth } from '@/stores/auth'
 import Sparkline from '@/components/Sparkline.vue'
+
+const auth = useAuth()
 
 interface Provider {
   name: string
@@ -94,9 +97,10 @@ interface LogRow {
   payload_object_key: string
 }
 
-// —— token 门 ——
+// —— 门禁：role≥admin 自动放行；否则 root-token 破玻璃 ——
 const tokenInput = ref('')
 const unlocked = ref(adminToken.get() !== '')
+const roleLoading = ref(true) // fetchMe 解析前不闪 token 表单
 const error = ref('')
 
 function unlock() {
@@ -297,10 +301,11 @@ async function saveSettings() {
 
 // —— 用户管理 ——
 interface AdminUser {
-  id: number; email: string; display_name: string; status: number
+  id: number; email: string; display_name: string; status: number; role: string
   org_id: number; balance: string; group: string
   invited: number; earned: string; inviter_org_id: number
 }
+const PLAT_ROLES = ['user', 'support', 'admin', 'superadmin'] as const
 const users = ref<AdminUser[]>([])
 const userQuery = ref('')
 async function loadUsers() {
@@ -320,6 +325,15 @@ async function setUserGroup(u: AdminUser, group: string) {
   if (!u.org_id) return
   try {
     await adminApi('PUT', `/api/admin/orgs/${u.org_id}/group`, { group })
+    await loadUsers()
+  } catch (e) {
+    showError(e)
+  }
+}
+// 改平台角色（仅 superadmin；后端再次校验 + 自我保护，RBAC 0020）
+async function setUserRole(u: AdminUser, role: string) {
+  try {
+    await adminApi('POST', `/api/admin/users/${u.id}/role`, { role })
     await loadUsers()
   } catch (e) {
     showError(e)
@@ -731,7 +745,11 @@ async function loadAll() {
     showError(e)
   }
 }
-onMounted(() => {
+onMounted(async () => {
+  // RBAC（0020）：取当前用户角色；admin/superadmin 直接解锁后台，无需粘 root token。
+  await auth.fetchMe()
+  if (auth.isAdmin) unlocked.value = true
+  roleLoading.value = false
   if (unlocked.value) void loadAll()
 })
 </script>
@@ -740,12 +758,16 @@ onMounted(() => {
   <div class="max-w-6xl space-y-6">
     <h1 class="text-2xl font-semibold tracking-tight">{{ t('admin.title') }}</h1>
 
-    <!-- token 门 -->
-    <form v-if="!unlocked" class="card max-w-md p-6 space-y-4" @submit.prevent="unlock">
+    <!-- 角色解析中：不闪 token 表单 -->
+    <p v-if="roleLoading" class="text-sm text-muted">{{ t('common.loading') }}</p>
+
+    <!-- 门禁：非 admin 角色 → root-token 破玻璃（引导首个超管 / 应急） -->
+    <form v-else-if="!unlocked" class="card max-w-md p-6 space-y-4" @submit.prevent="unlock">
       <div>
         <label class="label" for="admintoken">{{ t('admin.token') }}</label>
         <input id="admintoken" v-model="tokenInput" class="input" type="password" required autocomplete="off" />
         <p class="mt-1.5 text-xs text-muted">{{ t('admin.tokenHint') }}</p>
+        <p class="mt-1 text-xs text-muted">{{ t('admin.roleHint') }}</p>
       </div>
       <button class="btn-primary">{{ t('admin.unlock') }}</button>
     </form>
@@ -1752,6 +1774,7 @@ onMounted(() => {
                 <th class="px-4 py-3 font-medium">ID</th>
                 <th class="px-4 py-3 font-medium">{{ t('auth.email') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('keys.status') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.userRole') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.userBalance') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.orgGroup') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.userInvite') }}</th>
@@ -1760,7 +1783,7 @@ onMounted(() => {
             </thead>
             <tbody>
               <tr v-if="users.length === 0">
-                <td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+                <td colspan="8" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <tr v-for="u in users" :key="u.id" class="border-b border-line last:border-0">
                 <td class="px-4 py-2.5 text-muted">{{ u.id }}</td>
@@ -1772,6 +1795,19 @@ onMounted(() => {
                   <span :class="u.status === 1 ? 'badge-ok' : 'badge-danger'">
                     {{ u.status === 1 ? t('admin.userActive') : t('admin.userBanned') }}
                   </span>
+                </td>
+                <td class="px-4 py-2.5">
+                  <!-- 仅 superadmin 可改角色；其余只读徽章。后端再次校验 + 自我保护 -->
+                  <select
+                    v-if="auth.isSuperadmin"
+                    :value="u.role"
+                    class="input !w-32 !py-1 text-xs"
+                    :title="t('admin.userRoleHint')"
+                    @change="setUserRole(u, ($event.target as HTMLSelectElement).value)"
+                  >
+                    <option v-for="r in PLAT_ROLES" :key="r" :value="r">{{ t(`admin.role_${r}`) }}</option>
+                  </select>
+                  <span v-else class="badge-muted">{{ t(`admin.role_${u.role || 'user'}`) }}</span>
                 </td>
                 <td class="px-4 py-2.5 text-right font-mono">${{ Number(u.balance).toFixed(2) }}</td>
                 <td class="px-4 py-2.5">
