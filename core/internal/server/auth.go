@@ -150,12 +150,17 @@ func (s *Server) me(c *gin.Context) {
 		fail(c, http.StatusNotFound, "user not found")
 		return
 	}
+	role := user.Role
+	if role == "" {
+		role = identity.PlatRoleUser
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"user_id":      user.ID,
 		"email":        user.Email,
 		"display_name": user.DisplayName,
 		"org_id":       claims.OrgID,
 		"totp_enabled": user.TOTPEnabled != 0,
+		"role":         role, // RBAC（0020）：前端据此决定是否放行后台、显示管理员入口
 	})
 }
 

@@ -133,9 +133,16 @@ type AuditLog struct {
 func (AuditLog) TableName() string { return "audit_logs" }
 
 // writeAudit 记录一条 admin 操作（尽力而为，失败只忽略不阻断业务）。
+// actor 取自 adminRequired 解析进 context 的身份标签（具体用户或 root-token，0020 RBAC）。
 func (s *Server) writeAudit(c *gin.Context, action, target, detail string) {
+	actor := "admin"
+	if v, ok := c.Get("actor_label"); ok {
+		if label, ok := v.(string); ok && label != "" {
+			actor = label
+		}
+	}
 	_ = s.db.Create(&AuditLog{
-		Actor:     "admin", // admin-token 操作；未来 root 用户记 user_id
+		Actor:     actor,
 		Action:    action,
 		Target:    target,
 		Detail:    detail,

@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/crypto"
+	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/mailer"
 	"github.com/laiai/laiai-next/core/internal/relay"
@@ -129,7 +130,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			authed.DELETE("/org/members/:user_id", s.removeMember)
 		}
 
-		admin := api.Group("/admin", s.adminRequired())
+		admin := api.Group("/admin", s.adminRequired(identity.PlatRoleAdmin))
 		{
 			admin.POST("/credits", s.adminGrantCredit)
 			admin.POST("/channels", s.adminCreateChannel)
@@ -155,6 +156,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			admin.GET("/audit-logs", s.adminListAuditLogs)
 			admin.GET("/users", s.adminListUsers)
 			admin.POST("/users/:id/manage", s.adminManageUser)
+			admin.POST("/users/:id/role", s.requireSuperadmin(), s.adminSetUserRole) // 授角色仅 superadmin
 			admin.GET("/payment-config", s.adminPaymentConfig)
 			admin.GET("/payment-channels", s.adminListPaymentChannels)
 			admin.POST("/payment-channels", s.adminUpsertPaymentChannel)

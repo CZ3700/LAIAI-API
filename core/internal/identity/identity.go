@@ -40,7 +40,41 @@ type User struct {
 	DisplayName    string `gorm:"column:display_name"`
 	TOTPSecretEnc  string `gorm:"column:totp_secret_enc"` // 2FA 共享密钥（信封加密，0017）
 	TOTPEnabled    int8   `gorm:"column:totp_enabled"`    // 2FA 是否启用
+	Role           string `gorm:"column:role"`            // 平台角色（0020，RBAC）：user|support|admin|superadmin
 	Status         int8   `gorm:"column:status"`
+}
+
+// 平台角色（0020 RBAC）。线性等级，rank 越大权越大。X-Admin-Token 视同 superadmin。
+// 注意：与上面的「组织成员角色」(RoleOwner/RoleAdmin/RoleMember/RoleBilling) 是两套体系，
+// 故用 PlatRole 前缀区分——这套存 users.role，决定能否进后台、进到哪一层。
+const (
+	PlatRoleUser       = "user"
+	PlatRoleSupport    = "support"
+	PlatRoleAdmin      = "admin"
+	PlatRoleSuperadmin = "superadmin"
+)
+
+// RoleRank：平台角色等级（未知角色视作最低 user=0）。用于「至少 X 级」门禁。
+func RoleRank(role string) int {
+	switch role {
+	case PlatRoleSuperadmin:
+		return 3
+	case PlatRoleAdmin:
+		return 2
+	case PlatRoleSupport:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// ValidRole：是否是已知可授予的平台角色。
+func ValidRole(role string) bool {
+	switch role {
+	case PlatRoleUser, PlatRoleSupport, PlatRoleAdmin, PlatRoleSuperadmin:
+		return true
+	}
+	return false
 }
 
 func (User) TableName() string { return "users" }

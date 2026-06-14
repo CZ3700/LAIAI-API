@@ -31,6 +31,7 @@ CREATE TABLE users (
     display_name TEXT NOT NULL DEFAULT '',
     totp_secret_enc TEXT NOT NULL DEFAULT '', totp_enabled INTEGER NOT NULL DEFAULT 0,
     status INTEGER NOT NULL DEFAULT 1,
+    role TEXT NOT NULL DEFAULT 'user',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

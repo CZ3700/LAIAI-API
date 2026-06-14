@@ -625,7 +625,8 @@ func TestAdminTokenGate(t *testing.T) {
 	if w.Code != 401 {
 		t.Fatalf("wrong admin token = %d", w.Code)
 	}
-	// 未配置 admin token 的实例：整组 404
+	// 未配置 admin token 且无角色用户：无任何有效后台身份 → 401 拒绝（RBAC 0020 后，
+	// 后台也可由 role 用户进入，故不再用 404 假装端点不存在；统一 401「需要后台权限」）。
 	db2, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Discard})
 	_ = db2.Exec(testSchema).Error
 	engine2 := New(db2, Options{AuthSecret: testSecret})
@@ -633,8 +634,8 @@ func TestAdminTokenGate(t *testing.T) {
 	req2.Header.Set("X-Admin-Token", testAdminToken)
 	w2 := httptest.NewRecorder()
 	engine2.ServeHTTP(w2, req2)
-	if w2.Code != 404 {
-		t.Fatalf("disabled admin api = %d, want 404", w2.Code)
+	if w2.Code != 401 {
+		t.Fatalf("no admin identity = %d, want 401", w2.Code)
 	}
 }
 

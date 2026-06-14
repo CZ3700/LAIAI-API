@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,15 +21,62 @@ import (
 // 平台管理 API（M1 内部验证阶段）：X-Admin-Token 门禁（常数时间比较）。
 // M3 Console 落地后升级为正式 root RBAC；资金类操作的审计 = journal 本身（kind=grant 全留痕）。
 
-func (s *Server) adminRequired() gin.HandlerFunc {
+// resolveAdmin：解析「带有效身份」的访问者（RBAC，0020）。只解析身份与角色，不做门槛判定
+//  —— 门槛交给 adminRequired(min)，这样 min 参数对所有层级（support/admin/superadmin）都生效。
+//  优先级：1) X-Admin-Token 命中 → root 破玻璃（视同 superadmin）；2) Bearer session 有效且用户在职 → 该用户身份与角色。
+// 返回 (审计标签, 角色, userID, 是否有有效身份)。
+func (s *Server) resolveAdmin(c *gin.Context) (label, role string, uid uint64, ok bool) {
+	if len(s.adminToken) > 0 {
+		got := c.GetHeader("X-Admin-Token")
+		if subtle.ConstantTimeCompare([]byte(got), s.adminToken) == 1 {
+			return "root-token", identity.PlatRoleSuperadmin, 0, true
+		}
+	}
+	h := c.GetHeader("Authorization")
+	if strings.HasPrefix(h, "Bearer ") {
+		claims, err := identity.VerifySessionToken(s.secret, strings.TrimPrefix(h, "Bearer "), s.now())
+		if err == nil {
+			var u identity.User
+			if e := s.db.WithContext(c.Request.Context()).
+				Select("id, email, role, status").First(&u, claims.UserID).Error; e == nil &&
+				u.Status == identity.StatusActive {
+				r := u.Role
+				if r == "" {
+					r = identity.PlatRoleUser
+				}
+				return fmt.Sprintf("user#%d %s(%s)", u.ID, u.Email, r), r, u.ID, true
+			}
+		}
+	}
+	return "", "", 0, false
+}
+
+// adminRequired：后台门禁，要求访问者角色 ≥ min。
+//   无有效身份 → 401；有身份但权限不足 → 403。通过后把身份写进 context（审计/二次校验用）。
+func (s *Server) adminRequired(min string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if len(s.adminToken) == 0 {
-			fail(c, http.StatusNotFound, "admin api disabled") // 未配置 = 整组端点不存在
+		label, role, uid, ok := s.resolveAdmin(c)
+		if !ok {
+			fail(c, http.StatusUnauthorized, "admin access required")
 			return
 		}
-		got := c.GetHeader("X-Admin-Token")
-		if subtle.ConstantTimeCompare([]byte(got), s.adminToken) != 1 {
-			fail(c, http.StatusUnauthorized, "admin token invalid")
+		if identity.RoleRank(role) < identity.RoleRank(min) {
+			fail(c, http.StatusForbidden, "insufficient role")
+			return
+		}
+		c.Set("actor_label", label)
+		c.Set("actor_role", role)
+		c.Set("actor_id", uid)
+		c.Next()
+	}
+}
+
+// requireSuperadmin：在 adminRequired 之后追加，限定仅 superadmin（角色管理等高危操作）。
+func (s *Server) requireSuperadmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, _ := c.Get("actor_role")
+		if r, _ := role.(string); identity.RoleRank(r) < identity.RoleRank(identity.PlatRoleSuperadmin) {
+			fail(c, http.StatusForbidden, "superadmin role required")
 			return
 		}
 		c.Next()
@@ -764,6 +812,7 @@ func (s *Server) adminListUsers(c *gin.Context) {
 		Email        string          `json:"email"`
 		DisplayName  string          `json:"display_name"`
 		Status       int8            `json:"status"`
+		Role         string          `json:"role"`           // 平台角色（0020 RBAC）
 		OrgID        uint64          `json:"org_id"`
 		Balance      decimal.Decimal `json:"balance"`
 		Group        string          `json:"group"`          // 个人组织计费分组（=层级/tier）
@@ -773,7 +822,7 @@ func (s *Server) adminListUsers(c *gin.Context) {
 	}
 	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	rdb.Raw(`
-		SELECT u.id, u.email, u.display_name, u.status,
+		SELECT u.id, u.email, u.display_name, u.status, u.role,
 		       COALESCE(o.id, 0) AS org_id,
 		       COALESCE(a.posted_balance, 0) AS balance,
 		       COALESCE(o.group_name, 'default') AS `+"`group`"+`,
@@ -829,4 +878,42 @@ func (s *Server) adminManageUser(c *gin.Context) {
 	}
 	s.writeAudit(c, "user_"+req.Action, strconv.FormatUint(id, 10), "user "+req.Action)
 	c.JSON(http.StatusOK, gin.H{"id": id, "status": status})
+}
+
+// adminSetUserRole：POST /api/admin/users/:id/role {role} —— 授角色（仅 superadmin，0020 RBAC）。
+func (s *Server) adminSetUserRole(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	var req struct {
+		Role string `json:"role" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "role required")
+		return
+	}
+	if !identity.ValidRole(req.Role) {
+		fail(c, http.StatusBadRequest, "invalid role (user|support|admin|superadmin)")
+		return
+	}
+	// 自我保护：实名 actor 不能改自己角色（防误降级锁死/自抬权）；root-token(id=0) 不受限。
+	if v, ok := c.Get("actor_id"); ok {
+		if aid, _ := v.(uint64); aid != 0 && aid == id {
+			fail(c, http.StatusBadRequest, "cannot change your own role")
+			return
+		}
+	}
+	res := s.db.Model(&identity.User{}).Where("id = ?", id).Update("role", req.Role)
+	if res.Error != nil {
+		fail(c, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if res.RowsAffected == 0 {
+		fail(c, http.StatusNotFound, "user not found")
+		return
+	}
+	s.writeAudit(c, "user_role_set", strconv.FormatUint(id, 10), "role → "+req.Role)
+	c.JSON(http.StatusOK, gin.H{"id": id, "role": req.Role})
 }
