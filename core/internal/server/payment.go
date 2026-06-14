@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -124,6 +125,7 @@ func (s *Server) getPaymentMethods(c *gin.Context) {
 		"methods": methods,
 		"amount_options": []int{10, 20, 50, 100, 200, 500}, // USD 档位
 		"cny_rate":       s.getSetting("cny_per_usd"),       // EPay 用：1 USD = ? CNY（空=默认 7.3）
+		"bonus_tiers":    s.getSetting("recharge_bonus_tiers"), // 充值阶梯优惠（前端按金额预览赠额；空=无）
 	})
 }
 
@@ -210,6 +212,9 @@ func (s *Server) createTopup(c *gin.Context) {
 		s.db.Model(order).Update("provider_ref", result.ProviderRef)
 	}
 	out := gin.H{"order_no": orderNo, "pay_url": result.PayURL}
+	if bonus := s.computeRechargeBonus(amountUSD); bonus.IsPositive() { // 预览：到账将额外赠送（实际入账时再算一次，以入账为准）
+		out["bonus_usd"] = bonus.String()
+	}
 	if result.Requirements != "" { // x402：返回支付要求供前端钱包签名（无跳转 URL）
 		out["requirements"] = result.Requirements
 	}
@@ -312,6 +317,7 @@ func (s *Server) x402Settle(c *gin.Context) {
 //   终态保护(failed 不翻转；接受 pending|expired) → 金额校验 → ledger 入金(幂等键 topup:order)。
 // paidAmount = 网关实付（callback 的 res.Amount 或 query 的 QueryResult.Amount），口径一致。
 func (s *Server) creditPaidOrder(provider, orderNo, tradeNo string, paidAmount decimal.Decimal) (already bool, err error) {
+	bonusTiersRaw := s.getSetting("recharge_bonus_tiers") // 事务外取配置：事务内读 ext_settings 会与持锁事务自死锁（单连接池）
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		var order TopupOrder
 		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -350,6 +356,19 @@ func (s *Server) creditPaidOrder(provider, orderNo, tradeNo string, paidAmount d
 			Reason:         "topup via " + provider,
 		}); e != nil {
 			return e
+		}
+		// 充值阶梯优惠（gap P1-D）：同事务内单列赠额入账，独立幂等键，reconcile 重跑安全
+		if bonus := rechargeBonusFromTiers(bonusTiersRaw, order.AmountUSD); bonus.IsPositive() {
+			if _, _, e := ledger.Post(tx, ledger.PostInput{
+				IdempotencyKey: "topup_bonus:" + order.OrderNo,
+				AccountID:      acc.ID,
+				Kind:           ledger.KindGrant,
+				Delta:          bonus,
+				RefType:        "topup_bonus",
+				Reason:         "recharge bonus for topup " + order.OrderNo,
+			}); e != nil {
+				return e
+			}
 		}
 		return tx.Model(&order).Updates(map[string]any{
 			"status": topupPaid, "trade_no": tradeNo, "paid_at": s.now().Unix(),
@@ -398,6 +417,46 @@ func (s *Server) ReconcileTopups(ctx context.Context, minAge time.Duration, limi
 		}
 	}
 	return checked, credited, nil
+}
+
+// computeRechargeBonus：按充值阶梯优惠（recharge_bonus_tiers，gap P1-D）算赠额（读 settings + 计算）。
+// 注意：**不可在已开启的 DB 事务内调用**——会嵌套查 ext_settings，单连接池下与持锁事务自死锁
+// （creditPaidOrder 已先取 raw 再进事务，改调 rechargeBonusFromTiers 纯函数）。
+func (s *Server) computeRechargeBonus(amountUSD decimal.Decimal) decimal.Decimal {
+	return rechargeBonusFromTiers(s.getSetting("recharge_bonus_tiers"), amountUSD)
+}
+
+// rechargeBonusFromTiers：纯函数——给定阶梯配置 JSON 与充值额，算赠额。
+// 取「amountUSD ≥ min_usd 的最高档 min_usd」对应 rate，bonus = amountUSD × rate，四舍五入到 2 位
+// （USD 分位，与前端 Wallet.vue 预览 toFixed(2) 完全一致，保证「预览=实到」）。
+// 配置非法/无匹配档/rate≤0 → 返 0（静默不赠，不阻断入账）。
+func rechargeBonusFromTiers(raw string, amountUSD decimal.Decimal) decimal.Decimal {
+	if raw == "" {
+		return decimal.Zero
+	}
+	var tiers []struct {
+		MinUSD string `json:"min_usd"`
+		Rate   string `json:"rate"`
+	}
+	if json.Unmarshal([]byte(raw), &tiers) != nil {
+		return decimal.Zero
+	}
+	bestRate := decimal.Zero
+	bestMin := decimal.NewFromInt(-1) // 追踪已匹配档中最高的 min_usd
+	for _, t := range tiers {
+		min, e1 := decimal.NewFromString(t.MinUSD)
+		rate, e2 := decimal.NewFromString(t.Rate)
+		if e1 != nil || e2 != nil || rate.IsNegative() || min.IsNegative() {
+			continue
+		}
+		if amountUSD.GreaterThanOrEqual(min) && min.GreaterThan(bestMin) {
+			bestMin, bestRate = min, rate
+		}
+	}
+	if !bestRate.IsPositive() {
+		return decimal.Zero
+	}
+	return amountUSD.Mul(bestRate).Round(2)
 }
 
 // payAffiliateRebate：充值入账后给邀请组织返佣（affiliate_rate × 充值额，settings 热更新）。

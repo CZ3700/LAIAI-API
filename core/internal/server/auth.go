@@ -54,11 +54,18 @@ func (s *Server) register(c *gin.Context) {
 			return
 		}
 	}
-	// 注册赠送额度（运营可配，热更新）：>0 时在同一事务内入账，保证「建号即到账」原子
+	// 注册赠送额度（运营可配，热更新）：>0 时在同一事务内入账，保证「建号即到账」原子。
+	// 两项 settings 都必须在事务**外**读取——事务内查 ext_settings 会与持锁事务自死锁（单连接池）。
 	welcome := decimal.Zero
 	if g := s.getSetting("new_user_grant_usd"); g != "" {
 		if v, e := decimal.NewFromString(g); e == nil && v.IsPositive() {
 			welcome = v
+		}
+	}
+	inviteGrant := decimal.Zero
+	if g := s.getSetting("invite_grant_usd"); g != "" {
+		if v, e := decimal.NewFromString(g); e == nil && v.IsPositive() {
+			inviteGrant = v
 		}
 	}
 	var user *identity.User
@@ -85,6 +92,23 @@ func (s *Server) register(c *gin.Context) {
 				Delta:          welcome,
 				RefType:        "welcome_grant",
 				Reason:         "new user signup bonus",
+			}); e != nil {
+				return e
+			}
+		}
+		// 被邀请赠额（gap P1-D）：携有效邀请码（org.InviterOrgID 被 Register 解析填充）才赠
+		if org.InviterOrgID != 0 && inviteGrant.IsPositive() {
+			acc, e := ledger.EnsureAccount(tx, org.ID, ledger.AccountUserCredit)
+			if e != nil {
+				return e
+			}
+			if _, _, e := ledger.Post(tx, ledger.PostInput{
+				IdempotencyKey: "invite_grant:" + strconv.FormatUint(org.ID, 10),
+				AccountID:      acc.ID,
+				Kind:           ledger.KindGrant,
+				Delta:          inviteGrant,
+				RefType:        "invite_grant",
+				Reason:         "grant for joining via invite code",
 			}); e != nil {
 				return e
 			}

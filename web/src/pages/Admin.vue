@@ -209,6 +209,8 @@ async function savePayGlobals() {
       cny_per_usd: settings.value.cny_per_usd ?? '',
       min_topup_usd: settings.value.min_topup_usd ?? '',
       affiliate_rate: settings.value.affiliate_rate ?? '',
+      recharge_bonus_tiers: settings.value.recharge_bonus_tiers ?? '',
+      invite_grant_usd: settings.value.invite_grant_usd ?? '',
     })
     payGlobalsMsg.value = t('settings.saved')
   } catch (e) {
@@ -1478,6 +1480,16 @@ onMounted(async () => {
               <div>
                 <label class="label" for="pg-aff">{{ t('admin.setAffRate') }}</label>
                 <input id="pg-aff" v-model="settings.affiliate_rate" class="input" placeholder="0" />
+              </div>
+              <div>
+                <label class="label" for="pg-invite">{{ t('admin.setInviteGrant') }}</label>
+                <input id="pg-invite" v-model="settings.invite_grant_usd" class="input" placeholder="0" />
+                <p class="mt-1 text-xs text-muted">{{ t('admin.setInviteGrantHint') }}</p>
+              </div>
+              <div class="sm:col-span-2">
+                <label class="label" for="pg-tiers">{{ t('admin.setBonusTiers') }}</label>
+                <input id="pg-tiers" v-model="settings.recharge_bonus_tiers" class="input font-mono text-xs" placeholder='[{"min_usd":"50","rate":"0.05"},{"min_usd":"200","rate":"0.1"}]' />
+                <p class="mt-1 text-xs text-muted">{{ t('admin.setBonusTiersHint') }}</p>
               </div>
             </div>
             <p class="mt-2 text-xs text-muted">{{ t('admin.setAffHint') }}</p>

@@ -38,6 +38,24 @@ const selectedProvider = ref('')
 const creating = ref(false)
 const error = ref('')
 
+// 充值阶梯优惠（gap P1-D）：从 methods 接口拿配置，前端按所选金额预览赠额。
+const bonusTiers = ref<{ min_usd: string; rate: string }[]>([])
+const bonusPreview = computed(() => {
+  let bestMin = -1
+  let bestRate = 0
+  for (const tRow of bonusTiers.value) {
+    const min = Number(tRow.min_usd)
+    const rate = Number(tRow.rate)
+    if (!Number.isFinite(min) || !Number.isFinite(rate) || rate <= 0 || min < 0) continue
+    if (selectedAmount.value >= min && min > bestMin) {
+      bestMin = min
+      bestRate = rate
+    }
+  }
+  if (bestRate <= 0) return ''
+  return (selectedAmount.value * bestRate).toFixed(2).replace(/\.?0+$/, '')
+})
+
 // 邀请返佣
 const aff = ref<{ aff_code: string; invited: number; earned: string; rate: string } | null>(null)
 const inviteLink = computed(() =>
@@ -70,7 +88,7 @@ function kindLabel(kind: string): string {
 async function load() {
   const [bal, m, o, a, lg] = await Promise.allSettled([
     api<{ balance: string; held: string }>('GET', '/api/balance'),
-    api<{ methods: Method[]; amount_options: number[] }>('GET', '/api/payment/methods'),
+    api<{ methods: Method[]; amount_options: number[]; bonus_tiers?: string }>('GET', '/api/payment/methods'),
     api<{ orders: Order[] }>('GET', '/api/payment/orders'),
     api<{ aff_code: string; invited: number; earned: string; rate: string }>('GET', '/api/affiliate'),
     api<{ items: LedgerEntry[] }>('GET', '/api/ledger'),
@@ -83,6 +101,11 @@ async function load() {
     methods.value = m.value.methods
     amountOptions.value = m.value.amount_options
     if (m.value.methods.length) selectedProvider.value = m.value.methods[0].provider
+    try {
+      bonusTiers.value = m.value.bonus_tiers ? JSON.parse(m.value.bonus_tiers) : []
+    } catch {
+      bonusTiers.value = []
+    }
   }
   if (o.status === 'fulfilled') orders.value = o.value.orders
   if (a.status === 'fulfilled') aff.value = a.value
@@ -143,6 +166,9 @@ onMounted(load)
               ${{ a }}
             </button>
           </div>
+          <p v-if="bonusPreview" class="mt-2 text-sm text-ok">
+            {{ t('wallet.bonusPreview', { bonus: bonusPreview }) }}
+          </p>
         </div>
         <div>
           <label class="label">{{ t('wallet.method') }}</label>

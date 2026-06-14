@@ -39,8 +39,14 @@ var settingDefaults = map[string]string{
 	"epay_api_url":          "",
 	"cny_per_usd":           "", // 空=默认 7.3
 	"min_topup_usd":         "1", // 最低充值额（USD）；createTopup 消费
-	// —— 返佣 ——
-	"affiliate_rate": "0", // 邀请返佣比例（0..1）；payAffiliateRebate 消费
+	// 充值阶梯优惠（gap P1-D）：JSON 数组 [{"min_usd":"50","rate":"0.05"},...]，空=无优惠。
+	// 入账时取「amount≥min_usd 的最高档 min_usd」对应 rate，bonus=amount×rate（KindGrant 单列入账）。
+	"recharge_bonus_tiers": "",
+	// —— 返佣 / 邀请 ——
+	"affiliate_rate": "0", // 邀请返佣比例（0..1）；payAffiliateRebate 消费（充值时给邀请人）
+	// 被邀请赠额（gap P1-D）：携有效邀请码注册时给「被邀请人」一次性赠额（USD，0=不送）。
+	// 防薅羊毛：开启时应同时开 email_verification_enabled（与 new_user_grant_usd 同口径）。
+	"invite_grant_usd": "0",
 	// —— 渠道治理 ——
 	"channel_auto_disable":      "true", // 上游连续失败自动禁用渠道（relay noteFailure 消费）
 	"channel_disable_threshold": "1",    // 连续失败次数阈值（1=判定性错误即禁用，与 relay 默认一致）
