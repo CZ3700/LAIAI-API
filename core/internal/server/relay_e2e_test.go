@@ -1735,6 +1735,91 @@ func TestAffiliateRebate(t *testing.T) {
 	}
 }
 
+// 二次验证 step-up（gap #4）：默认关闭零摩擦；开启后创建 Key 需 X-Secure-Verify；令牌绑 uid。
+func TestStepUpVerification(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	reg := func(email string) string {
+		srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": email, "password": "longenough1"})
+		_, l := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": email, "password": "longenough1"})
+		return l["token"].(string)
+	}
+	tokA := reg("step-a@example.com")
+	tokB := reg("step-b@example.com")
+
+	createKey := func(sess, stepup string) int {
+		req := httptest.NewRequest("POST", "/api/keys", bytes.NewBufferString(`{"name":"k"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+sess)
+		if stepup != "" {
+			req.Header.Set("X-Secure-Verify", stepup)
+		}
+		w := httptest.NewRecorder()
+		srv.engine.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// 默认关闭：创建 Key 无需 step-up
+	if c := createKey(tokA, ""); c != 201 {
+		t.Fatalf("default create key = %d, want 201 (stepup off)", c)
+	}
+
+	// 开启开关
+	db.Exec("INSERT INTO ext_settings (name,value) VALUES ('require_stepup_for_keys','true')")
+
+	// 无 step-up → 403 VERIFICATION_REQUIRED
+	w, out := srv.do(t, "POST", "/api/keys", tokA, map[string]any{"name": "k"})
+	if w.Code != 403 || out["code"] != "VERIFICATION_REQUIRED" {
+		t.Fatalf("create without stepup = %d %v, want 403 VERIFICATION_REQUIRED", w.Code, out)
+	}
+
+	// 错密码 verify → 401
+	if w, _ := srv.do(t, "POST", "/api/me/verify", tokA, map[string]any{"password": "wrongpass1"}); w.Code != 401 {
+		t.Fatalf("verify wrong password = %d, want 401", w.Code)
+	}
+	// 对密码 verify → 拿令牌
+	_, vr := srv.do(t, "POST", "/api/me/verify", tokA, map[string]any{"password": "longenough1"})
+	stepTok, _ := vr["token"].(string)
+	if stepTok == "" {
+		t.Fatalf("verify did not return token: %v", vr)
+	}
+	// 带令牌创建 Key → 201
+	if c := createKey(tokA, stepTok); c != 201 {
+		t.Fatalf("create with stepup = %d, want 201", c)
+	}
+	// 令牌绑 uid：A 的令牌给 B 用 → 403
+	if c := createKey(tokB, stepTok); c != 403 {
+		t.Fatalf("cross-user stepup token = %d, want 403", c)
+	}
+	// 伪造令牌 → 403
+	if c := createKey(tokA, "1.9999999999.deadbeef"); c != 403 {
+		t.Fatalf("forged stepup token = %d, want 403", c)
+	}
+
+	// 过期令牌 → 403（把服务端时钟前推 6 分钟使刚发的令牌过期）
+	_, vx := srv.do(t, "POST", "/api/me/verify", tokA, map[string]any{"password": "longenough1"})
+	expTok := vx["token"].(string)
+	realNow := srv.srv.now
+	srv.srv.now = func() time.Time { return realNow().Add(6 * time.Minute) }
+	if c := createKey(tokA, expTok); c != 403 {
+		t.Fatalf("expired stepup token = %d, want 403", c)
+	}
+	srv.srv.now = realNow
+
+	// TOTP 路径：给 A 开 2FA，用 TOTP 再认证换令牌 → 创建 Key
+	_, setup := srv.do(t, "POST", "/api/me/2fa/setup", tokA, nil)
+	secret := setup["secret"].(string)
+	if w, _ := srv.do(t, "POST", "/api/me/2fa/enable", tokA, map[string]string{"code": genTOTP(secret)}); w.Code != 200 {
+		t.Fatalf("enable 2fa = %d", w.Code)
+	}
+	_, vt := srv.do(t, "POST", "/api/me/verify", tokA, map[string]any{"totp_code": genTOTP(secret)})
+	if vt["token"] == nil {
+		t.Fatalf("TOTP verify did not return token: %v", vt)
+	}
+	if c := createKey(tokA, vt["token"].(string)); c != 201 {
+		t.Fatalf("create with TOTP stepup = %d, want 201", c)
+	}
+}
+
 // 2FA 全流程：setup → enable → 登录二阶段验证。
 func TestTwoFactorFlow(t *testing.T) {
 	srv, _ := setupRelayServer(t) // 有 keyring

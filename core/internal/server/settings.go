@@ -47,6 +47,8 @@ var settingDefaults = map[string]string{
 	// —— 模型级限流（gap #2，relay allowModelRate 消费）——
 	"model_rate_limit_enabled": "false", // 开关
 	"model_rate_limit_rpm":     "0",     // 每 (org, model) 每分钟请求上限；0=不限
+	// —— 二次验证（gap #4，requireStepUpForKeys 消费）——
+	"require_stepup_for_keys": "false", // 开启则创建 API Key 需 step-up 再认证（默认关，零摩擦）
 	// —— OAuth（oauthStart/Callback 消费）——
 	"github_client_id":     "",
 	"github_client_secret": "",

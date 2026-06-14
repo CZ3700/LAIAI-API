@@ -117,7 +117,8 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			authed.POST("/me/2fa/enable", s.twofaEnable)
 			authed.POST("/me/2fa/disable", s.twofaDisable)
 			authed.POST("/me/2fa/backup-codes", s.twofaRegenBackup) // 重置备用码（gap #3）
-			authed.POST("/keys", s.createKey)
+			authed.POST("/me/verify", s.authRateLimit(), s.meVerify)           // 二次验证换 step-up 令牌（gap #4）；限流防暴力猜密码/TOTP
+			authed.POST("/keys", s.requireStepUpForKeys(), s.createKey)         // 受开关保护：开启则需 step-up
 			authed.GET("/keys", s.listKeys)
 			authed.DELETE("/keys/:id", s.revokeKey)
 			authed.DELETE("/keys/:id/purge", s.deleteKey)

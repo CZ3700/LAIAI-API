@@ -2062,6 +2062,14 @@ onMounted(async () => {
                 <input id="set-grant" v-model="settings.new_user_grant_usd" class="input" placeholder="0" />
                 <p class="mt-1 text-xs text-muted">{{ t('admin.setWelcomeGrantHint') }}</p>
               </div>
+              <div class="border-t border-line pt-3">
+                <label class="flex items-center gap-2 text-sm">
+                  <input type="checkbox" class="accent-accent" :checked="settings.require_stepup_for_keys === 'true'"
+                    @change="settings.require_stepup_for_keys = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
+                  {{ t('admin.setStepUpKeys') }}
+                </label>
+                <p class="mt-1 text-xs text-muted">{{ t('admin.setStepUpKeysHint') }}</p>
+              </div>
           </div>
 
           <div v-show="setSec === 'channels'">

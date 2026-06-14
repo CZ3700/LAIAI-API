@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, copyText, errorMessage } from '@/lib/api'
+import { api, ApiError, copyText, errorMessage } from '@/lib/api'
 
 interface KeyRow {
   id: number
@@ -101,24 +101,57 @@ async function load() {
   }
 }
 
+// 二次验证（step-up）：若运营开启 require_stepup_for_keys，创建 Key 会先回 403
+// VERIFICATION_REQUIRED；此时弹窗收集密码/TOTP 换 step-up 令牌，再带 X-Secure-Verify 重试。
+const stepUp = ref<{ open: boolean; pwd: string; code: string; err: string; busy: boolean; body: Record<string, unknown> | null }>(
+  { open: false, pwd: '', code: '', err: '', busy: false, body: null },
+)
+
+function buildKeyBody(): Record<string, unknown> {
+  const body: Record<string, unknown> = { name: newName.value }
+  if (newQuota.value) body.quota_limit = newQuota.value
+  if (newModels.value.trim()) body.model_limits = newModels.value.split(',').map((m) => m.trim()).filter(Boolean)
+  if (newIps.value.trim()) body.allow_ips = newIps.value.trim()
+  if (newExpiry.value > 0) body.expires_in_days = newExpiry.value
+  return body
+}
+
+async function doCreate(body: Record<string, unknown>, stepUpToken?: string) {
+  const r = await api<{ key: string }>('POST', '/api/keys', body, stepUpToken ? { headers: { 'X-Secure-Verify': stepUpToken } } : {})
+  createdKey.value = r.key
+  showCreate.value = false
+  newName.value = newQuota.value = newModels.value = newIps.value = ''
+  newExpiry.value = 0
+  await load()
+}
+
 async function create() {
   creating.value = true
+  const body = buildKeyBody()
   try {
-    const body: Record<string, unknown> = { name: newName.value }
-    if (newQuota.value) body.quota_limit = newQuota.value
-    if (newModels.value.trim()) body.model_limits = newModels.value.split(',').map((m) => m.trim()).filter(Boolean)
-    if (newIps.value.trim()) body.allow_ips = newIps.value.trim()
-    if (newExpiry.value > 0) body.expires_in_days = newExpiry.value
-    const r = await api<{ key: string }>('POST', '/api/keys', body)
-    createdKey.value = r.key
-    showCreate.value = false
-    newName.value = newQuota.value = newModels.value = newIps.value = ''
-    newExpiry.value = 0
-    await load()
+    await doCreate(body)
   } catch (e) {
-    error.value = errorMessage(e, t('common.error'))
+    if (e instanceof ApiError && e.code === 'VERIFICATION_REQUIRED') {
+      stepUp.value = { open: true, pwd: '', code: '', err: '', busy: false, body }
+    } else {
+      error.value = errorMessage(e, t('common.error'))
+    }
   } finally {
     creating.value = false
+  }
+}
+
+async function submitStepUp() {
+  stepUp.value.busy = true
+  stepUp.value.err = ''
+  try {
+    const vr = await api<{ token: string }>('POST', '/api/me/verify', { password: stepUp.value.pwd, totp_code: stepUp.value.code })
+    await doCreate(stepUp.value.body ?? {}, vr.token)
+    stepUp.value.open = false
+  } catch (e) {
+    stepUp.value.err = errorMessage(e, t('common.error'))
+  } finally {
+    stepUp.value.busy = false
   }
 }
 
@@ -264,6 +297,27 @@ onMounted(load)
         <div class="flex justify-end gap-2">
           <button type="button" class="btn-ghost" @click="showCreate = false">{{ t('common.cancel') }}</button>
           <button class="btn-primary" :disabled="creating">{{ t('common.confirm') }}</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- 二次验证（step-up，仅运营开启时触发） -->
+    <div v-if="stepUp.open" class="modal-backdrop" @click.self="stepUp.open = false">
+      <form class="card modal-panel w-full max-w-sm p-6 space-y-4" @submit.prevent="submitStepUp">
+        <h2 class="font-semibold">{{ t('keys.stepUpTitle') }}</h2>
+        <p class="text-sm text-muted">{{ t('keys.stepUpHint') }}</p>
+        <div>
+          <label class="label" for="su-pwd">{{ t('keys.stepUpPassword') }}</label>
+          <input id="su-pwd" v-model="stepUp.pwd" type="password" class="input" autocomplete="current-password" autofocus />
+        </div>
+        <div>
+          <label class="label" for="su-code">{{ t('keys.stepUpCode') }}</label>
+          <input id="su-code" v-model="stepUp.code" class="input font-mono" inputmode="numeric" maxlength="6" :placeholder="t('keys.stepUpCodePh')" />
+        </div>
+        <p v-if="stepUp.err" class="text-sm text-danger" role="alert">{{ stepUp.err }}</p>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn-ghost" @click="stepUp.open = false">{{ t('common.cancel') }}</button>
+          <button class="btn-primary" :disabled="stepUp.busy">{{ t('keys.stepUpVerify') }}</button>
         </div>
       </form>
     </div>

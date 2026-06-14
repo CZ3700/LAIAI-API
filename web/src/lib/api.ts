@@ -7,6 +7,7 @@ export class ApiError extends Error {
     message: string,
     // 后端在每个响应上回传的 X-Request-Id：报错时透出给用户，便于工单溯源
     public requestId: string | null = null,
+    public code: string | null = null, // 后端结构化错误码（如 VERIFICATION_REQUIRED）
   ) {
     super(message)
   }
@@ -63,9 +64,9 @@ export async function api<T>(
   method: string,
   path: string,
   body?: unknown,
-  opts: { auth?: boolean } = { auth: true },
+  opts: { auth?: boolean; headers?: Record<string, string> } = { auth: true },
 ): Promise<T> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(opts.headers ?? {}) }
   const auth = useAuth()
   if (opts.auth !== false && auth.token) {
     headers.Authorization = `Bearer ${auth.token}`
@@ -84,7 +85,11 @@ export async function api<T>(
       typeof data === 'object' && data !== null && 'error' in data
         ? String((data as { error: unknown }).error)
         : `request failed (${resp.status})`
-    throw new ApiError(resp.status, msg, resp.headers.get('X-Request-Id'))
+    const code =
+      typeof data === 'object' && data !== null && 'code' in data
+        ? String((data as { code: unknown }).code)
+        : null
+    throw new ApiError(resp.status, msg, resp.headers.get('X-Request-Id'), code)
   }
   return data as T
 }
@@ -119,7 +124,11 @@ export async function adminApi<T>(method: string, path: string, body?: unknown):
       typeof data === 'object' && data !== null && 'error' in data
         ? String((data as { error: unknown }).error)
         : `request failed (${resp.status})`
-    throw new ApiError(resp.status, msg, resp.headers.get('X-Request-Id'))
+    const code =
+      typeof data === 'object' && data !== null && 'code' in data
+        ? String((data as { code: unknown }).code)
+        : null
+    throw new ApiError(resp.status, msg, resp.headers.get('X-Request-Id'), code)
   }
   return data as T
 }
