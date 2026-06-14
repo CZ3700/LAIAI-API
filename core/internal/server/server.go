@@ -151,6 +151,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 			admin.POST("/group-ratios", s.adminUpsertGroupRatio)
 			admin.DELETE("/group-ratios/:name", s.adminDeleteGroupRatio)
 			admin.PUT("/orgs/:id/group", s.adminSetOrgGroup)
+			admin.PUT("/orgs/:id/entitlements", s.adminSetEntitlements) // P0-2 功能调配
 			admin.GET("/settings", s.adminGetSettings)
 			admin.PUT("/settings", s.adminSetSettings)
 			admin.GET("/audit-logs", s.adminListAuditLogs)

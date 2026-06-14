@@ -25,6 +25,11 @@ func (s *Service) HandleCreate(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Entitlements 功能门（P0-2）：超管可按 org 关闭视频生成。
+	if ent, eerr := identity.LoadEntitlements(s.DB, key.OrgID); eerr == nil && !ent.FeatureVideo {
+		taskErr(c, http.StatusForbidden, "video generation is not enabled for this organization")
+		return
+	}
 	var req createReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		taskErr(c, http.StatusBadRequest, "model and content are required")

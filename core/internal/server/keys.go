@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,7 +45,10 @@ func (s *Server) createKey(c *gin.Context) {
 	var plaintext string
 	var key *identity.APIKey
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var err error
+		ent, err := identity.LoadEntitlements(tx, claims.OrgID)
+		if err != nil {
+			return err
+		}
 		uid := claims.UserID
 		plaintext, key, err = identity.IssueKey(tx, identity.IssueKeyInput{
 			OrgID: claims.OrgID, UserID: &uid,
@@ -52,9 +56,14 @@ func (s *Server) createKey(c *gin.Context) {
 			QuotaLimit:  quota,
 			ModelLimits: joinTrim(req.ModelLimits),
 			AllowIPs:    req.AllowIPs,
+			MaxKeys:     ent.MaxAPIKeys, // entitlements 上限（红线：原子在 IssueKey 内强制）
 		})
 		return err
 	})
+	if errors.Is(err, identity.ErrKeyLimit) {
+		fail(c, http.StatusForbidden, "api key limit reached for this organization")
+		return
+	}
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "key issue failed")
 		return

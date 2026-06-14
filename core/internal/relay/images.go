@@ -80,6 +80,13 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		r.Rec.Record(inv)
 	}
 
+	// Entitlements 功能门（P0-2）：超管可按 org 关闭图像生成。
+	if ent, eerr := identity.LoadEntitlements(rdb, key.OrgID); eerr == nil && !ent.FeatureImages {
+		finish("forbidden", http.StatusForbidden, "image generation disabled")
+		relayErr(c, http.StatusForbidden, "image generation is not enabled for this organization")
+		return
+	}
+
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxRequestBodySize))
 	if err != nil {
 		relayErr(c, http.StatusBadRequest, "cannot read request body")

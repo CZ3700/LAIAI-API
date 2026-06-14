@@ -78,11 +78,21 @@ func CreateTeamOrg(tx *gorm.DB, ownerID uint64, name string) (*Organization, err
 
 // AddMemberByEmail：按邮箱加成员（对方必须已注册；查找走 canonical 形态，alias 绕不过）。
 // 可指派角色限 admin|member|billing——owner 不经此 API 产生（所有权转移是单独流程）。
-func AddMemberByEmail(tx *gorm.DB, orgID uint64, email, role string) (*User, error) {
+func AddMemberByEmail(tx *gorm.DB, orgID uint64, email, role string, maxMembers int) (*User, error) {
 	switch role {
 	case RoleAdmin, RoleMember, RoleBilling:
 	default:
 		return nil, ErrForbiddenRole
+	}
+	// 成员上限（entitlements）：同事务内 COUNT 现有成员，触顶即拒（原子，无 TOCTOU）。
+	if maxMembers > 0 {
+		var n int64
+		if err := tx.Model(&OrgMember{}).Where("org_id = ?", orgID).Count(&n).Error; err != nil {
+			return nil, err
+		}
+		if n >= int64(maxMembers) {
+			return nil, ErrMemberLimit
+		}
 	}
 	u, err := FindUserByEmail(tx, email)
 	if err != nil {

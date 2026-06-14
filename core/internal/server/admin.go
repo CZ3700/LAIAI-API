@@ -455,6 +455,11 @@ func (s *Server) adminListOrgs(c *gin.Context) {
 		Calls         int64           `json:"calls"`       // 生涯调用数
 		Spend         decimal.Decimal `json:"spend"`       // 生涯消耗
 		LastActive    string          `json:"last_active"` // 最近一次调用时间（空=从未调用）
+		// Entitlements（P0-2 功能调配）：无配置行 → COALESCE 回平台默认（全开/不限）。
+		FeatureImages bool `json:"feature_images"`
+		FeatureVideo  bool `json:"feature_video"`
+		MaxMembers    int  `json:"max_members"`
+		MaxAPIKeys    int  `json:"max_api_keys"`
 	}
 	// 活跃度子查询独立聚合（每 org 一行），避免与 members 子查询交叉相乘
 	err := s.db.Raw(`
@@ -465,11 +470,16 @@ func (s *Server) adminListOrgs(c *gin.Context) {
 		       COALESCE(a.held_amount, 0) AS held_amount,
 		       COALESCE(iv.calls, 0) AS calls,
 		       COALESCE(iv.spend, 0) AS spend,
-		       COALESCE(iv.last_active, '') AS last_active
+		       COALESCE(iv.last_active, '') AS last_active,
+		       COALESCE(e.feature_images, 1) AS feature_images,
+		       COALESCE(e.feature_video, 1) AS feature_video,
+		       COALESCE(e.max_members, 0) AS max_members,
+		       COALESCE(e.max_api_keys, 0) AS max_api_keys
 		FROM organizations o
 		LEFT JOIN org_members om ON om.org_id = o.id AND om.role = 'owner'
 		LEFT JOIN users u ON u.id = om.user_id
 		LEFT JOIN ledger_accounts a ON a.org_id = o.id AND a.type = 'user_credit'
+		LEFT JOIN org_entitlements e ON e.org_id = o.id
 		LEFT JOIN (
 		    SELECT org_id, COUNT(*) AS calls,
 		           COALESCE(SUM(cost_usd), 0) AS spend, MAX(created_at) AS last_active
@@ -785,6 +795,58 @@ func (s *Server) adminSetOrgGroup(c *gin.Context) {
 	}
 	s.writeAudit(c, "org_group_set", strconv.FormatUint(id, 10), "group → "+req.Group)
 	c.JSON(http.StatusOK, gin.H{"id": id, "group": req.Group})
+}
+
+// adminSetEntitlements：PUT /api/admin/orgs/:id/entitlements —— 超管按 org 分配功能与上限（P0-2）。
+// 整行覆盖语义：请求体即新配置；缺省字段按零值落库（feature=关、上限=0/不限）。
+func (s *Server) adminSetEntitlements(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid org id")
+		return
+	}
+	var req struct {
+		FeatureImages bool `json:"feature_images"`
+		FeatureVideo  bool `json:"feature_video"`
+		MaxMembers    int  `json:"max_members"`
+		MaxAPIKeys    int  `json:"max_api_keys"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.MaxMembers < 0 || req.MaxAPIKeys < 0 {
+		fail(c, http.StatusBadRequest, "limits must be non-negative (0 = unlimited)")
+		return
+	}
+	// org 必须存在（避免给不存在的 org 写孤儿配置）。
+	var exists int64
+	if err := s.db.Model(&identity.Organization{}).Where("id = ?", id).Count(&exists).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if exists == 0 {
+		fail(c, http.StatusNotFound, "org not found")
+		return
+	}
+	ent := identity.Entitlements{
+		OrgID:         id,
+		FeatureImages: req.FeatureImages,
+		FeatureVideo:  req.FeatureVideo,
+		MaxMembers:    req.MaxMembers,
+		MaxAPIKeys:    req.MaxAPIKeys,
+	}
+	if err := identity.UpsertEntitlements(s.db, ent); err != nil {
+		fail(c, http.StatusInternalServerError, "update failed")
+		return
+	}
+	s.writeAudit(c, "org_entitlements_set", strconv.FormatUint(id, 10),
+		fmt.Sprintf("images=%t video=%t max_members=%d max_keys=%d",
+			ent.FeatureImages, ent.FeatureVideo, ent.MaxMembers, ent.MaxAPIKeys))
+	c.JSON(http.StatusOK, gin.H{
+		"org_id": id, "feature_images": ent.FeatureImages, "feature_video": ent.FeatureVideo,
+		"max_members": ent.MaxMembers, "max_api_keys": ent.MaxAPIKeys,
+	})
 }
 
 // adminListUsers：GET /api/admin/users?page=&q= —— 用户清单（含状态/注册时间，运营视图）。

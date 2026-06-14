@@ -63,6 +63,12 @@ CREATE TABLE api_keys (
     model_limits TEXT NOT NULL DEFAULT '', allow_ips TEXT NOT NULL DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE org_entitlements (
+    org_id INTEGER PRIMARY KEY,
+    feature_images INTEGER NOT NULL DEFAULT 1, feature_video INTEGER NOT NULL DEFAULT 1,
+    max_members INTEGER NOT NULL DEFAULT 0, max_api_keys INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 var testSecret = []byte("test-secret-0123456789abcdef-0123456789abcdef")

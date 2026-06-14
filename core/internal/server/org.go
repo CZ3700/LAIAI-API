@@ -121,11 +121,16 @@ func (s *Server) addMember(c *gin.Context) {
 	}
 	var added *identity.User
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var err error
-		added, err = identity.AddMemberByEmail(tx, claims.OrgID, req.Email, req.Role)
+		ent, err := identity.LoadEntitlements(tx, claims.OrgID)
+		if err != nil {
+			return err
+		}
+		added, err = identity.AddMemberByEmail(tx, claims.OrgID, req.Email, req.Role, ent.MaxMembers)
 		return err
 	})
 	switch {
+	case errors.Is(err, identity.ErrMemberLimit):
+		fail(c, http.StatusForbidden, "member limit reached for this organization")
 	case errors.Is(err, identity.ErrUserNotFound):
 		fail(c, http.StatusNotFound, "no account with this email")
 	case errors.Is(err, identity.ErrAlreadyMember):

@@ -88,12 +88,24 @@ type IssueKeyInput struct {
 	QuotaLimit  decimal.Decimal // 累计消费上限 USD，0=无限
 	ModelLimits string          // 模型白名单
 	AllowIPs    string          // IP 白名单
+	MaxKeys     int             // org 活跃 Key 上限（entitlements），0=不限
 }
 
 // IssueKey 签发新 Key。返回 (明文, 记录)；明文此后不可再取。
 func IssueKey(tx *gorm.DB, in IssueKeyInput) (string, *APIKey, error) {
 	if in.OrgID == 0 {
 		return "", nil, ErrInvalidInput
+	}
+	// 资源上限（entitlements）：同事务内 COUNT 活跃 Key，触顶即拒（原子，无 TOCTOU）。
+	if in.MaxKeys > 0 {
+		var n int64
+		if err := tx.Model(&APIKey{}).
+			Where("org_id = ? AND status = ?", in.OrgID, StatusActive).Count(&n).Error; err != nil {
+			return "", nil, err
+		}
+		if n >= int64(in.MaxKeys) {
+			return "", nil, ErrKeyLimit
+		}
 	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
