@@ -129,6 +129,11 @@ const { t, d } = useI18n()
 // —— tabs ——
 const tab = ref<'overview' | 'analytics' | 'health' | 'channels' | 'payments' | 'prices' | 'groups' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
 
+// 标签分级（对标后端 RBAC）：资金/系统/定价类仅 superadmin 可见，admin 看运营类。
+const ALL_TABS = ['overview', 'analytics', 'health', 'channels', 'payments', 'prices', 'groups', 'orgs', 'users', 'logs', 'settings', 'audit'] as const
+const SUPER_ONLY_TABS = new Set(['payments', 'groups', 'settings'])
+const visibleTabs = computed(() => ALL_TABS.filter((tb) => auth.isSuperadmin || !SUPER_ONLY_TABS.has(tb)))
+
 // —— 运营分析（资金 / 用户 / 质量 颗粒度） ——
 interface Analytics {
   days: number
@@ -829,7 +834,7 @@ onMounted(async () => {
       <div class="flex items-center justify-between">
         <div class="flex gap-1" role="tablist">
           <button
-            v-for="tb in ['overview', 'analytics', 'health', 'channels', 'payments', 'prices', 'groups', 'orgs', 'users', 'logs', 'settings', 'audit'] as const"
+            v-for="tb in visibleTabs"
             :key="tb"
             type="button"
             role="tab"
@@ -1738,12 +1743,14 @@ onMounted(async () => {
                   <td class="px-4 py-2.5 font-mono text-xs">{{ o.owner_email }}</td>
                   <td class="px-4 py-2.5">
                     <select
+                      v-if="auth.isSuperadmin"
                       :value="o.group"
                       class="input !w-28 !py-1 text-xs"
                       @change="setOrgGroup(o, ($event.target as HTMLSelectElement).value)"
                     >
                       <option v-for="g in groupRatios" :key="g.name" :value="g.name">{{ g.name }} ({{ g.ratio }}×)</option>
                     </select>
+                    <span v-else class="text-xs text-muted">{{ o.group }}</span>
                   </td>
                   <td class="px-4 py-2.5 text-right">{{ o.members }}{{ o.max_members ? `/${o.max_members}` : '' }}</td>
                   <td class="px-4 py-2.5 text-right font-mono">${{ o.balance }}</td>
@@ -1752,8 +1759,11 @@ onMounted(async () => {
                   <td class="px-4 py-2.5 text-right font-mono text-muted">{{ o.calls }}</td>
                   <td class="px-4 py-2.5 text-xs text-muted">{{ o.last_active ? o.last_active.slice(0, 10) : '—' }}</td>
                   <td class="px-4 py-2.5 text-right whitespace-nowrap">
-                    <button class="btn-ghost !py-1 text-xs" @click="toggleEnt(o)">{{ t('admin.entEdit') }}</button>
-                    <button class="btn-ghost !py-1 text-xs" @click="grantTo(o)">{{ t('admin.orgGrant') }}</button>
+                    <template v-if="auth.isSuperadmin">
+                      <button class="btn-ghost !py-1 text-xs" @click="toggleEnt(o)">{{ t('admin.entEdit') }}</button>
+                      <button class="btn-ghost !py-1 text-xs" @click="grantTo(o)">{{ t('admin.orgGrant') }}</button>
+                    </template>
+                    <span v-else class="text-xs text-muted">—</span>
                   </td>
                 </tr>
                 <tr v-if="entOpen === o.id" class="border-b border-line bg-elev/40 last:border-0">
@@ -1941,6 +1951,7 @@ onMounted(async () => {
                 <td class="px-4 py-2.5 text-right font-mono">${{ Number(u.balance).toFixed(2) }}</td>
                 <td class="px-4 py-2.5">
                   <select
+                    v-if="auth.isSuperadmin"
                     :value="u.group"
                     class="input !w-28 !py-1 text-xs"
                     :disabled="!u.org_id"
@@ -1949,6 +1960,7 @@ onMounted(async () => {
                   >
                     <option v-for="g in groupRatios" :key="g.name" :value="g.name">{{ g.name }} ({{ g.ratio }}×)</option>
                   </select>
+                  <span v-else class="text-xs text-muted">{{ u.group }}</span>
                 </td>
                 <td class="px-4 py-2.5 text-xs text-muted whitespace-nowrap">
                   <span :title="t('admin.userInvited')">👥 {{ u.invited }}</span>
@@ -1956,7 +1968,7 @@ onMounted(async () => {
                   <span v-if="u.inviter_org_id" class="ml-2" :title="t('admin.userInviter')">← #{{ u.inviter_org_id }}</span>
                 </td>
                 <td class="px-4 py-2.5 text-right space-x-2 whitespace-nowrap">
-                  <button class="btn-ghost !py-1 text-xs" :disabled="!u.org_id" @click="openGrant(u.org_id, u.email)">{{ t('admin.crAdd') }}</button>
+                  <button v-if="auth.isSuperadmin" class="btn-ghost !py-1 text-xs" :disabled="!u.org_id" @click="openGrant(u.org_id, u.email)">{{ t('admin.crAdd') }}</button>
                   <button v-if="u.status === 1" class="btn-danger !py-1 text-xs" @click="manageUser(u, 'ban')">{{ t('admin.userBan') }}</button>
                   <button v-else class="btn-ghost !py-1 text-xs" @click="manageUser(u, 'unban')">{{ t('admin.userUnban') }}</button>
                 </td>

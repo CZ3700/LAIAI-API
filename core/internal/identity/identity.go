@@ -68,6 +68,16 @@ func RoleRank(role string) int {
 	}
 }
 
+// CanManageUser：能否对目标用户执行管理操作（封禁/改角色等）。
+// 对标 NewAPI（controller/user.go）规则：superadmin/root 可管理任何人；
+// 其余角色仅能管理「严格更低」等级者——admin 管不了 admin/superadmin（防平级互掀/提权）。
+func CanManageUser(actorRole, targetRole string) bool {
+	if actorRole == PlatRoleSuperadmin {
+		return true
+	}
+	return RoleRank(actorRole) > RoleRank(targetRole)
+}
+
 // ValidRole：是否是已知可授予的平台角色。
 func ValidRole(role string) bool {
 	switch role {

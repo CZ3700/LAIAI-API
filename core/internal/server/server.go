@@ -141,7 +141,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 
 		admin := api.Group("/admin", s.adminRequired(identity.PlatRoleAdmin))
 		{
-			admin.POST("/credits", s.adminGrantCredit)
+			// —— admin 级（运营）：渠道 / 模型定价 / 查看 ——（对标 NewAPI AdminAuth）
 			admin.POST("/channels", s.adminCreateChannel)
 			admin.GET("/channels", s.adminListChannels)
 			admin.PUT("/channels/:id", s.adminUpdateChannel)
@@ -157,23 +157,29 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.GET("/analytics", s.adminAnalytics)
 			admin.GET("/channel-health", s.adminChannelHealth) // M2 渠道健康看板
 			admin.GET("/invocations", s.adminListInvocations)
-			admin.GET("/group-ratios", s.adminListGroupRatios)
-			admin.POST("/group-ratios", s.adminUpsertGroupRatio)
-			admin.DELETE("/group-ratios/:name", s.adminDeleteGroupRatio)
-			admin.PUT("/orgs/:id/group", s.adminSetOrgGroup)
-			admin.PUT("/orgs/:id/entitlements", s.adminSetEntitlements) // P0-2 功能调配
-			admin.GET("/settings", s.adminGetSettings)
-			admin.PUT("/settings", s.adminSetSettings)
 			admin.GET("/audit-logs", s.adminListAuditLogs)
 			admin.GET("/users", s.adminListUsers)
-			admin.POST("/users/:id/manage", s.adminManageUser)
-			admin.POST("/users/:id/role", s.requireSuperadmin(), s.adminSetUserRole) // 授角色仅 superadmin
-			admin.GET("/payment-config", s.adminPaymentConfig)
-			admin.GET("/payment-channels", s.adminListPaymentChannels)
-			admin.POST("/payment-channels", s.adminUpsertPaymentChannel)
-			admin.DELETE("/payment-channels/:id", s.adminDeletePaymentChannel)
-			admin.POST("/payment-channels/:id/test", s.adminTestPaymentChannel)
-			admin.GET("/payment-channels/route-preview", s.adminPaymentRoutePreview)
+			admin.POST("/users/:id/manage", s.adminManageUser) // 含 targetRole 守卫（不能动同级/更高）
+
+			// —— superadmin 级（资金 / 系统设置 / 定价策略 / 授权）——（对标 NewAPI RootAuth）
+			su := admin.Group("", s.requireSuperadmin())
+			{
+				su.POST("/credits", s.adminGrantCredit)             // 授信入金（动钱）
+				su.GET("/settings", s.adminGetSettings)             // 系统设置
+				su.PUT("/settings", s.adminSetSettings)
+				su.GET("/group-ratios", s.adminListGroupRatios)     // 差异化定价倍率
+				su.POST("/group-ratios", s.adminUpsertGroupRatio)
+				su.DELETE("/group-ratios/:name", s.adminDeleteGroupRatio)
+				su.PUT("/orgs/:id/group", s.adminSetOrgGroup)       // 指派计费分组（定价）
+				su.PUT("/orgs/:id/entitlements", s.adminSetEntitlements) // P0-2 功能调配
+				su.POST("/users/:id/role", s.adminSetUserRole)      // 授角色
+				su.GET("/payment-config", s.adminPaymentConfig)     // 支付配置（含密钥引用）
+				su.GET("/payment-channels", s.adminListPaymentChannels)
+				su.POST("/payment-channels", s.adminUpsertPaymentChannel)
+				su.DELETE("/payment-channels/:id", s.adminDeletePaymentChannel)
+				su.POST("/payment-channels/:id/test", s.adminTestPaymentChannel)
+				su.GET("/payment-channels/route-preview", s.adminPaymentRoutePreview)
+			}
 		}
 	}
 

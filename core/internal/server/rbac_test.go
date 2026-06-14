@@ -6,6 +6,60 @@ import (
 	"testing"
 )
 
+// admin 与 superadmin 权限分级（对标 NewAPI）：运营级 vs 资金/系统/定价级 + 等级守卫。
+func TestRBACTierSplit(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	mk := func(email string) (string, uint64) {
+		srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": email, "password": "longenough1"})
+		_, l := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": email, "password": "longenough1"})
+		_, me := srv.do(t, "GET", "/api/me", l["token"].(string), nil)
+		return l["token"].(string), uint64(me["user_id"].(float64))
+	}
+	setRole := func(uid uint64, role string) { db.Exec("UPDATE users SET role = ? WHERE id = ?", role, uid) }
+	manage := func(uid uint64) string { return fmt.Sprintf("/api/admin/users/%d/manage", uid) }
+
+	adminTok, adminUID := mk("tier-admin@ex.com")
+	suTok, suUID := mk("tier-su@ex.com")
+	_, victimUID := mk("tier-victim@ex.com")
+	setRole(adminUID, "admin")
+	setRole(suUID, "superadmin")
+
+	// admin 级（运营）：admin 可访问
+	for _, p := range []string{"/api/admin/channels", "/api/admin/model-prices", "/api/admin/overview"} {
+		if w, _ := srv.do(t, "GET", p, adminTok, nil); w.Code != 200 {
+			t.Fatalf("admin GET %s = %d, want 200", p, w.Code)
+		}
+	}
+	// superadmin 级：admin 一律 403（资金/系统/定价）
+	for _, p := range []string{"/api/admin/settings", "/api/admin/group-ratios", "/api/admin/payment-channels", "/api/admin/payment-config"} {
+		if w, _ := srv.do(t, "GET", p, adminTok, nil); w.Code != 403 {
+			t.Fatalf("admin GET %s = %d, want 403 (superadmin-only)", p, w.Code)
+		}
+	}
+	// 授信（动钱）：admin 403
+	if w, _ := srv.do(t, "POST", "/api/admin/credits", adminTok,
+		map[string]any{"org_id": 1, "amount_usd": "1", "reason": "x", "idempotency_key": "k1"}); w.Code != 403 {
+		t.Fatalf("admin credits = %d, want 403", w.Code)
+	}
+	// superadmin 可访问 superadmin 级
+	if w, _ := srv.do(t, "GET", "/api/admin/settings", suTok, nil); w.Code != 200 {
+		t.Fatalf("superadmin settings = %d, want 200", w.Code)
+	}
+
+	// 等级守卫：admin 能封普通用户，封不动同级 admin / 更高 superadmin
+	if w, _ := srv.do(t, "POST", manage(victimUID), adminTok, map[string]any{"action": "ban"}); w.Code != 200 {
+		t.Fatalf("admin ban common user = %d, want 200", w.Code)
+	}
+	if w, _ := srv.do(t, "POST", manage(suUID), adminTok, map[string]any{"action": "ban"}); w.Code != 403 {
+		t.Fatalf("admin ban superadmin = %d, want 403", w.Code)
+	}
+	_, admin2UID := mk("tier-admin2@ex.com")
+	setRole(admin2UID, "admin")
+	if w, _ := srv.do(t, "POST", manage(admin2UID), adminTok, map[string]any{"action": "ban"}); w.Code != 403 {
+		t.Fatalf("admin ban peer admin = %d, want 403", w.Code)
+	}
+}
+
 func TestRBAC(t *testing.T) {
 	srv, db := setupRelayServer(t)
 

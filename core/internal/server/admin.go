@@ -929,6 +929,23 @@ func (s *Server) adminManageUser(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "action must be ban or unban")
 		return
 	}
+	// 等级守卫（对标 NewAPI）：不能封禁同级/更高角色（admin 动不了 admin/superadmin）；
+	// 也不能封禁自己。root-token(actor_id=0) 视作 superadmin，不受自我保护限制。
+	var target identity.User
+	if e := s.db.Select("id, role").First(&target, id).Error; e != nil {
+		fail(c, http.StatusNotFound, "user not found")
+		return
+	}
+	if aid, _ := c.Get("actor_id"); aid != nil {
+		if v, _ := aid.(uint64); v != 0 && v == id {
+			fail(c, http.StatusBadRequest, "cannot ban yourself")
+			return
+		}
+	}
+	if !identity.CanManageUser(c.GetString("actor_role"), target.Role) {
+		fail(c, http.StatusForbidden, "cannot manage a user of equal or higher role")
+		return
+	}
 	res := s.db.Model(&identity.User{}).Where("id = ?", id).Update("status", status)
 	if res.Error != nil {
 		fail(c, http.StatusInternalServerError, "update failed")
