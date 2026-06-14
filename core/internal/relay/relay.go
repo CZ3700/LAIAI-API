@@ -55,6 +55,17 @@ type Relay struct {
 	// 渠道级代理客户端缓存（按 proxy URL 复用，避免每请求新建 Transport）。
 	proxyMu      sync.Mutex
 	proxyClients map[string]*http.Client
+
+	// 模型级限流（gap #2）：每 (org, model) 固定 60s 窗口计数。**进程内**——单实例正确；
+	// 多实例需换 Redis（设计 §4.4 限流红线；LAIAI_REDIS_ADDR 已预留，未接线）。
+	// 策略(开关+RPM)从 ext_settings 读，带 5s 缓存避免每请求打库。
+	rateMu       sync.Mutex
+	rateWindows  map[string]*rateWindow
+	rateLastEvic time.Time
+	ratePolMu    sync.Mutex
+	ratePolAt    time.Time
+	rateEnabled  bool
+	rateRPM      int
 }
 
 // clientFor：渠道无代理 → 共享 Client；有代理 → 按 proxy URL 复用一个带代理 Transport 的 Client。
@@ -89,9 +100,10 @@ func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Lo
 		Client:     &http.Client{Timeout: upstreamTimeout},
 		Log:        log,
 		Rec:        rec,
-		Now:        time.Now,
-		failCounts: map[uint64]int{},
-		health:     map[uint64]float64{},
+		Now:         time.Now,
+		failCounts:  map[uint64]int{},
+		health:      map[uint64]float64{},
+		rateWindows: map[string]*rateWindow{},
 	}
 }
 
@@ -292,6 +304,11 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	}
 	if code, msg, ok := keyGate(key, c.ClientIP(), model); !ok { // Key 精细管控（0012）
 		relayErr(c, code, msg)
+		return
+	}
+	if ok, _ := r.allowModelRate(key.OrgID, model); !ok { // 模型级限流（gap #2）
+		c.Header("Retry-After", "60")
+		relayErr(c, http.StatusTooManyRequests, "model rate limit exceeded, slow down")
 		return
 	}
 	stream, _ := req["stream"].(bool)

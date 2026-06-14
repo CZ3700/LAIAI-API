@@ -2075,6 +2075,19 @@ onMounted(async () => {
               <input id="set-thresh" v-model="settings.channel_disable_threshold" class="input" type="number" min="1" placeholder="5" />
             </div>
             <p class="mt-2 text-xs text-muted">{{ t('admin.setAutoDisableHint') }}</p>
+
+            <div class="mt-5 border-t border-line pt-4">
+              <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" class="accent-accent" :checked="settings.model_rate_limit_enabled === 'true'"
+                  @change="settings.model_rate_limit_enabled = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
+                {{ t('admin.setRateLimit') }}
+              </label>
+              <div class="mt-3 max-w-xs">
+                <label class="label" for="set-rpm">{{ t('admin.setRateLimitRpm') }}</label>
+                <input id="set-rpm" v-model="settings.model_rate_limit_rpm" class="input" type="number" min="0" placeholder="0" />
+              </div>
+              <p class="mt-2 text-xs text-muted">{{ t('admin.setRateLimitHint') }}</p>
+            </div>
           </div>
 
           <div v-show="setSec === 'oauth'">

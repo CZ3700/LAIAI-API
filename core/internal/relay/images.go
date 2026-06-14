@@ -113,6 +113,11 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		relayErr(c, code, msg)
 		return
 	}
+	if ok, _ := r.allowModelRate(key.OrgID, req.Model); !ok { // 模型级限流（gap #2）
+		c.Header("Retry-After", "60")
+		relayErr(c, http.StatusTooManyRequests, "model rate limit exceeded, slow down")
+		return
+	}
 	inv.Model = req.Model
 
 	price, err := GetPrice(rdb, req.Model)

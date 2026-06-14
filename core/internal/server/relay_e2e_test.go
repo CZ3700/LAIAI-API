@@ -1013,6 +1013,35 @@ func TestPublicStatus(t *testing.T) {
 	}
 }
 
+// 模型级限流（gap #2）：每 (org, model) 60s 窗口 RPM 上限；per-org 隔离；开关从 settings 读。
+func TestModelRateLimit(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := mockUpstreamJSON(t, 5, 5)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKey1, _ := seedUserWithCredit(t, srv, "rl1@example.com", "10")
+	apiKey2, _ := seedUserWithCredit(t, srv, "rl2@example.com", "10")
+	db.Exec("INSERT INTO ext_settings (name,value) VALUES ('model_rate_limit_enabled','true'),('model_rate_limit_rpm','2')")
+
+	call := func(apiKey string) int {
+		w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+			"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+		})
+		return w.Code
+	}
+	// org1：前 2 次放行，第 3 次同窗口触顶 → 429
+	if call(apiKey1) != 200 || call(apiKey1) != 200 {
+		t.Fatal("first two requests should pass")
+	}
+	if c := call(apiKey1); c != http.StatusTooManyRequests {
+		t.Fatalf("3rd request = %d, want 429", c)
+	}
+	// org2：独立计数，第 1 次照常放行（per-org 隔离）
+	if c := call(apiKey2); c != 200 {
+		t.Fatalf("org2 first request = %d, want 200 (per-org isolation)", c)
+	}
+}
+
 // 渠道健康看板（M2）：从 invocations 派生每渠道成功率/时延/最近活跃；含零流量渠道。
 func TestChannelHealth(t *testing.T) {
 	srv, db := setupRelayServer(t)
