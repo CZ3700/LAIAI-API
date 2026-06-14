@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -85,10 +86,13 @@ func (s *Server) requireSuperadmin() gin.HandlerFunc {
 
 type grantReq struct {
 	OrgID          uint64 `json:"org_id" binding:"required"`
+	Mode           string `json:"mode"` // add | subtract | override；空=add（向后兼容）
 	AmountUSD      string `json:"amount_usd" binding:"required"`
 	Reason         string `json:"reason" binding:"required"`
 	IdempotencyKey string `json:"idempotency_key" binding:"required"`
 }
+
+var errBadAdjustMode = errors.New("invalid adjust mode")
 
 // adminGrantCredit：授信入账（红线 2：幂等键由调用方提供，UNIQUE 兜底）。
 func (s *Server) adminGrantCredit(c *gin.Context) {
@@ -98,36 +102,81 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 		return
 	}
 	amount, err := decimal.NewFromString(req.AmountUSD)
-	if err != nil || !amount.IsPositive() {
-		fail(c, http.StatusBadRequest, "amount_usd must be a positive decimal string")
+	if err != nil || amount.IsNegative() {
+		fail(c, http.StatusBadRequest, "amount_usd must be a non-negative decimal string")
 		return
 	}
+	mode := req.Mode
+	if mode == "" {
+		mode = "add" // 向后兼容：旧调用方不传 mode 即为授信
+	}
+	if (mode == "add" || mode == "subtract") && !amount.IsPositive() {
+		fail(c, http.StatusBadRequest, "amount_usd must be positive for add/subtract")
+		return
+	}
+
+	// 三档调账，全部走 ledger 事务（红线：余额永不直接 UPDATE；扣减由 Post 的可用余额守卫兜底）：
+	//   add=授信(+) / subtract=扣减(-) / override=订正到目标值(delta=目标-当前，正补负扣)
 	var entry *ledger.JournalEntry
-	var applied bool
+	var applied, noop bool
+	var balanceAfter decimal.Decimal
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		acc, err := ledger.EnsureAccount(tx, req.OrgID, ledger.AccountUserCredit)
 		if err != nil {
 			return err
 		}
+		var delta decimal.Decimal
+		var kind, refType string
+		switch mode {
+		case "add":
+			delta, kind, refType = amount, ledger.KindGrant, "admin_grant"
+		case "subtract":
+			delta, kind, refType = amount.Neg(), ledger.KindDebit, "admin_debit"
+		case "override":
+			// 注：delta 据非锁读的 PostedBalance 计算；授信是单人低频操作，竞态可忽略，
+			// 幂等键兜底重放。Post 内部行锁保证最终一致。
+			delta = amount.Sub(acc.PostedBalance)
+			if delta.IsZero() {
+				noop, balanceAfter = true, acc.PostedBalance
+				return nil // 已等于目标，无需过账
+			}
+			if delta.IsNegative() {
+				kind, refType = ledger.KindDebit, "admin_override"
+			} else {
+				kind, refType = ledger.KindGrant, "admin_override"
+			}
+		default:
+			return errBadAdjustMode
+		}
 		entry, applied, err = ledger.Post(tx, ledger.PostInput{
-			IdempotencyKey: "admin_grant:" + req.IdempotencyKey,
+			IdempotencyKey: "admin_adjust:" + req.IdempotencyKey,
 			AccountID:      acc.ID,
-			Kind:           ledger.KindGrant,
-			Delta:          amount,
-			RefType:        "admin_grant",
+			Kind:           kind,
+			Delta:          delta,
+			RefType:        refType,
 			Reason:         req.Reason,
 		})
+		if err == nil {
+			balanceAfter = entry.BalanceAfter
+		}
 		return err
 	})
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "grant failed")
+	switch {
+	case errors.Is(err, errBadAdjustMode):
+		fail(c, http.StatusBadRequest, "mode must be add, subtract or override")
+		return
+	case errors.Is(err, ledger.ErrInsufficientBalance):
+		fail(c, http.StatusConflict, "insufficient available balance for this adjustment")
+		return
+	case err != nil:
+		fail(c, http.StatusInternalServerError, "adjustment failed")
 		return
 	}
-	if !applied {
-		s.writeAudit(c, "credit_grant", strconv.FormatUint(req.OrgID, 10), "granted "+req.AmountUSD+" USD: "+req.Reason)
+	if !applied && !noop {
+		s.writeAudit(c, "credit_"+mode, strconv.FormatUint(req.OrgID, 10), mode+" "+req.AmountUSD+" USD: "+req.Reason)
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"entry_id": entry.ID, "balance_after": entry.BalanceAfter, "already_applied": applied,
+		"balance_after": balanceAfter, "already_applied": applied, "noop": noop,
 	})
 }
 

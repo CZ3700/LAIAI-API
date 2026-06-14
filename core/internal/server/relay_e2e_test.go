@@ -870,6 +870,60 @@ func TestReconcileTopups(t *testing.T) {
 	}
 }
 
+// 额度三档调账（add/subtract/override）：全走 ledger、扣减有可用余额守卫、override 订正到目标、幂等。
+func TestCreditAdjust(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	_, orgID := seedUserWithCredit(t, srv, "adj@example.com", "100") // add 100
+	bal := func() decimal.Decimal {
+		acc := &ledger.Account{}
+		db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+		return acc.PostedBalance
+	}
+	adjust := func(mode, amount, key string) int {
+		w, _ := srv.doAdmin(t, "POST", "/api/admin/credits", map[string]any{
+			"org_id": orgID, "mode": mode, "amount_usd": amount, "reason": "t", "idempotency_key": key,
+		})
+		return w.Code
+	}
+	want := func(v string, ctx string) {
+		if !bal().Equal(decimal.RequireFromString(v)) {
+			t.Fatalf("%s: balance = %s, want %s", ctx, bal(), v)
+		}
+	}
+
+	if c := adjust("subtract", "30", "s1"); c != 200 {
+		t.Fatalf("subtract = %d", c)
+	}
+	want("70", "after subtract 30")
+
+	if c := adjust("override", "50", "o1"); c != 200 { // 70 → 50（扣 20）
+		t.Fatalf("override = %d", c)
+	}
+	want("50", "after override→50")
+
+	if c := adjust("override", "50", "o2"); c != 200 { // 已是 50 → noop
+		t.Fatalf("override noop = %d", c)
+	}
+	want("50", "after override noop")
+
+	if c := adjust("subtract", "1000", "s2"); c != 409 { // 超过可用 → 拒绝
+		t.Fatalf("over-subtract = %d, want 409", c)
+	}
+	want("50", "after rejected over-subtract (unchanged)")
+
+	adjust("subtract", "10", "dup") // 50 → 40
+	adjust("subtract", "10", "dup") // 同键重放 → 不重复
+	want("40", "after idempotent dup subtract")
+
+	// 向后兼容：不传 mode 仍是授信
+	if w, _ := srv.doAdmin(t, "POST", "/api/admin/credits", map[string]any{
+		"org_id": orgID, "amount_usd": "5", "reason": "t", "idempotency_key": "add1",
+	}); w.Code != 200 {
+		t.Fatalf("add (no mode) = %d", w.Code)
+	}
+	want("45", "after add 5 (no mode)")
+}
+
 // x402 充值档（M4 §5.2 第一档）：建单(返 requirements) → /x402/settle(X-PAYMENT) →
 // facilitator verify/settle → 统一资金路径入账。默认禁用，配置齐全才生效。
 func TestX402TopupSettle(t *testing.T) {

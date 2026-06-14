@@ -757,7 +757,7 @@ async function upsertPrice() {
 // 统一弹窗，用户管理 / 组织列表共用。幂等键在「打开弹窗」时生成一次并固定，
 // 重复点击/网络重试用同一 key → 永不重复入账（旧实现每次 grant() 新 key 是漏洞）。
 const grantModal = ref<{ orgId: number; label: string; key: string } | null>(null)
-const grantForm = ref({ amount_usd: '', reason: '' })
+const grantForm = ref<{ mode: string; amount_usd: string; reason: string }>({ mode: 'add', amount_usd: '', reason: '' })
 const grantBusy = ref(false)
 const grantResult = ref<{ balance_after: string; already_applied: boolean } | null>(null)
 
@@ -767,7 +767,7 @@ function openGrant(orgId: number, label: string) {
     return
   }
   grantModal.value = { orgId, label, key: uuid() }
-  grantForm.value = { amount_usd: '', reason: '' }
+  grantForm.value = { mode: 'add', amount_usd: '', reason: '' }
   grantResult.value = null
 }
 async function submitGrant() {
@@ -779,6 +779,7 @@ async function submitGrant() {
       '/api/admin/credits',
       {
         org_id: grantModal.value.orgId,
+        mode: grantForm.value.mode,
         amount_usd: grantForm.value.amount_usd,
         reason: grantForm.value.reason,
         idempotency_key: grantModal.value.key, // 固定 key：重提不重复入账
@@ -1649,8 +1650,22 @@ onMounted(async () => {
           <h2 class="font-semibold">{{ t('admin.crTitle') }}</h2>
           <p class="text-xs text-muted">{{ t('admin.crTarget') }}: <span class="font-mono">{{ grantModal.label }}</span> · org #{{ grantModal.orgId }}</p>
           <div>
-            <label class="label" for="cr-amount">{{ t('admin.crAmount') }}</label>
+            <label class="label">{{ t('admin.crMode') }}</label>
+            <div class="flex gap-1">
+              <button
+                v-for="m in ['add', 'subtract', 'override']"
+                :key="m"
+                type="button"
+                class="btn-ghost !py-1 flex-1 text-xs"
+                :class="grantForm.mode === m ? '!bg-panel !text-ink' : 'text-muted'"
+                @click="grantForm.mode = m"
+              >{{ t(`admin.crMode_${m}`) }}</button>
+            </div>
+          </div>
+          <div>
+            <label class="label" for="cr-amount">{{ grantForm.mode === 'override' ? t('admin.crTargetBalance') : t('admin.crAmount') }}</label>
             <input id="cr-amount" v-model="grantForm.amount_usd" class="input" required placeholder="10.00" autofocus />
+            <p v-if="grantForm.mode === 'override'" class="mt-1 text-xs text-muted">{{ t('admin.crOverrideHint') }}</p>
           </div>
           <div>
             <label class="label" for="cr-reason">{{ t('admin.crReason') }}</label>
