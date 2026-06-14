@@ -99,6 +99,7 @@ const links = [
             <router-link class="hover:text-ink" to="/rankings">{{ t('nav.rankings') }}</router-link>
             <router-link class="hover:text-ink" to="/docs">{{ t('nav.docs') }}</router-link>
             <router-link class="hover:text-ink" to="/about">{{ t('nav.about') }}</router-link>
+            <router-link class="hover:text-ink" to="/status">{{ t('status.short') }}</router-link>
             <router-link v-if="hasTerms" class="hover:text-ink" to="/terms">{{ t('legal.terms') }}</router-link>
             <router-link v-if="hasPrivacy" class="hover:text-ink" to="/privacy">{{ t('legal.privacy') }}</router-link>
             <a v-if="supportEmail" class="hover:text-ink" :href="`mailto:${supportEmail}`">{{ t('legal.contact') }}</a>

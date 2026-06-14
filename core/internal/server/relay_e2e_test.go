@@ -870,6 +870,37 @@ func TestReconcileTopups(t *testing.T) {
 	}
 }
 
+// 公开状态页（M3）：无需登录；无渠道=relay down；有活跃渠道=operational；不泄露细节。
+func TestPublicStatus(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+
+	// 无渠道：relay 无容量 → down，整体 down（HTTP 503，便于 uptime 探针告警）
+	w, out := srv.do(t, "GET", "/api/status", "", nil)
+	if w.Code != http.StatusServiceUnavailable || out["status"] != "down" {
+		t.Fatalf("no-channel status = %d %v, want 503/down", w.Code, out)
+	}
+	comps, _ := out["components"].([]any)
+	if len(comps) != 3 {
+		t.Fatalf("components = %v, want 3 (api/database/relay)", comps)
+	}
+	// 不泄露：响应里不得出现渠道名/厂商/org/成功率数字等运营细节
+	body := w.Body.String()
+	for _, leak := range []string{"success_rate", "channel", "provider", "org", "calls"} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("public status leaked %q: %s", leak, body)
+		}
+	}
+
+	// 有活跃渠道 + 无近期失败 → operational（HTTP 200）
+	up := mockUpstreamJSON(t, 1, 1)
+	defer up.Close()
+	setupChannelAndPrice(t, srv, up.URL)
+	w, out = srv.do(t, "GET", "/api/status", "", nil)
+	if w.Code != 200 || out["status"] != "operational" {
+		t.Fatalf("healthy status = %d %v, want 200/operational", w.Code, out)
+	}
+}
+
 // 渠道健康看板（M2）：从 invocations 派生每渠道成功率/时延/最近活跃；含零流量渠道。
 func TestChannelHealth(t *testing.T) {
 	srv, db := setupRelayServer(t)
