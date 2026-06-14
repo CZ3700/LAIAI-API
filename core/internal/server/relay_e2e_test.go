@@ -870,6 +870,64 @@ func TestReconcileTopups(t *testing.T) {
 	}
 }
 
+// x402 充值档（M4 §5.2 第一档）：建单(返 requirements) → /x402/settle(X-PAYMENT) →
+// facilitator verify/settle → 统一资金路径入账。默认禁用，配置齐全才生效。
+func TestX402TopupSettle(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	fac := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/verify":
+			_, _ = w.Write([]byte(`{"isValid":true}`))
+		case "/settle":
+			_, _ = w.Write([]byte(`{"success":true,"transaction":"0xTOPUPTX"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer fac.Close()
+	// 启用 x402（三项配置齐全）
+	db.Exec(`INSERT INTO ext_settings (name,value) VALUES ('x402_facilitator_url',?),('x402_pay_to','0xMerchant'),('x402_asset','0xUSDC')`, fac.URL)
+
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "x402@example.com", "password": "longenough1"})
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "x402@example.com", "password": "longenough1"})
+	token := login["token"].(string)
+	orgID := login["org_id"].(float64)
+
+	// 建单：返回 requirements（无跳转 url）
+	w, out := srv.do(t, "POST", "/api/payment/create", token, map[string]any{"provider": "x402", "amount_usd": "25"})
+	if w.Code != 200 || out["requirements"] == nil || out["pay_url"] != "" {
+		t.Fatalf("x402 create = %d %v", w.Code, out)
+	}
+	orderNo := out["order_no"].(string)
+
+	// settle：带 X-PAYMENT 头（base64 paymentPayload）
+	xpay := base64.StdEncoding.EncodeToString([]byte(`{"x402Version":1,"scheme":"exact","payload":{}}`))
+	settle := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/api/payment/x402/settle/"+orderNo, nil)
+		req.Header.Set("X-PAYMENT", xpay)
+		rec := httptest.NewRecorder()
+		srv.engine.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := settle(); rec.Code != 200 {
+		t.Fatalf("x402 settle = %d %s", rec.Code, rec.Body.String())
+	}
+	acc := &ledger.Account{}
+	db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("25")) {
+		t.Fatalf("balance after x402 = %s, want 25", acc.PostedBalance)
+	}
+	// 幂等：重复 settle 不重复入账
+	if rec := settle(); rec.Code != 200 {
+		t.Fatalf("x402 re-settle = %d", rec.Code)
+	}
+	db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("25")) {
+		t.Fatalf("balance after re-settle = %s, want 25 (idempotent)", acc.PostedBalance)
+	}
+}
+
 // 公开状态页（M3）：无需登录；无渠道=relay down；有活跃渠道=operational；不泄露细节。
 func TestPublicStatus(t *testing.T) {
 	srv, _ := setupRelayServer(t)

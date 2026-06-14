@@ -20,10 +20,12 @@ type CreateRequest struct {
 	PayMethod   string // alipay / wxpay / card ...（引擎自定）
 }
 
-// CreateResult：创建结果，PayURL 是让用户跳转去支付的地址。
+// CreateResult：创建结果。PayURL 是跳转支付地址（重定向类引擎）；
+// Requirements 是 x402 的支付要求 JSON（header-based 引擎，无跳转，前端钱包据此签名付款）。
 type CreateResult struct {
-	PayURL      string
-	ProviderRef string // 上游会话/订单引用
+	PayURL       string
+	ProviderRef  string // 上游会话/订单引用
+	Requirements string // x402 paymentRequirements JSON（非 x402 引擎留空）
 }
 
 // CallbackResult：验签后的回调结论（入金依据）。

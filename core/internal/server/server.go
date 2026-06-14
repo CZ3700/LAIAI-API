@@ -106,6 +106,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		api.GET("/rankings", s.getRankings)   // 公开模型/厂商调用量排行（营销/SEO）
 		api.GET("/status", s.publicStatus)    // 公开状态页（粗粒度组件健康，M3）
 		api.POST("/payment/callback/:provider", s.paymentCallback) // 支付 webhook（验签入金，无需登录）
+		api.POST("/payment/x402/settle/:order_no", s.x402Settle)   // x402 链上结算入账（§5.2，默认禁用）
 
 		authed := api.Group("", s.authRequired())
 		{

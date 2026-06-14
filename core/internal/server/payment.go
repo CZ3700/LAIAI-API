@@ -84,6 +84,16 @@ func (s *Server) engineFor(provider string) payment.Engine {
 			return nil
 		}
 		return &payment.EPay{PID: pid, Key: s.getSetting("epay_key"), APIURL: s.getSetting("epay_api_url")}
+	case "x402":
+		// 默认禁用：三项配置齐全才构建（见 x402.go 合约校验注记）
+		fac := s.getSetting("x402_facilitator_url")
+		if fac == "" || s.getSetting("x402_pay_to") == "" || s.getSetting("x402_asset") == "" {
+			return nil
+		}
+		return &payment.X402{
+			FacilitatorURL: fac, PayTo: s.getSetting("x402_pay_to"),
+			Asset: s.getSetting("x402_asset"), Network: s.getSetting("x402_network"),
+		}
 	}
 	return nil
 }
@@ -152,8 +162,11 @@ func (s *Server) createTopup(c *gin.Context) {
 		return
 	}
 
-	// 实付金额/币种：stripe 直接 USD；epay 按汇率折 CNY（按 protocol 判，非 code）
+	// 实付金额/币种：stripe 直接 USD；x402 用 USDC（1:1，链上稳定币）；epay 按汇率折 CNY
 	payAmount, payCurrency := amountUSD, "USD"
+	if protocol == "x402" {
+		payCurrency = "USDC" // USDC ≈ USD，金额不变
+	}
 	if protocol == "epay" {
 		rate := decimal.RequireFromString("7.3")
 		if r := s.getSetting("cny_per_usd"); r != "" {
@@ -196,7 +209,11 @@ func (s *Server) createTopup(c *gin.Context) {
 	if result.ProviderRef != "" {
 		s.db.Model(order).Update("provider_ref", result.ProviderRef)
 	}
-	c.JSON(http.StatusOK, gin.H{"order_no": orderNo, "pay_url": result.PayURL})
+	out := gin.H{"order_no": orderNo, "pay_url": result.PayURL}
+	if result.Requirements != "" { // x402：返回支付要求供前端钱包签名（无跳转 URL）
+		out["requirements"] = result.Requirements
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 // paymentCallback：POST /api/payment/callback/:provider —— webhook 入金。
@@ -243,6 +260,51 @@ func (s *Server) paymentCallback(c *gin.Context) {
 		s.writeAudit(c, "topup_paid", res.OrderNo, "topup credited via "+provider)
 	}
 	c.String(http.StatusOK, engine.AckBody())
+}
+
+// x402Settle：POST /api/payment/x402/settle/:order_no —— x402 链上结算 + 入账（§5.2 第一档）。
+// 公开端点（X-PAYMENT 头自证支付，订单号定位 org）；结算成功走**统一资金路径** creditPaidOrder。
+// x402 默认禁用（engineFor 返回 nil）→ 503；启用前须验证 facilitator 合约（见 x402.go）。
+func (s *Server) x402Settle(c *gin.Context) {
+	orderNo := c.Param("order_no")
+	xPayment := c.GetHeader("X-PAYMENT")
+	if xPayment == "" {
+		fail(c, http.StatusBadRequest, "missing X-PAYMENT header")
+		return
+	}
+	var order TopupOrder
+	if e := s.db.Where("order_no = ?", orderNo).First(&order).Error; e != nil {
+		fail(c, http.StatusNotFound, "order not found")
+		return
+	}
+	if order.Provider != "x402" { // 防把别的单走 x402 结算
+		fail(c, http.StatusBadRequest, "order is not an x402 order")
+		return
+	}
+	x402, ok := s.engineFor(order.Provider).(*payment.X402)
+	if !ok || x402 == nil {
+		fail(c, http.StatusServiceUnavailable, "x402 not configured")
+		return
+	}
+	res, err := x402.Settle(c.Request.Context(), xPayment, order.OrderNo, order.PayAmount,
+		s.getSetting("site_name")+" top-up")
+	if err != nil || res == nil || !res.Success {
+		s.Log().Warn("x402 settle failed", "order", orderNo, "err", err)
+		fail(c, http.StatusPaymentRequired, "x402 settlement failed")
+		return
+	}
+	// 结算确认了 requirements 金额已上链支付 → 按订单应付额入账（与 callback 同口径）
+	already, cerr := s.creditPaidOrder("x402", order.OrderNo, res.TxHash, order.PayAmount)
+	if cerr != nil {
+		s.Log().Error("x402 credit failed", "order", orderNo, "err", cerr)
+		fail(c, http.StatusInternalServerError, "credit failed")
+		return
+	}
+	if !already {
+		s.payAffiliateRebate(order.OrderNo)
+		s.writeAudit(c, "topup_paid", order.OrderNo, "topup credited via x402 tx "+res.TxHash)
+	}
+	c.JSON(http.StatusOK, gin.H{"order_no": orderNo, "tx_hash": res.TxHash, "status": "paid"})
 }
 
 // creditPaidOrder：把一笔已确认支付的订单入账——**callback 与 reconcile 共用的唯一资金路径**。

@@ -2,6 +2,8 @@ package payment
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -121,6 +123,67 @@ func TestStripeQueryOrder(t *testing.T) {
 	qr3, _ := s.QueryOrder(context.Background(), QueryRequest{ProviderRef: ""})
 	if qr3.Found {
 		t.Fatalf("empty ref = %+v, want not found", qr3)
+	}
+}
+
+// x402 引擎：requirements 构造（USDC 原子单位）+ Settle 经 mock facilitator verify→settle。
+func TestX402Engine(t *testing.T) {
+	var verifyHit, settleHit int
+	fac := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/verify":
+			verifyHit++
+			_, _ = w.Write([]byte(`{"isValid":true,"payer":"0xPayer"}`))
+		case "/settle":
+			settleHit++
+			_, _ = w.Write([]byte(`{"success":true,"transaction":"0xTxHash","payer":"0xPayer","network":"base"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer fac.Close()
+
+	x := &X402{FacilitatorURL: fac.URL, PayTo: "0xMerchant", Asset: "0xUSDC", Client: fac.Client()}
+
+	// CreatePayment：requirements JSON 含 payTo/asset/原子金额（$50 → 50000000）
+	cr, err := x.CreatePayment(context.Background(), &CreateRequest{OrderNo: "ORD1", Amount: decimal.RequireFromString("50")})
+	if err != nil || cr.Requirements == "" || cr.PayURL != "" {
+		t.Fatalf("create = %+v err=%v", cr, err)
+	}
+	var reqDoc struct {
+		Accepts []paymentRequirements `json:"accepts"`
+	}
+	if err := json.Unmarshal([]byte(cr.Requirements), &reqDoc); err != nil || len(reqDoc.Accepts) != 1 {
+		t.Fatalf("requirements json = %s err=%v", cr.Requirements, err)
+	}
+	a := reqDoc.Accepts[0]
+	if a.MaxAmountRequired != "50000000" || a.PayTo != "0xMerchant" || a.Asset != "0xUSDC" || a.Network != "base" {
+		t.Fatalf("requirements = %+v", a)
+	}
+
+	// Settle：X-PAYMENT 是 base64 的 paymentPayload JSON
+	xpay := base64.StdEncoding.EncodeToString([]byte(`{"x402Version":1,"scheme":"exact","network":"base","payload":{}}`))
+	res, err := x.Settle(context.Background(), xpay, "ORD1", decimal.RequireFromString("50"), "topup")
+	if err != nil || res == nil || !res.Success || res.TxHash != "0xTxHash" {
+		t.Fatalf("settle = %+v err=%v", res, err)
+	}
+	if verifyHit != 1 || settleHit != 1 {
+		t.Fatalf("facilitator hits: verify=%d settle=%d", verifyHit, settleHit)
+	}
+
+	// verify 拒绝 → Settle 失败且不 settle
+	facReject := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/verify" {
+			_, _ = w.Write([]byte(`{"isValid":false,"invalidReason":"insufficient_funds"}`))
+			return
+		}
+		t.Error("settle must not be called when verify rejects")
+	}))
+	defer facReject.Close()
+	xr := &X402{FacilitatorURL: facReject.URL, PayTo: "0xM", Asset: "0xU", Client: facReject.Client()}
+	if res, err := xr.Settle(context.Background(), xpay, "ORD2", decimal.RequireFromString("10"), ""); err == nil || (res != nil && res.Success) {
+		t.Fatalf("rejected verify should fail settle: res=%+v err=%v", res, err)
 	}
 }
 
