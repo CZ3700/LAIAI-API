@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, errorMessage } from '@/lib/api'
+import { api, copyText, errorMessage } from '@/lib/api'
 
 interface Me {
   user_id: number
@@ -9,6 +9,7 @@ interface Me {
   display_name: string
   org_id: number
   role: string
+  backup_codes_remaining?: number
 }
 
 const { t } = useI18n()
@@ -33,6 +34,7 @@ const totpEnabled = ref(false)
 const setupUri = ref('')
 const setupSecret = ref('')
 const twofaCode = ref('')
+const backupCodes = ref<string[]>([])
 const twofaBusy = ref(false)
 const twofaErr = ref('')
 const twofaMsg = ref('')
@@ -51,10 +53,12 @@ async function enable2fa() {
   twofaBusy.value = true
   twofaErr.value = ''
   try {
-    await api('POST', '/api/me/2fa/enable', { code: twofaCode.value })
+    const r = await api<{ backup_codes: string[] }>('POST', '/api/me/2fa/enable', { code: twofaCode.value })
     totpEnabled.value = true
     setupUri.value = ''
     twofaCode.value = ''
+    backupCodes.value = r.backup_codes ?? []
+    if (me.value) me.value.backup_codes_remaining = backupCodes.value.length // 刷新剩余计数
     twofaMsg.value = t('settings.twofaEnabled')
   } catch (e) {
     twofaErr.value = errorMessage(e, t('common.error'))
@@ -69,7 +73,28 @@ async function disable2fa() {
     await api('POST', '/api/me/2fa/disable', { code: twofaCode.value })
     totpEnabled.value = false
     twofaCode.value = ''
+    backupCodes.value = []
+    if (me.value) me.value.backup_codes_remaining = undefined // 关闭后清零计数，状态一致
     twofaMsg.value = t('settings.twofaDisabled')
+  } catch (e) {
+    twofaErr.value = errorMessage(e, t('common.error'))
+  } finally {
+    twofaBusy.value = false
+  }
+}
+async function copyBackup() {
+  await copyText(backupCodes.value.join('\n'))
+  twofaMsg.value = t('settings.twofaBackupCopied')
+}
+async function regenBackup() {
+  twofaBusy.value = true
+  twofaErr.value = ''
+  try {
+    const r = await api<{ backup_codes: string[] }>('POST', '/api/me/2fa/backup-codes', { code: twofaCode.value })
+    twofaCode.value = ''
+    backupCodes.value = r.backup_codes ?? []
+    if (me.value) me.value.backup_codes_remaining = backupCodes.value.length // 刷新剩余计数
+    twofaMsg.value = t('settings.twofaBackupRegen')
   } catch (e) {
     twofaErr.value = errorMessage(e, t('common.error'))
   } finally {
@@ -207,10 +232,31 @@ async function changePassword() {
         </div>
       </template>
 
-      <!-- 已启用：禁用流程 -->
-      <div v-else class="flex gap-2">
-        <input v-model="twofaCode" class="input max-w-[10rem] font-mono" inputmode="numeric" maxlength="6" :placeholder="t('auth.verifyCode')" />
-        <button class="btn-danger shrink-0" :disabled="twofaBusy" @click="disable2fa">{{ t('settings.twofaDisable') }}</button>
+      <!-- 已启用：禁用 + 重置备用码 -->
+      <div v-else class="space-y-2">
+        <div class="flex flex-wrap gap-2">
+          <input v-model="twofaCode" class="input max-w-[10rem] font-mono" inputmode="numeric" maxlength="6" :placeholder="t('auth.verifyCode')" />
+          <button class="btn-danger shrink-0" :disabled="twofaBusy" @click="disable2fa">{{ t('settings.twofaDisable') }}</button>
+          <button class="btn-ghost shrink-0" :disabled="twofaBusy" @click="regenBackup">{{ t('settings.twofaBackupRegenBtn') }}</button>
+        </div>
+        <p class="text-xs text-muted">{{ t('settings.twofaBackupHint') }}</p>
+        <p
+          v-if="me && me.backup_codes_remaining !== undefined"
+          class="text-xs"
+          :class="me.backup_codes_remaining <= 2 ? 'text-danger' : 'text-muted'"
+        >
+          {{ t('settings.twofaBackupLeft', { n: me.backup_codes_remaining }) }}<span v-if="me.backup_codes_remaining <= 2"> · {{ t('settings.twofaBackupLow') }}</span>
+        </p>
+      </div>
+
+      <!-- 备用码（启用/重置后一次性显示，离开即消失） -->
+      <div v-if="backupCodes.length" class="rounded-lg border border-line bg-elev/40 p-4 space-y-2">
+        <p class="text-sm font-medium text-ink">{{ t('settings.twofaBackupTitle') }}</p>
+        <p class="text-xs text-danger">{{ t('settings.twofaBackupWarn') }}</p>
+        <div class="grid grid-cols-2 gap-1.5">
+          <code v-for="c in backupCodes" :key="c" class="select-all rounded bg-panel px-2 py-1 text-center font-mono text-sm">{{ c }}</code>
+        </div>
+        <button class="btn-ghost !py-1 text-xs" @click="copyBackup">{{ t('settings.twofaBackupCopy') }}</button>
       </div>
     </div>
   </div>

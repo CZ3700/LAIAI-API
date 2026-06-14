@@ -63,6 +63,12 @@ CREATE TABLE org_entitlements (
     max_members INTEGER NOT NULL DEFAULT 0, max_api_keys INTEGER NOT NULL DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE twofa_backup_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL, code_hash TEXT NOT NULL,
+    used_at INTEGER, created_at INTEGER NOT NULL,
+    UNIQUE (user_id, code_hash)
+);
 `
 
 func setupDB(t *testing.T) *gorm.DB {

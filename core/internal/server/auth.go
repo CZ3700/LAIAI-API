@@ -154,14 +154,20 @@ func (s *Server) me(c *gin.Context) {
 	if role == "" {
 		role = identity.PlatRoleUser
 	}
-	c.JSON(http.StatusOK, gin.H{
+	out := gin.H{
 		"user_id":      user.ID,
 		"email":        user.Email,
 		"display_name": user.DisplayName,
 		"org_id":       claims.OrgID,
 		"totp_enabled": user.TOTPEnabled != 0,
 		"role":         role, // RBAC（0020）：前端据此决定是否放行后台、显示管理员入口
-	})
+	}
+	if user.TOTPEnabled != 0 { // 剩余备用码数（低余量提醒，gap #3）
+		if n, err := identity.CountUnusedBackupCodes(s.db, user.ID); err == nil {
+			out["backup_codes_remaining"] = n
+		}
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 type updateProfileReq struct {

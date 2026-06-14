@@ -85,7 +85,8 @@ async function submit2fa() {
         <p class="text-sm text-muted">{{ t('auth.twofaHint') }}</p>
         <div>
           <label class="label" for="totp">{{ t('auth.verifyCode') }}</label>
-          <input id="totp" v-model="code" class="input font-mono text-center text-lg tracking-widest" inputmode="numeric" maxlength="6" autofocus required />
+          <input id="totp" v-model="code" class="input font-mono text-center text-lg tracking-widest" maxlength="20" autocomplete="one-time-code" autofocus required />
+          <p class="mt-1 text-xs text-muted">{{ t('auth.twofaBackupHint') }}</p>
         </div>
         <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
         <button class="btn-primary w-full" :disabled="busy">{{ t('auth.signin') }}</button>

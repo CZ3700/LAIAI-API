@@ -116,6 +116,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			authed.POST("/me/2fa/setup", s.twofaSetup)
 			authed.POST("/me/2fa/enable", s.twofaEnable)
 			authed.POST("/me/2fa/disable", s.twofaDisable)
+			authed.POST("/me/2fa/backup-codes", s.twofaRegenBackup) // 重置备用码（gap #3）
 			authed.POST("/keys", s.createKey)
 			authed.GET("/keys", s.listKeys)
 			authed.DELETE("/keys/:id", s.revokeKey)

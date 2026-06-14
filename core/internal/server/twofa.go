@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/totp"
+	"gorm.io/gorm"
 )
 
 // 2FA（TOTP，0017）。secret 用 keyring 信封加密存 users.totp_secret_enc。
@@ -63,9 +64,58 @@ func (s *Server) twofaEnable(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid code")
 		return
 	}
-	s.db.Model(user).Update("totp_enabled", 1)
+	// 启用 + 生成备用码（同事务），明文仅此一次返回
+	var codes []string
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if e := tx.Model(user).Update("totp_enabled", 1).Error; e != nil {
+			return e
+		}
+		var genErr error
+		codes, genErr = identity.GenerateBackupCodes(tx, user.ID, s.now().Unix())
+		return genErr
+	})
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "enable failed")
+		return
+	}
 	s.writeAudit(c, "2fa_enable", strconv.FormatUint(user.ID, 10), "2FA enabled")
-	c.JSON(http.StatusOK, gin.H{"enabled": true})
+	c.Header("Cache-Control", "no-store") // 备用码明文不进缓存
+	c.JSON(http.StatusOK, gin.H{"enabled": true, "backup_codes": codes})
+}
+
+// twofaRegenBackup：POST /api/me/2fa/backup-codes {code} —— 验 TOTP 后重置备用码（旧码全失效）。
+func (s *Server) twofaRegenBackup(c *gin.Context) {
+	claims := mustClaims(c)
+	var req struct {
+		Code string `json:"code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "code required")
+		return
+	}
+	user := &identity.User{}
+	if err := s.db.First(user, claims.UserID).Error; err != nil || user.TOTPEnabled == 0 {
+		fail(c, http.StatusBadRequest, "2FA not enabled")
+		return
+	}
+	secret, err := s.keyring.Decrypt(user.TOTPSecretEnc)
+	if err != nil || !totp.Validate(secret, req.Code, s.now()) {
+		fail(c, http.StatusBadRequest, "invalid code")
+		return
+	}
+	var codes []string
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		var genErr error
+		codes, genErr = identity.GenerateBackupCodes(tx, user.ID, s.now().Unix())
+		return genErr
+	})
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "regenerate failed")
+		return
+	}
+	s.writeAudit(c, "2fa_backup_regen", strconv.FormatUint(user.ID, 10), "2FA backup codes regenerated")
+	c.Header("Cache-Control", "no-store") // 备用码明文不进缓存
+	c.JSON(http.StatusOK, gin.H{"backup_codes": codes})
 }
 
 // twofaDisable：POST /api/me/2fa/disable {code} —— 验证码正确则关闭并清除密钥。
@@ -88,7 +138,15 @@ func (s *Server) twofaDisable(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid code")
 		return
 	}
-	s.db.Model(user).Updates(map[string]any{"totp_enabled": 0, "totp_secret_enc": ""})
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if e := tx.Model(user).Updates(map[string]any{"totp_enabled": 0, "totp_secret_enc": ""}).Error; e != nil {
+			return e
+		}
+		return identity.DeleteBackupCodes(tx, user.ID) // 关闭即清空备用码
+	}); err != nil {
+		fail(c, http.StatusInternalServerError, "disable failed")
+		return
+	}
 	s.writeAudit(c, "2fa_disable", strconv.FormatUint(user.ID, 10), "2FA disabled")
 	c.JSON(http.StatusOK, gin.H{"enabled": false})
 }
@@ -114,9 +172,22 @@ func (s *Server) twofaVerifyLogin(c *gin.Context) {
 		return
 	}
 	secret, err := s.keyring.Decrypt(user.TOTPSecretEnc)
-	if err != nil || !totp.Validate(secret, req.Code, s.now()) {
+	if err != nil {
 		fail(c, http.StatusUnauthorized, "invalid code")
 		return
+	}
+	if !totp.Validate(secret, req.Code, s.now()) {
+		// TOTP 不过，尝试备用码（原子消费，用过即焚）
+		consumed, cerr := identity.ConsumeBackupCode(s.db, uid, req.Code, s.now().Unix())
+		if cerr != nil {
+			fail(c, http.StatusInternalServerError, "verify failed")
+			return
+		}
+		if !consumed {
+			fail(c, http.StatusUnauthorized, "invalid code")
+			return
+		}
+		s.writeAudit(c, "2fa_backup_used", strconv.FormatUint(uid, 10), "logged in with a backup code")
 	}
 	s.issueSessionFor(c, user)
 }

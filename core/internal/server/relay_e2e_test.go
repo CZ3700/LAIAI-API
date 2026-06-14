@@ -1742,6 +1742,11 @@ func TestTwoFactorFlow(t *testing.T) {
 	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "2fa@example.com", "password": "longenough1"})
 	token := login["token"].(string)
 
+	// 未启用 2FA 时重置备用码 → 400（边界）
+	if w, _ := srv.do(t, "POST", "/api/me/2fa/backup-codes", token, map[string]string{"code": "123456"}); w.Code != 400 {
+		t.Fatalf("regen before enable = %d, want 400", w.Code)
+	}
+
 	// setup 拿 secret
 	_, setup := srv.do(t, "POST", "/api/me/2fa/setup", token, nil)
 	secret := setup["secret"].(string)
@@ -1757,10 +1762,16 @@ func TestTwoFactorFlow(t *testing.T) {
 	code := totp.Validate // 用包生成当前码
 	_ = code
 	curCode := genTOTP(secret)
-	w, _ = srv.do(t, "POST", "/api/me/2fa/enable", token, map[string]string{"code": curCode})
+	w, en := srv.do(t, "POST", "/api/me/2fa/enable", token, map[string]string{"code": curCode})
 	if w.Code != 200 {
 		t.Fatalf("enable = %d", w.Code)
 	}
+	// enable 返回 10 个备用码（明文仅此一次）
+	rawCodes, _ := en["backup_codes"].([]any)
+	if len(rawCodes) != 10 {
+		t.Fatalf("backup_codes = %d, want 10", len(rawCodes))
+	}
+	backup := rawCodes[0].(string)
 
 	// 重新登录 → 要求 2FA（不直接发 session）
 	_, l2 := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "2fa@example.com", "password": "longenough1"})
@@ -1775,6 +1786,46 @@ func TestTwoFactorFlow(t *testing.T) {
 	w, l3 := srv.do(t, "POST", "/api/auth/2fa", "", map[string]any{"token": twofaToken, "code": genTOTP(secret)})
 	if w.Code != 200 || l3["token"] == nil {
 		t.Fatalf("2fa verify = %d %v", w.Code, l3)
+	}
+
+	// 用备用码登录（设备丢失场景）
+	loginStage := func() string {
+		_, l := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "2fa@example.com", "password": "longenough1"})
+		return l["token"].(string)
+	}
+	w, lb := srv.do(t, "POST", "/api/auth/2fa", "", map[string]any{"token": loginStage(), "code": backup})
+	if w.Code != 200 || lb["token"] == nil {
+		t.Fatalf("backup-code login = %d %v", w.Code, lb)
+	}
+	// 同一备用码重用 → 拒绝（用过即焚）
+	if w, _ := srv.do(t, "POST", "/api/auth/2fa", "", map[string]any{"token": loginStage(), "code": backup}); w.Code == 200 {
+		t.Fatal("reused backup code must be rejected")
+	}
+	// /api/me 报告剩余 9（用掉 1 个）
+	if _, meR := srv.do(t, "GET", "/api/me", token, nil); meR["backup_codes_remaining"] != float64(9) {
+		t.Fatalf("backup_codes_remaining = %v, want 9", meR["backup_codes_remaining"])
+	}
+	// 另一个原始备用码仍可用（隔离性，非全量失效）
+	if w, _ := srv.do(t, "POST", "/api/auth/2fa", "", map[string]any{"token": loginStage(), "code": rawCodes[2].(string)}); w.Code != 200 {
+		t.Fatal("a different original backup code should still work")
+	}
+
+	// 重置备用码（验 TOTP）：旧码全失效
+	w, rg := srv.do(t, "POST", "/api/me/2fa/backup-codes", token, map[string]string{"code": genTOTP(secret)})
+	if w.Code != 200 {
+		t.Fatalf("regen backup = %d", w.Code)
+	}
+	newCodes, _ := rg["backup_codes"].([]any)
+	if len(newCodes) != 10 {
+		t.Fatalf("regen returned %d codes, want 10", len(newCodes))
+	}
+	// 旧的另一个备用码（rawCodes[1]）重置后失效
+	if w, _ := srv.do(t, "POST", "/api/auth/2fa", "", map[string]any{"token": loginStage(), "code": rawCodes[1].(string)}); w.Code == 200 {
+		t.Fatal("old backup code after regen must be rejected")
+	}
+	// 新码可用
+	if w, _ := srv.do(t, "POST", "/api/auth/2fa", "", map[string]any{"token": loginStage(), "code": newCodes[0].(string)}); w.Code != 200 {
+		t.Fatal("new backup code should work")
 	}
 }
 
