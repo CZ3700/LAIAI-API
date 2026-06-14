@@ -27,10 +27,19 @@ func init() {
 	for _, k := range []string{
 		"github_client_id", "github_client_secret",
 		"google_client_id", "google_client_secret",
+		"discord_client_id", "discord_client_secret",
+		// OIDC 通用（企业 SSO）：端点由运营按各家 Discovery 填
+		"oidc_client_id", "oidc_client_secret",
+		"oidc_auth_url", "oidc_token_url", "oidc_userinfo_url", "oidc_scope",
+		// Telegram Login Widget（HMAC，非 OAuth2 跳转流；无 email，用合成身份）
+		"telegram_bot_token", "telegram_bot_username",
 	} {
 		settingDefaults[k] = ""
 	}
 }
+
+// oauthProviderNames：所有可能的 OAuth2 跳转类提供方（Telegram 走专用 widget 流，不在此列）。
+var oauthProviderNames = []string{"github", "google", "discord", "oidc"}
 
 type oauthProvider struct {
 	authURL, tokenURL, userURL, scope string
@@ -65,19 +74,56 @@ func (s *Server) oauthProvider(name string) (*oauthProvider, bool) {
 			clientID:     id,
 			clientSecret: s.getSetting("google_client_secret"),
 		}, true
+	case "discord":
+		id := s.getSetting("discord_client_id")
+		if id == "" {
+			return nil, false
+		}
+		return &oauthProvider{
+			authURL:      "https://discord.com/oauth2/authorize",
+			tokenURL:     "https://discord.com/api/oauth2/token",
+			userURL:      "https://discord.com/api/users/@me",
+			scope:        "identify email",
+			clientID:     id,
+			clientSecret: s.getSetting("discord_client_secret"),
+		}, true
+	case "oidc":
+		// 通用 OIDC：端点全部来自运营设置（各家 Discovery 不同）
+		id := s.getSetting("oidc_client_id")
+		auth := s.getSetting("oidc_auth_url")
+		if id == "" || auth == "" || s.getSetting("oidc_token_url") == "" || s.getSetting("oidc_userinfo_url") == "" {
+			return nil, false
+		}
+		scope := s.getSetting("oidc_scope")
+		if scope == "" {
+			scope = "openid email"
+		}
+		return &oauthProvider{
+			authURL:      auth,
+			tokenURL:     s.getSetting("oidc_token_url"),
+			userURL:      s.getSetting("oidc_userinfo_url"),
+			scope:        scope,
+			clientID:     id,
+			clientSecret: s.getSetting("oidc_client_secret"),
+		}, true
 	}
 	return nil, false
 }
 
 // getOAuthProviders：GET /api/auth/oauth —— 已配置的 OAuth 提供方（前端登录页显示按钮）。
+// Telegram 走专用 widget 流：配置齐全时回 telegram_bot 供前端渲染登录组件。
 func (s *Server) getOAuthProviders(c *gin.Context) {
-	var providers []string
-	for _, p := range []string{"github", "google"} {
+	providers := []string{}
+	for _, p := range oauthProviderNames {
 		if _, ok := s.oauthProvider(p); ok {
 			providers = append(providers, p)
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"providers": providers})
+	out := gin.H{"providers": providers}
+	if bot := s.getSetting("telegram_bot_username"); bot != "" && s.getSetting("telegram_bot_token") != "" {
+		out["telegram_bot"] = bot
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 // oauthStart：GET /api/auth/oauth/:provider/start —— 重定向到 provider 授权页（带防 CSRF state）。
@@ -94,9 +140,7 @@ func (s *Server) oauthStart(c *gin.Context) {
 	q.Set("redirect_uri", redirect)
 	q.Set("scope", p.scope)
 	q.Set("state", s.makeOAuthState(name))
-	if name == "google" {
-		q.Set("response_type", "code")
-	}
+	q.Set("response_type", "code") // 所有标准 OAuth2 提供方通用（github 也接受）
 	c.Redirect(http.StatusFound, p.authURL+"?"+q.Encode())
 }
 
@@ -129,6 +173,12 @@ func (s *Server) oauthCallback(c *gin.Context) {
 	if err != nil || email == "" {
 		s.Log().Warn("oauth email fetch failed", "provider", name, "err", err)
 		fail(c, http.StatusBadGateway, "could not get email from "+name)
+		return
+	}
+	// 第三方 IdP 不得返回内部保留合成域（防冒充 Telegram 合成身份）
+	if isReservedSyntheticEmail(email) {
+		s.Log().Warn("oauth returned reserved synthetic email", "provider", name)
+		fail(c, http.StatusBadRequest, "reserved email domain")
 		return
 	}
 
@@ -206,7 +256,8 @@ func (s *Server) oauthFetchEmail(ctx context.Context, p *oauthProvider, name, to
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if name == "github" {
+	switch name {
+	case "github":
 		var emails []struct {
 			Email    string `json:"email"`
 			Primary  bool   `json:"primary"`
@@ -226,19 +277,58 @@ func (s *Server) oauthFetchEmail(ctx context.Context, p *oauthProvider, name, to
 			}
 		}
 		return "", fmt.Errorf("no verified email")
+	case "discord":
+		var info struct {
+			Email    string `json:"email"`
+			Verified bool   `json:"verified"`
+		}
+		if err := json.Unmarshal(body, &info); err != nil {
+			return "", err
+		}
+		if info.Email == "" {
+			return "", fmt.Errorf("no email (grant the email scope)")
+		}
+		if !info.Verified {
+			return "", fmt.Errorf("email not verified")
+		}
+		return info.Email, nil
+	case "oidc":
+		// 安全：email 必有 + email_verified 必须**显式为真**（防恶意/未验证 IdP 冒充他人 email 接管账号）。
+		// 缺省/非真一律拒——OIDC 规范要求该 claim 存在；安全优先于兼容。兼容 bool 与字符串("true"/"1")。
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err != nil {
+			return "", err
+		}
+		email, _ := m["email"].(string)
+		if email == "" {
+			return "", fmt.Errorf("no email in oidc userinfo")
+		}
+		verified := false
+		switch v := m["email_verified"].(type) {
+		case bool:
+			verified = v
+		case string:
+			verified = v == "true" || v == "1"
+		case float64:
+			verified = v == 1 // 部分 IdP 把 email_verified 发成 JSON 数字 1/0
+		}
+		if !verified {
+			return "", fmt.Errorf("email not verified (email_verified must be true)")
+		}
+		return email, nil
+	default: // google
+		var info struct {
+			Email         string `json:"email"`
+			VerifiedEmail bool   `json:"verified_email"`
+		}
+		if err := json.Unmarshal(body, &info); err != nil {
+			return "", err
+		}
+		if !info.VerifiedEmail {
+			return "", fmt.Errorf("email not verified")
+		}
+		return info.Email, nil
 	}
-	// google userinfo
-	var info struct {
-		Email         string `json:"email"`
-		VerifiedEmail bool   `json:"verified_email"`
-	}
-	if err := json.Unmarshal(body, &info); err != nil {
-		return "", err
-	}
-	if !info.VerifiedEmail {
-		return "", fmt.Errorf("email not verified")
-	}
-	return info.Email, nil
 }
 
 // makeOAuthState / verifyOAuthState：HMAC 签的 10 分钟短期 state（防 CSRF）。

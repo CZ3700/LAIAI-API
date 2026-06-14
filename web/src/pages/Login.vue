@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuth } from '@/stores/auth'
@@ -12,10 +12,17 @@ const router = useRouter()
 const route = useRoute()
 
 const oauthProviders = ref<string[]>([])
+const telegramBot = ref('')
+const telegramHost = ref<HTMLElement | null>(null)
 onMounted(async () => {
   try {
-    const r = await api<{ providers: string[] }>('GET', '/api/auth/oauth', undefined, { auth: false })
+    const r = await api<{ providers: string[]; telegram_bot?: string }>('GET', '/api/auth/oauth', undefined, { auth: false })
     oauthProviders.value = r.providers ?? []
+    telegramBot.value = r.telegram_bot ?? ''
+    if (telegramBot.value) {
+      await nextTick() // 等 v-if 的容器 div 渲染出来，否则 telegramHost 仍为 null，组件挂不上
+      mountTelegramWidget()
+    }
   } catch {
     // 无 OAuth 不影响密码登录
   }
@@ -24,7 +31,36 @@ function oauthLogin(provider: string) {
   window.location.href = `/api/auth/oauth/${provider}/start`
 }
 function providerLabel(p: string): string {
-  return p === 'github' ? 'GitHub' : p === 'google' ? 'Google' : p
+  const m: Record<string, string> = { github: 'GitHub', google: 'Google', discord: 'Discord', oidc: 'SSO' }
+  return m[p] ?? p
+}
+
+// —— Telegram 登录组件（widget，非跳转流）——
+// Telegram JS 组件授权后回调 window.onTelegramAuth(user)，把签名数据 POST 给后端验 HMAC。
+async function onTelegramAuth(u: Record<string, unknown>) {
+  try {
+    const r = await api<{ token: string; expires_at: number; org_id: number }>(
+      'POST', '/api/auth/telegram', u, { auth: false },
+    )
+    auth.setSession({ token: r.token, expiresAt: r.expires_at, orgId: r.org_id, email: '' })
+    await router.replace((route.query.to as string) || '/app')
+  } catch (e) {
+    error.value = errorMessage(e, t('common.error'))
+  }
+}
+function mountTelegramWidget() {
+  ;(window as unknown as { onTelegramAuth: typeof onTelegramAuth }).onTelegramAuth = onTelegramAuth
+  const el = telegramHost.value
+  if (!el) return
+  el.innerHTML = ''
+  const s = document.createElement('script')
+  s.async = true
+  s.src = 'https://telegram.org/js/telegram-widget.js?22'
+  s.setAttribute('data-telegram-login', telegramBot.value)
+  s.setAttribute('data-size', 'large')
+  s.setAttribute('data-onauth', 'onTelegramAuth(user)')
+  s.setAttribute('data-request-access', 'write')
+  el.appendChild(s)
 }
 
 const email = ref('')
@@ -106,7 +142,7 @@ async function submit2fa() {
       <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
       <button class="btn-primary w-full" :disabled="busy">{{ t('auth.signin') }}</button>
 
-      <template v-if="oauthProviders.length">
+      <template v-if="oauthProviders.length || telegramBot">
         <div class="flex items-center gap-3 text-xs text-muted">
           <span class="h-px flex-1 bg-line"></span>{{ t('auth.or') }}<span class="h-px flex-1 bg-line"></span>
         </div>
@@ -119,6 +155,8 @@ async function submit2fa() {
         >
           {{ t('auth.continueWith', { provider: providerLabel(p) }) }}
         </button>
+        <!-- Telegram 登录组件（脚本动态注入；无 email，用合成身份） -->
+        <div v-if="telegramBot" ref="telegramHost" class="flex justify-center"></div>
       </template>
 
         <p class="text-sm text-muted text-center">

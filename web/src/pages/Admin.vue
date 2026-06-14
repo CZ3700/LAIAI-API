@@ -2116,6 +2116,46 @@ onMounted(async () => {
                 <label class="label" for="set-gg-sec">Google Client Secret</label>
                 <input id="set-gg-sec" v-model="settings.google_client_secret" class="input font-mono text-xs" type="password" autocomplete="off" />
               </div>
+              <div>
+                <label class="label" for="set-dc-id">Discord Client ID</label>
+                <input id="set-dc-id" v-model="settings.discord_client_id" class="input font-mono text-xs" />
+              </div>
+              <div>
+                <label class="label" for="set-dc-sec">Discord Client Secret</label>
+                <input id="set-dc-sec" v-model="settings.discord_client_secret" class="input font-mono text-xs" type="password" autocomplete="off" />
+              </div>
+              <div>
+                <label class="label" for="set-oidc-id">OIDC Client ID</label>
+                <input id="set-oidc-id" v-model="settings.oidc_client_id" class="input font-mono text-xs" />
+              </div>
+              <div>
+                <label class="label" for="set-oidc-sec">OIDC Client Secret</label>
+                <input id="set-oidc-sec" v-model="settings.oidc_client_secret" class="input font-mono text-xs" type="password" autocomplete="off" />
+              </div>
+              <div>
+                <label class="label" for="set-oidc-auth">OIDC Authorize URL</label>
+                <input id="set-oidc-auth" v-model="settings.oidc_auth_url" class="input font-mono text-xs" placeholder="https://idp/authorize" />
+              </div>
+              <div>
+                <label class="label" for="set-oidc-token">OIDC Token URL</label>
+                <input id="set-oidc-token" v-model="settings.oidc_token_url" class="input font-mono text-xs" placeholder="https://idp/token" />
+              </div>
+              <div>
+                <label class="label" for="set-oidc-userinfo">OIDC Userinfo URL</label>
+                <input id="set-oidc-userinfo" v-model="settings.oidc_userinfo_url" class="input font-mono text-xs" placeholder="https://idp/userinfo" />
+              </div>
+              <div>
+                <label class="label" for="set-oidc-scope">OIDC Scope</label>
+                <input id="set-oidc-scope" v-model="settings.oidc_scope" class="input font-mono text-xs" placeholder="openid email" />
+              </div>
+              <div>
+                <label class="label" for="set-tg-token">Telegram Bot Token</label>
+                <input id="set-tg-token" v-model="settings.telegram_bot_token" class="input font-mono text-xs" type="password" autocomplete="off" />
+              </div>
+              <div>
+                <label class="label" for="set-tg-user">Telegram Bot Username</label>
+                <input id="set-tg-user" v-model="settings.telegram_bot_username" class="input font-mono text-xs" placeholder="mybot" />
+              </div>
             </div>
             <p class="mt-2 text-xs text-muted">{{ t('admin.setOAuthHint') }}</p>
           </div>

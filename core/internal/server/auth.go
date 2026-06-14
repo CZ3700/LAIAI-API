@@ -37,6 +37,11 @@ func (s *Server) register(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "email and password are required")
 		return
 	}
+	// 保留合成域不可被公开注册占用（防 Telegram 账号预劫持）
+	if isReservedSyntheticEmail(req.Email) {
+		fail(c, http.StatusBadRequest, "this email domain is reserved")
+		return
+	}
 	// 邮箱验证（0014）：开启时必须先通过验证码（堵同邮箱薅羊毛）
 	if s.getBoolSetting("email_verification_enabled") {
 		canonical, err := identity.CanonicalizeEmail(req.Email)
