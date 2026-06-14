@@ -99,7 +99,8 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	ch, err := relay.PickChannelForAttempt(s.DB, in.Model, 0, nil)
+	// 健康分传 nil：异步任务（视频）独立于 relay 的内存健康态，沿用纯权重选路。
+	ch, err := relay.PickChannelForAttempt(s.DB, in.Model, 0, nil, nil)
 	if err != nil {
 		return nil, err
 	}

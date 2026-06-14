@@ -49,18 +49,18 @@ func TestPickPriorityTiers(t *testing.T) {
 
 	// attempt 0 → 高优先级层
 	for i := 0; i < 10; i++ {
-		ch, err := PickChannelForAttempt(db, "m1", 0, nil)
+		ch, err := PickChannelForAttempt(db, "m1", 0, nil, nil)
 		if err != nil || ch.ID != high {
 			t.Fatalf("attempt 0 picked %v (err %v), want high tier", ch, err)
 		}
 	}
 	// attempt 1 → 次层
-	ch, err := PickChannelForAttempt(db, "m1", 1, nil)
+	ch, err := PickChannelForAttempt(db, "m1", 1, nil, nil)
 	if err != nil || ch.ID != low {
 		t.Fatalf("attempt 1 = %v, want low tier", ch)
 	}
 	// attempt 99 → 钳到最低层（保证重试永远有渠道）
-	ch, err = PickChannelForAttempt(db, "m1", 99, nil)
+	ch, err = PickChannelForAttempt(db, "m1", 99, nil, nil)
 	if err != nil || ch.ID != low {
 		t.Fatalf("attempt 99 = %v, want clamped to last tier", ch)
 	}
@@ -76,17 +76,17 @@ func TestPickExclusionAndModelFilter(t *testing.T) {
 
 	// 排除 a 后只剩 b
 	for i := 0; i < 10; i++ {
-		ch, err := PickChannelForAttempt(db, "m1", 0, map[uint64]bool{a: true})
+		ch, err := PickChannelForAttempt(db, "m1", 0, map[uint64]bool{a: true}, nil)
 		if err != nil || ch.ID != b {
 			t.Fatalf("with exclusion picked %v, want b", ch)
 		}
 	}
 	// 全部排除 → ErrNoChannel
-	if _, err := PickChannelForAttempt(db, "m1", 0, map[uint64]bool{a: true, b: true}); err != ErrNoChannel {
+	if _, err := PickChannelForAttempt(db, "m1", 0, map[uint64]bool{a: true, b: true}, nil); err != ErrNoChannel {
 		t.Fatalf("want ErrNoChannel, got %v", err)
 	}
 	// 无人服务的模型
-	if _, err := PickChannelForAttempt(db, "m999", 0, nil); err != ErrNoChannel {
+	if _, err := PickChannelForAttempt(db, "m999", 0, nil, nil); err != ErrNoChannel {
 		t.Fatalf("unknown model: want ErrNoChannel, got %v", err)
 	}
 }
@@ -97,7 +97,7 @@ func TestWeightedPickZeroWeightSemantics(t *testing.T) {
 	b := &Channel{ID: 2, Weight: 0}
 	seen := map[uint64]int{}
 	for i := 0; i < 200; i++ {
-		seen[weightedPick([]*Channel{a, b}).ID]++
+		seen[weightedPick([]*Channel{a, b}, nil).ID]++
 	}
 	if seen[1] == 0 || seen[2] == 0 {
 		t.Fatalf("zero-weight channels not equally selectable: %v", seen)
@@ -107,7 +107,7 @@ func TestWeightedPickZeroWeightSemantics(t *testing.T) {
 	d := &Channel{ID: 4, Weight: 0}
 	seen = map[uint64]int{}
 	for i := 0; i < 500; i++ {
-		seen[weightedPick([]*Channel{c, d}).ID]++
+		seen[weightedPick([]*Channel{c, d}, nil).ID]++
 	}
 	if seen[4] == 0 {
 		t.Fatalf("zero-weight starved in mixed tier: %v", seen)

@@ -46,6 +46,12 @@ type Relay struct {
 	failMu     sync.Mutex
 	failCounts map[uint64]int
 
+	// 渠道健康分（内存态 EWMA，M2 收尾）：每次 attempt 终态喂 1.0/0.0，α=0.3。
+	// 作层内选路权重乘子（见 types.weightedPick），不影响 auto-disable 与计费。
+	// 重启乐观置满分（未知=1.0），与 failCounts 同保守哲学。
+	healthMu sync.Mutex
+	health   map[uint64]float64
+
 	// 渠道级代理客户端缓存（按 proxy URL 复用，避免每请求新建 Transport）。
 	proxyMu      sync.Mutex
 	proxyClients map[string]*http.Client
@@ -85,7 +91,47 @@ func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Lo
 		Rec:        rec,
 		Now:        time.Now,
 		failCounts: map[uint64]int{},
+		health:     map[uint64]float64{},
 	}
+}
+
+// 健康分 EWMA 参数（M2 收尾）：α 越大越灵敏；floor 保证不健康渠道不被硬排除。
+const (
+	healthEWMAAlpha = 0.3
+	healthFloor     = 0.1
+)
+
+// observe：把一次 attempt 结果喂进渠道健康 EWMA（成功 1.0 / 失败 0.0）。
+// 内存态、并发安全；map 懒初始化（兼容不经 New 构造的测试实例）。
+func (r *Relay) observe(channelID uint64, ok bool) {
+	sample := 0.0
+	if ok {
+		sample = 1.0
+	}
+	r.healthMu.Lock()
+	if r.health == nil {
+		r.health = map[uint64]float64{}
+	}
+	h, seen := r.health[channelID]
+	if !seen {
+		h = 1.0 // 乐观默认：新/未知渠道满分，先给正常流量再凭实绩调整
+	}
+	r.health[channelID] = healthEWMAAlpha*sample + (1-healthEWMAAlpha)*h
+	r.healthMu.Unlock()
+}
+
+// healthFactor：渠道健康因子∈[floor,1]，作 weightedPick 层内权重乘子。未知=1.0。
+func (r *Relay) healthFactor(channelID uint64) float64 {
+	r.healthMu.Lock()
+	h, seen := r.health[channelID]
+	r.healthMu.Unlock()
+	if !seen {
+		return 1.0
+	}
+	if h < healthFloor {
+		return healthFloor
+	}
+	return h
 }
 
 // autoDisablePolicy：从 ext_settings 读取自动禁用策略（开关 + 阈值）。
@@ -308,7 +354,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	var lastBody []byte
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		var pickErr error
-		ch, pickErr = PickChannelForAttempt(rdb, model, attempt, exclude)
+		ch, pickErr = PickChannelForAttempt(rdb, model, attempt, exclude, r.healthFactor)
 		if pickErr != nil {
 			break // 无渠道可用：落到循环后的失败处理
 		}
@@ -335,6 +381,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		resp, err = r.clientFor(ch).Do(upReq)
 		if err != nil {
 			r.Log.Warn("upstream unreachable", "channel", ch.ID, "attempt", attempt, "err", err)
+			r.observe(ch.ID, false) // 健康分：网络不可达 = 渠道可靠性失败
 			exclude[ch.ID] = true
 			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
 			resp = nil
@@ -347,6 +394,9 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		resp.Body.Close()
 		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
+		if disp.Retryable || disp.DisableChannel {
+			r.observe(ch.ID, false) // 健康分：渠道自身可靠性失败（客户端 400 类不计）
+		}
 		// 不记原始上游错误体（审查 M-5）：可能回显请求片段/org 标识/prompt 碎片，
 		// 违反"操作日志禁 payload/PII"红线。只记分类后的 reason。
 		r.Log.Warn("upstream error", "channel", ch.ID, "attempt", attempt, "status", resp.StatusCode,
@@ -463,6 +513,7 @@ func (r *Relay) disableChannel(channelID uint64, reason string) {
 // enableChannelIfDisabled：成功请求后清零失败计数；若渠道处于 auto-disabled 则自动重启用（知识库 §2.2）。
 func (r *Relay) enableChannelIfDisabled(ch *Channel) {
 	r.resetFailures(ch.ID)
+	r.observe(ch.ID, true) // 健康分：一次成功（三类 relay 共用此成功钩子）
 	if ch.Status != 2 {
 		return
 	}

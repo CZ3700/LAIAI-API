@@ -130,8 +130,10 @@ func (p *ModelPrice) Cost(inputTokens, cachedTokens, outputTokens int64) decimal
 //   - 层内加权随机；**零权重语义**：weight=0 不是"别用我"，全零层均分，混合时低权重平滑
 //   - exclude：本次请求已失败的渠道（重试时排除）
 //
-// M2 后续：abilities 物化索引（渠道规模化后）、健康分（Diagnostics 探针喂）。
-func PickChannelForAttempt(db *gorm.DB, model string, attempt int, exclude map[uint64]bool) (*Channel, error) {
+// health(channelID)∈[0.1,1] 是层内权重乘子（M2 收尾）；nil = 不启用健康分（全 1.0），
+// 保持与历史行为完全一致（测试/非 relay 调用方传 nil）。
+// M2 后续：abilities 物化索引（渠道规模化后）。
+func PickChannelForAttempt(db *gorm.DB, model string, attempt int, exclude map[uint64]bool, health func(uint64) float64) (*Channel, error) {
 	var channels []Channel
 	if err := db.Where("status = 1").Order("priority DESC, id").Find(&channels).Error; err != nil {
 		return nil, err
@@ -157,30 +159,42 @@ func PickChannelForAttempt(db *gorm.DB, model string, attempt int, exclude map[u
 	if tier >= len(tiers) {
 		tier = len(tiers) - 1 // 钳到最低层
 	}
-	return weightedPick(tiers[tier]), nil
+	return weightedPick(tiers[tier], health), nil
 }
 
-// weightedPick 层内加权随机（零权重均分 + 低均值平滑，知识库 §3 烧出来的语义）。
-func weightedPick(tier []*Channel) *Channel {
+// weightedPick 层内加权随机：基础权重（零权重均分 + 低均值平滑，知识库 §3 烧出来的语义）
+// 再乘以健康因子 health(id)∈[0.1,1]（nil=全 1.0）——健康渠道分到更多流量，但 floor>0
+// 保证不健康渠道永不被硬排除（保留恢复机会；硬下线是 auto-disable 的职责）。
+func weightedPick(tier []*Channel, health func(uint64) float64) *Channel {
 	if len(tier) == 1 {
-		return tier[0]
+		return tier[0] // lone 渠道：无可重分配对象，健康分不参与
 	}
 	sum := 0
 	for _, ch := range tier {
 		sum += ch.Weight
 	}
 	smoothing := 0
-	if sum == 0 {
-		smoothing = 100 // 全零：均分
-		sum = len(tier) * 100
-	} else if sum/len(tier) < 10 {
-		smoothing = 100 // 低均值：平滑，防低权重渠道几乎永不被选
-		sum += len(tier) * 100
+	if sum == 0 || sum/len(tier) < 10 {
+		smoothing = 100 // 全零均分 / 低均值平滑：防低权重渠道几乎永不被选
 	}
-	r := rand.IntN(sum)
-	for _, ch := range tier {
-		r -= ch.Weight + smoothing
-		if r < 0 {
+	// 有效权重 = (weight+smoothing) × 健康因子；float 累加（健康分是乘子）。
+	weights := make([]float64, len(tier))
+	var total float64
+	for i, ch := range tier {
+		h := 1.0
+		if health != nil {
+			h = health(ch.ID)
+		}
+		weights[i] = float64(ch.Weight+smoothing) * h
+		total += weights[i]
+	}
+	if total <= 0 {
+		return tier[len(tier)-1] // floor>0 下理论不可达；兜底防除零
+	}
+	pick := rand.Float64() * total
+	for i, ch := range tier {
+		pick -= weights[i]
+		if pick < 0 {
 			return ch
 		}
 	}

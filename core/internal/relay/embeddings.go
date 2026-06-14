@@ -182,7 +182,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 	var lastBody []byte
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		var pickErr error
-		ch, pickErr = PickChannelForAttempt(rdb, req.Model, attempt, exclude)
+		ch, pickErr = PickChannelForAttempt(rdb, req.Model, attempt, exclude, r.healthFactor)
 		if pickErr != nil {
 			break
 		}
@@ -211,6 +211,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 		resp, err = r.clientFor(ch).Do(upReq)
 		if err != nil {
 			r.Log.Warn("embeddings upstream unreachable", "channel", ch.ID, "err", err)
+			r.observe(ch.ID, false) // 健康分：网络不可达
 			exclude[ch.ID] = true
 			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
 			resp = nil
@@ -223,6 +224,9 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		resp.Body.Close()
 		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
+		if disp.Retryable || disp.DisableChannel {
+			r.observe(ch.ID, false) // 健康分：渠道自身可靠性失败
+		}
 		r.Log.Warn("embeddings upstream error", "channel", ch.ID, "status", resp.StatusCode,
 			"disable", disp.DisableChannel, "retryable", disp.Retryable)
 		if disp.DisableChannel {
