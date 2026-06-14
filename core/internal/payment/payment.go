@@ -35,6 +35,22 @@ type CallbackResult struct {
 	Success  bool
 }
 
+// QueryRequest：主动对账查询入参。OrderNo=我方单号（epay 用 out_trade_no 查）；
+// ProviderRef=网关侧引用（Stripe Checkout Session id，按会话查）。引擎按各自需要取用。
+type QueryRequest struct {
+	OrderNo     string
+	ProviderRef string
+}
+
+// QueryResult：主动查询到的支付状态（reconcile 兜底 callback 漏发的依据）。
+type QueryResult struct {
+	Found    bool            // 网关侧能否查到此单（false=查不到/不存在，区别于查到但未付）
+	Paid     bool            // 是否已支付成功
+	TradeNo  string          // 网关交易号
+	Amount   decimal.Decimal // 实付金额（网关币种口径，与 callback 同）
+	Currency string
+}
+
 // Engine：一个支付引擎（stripe/epay/...）。
 type Engine interface {
 	Name() string
@@ -44,4 +60,6 @@ type Engine interface {
 	VerifyCallback(rawBody []byte, headers, query map[string]string) (*CallbackResult, error)
 	// AckBody 返回应回给上游的确认响应体（如 epay 要求回 "success"）。
 	AckBody() string
+	// QueryOrder 主动查询订单支付状态（红线 #5：对账兜底 callback 漏发）。
+	QueryOrder(ctx context.Context, req QueryRequest) (*QueryResult, error)
 }

@@ -99,22 +99,44 @@ func main() {
 		}()
 	}
 
+	handler, apiSrv := server.NewWithServer(db, server.Options{
+		AuthSecret:  cfg.AuthSecret,
+		AdminToken:  cfg.AdminToken,
+		Keyring:     cfg.Keyring,
+		Recorder:    rec,
+		TaskService: taskSvc,
+		Mailer: mailer.New(mailer.Config{
+			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
+			Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
+		}, log.With("component", "mailer")),
+		Log: log,
+	})
 	srv := &http.Server{
-		Addr: cfg.ListenAddr,
-		Handler: server.New(db, server.Options{
-			AuthSecret:  cfg.AuthSecret,
-			AdminToken:  cfg.AdminToken,
-			Keyring:     cfg.Keyring,
-			Recorder:    rec,
-			TaskService: taskSvc,
-			Mailer: mailer.New(mailer.Config{
-				Host: cfg.SMTPHost, Port: cfg.SMTPPort,
-				Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
-			}, log.With("component", "mailer")),
-			Log: log,
-		}),
+		Addr:              cfg.ListenAddr,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	// 充值对账 job（M4，金融级双保险）：每 5 分钟主动 Query 兜底 callback/webhook 漏发。
+	// 只对账建单超过 2 分钟的 pending 单（callback 通常秒级到，给足正常支付窗口）。
+	reconcileCtx, reconcileCancel := context.WithCancel(context.Background())
+	defer reconcileCancel()
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if checked, credited, err := apiSrv.ReconcileTopups(reconcileCtx, 2*time.Minute, 200); err != nil {
+					log.Error("topup reconcile failed", "err", err)
+				} else if credited > 0 {
+					log.Warn("topup reconcile credited orphans", "checked", checked, "credited", credited)
+				}
+			case <-reconcileCtx.Done():
+				return
+			}
+		}
+	}()
 
 	go func() {
 		log.Info("listening", "addr", cfg.ListenAddr)

@@ -1,11 +1,13 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
@@ -36,6 +38,7 @@ type TopupOrder struct {
 	PayCurrency string          `gorm:"column:pay_currency" json:"pay_currency"`
 	Status      int8            `gorm:"column:status" json:"status"`
 	TradeNo     string          `gorm:"column:trade_no" json:"trade_no"`
+	ProviderRef string          `gorm:"column:provider_ref" json:"-"` // 网关会话引用（Stripe session id），对账用
 	CreatedAt   int64           `gorm:"column:created_at" json:"created_at"`
 	PaidAt      int64           `gorm:"column:paid_at" json:"paid_at"`
 }
@@ -189,6 +192,10 @@ func (s *Server) createTopup(c *gin.Context) {
 		fail(c, http.StatusBadGateway, "payment gateway error: "+err.Error())
 		return
 	}
+	// 持久化网关会话引用（Stripe session id），供 reconcile job 主动对账
+	if result.ProviderRef != "" {
+		s.db.Model(order).Update("provider_ref", result.ProviderRef)
+	}
 	c.JSON(http.StatusOK, gin.H{"order_no": orderNo, "pay_url": result.PayURL})
 }
 
@@ -225,27 +232,46 @@ func (s *Server) paymentCallback(c *gin.Context) {
 		return
 	}
 
+	already, err := s.creditPaidOrder(provider, res.OrderNo, res.TradeNo, res.Amount)
+	if err != nil {
+		s.Log().Error("payment callback credit failed", "provider", provider, "order", res.OrderNo, "err", err)
+		c.String(http.StatusInternalServerError, "credit failed")
+		return
+	}
+	if !already { // 首次入金才返佣 + 审计；重复 callback 静默 ack（返佣本身也幂等）
+		s.payAffiliateRebate(res.OrderNo) // 邀请返佣（0016，尽力而为，失败不影响入金）
+		s.writeAudit(c, "topup_paid", res.OrderNo, "topup credited via "+provider)
+	}
+	c.String(http.StatusOK, engine.AckBody())
+}
+
+// creditPaidOrder：把一笔已确认支付的订单入账——**callback 与 reconcile 共用的唯一资金路径**。
+// 红线集中：行锁取订单 → provider 匹配（防跨网关）→ 幂等(已 paid→already=true) →
+//   终态保护(failed 不翻转；接受 pending|expired) → 金额校验 → ledger 入金(幂等键 topup:order)。
+// paidAmount = 网关实付（callback 的 res.Amount 或 query 的 QueryResult.Amount），口径一致。
+func (s *Server) creditPaidOrder(provider, orderNo, tradeNo string, paidAmount decimal.Decimal) (already bool, err error) {
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		var order TopupOrder
 		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("order_no = ?", res.OrderNo).First(&order).Error; e != nil {
-			return fmt.Errorf("order not found: %s", res.OrderNo)
+			Where("order_no = ?", orderNo).First(&order).Error; e != nil {
+			return fmt.Errorf("order not found: %s", orderNo)
 		}
-		if order.Provider != provider { // 防跨网关回调攻击
-			s.Log().Error("SECURITY: callback provider mismatch", "order", res.OrderNo,
-				"order_provider", order.Provider, "callback_provider", provider)
+		if order.Provider != provider { // 防跨网关入账攻击
+			s.Log().Error("SECURITY: credit provider mismatch", "order", orderNo,
+				"order_provider", order.Provider, "credit_provider", provider)
 			return fmt.Errorf("provider mismatch")
 		}
-		if order.Status == topupPaid { // 幂等：已入金，重复 callback 直接成功
+		if order.Status == topupPaid { // 幂等：已入金
+			already = true
 			return nil
 		}
-		if order.Status == topupFailed { // 终态保护：失败订单不被晚到 callback 翻转
+		if order.Status == topupFailed { // 终态保护：失败订单不被翻转（pending|expired 仍可入金）
 			return fmt.Errorf("order in terminal failed state")
 		}
 		// 金额校验：实付不得少于订单应付（多付容忍）
-		if res.Amount.LessThan(order.PayAmount) {
-			s.Log().Error("SECURITY: callback amount too low", "order", res.OrderNo,
-				"expected", order.PayAmount, "paid", res.Amount)
+		if paidAmount.LessThan(order.PayAmount) {
+			s.Log().Error("SECURITY: credit amount too low", "order", orderNo,
+				"expected", order.PayAmount, "paid", paidAmount)
 			return fmt.Errorf("amount too low")
 		}
 		// 入金：按订单的 amount_usd 入账（实付币种只是支付通道，入账永远 USD）
@@ -264,17 +290,52 @@ func (s *Server) paymentCallback(c *gin.Context) {
 			return e
 		}
 		return tx.Model(&order).Updates(map[string]any{
-			"status": topupPaid, "trade_no": res.TradeNo, "paid_at": s.now().Unix(),
+			"status": topupPaid, "trade_no": tradeNo, "paid_at": s.now().Unix(),
 		}).Error
 	})
-	if err != nil {
-		s.Log().Error("payment callback credit failed", "provider", provider, "order", res.OrderNo, "err", err)
-		c.String(http.StatusInternalServerError, "credit failed")
-		return
+	return already, err
+}
+
+// ReconcileTopups：主动对账兜底 callback/webhook 漏发（红线 #5；金融级双保险）。
+// 扫描 pending 且建单超过 minAge 的订单，对每单 engine.QueryOrder；网关侧已支付则走
+// 统一入账路径 creditPaidOrder（幂等，与 callback 同一资金路径）。返回 (checked, credited)。
+//   - minAge 防误判尚在支付中的新单（callback 通常秒级到，对账是分钟级兜底）
+//   - 只扫 pending：paid 已入账、failed 终态、expired 单独清理，均不重复查
+//   - 单个引擎/订单失败不阻塞其余（warn 后 continue），整轮尽力而为
+func (s *Server) ReconcileTopups(ctx context.Context, minAge time.Duration, limit int) (checked, credited int, err error) {
+	cutoff := s.now().Add(-minAge).Unix()
+	var orders []TopupOrder
+	if e := s.db.WithContext(ctx).Where("status = ? AND created_at < ?", topupPending, cutoff).
+		Order("id").Limit(limit).Find(&orders).Error; e != nil {
+		return 0, 0, e
 	}
-	s.payAffiliateRebate(res.OrderNo) // 邀请返佣（0016，尽力而为，失败不影响入金）
-	s.writeAudit(c, "topup_paid", res.OrderNo, "topup credited via "+provider)
-	c.String(http.StatusOK, engine.AckBody())
+	for i := range orders {
+		o := &orders[i]
+		engine := s.engineFor(o.Provider)
+		if engine == nil {
+			continue // 渠道配置已不可解析，跳过（不阻塞其他单）
+		}
+		qr, qe := engine.QueryOrder(ctx, payment.QueryRequest{OrderNo: o.OrderNo, ProviderRef: o.ProviderRef})
+		checked++
+		if qe != nil {
+			s.Log().Warn("reconcile query failed", "provider", o.Provider, "order", o.OrderNo, "err", qe)
+			continue
+		}
+		if qr == nil || !qr.Found || !qr.Paid {
+			continue // 查不到 / 未支付：留待下轮
+		}
+		already, ce := s.creditPaidOrder(o.Provider, o.OrderNo, qr.TradeNo, qr.Amount)
+		if ce != nil {
+			s.Log().Error("reconcile credit failed", "provider", o.Provider, "order", o.OrderNo, "err", ce)
+			continue
+		}
+		if !already { // 真正补回了一笔漏发 callback 的入金
+			s.payAffiliateRebate(o.OrderNo)
+			credited++
+			s.Log().Warn("reconcile credited orphan paid order", "provider", o.Provider, "order", o.OrderNo)
+		}
+	}
+	return checked, credited, nil
 }
 
 // payAffiliateRebate：充值入账后给邀请组织返佣（affiliate_rate × 充值额，settings 热更新）。

@@ -53,7 +53,14 @@ func (s *Server) Log() *slog.Logger {
 
 const controlPlaneBodyLimit = 1 << 20 // 1MB：控制面 JSON 足够（审查 M2）
 
+// New 构建 HTTP handler。后台 job（对账等）需 *Server 句柄时用 NewWithServer。
 func New(db *gorm.DB, opts Options) *gin.Engine {
+	r, _ := NewWithServer(db, opts)
+	return r
+}
+
+// NewWithServer 同 New，但额外返回 *Server，供 main.go 启动后台 job（ReconcileTopups 等）。
+func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 	log := opts.Log
 	if log == nil {
 		log = slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -184,7 +191,7 @@ func New(db *gorm.DB, opts Options) *gin.Engine {
 		r.GET("/v1/video/generations/:id", ts.HandleGet)
 	}
 
-	return r
+	return r, s
 }
 
 func (s *Server) healthz(c *gin.Context) {

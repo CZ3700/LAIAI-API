@@ -82,7 +82,8 @@ func setupServer(t *testing.T) (*gin999, *gorm.DB) {
 	if err := db.Exec(testSchema).Error; err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	return &gin999{engine: New(db, Options{AuthSecret: testSecret, AuthRateBurst: 100000, Mailer: &captureMailer{}})}, db
+	engine, srv := NewWithServer(db, Options{AuthSecret: testSecret, AuthRateBurst: 100000, Mailer: &captureMailer{}})
+	return &gin999{engine: engine, srv: srv}, db
 }
 
 // captureMailer：测试用，记录最后一封邮件正文（从中抠验证码）。
@@ -95,7 +96,10 @@ func (m *captureMailer) Send(to, subject, body string) error {
 }
 
 // 轻薄的请求辅助
-type gin999 struct{ engine http.Handler }
+type gin999 struct {
+	engine http.Handler
+	srv    *Server // 后台 job（对账等）测试用句柄
+}
 
 func (g *gin999) do(t *testing.T, method, path, token string, body any) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()

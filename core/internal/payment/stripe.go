@@ -23,9 +23,17 @@ type Stripe struct {
 	SecretKey     string // sk_live_... / sk_test_...
 	WebhookSecret string // whsec_...
 	Client        *http.Client
+	APIBase       string // 默认 https://api.stripe.com；测试可注入 httptest
 }
 
 func (s *Stripe) Name() string { return "stripe" }
+
+func (s *Stripe) apiBase() string {
+	if s.APIBase != "" {
+		return strings.TrimRight(s.APIBase, "/")
+	}
+	return "https://api.stripe.com"
+}
 
 func (s *Stripe) httpClient() *http.Client {
 	if s.Client != nil {
@@ -116,6 +124,49 @@ func (s *Stripe) VerifyCallback(rawBody []byte, headers, _ map[string]string) (*
 }
 
 func (s *Stripe) AckBody() string { return "" } // Stripe 只看 2xx 状态码
+
+// QueryOrder：按 Checkout Session id 查会话状态（红线 #5 对账兜底 webhook 漏发）。
+// ProviderRef = CreatePayment 返回的 session.id（createTopup 落库到 topup_orders.provider_ref）。
+// payment_status=="paid" 即已支付；404 视为查不到（Found=false）。
+func (s *Stripe) QueryOrder(ctx context.Context, req QueryRequest) (*QueryResult, error) {
+	if req.ProviderRef == "" {
+		return &QueryResult{Found: false}, nil // 无会话 id 无从查（如订单建后 CreatePayment 即失败）
+	}
+	endpoint := s.apiBase() + "/v1/checkout/sessions/" + url.PathEscape(req.ProviderRef)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.SetBasicAuth(s.SecretKey, "")
+	resp, err := s.httpClient().Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("stripe query session: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode == http.StatusNotFound {
+		return &QueryResult{Found: false}, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("stripe query http %d: %s", resp.StatusCode, excerpt(body))
+	}
+	var session struct {
+		PaymentStatus string `json:"payment_status"`
+		PaymentIntent string `json:"payment_intent"`
+		AmountTotal   int64  `json:"amount_total"`
+		Currency      string `json:"currency"`
+	}
+	if err := json.Unmarshal(body, &session); err != nil {
+		return nil, fmt.Errorf("stripe query decode: %w", err)
+	}
+	return &QueryResult{
+		Found:    true,
+		Paid:     session.PaymentStatus == "paid",
+		TradeNo:  session.PaymentIntent,
+		Amount:   decimal.NewFromInt(session.AmountTotal).Div(decimal.NewFromInt(100)), // 分→元
+		Currency: strings.ToUpper(session.Currency),
+	}, nil
+}
 
 // verifySignature：Stripe webhook 签名校验（防伪造回调入金）。
 // 头格式：t=<ts>,v1=<hex hmac>；签名串 = "<ts>.<rawBody>"，密钥 = WebhookSecret。

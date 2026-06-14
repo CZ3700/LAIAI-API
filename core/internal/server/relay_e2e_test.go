@@ -86,7 +86,8 @@ CREATE TABLE topup_orders (
     order_no TEXT NOT NULL UNIQUE, org_id INTEGER NOT NULL, user_id INTEGER,
     provider TEXT NOT NULL, amount_usd NUMERIC NOT NULL, pay_amount NUMERIC NOT NULL,
     pay_currency TEXT NOT NULL DEFAULT 'USD', status INTEGER NOT NULL DEFAULT 0,
-    trade_no TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, paid_at INTEGER NOT NULL DEFAULT 0
+    trade_no TEXT NOT NULL DEFAULT '', provider_ref TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL, paid_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE payment_channels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,14 +155,14 @@ func setupRelayServer(t *testing.T) (*gin999, *gorm.DB) {
 	}
 	rec := invocation.NewRecorder(db, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	t.Cleanup(rec.Close)
-	engine := New(db, Options{
+	engine, srv := NewWithServer(db, Options{
 		AuthSecret:    testSecret,
 		AdminToken:    []byte(testAdminToken),
 		Keyring:       testKeyring(t),
 		Recorder:      rec,
 		AuthRateBurst: 100000, // 测试不限流（功能流密集发起 auth 调用）
 	})
-	return &gin999{engine: engine}, db
+	return &gin999{engine: engine, srv: srv}, db
 }
 
 // waitInvocation 轮询等待异步落库的调用记录（flush 间隔 250ms）
@@ -815,6 +816,60 @@ func TestAdminTestChannel(t *testing.T) {
 	}
 }
 
+// 充值对账（M4 金融级双保险）：pending 订单 callback 漏发，reconcile 主动 Query 补回入账。
+func TestReconcileTopups(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	mock := &mockPayEngine{}
+	engineForTest = func(p string) payment.Engine {
+		if p == "stripe" {
+			return mock
+		}
+		return nil
+	}
+	defer func() { engineForTest = nil }()
+
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "rec@example.com", "password": "longenough1"})
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "rec@example.com", "password": "longenough1"})
+	token := login["token"].(string)
+	orgID := login["org_id"].(float64)
+	_, out := srv.do(t, "POST", "/api/payment/create", token, map[string]any{"provider": "stripe", "amount_usd": "50"})
+	orderNo := out["order_no"].(string)
+
+	// 网关侧其实已支付，但 callback 漏发（reconcile 要兜住）
+	mock.queryFound, mock.queryPaid, mock.tradeNo, mock.amount = true, true, "pi_recon", decimal.RequireFromString("50")
+
+	// 太新的单（minAge=1h，cutoff 在过去）→ 不对账，给足正常支付窗口
+	if checked, credited, err := srv.srv.ReconcileTopups(context.Background(), time.Hour, 100); err != nil || checked != 0 || credited != 0 {
+		t.Fatalf("fresh order must be skipped: checked=%d credited=%d err=%v", checked, credited, err)
+	}
+
+	// backdate 到 10 分钟前 → 进入对账窗口
+	db.Exec("UPDATE topup_orders SET created_at = ? WHERE order_no = ?", time.Now().Add(-10*time.Minute).Unix(), orderNo)
+	checked, credited, err := srv.srv.ReconcileTopups(context.Background(), 2*time.Minute, 100)
+	if err != nil || checked != 1 || credited != 1 {
+		t.Fatalf("reconcile must credit orphan: checked=%d credited=%d err=%v", checked, credited, err)
+	}
+	acc := &ledger.Account{}
+	db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("50")) {
+		t.Fatalf("balance after reconcile = %s, want 50", acc.PostedBalance)
+	}
+	var status int8
+	db.Raw("SELECT status FROM topup_orders WHERE order_no = ?", orderNo).Scan(&status)
+	if status != topupPaid {
+		t.Fatalf("order status = %d, want paid", status)
+	}
+
+	// 幂等：订单已 paid，不再被扫到，余额不翻倍
+	if checked, credited, _ = srv.srv.ReconcileTopups(context.Background(), 2*time.Minute, 100); checked != 0 || credited != 0 {
+		t.Fatalf("paid order must not be re-checked: checked=%d credited=%d", checked, credited)
+	}
+	db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("50")) {
+		t.Fatalf("balance after 2nd reconcile = %s, want 50 (idempotent)", acc.PostedBalance)
+	}
+}
+
 // 渠道健康看板（M2）：从 invocations 派生每渠道成功率/时延/最近活跃；含零流量渠道。
 func TestChannelHealth(t *testing.T) {
 	srv, db := setupRelayServer(t)
@@ -1382,11 +1437,12 @@ func TestUserManageAndAudit(t *testing.T) {
 	}
 }
 
-// mockPayEngine：测试用支付引擎，回调结果可控。
+// mockPayEngine：测试用支付引擎，回调与查询结果均可控。
 type mockPayEngine struct {
-	orderNo, tradeNo string
-	amount           decimal.Decimal
-	success          bool
+	orderNo, tradeNo      string
+	amount                decimal.Decimal
+	success               bool
+	queryFound, queryPaid bool // QueryOrder（对账）受控返回
 }
 
 func (m *mockPayEngine) Name() string { return "mock" }
@@ -1397,6 +1453,9 @@ func (m *mockPayEngine) VerifyCallback(_ []byte, _, _ map[string]string) (*payme
 	return &payment.CallbackResult{OrderNo: m.orderNo, TradeNo: m.tradeNo, Amount: m.amount, Currency: "USD", Success: m.success}, nil
 }
 func (m *mockPayEngine) AckBody() string { return "ok" }
+func (m *mockPayEngine) QueryOrder(_ context.Context, _ payment.QueryRequest) (*payment.QueryResult, error) {
+	return &payment.QueryResult{Found: m.queryFound, Paid: m.queryPaid, TradeNo: m.tradeNo, Amount: m.amount, Currency: "USD"}, nil
+}
 
 // 支付入金红线：成功入账一次 + 幂等不重复 + 终态保护 + 金额过低拒收。
 func TestPaymentCreditFlow(t *testing.T) {
