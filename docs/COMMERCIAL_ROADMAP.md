@@ -96,6 +96,28 @@ b.ai 等新一代平台把 **x402** 与 **ERC-8004** 作为「机器对机器、
 
 ---
 
+## 4.5 阶段 P — 超管运营控制面（商业化多租户的管理底座）
+
+> 起因：平台原本只有「共享 X-Admin-Token」一把钥匙，是「个人站」形态。大规模商业化下，
+> 超管必须能按人分权、按租户分配功能与额度、做数据治理与财务审批。本阶段与 A–D 正交，
+> 是它们的**管理面前置条件**。
+
+| 步骤 | 内容 | 状态 |
+|---|---|---|
+| **P0-1** | **每用户 RBAC**：`users.role`（user<support<admin<superadmin）；X-Admin-Token 降为破玻璃超管；授角色仅 superadmin + 自保护 + 实名审计；控制台 role≥admin 自动解锁、侧栏按角色显隐 | ✅ 已上线 (`653dea7`/`bba1396`) |
+| **P0-2** | **每 org Entitlements 功能调配**：`org_entitlements` 表；4 处真实强制门（图像/视频功能开关、成员上限、API Key 上限，后两者同事务 COUNT 原子无 TOCTOU）；超管控制台内联编辑；无配置行=平台默认（全开/不限）向后兼容 | ✅ 已上线 (`be33429`) |
+| P0-3 | **月度消费上限**（金额红线）：需独立聚合源——`invocations` 30 天滚动清理，非可靠口径；故 P0-2 **刻意不做**金额封顶（可设却不强制比不设更危险）。待建 per-org 月度用量物化表后精确实现 | ⏳ 待 Phase 2 |
+| P1-1 | **财务审批流**：退款 / 提现审批 / 手动调账（均须走 ledger 事务 + 审计） | 规划 |
+| P1-2 | **数据治理**：全局搜索（用户/订单/调用）、PII 分级、导出、合规删除 | 规划 |
+| P1-3 | **客服工具**：受控 impersonation（只读优先）、工单锚点（X-Request-Id 已具备） | 规划 |
+| P1-4 | **分层速率限制**：per-org / per-model RPM（与 D2 合并；Entitlements 表可扩列承载） | 规划 |
+
+**P0-2 强制门落点（便于后续审计）**：`feature_images`→relay `images.go`；`feature_video`→task `handlers.go`；
+`max_members`→`identity.AddMemberByEmail`；`max_api_keys`→`identity.IssueKey`。新增功能开关时在此表加列 +
+对应入口加门 + `TestEntitlements` 补例。
+
+---
+
 ## 5. 推荐执行顺序（按 ROI / 依赖排序）
 
 1. **A2+A3+A4 路由智能 + 健康看板** — 最核心护城河，数据已在 invocations 里，改造集中在 relay。

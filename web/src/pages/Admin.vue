@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminApi, adminToken, ApiError, copyText, errorMessage, uuid } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
@@ -60,6 +60,10 @@ interface OrgRow {
   calls: number
   spend: string
   last_active: string
+  feature_images: boolean
+  feature_video: boolean
+  max_members: number
+  max_api_keys: number
 }
 interface GroupRatio {
   name: string
@@ -393,6 +397,34 @@ async function deleteGroupRatio(name: string) {
 async function setOrgGroup(o: OrgRow, group: string) {
   try {
     await adminApi('PUT', `/api/admin/orgs/${o.id}/group`, { group })
+    await loadOrgs()
+    error.value = ''
+  } catch (e) {
+    showError(e)
+  }
+}
+
+// —— Entitlements 功能调配（P0-2）：超管按 org 开关功能 / 设资源上限 ——
+// 整行覆盖语义：保存时提交全部 4 个字段（与后端 UpsertEntitlements 一致）。
+const entOpen = ref<number | null>(null)
+const entForm = reactive({ feature_images: true, feature_video: true, max_members: 0, max_api_keys: 0 })
+function toggleEnt(o: OrgRow) {
+  if (entOpen.value === o.id) { entOpen.value = null; return }
+  entForm.feature_images = o.feature_images
+  entForm.feature_video = o.feature_video
+  entForm.max_members = o.max_members
+  entForm.max_api_keys = o.max_api_keys
+  entOpen.value = o.id
+}
+async function saveEnt(o: OrgRow) {
+  try {
+    await adminApi('PUT', `/api/admin/orgs/${o.id}/entitlements`, {
+      feature_images: entForm.feature_images,
+      feature_video: entForm.feature_video,
+      max_members: Math.max(0, Math.trunc(Number(entForm.max_members) || 0)),
+      max_api_keys: Math.max(0, Math.trunc(Number(entForm.max_api_keys) || 0)),
+    })
+    entOpen.value = null
     await loadOrgs()
     error.value = ''
   } catch (e) {
@@ -1630,31 +1662,61 @@ onMounted(async () => {
             </thead>
             <tbody>
               <tr v-if="orgs.length === 0">
-                <td colspan="11" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+                <td colspan="12" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
-              <tr v-for="o in orgs" :key="o.id" class="border-b border-line last:border-0">
-                <td class="px-4 py-2.5 text-muted">{{ o.id }}</td>
-                <td class="px-4 py-2.5">{{ o.name }}</td>
-                <td class="px-4 py-2.5 font-mono text-xs">{{ o.owner_email }}</td>
-                <td class="px-4 py-2.5">
-                  <select
-                    :value="o.group"
-                    class="input !w-28 !py-1 text-xs"
-                    @change="setOrgGroup(o, ($event.target as HTMLSelectElement).value)"
-                  >
-                    <option v-for="g in groupRatios" :key="g.name" :value="g.name">{{ g.name }} ({{ g.ratio }}×)</option>
-                  </select>
-                </td>
-                <td class="px-4 py-2.5 text-right">{{ o.members }}</td>
-                <td class="px-4 py-2.5 text-right font-mono">${{ o.balance }}</td>
-                <td class="px-4 py-2.5 text-right font-mono text-muted">${{ o.held }}</td>
-                <td class="px-4 py-2.5 text-right font-mono">${{ Number(o.spend).toFixed(4) }}</td>
-                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ o.calls }}</td>
-                <td class="px-4 py-2.5 text-xs text-muted">{{ o.last_active ? o.last_active.slice(0, 10) : '—' }}</td>
-                <td class="px-4 py-2.5 text-right">
-                  <button class="btn-ghost !py-1 text-xs" @click="grantTo(o)">{{ t('admin.orgGrant') }}</button>
-                </td>
-              </tr>
+              <template v-for="o in orgs" :key="o.id">
+                <tr class="border-b border-line" :class="entOpen === o.id ? '' : 'last:border-0'">
+                  <td class="px-4 py-2.5 text-muted">{{ o.id }}</td>
+                  <td class="px-4 py-2.5">{{ o.name }}</td>
+                  <td class="px-4 py-2.5 font-mono text-xs">{{ o.owner_email }}</td>
+                  <td class="px-4 py-2.5">
+                    <select
+                      :value="o.group"
+                      class="input !w-28 !py-1 text-xs"
+                      @change="setOrgGroup(o, ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="g in groupRatios" :key="g.name" :value="g.name">{{ g.name }} ({{ g.ratio }}×)</option>
+                    </select>
+                  </td>
+                  <td class="px-4 py-2.5 text-right">{{ o.members }}{{ o.max_members ? `/${o.max_members}` : '' }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono">${{ o.balance }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-muted">${{ o.held }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono">${{ Number(o.spend).toFixed(4) }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-muted">{{ o.calls }}</td>
+                  <td class="px-4 py-2.5 text-xs text-muted">{{ o.last_active ? o.last_active.slice(0, 10) : '—' }}</td>
+                  <td class="px-4 py-2.5 text-right whitespace-nowrap">
+                    <button class="btn-ghost !py-1 text-xs" @click="toggleEnt(o)">{{ t('admin.entEdit') }}</button>
+                    <button class="btn-ghost !py-1 text-xs" @click="grantTo(o)">{{ t('admin.orgGrant') }}</button>
+                  </td>
+                </tr>
+                <tr v-if="entOpen === o.id" class="border-b border-line bg-elev/40 last:border-0">
+                  <td colspan="12" class="px-4 py-3">
+                    <div class="flex flex-wrap items-end gap-5">
+                      <p class="w-full text-xs text-muted">{{ t('admin.entHint') }}</p>
+                      <label class="flex items-center gap-2 text-sm">
+                        <input v-model="entForm.feature_images" type="checkbox" class="h-4 w-4" />
+                        {{ t('admin.entImages') }}
+                      </label>
+                      <label class="flex items-center gap-2 text-sm">
+                        <input v-model="entForm.feature_video" type="checkbox" class="h-4 w-4" />
+                        {{ t('admin.entVideo') }}
+                      </label>
+                      <div>
+                        <label class="label" :for="`ent-mem-${o.id}`">{{ t('admin.entMaxMembers') }}</label>
+                        <input :id="`ent-mem-${o.id}`" v-model.number="entForm.max_members" type="number" min="0" class="input !w-28" />
+                      </div>
+                      <div>
+                        <label class="label" :for="`ent-key-${o.id}`">{{ t('admin.entMaxKeys') }}</label>
+                        <input :id="`ent-key-${o.id}`" v-model.number="entForm.max_api_keys" type="number" min="0" class="input !w-28" />
+                      </div>
+                      <div class="flex gap-2">
+                        <button class="btn-primary !py-1.5 text-xs" @click="saveEnt(o)">{{ t('common.save') }}</button>
+                        <button class="btn-ghost !py-1.5 text-xs" @click="entOpen = null">{{ t('common.cancel') }}</button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </template>
             </tbody>
           </table>
         </div>
