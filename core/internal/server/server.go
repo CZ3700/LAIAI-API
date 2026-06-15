@@ -29,6 +29,9 @@ type Options struct {
 	AuthRateBurst int
 	Mailer        mailer.Mailer // 邮件发送；nil = 邮件功能禁用（验证端点 503）
 	Log           *slog.Logger
+	// InvocationRetentionDays：调用日志保留天数的「启动期默认」（env 注入）。
+	// 运营可用 ext_settings.log_retention_days 热覆盖；该值仅作未配置时的回退。0 = 永久保留。
+	InvocationRetentionDays int
 }
 
 type Server struct {
@@ -41,6 +44,7 @@ type Server struct {
 	mailer      mailer.Mailer    // 邮件发送；nil = 邮件功能禁用
 	log         *slog.Logger
 	now         func() time.Time // 可注入时钟，测试用
+	invRetentionDefault int      // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
 }
 
 // Log 返回服务器 logger（payment/audit 等用）。
@@ -76,6 +80,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		mailer:      opts.Mailer,
 		log:         log,
 		now:         time.Now,
+		invRetentionDefault: opts.InvocationRetentionDays,
 	}
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -166,6 +171,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.POST("/users/:id/remark", s.adminSetUserRemark)  // 运营备注（gap P2-B，含等级守卫）
 			admin.GET("/usage/by-user", s.adminUsageByUser)        // 全平台按用户聚合用量（gap P2-B）
 			admin.GET("/usage/by-user/export", s.adminUsageByUserExport) // 同上 CSV 导出
+			admin.GET("/log-stats", s.adminLogStats)               // 日志量 + 保留期一览（gap P2-C）
 
 			// —— superadmin 级（资金 / 系统设置 / 定价策略 / 授权）——（对标 NewAPI RootAuth）
 			su := admin.Group("", s.requireSuperadmin())

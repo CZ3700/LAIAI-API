@@ -55,6 +55,9 @@ var settingDefaults = map[string]string{
 	"model_rate_limit_rpm":     "0",     // 每 (org, model) 每分钟请求上限；0=不限
 	// —— 二次验证（gap #4，requireStepUpForKeys 消费）——
 	"require_stepup_for_keys": "false", // 开启则创建 API Key 需 step-up 再认证（默认关，零摩擦）
+	// —— 旧日志清理（gap P2-C，RunLogRetention 每小时消费；0/空=永久保留）——
+	"log_retention_days":       "", // 调用日志保留天数；空=回退到 env 默认（INVOCATION_RETENTION_DAYS）
+	"audit_log_retention_days": "0", // 审计日志保留天数；0=永久保留（审计默认不删，合规优先）
 	// —— OAuth（oauthStart/Callback 消费）——
 	"github_client_id":     "",
 	"github_client_secret": "",

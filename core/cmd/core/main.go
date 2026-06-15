@@ -48,36 +48,9 @@ func main() {
 	sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
-	// Invocation Store：异步记录器 + 保留期清理循环（设计 §6.1）
+	// Invocation Store：异步记录器（保留期清理循环移至 apiSrv 构建后，见下）
 	rec := invocation.NewRecorder(db, log)
 	retentionDone := make(chan struct{})
-	// 后台维护循环：调用记录保留期清理 + relay 卡死 hold 清扫（审查 H-1）
-	go func() {
-		ticker := time.NewTicker(time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if cfg.InvocationRetentionDays > 0 {
-					cutoff := time.Now().UTC().AddDate(0, 0, -cfg.InvocationRetentionDays)
-					if n, err := invocation.PurgeOlderThan(db, cutoff, 1000); err != nil {
-						log.Error("invocation retention purge failed", "err", err)
-					} else if n > 0 {
-						log.Info("invocation retention purged", "deleted", n, "cutoff", cutoff)
-					}
-				}
-				// 兜底同步结算失败留下的孤儿 usage hold（远早于任何正常请求时长）
-				stuckCutoff := time.Now().UTC().Add(-15 * time.Minute)
-				if n, err := ledger.SweepStuckHolds(db, "usage", stuckCutoff, 500); err != nil {
-					log.Error("stuck hold sweep failed", "err", err)
-				} else if n > 0 {
-					log.Warn("released stuck relay holds", "count", n)
-				}
-			case <-retentionDone:
-				return
-			}
-		}
-	}()
 
 	// 异步任务轮询循环（Seedance 类任务的状态同步与结算，设计 §4.4）
 	var taskSvc *task.Service
@@ -109,8 +82,35 @@ func main() {
 			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 			Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
 		}, log.With("component", "mailer")),
-		Log: log,
+		Log:                     log,
+		InvocationRetentionDays: cfg.InvocationRetentionDays, // ext_settings.log_retention_days 未配置时的回退默认
 	})
+
+	// 后台维护循环（每小时）：旧日志保留期清理（调用日志 + 审计日志，运营可热配，gap P2-C）
+	//   + relay 卡死 hold 清扫（审查 H-1）。放在 apiSrv 构建后以复用 RunLogRetention（读 ext_settings）。
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if inv, aud, err := apiSrv.RunLogRetention(context.Background()); err != nil {
+					log.Error("log retention purge failed", "err", err)
+				} else if inv > 0 || aud > 0 {
+					log.Info("log retention purged", "invocations", inv, "audit_logs", aud)
+				}
+				// 兜底同步结算失败留下的孤儿 usage hold（远早于任何正常请求时长）
+				stuckCutoff := time.Now().UTC().Add(-15 * time.Minute)
+				if n, err := ledger.SweepStuckHolds(db, "usage", stuckCutoff, 500); err != nil {
+					log.Error("stuck hold sweep failed", "err", err)
+				} else if n > 0 {
+					log.Warn("released stuck relay holds", "count", n)
+				}
+			case <-retentionDone:
+				return
+			}
+		}
+	}()
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           handler,

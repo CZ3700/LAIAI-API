@@ -291,8 +291,23 @@ const callbackBase = `${window.location.origin}/api/payment/callback`
 const settings = ref<Record<string, string>>({})
 const settingsBusy = ref(false)
 // 设置分区子导航（避免一页拉太长）
-const setSec = ref<'general' | 'signup' | 'channels' | 'oauth'>('general')
-const SET_SECTIONS = ['general', 'signup', 'channels', 'oauth'] as const
+const setSec = ref<'general' | 'signup' | 'channels' | 'oauth' | 'logs'>('general')
+const SET_SECTIONS = ['general', 'signup', 'channels', 'oauth', 'logs'] as const
+
+// —— 日志量 + 保留期一览（gap P2-C）——
+interface LogStats {
+  invocations: { total: number; oldest_at: string | null }
+  audit_logs: { total: number; oldest_at_ms: number | null }
+  retention: { log_retention_days: number; audit_log_retention_days: number }
+}
+const logStats = ref<LogStats | null>(null)
+async function loadLogStats() {
+  try {
+    logStats.value = await adminApi<LogStats>('GET', '/api/admin/log-stats')
+  } catch (e) {
+    showError(e)
+  }
+}
 const settingsMsg = ref('')
 async function loadSettings() {
   settings.value = (await adminApi<{ settings: Record<string, string> }>('GET', '/api/admin/settings')).settings
@@ -421,6 +436,7 @@ function auditSensitive(a: string): boolean {
 // 切到这些 tab 时懒加载
 watch(tab, (v) => {
   if (v === 'settings' && Object.keys(settings.value).length === 0) void loadSettings().catch(showError)
+  if (v === 'settings' && !logStats.value) void loadLogStats()
   if (v === 'analytics' && !analytics.value) void loadAnalytics().catch(showError)
   if (v === 'payments' && !payLoaded.value) void loadPayChannels().catch(showError)
   if (v === 'users' && users.value.length === 0) void loadUsers().catch(showError)
@@ -2272,6 +2288,31 @@ onMounted(async () => {
               </div>
             </div>
             <p class="mt-2 text-xs text-muted">{{ t('admin.setOAuthHint') }}</p>
+          </div>
+
+          <!-- 日志保留 + 量级一览（gap P2-C） -->
+          <div v-show="setSec === 'logs'" class="space-y-5">
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label class="label" for="set-logret">{{ t('admin.setLogRetention') }}</label>
+                <input id="set-logret" v-model="settings.log_retention_days" class="input" inputmode="numeric" placeholder="30" />
+                <p class="mt-1 text-xs text-muted">{{ t('admin.setLogRetentionHint') }}</p>
+              </div>
+              <div>
+                <label class="label" for="set-auditret">{{ t('admin.setAuditRetention') }}</label>
+                <input id="set-auditret" v-model="settings.audit_log_retention_days" class="input" inputmode="numeric" placeholder="0" />
+                <p class="mt-1 text-xs text-muted">{{ t('admin.setAuditRetentionHint') }}</p>
+              </div>
+            </div>
+            <div v-if="logStats" class="rounded-lg border border-line p-4 text-sm space-y-1.5">
+              <div class="flex justify-between"><span class="text-muted">{{ t('admin.logStatInvocations') }}</span>
+                <span class="font-mono">{{ logStats.invocations.total.toLocaleString() }}<span v-if="logStats.invocations.oldest_at" class="ml-2 text-muted">{{ t('admin.logStatOldest') }} {{ logStats.invocations.oldest_at }}</span></span>
+              </div>
+              <div class="flex justify-between"><span class="text-muted">{{ t('admin.logStatAudit') }}</span>
+                <span class="font-mono">{{ logStats.audit_logs.total.toLocaleString() }}<span v-if="logStats.audit_logs.oldest_at_ms" class="ml-2 text-muted">{{ t('admin.logStatOldest') }} {{ new Date(logStats.audit_logs.oldest_at_ms).toLocaleDateString() }}</span></span>
+              </div>
+              <button type="button" class="btn-ghost !py-1 text-xs" @click="loadLogStats">{{ t('common.refresh') }}</button>
+            </div>
           </div>
 
           <div class="flex items-center gap-3">
