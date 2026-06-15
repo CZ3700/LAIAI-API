@@ -47,3 +47,26 @@ router.beforeEach((to) => {
   if (to.meta.auth && !auth.isAuthed) return { path: '/login', query: { to: to.fullPath } }
   if ((to.path === '/login' || to.path === '/register') && auth.isAuthed) return { path: '/app' }
 })
+
+// 部署自愈：Vite 按内容哈希切分懒加载 chunk，发版后旧标签页/缓存里的 index.html 仍引用
+// 已被替换的旧 chunk 哈希，导致某个未访问过的懒路由（如 /app/playground）import 失败「打不开」，
+// 而已加载到内存的页面照常工作。这里抓到动态 import 失败 → 当次会话只硬刷新一次（防循环）→
+// 新 index.html 带新哈希自动恢复。成功导航后清标记，使未来每次发版都能再次自愈。
+const chunkReloadKey = 'laiai.chunkReloaded'
+function isDynamicImportError(err: unknown): boolean {
+  const m = String((err as Error)?.message || err)
+  return /dynamically imported module|Importing a module script failed|Failed to fetch dynamically|error loading dynamically imported/i.test(m)
+}
+function reloadOnce() {
+  if (sessionStorage.getItem(chunkReloadKey)) return // 已重载过一次仍失败 → 不再循环，让错误暴露
+  sessionStorage.setItem(chunkReloadKey, '1')
+  window.location.reload()
+}
+router.onError((err) => {
+  if (isDynamicImportError(err)) reloadOnce()
+})
+router.afterEach(() => {
+  sessionStorage.removeItem(chunkReloadKey) // 成功导航=chunk 正常，清一次性标记
+})
+// 兜底：Vite 预加载助手失败时也走同一自愈路径
+window.addEventListener('vite:preloadError', reloadOnce)
