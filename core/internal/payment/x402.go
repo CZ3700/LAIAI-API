@@ -19,11 +19,12 @@ import (
 // 链上结算交给外部 facilitator（verify→settle），我方只编排 + 入账。
 //
 // ⚠️ 合约校验状态（2026-06-14）：facilitator /verify、/settle 的请求/响应形态按 x402 v1
-//    **公开规范**实现，尚未对真实/测试网 facilitator 跑通。**上线动真金前必须**：
-//    ① 对接真实 facilitator（或 Coinbase x402 facilitator）抓真实 raw response 写进 fixture；
-//    ② 校验 EIP-3009 authorization 字段与 USDC 合约地址；③ 测试网端到端走通一次。
-//    未配置 FacilitatorURL/PayTo/Asset 时引擎不构建（engineFor 返回 nil）→ 默认禁用，
-//    绝不在未验证状态下进入真实资金路径。
+//
+//	**公开规范**实现，尚未对真实/测试网 facilitator 跑通。**上线动真金前必须**：
+//	① 对接真实 facilitator（或 Coinbase x402 facilitator）抓真实 raw response 写进 fixture；
+//	② 校验 EIP-3009 authorization 字段与 USDC 合约地址；③ 测试网端到端走通一次。
+//	未配置 FacilitatorURL/PayTo/Asset 时引擎不构建（engineFor 返回 nil）→ 默认禁用，
+//	绝不在未验证状态下进入真实资金路径。
 type X402 struct {
 	FacilitatorURL string // facilitator 基址（verify/settle）
 	PayTo          string // 收款地址 0x...
@@ -49,8 +50,10 @@ func (x *X402) httpClient() *http.Client {
 }
 
 // usdcAtomic：USD 金额 → USDC 原子单位（6 位小数）整数串。
+// 先 Truncate(6) 截到 USDC 精度再 ×1e6——绝不 Round：向上取整会要求客户多付（资金红线），
+// 截断只可能少要求 1 个原子单位（不会拒正确付款）。USD 充值额通常 ≤2 位小数，此处恒精确。
 func usdcAtomic(amount decimal.Decimal) string {
-	return amount.Mul(decimal.NewFromInt(1_000_000)).Round(0).String()
+	return amount.Truncate(6).Mul(decimal.NewFromInt(1_000_000)).String()
 }
 
 // paymentRequirements：x402 v1 的 accepts 条目（"exact" scheme）。

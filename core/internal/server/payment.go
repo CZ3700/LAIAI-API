@@ -22,10 +22,10 @@ import (
 
 // 订单状态（与旧平台同枚举，运维直觉）
 const (
-	topupPending  int8 = 0
-	topupPaid     int8 = 1
-	topupFailed   int8 = 2
-	topupExpired  int8 = 4
+	topupPending int8 = 0
+	topupPaid    int8 = 1
+	topupFailed  int8 = 2
+	topupExpired int8 = 4
 )
 
 // TopupOrder：充值订单（0015）。入金事实源仍是 ledger journal，此表是支付侧状态机。
@@ -54,6 +54,7 @@ var engineForTest func(provider string) payment.Engine
 //  1. 测试钩子（注入 mock）
 //  2. payment_channels 表里启用的同 code 渠道（信封加密配置，#5 灵活渠道）
 //  3. 退回扁平 ext_settings 单套 stripe/epay 配置（旧路径，未建表时仍可用）
+//
 // 返回 nil 表示未配置/未启用。
 func (s *Server) engineFor(provider string) payment.Engine {
 	if engineForTest != nil {
@@ -86,6 +87,17 @@ func (s *Server) engineFor(provider string) payment.Engine {
 			return nil
 		}
 		return &payment.EPay{PID: pid, Key: s.getSetting("epay_key"), APIURL: s.getSetting("epay_api_url")}
+	case "coinbase":
+		// 加密货币主通道（WS-4）：默认禁用——字段层级/枚举尚未接真实账号 fixture 验真
+		// （见 coinbase_commerce.go 红线）。验真后置 coinbase_enabled="true" 方可进真金路径。
+		if s.getSetting("coinbase_enabled") != "true" {
+			return nil
+		}
+		ak := s.getSetting("coinbase_api_key")
+		if ak == "" || s.getSetting("coinbase_webhook_secret") == "" {
+			return nil
+		}
+		return &payment.CoinbaseCommerce{APIKey: ak, WebhookSecret: s.getSetting("coinbase_webhook_secret")}
 	case "x402":
 		// P0-4：合约尚未对真实 facilitator 校验（见 x402.go 注记）→ 显式总开关默认关闭，
 		// 即便三项配置齐全也不进真金路径；完成合约校验清单后方可将 x402_enabled 置 "true"。
@@ -128,9 +140,9 @@ func (s *Server) getPaymentMethods(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"methods": methods,
-		"amount_options": []int{10, 20, 50, 100, 200, 500}, // USD 档位
-		"cny_rate":       s.getSetting("cny_per_usd"),       // EPay 用：1 USD = ? CNY（空=默认 7.3）
+		"methods":        methods,
+		"amount_options": []int{10, 20, 50, 100, 200, 500},     // USD 档位
+		"cny_rate":       s.getSetting("cny_per_usd"),          // EPay 用：1 USD = ? CNY（空=默认 7.3）
 		"bonus_tiers":    s.getSetting("recharge_bonus_tiers"), // 充值阶梯优惠（前端按金额预览赠额；空=无）
 	})
 }
@@ -234,8 +246,9 @@ func (s *Server) createTopup(c *gin.Context) {
 
 // paymentCallback：POST /api/payment/callback/:provider —— webhook 入金。
 // 红线集中（移植旧平台血泪）：验签 → 行锁取订单 → provider 匹配 → 幂等(已 paid) →
-//   终态保护(failed 不翻转) → 金额校验 → ledger 入金(idempotency=topup:order)。
-//   接受 status IN (pending, expired)：客户付了款但 callback 晚到，不能拒收（黑洞修复）。
+//
+//	终态保护(failed 不翻转) → 金额校验 → ledger 入金(idempotency=topup:order)。
+//	接受 status IN (pending, expired)：客户付了款但 callback 晚到，不能拒收（黑洞修复）。
 func (s *Server) paymentCallback(c *gin.Context) {
 	provider := c.Param("provider")
 	engine := s.engineFor(provider)
@@ -352,7 +365,9 @@ func (s *Server) x402Settle(c *gin.Context) {
 
 // creditPaidOrder：把一笔已确认支付的订单入账——**callback 与 reconcile 共用的唯一资金路径**。
 // 红线集中：行锁取订单 → provider 匹配（防跨网关）→ 幂等(已 paid→already=true) →
-//   终态保护(failed 不翻转；接受 pending|expired) → 金额校验 → ledger 入金(幂等键 topup:order)。
+//
+//	终态保护(failed 不翻转；接受 pending|expired) → 金额校验 → ledger 入金(幂等键 topup:order)。
+//
 // paidAmount = 网关实付（callback 的 res.Amount 或 query 的 QueryResult.Amount），口径一致。
 // paidCurrency = 网关实付币种（res.Currency/qr.Currency）；非空时必须与订单 PayCurrency 一致
 // （P2-8：防"金额数字相同但币种更便宜"的隐性少付，如 73 CNY 单收到 73 USD 通知）。空=网关未报，跳过。
@@ -615,6 +630,8 @@ func init() {
 		"stripe_secret_key", "stripe_webhook_secret",
 		"epay_pid", "epay_key", "epay_api_url", "cny_per_usd",
 		"affiliate_rate", // 邀请返佣比例（0016），如 "0.05" = 5%；空/0=关闭
+		// 加密货币主通道（WS-4，默认禁用，验真后置 coinbase_enabled=true）
+		"coinbase_enabled", "coinbase_api_key", "coinbase_webhook_secret",
 	} {
 		settingDefaults[k] = ""
 	}

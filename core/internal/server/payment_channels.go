@@ -55,6 +55,13 @@ func buildPaymentEngine(protocol string, cfg map[string]string) payment.Engine {
 			return nil
 		}
 		return &payment.EPay{PID: cfg["pid"], Key: cfg["key"], APIURL: cfg["api_url"]}
+	case "coinbase":
+		// 加密货币主通道（WS-4）：api_key + webhook_secret 两个独立密钥齐全才构建。
+		// ⚠ 上线前须接真实账号抓 raw 写 fixture 验真（见 coinbase_commerce.go 红线）。
+		if cfg["api_key"] == "" || cfg["webhook_secret"] == "" {
+			return nil
+		}
+		return &payment.CoinbaseCommerce{APIKey: cfg["api_key"], WebhookSecret: cfg["webhook_secret"]}
 	case "x402":
 		// 默认禁用：facilitator/收款地址/资产三者齐全才构建（见 x402.go 合约校验注记）
 		if cfg["facilitator_url"] == "" || cfg["pay_to"] == "" || cfg["asset"] == "" {
@@ -123,6 +130,8 @@ func (s *Server) adminUpsertPaymentChannel(c *gin.Context) {
 		return
 	}
 	code := strings.TrimSpace(req.Code)
+	// coinbase 暂不开放表渠道创建（与 x402 同：字段未接真实 fixture 验真前，仅经 ext_settings +
+	// coinbase_enabled 显式启用，避免运营在 Console 误开真金通道）。
 	if code == "" || (req.Protocol != "stripe" && req.Protocol != "epay") {
 		fail(c, http.StatusBadRequest, "invalid code or protocol (stripe|epay)")
 		return
