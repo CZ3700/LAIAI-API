@@ -150,8 +150,8 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 	}
 
 	estIn := countEmbeddingsTokens(req.Input, len(body))
-	groupRatio := GroupRatio(rdb, key.OrgID) // 分组倍率（0011），hold/capture 同值
-	holdAmount := price.Cost(estIn, 0, 0).Mul(groupRatio)
+	groupRatio := EffectiveRatio(rdb, key.OrgID, req.Model) // 一层+二层倍率（0011/0027），hold/capture 同值
+	holdAmount := price.ChatCost(estIn, 0, 0).Mul(groupRatio)
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
 		acc, err := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
@@ -290,7 +290,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 
 	c.Data(http.StatusOK, "application/json", raw)
 
-	actual := price.Cost(inTokens, 0, 0).Mul(groupRatio)
+	actual := price.ChatCost(inTokens, 0, 0).Mul(groupRatio)
 	defer func() { _ = identity.AddKeyUsage(r.DB, key.ID, actual) }() // per-key 已用额度（0012）
 	reason := fmt.Sprintf("embeddings model=%s in=%d ×%s", req.Model, inTokens, groupRatio)
 	var overage = decimal.Zero

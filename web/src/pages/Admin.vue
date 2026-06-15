@@ -490,6 +490,32 @@ async function deleteGroupRatio(name: string) {
     showError(e)
   }
 }
+
+// —— 二层 (分组,模型) 倍率（gap P2-F）——
+interface ModelGroupRatio { group_name: string; model: string; ratio: string }
+const modelGroupRatios = ref<ModelGroupRatio[]>([])
+const mgr = ref({ group_name: '', model: '', ratio: '1' })
+async function loadModelGroupRatios() {
+  modelGroupRatios.value = (await adminApi<{ items: ModelGroupRatio[] }>('GET', '/api/admin/model-group-ratios')).items ?? []
+}
+async function upsertModelGroupRatio() {
+  try {
+    await adminApi('POST', '/api/admin/model-group-ratios', { group_name: mgr.value.group_name, model: mgr.value.model, ratio: mgr.value.ratio })
+    mgr.value = { group_name: '', model: '', ratio: '1' }
+    await loadModelGroupRatios()
+    error.value = ''
+  } catch (e) {
+    showError(e)
+  }
+}
+async function deleteModelGroupRatio(row: ModelGroupRatio) {
+  try {
+    await adminApi('DELETE', `/api/admin/model-group-ratios?group_name=${encodeURIComponent(row.group_name)}&model=${encodeURIComponent(row.model)}`)
+    await loadModelGroupRatios()
+  } catch (e) {
+    showError(e)
+  }
+}
 async function setOrgGroup(o: OrgRow, group: string) {
   try {
     await adminApi('PUT', `/api/admin/orgs/${o.id}/group`, { group })
@@ -765,7 +791,7 @@ function grantTo(o: OrgRow) {
 
 // —— 定价 ——
 const prices = ref<Price[]>([])
-const pr = ref({ model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '' })
+const pr = ref({ model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '', per_call_usd: '', tts_usd_per_1k_chars: '', transcription_usd_per_call: '' })
 const prBusy = ref(false)
 
 // 模型目录：上游已上货模型 → 承载渠道 + 是否已定价（定价管理一眼看缺口）
@@ -796,6 +822,9 @@ function pickModelForPricing(m: CatalogModel) {
     output_usd_per_1m: m.output_usd_per_1m ?? '0',
     image_usd: '',
     cached_input_usd_per_1m: '',
+    per_call_usd: '',
+    tts_usd_per_1k_chars: '',
+    transcription_usd_per_call: '',
   }
 }
 
@@ -813,8 +842,11 @@ async function upsertPrice() {
     }
     if (pr.value.image_usd) body.image_usd = pr.value.image_usd
     if (pr.value.cached_input_usd_per_1m) body.cached_input_usd_per_1m = pr.value.cached_input_usd_per_1m
+    if (pr.value.per_call_usd) body.per_call_usd = pr.value.per_call_usd
+    if (pr.value.tts_usd_per_1k_chars) body.tts_usd_per_1k_chars = pr.value.tts_usd_per_1k_chars
+    if (pr.value.transcription_usd_per_call) body.transcription_usd_per_call = pr.value.transcription_usd_per_call
     await adminApi('POST', '/api/admin/model-prices', body)
-    pr.value = { model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '' }
+    pr.value = { model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '', per_call_usd: '', tts_usd_per_1k_chars: '', transcription_usd_per_call: '' }
     await loadPrices()
     error.value = ''
   } catch (e) {
@@ -926,7 +958,7 @@ async function submitGrant() {
 
 async function loadAll() {
   try {
-    await Promise.all([loadOverview(), loadChannels(), loadPrices(), loadCatalog(), loadOrgs(), loadGroupRatios()])
+    await Promise.all([loadOverview(), loadChannels(), loadPrices(), loadCatalog(), loadOrgs(), loadGroupRatios(), loadModelGroupRatios()])
   } catch (e) {
     showError(e)
   }
@@ -1680,9 +1712,21 @@ onMounted(async () => {
             <label class="label" for="pr-image">{{ t('admin.prImage') }}</label>
             <input id="pr-image" v-model="pr.image_usd" class="input" placeholder="0" />
           </div>
+          <div>
+            <label class="label" for="pr-percall">{{ t('admin.prPerCall') }}</label>
+            <input id="pr-percall" v-model="pr.per_call_usd" class="input" placeholder="0" />
+          </div>
+          <div>
+            <label class="label" for="pr-tts">{{ t('admin.prTTS') }}</label>
+            <input id="pr-tts" v-model="pr.tts_usd_per_1k_chars" class="input" placeholder="0" />
+          </div>
+          <div>
+            <label class="label" for="pr-stt">{{ t('admin.prTranscription') }}</label>
+            <input id="pr-stt" v-model="pr.transcription_usd_per_call" class="input" placeholder="0" />
+          </div>
           <div class="col-span-5 flex items-center gap-3">
             <button class="btn-primary" :disabled="prBusy">{{ t('admin.prUpsert') }}</button>
-            <span class="text-xs text-muted">{{ t('admin.prCachedHint') }}</span>
+            <span class="text-xs text-muted">{{ t('admin.prAdvancedHint') }}</span>
           </div>
         </form>
 
@@ -1849,6 +1893,49 @@ onMounted(async () => {
                   <button v-if="g.name !== 'default'" class="btn-danger !py-1 text-xs" @click="deleteGroupRatio(g.name)">
                     {{ t('keys.delete') }}
                   </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 二层 (分组,模型) 倍率（gap P2-F）：叠加在分组倍率之上 -->
+        <h3 class="mt-2 font-semibold">{{ t('admin.mgrTitle') }}</h3>
+        <form class="card p-5 grid grid-cols-4 gap-4 items-end" @submit.prevent="upsertModelGroupRatio">
+          <div>
+            <label class="label" for="mgr-group">{{ t('admin.grName') }}</label>
+            <input id="mgr-group" v-model="mgr.group_name" class="input font-mono text-xs" placeholder="vip" required />
+          </div>
+          <div>
+            <label class="label" for="mgr-model">{{ t('admin.prModel') }}</label>
+            <input id="mgr-model" v-model="mgr.model" class="input font-mono text-xs" placeholder="gpt-5.2" required />
+          </div>
+          <div>
+            <label class="label" for="mgr-ratio">{{ t('admin.grRatio') }}</label>
+            <input id="mgr-ratio" v-model="mgr.ratio" class="input" placeholder="1" required />
+          </div>
+          <div>
+            <button class="btn-primary" :disabled="prBusy">{{ t('admin.prUpsert') }}</button>
+          </div>
+          <p class="col-span-4 text-xs text-muted">{{ t('admin.mgrHint') }}</p>
+        </form>
+        <div v-if="modelGroupRatios.length" class="card overflow-hidden">
+          <table class="table w-full text-sm">
+            <thead>
+              <tr class="border-b border-line text-left text-muted">
+                <th class="px-4 py-3 font-medium">{{ t('admin.grName') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.prModel') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.grRatio') }}</th>
+                <th class="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in modelGroupRatios" :key="m.group_name + '/' + m.model" class="border-b border-line last:border-0">
+                <td class="px-4 py-2.5 font-mono">{{ m.group_name }}</td>
+                <td class="px-4 py-2.5 font-mono text-xs">{{ m.model }}</td>
+                <td class="px-4 py-2.5 text-right font-mono">{{ m.ratio }}×</td>
+                <td class="px-4 py-2.5 text-right">
+                  <button class="btn-danger !py-1 text-xs" @click="deleteModelGroupRatio(m)">{{ t('keys.delete') }}</button>
                 </td>
               </tr>
             </tbody>

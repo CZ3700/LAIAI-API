@@ -184,6 +184,9 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				su.GET("/group-ratios", s.adminListGroupRatios)     // 差异化定价倍率
 				su.POST("/group-ratios", s.adminUpsertGroupRatio)
 				su.DELETE("/group-ratios/:name", s.adminDeleteGroupRatio)
+				su.GET("/model-group-ratios", s.adminListModelGroupRatios)      // 二层 (分组,模型) 倍率（gap P2-F）
+				su.POST("/model-group-ratios", s.adminUpsertModelGroupRatio)
+				su.DELETE("/model-group-ratios", s.adminDeleteModelGroupRatio)
 				su.PUT("/orgs/:id/group", s.adminSetOrgGroup)       // 指派计费分组（定价）
 				su.PUT("/orgs/:id/entitlements", s.adminSetEntitlements) // P0-2 功能调配
 				su.POST("/users/:id/role", s.adminSetUserRole)      // 授角色
@@ -203,6 +206,8 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		r.POST("/v1/chat/completions", rl.HandleChatCompletions)
 		r.POST("/v1/embeddings", rl.HandleEmbeddings)
 		r.POST("/v1/images/generations", rl.HandleImages)
+		r.POST("/v1/audio/speech", rl.HandleAudioSpeech)               // TTS（gap P2-F，按字符计价）
+		r.POST("/v1/audio/transcriptions", rl.HandleAudioTranscription) // STT（gap P2-F，按次固定价）
 
 		// 异步任务（Seedance 类视频生成，设计 §4.4 Task API）
 		ts := opts.TaskService

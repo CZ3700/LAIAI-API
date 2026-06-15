@@ -399,6 +399,31 @@ type priceReq struct {
 	OutputUSDPer1M string `json:"output_usd_per_1m" binding:"required"`
 	ImageUSD       string `json:"image_usd"`              // 每张图 USD；图像模型必填，其他模型省略
 	CachedInputUSDPer1M string `json:"cached_input_usd_per_1m"` // 缓存命中输入价（0010，省略=按 input 全价）
+	PerCallUSD           string `json:"per_call_usd"`               // 按次固定价（0027，gap P2-F）
+	TTSPer1KChars        string `json:"tts_usd_per_1k_chars"`       // TTS 每千字符 USD（0027）
+	TranscriptionPerCall string `json:"transcription_usd_per_call"` // 转录每次固定价 USD（0027）
+}
+
+// firstErr：返回首个非 nil 错误。
+func firstErr(errs ...error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+// parseOptNonNegDecimal：解析可选的非负十进制串。空串 → 0；非法/负 → 报错。
+func parseOptNonNegDecimal(s, field string) (decimal.Decimal, error) {
+	if s == "" {
+		return decimal.Zero, nil
+	}
+	v, err := decimal.NewFromString(s)
+	if err != nil || v.IsNegative() {
+		return decimal.Zero, errors.New(field + " must be a non-negative decimal string")
+	}
+	return v, nil
 }
 
 // adminUpsertPrice：模型定价 upsert（uk_model_prices_model 兜底）。
@@ -430,10 +455,23 @@ func (s *Server) adminUpsertPrice(c *gin.Context) {
 			return
 		}
 	}
-	p := &relay.ModelPrice{Model: req.Model, InputUSDPer1M: in, OutputUSDPer1M: out, ImageUSD: img, CachedInputUSDPer1M: cachedIn}
+	perCall, e1 := parseOptNonNegDecimal(req.PerCallUSD, "per_call_usd")
+	tts, e2 := parseOptNonNegDecimal(req.TTSPer1KChars, "tts_usd_per_1k_chars")
+	transcribe, e3 := parseOptNonNegDecimal(req.TranscriptionPerCall, "transcription_usd_per_call")
+	if e1 != nil || e2 != nil || e3 != nil {
+		fail(c, http.StatusBadRequest, firstErr(e1, e2, e3).Error())
+		return
+	}
+	p := &relay.ModelPrice{
+		Model: req.Model, InputUSDPer1M: in, OutputUSDPer1M: out, ImageUSD: img, CachedInputUSDPer1M: cachedIn,
+		PerCallUSD: perCall, TTSPer1KChars: tts, TranscriptionPerCall: transcribe,
+	}
 	err := s.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "model"}},
-		DoUpdates: clause.AssignmentColumns([]string{"input_usd_per_1m", "output_usd_per_1m", "image_usd", "cached_input_usd_per_1m"}),
+		Columns: []clause.Column{{Name: "model"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"input_usd_per_1m", "output_usd_per_1m", "image_usd", "cached_input_usd_per_1m",
+			"per_call_usd", "tts_usd_per_1k_chars", "transcription_usd_per_call",
+		}),
 	}).Create(p).Error
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "price upsert failed")
@@ -818,6 +856,69 @@ func (s *Server) adminDeleteGroupRatio(c *gin.Context) {
 	}
 	s.writeAudit(c, "group_ratio_delete", name, "group ratio deleted")
 	c.JSON(http.StatusOK, gin.H{"deleted": name})
+}
+
+// —— 二层分组倍率（0027，gap P2-F）：(分组, 模型) → 倍率，叠加在分组倍率之上 ——
+
+type ModelGroupRatio struct {
+	GroupName string          `gorm:"primaryKey;column:group_name" json:"group_name"`
+	Model     string          `gorm:"primaryKey;column:model" json:"model"`
+	Ratio     decimal.Decimal `gorm:"column:ratio" json:"ratio"`
+}
+
+func (ModelGroupRatio) TableName() string { return "model_group_ratios" }
+
+// adminListModelGroupRatios：GET /api/admin/model-group-ratios
+func (s *Server) adminListModelGroupRatios(c *gin.Context) {
+	var rows []ModelGroupRatio
+	if err := s.db.Order("group_name, model").Find(&rows).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "list failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": rows})
+}
+
+// adminUpsertModelGroupRatio：POST /api/admin/model-group-ratios {group_name, model, ratio}
+func (s *Server) adminUpsertModelGroupRatio(c *gin.Context) {
+	var req struct {
+		GroupName string `json:"group_name" binding:"required"`
+		Model     string `json:"model" binding:"required"`
+		Ratio     string `json:"ratio" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "group_name, model and ratio required")
+		return
+	}
+	ratio, err := decimal.NewFromString(req.Ratio)
+	if err != nil || ratio.IsNegative() {
+		fail(c, http.StatusBadRequest, "ratio must be a non-negative decimal string")
+		return
+	}
+	g := &ModelGroupRatio{GroupName: req.GroupName, Model: req.Model, Ratio: ratio}
+	if err := s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "group_name"}, {Name: "model"}},
+		DoUpdates: clause.AssignmentColumns([]string{"ratio"}),
+	}).Create(g).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "upsert failed")
+		return
+	}
+	s.writeAudit(c, "model_group_ratio_set", req.GroupName+"/"+req.Model, "ratio = "+req.Ratio)
+	c.JSON(http.StatusOK, gin.H{"group_name": req.GroupName, "model": req.Model})
+}
+
+// adminDeleteModelGroupRatio：DELETE /api/admin/model-group-ratios?group_name=&model=
+func (s *Server) adminDeleteModelGroupRatio(c *gin.Context) {
+	groupName, model := c.Query("group_name"), c.Query("model")
+	if groupName == "" || model == "" {
+		fail(c, http.StatusBadRequest, "group_name and model query params required")
+		return
+	}
+	if err := s.db.Where("group_name = ? AND model = ?", groupName, model).Delete(&ModelGroupRatio{}).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	s.writeAudit(c, "model_group_ratio_delete", groupName+"/"+model, "deleted")
+	c.JSON(http.StatusOK, gin.H{"deleted": true})
 }
 
 // adminSetOrgGroup：PUT /api/admin/orgs/:id/group {group}

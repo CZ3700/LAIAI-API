@@ -105,7 +105,14 @@ CREATE TABLE model_prices (
     input_usd_per_1m NUMERIC NOT NULL, output_usd_per_1m NUMERIC NOT NULL,
     image_usd NUMERIC NOT NULL DEFAULT 0,
     cached_input_usd_per_1m NUMERIC NOT NULL DEFAULT 0,
+    per_call_usd NUMERIC NOT NULL DEFAULT 0,
+    tts_usd_per_1k_chars NUMERIC NOT NULL DEFAULT 0,
+    transcription_usd_per_call NUMERIC NOT NULL DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE model_group_ratios (
+    group_name TEXT NOT NULL, model TEXT NOT NULL, ratio NUMERIC NOT NULL DEFAULT 1,
+    PRIMARY KEY (group_name, model)
 );
 CREATE TABLE model_meta (
     model TEXT PRIMARY KEY, vendor TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',

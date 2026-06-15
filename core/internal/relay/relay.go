@@ -330,9 +330,9 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 
 	// 4. Hold：按 tiktoken 估算输入 + max_tokens 上限 冻结（整个重试周期只 hold 一次）
 	estIn := CountChatTokens(req, len(body))
-	// 分组倍率（0011）：hold/capture 取同一次值，避免中途改配置导致 release 算错
-	groupRatio := GroupRatio(rdb, key.OrgID)
-	holdAmount := price.Cost(estIn, 0, maxTokens).Mul(groupRatio)
+	// 计费倍率（0011 一层 + 0027 二层 (分组,模型)）：hold/capture 取同一次值，避免中途改配置导致 release 算错
+	groupRatio := EffectiveRatio(rdb, key.OrgID, model)
+	holdAmount := price.ChatCost(estIn, 0, maxTokens).Mul(groupRatio) // 按次固定价时忽略 token（gap P2-F）
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
 		acc, err := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
@@ -486,7 +486,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		r.Log.Warn("usage missing from upstream, estimated", "channel", ch.ID, "model", model)
 	}
 
-	actual := price.Cost(u.PromptTokens, u.Cached(), u.CompletionTokens).Mul(groupRatio)
+	actual := price.ChatCost(u.PromptTokens, u.Cached(), u.CompletionTokens).Mul(groupRatio)
 	reason := fmt.Sprintf("model=%s in=%d cached=%d out=%d ×%s", model, u.PromptTokens, u.Cached(), u.CompletionTokens, groupRatio)
 	var overage = decimal.Zero
 	if err := r.DB.Transaction(func(tx *gorm.DB) error {

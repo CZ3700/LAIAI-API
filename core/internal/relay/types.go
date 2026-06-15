@@ -96,6 +96,9 @@ type ModelPrice struct {
 	OutputUSDPer1M decimal.Decimal `gorm:"column:output_usd_per_1m"`
 	ImageUSD       decimal.Decimal `gorm:"column:image_usd"`              // 每张图 USD（0007，0=非图像模型）
 	CachedInputUSDPer1M decimal.Decimal `gorm:"column:cached_input_usd_per_1m"` // 缓存命中输入价（0010，0=按 input 全价）
+	PerCallUSD           decimal.Decimal `gorm:"column:per_call_usd"`               // 按次固定价（0027，>0 时 chat/embeddings 忽略 token 按次收）
+	TTSPer1KChars        decimal.Decimal `gorm:"column:tts_usd_per_1k_chars"`       // TTS 每千字符 USD（0027）
+	TranscriptionPerCall decimal.Decimal `gorm:"column:transcription_usd_per_call"` // 转录每次固定价 USD（0027）
 }
 
 func (ModelPrice) TableName() string { return "model_prices" }
@@ -123,6 +126,57 @@ func (p *ModelPrice) Cost(inputTokens, cachedTokens, outputTokens int64) decimal
 	cached := p.cachedInputPrice().Mul(decimal.NewFromInt(cachedTokens)).Div(oneMillion)
 	out := p.OutputUSDPer1M.Mul(decimal.NewFromInt(outputTokens)).Div(oneMillion)
 	return in.Add(cached).Add(out)
+}
+
+var oneThousand = decimal.NewFromInt(1000)
+
+// ChatCost：每请求计费。PerCallUSD>0 → 按次固定价（忽略 token，gap P2-F「按次固定价」）；
+// 否则回退按 token 的 Cost。chat 与 embeddings 共用（embeddings 传 output=0）。
+func (p *ModelPrice) ChatCost(inputTokens, cachedTokens, outputTokens int64) decimal.Decimal {
+	if p.PerCallUSD.IsPositive() {
+		return p.PerCallUSD
+	}
+	return p.Cost(inputTokens, cachedTokens, outputTokens)
+}
+
+// SpeechCost：TTS 按输入字符数计价（tts_usd_per_1k_chars × chars / 1000，gap P2-F）。
+func (p *ModelPrice) SpeechCost(chars int64) decimal.Decimal {
+	if chars < 0 {
+		chars = 0
+	}
+	return p.TTSPer1KChars.Mul(decimal.NewFromInt(chars)).Div(oneThousand)
+}
+
+// ModelGroupRatio：分组×模型的二层倍率（gap P2-F）。命中 (group_name, model) 返回其 ratio，
+// 否则回退 1。group_name 空（无分组）直接 1。
+func ModelGroupRatio(db *gorm.DB, groupName, model string) decimal.Decimal {
+	if groupName == "" {
+		return decimal.NewFromInt(1)
+	}
+	var ratio decimal.Decimal
+	err := db.Raw(`SELECT ratio FROM model_group_ratios WHERE group_name = ? AND model = ?`,
+		groupName, model).Scan(&ratio).Error
+	if err != nil || !ratio.IsPositive() {
+		return decimal.NewFromInt(1)
+	}
+	return ratio
+}
+
+// EffectiveRatio：最终计费倍率 = 一层分组倍率 × 二层(分组,模型)倍率（gap P2-F「二层分组倍率」）。
+// 取代裸 GroupRatio：hold 与 capture 必须用同一次取值（调用方取一次传两处）。各层查不到/异常回退 1。
+func EffectiveRatio(db *gorm.DB, orgID uint64, model string) decimal.Decimal {
+	var row struct {
+		GroupName string
+		Ratio     decimal.Decimal
+	}
+	err := db.Raw(`SELECT o.group_name AS group_name, COALESCE(gr.ratio, 1) AS ratio
+		FROM organizations o LEFT JOIN group_ratios gr ON gr.name = o.group_name
+		WHERE o.id = ?`, orgID).Scan(&row).Error
+	base := decimal.NewFromInt(1)
+	if err == nil && row.Ratio.IsPositive() {
+		base = row.Ratio
+	}
+	return base.Mul(ModelGroupRatio(db, row.GroupName, model))
 }
 
 // PickChannelForAttempt 选择服务该模型的活跃渠道（知识库 §3，NewAPI channel_cache.go:96 算法）：

@@ -1,0 +1,398 @@
+package relay
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/laiai/laiai-next/core/internal/identity"
+	"github.com/laiai/laiai-next/core/internal/invocation"
+	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+)
+
+// 音频模态（gap P2-F）。两个 OpenAI 兼容端点：
+//   /v1/audio/speech          —— TTS，JSON {model,input,voice}；按 input 字符数计价（SpeechCost）
+//   /v1/audio/transcriptions  —— STT，multipart(file+model)；按次固定价（TranscriptionPerCall，时长不可靠）
+// 资金语义与 image 同构：hold→capture 走 ledger，差额自动解冻。anthropic/gemini 不支持，回退报错。
+
+var errAudioUnsupported = fmt.Errorf("relay: provider does not serve openai-compatible audio")
+
+// audioUpstreamURL：拼接渠道的音频端点 URL（azure 用 deployments 形态）。
+func audioUpstreamURL(ch *Channel, model, suffix string) (string, string, string, error) {
+	adapterName := ch.Provider
+	if p, ok := ProfileFor(ch.Provider); ok {
+		adapterName = p.Adapter
+	}
+	authHeader, authValue := "Authorization", "Bearer "
+	switch adapterName {
+	case "azure":
+		// /openai/deployments/{model}/audio/{speech|transcriptions}?api-version=...
+		return strings.TrimRight(ch.BaseURL, "/") + "/openai/deployments/" + model + "/audio/" + suffix +
+			"?api-version=" + AzureAPIVersion, "api-key", "", nil
+	case "anthropic", "gemini":
+		return "", "", "", errAudioUnsupported
+	default:
+		return strings.TrimRight(ch.BaseURL, "/") + "/audio/" + suffix, authHeader, authValue, nil
+	}
+}
+
+// HandleAudioSpeech：POST /v1/audio/speech —— TTS。按输入字符数计价，响应为二进制音频透传。
+func (r *Relay) HandleAudioSpeech(c *gin.Context) {
+	t0 := r.Now()
+	rdb := r.DB.WithContext(c.Request.Context())
+	key, inv, finish, ok := r.audioPreamble(c, t0)
+	if !ok {
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxRequestBodySize))
+	if err != nil {
+		relayErr(c, http.StatusBadRequest, "cannot read request body")
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+		Input string `json:"input"`
+	}
+	if e := json.Unmarshal(body, &req); e != nil || req.Model == "" || req.Input == "" {
+		relayErr(c, http.StatusBadRequest, "model and input are required")
+		return
+	}
+	if code, msg, gok := keyGate(key, c.ClientIP(), req.Model); !gok {
+		relayErr(c, code, msg)
+		return
+	}
+	if rok, _ := r.allowModelRate(key.OrgID, req.Model); !rok {
+		c.Header("Retry-After", "60")
+		relayErr(c, http.StatusTooManyRequests, "model rate limit exceeded, slow down")
+		return
+	}
+	inv.Model = req.Model
+	price, err := GetPrice(rdb, req.Model)
+	if err != nil {
+		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", req.Model))
+		return
+	}
+	if !price.TTSPer1KChars.IsPositive() {
+		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not priced for text-to-speech", req.Model))
+		return
+	}
+
+	chars := int64(len([]rune(req.Input)))
+	groupRatio := EffectiveRatio(rdb, key.OrgID, req.Model)
+	cost := price.SpeechCost(chars).Mul(groupRatio) // TTS 确定性计价：字符数已知，hold=capture
+	hold, ok := r.audioHold(c, key, req.Model, cost, finish)
+	if !ok {
+		return
+	}
+
+	// 上游请求构建器（带模型映射）
+	build := func(ctx context.Context, ch *Channel, cred string) (*http.Request, error) {
+		url, ah, av, e := audioUpstreamURL(ch, ch.UpstreamModel(req.Model), "speech")
+		if e != nil {
+			return nil, e
+		}
+		upBody, _ := mappedRawBody(ch, body, req.Model)
+		hr, e := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(upBody))
+		if e != nil {
+			return nil, e
+		}
+		hr.Header.Set("Content-Type", "application/json")
+		hr.Header.Set(ah, av+cred)
+		return hr, nil
+	}
+	resp, ferr := r.audioForward(c, rdb, inv, req.Model, hold, build, finish)
+	if ferr {
+		return
+	}
+	defer resp.Body.Close()
+	if rid := resp.Header.Get("x-request-id"); rid != "" {
+		inv.UpstreamRequestID = rid
+	}
+	inv.FRTMs = int(r.Now().Sub(t0).Milliseconds())
+
+	// 二进制音频透传（content-type 来自上游，如 audio/mpeg）。不做 JSON content-type 校验。
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "audio/mpeg"
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		r.release(hold.ID)
+		finish(invocation.StatusUpstreamError, http.StatusBadGateway, "upstream response body unreadable")
+		relayErr(c, http.StatusBadGateway, "upstream read failed")
+		return
+	}
+	c.Data(http.StatusOK, ct, raw)
+
+	r.audioSettle(c, key, req.Model, hold, cost, fmt.Sprintf("tts model=%s chars=%d ×%s", req.Model, chars, groupRatio))
+	inv.PromptTokens = chars // 字符数记入 prompt 槽（语义：计价单位量）
+	inv.CostUSD = cost
+	finish(invocation.StatusSuccess, http.StatusOK, "")
+}
+
+// HandleAudioTranscription：POST /v1/audio/transcriptions —— STT。multipart(file+model)，
+// 按次固定价（时长不可靠，按次最稳妥）。响应 JSON 透传。
+func (r *Relay) HandleAudioTranscription(c *gin.Context) {
+	t0 := r.Now()
+	rdb := r.DB.WithContext(c.Request.Context())
+	key, inv, finish, ok := r.audioPreamble(c, t0)
+	if !ok {
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxRequestBodySize))
+	if err != nil {
+		relayErr(c, http.StatusBadRequest, "cannot read request body")
+		return
+	}
+	ctHeader := c.GetHeader("Content-Type")
+	model := multipartField(body, ctHeader, "model")
+	if model == "" {
+		relayErr(c, http.StatusBadRequest, "multipart form with a model field is required")
+		return
+	}
+	if code, msg, gok := keyGate(key, c.ClientIP(), model); !gok {
+		relayErr(c, code, msg)
+		return
+	}
+	if rok, _ := r.allowModelRate(key.OrgID, model); !rok {
+		c.Header("Retry-After", "60")
+		relayErr(c, http.StatusTooManyRequests, "model rate limit exceeded, slow down")
+		return
+	}
+	inv.Model = model
+	price, err := GetPrice(rdb, model)
+	if err != nil {
+		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", model))
+		return
+	}
+	if !price.TranscriptionPerCall.IsPositive() {
+		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not priced for transcription", model))
+		return
+	}
+
+	groupRatio := EffectiveRatio(rdb, key.OrgID, model)
+	cost := price.TranscriptionPerCall.Mul(groupRatio) // 按次固定，hold=capture
+	hold, ok := r.audioHold(c, key, model, cost, finish)
+	if !ok {
+		return
+	}
+
+	// 透传原始 multipart body（含 boundary）。模型映射不作用于 multipart 字段（已知限制）。
+	build := func(ctx context.Context, ch *Channel, cred string) (*http.Request, error) {
+		url, ah, av, e := audioUpstreamURL(ch, model, "transcriptions")
+		if e != nil {
+			return nil, e
+		}
+		hr, e := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if e != nil {
+			return nil, e
+		}
+		hr.Header.Set("Content-Type", ctHeader) // 保留原 boundary
+		hr.Header.Set(ah, av+cred)
+		return hr, nil
+	}
+	resp, ferr := r.audioForward(c, rdb, inv, model, hold, build, finish)
+	if ferr {
+		return
+	}
+	defer resp.Body.Close()
+	if rid := resp.Header.Get("x-request-id"); rid != "" {
+		inv.UpstreamRequestID = rid
+	}
+	inv.FRTMs = int(r.Now().Sub(t0).Milliseconds())
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		r.release(hold.ID)
+		finish(invocation.StatusUpstreamError, http.StatusBadGateway, "upstream response body unreadable")
+		relayErr(c, http.StatusBadGateway, "upstream read failed")
+		return
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "application/json"
+	}
+	c.Data(http.StatusOK, ct, raw)
+
+	r.audioSettle(c, key, model, hold, cost, fmt.Sprintf("transcription model=%s ×%s", model, groupRatio))
+	inv.CostUSD = cost
+	finish(invocation.StatusSuccess, http.StatusOK, "")
+}
+
+// —— 音频处理共用件 ——
+
+// audioPreamble：auth + invocation 初始化 + finish 闭包（与 images 同构）。
+func (r *Relay) audioPreamble(c *gin.Context, t0 time.Time) (*identity.APIKey, *invocation.Invocation, func(string, int, string), bool) {
+	auth := c.GetHeader("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		relayErr(c, http.StatusUnauthorized, "missing api key")
+		return nil, nil, nil, false
+	}
+	key, err := identity.VerifyKey(r.DB.WithContext(c.Request.Context()), strings.TrimPrefix(auth, "Bearer "), r.Now())
+	if err != nil {
+		relayErr(c, http.StatusUnauthorized, "invalid api key")
+		return nil, nil, nil, false
+	}
+	inv := &invocation.Invocation{OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID, RequestID: newRequestID()}
+	c.Header("X-Request-Id", inv.RequestID)
+	finish := func(status string, code int, brief string) {
+		if r.Rec == nil {
+			return
+		}
+		inv.Status, inv.StatusCode, inv.ErrorBrief = status, code, brief
+		inv.DurationMs = int(r.Now().Sub(t0).Milliseconds())
+		r.Rec.Record(inv)
+	}
+	return key, inv, finish, true
+}
+
+// audioHold：建 hold（余额不足/失败已转译响应）。
+func (r *Relay) audioHold(c *gin.Context, key *identity.APIKey, model string, amount decimal.Decimal, finish func(string, int, string)) (*ledger.Hold, bool) {
+	var hold *ledger.Hold
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		acc, e := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
+		if e != nil {
+			return e
+		}
+		h, _, e := ledger.CreateHold(tx, ledger.HoldInput{
+			IdempotencyKey: fmt.Sprintf("audio:%d:%d", key.ID, r.Now().UnixNano()),
+			AccountID:      acc.ID, Amount: amount, RefType: "usage", RefID: model,
+		})
+		hold = h
+		return e
+	})
+	if err != nil {
+		if errors.Is(err, ledger.ErrInsufficientBalance) {
+			finish(invocation.StatusInsufficientBalance, http.StatusPaymentRequired, "insufficient balance")
+			relayErr(c, http.StatusPaymentRequired, "insufficient balance")
+			return nil, false
+		}
+		r.Log.Error("audio hold failed", "err", err)
+		relayErr(c, http.StatusInternalServerError, "billing error")
+		return nil, false
+	}
+	return hold, true
+}
+
+// audioForward：换渠道重试转发（与 images 同款分类驱动）。返回成功的 *http.Response；
+// 第二返回值 true 表示已结束（已 release hold + 写响应），调用方应直接 return。
+func (r *Relay) audioForward(c *gin.Context, rdb *gorm.DB, inv *invocation.Invocation, model string, hold *ledger.Hold,
+	build func(context.Context, *Channel, string) (*http.Request, error), finish func(string, int, string)) (*http.Response, bool) {
+	var resp *http.Response
+	exclude := map[uint64]bool{}
+	var lastStatus int
+	var lastBody []byte
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		ch, pickErr := PickChannelForAttempt(rdb, model, attempt, exclude, r.healthFactor)
+		if pickErr != nil {
+			break
+		}
+		inv.Attempts = attempt + 1
+		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
+		cred, e := r.Keyring.Decrypt(ch.CredentialEnc)
+		if e != nil {
+			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "err", e)
+			exclude[ch.ID] = true
+			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
+			continue
+		}
+		upReq, e := build(c.Request.Context(), ch, cred)
+		if e != nil {
+			r.release(hold.ID)
+			if e == errAudioUnsupported {
+				finish(invocation.StatusUpstreamError, http.StatusBadRequest, "provider lacks audio")
+				relayErr(c, http.StatusBadRequest, fmt.Sprintf("provider %q does not support audio", ch.Provider))
+				return nil, true
+			}
+			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
+			return nil, true
+		}
+		resp, e = r.clientFor(ch).Do(upReq)
+		if e != nil {
+			r.Log.Warn("audio upstream unreachable", "channel", ch.ID, "err", e)
+			r.observe(ch.ID, false)
+			exclude[ch.ID] = true
+			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
+			resp = nil
+			continue
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			r.enableChannelIfDisabled(ch)
+			return resp, false
+		}
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		resp.Body.Close()
+		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
+		if disp.Retryable || disp.DisableChannel {
+			r.observe(ch.ID, false)
+		}
+		if disp.DisableChannel {
+			r.noteFailure(ch.ID, disp.Reason)
+		}
+		lastStatus, lastBody = resp.StatusCode, errBody
+		resp = nil
+		if !disp.Retryable {
+			break
+		}
+		exclude[ch.ID] = true
+	}
+	// 全失败：释放 hold 并转译响应
+	r.release(hold.ID)
+	if lastStatus == 0 {
+		finish(invocation.StatusNoChannel, http.StatusServiceUnavailable, "no upstream available")
+		relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
+		return nil, true
+	}
+	finish(invocation.StatusUpstreamError, lastStatus, fmt.Sprintf("upstream status %d after %d attempts", lastStatus, inv.Attempts))
+	c.Data(lastStatus, "application/json", lastBody)
+	return nil, true
+}
+
+// audioSettle：确定性计价结算（cost 即 hold，正常无 overage）。
+func (r *Relay) audioSettle(c *gin.Context, key *identity.APIKey, model string, hold *ledger.Hold, cost decimal.Decimal, reason string) {
+	_ = c
+	defer func() { _ = identity.AddKeyUsage(r.DB, key.ID, cost) }()
+	if err := r.DB.Transaction(func(tx *gorm.DB) error {
+		_, e := ledger.SettleHoldExact(tx, hold.ID, cost, "usage", model, reason)
+		return e
+	}); err != nil {
+		r.Log.Error("AUDIO SETTLE FAILED — manual reconcile needed", "hold", hold.ID, "err", err)
+	}
+}
+
+// multipartField：从 multipart body 提取某个非文件表单字段值（用于取 transcription 的 model）。
+// 解析失败/无该字段返回 ""。只读 boundary 解析，不消费原始 body（调用方仍持原 body 透传）。
+func multipartField(body []byte, contentType, field string) string {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return ""
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		return ""
+	}
+	mr := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, e := mr.NextPart()
+		if e != nil {
+			return ""
+		}
+		if part.FormName() == field && part.FileName() == "" {
+			val, _ := io.ReadAll(io.LimitReader(part, 1<<16))
+			return strings.TrimSpace(string(val))
+		}
+		_ = part.Close()
+	}
+}
