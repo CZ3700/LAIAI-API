@@ -158,6 +158,7 @@ export default {
     send: 'Envoyer',
     stop: 'Arrêter',
     noReply: 'Le fournisseur n’a renvoyé aucun contenu — vérifiez que le canal/modèle est joignable et que la clé API a accès.',
+    nonChatModel: 'Ce modèle est de type {category} — le playground ne gère que les modèles texte/chat. Appelez-le directement via l’API.',
     usage: 'Usage : {input} entrée / {output} sortie tokens',
   },  usage: {
     title: 'Utilisation',

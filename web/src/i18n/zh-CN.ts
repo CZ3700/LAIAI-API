@@ -158,6 +158,7 @@ export default {
     send: '发送',
     stop: '停止',
     noReply: '上游未返回内容 —— 请检查渠道/模型是否可用、API Key 是否有权限。',
+    nonChatModel: '这是 {category} 模型 —— 体验场仅支持文本/对话模型，请直接通过 API 调用。',
     usage: '用量：输入 {input} / 输出 {output} token',
   },  usage: {
     title: '用量',

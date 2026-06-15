@@ -158,6 +158,7 @@ export default {
     send: 'Gửi',
     stop: 'Dừng',
     noReply: 'Thượng nguồn không trả về nội dung — kiểm tra kênh/mô hình có truy cập được và API key có quyền.',
+    nonChatModel: 'Đây là mô hình {category} — playground chỉ hỗ trợ mô hình văn bản/chat. Hãy gọi trực tiếp qua API.',
     usage: 'Sử dụng: {input} vào / {output} ra token',
   },  usage: {
     title: 'Mức sử dụng',

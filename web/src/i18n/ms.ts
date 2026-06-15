@@ -158,6 +158,7 @@ export default {
     send: 'Hantar',
     stop: 'Henti',
     noReply: 'Huluan tidak mengembalikan kandungan — semak saluran/model boleh dicapai dan kunci API mempunyai akses.',
+    nonChatModel: 'Ini model {category} — playground hanya menyokong model teks/chat. Panggil terus melalui API.',
     usage: 'Penggunaan: {input} masuk / {output} keluar token',
   },  usage: {
     title: 'Penggunaan',

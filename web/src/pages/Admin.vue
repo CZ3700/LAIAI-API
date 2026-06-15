@@ -131,7 +131,8 @@ const tab = ref<'overview' | 'analytics' | 'health' | 'channels' | 'payments' | 
 
 // 标签分级（对标后端 RBAC）：资金/系统/定价类仅 superadmin 可见，admin 看运营类。
 const ALL_TABS = ['overview', 'analytics', 'health', 'channels', 'payments', 'prices', 'groups', 'orgs', 'users', 'logs', 'settings', 'audit'] as const
-const SUPER_ONLY_TABS = new Set(['payments', 'groups', 'settings'])
+// logs（全局调用明细）跨租户 → superadmin-only（配合后端 P2-3 把 /invocations 收归超管）
+const SUPER_ONLY_TABS = new Set(['payments', 'groups', 'settings', 'logs'])
 const visibleTabs = computed(() => ALL_TABS.filter((tb) => auth.isSuperadmin || !SUPER_ONLY_TABS.has(tb)))
 
 // —— 运营分析（资金 / 用户 / 质量 颗粒度） ——
@@ -958,7 +959,13 @@ async function submitGrant() {
 
 async function loadAll() {
   try {
-    await Promise.all([loadOverview(), loadChannels(), loadPrices(), loadCatalog(), loadOrgs(), loadGroupRatios(), loadModelGroupRatios()])
+    // 运营(admin)可见的资源；group-ratios/model-group-ratios 是 superadmin-only 端点，
+    // 非超管加载会 403——按角色分支，避免后台首屏报错（FE-1，配合后端 RBAC）。
+    const tasks = [loadOverview(), loadChannels(), loadPrices(), loadCatalog(), loadOrgs()]
+    if (auth.isSuperadmin) {
+      tasks.push(loadGroupRatios(), loadModelGroupRatios())
+    }
+    await Promise.all(tasks)
   } catch (e) {
     showError(e)
   }

@@ -159,6 +159,7 @@ const messages = {
     send: 'Send',
     stop: 'Stop',
     noReply: 'Upstream returned no content — check the channel/model is reachable and the API key has access.',
+    nonChatModel: 'This is a {category} model — the chat playground only supports text/chat models. Call it directly via the API.',
     usage: 'Usage: {input} in / {output} out tokens',
   },  usage: {
     title: 'Usage',

@@ -157,6 +157,7 @@ export default {
     send: '送信',
     stop: '停止',
     noReply: '上流からの応答が空です —— チャネル/モデルの到達性と API キーの権限を確認してください。',
+    nonChatModel: 'これは {category} モデルです —— プレイグラウンドはテキスト/チャットモデルのみ対応。API から直接呼び出してください。',
     usage: '使用量：入力 {input} / 出力 {output} トークン',
   },  usage: {
     title: '使用量',

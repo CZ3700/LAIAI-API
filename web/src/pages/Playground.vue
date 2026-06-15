@@ -1,12 +1,20 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/lib/api'
 
 interface PricedModel {
   model: string
   provider: string
+  category?: string // 后端模型元数据的模态/分类（chat/image/audio/embedding…）
 }
+
+// 非对话模态：chat playground 只发 /v1/chat/completions，这些模型应引导走 API（FE-4）。
+const NON_CHAT_CATEGORIES = new Set([
+  'image', 'images', 'audio', 'tts', 'stt', 'speech', 'transcription',
+  'embedding', 'embeddings', 'rerank', 'moderation', 'video',
+])
 interface Msg {
   role: 'user' | 'assistant'
   content: string
@@ -38,8 +46,16 @@ const error = ref('')
 const lastUsage = ref<{ prompt_tokens: number; completion_tokens: number } | null>(null)
 let abort: AbortController | null = null
 
+const route = useRoute()
 const scrollEl = ref<HTMLElement | null>(null)
-const canSend = computed(() => !!apiKey.value && !!model.value && !!input.value.trim() && !sending.value)
+// 当前选中模型的分类（来自后端 /api/pricing 元数据），用于多模态路由判断（FE-4）
+const selectedCategory = computed(
+  () => models.value.find((m) => m.model === model.value)?.category?.toLowerCase() ?? '',
+)
+const isChatModel = computed(() => !NON_CHAT_CATEGORIES.has(selectedCategory.value))
+const canSend = computed(
+  () => !!apiKey.value && !!model.value && !!input.value.trim() && !sending.value && isChatModel.value,
+)
 
 async function toBottom() {
   await nextTick()
@@ -50,9 +66,14 @@ onMounted(async () => {
   try {
     const r = await api<{ models: PricedModel[] }>('GET', '/api/pricing')
     models.value = r.models
-    if (r.models.length) model.value = r.models[0].model
+    // FE-3：从路由 ?model= 预填（模型市场页"试用"跳转过来）；命中列表则选中，否则作手填值。
+    const qModel = typeof route.query.model === 'string' ? route.query.model : ''
+    if (qModel) model.value = qModel
+    else if (r.models.length) model.value = r.models[0].model
   } catch {
     // 无价目不阻塞：用户仍可手填模型名（input fallback 见模板）
+    const qModel = typeof route.query.model === 'string' ? route.query.model : ''
+    if (qModel) model.value = qModel
   }
 })
 
@@ -237,6 +258,10 @@ async function send() {
       </div>
     </div>
 
+    <!-- FE-4：非对话模态模型不能在 chat playground 里调，引导走 API -->
+    <p v-if="model && !isChatModel" class="text-sm text-amber-500" role="alert">
+      {{ t('play.nonChatModel', { category: selectedCategory }) }}
+    </p>
     <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
     <p v-if="lastUsage" class="text-xs text-muted">
       {{ t('play.usage', { input: lastUsage.prompt_tokens, output: lastUsage.completion_tokens }) }}

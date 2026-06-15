@@ -37,6 +37,10 @@ const selectedAmount = ref(20)
 const selectedProvider = ref('')
 const creating = ref(false)
 const error = ref('')
+// FE-5：区分"加载失败"与"确实为空"——加载失败时不该显示"暂无…"误导用户
+const methodsErr = ref(false)
+const ordersErr = ref(false)
+const ledgerErr = ref(false)
 
 // 充值阶梯优惠（gap P1-D）：从 methods 接口拿配置，前端按所选金额预览赠额。
 const bonusTiers = ref<{ min_usd: string; rate: string }[]>([])
@@ -97,6 +101,7 @@ async function load() {
     balance.value = bal.value.balance
     held.value = bal.value.held
   }
+  methodsErr.value = m.status === 'rejected'
   if (m.status === 'fulfilled') {
     methods.value = m.value.methods
     amountOptions.value = m.value.amount_options
@@ -107,8 +112,10 @@ async function load() {
       bonusTiers.value = []
     }
   }
+  ordersErr.value = o.status === 'rejected'
   if (o.status === 'fulfilled') orders.value = o.value.orders
   if (a.status === 'fulfilled') aff.value = a.value
+  ledgerErr.value = lg.status === 'rejected'
   if (lg.status === 'fulfilled') ledger.value = lg.value.items
 }
 
@@ -150,7 +157,8 @@ onMounted(load)
     <!-- 充值 -->
     <div class="card p-6 space-y-5">
       <h2 class="font-semibold">{{ t('wallet.topup') }}</h2>
-      <p v-if="noMethods" class="text-sm text-muted">{{ t('wallet.noMethods') }}</p>
+      <p v-if="methodsErr" class="text-sm text-danger" role="alert">{{ t('common.error') }}</p>
+      <p v-else-if="noMethods" class="text-sm text-muted">{{ t('wallet.noMethods') }}</p>
       <template v-else>
         <div>
           <label class="label">{{ t('wallet.amount') }}</label>
@@ -221,7 +229,10 @@ onMounted(load)
             </tr>
           </thead>
           <tbody>
-            <tr v-if="ledger.length === 0">
+            <tr v-if="ledgerErr">
+              <td colspan="5" class="px-4 py-8 text-center text-danger">{{ t('common.error') }}</td>
+            </tr>
+            <tr v-else-if="ledger.length === 0">
               <td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
             </tr>
             <tr v-for="e in ledger" :key="e.id" class="border-b border-line last:border-0">
@@ -252,7 +263,10 @@ onMounted(load)
             </tr>
           </thead>
           <tbody>
-            <tr v-if="orders.length === 0">
+            <tr v-if="ordersErr">
+              <td colspan="4" class="px-4 py-8 text-center text-danger">{{ t('common.error') }}</td>
+            </tr>
+            <tr v-else-if="orders.length === 0">
               <td colspan="4" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
             </tr>
             <tr v-for="o in orders" :key="o.id" class="border-b border-line last:border-0">
