@@ -17,7 +17,8 @@ type Config struct {
 	AuthSecret []byte          // LAIAI_AUTH_SECRET，必填且 >= 32 字符（session token HMAC）
 	AdminToken []byte          // LAIAI_ADMIN_TOKEN，可选；设置则须 >= 32 字符，未设置 admin API 整组禁用
 	Keyring    *crypto.Keyring // LAIAI_DATA_KEYS + LAIAI_DATA_KEY_ACTIVE，可选；未设置则渠道管理/relay 禁用
-	RedisAddr  string          // LAIAI_REDIS_ADDR，可选（M2 起 asynq/限流需要）
+	RedisAddr     string       // LAIAI_REDIS_ADDR，可选（跨实例限流需要；空=退化进程内限流）
+	RedisPassword string       // LAIAI_REDIS_PASSWORD，可选（compose 的 redis 启用 requirepass）
 	// LAIAI_INVOCATION_RETENTION_DAYS：Invocation Store 保留天数（设计 §6.1 默认 30；0 = 关闭清理）
 	InvocationRetentionDays int
 	// SMTP（0014，可选）：全空 = 邮件退化为日志，不真实发送
@@ -33,7 +34,8 @@ func Load() (*Config, error) {
 	c := &Config{
 		DSN:        os.Getenv("LAIAI_DSN"),
 		ListenAddr: getenvDefault("LAIAI_LISTEN_ADDR", ":8080"),
-		RedisAddr:  os.Getenv("LAIAI_REDIS_ADDR"),
+		RedisAddr:     os.Getenv("LAIAI_REDIS_ADDR"),
+		RedisPassword: os.Getenv("LAIAI_REDIS_PASSWORD"),
 	}
 	if c.DSN == "" {
 		return nil, fmt.Errorf("config: LAIAI_DSN is required")

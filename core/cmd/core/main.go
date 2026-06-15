@@ -18,6 +18,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/mailer"
 	"github.com/laiai/laiai-next/core/internal/server"
 	"github.com/laiai/laiai-next/core/internal/task"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -72,6 +73,13 @@ func main() {
 		}()
 	}
 
+	// 跨实例限流：配了 LAIAI_REDIS_ADDR 才接 Redis；否则 relay 退化进程内限流（单实例正确）。
+	var redisRL *redis.Client
+	if cfg.RedisAddr != "" {
+		redisRL = redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, Password: cfg.RedisPassword})
+		log.Info("redis rate limiter enabled", "addr", cfg.RedisAddr)
+	}
+
 	handler, apiSrv := server.NewWithServer(db, server.Options{
 		AuthSecret:  cfg.AuthSecret,
 		AdminToken:  cfg.AdminToken,
@@ -84,6 +92,7 @@ func main() {
 		}, log.With("component", "mailer")),
 		Log:                     log,
 		InvocationRetentionDays: cfg.InvocationRetentionDays, // ext_settings.log_retention_days 未配置时的回退默认
+		RedisRateLimiter:        redisRL,
 	})
 
 	// 后台维护循环（每小时）：旧日志保留期清理（调用日志 + 审计日志，运营可热配，gap P2-C）

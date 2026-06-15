@@ -56,6 +56,7 @@ services:
       LAIAI_DATA_KEY_ACTIVE: ${LAIAI_DATA_KEY_ACTIVE:-}
       LAIAI_INVOCATION_RETENTION_DAYS: ${LAIAI_INVOCATION_RETENTION_DAYS:-30}
       LAIAI_REDIS_ADDR: "redis:6379"
+      LAIAI_REDIS_PASSWORD: ${REDIS_PASSWORD:?set in .env} # 跨实例限流连 redis（requirepass）
       LAIAI_LISTEN_ADDR: ":8080"
     read_only: true
     tmpfs:

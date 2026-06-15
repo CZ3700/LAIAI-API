@@ -57,9 +57,11 @@ type Relay struct {
 	proxyMu      sync.Mutex
 	proxyClients map[string]*http.Client
 
-	// 模型级限流（gap #2）：每 (org, model) 固定 60s 窗口计数。**进程内**——单实例正确；
-	// 多实例需换 Redis（设计 §4.4 限流红线；LAIAI_REDIS_ADDR 已预留，未接线）。
-	// 策略(开关+RPM)从 ext_settings 读，带 5s 缓存避免每请求打库。
+	// 模型级限流（gap #2）：每 (org, model) 固定 60s 窗口计数。策略(开关+RPM)从 ext_settings
+	// 读，带 5s 缓存避免每请求打库。rate 非 nil（生产接入 Redis）→ 跨实例原子计数；
+	// nil（单实例/未配 Redis）→ 退化为下面的进程内窗口。Redis 出错一律 fail-open（绝不因
+	// 限流基础设施抖动挡住付费流量，P2-2 用户体验红线）。
+	rate         rateCounter
 	rateMu       sync.Mutex
 	rateWindows  map[string]*rateWindow
 	rateLastEvic time.Time

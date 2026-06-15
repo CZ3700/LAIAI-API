@@ -15,6 +15,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/mailer"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/task"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
 	"gorm.io/gorm"
 )
@@ -29,6 +30,8 @@ type Options struct {
 	AuthRateBurst int
 	Mailer        mailer.Mailer // 邮件发送；nil = 邮件功能禁用（验证端点 503）
 	Log           *slog.Logger
+	// RedisRateLimiter：接入 Redis 跨实例限流（多实例部署用）；nil = relay 退化进程内限流。
+	RedisRateLimiter *redis.Client
 	// InvocationRetentionDays：调用日志保留天数的「启动期默认」（env 注入）。
 	// 运营可用 ext_settings.log_retention_days 热覆盖；该值仅作未配置时的回退。0 = 永久保留。
 	InvocationRetentionDays int
@@ -90,6 +93,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 	var rl *relay.Relay
 	if opts.Keyring != nil {
 		rl = relay.New(db, opts.Keyring, opts.Recorder, log.With("component", "relay"))
+		rl.UseRedisRateLimiter(opts.RedisRateLimiter) // 非 nil 才接入；nil 退化进程内限流
 		s.relay = rl
 	}
 
