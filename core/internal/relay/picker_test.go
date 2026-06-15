@@ -26,6 +26,11 @@ func pickerDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 单连接：:memory: 下每条连接是独立库——noteFailure→disableChannel 的异步 goroutine
+	// 必须与前台读写共享同一库，否则按连接命中不同空库，导致 autodisable 测试时序性 flaky。
+	if sqlDB, e := db.DB(); e == nil {
+		sqlDB.SetMaxOpenConns(1)
+	}
 	if err := db.Exec(pickerSchema).Error; err != nil {
 		t.Fatal(err)
 	}

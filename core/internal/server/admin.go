@@ -40,13 +40,14 @@ func (s *Server) resolveAdmin(c *gin.Context) (label, role string, uid uint64, o
 		if err == nil {
 			var u identity.User
 			if e := s.db.WithContext(c.Request.Context()).
-				Select("id, email, role, status").First(&u, claims.UserID).Error; e == nil &&
+				Select("id, role, status").First(&u, claims.UserID).Error; e == nil &&
 				u.Status == identity.StatusActive {
 				r := u.Role
 				if r == "" {
 					r = identity.PlatRoleUser
 				}
-				return fmt.Sprintf("user#%d %s(%s)", u.ID, u.Email, r), r, u.ID, true
+				// 审计标签只存 user#id(role)，不含 email（P2-4：审计日志禁 PII，红线 8）
+				return fmt.Sprintf("user#%d(%s)", u.ID, r), r, u.ID, true
 			}
 		}
 	}
@@ -134,11 +135,15 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 		case "subtract":
 			delta, kind, refType = amount.Neg(), ledger.KindDebit, "admin_debit"
 		case "override":
-			// 注：delta 据非锁读的 PostedBalance 计算；授信是单人低频操作，竞态可忽略，
-			// 幂等键兜底重放。Post 内部行锁保证最终一致。
-			delta = amount.Sub(acc.PostedBalance)
+			// P2-12 严格：行锁读余额再算 delta=目标-当前，并持锁到事务结束，
+			// 确保 Post 看到同一余额 → 订正精确落到目标（旧实现用非锁读，并发会订偏）。
+			locked, lerr := ledger.LockAccount(tx, acc.ID)
+			if lerr != nil {
+				return lerr
+			}
+			delta = amount.Sub(locked.PostedBalance)
 			if delta.IsZero() {
-				noop, balanceAfter = true, acc.PostedBalance
+				noop, balanceAfter = true, locked.PostedBalance
 				return nil // 已等于目标，无需过账
 			}
 			if delta.IsNegative() {

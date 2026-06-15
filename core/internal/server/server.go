@@ -174,7 +174,6 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.GET("/overview", s.adminOverview)
 			admin.GET("/analytics", s.adminAnalytics)
 			admin.GET("/channel-health", s.adminChannelHealth) // M2 渠道健康看板
-			admin.GET("/invocations", s.adminListInvocations)
 			admin.GET("/audit-logs", s.adminListAuditLogs)
 			admin.GET("/users", s.adminListUsers)
 			admin.POST("/users/:id/manage", s.adminManageUser)     // 含 targetRole 守卫（不能动同级/更高）
@@ -186,6 +185,8 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			// —— superadmin 级（资金 / 系统设置 / 定价策略 / 授权）——（对标 NewAPI RootAuth）
 			su := admin.Group("", s.requireSuperadmin())
 			{
+				// 跨租户全平台调用明细（org_id/user_id/model/cost）：限 superadmin（P2-3）
+				su.GET("/invocations", s.adminListInvocations)
 				su.POST("/credits", s.adminGrantCredit)             // 授信入金（动钱）
 				su.GET("/settings", s.adminGetSettings)             // 系统设置
 				su.PUT("/settings", s.adminSetSettings)

@@ -30,11 +30,15 @@ func TestRBACTierSplit(t *testing.T) {
 			t.Fatalf("admin GET %s = %d, want 200", p, w.Code)
 		}
 	}
-	// superadmin 级：admin 一律 403（资金/系统/定价）
-	for _, p := range []string{"/api/admin/settings", "/api/admin/group-ratios", "/api/admin/payment-channels", "/api/admin/payment-config"} {
+	// superadmin 级：admin 一律 403（资金/系统/定价 + P2-3 跨租户调用明细）
+	for _, p := range []string{"/api/admin/settings", "/api/admin/group-ratios", "/api/admin/payment-channels", "/api/admin/payment-config", "/api/admin/invocations"} {
 		if w, _ := srv.do(t, "GET", p, adminTok, nil); w.Code != 403 {
 			t.Fatalf("admin GET %s = %d, want 403 (superadmin-only)", p, w.Code)
 		}
+	}
+	// P2-3：superadmin 可见跨租户调用明细
+	if w, _ := srv.do(t, "GET", "/api/admin/invocations", suTok, nil); w.Code != 200 {
+		t.Fatalf("superadmin invocations = %d, want 200", w.Code)
 	}
 	// 授信（动钱）：admin 403
 	if w, _ := srv.do(t, "POST", "/api/admin/credits", adminTok,
@@ -49,6 +53,18 @@ func TestRBACTierSplit(t *testing.T) {
 	// 等级守卫：admin 能封普通用户，封不动同级 admin / 更高 superadmin
 	if w, _ := srv.do(t, "POST", manage(victimUID), adminTok, map[string]any{"action": "ban"}); w.Code != 200 {
 		t.Fatalf("admin ban common user = %d, want 200", w.Code)
+	}
+	// P2-4：审计 actor 只存 user#id(role)，不含 email（PII，红线 8）
+	{
+		var actor string
+		db.Raw(`SELECT actor FROM audit_logs ORDER BY id DESC LIMIT 1`).Scan(&actor)
+		want := fmt.Sprintf("user#%d(admin)", adminUID)
+		if actor != want {
+			t.Fatalf("audit actor = %q, want %q (no email)", actor, want)
+		}
+		if strings.Contains(actor, "@") {
+			t.Fatalf("audit actor leaks email: %q", actor)
+		}
 	}
 	if w, _ := srv.do(t, "POST", manage(suUID), adminTok, map[string]any{"action": "ban"}); w.Code != 403 {
 		t.Fatalf("admin ban superadmin = %d, want 403", w.Code)

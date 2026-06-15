@@ -40,6 +40,13 @@ func (s *Server) sendVerification(c *gin.Context) {
 		fail(c, http.StatusServiceUnavailable, "email is not configured")
 		return
 	}
+	// P2-5 fail-closed：验证已启用却无真实投递（logMailer）→ 明确 503，绝不谎报已发
+	// （否则验证码只进服务器日志：真实用户收不到、且日志读者可见，验证名存实亡）。
+	if s.getBoolSetting("email_verification_enabled") && !s.mailer.Active() {
+		s.Log().Error("email_verification_enabled but no real mailer (SMTP) configured — failing closed")
+		fail(c, http.StatusServiceUnavailable, "email delivery is not configured; cannot send verification code")
+		return
+	}
 	var req struct {
 		Email string `json:"email" binding:"required"`
 	}
@@ -69,10 +76,17 @@ func (s *Server) sendVerification(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "could not store verification")
 		return
 	}
-	// 发送（LogMailer 打日志；SMTP 真发）。失败只记日志不阻断（用户可重发）。
+	// 发送（LogMailer 打日志；SMTP 真发）。
 	site := s.getSetting("site_name")
-	_ = s.mailer.Send(req.Email, site+" verification code",
-		"Your "+site+" verification code is: "+code+"\n\nIt expires in 10 minutes.")
+	if err := s.mailer.Send(req.Email, site+" verification code",
+		"Your "+site+" verification code is: "+code+"\n\nIt expires in 10 minutes."); err != nil {
+		// 真实投递失败不谎报已发（fail-closed）；logMailer 永不返错故只命中 Active 分支
+		if s.mailer.Active() {
+			s.Log().Error("verification email send failed", "err", err)
+			fail(c, http.StatusBadGateway, "could not send verification email, please retry")
+			return
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"sent": true})
 }
 

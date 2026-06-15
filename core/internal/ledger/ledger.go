@@ -448,6 +448,10 @@ func CheckDrift(db *gorm.DB) ([]AccountDrift, error) {
 
 // ---- internal ----
 
+// LockAccount 行锁读取账户余额（导出供需要"先锁再据余额决策"的调用方，如 admin override
+// 精确订正）。必须在调用方事务内调用；锁持有到事务结束，期间余额不被他人改动。
+func LockAccount(tx *gorm.DB, id uint64) (*Account, error) { return lockAccount(tx, id) }
+
 // lockAccount 行锁取账户（MySQL: SELECT ... FOR UPDATE；SQLite 测试方言无行锁，事务串行化兜底）。
 func lockAccount(tx *gorm.DB, id uint64) (*Account, error) {
 	acc := &Account{}
