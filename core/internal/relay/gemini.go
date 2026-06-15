@@ -192,8 +192,9 @@ func (geminiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 }
 
 type geminiUsage struct {
-	PromptTokenCount     int64 `json:"promptTokenCount"`
-	CandidatesTokenCount int64 `json:"candidatesTokenCount"`
+	PromptTokenCount        int64 `json:"promptTokenCount"`        // 含缓存部分（Gemini 口径，总输入）
+	CandidatesTokenCount    int64 `json:"candidatesTokenCount"`
+	CachedContentTokenCount int64 `json:"cachedContentTokenCount"` // promptTokenCount 的缓存子集（折扣价）
 }
 
 type geminiCandidate struct {
@@ -262,10 +263,12 @@ func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error
 			"prompt_tokens":     resp.UsageMetadata.PromptTokenCount,
 			"completion_tokens": resp.UsageMetadata.CandidatesTokenCount,
 			"total_tokens":      resp.UsageMetadata.PromptTokenCount + resp.UsageMetadata.CandidatesTokenCount,
+			"prompt_tokens_details": gin.H{"cached_tokens": resp.UsageMetadata.CachedContentTokenCount},
 		},
 	})
-	return usage{PromptTokens: resp.UsageMetadata.PromptTokenCount,
-		CompletionTokens: resp.UsageMetadata.CandidatesTokenCount}, len(raw), nil
+	u := usage{PromptTokens: resp.UsageMetadata.PromptTokenCount, CompletionTokens: resp.UsageMetadata.CandidatesTokenCount}
+	u.PromptTokensDetails.CachedTokens = resp.UsageMetadata.CachedContentTokenCount // 缓存折扣计费（P2-9）
+	return u, len(raw), nil
 }
 
 func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error) {
@@ -301,7 +304,8 @@ func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error)
 		}
 		if chunk.UsageMetadata != nil {
 			u.PromptTokens = chunk.UsageMetadata.PromptTokenCount
-			u.CompletionTokens = chunk.UsageMetadata.CandidatesTokenCount // 累计值，取最后一次
+			u.CompletionTokens = chunk.UsageMetadata.CandidatesTokenCount        // 累计值，取最后一次
+			u.PromptTokensDetails.CachedTokens = chunk.UsageMetadata.CachedContentTokenCount // 缓存折扣（P2-9）
 		}
 		if len(chunk.Candidates) == 0 {
 			return

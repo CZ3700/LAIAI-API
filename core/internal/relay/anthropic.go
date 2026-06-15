@@ -175,8 +175,15 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 }
 
 type anthropicUsage struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`     // 命中缓存的输入（折扣价）
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"` // 写缓存的输入（按输入价计，宁少不多）
+}
+
+// promptTotal：Anthropic 的 input_tokens 不含缓存读/写部分，总输入需相加（否则少计 prompt）。
+func (u anthropicUsage) promptTotal() int64 {
+	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }
 
 func mapStopReason(r string) string {
@@ -253,13 +260,16 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 			"finish_reason": mapStopReason(resp.StopReason),
 		}},
 		"usage": gin.H{
-			"prompt_tokens":     resp.Usage.InputTokens,
+			"prompt_tokens":     resp.Usage.promptTotal(),
 			"completion_tokens": resp.Usage.OutputTokens,
-			"total_tokens":      resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			"total_tokens":      resp.Usage.promptTotal() + resp.Usage.OutputTokens,
+			"prompt_tokens_details": gin.H{"cached_tokens": resp.Usage.CacheReadInputTokens},
 		},
 	}
 	c.JSON(http.StatusOK, converted)
-	return usage{PromptTokens: resp.Usage.InputTokens, CompletionTokens: resp.Usage.OutputTokens}, len(raw), nil
+	u := usage{PromptTokens: resp.Usage.promptTotal(), CompletionTokens: resp.Usage.OutputTokens}
+	u.PromptTokensDetails.CachedTokens = resp.Usage.CacheReadInputTokens // 缓存读按折扣价计费（P2-9）
+	return u, len(raw), nil
 }
 
 func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error) {
@@ -313,7 +323,8 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 		}
 		switch ev.Type {
 		case "message_start":
-			u.PromptTokens = ev.Message.Usage.InputTokens
+			u.PromptTokens = ev.Message.Usage.promptTotal()
+			u.PromptTokensDetails.CachedTokens = ev.Message.Usage.CacheReadInputTokens // 缓存读折扣计费（P2-9）
 			emit(gin.H{"object": "chat.completion.chunk",
 				"choices": []gin.H{{"index": 0, "delta": gin.H{"role": "assistant"}}}})
 		case "content_block_start":
