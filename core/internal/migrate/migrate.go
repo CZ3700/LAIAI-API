@@ -58,6 +58,9 @@ func Up(db *gorm.DB, fsys fs.FS) ([]string, error) {
 		if len(stmts) == 0 {
 			return nil, fmt.Errorf("migrate: %s contains no statements", f)
 		}
+		// ⚠️ MySQL 上 DDL 隐式提交、不可回滚：本事务对「单文件多条 DDL」不保证原子
+		// （仅 SQLite 测试方言下 DDL 才事务性）。安全靠 Lint（破坏性拦截 + 多 DDL 告警）+
+		// 纪律（单文件单 DDL / 多列合并为单条 ALTER）兜底，见 lint.go。
 		err = db.Transaction(func(tx *gorm.DB) error {
 			for i, s := range stmts {
 				if err := tx.Exec(s).Error; err != nil {
