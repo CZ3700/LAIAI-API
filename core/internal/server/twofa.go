@@ -171,6 +171,12 @@ func (s *Server) twofaVerifyLogin(c *gin.Context) {
 		fail(c, http.StatusUnauthorized, "2fa not active")
 		return
 	}
+	// 与一阶段 login / OAuth / Telegram 登录口径一致：签发会话前复核账号在职（fail-fast，
+	// 防被封用户在 5 分钟中间票窗口内兑换出 session；下游 requireActiveUser 也会拦，此处提前一致化）
+	if user.Status != identity.StatusActive {
+		fail(c, http.StatusForbidden, "account is not active")
+		return
+	}
 	secret, err := s.keyring.Decrypt(user.TOTPSecretEnc)
 	if err != nil {
 		fail(c, http.StatusUnauthorized, "invalid code")

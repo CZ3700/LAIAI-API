@@ -140,7 +140,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 			return err
 		}
 		h, _, err := ledger.CreateHold(tx, ledger.HoldInput{
-			IdempotencyKey: fmt.Sprintf("img:%d:%d", key.ID, r.Now().UnixNano()),
+			IdempotencyKey: "img:" + inv.RequestID, // 每请求唯一 16-hex（非时间戳，杜绝纳秒碰撞共用 hold）
 			AccountID:      acc.ID,
 			Amount:         holdAmount,
 			RefType:        "usage",

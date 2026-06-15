@@ -297,7 +297,7 @@ func (r *Relay) audioHold(c *gin.Context, key *identity.APIKey, model string, am
 			return e
 		}
 		h, _, e := ledger.CreateHold(tx, ledger.HoldInput{
-			IdempotencyKey: fmt.Sprintf("audio:%d:%d", key.ID, r.Now().UnixNano()),
+			IdempotencyKey: "audio:" + c.Writer.Header().Get("X-Request-Id"), // 每请求唯一 16-hex（非时间戳，杜绝纳秒碰撞共用 hold）
 			AccountID:      acc.ID, Amount: amount, RefType: "usage", RefID: model,
 		})
 		hold = h

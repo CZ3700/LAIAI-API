@@ -131,6 +131,14 @@ func (s *Server) adminUpsertPaymentChannel(c *gin.Context) {
 	var existing PaymentChannel
 	found := s.db.Where("code = ?", code).First(&existing).Error == nil
 
+	// 护栏：禁止改写既有 code 的协议。订单只存 code（=provider），callback/reconcile 按当前行
+	// 重解析引擎；若把 epay 改成 stripe，在途订单回调会被新引擎拒签→无法入账（在途支付黑洞红线）。
+	// 换协议必须用新 code（每协议一 code，如 epay_main / stripe_main）。
+	if found && req.Protocol != existing.Protocol {
+		fail(c, http.StatusConflict, "cannot change protocol of an existing channel code; create a new code instead")
+		return
+	}
+
 	// 配置加密：提供了 config 则加密新配置；编辑时省略 config = 保留原密文
 	configEnc := ""
 	if len(req.Config) > 0 {

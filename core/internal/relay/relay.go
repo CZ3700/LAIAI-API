@@ -343,6 +343,9 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		n := int64(nv)
 		if n > maxCompletionChoices {
 			n = maxCompletionChoices
+			req["n"] = float64(n) // 同步夹紧**转发体**：否则上游按原始 n>128 产出全部候选，
+			// capture 按真实 ×n 结算 > ×128 hold，超出走 AllowNegative overage 把 org 余额刷负（资金红线）。
+			// 与 images.go 对转发张数 N 的夹紧同款防护。
 		}
 		holdOutput = maxTokens * n
 	}
@@ -367,7 +370,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			return err
 		}
 		h, _, err := ledger.CreateHold(tx, ledger.HoldInput{
-			IdempotencyKey: fmt.Sprintf("relay:%d:%d", key.ID, r.Now().UnixNano()),
+			IdempotencyKey: "relay:" + inv.RequestID, // 每请求唯一 16-hex（非时间戳，杜绝纳秒碰撞共用 hold）
 			AccountID:      acc.ID,
 			Amount:         holdAmount,
 			RefType:        "usage",
@@ -521,12 +524,20 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		u, outBytes, streamErr = ad.pipeJSON(c, respBody)
 	}
 	inv.UsageSource = invocation.UsageSourceUpstream
-	if u.PromptTokens == 0 && u.CompletionTokens == 0 {
-		// 第三档兜底：上游没给 usage，按字节估算（宁可少收不多收：输入用请求估算，输出用响应字节）
+	// 第三档兜底（**按字段独立判定**）：上游缺某项 usage 就按估算补（宁可少收不多收）。
+	// 必须分字段而非 &&：Anthropic 流式 message_start 早置 prompt、completion 仅末帧给，
+	// 客户端中途断连会留下 prompt>0 & completion=0；若合并判定会用 completion=0 结算，
+	// 把已下发的输出近乎免费计费（BUG-H2 收入泄漏）。
+	if u.PromptTokens == 0 {
 		u.PromptTokens = estIn
+		inv.UsageSource = invocation.UsageSourceEstimated
+	}
+	if u.CompletionTokens == 0 {
 		u.CompletionTokens = EstimateTokens(outBytes)
 		inv.UsageSource = invocation.UsageSourceEstimated
-		r.Log.Warn("usage missing from upstream, estimated", "channel", ch.ID, "model", model)
+	}
+	if inv.UsageSource == invocation.UsageSourceEstimated {
+		r.Log.Warn("usage missing/partial from upstream, estimated", "channel", ch.ID, "model", model)
 	}
 
 	actual := price.ChatCost(u.PromptTokens, u.Cached(), u.CompletionTokens).Mul(groupRatio)

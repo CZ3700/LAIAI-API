@@ -111,7 +111,8 @@ type addMemberReq struct {
 // POST /api/org/members：按邮箱加成员（owner/admin）
 func (s *Server) addMember(c *gin.Context) {
 	claims := mustClaims(c)
-	if !s.requireManager(c, claims.OrgID, claims.UserID) {
+	actorRole, ok := s.requireManager(c, claims.OrgID, claims.UserID)
+	if !ok {
 		return
 	}
 	var req addMemberReq
@@ -125,7 +126,7 @@ func (s *Server) addMember(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		added, err = identity.AddMemberByEmail(tx, claims.OrgID, req.Email, req.Role, ent.MaxMembers)
+		added, err = identity.AddMemberByEmail(tx, claims.OrgID, req.Email, req.Role, ent.MaxMembers, actorRole)
 		return err
 	})
 	switch {
@@ -137,6 +138,8 @@ func (s *Server) addMember(c *gin.Context) {
 		fail(c, http.StatusConflict, "already a member")
 	case errors.Is(err, identity.ErrForbiddenRole):
 		fail(c, http.StatusBadRequest, "role must be admin, member or billing")
+	case errors.Is(err, identity.ErrCannotManageTarget):
+		fail(c, http.StatusForbidden, "only an owner can grant the admin role")
 	case err != nil:
 		fail(c, http.StatusInternalServerError, "add member failed")
 	default:
@@ -147,7 +150,8 @@ func (s *Server) addMember(c *gin.Context) {
 // DELETE /api/org/members/:user_id：移除成员（owner/admin；末位 owner 保护）
 func (s *Server) removeMember(c *gin.Context) {
 	claims := mustClaims(c)
-	if !s.requireManager(c, claims.OrgID, claims.UserID) {
+	actorRole, ok := s.requireManager(c, claims.OrgID, claims.UserID)
+	if !ok {
 		return
 	}
 	uid, err := strconv.ParseUint(c.Param("user_id"), 10, 64)
@@ -156,13 +160,15 @@ func (s *Server) removeMember(c *gin.Context) {
 		return
 	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
-		return identity.RemoveMember(tx, claims.OrgID, uid)
+		return identity.RemoveMember(tx, claims.OrgID, actorRole, claims.UserID, uid)
 	})
 	switch {
 	case errors.Is(err, identity.ErrLastOwner):
 		fail(c, http.StatusConflict, "cannot remove the only owner")
 	case errors.Is(err, identity.ErrNotMember):
 		fail(c, http.StatusNotFound, "not a member")
+	case errors.Is(err, identity.ErrCannotManageTarget):
+		fail(c, http.StatusForbidden, "cannot remove an owner or a peer admin")
 	case err != nil:
 		fail(c, http.StatusInternalServerError, "remove member failed")
 	default:
@@ -170,11 +176,11 @@ func (s *Server) removeMember(c *gin.Context) {
 	}
 }
 
-func (s *Server) requireManager(c *gin.Context, orgID, userID uint64) bool {
+func (s *Server) requireManager(c *gin.Context, orgID, userID uint64) (string, bool) {
 	role, err := identity.RoleIn(s.db, orgID, userID)
 	if err != nil || !identity.CanManageMembers(role) {
 		fail(c, http.StatusForbidden, "requires owner or admin role")
-		return false
+		return "", false
 	}
-	return true
+	return role, true
 }
