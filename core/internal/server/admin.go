@@ -762,8 +762,10 @@ func (s *Server) adminListInvocations(c *gin.Context) {
 	}
 	out := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
-		// 超管视图：回显全部落库字段（含 user_id / api_key_id / payload 对象键），
-		// 满足「可查落库完整数据」。普通 /api/usage 仍按 json tag 隐藏平台内部字段。
+		// 超管视图：回显全部落库元数据字段（含 user_id / api_key_id）。
+		// 普通 /api/usage 仍按 json tag 隐藏平台内部字段。
+		// 注（P1-4）：本表是**元数据-only** 存储，不落 request/response payload——
+		// 故不回显 payload_object_key（当前恒为空、指向不存在的对象，回显即"超承诺"）。
 		out = append(out, gin.H{
 			"id": r.ID, "created_at": r.CreatedAt, "request_id": r.RequestID,
 			"org_id": r.OrgID, "user_id": r.UserID, "api_key_id": r.APIKeyID, "model": r.Model,
@@ -773,7 +775,6 @@ func (s *Server) adminListInvocations(c *gin.Context) {
 			"cost_usd": r.CostUSD, "usage_source": r.UsageSource,
 			"frt_ms": r.FRTMs, "duration_ms": r.DurationMs,
 			"upstream_request_id": r.UpstreamRequestID, "error_brief": r.ErrorBrief,
-			"payload_object_key": r.PayloadObjectKey,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"total": total, "page": page, "page_size": pageSize, "items": out})

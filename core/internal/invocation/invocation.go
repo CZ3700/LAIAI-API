@@ -1,9 +1,17 @@
 // Package invocation：Invocation Store 元数据层（设计 §6.1）。
 //
+// 当前实现是**元数据-only** 存储：只落计费/审计所需的元数据，**绝不**持久化
+// request/response payload（零 payload 捕获＝最强隐私默认）。
+//
 // 写入纪律（红线）：
 //   - 绝不阻塞 relay 热路径——Record() 非阻塞投递，队列满则丢弃并计数（"宁缺不卡"）
-//   - error_brief 等字段禁 payload/PII 明文；payload 体后续走 R2 信封加密，本表只持指针
+//   - error_brief 等字段禁 payload/PII 明文，只存分类后的状态摘要
 //   - 元数据是计费审计的一部分，per-org zero-retention 只豁免 payload，不豁免元数据
+//
+// PayloadObjectKey 是为「未来可选的 payload 捕获」预留的指针列，**当前未实现、恒为空**。
+// 若日后启用 payload 捕获（P1-4 决策：暂不落地，先不超承诺），落地前必须满足：
+// payload 体信封加密后存对象存储（如 R2），本表只持加密对象键；并严格遵守 per-org
+// zero-retention（豁免 org 不写指针/不上传）。在此之前任何 API 都不应回显该字段。
 package invocation
 
 import (

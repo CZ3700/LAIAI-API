@@ -1318,6 +1318,10 @@ func TestAdminListInvocations(t *testing.T) {
 	if row["org_id"] != orgID || row["provider"] != "openai" || row["channel_id"] != float64(1) {
 		t.Fatalf("admin row missing internal fields: %v", row)
 	}
+	// P1-4 不超承诺：元数据-only 存储，不回显 payload 指针（恒为空、指向不存在的对象）
+	if _, ok := row["payload_object_key"]; ok {
+		t.Fatalf("admin row must not expose payload_object_key (metadata-only store): %v", row)
+	}
 	// status 筛选：success 命中，failed 落空
 	_, out = srv.doAdmin(t, "GET", "/api/admin/invocations?status=success", nil)
 	if len(out["items"].([]any)) != 1 {
