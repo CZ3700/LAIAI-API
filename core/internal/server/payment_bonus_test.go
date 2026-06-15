@@ -66,7 +66,7 @@ func TestRechargeBonusCredited(t *testing.T) {
 	if e := db.Create(&order).Error; e != nil {
 		t.Fatalf("create order: %v", e)
 	}
-	already, err := srv.srv.creditPaidOrder("stripe", "RB1", "trade1", decimal.RequireFromString("100"))
+	already, err := srv.srv.creditPaidOrder("stripe", "RB1", "trade1", decimal.RequireFromString("100"), "USD")
 	if err != nil || already {
 		t.Fatalf("first credit = already:%v err:%v", already, err)
 	}
@@ -82,7 +82,7 @@ func TestRechargeBonusCredited(t *testing.T) {
 		t.Fatalf("bonus credited = %s, want 10", got)
 	}
 	// 幂等：再次入账（如 reconcile 重跑）→ already，bonus 不翻倍
-	already, err = srv.srv.creditPaidOrder("stripe", "RB1", "trade1", decimal.RequireFromString("100"))
+	already, err = srv.srv.creditPaidOrder("stripe", "RB1", "trade1", decimal.RequireFromString("100"), "USD")
 	if err != nil || !already {
 		t.Fatalf("second credit = already:%v err:%v, want already=true", already, err)
 	}
@@ -98,7 +98,7 @@ func TestRechargeBonusCredited(t *testing.T) {
 		PayCurrency: "USD", Status: topupPending, CreatedAt: srv.srv.now().Unix(),
 	}
 	db.Create(&order2)
-	srv.srv.creditPaidOrder("stripe", "RB2", "trade2", decimal.RequireFromString("100"))
+	srv.srv.creditPaidOrder("stripe", "RB2", "trade2", decimal.RequireFromString("100"), "USD")
 	if got := bonusSum(); !got.Equal(decimal.RequireFromString("10")) {
 		t.Fatalf("bonus total after no-tier topup = %s, want still 10", got)
 	}
@@ -151,5 +151,47 @@ func TestInviteGrant(t *testing.T) {
 	})
 	if g := grantTotal("badcode@gmail.com"); !g.IsZero() {
 		t.Fatalf("bad-code grant = %s, want 0", g)
+	}
+}
+
+// P2-8：网关回调币种与订单不符 → 拒收（金额数字相同但币种更便宜＝隐性少付）。
+func TestCreditRejectsCurrencyMismatch(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "cm@gmail.com", "password": "longenough1"})
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "cm@gmail.com", "password": "longenough1"})
+	orgID := uint64(login["org_id"].(float64))
+
+	// 一张 73 CNY 的订单
+	order := TopupOrder{
+		OrderNo: "CM1", OrgID: orgID, Provider: "epay",
+		AmountUSD: decimal.RequireFromString("10"), PayAmount: decimal.RequireFromString("73"),
+		PayCurrency: "CNY", Status: topupPending, CreatedAt: srv.srv.now().Unix(),
+	}
+	if e := db.Create(&order).Error; e != nil {
+		t.Fatalf("create order: %v", e)
+	}
+
+	// 回调报 73 USD（币种不符）→ 必须拒收
+	if _, err := srv.srv.creditPaidOrder("epay", "CM1", "t1", decimal.RequireFromString("73"), "USD"); err == nil {
+		t.Fatal("currency mismatch (CNY order, USD callback) must be rejected")
+	}
+	var st int8
+	db.Raw(`SELECT status FROM topup_orders WHERE order_no='CM1'`).Scan(&st)
+	if st != topupPending {
+		t.Fatalf("order status = %d, want still pending (not credited)", st)
+	}
+	// 同币种 73 CNY → 入账成功
+	if already, err := srv.srv.creditPaidOrder("epay", "CM1", "t1", decimal.RequireFromString("73"), "CNY"); err != nil || already {
+		t.Fatalf("matching currency credit = already:%v err:%v, want success", already, err)
+	}
+	// 币种空（网关未报）→ 跳过校验，正常入账（用另一单验证）
+	order2 := TopupOrder{
+		OrderNo: "CM2", OrgID: orgID, Provider: "epay",
+		AmountUSD: decimal.RequireFromString("10"), PayAmount: decimal.RequireFromString("73"),
+		PayCurrency: "CNY", Status: topupPending, CreatedAt: srv.srv.now().Unix(),
+	}
+	db.Create(&order2)
+	if _, err := srv.srv.creditPaidOrder("epay", "CM2", "t2", decimal.RequireFromString("73"), ""); err != nil {
+		t.Fatalf("empty-currency credit should skip check, got err %v", err)
 	}
 }

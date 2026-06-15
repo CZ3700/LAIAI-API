@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -212,9 +213,14 @@ func (s *Server) createTopup(c *gin.Context) {
 		fail(c, http.StatusBadGateway, "payment gateway error: "+err.Error())
 		return
 	}
-	// 持久化网关会话引用（Stripe session id），供 reconcile job 主动对账
+	// 持久化网关会话引用（Stripe session id），供 reconcile job 主动对账。
+	// P2-7：写失败必须响亮告警——否则该单 provider_ref 为空，reconcile 无从 QueryOrder，
+	// 一旦 callback 也漏发即成对账盲区（运维可据日志手工回填 provider_ref）。
 	if result.ProviderRef != "" {
-		s.db.Model(order).Update("provider_ref", result.ProviderRef)
+		if e := s.db.Model(order).Update("provider_ref", result.ProviderRef).Error; e != nil {
+			s.Log().Error("provider_ref persist failed — reconcile blind spot if callback misses",
+				"order", orderNo, "provider", req.Provider, "provider_ref", result.ProviderRef, "err", e)
+		}
 	}
 	out := gin.H{"order_no": orderNo, "pay_url": result.PayURL}
 	if bonus := s.computeRechargeBonus(amountUSD); bonus.IsPositive() { // 预览：到账将额外赠送（实际入账时再算一次，以入账为准）
@@ -259,7 +265,7 @@ func (s *Server) paymentCallback(c *gin.Context) {
 		return
 	}
 
-	already, err := s.creditPaidOrder(provider, res.OrderNo, res.TradeNo, res.Amount)
+	already, err := s.creditPaidOrder(provider, res.OrderNo, res.TradeNo, res.Amount, res.Currency)
 	if err != nil {
 		s.Log().Error("payment callback credit failed", "provider", provider, "order", res.OrderNo, "err", err)
 		c.String(http.StatusInternalServerError, "credit failed")
@@ -320,7 +326,7 @@ func (s *Server) x402Settle(c *gin.Context) {
 	}
 
 	// 统一资金路径入账（幂等：同订单永不重复入账）。成功路径 creditPaidOrder 同事务写 trade_no。
-	already, cerr := s.creditPaidOrder("x402", order.OrderNo, txHash, order.PayAmount)
+	already, cerr := s.creditPaidOrder("x402", order.OrderNo, txHash, order.PayAmount, order.PayCurrency)
 	if cerr != nil {
 		// 链上已不可逆结算但本地入账失败：单独把 txHash 落库作恢复锚点（仅当尚未写入），
 		// 使 ReconcileTopups 的 x402 修复分支可据 trade_no 自动重放入账，绝不丢链上付款。
@@ -348,7 +354,9 @@ func (s *Server) x402Settle(c *gin.Context) {
 // 红线集中：行锁取订单 → provider 匹配（防跨网关）→ 幂等(已 paid→already=true) →
 //   终态保护(failed 不翻转；接受 pending|expired) → 金额校验 → ledger 入金(幂等键 topup:order)。
 // paidAmount = 网关实付（callback 的 res.Amount 或 query 的 QueryResult.Amount），口径一致。
-func (s *Server) creditPaidOrder(provider, orderNo, tradeNo string, paidAmount decimal.Decimal) (already bool, err error) {
+// paidCurrency = 网关实付币种（res.Currency/qr.Currency）；非空时必须与订单 PayCurrency 一致
+// （P2-8：防"金额数字相同但币种更便宜"的隐性少付，如 73 CNY 单收到 73 USD 通知）。空=网关未报，跳过。
+func (s *Server) creditPaidOrder(provider, orderNo, tradeNo string, paidAmount decimal.Decimal, paidCurrency string) (already bool, err error) {
 	bonusTiersRaw := s.getSetting("recharge_bonus_tiers") // 事务外取配置：事务内读 ext_settings 会与持锁事务自死锁（单连接池）
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		var order TopupOrder
@@ -367,6 +375,12 @@ func (s *Server) creditPaidOrder(provider, orderNo, tradeNo string, paidAmount d
 		}
 		if order.Status == topupFailed { // 终态保护：失败订单不被翻转（pending|expired 仍可入金）
 			return fmt.Errorf("order in terminal failed state")
+		}
+		// 币种校验（P2-8）：网关报了币种就必须与订单一致，否则金额比较失去意义（跨币种少付）
+		if paidCurrency != "" && !strings.EqualFold(paidCurrency, order.PayCurrency) {
+			s.Log().Error("SECURITY: credit currency mismatch", "order", orderNo,
+				"expected", order.PayCurrency, "paid", paidCurrency)
+			return fmt.Errorf("currency mismatch")
 		}
 		// 金额校验：实付不得少于订单应付（多付容忍）
 		if paidAmount.LessThan(order.PayAmount) {
@@ -432,7 +446,7 @@ func (s *Server) ReconcileTopups(ctx context.Context, minAge time.Duration, limi
 				continue // 未结算，无可恢复
 			}
 			checked++
-			already, ce := s.creditPaidOrder(o.Provider, o.OrderNo, o.TradeNo, o.PayAmount)
+			already, ce := s.creditPaidOrder(o.Provider, o.OrderNo, o.TradeNo, o.PayAmount, o.PayCurrency)
 			if ce != nil {
 				s.Log().Error("reconcile x402 credit failed", "order", o.OrderNo, "err", ce)
 				continue
@@ -457,7 +471,7 @@ func (s *Server) ReconcileTopups(ctx context.Context, minAge time.Duration, limi
 		if qr == nil || !qr.Found || !qr.Paid {
 			continue // 查不到 / 未支付：留待下轮
 		}
-		already, ce := s.creditPaidOrder(o.Provider, o.OrderNo, qr.TradeNo, qr.Amount)
+		already, ce := s.creditPaidOrder(o.Provider, o.OrderNo, qr.TradeNo, qr.Amount, qr.Currency)
 		if ce != nil {
 			s.Log().Error("reconcile credit failed", "provider", o.Provider, "order", o.OrderNo, "err", ce)
 			continue
