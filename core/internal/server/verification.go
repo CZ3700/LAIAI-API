@@ -52,6 +52,11 @@ func (s *Server) sendVerification(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid email")
 		return
 	}
+	// 邮箱准入策略（gap P2-E）：不向被禁/非白名单域名发码，省得后续注册再被拒。403=策略拒绝
+	if e := s.checkEmailDomainPolicy(req.Email); e != nil {
+		fail(c, http.StatusForbidden, e.Error())
+		return
+	}
 	code := gen6()
 	now := s.now().Unix()
 	rec := &EmailVerification{

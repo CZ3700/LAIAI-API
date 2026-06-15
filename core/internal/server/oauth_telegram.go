@@ -116,6 +116,12 @@ func (s *Server) telegramLogin(c *gin.Context) {
 	}
 
 	email := fmt.Sprintf("tg%d@telegram.local", tgID) // 合成身份（Telegram 无 email）
+	// 邮箱准入策略（gap P2-E）：配了域名白名单时，合成域 telegram.local 不在白名单内 → 拒绝
+	// Telegram 登录。即「设了白名单=锁定可注册域名」时，Telegram 这条无邮箱旁路也被一并关上。
+	if e := s.checkEmailDomainPolicy(email); e != nil {
+		fail(c, http.StatusForbidden, e.Error())
+		return
+	}
 	user, err := identity.FindUserByEmail(s.db, email)
 	if err != nil {
 		username, _ := data["username"].(string)

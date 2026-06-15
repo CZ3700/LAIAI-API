@@ -31,6 +31,10 @@ var settingDefaults = map[string]string{
 	"register_enabled":           "true",
 	"email_verification_enabled": "false",
 	"new_user_grant_usd":         "0", // 注册即赠送额度（USD，0=不送）；register 流程消费
+	// 邮箱准入策略（gap P2-E，checkEmailDomainPolicy 消费；作用于注册/发码/OAuth）
+	"email_domain_whitelist": "", // 逗号分隔允许域名；空=不限制
+	"email_domain_blocklist": "", // 逗号分隔禁止域名（挡一次性邮箱）；空=不禁
+	"email_alias_block":      "false", // 拒绝带 +别名 的邮箱
 	// —— 支付（引擎 engineFor 消费；密钥服务端存，前端永不回显明文）——
 	"stripe_secret_key":     "",
 	"stripe_webhook_secret": "",

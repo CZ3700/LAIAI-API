@@ -42,6 +42,11 @@ func (s *Server) register(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "this email domain is reserved")
 		return
 	}
+	// 邮箱准入策略（gap P2-E）：域名白/黑名单 + 别名限制。403=策略拒绝（与 oauth/telegram 同口径）
+	if err := s.checkEmailDomainPolicy(req.Email); err != nil {
+		fail(c, http.StatusForbidden, err.Error())
+		return
+	}
 	// 邮箱验证（0014）：开启时必须先通过验证码（堵同邮箱薅羊毛）
 	if s.getBoolSetting("email_verification_enabled") {
 		canonical, err := identity.CanonicalizeEmail(req.Email)

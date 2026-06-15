@@ -2333,6 +2333,25 @@ onMounted(async () => {
                 </label>
                 <p class="mt-1 text-xs text-muted">{{ t('admin.setStepUpKeysHint') }}</p>
               </div>
+              <!-- 邮箱准入策略（gap P2-E） -->
+              <div class="border-t border-line pt-3 space-y-3">
+                <div>
+                  <label class="label" for="set-emwl">{{ t('admin.setEmailWhitelist') }}</label>
+                  <input id="set-emwl" v-model="settings.email_domain_whitelist" class="input font-mono text-xs" placeholder="company.com, partner.com" />
+                  <p class="mt-1 text-xs text-muted">{{ t('admin.setEmailWhitelistHint') }}</p>
+                </div>
+                <div>
+                  <label class="label" for="set-embl">{{ t('admin.setEmailBlocklist') }}</label>
+                  <input id="set-embl" v-model="settings.email_domain_blocklist" class="input font-mono text-xs" placeholder="10minutemail.com" />
+                  <p class="mt-1 text-xs text-muted">{{ t('admin.setEmailBlocklistHint') }}</p>
+                </div>
+                <label class="flex items-center gap-2 text-sm">
+                  <input type="checkbox" class="accent-accent" :checked="settings.email_alias_block === 'true'"
+                    @change="settings.email_alias_block = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
+                  {{ t('admin.setEmailAliasBlock') }}
+                </label>
+                <p class="-mt-1 text-xs text-muted">{{ t('admin.setEmailAliasBlockHint') }}</p>
+              </div>
           </div>
 
           <div v-show="setSec === 'channels'">

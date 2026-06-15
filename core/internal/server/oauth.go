@@ -181,6 +181,12 @@ func (s *Server) oauthCallback(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "reserved email domain")
 		return
 	}
+	// 邮箱准入策略（gap P2-E）：OAuth 邮箱同受域名白/黑名单约束（如限本公司域）
+	if e := s.checkEmailDomainPolicy(email); e != nil {
+		s.Log().Warn("oauth email rejected by domain policy", "provider", name)
+		fail(c, http.StatusForbidden, e.Error())
+		return
+	}
 
 	// 找/建用户（OAuth 用户用随机密码注册，之后可在设置改）
 	user, err := identity.FindUserByEmail(s.db, email)
