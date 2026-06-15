@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -33,26 +34,26 @@ func (openaiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 	return upReq, nil
 }
 
-func (openaiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int) {
+func (openaiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error) {
 	raw, err := io.ReadAll(body)
 	if err != nil {
-		return usage{}, 0
+		return usage{}, 0, fmt.Errorf("%w: %v", errStreamReadFail, err)
 	}
 	var parsed struct {
 		Usage usage `json:"usage"`
 	}
 	_ = json.Unmarshal(raw, &parsed)
 	c.Data(http.StatusOK, "application/json", raw)
-	return parsed.Usage, len(raw)
+	return parsed.Usage, len(raw), nil
 }
 
-func (openaiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
+func (openaiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error) {
 	sseHeaders(c)
 	w := c.Writer
 
 	var u usage
 	outBytes := 0
-	pumpLines(c.Request.Context(), body, func(line string) {
+	err := pumpLines(c.Request.Context(), body, func(line string) {
 		outBytes += len(line)
 		if data, ok := strings.CutPrefix(line, "data: "); ok && data != "[DONE]" {
 			var chunk struct {
@@ -66,5 +67,8 @@ func (openaiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 		_, _ = w.WriteString(line + "\n")
 		w.Flush()
 	})
-	return u, outBytes
+	if err != nil { // 截断流：补 error 帧，避免客户端把残缺流当完整响应
+		emitStreamError(w, "upstream stream ended abnormally")
+	}
+	return u, outBytes, err
 }

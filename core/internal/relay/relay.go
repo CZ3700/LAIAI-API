@@ -512,10 +512,11 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	// 7. 响应回传（adapter 转换）+ usage 抽取 + capture
 	var u usage
 	var outBytes int
+	var streamErr error
 	if stream {
-		u, outBytes = ad.pipeSSE(c, respBody)
+		u, outBytes, streamErr = ad.pipeSSE(c, respBody)
 	} else {
-		u, outBytes = ad.pipeJSON(c, respBody)
+		u, outBytes, streamErr = ad.pipeJSON(c, respBody)
 	}
 	inv.UsageSource = invocation.UsageSourceUpstream
 	if u.PromptTokens == 0 && u.CompletionTokens == 0 {
@@ -543,9 +544,16 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 
 	inv.PromptTokens, inv.CompletionTokens, inv.CostUSD = u.PromptTokens, u.CompletionTokens, actual
 	// 预留→实际对账（P0-3）：used_amount 已 +holdAmount，这里 +(actual-hold) 使其落到真实 actual；
-	// 标记 settled 让上面的退还 defer 不再触发。
+	// 标记 settled 让上面的退还 defer 不再触发。已交付的部分 token 照实计费（actual），不退。
 	_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(holdAmount))
 	quotaSettled = true
+	// P1-5：流中途 stall/读错误 → 已发 200 头的截断流，照实计费但**不可记为 success**。
+	if streamErr != nil {
+		r.Log.Warn("upstream stream ended abnormally — recording as upstream_error",
+			"channel", ch.ID, "model", model, "err", streamErr)
+		finish(invocation.StatusUpstreamError, http.StatusBadGateway, "upstream stream ended abnormally")
+		return
+	}
 	finish(invocation.StatusSuccess, http.StatusOK, "")
 }
 

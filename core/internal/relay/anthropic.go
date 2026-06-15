@@ -192,10 +192,10 @@ func mapStopReason(r string) string {
 	}
 }
 
-func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int) {
+func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error) {
 	raw, err := io.ReadAll(body)
 	if err != nil {
-		return usage{}, 0
+		return usage{}, 0, fmt.Errorf("%w: %v", errStreamReadFail, err)
 	}
 	var resp struct {
 		ID      string `json:"id"`
@@ -213,7 +213,7 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int) {
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		// 解析失败原样透传（不丢上游信息），usage 走兜底估算
 		c.Data(http.StatusOK, "application/json", raw)
-		return usage{}, len(raw)
+		return usage{}, len(raw), nil
 	}
 	var text strings.Builder
 	var toolCalls []gin.H
@@ -259,10 +259,10 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int) {
 		},
 	}
 	c.JSON(http.StatusOK, converted)
-	return usage{PromptTokens: resp.Usage.InputTokens, CompletionTokens: resp.Usage.OutputTokens}, len(raw)
+	return usage{PromptTokens: resp.Usage.InputTokens, CompletionTokens: resp.Usage.OutputTokens}, len(raw), nil
 }
 
-func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
+func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error) {
 	sseHeaders(c)
 	w := c.Writer
 
@@ -284,7 +284,7 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 	// 必须维护 block index → tool index 映射，多工具并行时各自累积 arguments。
 	toolIdxByBlock := map[int]int{}
 	toolCount := 0
-	pumpLines(c.Request.Context(), body, func(line string) {
+	err := pumpLines(c.Request.Context(), body, func(line string) {
 		data, ok := strings.CutPrefix(line, "data: ")
 		if !ok {
 			return // event: 行与空行不需要（data JSON 自带 type）
@@ -358,5 +358,8 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 			w.Flush()
 		}
 	})
-	return u, outBytes
+	if err != nil { // 截断流（无 message_stop）：补 error 帧，不可计 success
+		emitStreamError(w, "upstream stream ended abnormally")
+	}
+	return u, outBytes, err
 }

@@ -3,6 +3,9 @@ package relay
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -15,10 +18,28 @@ import (
 type adapter interface {
 	// buildRequest 把统一格式请求转换为上游请求（含端点、headers、鉴权）。
 	buildRequest(ctx context.Context, ch *Channel, credential string, req map[string]any, stream bool) (*http.Request, error)
-	// pipeJSON 读取非流式上游响应，转换为统一格式写给客户端，返回 usage 与响应字节数。
-	pipeJSON(c *gin.Context, body io.Reader) (usage, int)
-	// pipeSSE 流式透传/转换，返回 usage 与输出字节数。
-	pipeSSE(c *gin.Context, body io.Reader) (usage, int)
+	// pipeJSON 读取非流式上游响应，转换为统一格式写给客户端，返回 usage、响应字节数、
+	// 以及流终止错误（读体失败=上游异常；nil=正常）。
+	pipeJSON(c *gin.Context, body io.Reader) (usage, int, error)
+	// pipeSSE 流式透传/转换，返回 usage、输出字节数、以及流终止错误
+	// （stall/读错误=上游异常，不可计为 success；nil=正常收尾）。
+	pipeSSE(c *gin.Context, body io.Reader) (usage, int, error)
+}
+
+// 流终止异常分类（P1-5）：用于把"已发 200 头但中途 stall/读错误"的截断流判为上游错误，
+// 而非误记为 success。客户端断连（ctx.Done）不算上游错误（用户主动放弃）。
+var (
+	errStreamStalled  = errors.New("relay: upstream stream stalled (per-chunk timeout)")
+	errStreamReadFail = errors.New("relay: upstream stream read failed")
+)
+
+// emitStreamError 在流中途异常时给客户端补一个 OpenAI 形态的 error 帧 + [DONE]，
+// 避免客户端把截断的流误当完整响应（与前端 Playground 的 error 帧探测一致）。
+func emitStreamError(w gin.ResponseWriter, msg string) {
+	b, _ := json.Marshal(gin.H{"error": gin.H{"message": msg, "type": "upstream_error"}})
+	_, _ = w.WriteString("data: " + string(b) + "\n\n")
+	_, _ = w.WriteString("data: [DONE]\n\n")
+	w.Flush()
 }
 
 // adapterFor 按渠道 provider 选择适配器：先查档案注册表（providers.go）的 Adapter 字段，
@@ -52,15 +73,17 @@ func sseHeaders(c *gin.Context) {
 // 不是全局超时——全局超时会杀死合法的长思考响应）。测试可缩短。
 var StreamChunkTimeout = 90 * time.Second
 
-// pumpLines 从上游流逐行读并回调 handle，三路 select：
-//   - 新行到达 → 重置超时计时器
-//   - per-chunk 超时 → 返回 timedOut=true（上游 stall）
-//   - 客户端断连（ctx.Done）→ 停止（省上游 token，知识库 §2.4）
+// pumpLines 从上游流逐行读并回调 handle，三路 select，返回流终止错误（P1-5）：
+//   - 上游正常 EOF        → nil
+//   - 中途读错误(sc.Err)  → errStreamReadFail 包装（截断流，不可计 success）
+//   - per-chunk 超时       → errStreamStalled（上游 stall）
+//   - 客户端断连(ctx.Done) → nil（用户主动放弃，非上游错误）
 //
 // 读 goroutine 在 caller 关闭 resp.Body 后解除阻塞退出，无泄漏。
-func pumpLines(ctx context.Context, body io.Reader, handle func(line string)) (timedOut bool) {
+func pumpLines(ctx context.Context, body io.Reader, handle func(line string)) error {
 	lines := make(chan string, 16)
 	stop := make(chan struct{})
+	var readErr error // 仅在扫描循环自然结束时写；close(lines) 前赋值，建立 happens-before
 	go func() {
 		defer close(lines)
 		sc := bufio.NewScanner(body)
@@ -72,6 +95,7 @@ func pumpLines(ctx context.Context, body io.Reader, handle func(line string)) (t
 				return
 			}
 		}
+		readErr = sc.Err() // EOF → nil；连接中断/读错误 → 非 nil
 	}()
 	defer close(stop)
 
@@ -81,7 +105,10 @@ func pumpLines(ctx context.Context, body io.Reader, handle func(line string)) (t
 		select {
 		case line, ok := <-lines:
 			if !ok {
-				return false // 上游正常结束
+				if readErr != nil {
+					return fmt.Errorf("%w: %v", errStreamReadFail, readErr)
+				}
+				return nil // 上游正常结束
 			}
 			handle(line)
 			if !timer.Stop() {
@@ -92,9 +119,9 @@ func pumpLines(ctx context.Context, body io.Reader, handle func(line string)) (t
 			}
 			timer.Reset(StreamChunkTimeout)
 		case <-timer.C:
-			return true // 上游 stall
+			return errStreamStalled // 上游 stall
 		case <-ctx.Done():
-			return false // 客户端断连
+			return nil // 客户端断连：非上游错误
 		}
 	}
 }

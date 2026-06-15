@@ -209,10 +209,10 @@ type geminiCandidate struct {
 	FinishReason string `json:"finishReason"`
 }
 
-func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int) {
+func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error) {
 	raw, err := io.ReadAll(body)
 	if err != nil {
-		return usage{}, 0
+		return usage{}, 0, fmt.Errorf("%w: %v", errStreamReadFail, err)
 	}
 	var resp struct {
 		Candidates    []geminiCandidate `json:"candidates"`
@@ -221,7 +221,7 @@ func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int) {
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil || len(resp.Candidates) == 0 {
 		c.Data(http.StatusOK, "application/json", raw)
-		return usage{}, len(raw)
+		return usage{}, len(raw), nil
 	}
 	cand := resp.Candidates[0]
 	var text strings.Builder
@@ -265,10 +265,10 @@ func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int) {
 		},
 	})
 	return usage{PromptTokens: resp.UsageMetadata.PromptTokenCount,
-		CompletionTokens: resp.UsageMetadata.CandidatesTokenCount}, len(raw)
+		CompletionTokens: resp.UsageMetadata.CandidatesTokenCount}, len(raw), nil
 }
 
-func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
+func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error) {
 	sseHeaders(c)
 	w := c.Writer
 
@@ -287,7 +287,7 @@ func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 	finishReason := "stop"
 	sentRole := false
 	toolCount := 0
-	pumpLines(c.Request.Context(), body, func(line string) {
+	err := pumpLines(c.Request.Context(), body, func(line string) {
 		data, ok := strings.CutPrefix(line, "data: ")
 		if !ok {
 			return
@@ -335,6 +335,10 @@ func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 			finishReason = mapGeminiFinishReason(cand.FinishReason, false)
 		}
 	})
+	if err != nil { // 截断流：发 error 帧而非合成"正常收尾"帧，不可计 success
+		emitStreamError(w, "upstream stream ended abnormally")
+		return u, outBytes, err
+	}
 
 	// Gemini 流无 [DONE]：上游 EOF 后由我们合成收尾帧（OpenAI 客户端依赖它）
 	emit(gin.H{"object": "chat.completion.chunk",
@@ -343,5 +347,5 @@ func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int) {
 			"total_tokens": u.PromptTokens + u.CompletionTokens}})
 	_, _ = w.WriteString("data: [DONE]\n\n")
 	w.Flush()
-	return u, outBytes
+	return u, outBytes, nil
 }
