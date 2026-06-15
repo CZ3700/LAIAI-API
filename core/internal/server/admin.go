@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/subtle"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -930,10 +931,11 @@ func (s *Server) adminListUsers(c *gin.Context) {
 		Invited      int64           `json:"invited"`        // 该用户邀请的组织数
 		Earned       decimal.Decimal `json:"earned"`         // 累计返佣（affiliate ledger）
 		InviterOrgID uint64          `json:"inviter_org_id"` // 邀请来源组织（0=无）
+		AdminRemark  string          `json:"admin_remark"`   // 运营备注（0025，gap P2-B）
 	}
 	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	rdb.Raw(`
-		SELECT u.id, u.email, u.display_name, u.status, u.role,
+		SELECT u.id, u.email, u.display_name, u.status, u.role, u.admin_remark,
 		       COALESCE(o.id, 0) AS org_id,
 		       COALESCE(a.posted_balance, 0) AS balance,
 		       COALESCE(o.group_name, 'default') AS `+"`group`"+`,
@@ -1006,6 +1008,126 @@ func (s *Server) adminManageUser(c *gin.Context) {
 	}
 	s.writeAudit(c, "user_"+req.Action, strconv.FormatUint(id, 10), "user "+req.Action)
 	c.JSON(http.StatusOK, gin.H{"id": id, "status": status})
+}
+
+// adminSetUserRemark：POST /api/admin/users/:id/remark {remark} —— 设运营备注（gap P2-B）。
+// 等级守卫：不能给同级/更高角色加备注（与 ban 同口径，防越权标注上级）。备注长度上限 500。
+func (s *Server) adminSetUserRemark(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	var req struct {
+		Remark string `json:"remark"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "remark required")
+		return
+	}
+	if len([]rune(req.Remark)) > 500 {
+		fail(c, http.StatusBadRequest, "remark too long (max 500 chars)")
+		return
+	}
+	var target identity.User
+	if e := s.db.Select("id, role").First(&target, id).Error; e != nil {
+		fail(c, http.StatusNotFound, "user not found")
+		return
+	}
+	if !identity.CanManageUser(c.GetString("actor_role"), target.Role) {
+		fail(c, http.StatusForbidden, "cannot annotate a user of equal or higher role")
+		return
+	}
+	if e := s.db.Model(&identity.User{}).Where("id = ?", id).Update("admin_remark", req.Remark).Error; e != nil {
+		fail(c, http.StatusInternalServerError, "update failed")
+		return
+	}
+	s.writeAudit(c, "user_remark", strconv.FormatUint(id, 10), "set admin remark")
+	c.JSON(http.StatusOK, gin.H{"id": id, "admin_remark": req.Remark})
+}
+
+// adminUsageByUser：GET /api/admin/usage/by-user?days=N&limit=M —— 全平台近 N 天按用户聚合用量
+// （调用数/成功数/token/费用），按费用降序。运营看「谁在烧钱 / 谁是大客户」。user_id 为空的调用
+// （无成员归属）归入 user_id=0 一行。DATE()/时间串比较两库同义（见 usage.go 注释）。
+func (s *Server) adminUsageByUser(c *gin.Context) {
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+	if days < 1 || days > 365 {
+		days = 30
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	if limit < 1 || limit > 1000 {
+		limit = 100
+	}
+	rows := s.usageByUserRows(c, days, limit)
+	c.JSON(http.StatusOK, gin.H{"days": days, "items": rows})
+}
+
+type usageByUserRow struct {
+	UserID           uint64          `json:"user_id"`
+	Email            string          `json:"email"`
+	Calls            int64           `json:"calls"`
+	Succeeded        int64           `json:"succeeded"`
+	PromptTokens     int64           `json:"prompt_tokens"`
+	CompletionTokens int64           `json:"completion_tokens"`
+	CostUSD          decimal.Decimal `json:"cost_usd"`
+}
+
+// usageByUserRows：usage-by-user 聚合（JSON 与 CSV 导出共用同一口径，避免两处漂移）。
+func (s *Server) usageByUserRows(c *gin.Context, days, limit int) []usageByUserRow {
+	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
+	rows := []usageByUserRow{} // 非 nil：空结果序列化为 [] 而非 null（前端按数组消费）
+	s.db.WithContext(c.Request.Context()).Raw(`
+		SELECT COALESCE(i.user_id, 0) AS user_id,
+		       COALESCE(u.email, '') AS email,
+		       COUNT(*) AS calls,
+		       SUM(CASE WHEN i.status = 'success' THEN 1 ELSE 0 END) AS succeeded,
+		       COALESCE(SUM(i.prompt_tokens), 0) AS prompt_tokens,
+		       COALESCE(SUM(i.completion_tokens), 0) AS completion_tokens,
+		       COALESCE(SUM(i.cost_usd), 0) AS cost_usd
+		FROM invocations i
+		LEFT JOIN users u ON u.id = i.user_id
+		WHERE i.created_at >= ?
+		GROUP BY COALESCE(i.user_id, 0), COALESCE(u.email, '')
+		ORDER BY cost_usd DESC
+		LIMIT ?`, since, limit).Scan(&rows)
+	return rows
+}
+
+// adminUsageByUserExport：GET /api/admin/usage/by-user/export?days=N —— 同上聚合的 CSV 下载（gap P2-B）。
+// 与 JSON 同口径（usageByUserRows）。CSV 注入防护：以 =,+,-,@ 起首的字段加前导单引号。
+func (s *Server) adminUsageByUserExport(c *gin.Context) {
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+	if days < 1 || days > 365 {
+		days = 30
+	}
+	rows := s.usageByUserRows(c, days, 1000)
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="usage_by_user.csv"`)
+	w := csv.NewWriter(c.Writer)
+	_ = w.Write([]string{"user_id", "email", "calls", "succeeded", "prompt_tokens", "completion_tokens", "cost_usd"})
+	for _, r := range rows {
+		_ = w.Write([]string{
+			strconv.FormatUint(r.UserID, 10), csvSafe(r.Email),
+			strconv.FormatInt(r.Calls, 10), strconv.FormatInt(r.Succeeded, 10),
+			strconv.FormatInt(r.PromptTokens, 10), strconv.FormatInt(r.CompletionTokens, 10),
+			r.CostUSD.String(),
+		})
+	}
+	w.Flush()
+	s.writeAudit(c, "usage_export", "", "exported usage-by-user CSV")
+}
+
+// csvSafe：防 CSV 公式注入——电子表格会把以 = + - @ 起首的单元格当公式执行。
+// 给这类字段加前导单引号（被表格视作文本）。encoding/csv 已处理逗号/引号/换行的转义。
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
 }
 
 // adminSetUserRole：POST /api/admin/users/:id/role {role} —— 授角色（仅 superadmin，0020 RBAC）。

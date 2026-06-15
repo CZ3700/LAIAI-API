@@ -314,7 +314,7 @@ async function saveSettings() {
 interface AdminUser {
   id: number; email: string; display_name: string; status: number; role: string
   org_id: number; balance: string; group: string
-  invited: number; earned: string; inviter_org_id: number
+  invited: number; earned: string; inviter_org_id: number; admin_remark: string
 }
 const PLAT_ROLES = ['user', 'support', 'admin', 'superadmin'] as const
 const users = ref<AdminUser[]>([])
@@ -350,6 +350,57 @@ async function setUserRole(u: AdminUser, role: string) {
     showError(e)
   }
 }
+// 运营备注（gap P2-B）：行内编辑，失焦保存；后端含等级守卫与长度上限
+async function saveUserRemark(u: AdminUser, remark: string) {
+  if (remark === u.admin_remark) return
+  try {
+    await adminApi('POST', `/api/admin/users/${u.id}/remark`, { remark })
+    u.admin_remark = remark
+  } catch (e) {
+    showError(e)
+    await loadUsers() // 失败回滚到服务端真值
+  }
+}
+
+// —— 按用户聚合用量（gap P2-B）——
+interface UsageByUser {
+  user_id: number; email: string; calls: number; succeeded: number
+  prompt_tokens: number; completion_tokens: number; cost_usd: string
+}
+const usageByUser = ref<UsageByUser[]>([])
+const usageDays = ref(30)
+const usageLoading = ref(false)
+async function loadUsageByUser() {
+  usageLoading.value = true
+  try {
+    usageByUser.value = (await adminApi<{ items: UsageByUser[] }>(
+      'GET', `/api/admin/usage/by-user?days=${usageDays.value}`,
+    )).items ?? []
+  } catch (e) {
+    showError(e)
+  } finally {
+    usageLoading.value = false
+  }
+}
+// CSV 导出：带上 X-Admin-Token（沿用 adminApi 的鉴权头），fetch → blob → 触发下载
+function exportUsageByUser() {
+  const headers: Record<string, string> = {}
+  const tok = adminToken.get()
+  if (tok) headers['X-Admin-Token'] = tok
+  const sess = auth.token
+  if (sess) headers['Authorization'] = `Bearer ${sess}`
+  fetch(`/api/admin/usage/by-user/export?days=${usageDays.value}`, { headers })
+    .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('export failed'))))
+    .then((blob) => {
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `usage_by_user_${usageDays.value}d.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    })
+    .catch((e) => showError(e))
+}
 
 // —— 审计日志 ——
 interface AuditRow { id: number; actor: string; action: string; target: string; detail: string; ip: string; created_at: number }
@@ -373,6 +424,7 @@ watch(tab, (v) => {
   if (v === 'analytics' && !analytics.value) void loadAnalytics().catch(showError)
   if (v === 'payments' && !payLoaded.value) void loadPayChannels().catch(showError)
   if (v === 'users' && users.value.length === 0) void loadUsers().catch(showError)
+  if (v === 'users' && usageByUser.value.length === 0) void loadUsageByUser().catch(showError)
   if (v === 'audit' && audit.value.length === 0) void loadAudit().catch(showError)
   if (v === 'health') void loadHealth().catch(showError)
 })
@@ -1944,12 +1996,13 @@ onMounted(async () => {
                 <th class="px-4 py-3 font-medium text-right">{{ t('admin.userBalance') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.orgGroup') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('admin.userInvite') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.userRemark') }}</th>
                 <th class="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="users.length === 0">
-                <td colspan="8" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+                <td colspan="9" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <tr v-for="u in users" :key="u.id" class="border-b border-line last:border-0">
                 <td class="px-4 py-2.5 text-muted">{{ u.id }}</td>
@@ -1994,6 +2047,16 @@ onMounted(async () => {
                   <span class="ml-2 text-ok" :title="t('admin.userEarned')">${{ Number(u.earned).toFixed(2) }}</span>
                   <span v-if="u.inviter_org_id" class="ml-2" :title="t('admin.userInviter')">← #{{ u.inviter_org_id }}</span>
                 </td>
+                <td class="px-4 py-2.5">
+                  <input
+                    :value="u.admin_remark"
+                    class="input !w-40 !py-1 text-xs"
+                    maxlength="500"
+                    :placeholder="t('admin.userRemarkPlaceholder')"
+                    :title="t('admin.userRemarkHint')"
+                    @change="saveUserRemark(u, ($event.target as HTMLInputElement).value)"
+                  />
+                </td>
                 <td class="px-4 py-2.5 text-right space-x-2 whitespace-nowrap">
                   <button v-if="auth.isSuperadmin" class="btn-ghost !py-1 text-xs" :disabled="!u.org_id" @click="openGrant(u.org_id, u.email)">{{ t('admin.crAdd') }}</button>
                   <button v-if="u.status === 1" class="btn-danger !py-1 text-xs" @click="manageUser(u, 'ban')">{{ t('admin.userBan') }}</button>
@@ -2004,6 +2067,45 @@ onMounted(async () => {
           </table>
         </div>
         <p class="text-xs text-muted">{{ t('admin.userTierHint') }}</p>
+
+        <!-- 按用户聚合用量 + CSV 导出（gap P2-B） -->
+        <div class="card p-6 space-y-4">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h3 class="font-semibold">{{ t('admin.usageByUser') }}</h3>
+            <div class="flex items-center gap-2">
+              <select v-model.number="usageDays" class="input !w-28 !py-1 text-xs" @change="loadUsageByUser">
+                <option :value="7">7 {{ t('admin.usageDays') }}</option>
+                <option :value="30">30 {{ t('admin.usageDays') }}</option>
+                <option :value="90">90 {{ t('admin.usageDays') }}</option>
+              </select>
+              <button class="btn-ghost !py-1 text-xs" :disabled="usageLoading" @click="loadUsageByUser">{{ t('common.refresh') }}</button>
+              <button class="btn-ghost !py-1 text-xs" @click="exportUsageByUser">{{ t('admin.exportCsv') }}</button>
+            </div>
+          </div>
+          <div v-if="usageByUser.length" class="overflow-x-auto">
+            <table class="table w-full text-sm whitespace-nowrap">
+              <thead>
+                <tr class="border-b border-line text-left text-muted">
+                  <th class="px-4 py-3 font-medium">ID</th>
+                  <th class="px-4 py-3 font-medium">{{ t('auth.email') }}</th>
+                  <th class="px-4 py-3 font-medium text-right">{{ t('admin.usageCalls') }}</th>
+                  <th class="px-4 py-3 font-medium text-right">{{ t('usage.tokens') }}</th>
+                  <th class="px-4 py-3 font-medium text-right">{{ t('usage.cost') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in usageByUser" :key="r.user_id" class="border-b border-line last:border-0">
+                  <td class="px-4 py-2.5 text-muted">{{ r.user_id || '—' }}</td>
+                  <td class="px-4 py-2.5 font-mono text-xs">{{ r.email || t('admin.usageNoUser') }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono">{{ r.succeeded }}/{{ r.calls }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono">{{ (r.prompt_tokens + r.completion_tokens).toLocaleString() }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-ok">${{ Number(r.cost_usd).toFixed(4) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else class="text-sm text-muted">{{ t('admin.usageEmpty') }}</p>
+        </div>
       </template>
 
       <!-- 设置（分区子导航，避免一页过长） -->

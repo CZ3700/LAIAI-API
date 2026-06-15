@@ -42,6 +42,7 @@ type User struct {
 	TOTPEnabled    int8   `gorm:"column:totp_enabled"`    // 2FA 是否启用
 	Role           string `gorm:"column:role"`            // 平台角色（0020，RBAC）：user|support|admin|superadmin
 	Status         int8   `gorm:"column:status"`
+	AdminRemark    string `gorm:"column:admin_remark" json:"-"` // 运营备注（0025，gap P2-B）：仅后台可见可改，json:"-" 防原样返回时外露给用户
 }
 
 // 平台角色（0020 RBAC）。线性等级，rank 越大权越大。X-Admin-Token 视同 superadmin。

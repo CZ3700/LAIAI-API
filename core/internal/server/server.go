@@ -162,7 +162,10 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.GET("/invocations", s.adminListInvocations)
 			admin.GET("/audit-logs", s.adminListAuditLogs)
 			admin.GET("/users", s.adminListUsers)
-			admin.POST("/users/:id/manage", s.adminManageUser) // 含 targetRole 守卫（不能动同级/更高）
+			admin.POST("/users/:id/manage", s.adminManageUser)     // 含 targetRole 守卫（不能动同级/更高）
+			admin.POST("/users/:id/remark", s.adminSetUserRemark)  // 运营备注（gap P2-B，含等级守卫）
+			admin.GET("/usage/by-user", s.adminUsageByUser)        // 全平台按用户聚合用量（gap P2-B）
+			admin.GET("/usage/by-user/export", s.adminUsageByUserExport) // 同上 CSV 导出
 
 			// —— superadmin 级（资金 / 系统设置 / 定价策略 / 授权）——（对标 NewAPI RootAuth）
 			su := admin.Group("", s.requireSuperadmin())
