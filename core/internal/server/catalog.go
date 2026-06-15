@@ -30,12 +30,14 @@ func (s *Server) adminModelCatalog(c *gin.Context) {
 		Provider string `json:"provider"`
 		Status   int8   `json:"status"`
 	}
+	metaMap := s.loadModelMetaMap() // 模型元数据（gap P2-D）：厂商/分类/标签等，关联进目录
 	type modelRow struct {
 		Model          string           `json:"model"`
 		Channels       []chRef          `json:"channels"`
 		Priced         bool             `json:"priced"`
 		InputUSDPer1M  *decimal.Decimal `json:"input_usd_per_1m,omitempty"`
 		OutputUSDPer1M *decimal.Decimal `json:"output_usd_per_1m,omitempty"`
+		Meta           *ModelMeta       `json:"meta,omitempty"`
 	}
 	catalog := map[string]*modelRow{}
 	for _, ch := range channels {
@@ -51,6 +53,10 @@ func (s *Server) adminModelCatalog(c *gin.Context) {
 					row.Priced = true
 					in, out := p.InputUSDPer1M, p.OutputUSDPer1M
 					row.InputUSDPer1M, row.OutputUSDPer1M = &in, &out
+				}
+				if meta, ok := metaMap[m]; ok {
+					mm := meta
+					row.Meta = &mm
 				}
 				catalog[m] = row
 			}

@@ -107,6 +107,11 @@ CREATE TABLE model_prices (
     cached_input_usd_per_1m NUMERIC NOT NULL DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE model_meta (
+    model TEXT PRIMARY KEY, vendor TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+    context_length INTEGER NOT NULL DEFAULT 0, icon TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE invocations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     org_id INTEGER NOT NULL, user_id INTEGER, api_key_id INTEGER NOT NULL,

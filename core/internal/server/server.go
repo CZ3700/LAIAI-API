@@ -156,8 +156,10 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.DELETE("/channels/:id", s.adminDisableChannel)
 			admin.POST("/channels/:id/test", s.adminTestChannel)
 			admin.POST("/channels/probe", s.adminProbeChannel)
+			admin.GET("/channels/:id/fetch-models", s.adminFetchChannelModels) // 自动拉模型+缺失检测（gap P2-D）
 			admin.POST("/model-prices", s.adminUpsertPrice)
 			admin.GET("/model-prices", s.adminListPrices)
+			admin.POST("/model-meta", s.adminUpsertModelMeta) // 模型元数据 upsert（gap P2-D）
 			admin.GET("/model-catalog", s.adminModelCatalog)
 			admin.GET("/providers", s.adminListProviders)
 			admin.GET("/orgs", s.adminListOrgs)

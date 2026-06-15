@@ -94,19 +94,28 @@ func (s *Server) getPricing(c *gin.Context) {
 		}
 		return "", false
 	}
+	metaMap := s.loadModelMetaMap()
 	out := make([]gin.H, 0, len(prices))
 	for _, p := range prices {
 		provider, ok := servedBy(p.Model)
 		if !ok {
 			continue
 		}
-		out = append(out, gin.H{
+		row := gin.H{
 			"model":             p.Model,
 			"provider":          provider,
 			"input_usd_per_1m":  p.InputUSDPer1M,
 			"output_usd_per_1m": p.OutputUSDPer1M,
 			"image_usd":         p.ImageUSD,
-		})
+		}
+		if meta, ok := metaMap[p.Model]; ok { // 模型元数据（gap P2-D）：有则前端用真实厂商/分类，无则回退按名猜
+			row["vendor"] = meta.Vendor
+			row["category"] = meta.Category
+			row["tags"] = meta.Tags
+			row["context_length"] = meta.ContextLength
+			row["icon"] = meta.Icon
+		}
+		out = append(out, row)
 	}
 	c.JSON(http.StatusOK, gin.H{"models": out})
 }

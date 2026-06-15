@@ -770,7 +770,8 @@ const prBusy = ref(false)
 
 // 模型目录：上游已上货模型 → 承载渠道 + 是否已定价（定价管理一眼看缺口）
 interface CatalogChannel { id: number; name: string; provider: string; status: number }
-interface CatalogModel { model: string; channels: CatalogChannel[]; priced: boolean; input_usd_per_1m?: string; output_usd_per_1m?: string }
+interface ModelMeta { model: string; vendor: string; category: string; tags: string; description: string; context_length: number; icon: string; updated_at?: number }
+interface CatalogModel { model: string; channels: CatalogChannel[]; priced: boolean; input_usd_per_1m?: string; output_usd_per_1m?: string; meta?: ModelMeta }
 const catalog = ref<{ models: CatalogModel[]; total: number; priced: number; unpriced: number } | null>(null)
 const catalogQuery = ref('')
 const catalogOnlyUnpriced = ref(false)
@@ -820,6 +821,62 @@ async function upsertPrice() {
     showError(e)
   } finally {
     prBusy.value = false
+  }
+}
+
+// —— 模型元数据（gap P2-D）——
+const metaForm = ref({ model: '', vendor: '', category: '', tags: '', description: '', context_length: '', icon: '' })
+const metaBusy = ref(false)
+function pickModelForMeta(m: CatalogModel) {
+  metaForm.value = {
+    model: m.model,
+    vendor: m.meta?.vendor ?? '',
+    category: m.meta?.category ?? '',
+    tags: m.meta?.tags ?? '',
+    description: m.meta?.description ?? '',
+    context_length: m.meta?.context_length ? String(m.meta.context_length) : '',
+    icon: m.meta?.icon ?? '',
+  }
+}
+async function upsertMeta() {
+  if (!metaForm.value.model.trim()) return
+  metaBusy.value = true
+  try {
+    await adminApi('POST', '/api/admin/model-meta', {
+      model: metaForm.value.model.trim(),
+      vendor: metaForm.value.vendor,
+      category: metaForm.value.category,
+      tags: metaForm.value.tags,
+      description: metaForm.value.description,
+      context_length: Number(metaForm.value.context_length) || 0,
+      icon: metaForm.value.icon,
+    })
+    metaForm.value = { model: '', vendor: '', category: '', tags: '', description: '', context_length: '', icon: '' }
+    await loadCatalog()
+    error.value = ''
+  } catch (e) {
+    showError(e)
+  } finally {
+    metaBusy.value = false
+  }
+}
+
+// —— 渠道：拉取上游模型 + 缺失检测（gap P2-D）——
+interface FetchModelsResult {
+  ok: boolean; message?: string; detected_base_url?: string; upstream_count?: number
+  missing_in_config?: string[]; extra_in_config?: string[]; unpriced?: string[]
+}
+const fetchModelsResult = ref<(FetchModelsResult & { channel: string }) | null>(null)
+const fetchingModelsId = ref<number | null>(null)
+async function fetchChannelModels(c: Channel) {
+  fetchingModelsId.value = c.id
+  try {
+    const r = await adminApi<FetchModelsResult>('GET', `/api/admin/channels/${c.id}/fetch-models`)
+    fetchModelsResult.value = { ...r, channel: c.name }
+  } catch (e) {
+    showError(e)
+  } finally {
+    fetchingModelsId.value = null
   }
 }
 
@@ -1315,6 +1372,9 @@ onMounted(async () => {
                   <button class="btn-ghost !py-1 text-xs" :disabled="testingId === c.id" @click="testChannel(c)">
                     {{ testingId === c.id ? t('admin.chTesting') : t('admin.chTest') }}
                   </button>
+                  <button class="btn-ghost !py-1 text-xs" :disabled="fetchingModelsId === c.id" @click="fetchChannelModels(c)">
+                    {{ fetchingModelsId === c.id ? t('admin.chFetching') : t('admin.chFetchModels') }}
+                  </button>
                   <button class="btn-ghost !py-1 text-xs" @click="openEdit(c)">{{ t('admin.chEdit') }}</button>
                   <button v-if="c.status === 1" class="btn-danger !py-1 text-xs" @click="disableChannel(c.id)">
                     {{ t('admin.chDisable') }}
@@ -1378,6 +1438,34 @@ onMounted(async () => {
               <button class="btn-primary" :disabled="editBusy">{{ t('common.confirm') }}</button>
             </div>
           </form>
+        </div>
+
+        <!-- 拉取上游模型结果（gap P2-D）：缺失/多余/未定价差集 -->
+        <div v-if="fetchModelsResult" class="modal-backdrop" @click.self="fetchModelsResult = null">
+          <div class="card modal-panel w-full max-w-lg p-6 space-y-4">
+            <h2 class="font-semibold">{{ t('admin.chFetchModels') }} · {{ fetchModelsResult.channel }}</h2>
+            <p v-if="!fetchModelsResult.ok" class="text-sm text-danger">{{ fetchModelsResult.message }}</p>
+            <template v-else>
+              <p class="text-xs text-muted">
+                {{ t('admin.fmDetected', { url: fetchModelsResult.detected_base_url, n: fetchModelsResult.upstream_count }) }}
+              </p>
+              <div>
+                <p class="text-sm font-medium text-danger">{{ t('admin.fmMissing') }} ({{ fetchModelsResult.missing_in_config?.length ?? 0 }})</p>
+                <p class="mt-1 break-words font-mono text-xs text-muted">{{ fetchModelsResult.missing_in_config?.join(', ') || '—' }}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium">{{ t('admin.fmUnpriced') }} ({{ fetchModelsResult.unpriced?.length ?? 0 }})</p>
+                <p class="mt-1 break-words font-mono text-xs text-muted">{{ fetchModelsResult.unpriced?.join(', ') || '—' }}</p>
+              </div>
+              <div v-if="fetchModelsResult.extra_in_config?.length">
+                <p class="text-sm font-medium text-muted">{{ t('admin.fmExtra') }} ({{ fetchModelsResult.extra_in_config.length }})</p>
+                <p class="mt-1 break-words font-mono text-xs text-muted">{{ fetchModelsResult.extra_in_config.join(', ') }}</p>
+              </div>
+            </template>
+            <div class="flex justify-end">
+              <button class="btn-ghost" @click="fetchModelsResult = null">{{ t('common.close') }}</button>
+            </div>
+          </div>
         </div>
       </template>
 
@@ -1598,6 +1686,45 @@ onMounted(async () => {
           </div>
         </form>
 
+        <!-- 模型元数据（gap P2-D）：厂商/分类/标签等展示元数据，前端据此替代按名猜 -->
+        <form class="card p-5 grid grid-cols-2 sm:grid-cols-4 gap-4 items-end" @submit.prevent="upsertMeta">
+          <div class="col-span-2 sm:col-span-4 -mb-1">
+            <h2 class="font-semibold">{{ t('admin.metaTitle') }}</h2>
+            <p class="mt-0.5 text-xs text-muted">{{ t('admin.metaHint') }}</p>
+          </div>
+          <div>
+            <label class="label" for="meta-model">{{ t('admin.prModel') }}</label>
+            <input id="meta-model" v-model="metaForm.model" class="input font-mono text-xs" required />
+          </div>
+          <div>
+            <label class="label" for="meta-vendor">{{ t('admin.metaVendor') }}</label>
+            <input id="meta-vendor" v-model="metaForm.vendor" class="input" maxlength="64" placeholder="OpenAI" />
+          </div>
+          <div>
+            <label class="label" for="meta-cat">{{ t('admin.metaCategory') }}</label>
+            <input id="meta-cat" v-model="metaForm.category" class="input" maxlength="32" placeholder="chat" />
+          </div>
+          <div>
+            <label class="label" for="meta-ctx">{{ t('admin.metaContext') }}</label>
+            <input id="meta-ctx" v-model="metaForm.context_length" class="input" inputmode="numeric" placeholder="128000" />
+          </div>
+          <div>
+            <label class="label" for="meta-tags">{{ t('admin.metaTags') }}</label>
+            <input id="meta-tags" v-model="metaForm.tags" class="input" maxlength="255" placeholder="vision,tools" />
+          </div>
+          <div>
+            <label class="label" for="meta-icon">{{ t('admin.metaIcon') }}</label>
+            <input id="meta-icon" v-model="metaForm.icon" class="input" maxlength="128" placeholder="openai" />
+          </div>
+          <div class="col-span-2">
+            <label class="label" for="meta-desc">{{ t('admin.metaDescription') }}</label>
+            <input id="meta-desc" v-model="metaForm.description" class="input" maxlength="500" />
+          </div>
+          <div class="col-span-2 sm:col-span-4">
+            <button class="btn-primary" :disabled="metaBusy">{{ t('admin.metaSave') }}</button>
+          </div>
+        </form>
+
         <!-- 模型目录：上游已上货模型 + 所在渠道 + 是否漏配价 -->
         <div v-if="catalog" class="card p-5">
           <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -1621,6 +1748,7 @@ onMounted(async () => {
               <thead class="sticky top-0 bg-panel/80 backdrop-blur">
                 <tr class="text-left text-muted">
                   <th class="px-3 py-2 font-medium">{{ t('admin.prModel') }}</th>
+                  <th class="px-3 py-2 font-medium">{{ t('admin.metaVendor') }}</th>
                   <th class="px-3 py-2 font-medium">{{ t('admin.catChannels') }}</th>
                   <th class="px-3 py-2 font-medium text-right">{{ t('admin.catPrice') }}</th>
                   <th class="px-3 py-2"></th>
@@ -1628,10 +1756,14 @@ onMounted(async () => {
               </thead>
               <tbody>
                 <tr v-if="catalogFiltered.length === 0">
-                  <td colspan="4" class="px-3 py-6 text-center text-muted">{{ t('common.empty') }}</td>
+                  <td colspan="5" class="px-3 py-6 text-center text-muted">{{ t('common.empty') }}</td>
                 </tr>
                 <tr v-for="m in catalogFiltered" :key="m.model" class="border-b border-line last:border-0">
                   <td class="px-3 py-2 font-mono text-xs">{{ m.model }}</td>
+                  <td class="px-3 py-2 text-xs">
+                    <span v-if="m.meta?.vendor" class="text-muted">{{ m.meta.vendor }}</span>
+                    <span v-if="m.meta?.category" class="ml-1 rounded bg-elev px-1.5 py-0.5 text-[11px]">{{ m.meta.category }}</span>
+                  </td>
                   <td class="px-3 py-2">
                     <span v-for="ch in m.channels" :key="ch.id"
                       class="mr-1 inline-flex items-center gap-1 rounded bg-elev px-1.5 py-0.5 text-[11px]"
@@ -1644,10 +1776,11 @@ onMounted(async () => {
                     <span v-if="m.priced">{{ m.input_usd_per_1m }} / {{ m.output_usd_per_1m }}</span>
                     <span v-else class="badge-danger">{{ t('admin.catNoPrice') }}</span>
                   </td>
-                  <td class="px-3 py-2 text-right">
+                  <td class="px-3 py-2 text-right whitespace-nowrap">
                     <button class="btn-ghost !py-1 text-xs" @click="pickModelForPricing(m)">
                       {{ m.priced ? t('admin.catEdit') : t('admin.catSetPrice') }}
                     </button>
+                    <button class="btn-ghost !py-1 text-xs ml-1" @click="pickModelForMeta(m)">{{ t('admin.metaEdit') }}</button>
                   </td>
                 </tr>
               </tbody>

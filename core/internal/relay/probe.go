@@ -78,6 +78,16 @@ func (r *Relay) ProbeChannel(ctx context.Context, apiKey, rawURL string) *ProbeR
 	return res
 }
 
+// ProbeExistingChannel：对已落库渠道拉取上游模型列表（gap P2-D，自动拉模型/缺失检测用）。
+// 解密渠道存储的凭证后复用 ProbeChannel（凭证处理留在 relay 内，与 TestChannel 同口径）。
+func (r *Relay) ProbeExistingChannel(ctx context.Context, ch *Channel) *ProbeResult {
+	cred, err := r.Keyring.Decrypt(ch.CredentialEnc)
+	if err != nil {
+		return &ProbeResult{Message: "credential decrypt failed"}
+	}
+	return r.ProbeChannel(ctx, cred, ch.BaseURL)
+}
+
 // fetchModels：GET {base}/models（OpenAI 兼容），解析 {data:[{id}]}。
 func (r *Relay) fetchModels(ctx context.Context, base, apiKey string) (models []string, gateway string, status int, err error) {
 	ctx, cancel := context.WithTimeout(ctx, probePerCandidateTimeout)

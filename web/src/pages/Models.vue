@@ -9,6 +9,11 @@ interface PricedModel {
   input_usd_per_1m: string
   output_usd_per_1m: string
   image_usd: string
+  // 模型元数据（gap P2-D）：运营配置则有，否则缺省回退到 provider
+  vendor?: string
+  category?: string
+  tags?: string
+  context_length?: number
 }
 
 const { t } = useI18n()
@@ -23,7 +28,11 @@ const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
   if (!q) return models.value
   return models.value.filter(
-    (m) => m.model.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q),
+    (m) =>
+      m.model.toLowerCase().includes(q) ||
+      m.provider.toLowerCase().includes(q) ||
+      (m.vendor ?? '').toLowerCase().includes(q) ||
+      (m.tags ?? '').toLowerCase().includes(q),
   )
 })
 
@@ -101,7 +110,8 @@ onMounted(async () => {
               </button>
             </td>
             <td class="px-4 py-2.5">
-              <span class="badge-muted">{{ m.provider }}</span>
+              <span class="badge-muted">{{ m.vendor || m.provider }}</span>
+              <span v-if="m.category" class="ml-1.5 text-xs text-muted">{{ m.category }}</span>
             </td>
             <td class="px-4 py-2.5 text-right font-mono">${{ m.input_usd_per_1m }}</td>
             <td class="px-4 py-2.5 text-right font-mono">${{ m.output_usd_per_1m }}</td>
