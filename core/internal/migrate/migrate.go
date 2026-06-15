@@ -8,12 +8,20 @@
 package migrate
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"io/fs"
 	"sort"
 	"strings"
 
 	"gorm.io/gorm"
+)
+
+// advisoryLockName / advisoryLockTimeout：多副本并发迁移的 MySQL 会话级互斥（WS-3）。
+const (
+	advisoryLockName    = "laiai_migrate"
+	advisoryLockTimeout = 120 // 秒：足够最慢的一批迁移跑完；超时视为另一实例迁移中（entrypoint 会重试）
 )
 
 type Record struct {
@@ -23,9 +31,42 @@ type Record struct {
 
 func (Record) TableName() string { return "schema_migrations" }
 
-// Up 应用 fsys 根目录下所有未应用的 *.sql 迁移，按文件名字典序。
-// 返回本次新应用的版本列表。
+// Up 应用 fsys 根目录下所有未应用的 *.sql 迁移，按文件名字典序。返回本次新应用的版本列表。
+//
+// 多副本安全（WS-3）：MySQL 上整个迁移流程用会话级 GET_LOCK 串行化——N 个 core 副本同时启动时
+// 只有一个进程执行迁移，其余阻塞到它释放后再跑（届时迁移已全部 applied，各自空过）。锁持在一条
+// 专用连接上直到显式 RELEASE_LOCK（GET_LOCK 是连接/会话级；conn.Close 只归还连接池不结束会话，
+// 故必须显式释放——对抗评审命中点）。SQLite 测试方言无 advisory lock，靠单连接串行兜底。
 func Up(db *gorm.DB, fsys fs.FS) ([]string, error) {
+	if db.Dialector.Name() != "mysql" {
+		return up(db, fsys)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("migrate: db handle: %w", err)
+	}
+	ctx := context.Background()
+	conn, err := sqlDB.Conn(ctx) // 专用连接：锁随此连接的会话存活，直到 RELEASE_LOCK
+	if err != nil {
+		return nil, fmt.Errorf("migrate: dedicated conn: %w", err)
+	}
+	defer conn.Close()
+	var got sql.NullInt64
+	if err := conn.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT GET_LOCK('%s', %d)", advisoryLockName, advisoryLockTimeout)).Scan(&got); err != nil {
+		return nil, fmt.Errorf("migrate: acquire advisory lock: %w", err)
+	}
+	if !got.Valid || got.Int64 != 1 {
+		// 超时（另一实例正在迁移且 >timeout）或异常：报错让 entrypoint 重试，绝不在未持锁时迁移。
+		return nil, fmt.Errorf("migrate: could not acquire advisory lock %q within %ds (another instance migrating?)",
+			advisoryLockName, advisoryLockTimeout)
+	}
+	defer conn.ExecContext(ctx, fmt.Sprintf("SELECT RELEASE_LOCK('%s')", advisoryLockName)) //nolint:errcheck
+	return up(db, fsys)
+}
+
+// up 是迁移主体（被 Up 在持有 advisory lock 后调用；SQLite 直接调）。
+func up(db *gorm.DB, fsys fs.FS) ([]string, error) {
 	if err := ensureTable(db); err != nil {
 		return nil, err
 	}

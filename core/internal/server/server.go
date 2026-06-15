@@ -85,6 +85,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		now:                 time.Now,
 		invRetentionDefault: opts.InvocationRetentionDays,
 	}
+	s.authLimiter.useRedis(opts.RedisRateLimiter) // 多实例：auth 限流跨副本聚合（nil 退化进程内）
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())

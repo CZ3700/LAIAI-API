@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/laiai/laiai-next/core/internal/config"
 	"github.com/laiai/laiai-next/core/internal/invocation"
+	"github.com/laiai/laiai-next/core/internal/leader"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/mailer"
 	"github.com/laiai/laiai-next/core/internal/server"
@@ -53,7 +56,24 @@ func main() {
 	rec := invocation.NewRecorder(db, log)
 	retentionDone := make(chan struct{})
 
-	// 异步任务轮询循环（Seedance 类任务的状态同步与结算，设计 §4.4）
+	// 跨实例限流 + 缓存失效 + leader 租约共用一个 Redis 客户端。
+	// 配了 LAIAI_REDIS_ADDR 才接 Redis；否则单实例：限流退化进程内、租约恒为 leader（都正确）。
+	var redisRL *redis.Client
+	if cfg.RedisAddr != "" {
+		redisRL = redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, Password: cfg.RedisPassword})
+		log.Info("redis enabled (rate limit + cache invalidation + leader lease)", "addr", cfg.RedisAddr)
+	}
+
+	// Leader 租约（WS-3 多实例）：后台 job 只在 leader 实例跑。Redis 未配 → 恒 leader（单实例）。
+	// 优化非正确性依赖：fail-open，DB 幂等兜底（见 leader 包注）。token 每实例唯一。
+	leaderLease := leader.New(leader.NewRedisStore(redisRL), "laiai:leader:jobs", randToken(),
+		30*time.Second, log.With("component", "leader"))
+	leaderCtx, leaderCancel := context.WithCancel(context.Background())
+	defer leaderCancel()
+	go leaderLease.Run(leaderCtx)
+
+	// 异步任务轮询循环（Seedance 类任务的状态同步与结算，设计 §4.4）。仅 leader 实例轮询，
+	// 避免 N 副本对同一批在途任务做 N 倍上游 query（终态结算本就 CAS 幂等，多跑只是浪费）。
 	var taskSvc *task.Service
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	defer pollerCancel()
@@ -65,19 +85,14 @@ func main() {
 			for {
 				select {
 				case <-ticker.C:
-					taskSvc.PollOnce(pollerCtx)
+					if leaderLease.IsLeader() {
+						taskSvc.PollOnce(pollerCtx)
+					}
 				case <-pollerCtx.Done():
 					return
 				}
 			}
 		}()
-	}
-
-	// 跨实例限流：配了 LAIAI_REDIS_ADDR 才接 Redis；否则 relay 退化进程内限流（单实例正确）。
-	var redisRL *redis.Client
-	if cfg.RedisAddr != "" {
-		redisRL = redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, Password: cfg.RedisPassword})
-		log.Info("redis rate limiter enabled", "addr", cfg.RedisAddr)
 	}
 
 	handler, apiSrv := server.NewWithServer(db, server.Options{
@@ -103,6 +118,9 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
+				if !leaderLease.IsLeader() {
+					continue // 仅 leader 跑维护/对账（多副本重复执行虽幂等但浪费）
+				}
 				if inv, aud, err := apiSrv.RunLogRetention(context.Background()); err != nil {
 					log.Error("log retention purge failed", "err", err)
 				} else if inv > 0 || aud > 0 {
@@ -148,6 +166,9 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
+				if !leaderLease.IsLeader() {
+					continue // 仅 leader 主动对账，避免 N 副本对同批在途单做 N 倍上游 query
+				}
 				if checked, credited, err := apiSrv.ReconcileTopups(reconcileCtx, 2*time.Minute, 200); err != nil {
 					log.Error("topup reconcile failed", "err", err)
 				} else if credited > 0 {
@@ -180,4 +201,13 @@ func main() {
 	rec.Close() // 排空调用记录队列后再关库
 	_ = sqlDB.Close()
 	log.Info("bye")
+}
+
+// randToken：leader 租约的每实例唯一标识（128-bit hex）。rand 失败回退时间戳兜底（极罕见）。
+func randToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "inst-" + time.Now().Format("20060102150405.000000000")
+	}
+	return hex.EncodeToString(b)
 }

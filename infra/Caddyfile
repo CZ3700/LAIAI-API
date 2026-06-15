@@ -5,6 +5,27 @@
 # 移植的两个 Caddy 陷阱纪律：
 #  1. respond/file_server 必须包在 handle 块里（directive 顺序陷阱）
 #  2. 若前面还有一层反代/CDN，必须配置 servers>trusted_proxies，否则 X-Forwarded-* 被覆写
+#
+# WS-3 多实例：core 用 docker compose --scale 起多副本（无 container_name）。Caddy 用
+# 「动态 DNS upstream」(dynamic a) 跟随 Docker 内嵌 DNS 解析出的全部副本 IP 做轮询负载均衡；
+# 每 5s 重解析，副本增减自动跟随。
+# ⚠️ 动态 upstream 只支持「被动」健康检查（fail_duration/unhealthy_status），不支持主动 health_uri
+#    （Caddy 限制，对抗评审命中点）——故用被动：连续 5xx/拨号失败的副本临时摘除一段时间。
+
+# core 反代 snippet（被三个 handle 复用，避免重复 + 保证负载均衡策略一致）。
+(core_proxy) {
+	reverse_proxy {
+		dynamic a {
+			name core
+			port 8080
+			refresh 5s
+		}
+		lb_policy round_robin
+		lb_try_duration 5s
+		fail_duration 30s   # 被动健康：拨号失败/坏响应的副本摘除 30s
+		unhealthy_status 5xx
+	}
+}
 
 {$LAIAI_DOMAIN} {
 	encode gzip
@@ -21,17 +42,17 @@
 	}
 
 	handle /healthz {
-		reverse_proxy core:8080
+		import core_proxy
 	}
 
 	# 控制面 API（Console 用）
 	handle /api/* {
-		reverse_proxy core:8080
+		import core_proxy
 	}
 
 	# 数据面 relay（chat/embeddings/images/video——对外统一 API）
 	handle /v1/* {
-		reverse_proxy core:8080
+		import core_proxy
 	}
 
 	# Console SPA（产物烤在镜像内 /srv/console）

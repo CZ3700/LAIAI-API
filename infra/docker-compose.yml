@@ -41,12 +41,15 @@ services:
     networks: [laiai]
 
   core:
+    # WS-3 多实例：无 container_name → 可 `docker compose up -d --scale core=N` 起多副本。
+    # Caddy 用 dynamic DNS（服务名 core）轮询所有副本；后台 job 用 Redis leader 租约只在一个副本跑；
+    # 迁移用 MySQL GET_LOCK 串行化（N 个副本启动只一个真正迁移）。多实例务必配 LAIAI_REDIS_ADDR
+    # （已默认 redis:6379），否则限流/缓存失效退化为各副本独立（运维红线）。
     build:
       context: ..
       dockerfile: infra/core.Dockerfile
       args:
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
-    container_name: laiai-core
     restart: unless-stopped
     environment:
       LAIAI_DSN: "laiai:${MYSQL_PASSWORD}@tcp(mysql:3306)/laiai?parseTime=true&charset=utf8mb4&loc=UTC"
