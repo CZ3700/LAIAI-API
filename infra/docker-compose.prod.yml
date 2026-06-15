@@ -1,0 +1,21 @@
+# LAIAI-NEXT 生产 overlay —— 与 docker-compose.yml 叠加使用：
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# 目的（P1-6）：生产环境第三方镜像必须 **digest 锁定**，杜绝可变 tag 的静默漂移
+# （mysql:8.4 / redis:7-alpine 这类 tag 会被上游重推到不同内容）。
+# 这里用 ${VAR:?} 强制必填、**无 fallback 默认**——未提供 digest 即拒绝启动，
+# 绝不像 ${VAR:-tag} 那样悄悄回退到可变 tag（旧平台跨十版隐式回滚事故的根因）。
+#
+# 取 digest：  docker manifest inspect mysql:8.4 --verbose | grep -m1 digest
+#       或：  docker image inspect mysql:8.4 --format '{{index .RepoDigests 0}}'
+# 填入 .env： MYSQL_IMAGE=mysql:8.4@sha256:<实际 digest>
+#             REDIS_IMAGE=redis:7-alpine@sha256:<实际 digest>
+#
+# core / caddy 从源码构建，由 git commit 锁定可复现；其运行镜像 ID 由
+# release-manifest.sh 在部署后记录入快照，用 diff 子命令揪任何漂移。
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:?prod 必须在 .env 设 digest 锁定镜像，见 docker-compose.prod.yml 头注}
+
+  redis:
+    image: ${REDIS_IMAGE:?prod 必须在 .env 设 digest 锁定镜像，见 docker-compose.prod.yml 头注}

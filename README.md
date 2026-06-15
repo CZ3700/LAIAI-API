@@ -44,6 +44,18 @@ docker compose up -d --build
 curl -s http://localhost/healthz   # → {"status":"ok"}
 ```
 
+**生产部署（digest 锁定 + 快照，红线 7）**：第三方镜像必须按 digest 锁定，杜绝可变 tag 静默漂移。
+
+```bash
+# 1. 取 digest 填入 .env（MYSQL_IMAGE/REDIS_IMAGE，无 fallback、未填即拒启）
+docker image inspect mysql:8.4 --format '{{index .RepoDigests 0}}'
+# 2. 叠加生产 overlay 起栈
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# 3. 部署后留快照，下次部署前 diff 揪漂移（镜像被换 / 配置静默回滚）
+./release-manifest.sh generate > releases/$(git rev-parse --short HEAD).json
+./release-manifest.sh diff releases/<上一版>.json   # 仅预期项变化才算正常
+```
+
 启动顺序由 compose 编排：MySQL 健康 → core 容器 entrypoint **自动应用 migrations/**（失败重试 60s 后响亮退出，绝不静默跳过 schema）→ HTTP 起服务 → Caddy 接流量。
 设置 `LAIAI_DOMAIN=api.example.com` 后 Caddy 自动 ACME 签发 TLS；留空则 :80 裸 HTTP（仅首次验证）。
 

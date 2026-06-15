@@ -1,0 +1,2 @@
+# 部署快照留档目录（P1-6）：release-manifest.sh generate 的输出按 git short-sha 命名存此。
+# 用于下次部署前 `release-manifest.sh diff` 对比，揪镜像/配置静默漂移。
