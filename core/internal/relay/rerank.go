@@ -31,12 +31,20 @@ func rerankUpstreamURL(ch *Channel, credential string) (string, string, string, 
 	if p, ok := ProfileFor(ch.Provider); ok {
 		adapterName = p.Adapter
 	}
-	switch adapterName {
-	case "anthropic", "gemini":
+	if adapterName == "anthropic" || adapterName == "gemini" {
 		return "", "", "", errRerankUnsupported
-	default:
-		return strings.TrimRight(ch.BaseURL, "/") + "/rerank", "Authorization", "Bearer " + credential, nil
 	}
+	base := strings.TrimRight(ch.BaseURL, "/")
+	// Cohere 的 rerank 是原生端点，不在 /compatibility（后者只镜像 OpenAI 形态的 chat/embeddings）。
+	// 默认 base 是 .../compatibility/v1（供 chat 兼容用），rerank 必须归一回主机根再拼 /v1/rerank
+	// （对标 NewAPI cohere/adaptor.go），否则会命中 /compatibility/v1/rerank → 404。
+	// 这样单个 cohere 渠道用同一 base 即可同时支撑 chat（compat）与 rerank（native）。
+	if ch.Provider == "cohere" {
+		base = strings.TrimSuffix(base, "/compatibility/v1")
+		return base + "/v1/rerank", "Authorization", "Bearer " + credential, nil
+	}
+	// 其余 OpenAI 兼容厂商（jina/siliconflow/qwen…）base 已含 /v1 → base + /rerank = /v1/rerank。
+	return base + "/rerank", "Authorization", "Bearer " + credential, nil
 }
 
 // countRerankTokens：query + 各 document 的 token 估算（无 tiktoken 时按原始字节估）。

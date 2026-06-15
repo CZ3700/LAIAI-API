@@ -109,9 +109,50 @@ func (c *CoinbaseCommerce) CreatePayment(ctx context.Context, req *CreateRequest
 	return &CreateResult{PayURL: out.Data.HostedURL, ProviderRef: out.Data.Code}, nil
 }
 
+// ccCharge：webhook/query 共用的 charge 解析形态。⚠待真实验证：嵌套层级、payments/pricing 字段。
+type ccCharge struct {
+	Code     string            `json:"code"`
+	Metadata map[string]string `json:"metadata"`
+	Pricing  struct {
+		Local ccMoney `json:"local"`
+	} `json:"pricing"`
+	// payments[]：客户**实际链上付款**记录（实收额）。underpaid 时 pricing.local（应付）不变，
+	// 实收只在此累计——金额红线必须用实收，否则「实付不得少于应付」退化为恒等式（对抗评审 critical）。
+	Payments []struct {
+		Value struct {
+			Local ccMoney `json:"local"`
+		} `json:"value"`
+	} `json:"payments"`
+	Timeline []struct {
+		Status string `json:"status"`
+	} `json:"timeline"`
+}
+
+type ccMoney struct {
+	Amount   string `json:"amount"`
+	Currency string `json:"currency"`
+}
+
+// paidLocal：累加 payments[].value.local 作为实收额；币种取首笔（与 pricing 同 local 口径）。
+// 无 payment 记录 → 实收 0（creditPaidOrder 的「实付不得少于应付」据此拒收，安全：绝不按应付价入账）。
+func (ch *ccCharge) paidLocal() (decimal.Decimal, string) {
+	total := decimal.Zero
+	currency := strings.ToUpper(ch.Pricing.Local.Currency)
+	for _, p := range ch.Payments {
+		if a, err := decimal.NewFromString(p.Value.Local.Amount); err == nil {
+			total = total.Add(a)
+		}
+		if currency == "" {
+			currency = strings.ToUpper(p.Value.Local.Currency)
+		}
+	}
+	return total, currency
+}
+
 // VerifyCallback：验 X-CC-Webhook-Signature = HMAC-SHA256(raw body) hex，
-// 仅 charge:confirmed / charge:resolved 视为成功（最终态；resolved 的 underpaid 由 creditPaidOrder
-// 的「实付不得少于应付」自动拦截）。
+// 仅 charge:confirmed / charge:resolved 视为成功（最终态）。
+// 金额取 payments[] 实收（非 pricing.local 应付）——这样 resolved 的 underpaid 被 creditPaidOrder
+// 的「实付不得少于应付」真正拦截（对抗评审：读应付价会让金额红线退化为恒等式）。
 func (c *CoinbaseCommerce) VerifyCallback(rawBody []byte, headers, _ map[string]string) (*CallbackResult, error) {
 	sig := headers["X-Cc-Webhook-Signature"]
 	if sig == "" {
@@ -123,32 +164,23 @@ func (c *CoinbaseCommerce) VerifyCallback(rawBody []byte, headers, _ map[string]
 	if !c.verifySig(rawBody, sig) {
 		return nil, fmt.Errorf("coinbase signature verification failed")
 	}
-	// ⚠待真实验证：event.data 充值对象嵌套、pricing.local 字段、metadata.order_no 回传。
+	// ⚠待真实验证：event.data 充值对象嵌套、payments[].value.local 字段、metadata.order_no 回传。
 	var env struct {
 		Event struct {
-			Type string `json:"type"`
-			Data struct {
-				Code     string            `json:"code"`
-				Metadata map[string]string `json:"metadata"`
-				Pricing  struct {
-					Local struct {
-						Amount   string `json:"amount"`
-						Currency string `json:"currency"`
-					} `json:"local"`
-				} `json:"pricing"`
-			} `json:"data"`
+			Type string   `json:"type"`
+			Data ccCharge `json:"data"`
 		} `json:"event"`
 	}
 	if err := json.Unmarshal(rawBody, &env); err != nil {
 		return nil, fmt.Errorf("coinbase webhook decode: %w", err)
 	}
 	d := env.Event.Data
-	amount, _ := decimal.NewFromString(d.Pricing.Local.Amount)
+	paid, currency := d.paidLocal()
 	return &CallbackResult{
 		OrderNo:  d.Metadata["order_no"],
 		TradeNo:  d.Code,
-		Amount:   amount,
-		Currency: strings.ToUpper(d.Pricing.Local.Currency),
+		Amount:   paid, // 实收（payments[] 累加），非应付价
+		Currency: currency,
 		Success:  env.Event.Type == "charge:confirmed" || env.Event.Type == "charge:resolved",
 	}, nil
 }
@@ -178,20 +210,9 @@ func (c *CoinbaseCommerce) QueryOrder(ctx context.Context, req QueryRequest) (*Q
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("coinbase query %d: %s", resp.StatusCode, excerpt(b))
 	}
-	// ⚠待真实验证：timeline.status 判「已支付」的枚举字符串。
+	// ⚠待真实验证：timeline.status 判「已支付」的枚举字符串、payments[] 字段。
 	var out struct {
-		Data struct {
-			Code    string `json:"code"`
-			Pricing struct {
-				Local struct {
-					Amount   string `json:"amount"`
-					Currency string `json:"currency"`
-				} `json:"local"`
-			} `json:"pricing"`
-			Timeline []struct {
-				Status string `json:"status"`
-			} `json:"timeline"`
-		} `json:"data"`
+		Data ccCharge `json:"data"`
 	}
 	if err := json.Unmarshal(b, &out); err != nil {
 		return nil, fmt.Errorf("coinbase query decode: %w", err)
@@ -203,10 +224,10 @@ func (c *CoinbaseCommerce) QueryOrder(ctx context.Context, req QueryRequest) (*Q
 			paid = true
 		}
 	}
-	amount, _ := decimal.NewFromString(out.Data.Pricing.Local.Amount)
+	amt, currency := out.Data.paidLocal() // 实收（payments[] 累加），供 reconcile 的金额红线
 	return &QueryResult{
 		Found: true, Paid: paid, TradeNo: out.Data.Code,
-		Amount: amount, Currency: strings.ToUpper(out.Data.Pricing.Local.Currency),
+		Amount: amt, Currency: currency,
 	}, nil
 }
 

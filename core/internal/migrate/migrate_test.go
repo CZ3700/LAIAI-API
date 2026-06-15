@@ -57,12 +57,38 @@ func TestUpAppliesInOrderAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// 半应用恢复（对抗评审 high）：多 DDL 文件前几条已落地但版本未记录时，re-run 必须容忍
+// 「已存在」跳过、补完剩余语句、记录版本——而非报错触发 entrypoint crash-loop。
+func TestHalfAppliedMigrationRerunIsIdempotent(t *testing.T) {
+	db := testDB(t)
+	// 模拟前次半应用：第 1 个对象已存在，但 schema_migrations 未记录该版本
+	if err := db.Exec("CREATE TABLE half1 (id INTEGER PRIMARY KEY)").Error; err != nil {
+		t.Fatal(err)
+	}
+	fs := fstest.MapFS{
+		"0001_x.sql": {Data: []byte("CREATE TABLE half1 (id INTEGER PRIMARY KEY);\nCREATE TABLE half2 (id INTEGER PRIMARY KEY);")},
+	}
+	ran, err := Up(db, fs)
+	if err != nil {
+		t.Fatalf("half-applied re-run must tolerate already-exists, got: %v", err)
+	}
+	if len(ran) != 1 || ran[0] != "0001_x" {
+		t.Fatalf("ran = %v, want 0001_x recorded", ran)
+	}
+	if db.Exec("SELECT 1 FROM half2 LIMIT 1").Error != nil {
+		t.Fatal("half2 not created — remaining statement was skipped instead of applied")
+	}
+	if ran2, _ := Up(db, fs); len(ran2) != 0 {
+		t.Fatalf("rerun applied %v, want none (version should now be recorded)", ran2)
+	}
+}
+
 func TestFailedMigrationRollsBackAndStops(t *testing.T) {
 	db := testDB(t)
 	bad := fstest.MapFS{
 		"0001_ok.sql":  {Data: []byte("CREATE TABLE ok1 (id INTEGER PRIMARY KEY);")},
 		"0002_bad.sql": {Data: []byte("CREATE TABLE ok2 (id INTEGER PRIMARY KEY);\nTHIS IS NOT SQL;")},
-		"0003_后续.sql": {Data: []byte("CREATE TABLE ok3 (id INTEGER PRIMARY KEY);")},
+		"0003_后续.sql":  {Data: []byte("CREATE TABLE ok3 (id INTEGER PRIMARY KEY);")},
 	}
 	ran, err := Up(db, bad)
 	if err == nil {

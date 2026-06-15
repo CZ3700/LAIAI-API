@@ -52,7 +52,7 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 				block := map[string]any{
 					"type":        "tool_result",
 					"tool_use_id": m["tool_call_id"],
-					"content":     m["content"],
+					"content":     anthropicContent(m["content"]), // 图片型 tool_result 也转 Claude 块
 				}
 				if n := len(messages); n > 0 && messages[n-1]["role"] == "user" {
 					if blocks, ok := messages[n-1]["content"].([]any); ok {
@@ -64,7 +64,8 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 			case "assistant":
 				tcs, _ := m["tool_calls"].([]any)
 				if len(tcs) == 0 {
-					messages = append(messages, map[string]any{"role": role, "content": m["content"]})
+					// assistant 历史也可能带多模态 content（多轮视觉回放）→ 同 user 转 Claude 块
+					messages = append(messages, map[string]any{"role": role, "content": anthropicContent(m["content"])})
 					continue
 				}
 				var blocks []any
@@ -165,7 +166,11 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 	if th, ok := req["thinking"].(map[string]any); ok {
 		out["thinking"] = th
 		if bt, ok := th["budget_tokens"].(float64); ok && bt > 0 && maxTokens <= bt {
-			out["max_tokens"] = bt + float64(defaultMaxTokens)
+			bumped := bt + float64(defaultMaxTokens)
+			if bumped > float64(maxOutputTokensCeiling) {
+				bumped = float64(maxOutputTokensCeiling) // 与 hold 口径一致钳上限
+			}
+			out["max_tokens"] = bumped
 		}
 	}
 

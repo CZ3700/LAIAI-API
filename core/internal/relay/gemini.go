@@ -38,8 +38,8 @@ func (geminiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 
 	// generationConfig
 	gen := map[string]any{}
-	if mt, ok := req["max_tokens"].(float64); ok && mt > 0 {
-		gen["maxOutputTokens"] = mt
+	if mt := requestedMaxOutput(req); mt > 0 { // 同识别 max_tokens 与 max_completion_tokens（与 anthropic 口径一致）
+		gen["maxOutputTokens"] = float64(mt)
 	}
 	if v, ok := req["temperature"]; ok {
 		gen["temperature"] = v
@@ -58,7 +58,10 @@ func (geminiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 			gen["responseMimeType"] = "application/json"
 			if js, ok := rf["json_schema"].(map[string]any); ok {
 				if schema, ok := js["schema"]; ok {
-					gen["responseSchema"] = schema
+					// Gemini responseSchema 只收 OpenAPI 3.0 子集，带 JSON-Schema 专有关键字
+					// （additionalProperties/title/$schema…）会 400；而 OpenAI strict 规范强制每个
+					// object 带 additionalProperties:false——必须递归剥离（对标 NewAPI）。
+					gen["responseSchema"] = sanitizeGeminiSchema(schema, 0)
 				}
 			}
 		}
@@ -88,10 +91,7 @@ func (geminiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 					systemParts = append(systemParts, s)
 				}
 			case "assistant":
-				parts := []map[string]any{}
-				if s, ok := m["content"].(string); ok && s != "" {
-					parts = append(parts, map[string]any{"text": s})
-				}
+				parts := geminiContentParts(m["content"]) // string 或多模态历史 → text/inlineData 部件
 				if tcs, ok := m["tool_calls"].([]any); ok {
 					for _, rtc := range tcs {
 						tc, _ := rtc.(map[string]any)
@@ -129,38 +129,10 @@ func (geminiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 						"name": name, "response": map[string]any{"content": m["content"]},
 					}}}})
 			default: // user
-				switch content := m["content"].(type) {
-				case string:
-					contents = append(contents, map[string]any{"role": "user",
-						"parts": []map[string]any{{"text": content}}})
-				case []any:
-					// 多模态数组：text → text 部件；image_url 的 data: URI → inlineData（base64 内联）。
-					// 远程 http(s) 图 Gemini 原生不收任意 URL（仅 GCS/File API），此处跳过——
-					// 这类图走 OpenAI 兼容渠道可直接透传（D1：原生通道视觉输入丝滑）。
-					parts := []map[string]any{}
-					for _, rp := range content {
-						p, ok := rp.(map[string]any)
-						if !ok {
-							continue
-						}
-						switch p["type"] {
-						case "text":
-							if s, ok := p["text"].(string); ok {
-								parts = append(parts, map[string]any{"text": s})
-							}
-						case "image_url":
-							iu, _ := p["image_url"].(map[string]any)
-							url, _ := iu["url"].(string)
-							if mime, data, ok := parseDataURI(url); ok {
-								parts = append(parts, map[string]any{
-									"inlineData": map[string]any{"mimeType": mime, "data": data},
-								})
-							}
-						}
-					}
-					if len(parts) > 0 {
-						contents = append(contents, map[string]any{"role": "user", "parts": parts})
-					}
+				// string 或多模态数组（text/image_url 的 data:URI→inlineData；远程 http 图 Gemini 原生
+				// 不收 → 跳过、走兼容渠道）。assistant 历史复用同一 geminiContentParts，转换对称。
+				if parts := geminiContentParts(m["content"]); len(parts) > 0 {
+					contents = append(contents, map[string]any{"role": "user", "parts": parts})
 				}
 			}
 		}
@@ -225,6 +197,72 @@ func (geminiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("x-goog-api-key", credential)
 	return upReq, nil
+}
+
+// geminiContentParts 把 OpenAI 消息 content（string 或多模态数组）统一转成 Gemini parts，供
+// user 与 assistant 分支复用（转换对称）：text → {text}；image_url 的 data:base64 URI → {inlineData}。
+// 远程 http(s) 图 Gemini 原生不收任意 URL（仅 GCS/File API），跳过——这类图走 OpenAI 兼容渠道透传。
+func geminiContentParts(content any) []map[string]any {
+	switch c := content.(type) {
+	case string:
+		if c == "" {
+			return nil
+		}
+		return []map[string]any{{"text": c}}
+	case []any:
+		var parts []map[string]any
+		for _, rp := range c {
+			p, ok := rp.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch p["type"] {
+			case "text":
+				if s, ok := p["text"].(string); ok {
+					parts = append(parts, map[string]any{"text": s})
+				}
+			case "image_url":
+				iu, _ := p["image_url"].(map[string]any)
+				url, _ := iu["url"].(string)
+				if mime, data, ok := parseDataURI(url); ok {
+					parts = append(parts, map[string]any{"inlineData": map[string]any{"mimeType": mime, "data": data}})
+				}
+			}
+		}
+		return parts
+	}
+	return nil
+}
+
+// sanitizeGeminiSchema 深拷贝并递归剥离 Gemini responseSchema 不接受的 JSON-Schema 专有关键字。
+// Gemini 只收 OpenAPI 3.0 Schema 子集；带 additionalProperties/title/$schema 等会 400 INVALID_ARGUMENT。
+// 深拷贝（不原地改客户端传入的 map，透传场景下原 req 可能复用）；限深防递归炸栈。对标 NewAPI
+// removeAdditionalPropertiesWithDepth。
+func sanitizeGeminiSchema(v any, depth int) any {
+	if depth > 64 {
+		return v
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			switch k {
+			case "additionalProperties", "title", "$schema", "$id", "unevaluatedProperties", "patternProperties":
+				continue // Gemini OpenAPI 子集不接受 → 剥离
+			default:
+				out[k] = sanitizeGeminiSchema(val, depth+1) // 递归处理 properties/items/anyOf/oneOf/allOf 等
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = sanitizeGeminiSchema(e, depth+1)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // parseDataURI 解析 `data:<mime>;base64,<data>`，用于把 OpenAI image_url 内联图转成 Gemini inlineData。

@@ -80,6 +80,39 @@ func TestTTLCacheClobberDefense(t *testing.T) {
 	}
 }
 
+// snapCache load 失败不缓存（镜像 ttlCache 护栏；快照给 status=1 渠道用，错误缓存=空快照→全模型 ErrNoChannel）。
+func TestSnapCacheDoesNotCacheErrors(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := newSnapCache[[]int](8*time.Second, func() time.Time { return now })
+	boom := errors.New("boom")
+	if _, err := c.getOrLoad(func() ([]int, error) { return nil, boom }); err != boom {
+		t.Fatalf("want boom, got %v", err)
+	}
+	v, err := c.getOrLoad(func() ([]int, error) { return []int{7}, nil })
+	if err != nil || len(v) != 1 || v[0] != 7 {
+		t.Fatalf("after error, snap = %v/%v, want [7]/nil (错误不应写回)", v, err)
+	}
+}
+
+// snapCache clobber 防御：load 期间 invalidate → 该次结果不写回，下次重新 load。
+func TestSnapCacheClobberDefense(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := newSnapCache[[]int](8*time.Second, func() time.Time { return now })
+	loads := 0
+	v, _ := c.getOrLoad(func() ([]int, error) {
+		loads++
+		c.invalidate() // load 进行中失效
+		return []int{100}, nil
+	})
+	if len(v) != 1 || v[0] != 100 {
+		t.Fatalf("caller still gets loaded value, got %v", v)
+	}
+	v2, _ := c.getOrLoad(func() ([]int, error) { loads++; return []int{200}, nil })
+	if len(v2) != 1 || v2[0] != 200 || loads != 2 {
+		t.Fatalf("clobbered snapshot leaked: %v loads=%d, want [200]/2", v2, loads)
+	}
+}
+
 func TestSnapCacheHitExpireInvalidate(t *testing.T) {
 	now := time.Unix(0, 0)
 	c := newSnapCache[[]int](8*time.Second, func() time.Time { return now })

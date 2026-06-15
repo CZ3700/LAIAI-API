@@ -22,7 +22,7 @@ CREATE TABLE ledger_journal (
     account_id      BIGINT UNSIGNED NOT NULL,
     kind            VARCHAR(16)  NOT NULL COMMENT 'credit|debit|capture|grant|expire',
     delta           DECIMAL(20,8) NOT NULL COMMENT '有符号变动',
-    balance_after   DECIMAL(20,8) NOT NULL COMMENT '过账后 posted_balance 快照（对账锚点）',
+    balance_after   DECIMAL(20,8) NOT NULL COMMENT '过账后 posted_balance 尽力快照（展示/审计用，非对账依据）。方案A 乐观并发下跨事务并发对同一账户过账时，本列可能锚定旧快照值；对账以 delta 求和为准（CheckDrift 恒等式 A：posted==Σdelta，不依赖本列）。capture 路径回读精确，post 路径尽力。',
     hold_id         BIGINT UNSIGNED NULL COMMENT 'capture 来源 hold',
     ref_type        VARCHAR(32)  NOT NULL DEFAULT '' COMMENT 'order|usage|withdrawal|commission|...',
     ref_id          VARCHAR(64)  NOT NULL DEFAULT '',

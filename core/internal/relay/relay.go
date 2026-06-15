@@ -357,6 +357,19 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			maxTokens = maxOutputTokensCeiling // 钳上限（审查 L-2）：防超大值把 hold 撑成误导性"余额不足"
 		}
 	}
+	// 扩展思考（Anthropic thinking）：thinking token 计入 output 计费，anthropic 适配器会把上游
+	// max_tokens 上调到 budget+4096。hold 必须同口径计入，否则低余额可借 overage 把 org 余额刷负
+	// （与下方 n 倍同类资金红线）。对非 anthropic 渠道无害（只多冻结、settle 按真实 usage 退差）。
+	if th, ok := req["thinking"].(map[string]any); ok {
+		if bt, ok := th["budget_tokens"].(float64); ok && bt > 0 {
+			if want := int64(bt) + int64(defaultMaxTokens); want > maxTokens {
+				maxTokens = want
+				if maxTokens > maxOutputTokensCeiling {
+					maxTokens = maxOutputTokensCeiling
+				}
+			}
+		}
+	}
 	// 多候选 n（OpenAI 上限 128）：输出 token 随 n 倍增、usage 计入全部候选，故 hold 也须按 n 倍冻结，
 	// 否则 n 大 + max_completion_tokens 大可绕过余额闸、借 overage 把余额刷成负（P0-2 同类）。
 	holdOutput := maxTokens

@@ -79,7 +79,7 @@ func TestAnthropicThinkingPassthrough(t *testing.T) {
 	if body.Thinking == nil || body.Thinking["type"] != "enabled" {
 		t.Fatalf("thinking not passed through: %v", body.Thinking)
 	}
-	if body.MaxTokens <= 8000 {
-		t.Fatalf("max_tokens=%v must be bumped above budget 8000", body.MaxTokens)
+	if body.MaxTokens != 8000+4096 { // 钉死上调公式 budget+defaultMaxTokens，而非仅验方向（防"恰好越过 1"退化）
+		t.Fatalf("max_tokens=%v, want budget+default=12096", body.MaxTokens)
 	}
 }

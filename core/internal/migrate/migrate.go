@@ -105,6 +105,14 @@ func up(db *gorm.DB, fsys fs.FS) ([]string, error) {
 		err = db.Transaction(func(tx *gorm.DB) error {
 			for i, s := range stmts {
 				if err := tx.Exec(s).Error; err != nil {
+					// 半应用恢复（对抗评审 high）：MySQL DDL 隐式提交不可回滚——多 DDL 文件若中途被杀
+					// （OOM/连接闪断/容器重启），前几条已落地但版本未记录，re-run 整个文件会撞「已存在」
+					// → 旧实现报错 → entrypoint 30 次全败 → 容器 crash-loop。这里容忍「已存在」类错误并
+					// 跳过该语句，使未记录版本的 re-run 幂等完成剩余语句并补记版本。安全前提：迁移是
+					// schema 唯一权威（红线禁 AutoMigrate），故「已存在」只可能源于本迁移的前次半应用。
+					if isAlreadyExists(err) {
+						continue
+					}
 					return fmt.Errorf("migrate: %s statement %d: %w", f, i+1, err)
 				}
 			}
@@ -152,6 +160,16 @@ func ensureTable(db *gorm.DB) error {
 		version VARCHAR(128) NOT NULL PRIMARY KEY,
 		applied_at VARCHAR(64) NOT NULL
 	)`).Error
+}
+
+// isAlreadyExists 判定「对象已存在」类错误（半应用 re-run 幂等用）。跨方言字符串匹配：
+// MySQL（1050 表已存在 / 1060 重复列 / 1061 重复键名）与 SQLite（table/index already exists、
+// duplicate column name）。仅在迁移=schema 唯一权威的前提下容忍（红线禁 AutoMigrate）。
+func isAlreadyExists(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "already exists") ||
+		strings.Contains(s, "duplicate column") ||
+		strings.Contains(s, "duplicate key")
 }
 
 // splitStatements 去掉 -- 行注释后按 ";" 切分。
