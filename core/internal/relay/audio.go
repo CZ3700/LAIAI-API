@@ -156,9 +156,15 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 	finish(invocation.StatusSuccess, http.StatusOK, "")
 }
 
-// HandleAudioTranscription：POST /v1/audio/transcriptions —— STT。multipart(file+model)，
-// 按次固定价（时长不可靠，按次最稳妥）。响应 JSON 透传。
-func (r *Relay) HandleAudioTranscription(c *gin.Context) {
+// HandleAudioTranscription：POST /v1/audio/transcriptions —— STT 转写。
+func (r *Relay) HandleAudioTranscription(c *gin.Context) { r.sttHandler(c, "transcriptions") }
+
+// HandleAudioTranslation：POST /v1/audio/translations —— STT 翻译到英文（D1）。
+// 与转写同款流程/计价（TranscriptionPerCall），仅上游端点后缀不同。
+func (r *Relay) HandleAudioTranslation(c *gin.Context) { r.sttHandler(c, "translations") }
+
+// sttHandler：STT 共用实现。multipart(file+model)，按次固定价（时长不可靠，按次最稳妥），响应透传。
+func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 	t0 := r.Now()
 	rdb := r.DB.WithContext(c.Request.Context())
 	key, inv, finish, ok := r.audioPreamble(c, t0)
@@ -220,7 +226,7 @@ func (r *Relay) HandleAudioTranscription(c *gin.Context) {
 	// P2-11：应用渠道模型映射——URL 用上游名（Azure deployment 形态），multipart 的 model
 	// 字段也重写为上游名（OpenAI 兼容 STT 模型在表单字段里）。无映射时原样透传。
 	build := func(ctx context.Context, ch *Channel, cred string) (*http.Request, error) {
-		url, ah, av, e := audioUpstreamURL(ch, ch.UpstreamModel(model), "transcriptions")
+		url, ah, av, e := audioUpstreamURL(ch, ch.UpstreamModel(model), suffix)
 		if e != nil {
 			return nil, e
 		}
@@ -255,7 +261,7 @@ func (r *Relay) HandleAudioTranscription(c *gin.Context) {
 	}
 	c.Data(http.StatusOK, ct, raw)
 
-	r.audioSettle(c, key, model, hold, cost, fmt.Sprintf("transcription model=%s ×%s", model, groupRatio))
+	r.audioSettle(c, key, model, hold, cost, fmt.Sprintf("%s model=%s ×%s", suffix, model, groupRatio))
 	quotaSettled = true // 预留即等于 cost（确定性计价），成功无需对账
 	inv.CostUSD = cost
 	finish(invocation.StatusSuccess, http.StatusOK, "")

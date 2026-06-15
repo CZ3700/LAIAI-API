@@ -221,6 +221,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		r.POST("/v1/images/generations", rl.HandleImages)
 		r.POST("/v1/audio/speech", rl.HandleAudioSpeech)               // TTS（gap P2-F，按字符计价）
 		r.POST("/v1/audio/transcriptions", rl.HandleAudioTranscription) // STT（gap P2-F，按次固定价）
+			r.POST("/v1/audio/translations", rl.HandleAudioTranslation)     // STT 翻译到英文（D1，同转写计价）
 
 		// 异步任务（Seedance 类视频生成，设计 §4.4 Task API）
 		ts := opts.TaskService

@@ -113,12 +113,27 @@ func (geminiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 					contents = append(contents, map[string]any{"role": "user",
 						"parts": []map[string]any{{"text": content}}})
 				case []any:
-					// 多模态数组：M2 仅取 text 部件（图片 inlineData 留待 vision 专项）
+					// 多模态数组：text → text 部件；image_url 的 data: URI → inlineData（base64 内联）。
+					// 远程 http(s) 图 Gemini 原生不收任意 URL（仅 GCS/File API），此处跳过——
+					// 这类图走 OpenAI 兼容渠道可直接透传（D1：原生通道视觉输入丝滑）。
 					parts := []map[string]any{}
 					for _, rp := range content {
-						if p, ok := rp.(map[string]any); ok && p["type"] == "text" {
+						p, ok := rp.(map[string]any)
+						if !ok {
+							continue
+						}
+						switch p["type"] {
+						case "text":
 							if s, ok := p["text"].(string); ok {
 								parts = append(parts, map[string]any{"text": s})
+							}
+						case "image_url":
+							iu, _ := p["image_url"].(map[string]any)
+							url, _ := iu["url"].(string)
+							if mime, data, ok := parseDataURI(url); ok {
+								parts = append(parts, map[string]any{
+									"inlineData": map[string]any{"mimeType": mime, "data": data},
+								})
 							}
 						}
 					}
@@ -189,6 +204,25 @@ func (geminiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("x-goog-api-key", credential)
 	return upReq, nil
+}
+
+// parseDataURI 解析 `data:<mime>;base64,<data>`，用于把 OpenAI image_url 内联图转成 Gemini inlineData。
+// 仅接受 base64 形态（视觉图的常态）；非 data: 或非 base64 返回 ok=false。
+func parseDataURI(s string) (mime, data string, ok bool) {
+	if !strings.HasPrefix(s, "data:") {
+		return "", "", false
+	}
+	rest := s[len("data:"):]
+	const marker = ";base64,"
+	i := strings.Index(rest, marker)
+	if i < 0 {
+		return "", "", false
+	}
+	mime, data = rest[:i], rest[i+len(marker):]
+	if mime == "" || data == "" {
+		return "", "", false
+	}
+	return mime, data, true
 }
 
 type geminiUsage struct {

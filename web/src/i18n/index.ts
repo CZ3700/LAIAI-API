@@ -25,16 +25,9 @@ export const SUPPORTED_LOCALES = [
 export type LocaleCode = (typeof SUPPORTED_LOCALES)[number]['code']
 
 function detectLocale(): LocaleCode {
+  // 默认英文——不按浏览器语言自动切换；仅当用户曾手动切换（持久化在 laiai.locale）才沿用其选择。
   const stored = localStorage.getItem('laiai.locale')
   if (stored && SUPPORTED_LOCALES.some((l) => l.code === stored)) return stored as LocaleCode
-  const lang = navigator.language.toLowerCase()
-  if (lang.startsWith('zh')) {
-    // 繁体圈：台湾/香港/澳门 → zh-TW，其余中文 → zh-CN
-    return /-(tw|hk|mo)|hant/.test(lang) ? 'zh-TW' : 'zh-CN'
-  }
-  for (const { code } of SUPPORTED_LOCALES) {
-    if (code !== 'en' && lang.startsWith(code.toLowerCase())) return code
-  }
   return 'en'
 }
 
