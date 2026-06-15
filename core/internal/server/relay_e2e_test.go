@@ -952,8 +952,8 @@ func TestX402TopupSettle(t *testing.T) {
 		}
 	}))
 	defer fac.Close()
-	// 启用 x402（三项配置齐全）
-	db.Exec(`INSERT INTO ext_settings (name,value) VALUES ('x402_facilitator_url',?),('x402_pay_to','0xMerchant'),('x402_asset','0xUSDC')`, fac.URL)
+	// 启用 x402（总开关 + 三项配置齐全；P0-4 起须显式 x402_enabled=true）
+	db.Exec(`INSERT INTO ext_settings (name,value) VALUES ('x402_enabled','true'),('x402_facilitator_url',?),('x402_pay_to','0xMerchant'),('x402_asset','0xUSDC')`, fac.URL)
 
 	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "x402@example.com", "password": "longenough1"})
 	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "x402@example.com", "password": "longenough1"})

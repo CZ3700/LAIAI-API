@@ -86,7 +86,12 @@ func (s *Server) engineFor(provider string) payment.Engine {
 		}
 		return &payment.EPay{PID: pid, Key: s.getSetting("epay_key"), APIURL: s.getSetting("epay_api_url")}
 	case "x402":
-		// 默认禁用：三项配置齐全才构建（见 x402.go 合约校验注记）
+		// P0-4：合约尚未对真实 facilitator 校验（见 x402.go 注记）→ 显式总开关默认关闭，
+		// 即便三项配置齐全也不进真金路径；完成合约校验清单后方可将 x402_enabled 置 "true"。
+		if s.getSetting("x402_enabled") != "true" {
+			return nil
+		}
+		// 三项配置齐全才构建
 		fac := s.getSetting("x402_facilitator_url")
 		if fac == "" || s.getSetting("x402_pay_to") == "" || s.getSetting("x402_asset") == "" {
 			return nil
@@ -272,11 +277,6 @@ func (s *Server) paymentCallback(c *gin.Context) {
 // x402 默认禁用（engineFor 返回 nil）→ 503；启用前须验证 facilitator 合约（见 x402.go）。
 func (s *Server) x402Settle(c *gin.Context) {
 	orderNo := c.Param("order_no")
-	xPayment := c.GetHeader("X-PAYMENT")
-	if xPayment == "" {
-		fail(c, http.StatusBadRequest, "missing X-PAYMENT header")
-		return
-	}
 	var order TopupOrder
 	if e := s.db.Where("order_no = ?", orderNo).First(&order).Error; e != nil {
 		fail(c, http.StatusNotFound, "order not found")
@@ -291,25 +291,57 @@ func (s *Server) x402Settle(c *gin.Context) {
 		fail(c, http.StatusServiceUnavailable, "x402 not configured")
 		return
 	}
-	res, err := x402.Settle(c.Request.Context(), xPayment, order.OrderNo, order.PayAmount,
-		s.getSetting("site_name")+" top-up")
-	if err != nil || res == nil || !res.Success {
-		s.Log().Warn("x402 settle failed", "order", orderNo, "err", err)
-		fail(c, http.StatusPaymentRequired, "x402 settlement failed")
-		return
+
+	// P0-4 恢复语义：trade_no(=txHash) 是链上已结算的持久化证据。
+	// 已有证据 → settle 此前已成功（入账成功会连 trade_no 一并落库；入账失败也会单独落锚点，
+	// 见下）→ 跳过 facilitator.Settle（链上不可逆，重发会撞 nonce/双花），直接重放幂等入账。
+	// 无证据 → 正常 verify+settle 取 txHash 再入账。
+	txHash := order.TradeNo
+	if txHash == "" {
+		xPayment := c.GetHeader("X-PAYMENT")
+		if xPayment == "" {
+			fail(c, http.StatusBadRequest, "missing X-PAYMENT header")
+			return
+		}
+		res, err := x402.Settle(c.Request.Context(), xPayment, order.OrderNo, order.PayAmount,
+			s.getSetting("site_name")+" top-up")
+		if err != nil || res == nil || !res.Success {
+			s.Log().Warn("x402 settle failed", "order", orderNo, "err", err)
+			fail(c, http.StatusPaymentRequired, "x402 settlement failed")
+			return
+		}
+		// 不变量：绝不在无结算引用(txHash)的情况下入账——否则入账失败将无锚点可恢复。
+		if res.TxHash == "" {
+			s.Log().Error("x402 settle reported success without a transaction reference — refusing to credit", "order", orderNo)
+			fail(c, http.StatusBadGateway, "x402 settlement returned no transaction reference")
+			return
+		}
+		txHash = res.TxHash
 	}
-	// 结算确认了 requirements 金额已上链支付 → 按订单应付额入账（与 callback 同口径）
-	already, cerr := s.creditPaidOrder("x402", order.OrderNo, res.TxHash, order.PayAmount)
+
+	// 统一资金路径入账（幂等：同订单永不重复入账）。成功路径 creditPaidOrder 同事务写 trade_no。
+	already, cerr := s.creditPaidOrder("x402", order.OrderNo, txHash, order.PayAmount)
 	if cerr != nil {
-		s.Log().Error("x402 credit failed", "order", orderNo, "err", cerr)
+		// 链上已不可逆结算但本地入账失败：单独把 txHash 落库作恢复锚点（仅当尚未写入），
+		// 使 ReconcileTopups 的 x402 修复分支可据 trade_no 自动重放入账，绝不丢链上付款。
+		// 该锚点写入再失败＝两次独立 DB 故障：显式告警，运维可据日志 txHash 手工补。
+		if pe := s.db.Model(&TopupOrder{}).
+			Where("order_no = ? AND (trade_no = '' OR trade_no IS NULL)", order.OrderNo).
+			Update("trade_no", txHash).Error; pe != nil {
+			s.Log().Error("x402 SETTLED ON-CHAIN BUT BOTH CREDIT AND PROOF-PERSIST FAILED — manual credit needed",
+				"order", orderNo, "tx", txHash, "credit_err", cerr, "persist_err", pe)
+		} else {
+			s.Log().Error("x402 credit failed (recoverable: txHash persisted, retry endpoint or reconcile)",
+				"order", orderNo, "tx", txHash, "err", cerr)
+		}
 		fail(c, http.StatusInternalServerError, "credit failed")
 		return
 	}
 	if !already {
 		s.payAffiliateRebate(order.OrderNo)
-		s.writeAudit(c, "topup_paid", order.OrderNo, "topup credited via x402 tx "+res.TxHash)
+		s.writeAudit(c, "topup_paid", order.OrderNo, "topup credited via x402 tx "+txHash)
 	}
-	c.JSON(http.StatusOK, gin.H{"order_no": orderNo, "tx_hash": res.TxHash, "status": "paid"})
+	c.JSON(http.StatusOK, gin.H{"order_no": orderNo, "tx_hash": txHash, "status": "paid"})
 }
 
 // creditPaidOrder：把一笔已确认支付的订单入账——**callback 与 reconcile 共用的唯一资金路径**。
@@ -392,6 +424,26 @@ func (s *Server) ReconcileTopups(ctx context.Context, minAge time.Duration, limi
 	}
 	for i := range orders {
 		o := &orders[i]
+		// P0-4：x402 无异步查询端点（QueryOrder 恒 Found=false），但 settle 成功会先把 txHash
+		// 落到 trade_no。已结算(trade_no 非空)却仍 pending（入账当时失败）→ 据 trade_no 重放
+		// 统一入账修复（不依赖客户端回访，也不需引擎；即便 x402 已被禁用仍能补回历史在途单）。
+		if o.Provider == "x402" {
+			if o.TradeNo == "" {
+				continue // 未结算，无可恢复
+			}
+			checked++
+			already, ce := s.creditPaidOrder(o.Provider, o.OrderNo, o.TradeNo, o.PayAmount)
+			if ce != nil {
+				s.Log().Error("reconcile x402 credit failed", "order", o.OrderNo, "err", ce)
+				continue
+			}
+			if !already {
+				s.payAffiliateRebate(o.OrderNo)
+				credited++
+				s.Log().Warn("reconcile credited settled-but-uncredited x402 order", "order", o.OrderNo)
+			}
+			continue
+		}
 		engine := s.engineFor(o.Provider)
 		if engine == nil {
 			continue // 渠道配置已不可解析，跳过（不阻塞其他单）
