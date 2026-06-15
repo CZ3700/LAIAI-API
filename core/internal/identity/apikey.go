@@ -152,6 +152,15 @@ func VerifyKey(db *gorm.DB, plaintext string, now time.Time) (*APIKey, error) {
 	if k.ExpiresAt != nil && now.After(*k.ExpiresAt) {
 		return nil, ErrKeyExpired
 	}
+	// P0-1：key 所属 org 必须 active；per-member key（绑定具体成员）还需该成员 active 且 membership 仍在
+	// ——组织禁用 / 成员被移除 / 用户被封禁后，其 key 立即失效（不等 TTL）。
+	if k.UserID != nil {
+		if err := VerifyActiveMembership(db, *k.UserID, k.OrgID); err != nil {
+			return nil, err
+		}
+	} else if err := VerifyOrgActive(db, k.OrgID); err != nil {
+		return nil, err
+	}
 	return k, nil
 }
 

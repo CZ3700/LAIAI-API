@@ -14,9 +14,54 @@ import (
 )
 
 var (
-	ErrEmailTaken   = errors.New("identity: email already registered")
-	ErrInvalidInput = errors.New("identity: invalid input")
+	ErrEmailTaken     = errors.New("identity: email already registered")
+	ErrInvalidInput   = errors.New("identity: invalid input")
+	ErrNotActiveMember = errors.New("identity: account inactive or membership revoked")
 )
+
+// VerifyActiveMembership：P0-1 安全闭环——校验 (user, org) 当前有效：user.status=active 且
+// org.status=active 且 org_members(user,org) 仍存在；三者任一不满足返回 ErrNotActiveMember。
+// 用于会话作用域控制面（requireActiveMembership）与 relay per-member key gate（VerifyKey），
+// 消解「封禁/移出团队/组织禁用后旧 session 或旧 key 在 TTL 内仍可访问」的越权窗口。
+func VerifyActiveMembership(db *gorm.DB, userID, orgID uint64) error {
+	var n int64
+	if err := db.Raw(`SELECT COUNT(*) FROM org_members m
+		JOIN users u ON u.id = m.user_id
+		JOIN organizations o ON o.id = m.org_id
+		WHERE m.user_id = ? AND m.org_id = ? AND u.status = ? AND o.status = ?`,
+		userID, orgID, StatusActive, StatusActive).Scan(&n).Error; err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotActiveMember
+	}
+	return nil
+}
+
+// VerifyUserActive：仅校验用户本身 active（封禁=全站锁死，用于账户级端点 /me /orgs /switch）。
+// 用户不存在（status 扫成 0=Disabled）同样拒绝。
+func VerifyUserActive(db *gorm.DB, userID uint64) error {
+	var status int8
+	if err := db.Raw(`SELECT status FROM users WHERE id = ?`, userID).Scan(&status).Error; err != nil {
+		return err
+	}
+	if status != StatusActive {
+		return ErrNotActiveMember
+	}
+	return nil
+}
+
+// VerifyOrgActive：仅校验 org active（用于无具体成员归属的 org 级 API Key）。
+func VerifyOrgActive(db *gorm.DB, orgID uint64) error {
+	var status int8
+	if err := db.Raw(`SELECT status FROM organizations WHERE id = ?`, orgID).Scan(&status).Error; err != nil {
+		return err
+	}
+	if status != StatusActive {
+		return ErrNotActiveMember
+	}
+	return nil
+}
 
 const (
 	OrgKindPersonal int8 = 0

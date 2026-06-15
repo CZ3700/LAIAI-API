@@ -210,6 +210,8 @@ func TestFindUserByEmailFoldsAlias(t *testing.T) {
 func TestAPIKeyLifecycle(t *testing.T) {
 	db := setupDB(t)
 	now := time.Date(2026, 6, 12, 0, 0, 0, 0, time.UTC)
+	// org-level key 需其 org active（P0-1：VerifyKey 校验 org 仍有效）
+	db.Exec(`INSERT INTO organizations (id, slug, name, status) VALUES (1, 'o1', 'O1', 1)`)
 
 	var plaintext string
 	var key *APIKey

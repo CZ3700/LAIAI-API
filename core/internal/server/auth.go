@@ -281,3 +281,29 @@ func (s *Server) authRequired() gin.HandlerFunc {
 func mustClaims(c *gin.Context) *identity.SessionClaims {
 	return c.MustGet("claims").(*identity.SessionClaims)
 }
+
+// requireActiveUser：P0-1——会话用户必须 active（封禁用户的旧令牌即时失效，不等 24h TTL）。
+// 挂在整个 authed 组（含账户级端点），所以被封禁账户对控制面全站 403。
+func (s *Server) requireActiveUser() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims := mustClaims(c)
+		if err := identity.VerifyUserActive(s.db.WithContext(c.Request.Context()), claims.UserID); err != nil {
+			fail(c, http.StatusForbidden, "account is not active")
+			return
+		}
+		c.Next()
+	}
+}
+
+// requireActiveMembership：P0-1——org-scoped 端点要求 org active 且会话用户仍是该 org 成员。
+// 组织被禁用 / 用户被移出当前团队后，旧令牌立即失去对该 org 数据的访问（仍可 /orgs 列表 + 切换）。
+func (s *Server) requireActiveMembership() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims := mustClaims(c)
+		if err := identity.VerifyActiveMembership(s.db.WithContext(c.Request.Context()), claims.UserID, claims.OrgID); err != nil {
+			fail(c, http.StatusForbidden, "your access to this organization has been revoked")
+			return
+		}
+		c.Next()
+	}
+}

@@ -114,8 +114,11 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		api.POST("/payment/callback/:provider", s.paymentCallback) // 支付 webhook（验签入金，无需登录）
 		api.POST("/payment/x402/settle/:order_no", s.x402Settle)   // x402 链上结算入账（§5.2，默认禁用）
 
-		authed := api.Group("", s.authRequired())
+		// authed：会话令牌 + 用户 active（P0-1：封禁用户旧令牌即时失效）。
+		authed := api.Group("", s.authRequired(), s.requireActiveUser())
 		{
+			// —— 账户级（仅需用户 active）：个人资料 / 2FA / 列我的组织 / 切换组织 ——
+			// 被移出当前 org 的有效用户仍可在此列出并切换到其它有效 org（switchOrg 校验目标 membership）。
 			authed.GET("/me", s.me)
 			authed.PATCH("/me", s.updateProfile)
 			authed.POST("/me/password", s.changePassword)
@@ -123,28 +126,33 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			authed.POST("/me/2fa/enable", s.twofaEnable)
 			authed.POST("/me/2fa/disable", s.twofaDisable)
 			authed.POST("/me/2fa/backup-codes", s.twofaRegenBackup) // 重置备用码（gap #3）
-			authed.POST("/me/verify", s.authRateLimit(), s.meVerify)           // 二次验证换 step-up 令牌（gap #4）；限流防暴力猜密码/TOTP
-			authed.POST("/keys", s.requireStepUpForKeys(), s.createKey)         // 受开关保护：开启则需 step-up
-			authed.GET("/keys", s.listKeys)
-			authed.DELETE("/keys/:id", s.revokeKey)
-			authed.DELETE("/keys/:id/purge", s.deleteKey)
-			authed.GET("/usage", s.getUsage)
-			authed.GET("/usage/summary", s.getUsageSummary)
-			authed.GET("/usage/by-model", s.getUsageByModel)
-			authed.GET("/usage/by-model-daily", s.getUsageByModelDaily)
-			authed.GET("/usage/perf", s.getUsagePerf)
-			authed.GET("/balance", s.getBalance)
-			authed.GET("/ledger", s.getLedger)
-			authed.GET("/payment/methods", s.getPaymentMethods)
-			authed.POST("/payment/create", s.createTopup)
-			authed.GET("/payment/orders", s.listTopups)
-			authed.GET("/affiliate", s.getAffiliate)
+			authed.POST("/me/verify", s.authRateLimit(), s.meVerify) // 二次验证换 step-up 令牌（gap #4）；限流防暴力猜密码/TOTP
 			authed.GET("/orgs", s.listOrgs)
 			authed.POST("/orgs", s.createOrg)
 			authed.POST("/auth/switch", s.switchOrg)
-			authed.GET("/org/members", s.listMembers)
-			authed.POST("/org/members", s.addMember)
-			authed.DELETE("/org/members/:user_id", s.removeMember)
+
+			// —— org-scoped（P0-1：还需 org active + 当前会话用户仍是该 org 成员）——
+			org := authed.Group("", s.requireActiveMembership())
+			{
+				org.POST("/keys", s.requireStepUpForKeys(), s.createKey) // 受开关保护：开启则需 step-up
+				org.GET("/keys", s.listKeys)
+				org.DELETE("/keys/:id", s.revokeKey)
+				org.DELETE("/keys/:id/purge", s.deleteKey)
+				org.GET("/usage", s.getUsage)
+				org.GET("/usage/summary", s.getUsageSummary)
+				org.GET("/usage/by-model", s.getUsageByModel)
+				org.GET("/usage/by-model-daily", s.getUsageByModelDaily)
+				org.GET("/usage/perf", s.getUsagePerf)
+				org.GET("/balance", s.getBalance)
+				org.GET("/ledger", s.getLedger)
+				org.GET("/payment/methods", s.getPaymentMethods)
+				org.POST("/payment/create", s.createTopup)
+				org.GET("/payment/orders", s.listTopups)
+				org.GET("/affiliate", s.getAffiliate)
+				org.GET("/org/members", s.listMembers)
+				org.POST("/org/members", s.addMember)
+				org.DELETE("/org/members/:user_id", s.removeMember)
+			}
 		}
 
 		admin := api.Group("/admin", s.adminRequired(identity.PlatRoleAdmin))
