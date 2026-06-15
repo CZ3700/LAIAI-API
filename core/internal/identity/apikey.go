@@ -178,3 +178,31 @@ func AddKeyUsage(db *gorm.DB, keyID uint64, amount decimal.Decimal) error {
 	return db.Model(&APIKey{}).Where("id = ?", keyID).
 		Update("used_amount", gorm.Expr("used_amount + ?", amount)).Error
 }
+
+// AddKeyUsageSigned 原子调整 used_amount（允许负 delta），用于 reserve→actual 对账与失败退还。
+// 单条 SQL 增量（非读改写），并发安全；忽略 0。
+func AddKeyUsageSigned(db *gorm.DB, keyID uint64, delta decimal.Decimal) error {
+	if delta.IsZero() {
+		return nil
+	}
+	return db.Model(&APIKey{}).Where("id = ?", keyID).
+		Update("used_amount", gorm.Expr("used_amount + ?", delta)).Error
+}
+
+// ReserveKeyQuota 在请求受理前原子预留额度（P0-3：消解 quota 并发超支）。
+// 软上限语义（与既有"调用前 used<limit 即放行、本次消费可越界、下次拦截"一致）：
+// 条件 UPDATE 仅当 quota 无限(0) 或 used_amount 尚未触顶(< quota_limit) 时才 +amount。
+// 不用 used+amount<=quota 的硬前置（否则单次 hold 估值即可大于一个小 quota，会误拒首调）；
+// 真正的资金护栏是 org 余额的 ledger hold，key quota 仅为软子预算，至多越界一笔在途调用。
+// 返回 true=放行；false=已触顶，调用方应 402 拒绝。amount<=0 视为无需预留直接放行。
+// 与 ledger hold 同构：先按 hold 估值预留，capture 用 AddKeyUsageSigned(actual-reserved) 对账，
+// 失败用 AddKeyUsageSigned(-reserved) 退还。单条带条件 UPDATE 行锁串行化，并发下不会人人放行。
+func ReserveKeyQuota(db *gorm.DB, keyID uint64, amount decimal.Decimal) bool {
+	if !amount.IsPositive() {
+		return true
+	}
+	res := db.Exec(
+		`UPDATE api_keys SET used_amount = used_amount + ? WHERE id = ? AND (quota_limit = 0 OR used_amount < quota_limit)`,
+		amount, keyID)
+	return res.Error == nil && res.RowsAffected == 1
+}

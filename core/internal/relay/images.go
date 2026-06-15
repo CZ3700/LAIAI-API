@@ -159,6 +159,19 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		relayErr(c, http.StatusInternalServerError, "billing error")
 		return
 	}
+	// API Key 额度原子预留（P0-3）；失败由下方 defer 退还
+	if !identity.ReserveKeyQuota(r.DB, key.ID, holdAmount) {
+		r.release(hold.ID)
+		finish(invocation.StatusInsufficientBalance, http.StatusPaymentRequired, "api key quota exceeded")
+		relayErr(c, http.StatusPaymentRequired, "this api key has reached its quota limit")
+		return
+	}
+	quotaSettled := false
+	defer func() {
+		if !quotaSettled {
+			_ = identity.AddKeyUsageSigned(r.DB, key.ID, holdAmount.Neg())
+		}
+	}()
 
 	// 换渠道重试循环（同款分类驱动）
 	var resp *http.Response
@@ -275,7 +288,11 @@ func (r *Relay) HandleImages(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json", raw)
 
 	actual := price.ImageUSD.Mul(decimal.NewFromInt(int64(actualN))).Mul(groupRatio)
-	defer func() { _ = identity.AddKeyUsage(r.DB, key.ID, actual) }() // per-key 已用额度（0012）
+	// 预留→实际对账（P0-3）：+(actual-hold) 落到真实 actual 并标记 settled
+	defer func() {
+		_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(holdAmount))
+		quotaSettled = true
+	}()
 	reason := fmt.Sprintf("images model=%s n=%d ×%s", req.Model, actualN, groupRatio)
 	var overage = decimal.Zero
 	if err := r.DB.Transaction(func(tx *gorm.DB) error {

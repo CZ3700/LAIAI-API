@@ -385,6 +385,21 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		return
 	}
 
+	// 4b. API Key 额度原子预留（P0-3：消解并发超 quota）。按 hold 估算预留；capture 对账到 actual，
+	// 失败由下方 defer 退还（统一覆盖所有 release 路径）。预留失败＝会超 quota → 释放 hold + 402。
+	if !identity.ReserveKeyQuota(r.DB, key.ID, holdAmount) {
+		r.release(hold.ID)
+		finish(invocation.StatusInsufficientBalance, http.StatusPaymentRequired, "api key quota exceeded")
+		relayErr(c, http.StatusPaymentRequired, "this api key has reached its quota limit")
+		return
+	}
+	quotaSettled := false
+	defer func() {
+		if !quotaSettled { // 未走到 capture（任何失败/释放路径）→ 退还预留
+			_ = identity.AddKeyUsageSigned(r.DB, key.ID, holdAmount.Neg())
+		}
+	}()
+
 	// 5. 换渠道重试循环（知识库 §1/§2：分类驱动；hold 跨重试只此一份）。
 	// 请求体已在内存（req map），每次 attempt 由 adapter 重建上游请求——天然可重放，
 	// 不需要 NewAPI 的磁盘 BufStorage。
@@ -527,7 +542,10 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	}
 
 	inv.PromptTokens, inv.CompletionTokens, inv.CostUSD = u.PromptTokens, u.CompletionTokens, actual
-	_ = identity.AddKeyUsage(r.DB, key.ID, actual) // 累加 per-key 已用额度（0012，喂 quota_limit）
+	// 预留→实际对账（P0-3）：used_amount 已 +holdAmount，这里 +(actual-hold) 使其落到真实 actual；
+	// 标记 settled 让上面的退还 defer 不再触发。
+	_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(holdAmount))
+	quotaSettled = true
 	finish(invocation.StatusSuccess, http.StatusOK, "")
 }
 

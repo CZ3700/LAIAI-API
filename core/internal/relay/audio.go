@@ -96,6 +96,19 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// API Key 额度原子预留（P0-3）；cost 确定性，成功即 settled，失败由 defer 退还
+	if !identity.ReserveKeyQuota(r.DB, key.ID, cost) {
+		r.release(hold.ID)
+		finish(invocation.StatusInsufficientBalance, http.StatusPaymentRequired, "api key quota exceeded")
+		relayErr(c, http.StatusPaymentRequired, "this api key has reached its quota limit")
+		return
+	}
+	quotaSettled := false
+	defer func() {
+		if !quotaSettled {
+			_ = identity.AddKeyUsageSigned(r.DB, key.ID, cost.Neg())
+		}
+	}()
 
 	// 上游请求构建器（带模型映射）
 	build := func(ctx context.Context, ch *Channel, cred string) (*http.Request, error) {
@@ -137,6 +150,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 	c.Data(http.StatusOK, ct, raw)
 
 	r.audioSettle(c, key, req.Model, hold, cost, fmt.Sprintf("tts model=%s chars=%d ×%s", req.Model, chars, groupRatio))
+	quotaSettled = true // 预留即等于 cost（确定性计价），成功无需对账
 	inv.PromptTokens = chars // 字符数记入 prompt 槽（语义：计价单位量）
 	inv.CostUSD = cost
 	finish(invocation.StatusSuccess, http.StatusOK, "")
@@ -189,6 +203,19 @@ func (r *Relay) HandleAudioTranscription(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// API Key 额度原子预留（P0-3）；cost 确定性，成功即 settled，失败由 defer 退还
+	if !identity.ReserveKeyQuota(r.DB, key.ID, cost) {
+		r.release(hold.ID)
+		finish(invocation.StatusInsufficientBalance, http.StatusPaymentRequired, "api key quota exceeded")
+		relayErr(c, http.StatusPaymentRequired, "this api key has reached its quota limit")
+		return
+	}
+	quotaSettled := false
+	defer func() {
+		if !quotaSettled {
+			_ = identity.AddKeyUsageSigned(r.DB, key.ID, cost.Neg())
+		}
+	}()
 
 	// 透传原始 multipart body（含 boundary）。模型映射不作用于 multipart 字段（已知限制）。
 	build := func(ctx context.Context, ch *Channel, cred string) (*http.Request, error) {
@@ -227,6 +254,7 @@ func (r *Relay) HandleAudioTranscription(c *gin.Context) {
 	c.Data(http.StatusOK, ct, raw)
 
 	r.audioSettle(c, key, model, hold, cost, fmt.Sprintf("transcription model=%s ×%s", model, groupRatio))
+	quotaSettled = true // 预留即等于 cost（确定性计价），成功无需对账
 	inv.CostUSD = cost
 	finish(invocation.StatusSuccess, http.StatusOK, "")
 }
@@ -361,9 +389,9 @@ func (r *Relay) audioForward(c *gin.Context, rdb *gorm.DB, inv *invocation.Invoc
 }
 
 // audioSettle：确定性计价结算（cost 即 hold，正常无 overage）。
+// 注意：per-key 额度统计不在此处——调用方用 P0-3 的 reserve(cost)+quotaSettled 记账，避免双计。
 func (r *Relay) audioSettle(c *gin.Context, key *identity.APIKey, model string, hold *ledger.Hold, cost decimal.Decimal, reason string) {
 	_ = c
-	defer func() { _ = identity.AddKeyUsage(r.DB, key.ID, cost) }()
 	if err := r.DB.Transaction(func(tx *gorm.DB) error {
 		_, e := ledger.SettleHoldExact(tx, hold.ID, cost, "usage", model, reason)
 		return e
