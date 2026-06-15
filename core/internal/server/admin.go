@@ -793,14 +793,15 @@ func (s *Server) adminProbeChannel(c *gin.Context) {
 		return
 	}
 	var req struct {
-		APIKey  string `json:"api_key" binding:"required"`
-		BaseURL string `json:"base_url" binding:"required"`
+		APIKey   string `json:"api_key" binding:"required"`
+		BaseURL  string `json:"base_url" binding:"required"`
+		Provider string `json:"provider"` // 可选；决定 /models 鉴权与解析口径（P2-10），空=openai 兼容
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "api_key and base_url required")
 		return
 	}
-	c.JSON(http.StatusOK, s.relay.ProbeChannel(c.Request.Context(), req.APIKey, req.BaseURL))
+	c.JSON(http.StatusOK, s.relay.ProbeChannel(c.Request.Context(), req.APIKey, req.BaseURL, req.Provider))
 }
 
 // —— 分组倍率（0011，差异化定价） ——

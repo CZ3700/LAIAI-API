@@ -47,18 +47,31 @@ func candidateBaseURLs(raw string) []string {
 	return []string{raw + "/v1", raw, raw + "/openai/v1"}
 }
 
-// ProbeChannel：用 key + 地址试探正确 base_url（按候选顺序 GET /models），
-// 返回首个返回合法模型列表的格式 + 可调模型名。纯探测，不落库不计费。
-func (r *Relay) ProbeChannel(ctx context.Context, apiKey, rawURL string) *ProbeResult {
+// probeFamily：把渠道 provider 归一到协议族（anthropic/gemini/openai），决定 /models 的
+// 鉴权方式与响应解析口径（P2-10：provider-aware probe）。未登记按 OpenAI 兼容。
+func probeFamily(provider string) string {
+	if p, ok := ProfileFor(provider); ok {
+		switch p.Adapter {
+		case "anthropic", "gemini":
+			return p.Adapter
+		}
+	}
+	return "openai"
+}
+
+// ProbeChannel：用 key + 地址 + provider 试探正确 base_url（按候选顺序 GET /models，
+// 按协议族选鉴权/解析），返回首个合法模型列表 + 可调模型名。纯探测，不落库不计费。
+func (r *Relay) ProbeChannel(ctx context.Context, apiKey, rawURL, provider string) *ProbeResult {
 	res := &ProbeResult{}
 	candidates := candidateBaseURLs(rawURL)
 	if len(candidates) == 0 {
 		res.Message = "base_url is required"
 		return res
 	}
+	family := probeFamily(provider)
 	for _, base := range candidates {
 		attempt := ProbeAttempt{BaseURL: base}
-		models, gw, status, err := r.fetchModels(ctx, base, apiKey)
+		models, gw, status, err := r.fetchModels(ctx, base, apiKey, family)
 		attempt.Status = status
 		if err != nil {
 			attempt.Note = err.Error()
@@ -85,18 +98,31 @@ func (r *Relay) ProbeExistingChannel(ctx context.Context, ch *Channel) *ProbeRes
 	if err != nil {
 		return &ProbeResult{Message: "credential decrypt failed"}
 	}
-	return r.ProbeChannel(ctx, cred, ch.BaseURL)
+	return r.ProbeChannel(ctx, cred, ch.BaseURL, ch.Provider)
 }
 
-// fetchModels：GET {base}/models（OpenAI 兼容），解析 {data:[{id}]}。
-func (r *Relay) fetchModels(ctx context.Context, base, apiKey string) (models []string, gateway string, status int, err error) {
+// fetchModels：GET {base}/models 拉模型列表，按协议族选鉴权头与响应解析（P2-10）：
+//   openai    Authorization: Bearer；解析 {data:[{id}]}
+//   anthropic x-api-key + anthropic-version；解析 {data:[{id}]}
+//   gemini    ?key= 查询参数；解析 {models:[{name:"models/x"}]}（去 models/ 前缀）
+func (r *Relay) fetchModels(ctx context.Context, base, apiKey, family string) (models []string, gateway string, status int, err error) {
 	ctx, cancel := context.WithTimeout(ctx, probePerCandidateTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
 	if err != nil {
 		return nil, "", 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	switch family {
+	case "anthropic":
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	case "gemini":
+		q := req.URL.Query()
+		q.Set("key", apiKey)
+		req.URL.RawQuery = q.Encode()
+	default:
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	resp, err := r.Client.Do(req)
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("unreachable")
@@ -113,21 +139,48 @@ func (r *Relay) fetchModels(ctx context.Context, base, apiKey string) (models []
 	if !IsLLMContentType(resp.Header.Get("Content-Type")) {
 		return nil, gateway, resp.StatusCode, fmt.Errorf("non-JSON (wrong path?)")
 	}
+	models, perr := parseModelList(family, body)
+	if perr != nil {
+		return nil, gateway, resp.StatusCode, perr
+	}
+	if len(models) == 0 {
+		return nil, gateway, resp.StatusCode, fmt.Errorf("empty model list")
+	}
+	return models, gateway, resp.StatusCode, nil
+}
+
+// parseModelList 按协议族解析 /models 响应。gemini 形如 {models:[{name:"models/x"}]}，
+// 其余形如 {data:[{id:"x"}]}。
+func parseModelList(family string, body []byte) ([]string, error) {
+	var models []string
+	if family == "gemini" {
+		var parsed struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return nil, fmt.Errorf("unparseable model list")
+		}
+		for _, m := range parsed.Models {
+			if id := strings.TrimPrefix(m.Name, "models/"); id != "" {
+				models = append(models, id)
+			}
+		}
+		return models, nil
+	}
 	var parsed struct {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if jsonErr := json.Unmarshal(body, &parsed); jsonErr != nil {
-		return nil, gateway, resp.StatusCode, fmt.Errorf("unparseable model list")
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("unparseable model list")
 	}
 	for _, m := range parsed.Data {
 		if m.ID != "" {
 			models = append(models, m.ID)
 		}
 	}
-	if len(models) == 0 {
-		return nil, gateway, resp.StatusCode, fmt.Errorf("empty model list")
-	}
-	return models, gateway, resp.StatusCode, nil
+	return models, nil
 }
