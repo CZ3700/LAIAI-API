@@ -8,6 +8,17 @@
 //
 // 三原语：Hold（冻结）→ Capture（按实际用量结算）→ Release（解冻）。
 // 直接过账（充值/grant 等）走 Post。available = posted_balance - held_amount。
+//
+// journal 生命周期口径（哪些原语写 journal、哪些只动余额列）——这是漂移自检的前提：
+//   - Post                写 1 条 journal（credit/debit/grant/expire），改 posted_balance。
+//   - CreateHold          不写 journal；只 +held_amount（冻结是预留，非过账）。
+//   - Capture(actual>0)   写 1 条 KindCapture(delta=-actual)，改 posted_balance；并 -整笔 held。
+//   - Capture(actual==0)  不写 journal；只 -整笔 held（纯解冻，无消费）。
+//   - Release             不写 journal；只 -整笔 held。
+// 由此得两条对账恒等式（CheckDrift 巡检；设计 §4.5）：
+//   (A) posted_balance == Σ journal.delta            （append-only，过账唯一来源）
+//   (B) held_amount    == Σ holds.amount WHERE status=Active （仅活跃冻结占用）
+// 任一不成立即资金漂移——只可能源于绕开本包写余额、或局部写入损坏，必须告警人工裁定。
 package ledger
 
 import (
@@ -342,6 +353,77 @@ func SweepStuckHolds(db *gorm.DB, refType string, olderThan time.Time, limit int
 		released++
 	}
 	return released, nil
+}
+
+// AccountDrift 描述单个账户的余额漂移（CheckDrift 结果）。Stored=账户列现值，
+// Derived=由 journal / 活跃 holds 重算的应然值；两者之差即漂移量。
+type AccountDrift struct {
+	AccountID     uint64
+	OrgID         uint64
+	Type          string
+	PostedStored  decimal.Decimal
+	PostedDerived decimal.Decimal // Σ journal.delta
+	HeldStored    decimal.Decimal
+	HeldDerived   decimal.Decimal // Σ holds.amount WHERE active
+}
+
+func (d AccountDrift) PostedDrift() decimal.Decimal { return d.PostedStored.Sub(d.PostedDerived) }
+func (d AccountDrift) HeldDrift() decimal.Decimal   { return d.HeldStored.Sub(d.HeldDerived) }
+
+// driftScale：对账比较精度（= 货币列 DECIMAL(20,8) 的最小单位）。差值四舍五入到 8 位后非零
+// 才算漂移——MySQL DECIMAL 上是精确比较（真实漂移 ≥ 1e-8 必被检出），同时吸收 SQLite
+// 测试方言 NUMERIC 以 float 存储、SQL SUM 带来的亚 1e-8 浮点噪声（不会误报）。
+const driftScale = 8
+
+// CheckDrift 只读重算两条对账恒等式（见包注 A/B），返回存在漂移的账户（空=全一致）。
+// 不修复（修复需人工裁定资金归属），供 ledger-drift 后台 job 周期巡检并在发现时告警。
+// 两条聚合查询 + 内存比对，按 account 分组；账户无 journal/hold 时派生值视为 0。
+func CheckDrift(db *gorm.DB) ([]AccountDrift, error) {
+	var accounts []Account
+	if err := db.Find(&accounts).Error; err != nil {
+		return nil, err
+	}
+	type sumRow struct {
+		AccountID uint64          `gorm:"column:account_id"`
+		S         decimal.Decimal `gorm:"column:s"` // decimal.Scan 兼容 MySQL DECIMAL([]byte) 与 SQLite REAL(float64)
+	}
+	postedSum := map[uint64]decimal.Decimal{}
+	heldSum := map[uint64]decimal.Decimal{}
+
+	var jr []sumRow
+	if err := db.Model(&JournalEntry{}).
+		Select("account_id AS account_id, COALESCE(SUM(delta),0) AS s").
+		Group("account_id").Scan(&jr).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range jr {
+		postedSum[r.AccountID] = r.S
+	}
+	var hr []sumRow
+	if err := db.Model(&Hold{}).Where("status = ?", HoldActive).
+		Select("account_id AS account_id, COALESCE(SUM(amount),0) AS s").
+		Group("account_id").Scan(&hr).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range hr {
+		heldSum[r.AccountID] = r.S
+	}
+
+	var drifts []AccountDrift
+	for i := range accounts {
+		a := &accounts[i]
+		pd, hd := postedSum[a.ID], heldSum[a.ID] // 缺省零值 decimal 即 0
+		if a.PostedBalance.Sub(pd).Round(driftScale).IsZero() &&
+			a.HeldAmount.Sub(hd).Round(driftScale).IsZero() {
+			continue
+		}
+		drifts = append(drifts, AccountDrift{
+			AccountID: a.ID, OrgID: a.OrgID, Type: a.Type,
+			PostedStored: a.PostedBalance, PostedDerived: pd,
+			HeldStored: a.HeldAmount, HeldDerived: hd,
+		})
+	}
+	return drifts, nil
 }
 
 // ---- internal ----

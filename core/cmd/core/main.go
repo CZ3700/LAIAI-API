@@ -106,6 +106,18 @@ func main() {
 				} else if n > 0 {
 					log.Warn("released stuck relay holds", "count", n)
 				}
+				// 账本漂移自检（P1-1）：重算两条对账恒等式，任一账户不一致即告警人工裁定。
+				// 只读不修复；正常应恒为 0，一旦非零说明有绕开 ledger 包写余额 / 局部写损坏。
+				if drifts, err := ledger.CheckDrift(db); err != nil {
+					log.Error("ledger drift check failed", "err", err)
+				} else if len(drifts) > 0 {
+					for _, d := range drifts {
+						log.Error("LEDGER DRIFT DETECTED — manual reconcile needed",
+							"account", d.AccountID, "org", d.OrgID, "type", d.Type,
+							"posted_stored", d.PostedStored.String(), "posted_derived", d.PostedDerived.String(), "posted_drift", d.PostedDrift().String(),
+							"held_stored", d.HeldStored.String(), "held_derived", d.HeldDerived.String(), "held_drift", d.HeldDrift().String())
+					}
+				}
 			case <-retentionDone:
 				return
 			}
