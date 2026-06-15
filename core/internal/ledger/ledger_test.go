@@ -358,6 +358,85 @@ func TestHoldIdempotency(t *testing.T) {
 	}
 }
 
+// P1-2：CreateHold 重放绝不能因期间可用余额下降而误报 insufficient——幂等查询前置于余额检查。
+// 首次冻结 $25（avail 100→75）→ 再冻结 $70（avail 75→5）→ 用同首次的 key 重放 $25：
+// 必须原样返回首次 hold 且 applied=true（avail=5 < 25 在修复前会错误地返 ErrInsufficientBalance）。
+func TestHoldIdempotentReplaySurvivesBalanceDrop(t *testing.T) {
+	db := setupDB(t)
+	acc := seedAccount(t, db, 11, "100")
+
+	var firstID uint64
+	mustTx(t, db, func(tx *gorm.DB) error {
+		h, applied, e := CreateHold(tx, HoldInput{IdempotencyKey: "rk:1", AccountID: acc.ID, Amount: d("25")})
+		if e == nil {
+			firstID = h.ID
+			if applied {
+				t.Fatal("first hold reported applied")
+			}
+		}
+		return e
+	})
+	// 另一笔冻结把可用余额压到 5（< 25）
+	mustTx(t, db, func(tx *gorm.DB) error {
+		_, _, e := CreateHold(tx, HoldInput{IdempotencyKey: "rk:2", AccountID: acc.ID, Amount: d("70")})
+		return e
+	})
+	if a := reload(t, db, acc.ID); !a.Available().Equal(d("5")) {
+		t.Fatalf("precondition available = %s, want 5", a.Available())
+	}
+
+	// 重放首次的 key：必须幂等返回首次 hold，不得 ErrInsufficientBalance、不得二次冻结
+	mustTx(t, db, func(tx *gorm.DB) error {
+		h, applied, e := CreateHold(tx, HoldInput{IdempotencyKey: "rk:1", AccountID: acc.ID, Amount: d("25")})
+		if e != nil {
+			t.Fatalf("replay returned error %v, want idempotent success", e)
+		}
+		if !applied {
+			t.Fatal("replay not detected as alreadyApplied")
+		}
+		if h.ID != firstID {
+			t.Fatalf("replay hold id = %d, want first %d", h.ID, firstID)
+		}
+		return nil
+	})
+	// held 仍是 25+70=95，未因重放翻倍
+	if a := reload(t, db, acc.ID); !a.HeldAmount.Equal(d("95")) {
+		t.Fatalf("held after replay = %s, want 95 (no double-hold)", a.HeldAmount)
+	}
+}
+
+// P1-2（同类，Post）：debit 重放绝不能因期间余额下降而误报 insufficient（如 admin subtract 重试）。
+// $100 → debit 60（key d1，posted 40）→ debit 40（posted 0）→ 用 d1 重放 debit 60：
+// 必须幂等返回首次 entry、posted 不再变（修复前会因 0-60<0 错误返 ErrInsufficientBalance）。
+func TestPostDebitIdempotentReplaySurvivesBalanceDrop(t *testing.T) {
+	db := setupDB(t)
+	acc := seedAccount(t, db, 12, "100")
+	mustTx(t, db, func(tx *gorm.DB) error {
+		_, _, e := Post(tx, PostInput{IdempotencyKey: "d1", AccountID: acc.ID, Kind: KindDebit, Delta: d("-60")})
+		return e
+	})
+	mustTx(t, db, func(tx *gorm.DB) error {
+		_, _, e := Post(tx, PostInput{IdempotencyKey: "d2", AccountID: acc.ID, Kind: KindDebit, Delta: d("-40")})
+		return e
+	})
+	if a := reload(t, db, acc.ID); !a.PostedBalance.IsZero() {
+		t.Fatalf("precondition posted = %s, want 0", a.PostedBalance)
+	}
+	mustTx(t, db, func(tx *gorm.DB) error {
+		_, applied, e := Post(tx, PostInput{IdempotencyKey: "d1", AccountID: acc.ID, Kind: KindDebit, Delta: d("-60")})
+		if e != nil {
+			t.Fatalf("debit replay returned %v, want idempotent success", e)
+		}
+		if !applied {
+			t.Fatal("debit replay not detected as alreadyApplied")
+		}
+		return nil
+	})
+	if a := reload(t, db, acc.ID); !a.PostedBalance.IsZero() {
+		t.Fatalf("posted after replay = %s, want still 0 (no double-debit)", a.PostedBalance)
+	}
+}
+
 // journal 重放对账：sum(delta) 必须等于 posted_balance（漂移自检 job 的核心断言，设计 §4.5）
 func TestJournalReplayMatchesBalance(t *testing.T) {
 	db := setupDB(t)

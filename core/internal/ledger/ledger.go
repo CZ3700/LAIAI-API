@@ -146,6 +146,16 @@ func Post(tx *gorm.DB, in PostInput) (*JournalEntry, bool, error) {
 	if in.IdempotencyKey == "" || in.AccountID == 0 || in.Kind == "" || in.Delta.IsZero() {
 		return nil, false, fmt.Errorf("%w: idempotency_key/account_id/kind/delta required", ErrInvalidInput)
 	}
+	// 幂等前置（P1-2）：已存在同键过账 → 直接返回首次结果，**不再做余额检查**。
+	// 否则 debit 重放会在期间余额下降时误报 insufficient（如 admin subtract 重试）——
+	// 首次早已成功扣减，重放本应原样返回，绝不能因后续余额变化翻盘。
+	existing := &JournalEntry{}
+	switch err := tx.Where("idempotency_key = ?", in.IdempotencyKey).First(existing).Error; {
+	case err == nil:
+		return existing, true, nil
+	case !errors.Is(err, gorm.ErrRecordNotFound):
+		return nil, false, err
+	}
 	acc, err := lockAccount(tx, in.AccountID)
 	if err != nil {
 		return nil, false, err
@@ -194,6 +204,16 @@ func CreateHold(tx *gorm.DB, in HoldInput) (*Hold, bool, error) {
 	if in.IdempotencyKey == "" || in.AccountID == 0 || !in.Amount.IsPositive() {
 		return nil, false, fmt.Errorf("%w: idempotency_key/account_id/positive amount required", ErrInvalidInput)
 	}
+	// 幂等前置（P1-2）：已存在同键 hold → 直接返回首次结果，**不再做余额检查**。
+	// 否则重放会在期间可用余额下降时误报 ErrInsufficientBalance——但首次早已成功冻结，
+	// 重放本应原样返回首次结果（幂等契约），绝不能因后续余额变化翻盘。
+	existing := &Hold{}
+	switch err := tx.Where("idempotency_key = ?", in.IdempotencyKey).First(existing).Error; {
+	case err == nil:
+		return existing, true, nil
+	case !errors.Is(err, gorm.ErrRecordNotFound):
+		return nil, false, err
+	}
 	acc, err := lockAccount(tx, in.AccountID)
 	if err != nil {
 		return nil, false, err
@@ -210,7 +230,7 @@ func CreateHold(tx *gorm.DB, in HoldInput) (*Hold, bool, error) {
 		RefID:          in.RefID,
 	}
 	if err := tx.Create(h).Error; err != nil {
-		if isDuplicate(err) {
+		if isDuplicate(err) { // 并发竞态：前置查询后、Create 前被另一事务抢先插入 → 重读返回首次结果
 			prior := &Hold{}
 			ferr := tx.Where("idempotency_key = ?", in.IdempotencyKey).First(prior).Error
 			return prior, true, ferr
