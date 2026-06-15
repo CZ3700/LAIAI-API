@@ -217,17 +217,19 @@ func (r *Relay) HandleAudioTranscription(c *gin.Context) {
 		}
 	}()
 
-	// 透传原始 multipart body（含 boundary）。模型映射不作用于 multipart 字段（已知限制）。
+	// P2-11：应用渠道模型映射——URL 用上游名（Azure deployment 形态），multipart 的 model
+	// 字段也重写为上游名（OpenAI 兼容 STT 模型在表单字段里）。无映射时原样透传。
 	build := func(ctx context.Context, ch *Channel, cred string) (*http.Request, error) {
-		url, ah, av, e := audioUpstreamURL(ch, model, "transcriptions")
+		url, ah, av, e := audioUpstreamURL(ch, ch.UpstreamModel(model), "transcriptions")
 		if e != nil {
 			return nil, e
 		}
-		hr, e := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		upBody, upCT := mappedMultipartBody(ch, body, ctHeader, model)
+		hr, e := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(upBody))
 		if e != nil {
 			return nil, e
 		}
-		hr.Header.Set("Content-Type", ctHeader) // 保留原 boundary
+		hr.Header.Set("Content-Type", upCT) // 映射后用新 boundary；无映射则原 boundary
 		hr.Header.Set(ah, av+cred)
 		return hr, nil
 	}
@@ -423,4 +425,51 @@ func multipartField(body []byte, contentType, field string) string {
 		}
 		_ = part.Close()
 	}
+}
+
+// mappedMultipartBody：渠道对该模型有映射时，重写 multipart 的 model 字段为上游名，
+// 其余 part（含音频文件）原样复制并保留 header，用新 boundary 重新编码；返回新 body 与
+// 新 Content-Type。无映射/解析失败 → 原样返回（不破坏透传）。修复 P2-11：STT 模型映射缺失。
+func mappedMultipartBody(ch *Channel, body []byte, contentType, platformModel string) ([]byte, string) {
+	upstream := ch.UpstreamModel(platformModel)
+	if upstream == platformModel {
+		return body, contentType // 无映射，原样透传
+	}
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil || params["boundary"] == "" {
+		return body, contentType
+	}
+	mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for {
+		p, e := mr.NextPart()
+		if e == io.EOF {
+			break
+		}
+		if e != nil {
+			return body, contentType // 解析失败，回退原样透传
+		}
+		if p.FormName() == "model" && p.FileName() == "" {
+			_ = p.Close()
+			if w, we := mw.CreateFormField("model"); we != nil {
+				return body, contentType
+			} else if _, we := io.WriteString(w, upstream); we != nil {
+				return body, contentType
+			}
+			continue
+		}
+		w, we := mw.CreatePart(p.Header) // 保留 Content-Disposition/Content-Type（文件名等）
+		if we == nil {
+			_, we = io.Copy(w, p)
+		}
+		_ = p.Close()
+		if we != nil {
+			return body, contentType
+		}
+	}
+	if mw.Close() != nil {
+		return body, contentType
+	}
+	return buf.Bytes(), mw.FormDataContentType()
 }
