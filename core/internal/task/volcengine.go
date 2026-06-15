@@ -30,13 +30,36 @@ type QueryResult struct {
 	FailReason       string
 }
 
+// taskAdaptors：任务型（异步：提交→轮询→取产物）厂商注册表。
+//
+// 新增一个视频/任务厂商 = 三步（与 chat 适配器同纪律）：
+//  1. 新文件 internal/task/<vendor>.go 定义 `type <vendor>Task struct{}` 并实现 Adaptor 的 5 个方法
+//     （EstimateOutputTokens / SubmitRequest / ParseSubmit / QueryRequest / ParseQuery），把厂商
+//     的提交/查询请求与响应**双向归一**到本包的 SubmitInput 与 QueryResult（Status* 常量）。
+//  2. 在下面注册表登记 "<provider-code>": <vendor>Task{}（或在 providers.go 给该 provider 档案
+//     设 Adapter 家族名，走下面的家族回退）。
+//  3. 🚨 红线：用**真实上游 raw response** 写 fixture 测试一次再上线——绝不凭文档臆造字段
+//     （否则重蹈 epay 方言事故）。提交/查询响应的 task id、status 枚举、产物 URL、usage 字段
+//     都必须对真实 API 校验。
+//
+// 计费：任务按 usage（如视频 token / 时长）结算，复用 model_prices 定价 + hold→capture→overage。
+var taskAdaptors = map[string]Adaptor{
+	"volcengine": volcengineTask{},
+	"modelark":   volcengineTask{},
+}
+
+// adaptorFor：先按 provider code 精确查注册表；未命中再按 provider 档案的 Adapter 家族回退一次
+// （如自定义渠道 code 映射到某视频家族）。都查不到返回 ErrNoTaskAdaptor。
 func adaptorFor(provider string) (Adaptor, error) {
-	switch provider {
-	case "volcengine", "modelark":
-		return volcengineTask{}, nil
-	default:
-		return nil, fmt.Errorf("%w: %s", ErrNoTaskAdaptor, provider)
+	if ad, ok := taskAdaptors[provider]; ok {
+		return ad, nil
 	}
+	if p, ok := relay.ProfileFor(provider); ok {
+		if ad, ok := taskAdaptors[p.Adapter]; ok {
+			return ad, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s", ErrNoTaskAdaptor, provider)
 }
 
 // volcengineTask：BytePlus ModelArk 内容生成任务 API（Seedance 视频生成走此协议）。

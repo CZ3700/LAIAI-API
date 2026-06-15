@@ -38,16 +38,16 @@ type Options struct {
 }
 
 type Server struct {
-	db          *gorm.DB
-	secret      []byte
-	adminToken  []byte
-	keyring     *crypto.Keyring
-	authLimiter *ipLimiter
-	relay       *relay.Relay     // 渠道一键测试用；nil = 测试端点 503
-	mailer      mailer.Mailer    // 邮件发送；nil = 邮件功能禁用
-	log         *slog.Logger
-	now         func() time.Time // 可注入时钟，测试用
-	invRetentionDefault int      // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
+	db                  *gorm.DB
+	secret              []byte
+	adminToken          []byte
+	keyring             *crypto.Keyring
+	authLimiter         *ipLimiter
+	relay               *relay.Relay  // 渠道一键测试用；nil = 测试端点 503
+	mailer              mailer.Mailer // 邮件发送；nil = 邮件功能禁用
+	log                 *slog.Logger
+	now                 func() time.Time // 可注入时钟，测试用
+	invRetentionDefault int              // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
 }
 
 // Log 返回服务器 logger（payment/audit 等用）。
@@ -79,10 +79,10 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 	s := &Server{
 		db: db, secret: opts.AuthSecret,
 		adminToken: opts.AdminToken, keyring: opts.Keyring,
-		authLimiter: newIPLimiter(rate.Every(time.Second), authBurst),
-		mailer:      opts.Mailer,
-		log:         log,
-		now:         time.Now,
+		authLimiter:         newIPLimiter(rate.Every(time.Second), authBurst),
+		mailer:              opts.Mailer,
+		log:                 log,
+		now:                 time.Now,
 		invRetentionDefault: opts.InvocationRetentionDays,
 	}
 	gin.SetMode(gin.ReleaseMode)
@@ -110,13 +110,13 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		api.GET("/auth/oauth", s.getOAuthProviders)                  // 已配置的 OAuth 提供方
 		api.GET("/auth/oauth/:provider/start", s.authRateLimit(), s.oauthStart)
 		api.GET("/auth/oauth/:provider/callback", s.authRateLimit(), s.oauthCallback) // 限流：callback 触发外联 token 交换 + 建号
-		api.POST("/auth/telegram", s.authRateLimit(), s.telegramLogin) // Telegram Login Widget（gap P1-C）
-		api.GET("/pricing", s.getPricing) // 公开价目（营销站/模型市场同源）
-		api.GET("/config", s.getConfig)       // 公开运营配置（站名/注册开关/公告/法务）
-		api.GET("/rankings", s.getRankings)   // 公开模型/厂商调用量排行（营销/SEO）
-		api.GET("/status", s.publicStatus)    // 公开状态页（粗粒度组件健康，M3）
-		api.POST("/payment/callback/:provider", s.paymentCallback) // 支付 webhook（验签入金，无需登录）
-		api.POST("/payment/x402/settle/:order_no", s.x402Settle)   // x402 链上结算入账（§5.2，默认禁用）
+		api.POST("/auth/telegram", s.authRateLimit(), s.telegramLogin)                // Telegram Login Widget（gap P1-C）
+		api.GET("/pricing", s.getPricing)                                             // 公开价目（营销站/模型市场同源）
+		api.GET("/config", s.getConfig)                                               // 公开运营配置（站名/注册开关/公告/法务）
+		api.GET("/rankings", s.getRankings)                                           // 公开模型/厂商调用量排行（营销/SEO）
+		api.GET("/status", s.publicStatus)                                            // 公开状态页（粗粒度组件健康，M3）
+		api.POST("/payment/callback/:provider", s.paymentCallback)                    // 支付 webhook（验签入金，无需登录）
+		api.POST("/payment/x402/settle/:order_no", s.x402Settle)                      // x402 链上结算入账（§5.2，默认禁用）
 
 		// authed：会话令牌 + 用户 active（P0-1：封禁用户旧令牌即时失效）。
 		authed := api.Group("", s.authRequired(), s.requireActiveUser())
@@ -129,7 +129,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			authed.POST("/me/2fa/setup", s.twofaSetup)
 			authed.POST("/me/2fa/enable", s.twofaEnable)
 			authed.POST("/me/2fa/disable", s.twofaDisable)
-			authed.POST("/me/2fa/backup-codes", s.twofaRegenBackup) // 重置备用码（gap #3）
+			authed.POST("/me/2fa/backup-codes", s.twofaRegenBackup)  // 重置备用码（gap #3）
 			authed.POST("/me/verify", s.authRateLimit(), s.meVerify) // 二次验证换 step-up 令牌（gap #4）；限流防暴力猜密码/TOTP
 			authed.GET("/orgs", s.listOrgs)
 			authed.POST("/orgs", s.createOrg)
@@ -180,30 +180,30 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.GET("/channel-health", s.adminChannelHealth) // M2 渠道健康看板
 			admin.GET("/audit-logs", s.adminListAuditLogs)
 			admin.GET("/users", s.adminListUsers)
-			admin.POST("/users/:id/manage", s.adminManageUser)     // 含 targetRole 守卫（不能动同级/更高）
-			admin.POST("/users/:id/remark", s.adminSetUserRemark)  // 运营备注（gap P2-B，含等级守卫）
-			admin.GET("/usage/by-user", s.adminUsageByUser)        // 全平台按用户聚合用量（gap P2-B）
+			admin.POST("/users/:id/manage", s.adminManageUser)           // 含 targetRole 守卫（不能动同级/更高）
+			admin.POST("/users/:id/remark", s.adminSetUserRemark)        // 运营备注（gap P2-B，含等级守卫）
+			admin.GET("/usage/by-user", s.adminUsageByUser)              // 全平台按用户聚合用量（gap P2-B）
 			admin.GET("/usage/by-user/export", s.adminUsageByUserExport) // 同上 CSV 导出
-			admin.GET("/log-stats", s.adminLogStats)               // 日志量 + 保留期一览（gap P2-C）
+			admin.GET("/log-stats", s.adminLogStats)                     // 日志量 + 保留期一览（gap P2-C）
 
 			// —— superadmin 级（资金 / 系统设置 / 定价策略 / 授权）——（对标 NewAPI RootAuth）
 			su := admin.Group("", s.requireSuperadmin())
 			{
 				// 跨租户全平台调用明细（org_id/user_id/model/cost）：限 superadmin（P2-3）
 				su.GET("/invocations", s.adminListInvocations)
-				su.POST("/credits", s.adminGrantCredit)             // 授信入金（动钱）
-				su.GET("/settings", s.adminGetSettings)             // 系统设置
+				su.POST("/credits", s.adminGrantCredit) // 授信入金（动钱）
+				su.GET("/settings", s.adminGetSettings) // 系统设置
 				su.PUT("/settings", s.adminSetSettings)
-				su.GET("/group-ratios", s.adminListGroupRatios)     // 差异化定价倍率
+				su.GET("/group-ratios", s.adminListGroupRatios) // 差异化定价倍率
 				su.POST("/group-ratios", s.adminUpsertGroupRatio)
 				su.DELETE("/group-ratios/:name", s.adminDeleteGroupRatio)
-				su.GET("/model-group-ratios", s.adminListModelGroupRatios)      // 二层 (分组,模型) 倍率（gap P2-F）
+				su.GET("/model-group-ratios", s.adminListModelGroupRatios) // 二层 (分组,模型) 倍率（gap P2-F）
 				su.POST("/model-group-ratios", s.adminUpsertModelGroupRatio)
 				su.DELETE("/model-group-ratios", s.adminDeleteModelGroupRatio)
-				su.PUT("/orgs/:id/group", s.adminSetOrgGroup)       // 指派计费分组（定价）
+				su.PUT("/orgs/:id/group", s.adminSetOrgGroup)            // 指派计费分组（定价）
 				su.PUT("/orgs/:id/entitlements", s.adminSetEntitlements) // P0-2 功能调配
-				su.POST("/users/:id/role", s.adminSetUserRole)      // 授角色
-				su.GET("/payment-config", s.adminPaymentConfig)     // 支付配置（含密钥引用）
+				su.POST("/users/:id/role", s.adminSetUserRole)           // 授角色
+				su.GET("/payment-config", s.adminPaymentConfig)          // 支付配置（含密钥引用）
 				su.GET("/payment-channels", s.adminListPaymentChannels)
 				su.POST("/payment-channels", s.adminUpsertPaymentChannel)
 				su.DELETE("/payment-channels/:id", s.adminDeletePaymentChannel)
@@ -219,9 +219,11 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		r.POST("/v1/chat/completions", rl.HandleChatCompletions)
 		r.POST("/v1/embeddings", rl.HandleEmbeddings)
 		r.POST("/v1/images/generations", rl.HandleImages)
-		r.POST("/v1/audio/speech", rl.HandleAudioSpeech)               // TTS（gap P2-F，按字符计价）
+		r.POST("/v1/images/edits", rl.HandleImageEdits)                 // 图生图编辑（D1，multipart，按张计价）
+		r.POST("/v1/images/variations", rl.HandleImageVariations)       // 图像变体（D1，multipart）
+		r.POST("/v1/audio/speech", rl.HandleAudioSpeech)                // TTS（gap P2-F，按字符计价）
 		r.POST("/v1/audio/transcriptions", rl.HandleAudioTranscription) // STT（gap P2-F，按次固定价）
-			r.POST("/v1/audio/translations", rl.HandleAudioTranslation)     // STT 翻译到英文（D1，同转写计价）
+		r.POST("/v1/audio/translations", rl.HandleAudioTranslation)     // STT 翻译到英文（D1，同转写计价）
 
 		// 异步任务（Seedance 类视频生成，设计 §4.4 Task API）
 		ts := opts.TaskService
