@@ -24,10 +24,10 @@ const anthropicVersion = "2023-06-01"
 func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credential string, req map[string]any, stream bool) (*http.Request, error) {
 	out := map[string]any{"model": req["model"]}
 
-	// Anthropic 强制 max_tokens
+	// Anthropic 强制 max_tokens；同时识别 max_completion_tokens（与 hold 口径一致，P0-2）
 	maxTokens := float64(defaultMaxTokens)
-	if mt, ok := req["max_tokens"].(float64); ok && mt > 0 {
-		maxTokens = mt
+	if v := requestedMaxOutput(req); v > 0 {
+		maxTokens = float64(v)
 	}
 	out["max_tokens"] = maxTokens
 

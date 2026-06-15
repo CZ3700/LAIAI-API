@@ -27,6 +27,7 @@ import (
 const (
 	defaultMaxTokens       = 4096
 	maxOutputTokensCeiling = 1 << 20 // 1M：max_tokens 上限（审查 L-2），远超任何真实模型上下文
+	maxCompletionChoices   = 128     // n 的 hold 上限（与 OpenAI n 上限一致），防 n 倍 hold 溢出/失真
 	upstreamTimeout        = 5 * time.Minute
 	maxErrorBodyBytes      = 2048 // 超大上游错误体截断（NewAPI rc.10 教训）
 	maxRequestBodySize     = 10 << 20
@@ -206,6 +207,20 @@ func keyGate(key *identity.APIKey, clientIP, model string) (int, string, bool) {
 	return 0, "", true
 }
 
+// requestedMaxOutput：取请求声明的输出 token 上限，用于 hold 估算与上游 max_tokens 映射。
+// 同时识别 max_tokens（经典 / Anthropic 必填）与 max_completion_tokens（OpenAI 新推理模型字段）；
+// 两者都给取较大者，确保 hold 不低于上游可能产出——堵住「只传 max_completion_tokens 绕过输出冻结
+// 上限、借 overage 把余额刷成负数」的 P0-2 漏洞。都没声明返回 0（调用方回退默认）。
+func requestedMaxOutput(req map[string]any) int64 {
+	var m int64
+	for _, k := range [...]string{"max_tokens", "max_completion_tokens"} {
+		if v, ok := req[k].(float64); ok && v > 0 && int64(v) > m {
+			m = int64(v)
+		}
+	}
+	return m
+}
+
 // newRequestID：平台级请求 id（16 hex），回传 X-Request-Id 给客户端作支持工单锚点。
 func newRequestID() string {
 	b := make([]byte, 8)
@@ -313,11 +328,21 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	}
 	stream, _ := req["stream"].(bool)
 	maxTokens := int64(defaultMaxTokens)
-	if mt, ok := req["max_tokens"].(float64); ok && mt > 0 {
-		maxTokens = int64(mt)
+	if v := requestedMaxOutput(req); v > 0 { // 同时识别 max_tokens 与 max_completion_tokens（P0-2）
+		maxTokens = v
 		if maxTokens > maxOutputTokensCeiling {
 			maxTokens = maxOutputTokensCeiling // 钳上限（审查 L-2）：防超大值把 hold 撑成误导性"余额不足"
 		}
+	}
+	// 多候选 n（OpenAI 上限 128）：输出 token 随 n 倍增、usage 计入全部候选，故 hold 也须按 n 倍冻结，
+	// 否则 n 大 + max_completion_tokens 大可绕过余额闸、借 overage 把余额刷成负（P0-2 同类）。
+	holdOutput := maxTokens
+	if nv, ok := req["n"].(float64); ok && nv > 1 {
+		n := int64(nv)
+		if n > maxCompletionChoices {
+			n = maxCompletionChoices
+		}
+		holdOutput = maxTokens * n
 	}
 	inv.Model, inv.IsStream = model, stream
 
@@ -332,7 +357,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	estIn := CountChatTokens(req, len(body))
 	// 计费倍率（0011 一层 + 0027 二层 (分组,模型)）：hold/capture 取同一次值，避免中途改配置导致 release 算错
 	groupRatio := EffectiveRatio(rdb, key.OrgID, model)
-	holdAmount := price.ChatCost(estIn, 0, maxTokens).Mul(groupRatio) // 按次固定价时忽略 token（gap P2-F）
+	holdAmount := price.ChatCost(estIn, 0, holdOutput).Mul(groupRatio) // holdOutput 含 n 倍；按次固定价时忽略 token（gap P2-F）
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
 		acc, err := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
