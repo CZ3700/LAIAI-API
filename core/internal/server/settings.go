@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -69,12 +70,50 @@ var settingDefaults = map[string]string{
 	"google_client_secret": "",
 }
 
+// secretSettingKeys：值为敏感凭据的设置键（P1-3）——落库信封加密、内部读时解密、
+// admin API 只回显掩码、PUT 收到掩码/空＝保留原值（write-only）。epay_pid/client_id/
+// *_api_url 是标识/地址非密钥，不在此列。
+var secretSettingKeys = map[string]bool{
+	"stripe_secret_key":     true,
+	"stripe_webhook_secret": true,
+	"epay_key":              true,
+	"github_client_secret":  true,
+	"google_client_secret":  true,
+	"discord_client_secret": true,
+	"oidc_client_secret":    true,
+}
+
+// settingEncPrefix：加密落库的 secret 值前缀，getSetting 据此判定是否解密。
+// 兼容历史明文（无前缀按明文返回，下次保存自动升级为密文）。
+const settingEncPrefix = "enc:v1:"
+
+// secretMask：admin GET 对「已配置」secret 的占位回显；PUT 收到此值视为「不改」。
+const secretMask = "••••••••"
+
 func (s *Server) getSetting(name string) string {
 	var row Setting
 	if err := s.db.Where("name = ?", name).First(&row).Error; err == nil {
-		return row.Value
+		return s.decodeSettingValue(name, row.Value)
 	}
 	return settingDefaults[name]
+}
+
+// decodeSettingValue：secret 键若为密文（带前缀）则解密供内部消费；历史明文原样返回。
+// 解密失败/无密钥环时返回 ""（绝不向调用方泄露密文），并告警。
+func (s *Server) decodeSettingValue(name, val string) string {
+	if val == "" || !secretSettingKeys[name] || !strings.HasPrefix(val, settingEncPrefix) {
+		return val
+	}
+	if s.keyring == nil {
+		s.Log().Error("secret setting present but keyring unavailable", "name", name)
+		return ""
+	}
+	plain, err := s.keyring.Decrypt(strings.TrimPrefix(val, settingEncPrefix))
+	if err != nil {
+		s.Log().Error("secret setting decrypt failed", "name", name, "err", err)
+		return ""
+	}
+	return plain
 }
 
 func (s *Server) getBoolSetting(name string) bool {
@@ -91,11 +130,17 @@ func (s *Server) adminGetSettings(c *gin.Context) {
 	}
 	out := make(map[string]string, len(settingDefaults))
 	for k, def := range settingDefaults {
-		if v, ok := stored[k]; ok {
-			out[k] = v
-		} else {
-			out[k] = def
+		v, ok := stored[k]
+		if !ok {
+			v = def
 		}
+		// 红线（P1-3）：secret 值永不回显——已配置回掩码、未配置回空，绝不下发明文/密文。
+		if secretSettingKeys[k] {
+			if v != "" {
+				v = secretMask
+			}
+		}
+		out[k] = v
 	}
 	c.JSON(http.StatusOK, gin.H{"settings": out})
 }
@@ -107,18 +152,36 @@ func (s *Server) adminSetSettings(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	updated := 0
 	for name, value := range req {
 		if _, known := settingDefaults[name]; !known {
 			fail(c, http.StatusBadRequest, "unknown setting: "+name)
 			return
 		}
+		if secretSettingKeys[name] {
+			// write-only（P1-3）：空或掩码＝保留原值（前端表单回显的是掩码，回传不应清空）。
+			if value == "" || value == secretMask {
+				continue
+			}
+			if s.keyring == nil {
+				fail(c, http.StatusServiceUnavailable, "LAIAI_DATA_KEYS not configured; cannot store secret")
+				return
+			}
+			enc, err := s.keyring.Encrypt(value)
+			if err != nil {
+				fail(c, http.StatusInternalServerError, "secret encrypt failed")
+				return
+			}
+			value = settingEncPrefix + enc // 落库即密文，明文绝不入 ext_settings
+		}
 		if err := s.db.Save(&Setting{Name: name, Value: value}).Error; err != nil {
 			fail(c, http.StatusInternalServerError, "save failed")
 			return
 		}
+		updated++
 	}
 	s.writeAudit(c, "settings_update", "", "updated platform settings")
-	c.JSON(http.StatusOK, gin.H{"updated": len(req)})
+	c.JSON(http.StatusOK, gin.H{"updated": updated})
 }
 
 // getConfig：GET /api/config —— 公开运营配置（无需登录；前端门面/注册页用）。
