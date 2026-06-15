@@ -220,6 +220,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		r.GET("/v1/models", rl.HandleListModels)
 		r.POST("/v1/chat/completions", rl.HandleChatCompletions)
 		r.POST("/v1/embeddings", rl.HandleEmbeddings)
+		r.POST("/v1/rerank", rl.HandleRerank) // 重排序（WS-1，RAG；Jina/SiliconFlow/Cohere/Qwen）
 		r.POST("/v1/images/generations", rl.HandleImages)
 		r.POST("/v1/images/edits", rl.HandleImageEdits)                 // 图生图编辑（D1，multipart，按张计价）
 		r.POST("/v1/images/variations", rl.HandleImageVariations)       // 图像变体（D1，multipart）

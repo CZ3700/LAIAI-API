@@ -92,7 +92,8 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 				}
 				messages = append(messages, map[string]any{"role": "assistant", "content": blocks})
 			default:
-				messages = append(messages, map[string]any{"role": role, "content": m["content"]})
+				// user（及未知角色）：content 可能是 OpenAI 多模态数组（text/image_url）→ 转 Claude 块
+				messages = append(messages, map[string]any{"role": role, "content": anthropicContent(m["content"])})
 			}
 		}
 	}
@@ -159,6 +160,15 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 		out["stream"] = true
 	}
 
+	// 扩展思考（reasoning）：Claude 原生 thinking 配置透传。Claude 强制 max_tokens > budget_tokens，
+	// 故按需上调 max_tokens 防上游 400。OpenAI 的 reasoning_effort 不透传（Claude 不识别该字段，会拒）。
+	if th, ok := req["thinking"].(map[string]any); ok {
+		out["thinking"] = th
+		if bt, ok := th["budget_tokens"].(float64); ok && bt > 0 && maxTokens <= bt {
+			out["max_tokens"] = bt + float64(defaultMaxTokens)
+		}
+	}
+
 	body, err := json.Marshal(out)
 	if err != nil {
 		return nil, err
@@ -184,6 +194,59 @@ type anthropicUsage struct {
 // promptTotal：Anthropic 的 input_tokens 不含缓存读/写部分，总输入需相加（否则少计 prompt）。
 func (u anthropicUsage) promptTotal() int64 {
 	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+}
+
+// anthropicContent 把 OpenAI 形态的消息 content 转成 Claude 形态（D1 视觉输入补齐）：
+//   - string → 原样（Claude 接受纯字符串 content）
+//   - []{type:text|image_url} → []{type:text} / {type:image, source:{...}}
+//     image_url 的 data:base64 URI → source{type:base64,media_type,data}；http(s) URL → source{type:url,url}
+//     （Claude Messages 原生支持 base64 与 url 两种 image source）
+//   - 块上的 cache_control 透传（prompt caching：客户端在块上标记，重建消息时必须保留）
+//   - 未知块型原样透传（已是 Claude 形态时不破坏）
+func anthropicContent(content any) any {
+	arr, ok := content.([]any)
+	if !ok {
+		return content
+	}
+	var blocks []any
+	for _, raw := range arr {
+		p, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch p["type"] {
+		case "text":
+			blk := map[string]any{"type": "text", "text": p["text"]}
+			if cc, ok := p["cache_control"]; ok {
+				blk["cache_control"] = cc
+			}
+			blocks = append(blocks, blk)
+		case "image_url":
+			urlStr := ""
+			if iu, ok := p["image_url"].(map[string]any); ok {
+				urlStr, _ = iu["url"].(string)
+			}
+			var src map[string]any
+			if mimeType, data, ok := parseDataURI(urlStr); ok {
+				src = map[string]any{"type": "base64", "media_type": mimeType, "data": data}
+			} else if strings.HasPrefix(urlStr, "http://") || strings.HasPrefix(urlStr, "https://") {
+				src = map[string]any{"type": "url", "url": urlStr}
+			} else {
+				continue // 无法识别的 image_url：丢弃该块而非污染请求
+			}
+			blk := map[string]any{"type": "image", "source": src}
+			if cc, ok := p["cache_control"]; ok {
+				blk["cache_control"] = cc
+			}
+			blocks = append(blocks, blk)
+		default:
+			blocks = append(blocks, p) // 未知/已是 Claude 块：透传
+		}
+	}
+	if len(blocks) == 0 {
+		return content
+	}
+	return blocks
 }
 
 func mapStopReason(r string) string {
@@ -260,9 +323,9 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 			"finish_reason": mapStopReason(resp.StopReason),
 		}},
 		"usage": gin.H{
-			"prompt_tokens":     resp.Usage.promptTotal(),
-			"completion_tokens": resp.Usage.OutputTokens,
-			"total_tokens":      resp.Usage.promptTotal() + resp.Usage.OutputTokens,
+			"prompt_tokens":         resp.Usage.promptTotal(),
+			"completion_tokens":     resp.Usage.OutputTokens,
+			"total_tokens":          resp.Usage.promptTotal() + resp.Usage.OutputTokens,
 			"prompt_tokens_details": gin.H{"cached_tokens": resp.Usage.CacheReadInputTokens},
 		},
 	}

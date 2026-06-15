@@ -41,18 +41,26 @@ var providerProfiles = map[string]providerProfile{
 	"ollama":     {DisplayName: "Ollama (self-host)", DefaultBaseURL: "http://localhost:11434/v1", Adapter: "openai"},
 
 	// —— OpenAI 兼容（中国系，A1 核心供给）——
-	"qwen":      {DisplayName: "阿里通义千问", DefaultBaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", Adapter: "openai", Notes: "国际版新加坡端点；国内换 dashscope.aliyuncs.com"},
-	"dashscope": {DisplayName: "阿里 DashScope", DefaultBaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", Adapter: "openai"},
-	"zhipu":     {DisplayName: "智谱 GLM", DefaultBaseURL: "https://open.bigmodel.cn/api/paas/v4", Adapter: "openai", Notes: "v4 起 OpenAI 兼容 + Bearer（旧版 JWT 协议不支持）"},
-	"moonshot":  {DisplayName: "月之暗面 Kimi", DefaultBaseURL: "https://api.moonshot.cn/v1", Adapter: "openai"},
-	"baidu":     {DisplayName: "百度千帆 ERNIE", DefaultBaseURL: "https://qianfan.baidubce.com/v2", Adapter: "openai", Notes: "千帆 v2 OpenAI 兼容（旧版 OAuth 协议不支持）"},
-	"hunyuan":   {DisplayName: "腾讯混元", DefaultBaseURL: "https://api.hunyuan.cloud.tencent.com/v1", Adapter: "openai", Notes: "OpenAI 兼容端点（旧版 HMAC 签名协议不支持）"},
-	"minimax":   {DisplayName: "MiniMax", DefaultBaseURL: "https://api.minimaxi.com/v1", Adapter: "openai"},
+	"qwen":        {DisplayName: "阿里通义千问", DefaultBaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", Adapter: "openai", Notes: "国际版新加坡端点；国内换 dashscope.aliyuncs.com"},
+	"dashscope":   {DisplayName: "阿里 DashScope", DefaultBaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", Adapter: "openai"},
+	"zhipu":       {DisplayName: "智谱 GLM", DefaultBaseURL: "https://open.bigmodel.cn/api/paas/v4", Adapter: "openai", Notes: "v4 起 OpenAI 兼容 + Bearer（旧版 JWT 协议不支持）"},
+	"moonshot":    {DisplayName: "月之暗面 Kimi", DefaultBaseURL: "https://api.moonshot.cn/v1", Adapter: "openai"},
+	"baidu":       {DisplayName: "百度千帆 ERNIE", DefaultBaseURL: "https://qianfan.baidubce.com/v2", Adapter: "openai", Notes: "千帆 v2 OpenAI 兼容（旧版 OAuth 协议不支持）"},
+	"hunyuan":     {DisplayName: "腾讯混元", DefaultBaseURL: "https://api.hunyuan.cloud.tencent.com/v1", Adapter: "openai", Notes: "OpenAI 兼容端点（旧版 HMAC 签名协议不支持）"},
+	"minimax":     {DisplayName: "MiniMax", DefaultBaseURL: "https://api.minimaxi.com/v1", Adapter: "openai"},
 	"siliconflow": {DisplayName: "硅基流动", DefaultBaseURL: "https://api.siliconflow.cn/v1", Adapter: "openai"},
-	"stepfun":   {DisplayName: "阶跃星辰", DefaultBaseURL: "https://api.stepfun.com/v1", Adapter: "openai"},
-	"spark":     {DisplayName: "讯飞星火", DefaultBaseURL: "https://spark-api-open.xf-yun.com/v1", Adapter: "openai", Notes: "HTTP 兼容端点（旧版 WebSocket 协议不支持）"},
+	"stepfun":     {DisplayName: "阶跃星辰", DefaultBaseURL: "https://api.stepfun.com/v1", Adapter: "openai"},
+	"spark":       {DisplayName: "讯飞星火", DefaultBaseURL: "https://spark-api-open.xf-yun.com/v1", Adapter: "openai", Notes: "HTTP 兼容端点（旧版 WebSocket 协议不支持）"},
 	"lingyiwanwu": {DisplayName: "零一万物 Yi", DefaultBaseURL: "https://api.lingyiwanwu.com/v1", Adapter: "openai"},
-	"kimi":      {DisplayName: "月之暗面 Kimi（别名）", DefaultBaseURL: "https://api.moonshot.cn/v1", Adapter: "openai"},
+	"kimi":        {DisplayName: "月之暗面 Kimi（别名）", DefaultBaseURL: "https://api.moonshot.cn/v1", Adapter: "openai"},
+	"ai360":       {DisplayName: "360 智脑", DefaultBaseURL: "https://api.360.cn/v1", Adapter: "openai"},
+	"jina":        {DisplayName: "Jina AI", DefaultBaseURL: "https://api.jina.ai/v1", Adapter: "openai", Notes: "embeddings + rerank（/v1/rerank）"},
+	"submodel":    {DisplayName: "SubModel", DefaultBaseURL: "https://llm.submodel.ai/v1", Adapter: "openai"},
+	"xinference":  {DisplayName: "Xinference (self-host)", DefaultBaseURL: "", Adapter: "openai", Notes: "自建，base_url 必填（http://host:9997/v1）；含 rerank"},
+
+	// —— OpenAI 兼容自建/级联（base_url 必填，不预置可能臆造的 URL）——
+	"vllm":   {DisplayName: "vLLM (self-host)", DefaultBaseURL: "", Adapter: "openai", Notes: "自建，base_url 必填（http://host:8000/v1）"},
+	"oneapi": {DisplayName: "One/New API 上游", DefaultBaseURL: "", Adapter: "openai", Notes: "级联另一套 OpenAI 兼容网关，base_url 必填"},
 }
 
 // ProfileFor 返回厂商档案；未登记的 provider 按 OpenAI 兼容裸档案处理

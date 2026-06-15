@@ -47,6 +47,27 @@ func (geminiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 	if v, ok := req["top_p"]; ok {
 		gen["topP"] = v
 	}
+	// 结构化输出（response_format → Gemini generationConfig，原 OpenAI 透传渠道才支持的能力补到原生 Gemini）：
+	//   {type:"json_object"} → responseMimeType=application/json
+	//   {type:"json_schema", json_schema:{schema}} → + responseSchema（OpenAPI 子集）
+	if rf, ok := req["response_format"].(map[string]any); ok {
+		switch rf["type"] {
+		case "json_object":
+			gen["responseMimeType"] = "application/json"
+		case "json_schema":
+			gen["responseMimeType"] = "application/json"
+			if js, ok := rf["json_schema"].(map[string]any); ok {
+				if schema, ok := js["schema"]; ok {
+					gen["responseSchema"] = schema
+				}
+			}
+		}
+	}
+	// 扩展思考：客户端显式提供 Gemini 原生 thinkingConfig 时透传（OpenAI reasoning_effort 不透传，
+	// Gemini 不识别该顶层字段）。
+	if tc, ok := req["thinkingConfig"].(map[string]any); ok {
+		gen["thinkingConfig"] = tc
+	}
 	if len(gen) > 0 {
 		out["generationConfig"] = gen
 	}
@@ -226,7 +247,7 @@ func parseDataURI(s string) (mime, data string, ok bool) {
 }
 
 type geminiUsage struct {
-	PromptTokenCount        int64 `json:"promptTokenCount"`        // 含缓存部分（Gemini 口径，总输入）
+	PromptTokenCount        int64 `json:"promptTokenCount"` // 含缓存部分（Gemini 口径，总输入）
 	CandidatesTokenCount    int64 `json:"candidatesTokenCount"`
 	CachedContentTokenCount int64 `json:"cachedContentTokenCount"` // promptTokenCount 的缓存子集（折扣价）
 }
@@ -271,8 +292,8 @@ func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error
 				args = "{}"
 			}
 			toolCalls = append(toolCalls, gin.H{
-				"id":   fmt.Sprintf("call_gemini_%d", i), // Gemini 无 call id，合成稳定 id
-				"type": "function",
+				"id":       fmt.Sprintf("call_gemini_%d", i), // Gemini 无 call id，合成稳定 id
+				"type":     "function",
 				"function": gin.H{"name": p.FunctionCall.Name, "arguments": args},
 			})
 		}
@@ -294,9 +315,9 @@ func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error
 			"finish_reason": mapGeminiFinishReason(cand.FinishReason, len(toolCalls) > 0),
 		}},
 		"usage": gin.H{
-			"prompt_tokens":     resp.UsageMetadata.PromptTokenCount,
-			"completion_tokens": resp.UsageMetadata.CandidatesTokenCount,
-			"total_tokens":      resp.UsageMetadata.PromptTokenCount + resp.UsageMetadata.CandidatesTokenCount,
+			"prompt_tokens":         resp.UsageMetadata.PromptTokenCount,
+			"completion_tokens":     resp.UsageMetadata.CandidatesTokenCount,
+			"total_tokens":          resp.UsageMetadata.PromptTokenCount + resp.UsageMetadata.CandidatesTokenCount,
 			"prompt_tokens_details": gin.H{"cached_tokens": resp.UsageMetadata.CachedContentTokenCount},
 		},
 	})
@@ -338,7 +359,7 @@ func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error)
 		}
 		if chunk.UsageMetadata != nil {
 			u.PromptTokens = chunk.UsageMetadata.PromptTokenCount
-			u.CompletionTokens = chunk.UsageMetadata.CandidatesTokenCount        // 累计值，取最后一次
+			u.CompletionTokens = chunk.UsageMetadata.CandidatesTokenCount                    // 累计值，取最后一次
 			u.PromptTokensDetails.CachedTokens = chunk.UsageMetadata.CachedContentTokenCount // 缓存折扣（P2-9）
 		}
 		if len(chunk.Candidates) == 0 {

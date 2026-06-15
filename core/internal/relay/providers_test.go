@@ -20,7 +20,8 @@ func TestProviderRegistryCoverage(t *testing.T) {
 		if !implemented[p.Adapter] {
 			t.Errorf("provider %q maps to unimplemented adapter %q", name, p.Adapter)
 		}
-		if p.DefaultBaseURL == "" && p.Adapter != "azure" {
+		// 空 base 仅允许：azure，或档案显式注明「base_url 必填」的自建/级联厂商（用户手填）。
+		if p.DefaultBaseURL == "" && p.Adapter != "azure" && !strings.Contains(p.Notes, "必填") {
 			t.Errorf("provider %q has no default base url", name)
 		}
 		if p.DisplayName == "" {
