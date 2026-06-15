@@ -109,7 +109,7 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 	}
 	inv.Model = model
 
-	price, err := GetPrice(rdb, model)
+	price, err := r.cachedPrice(model)
 	if err != nil {
 		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", model))
 		return
@@ -119,7 +119,7 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 		return
 	}
 
-	groupRatio := EffectiveRatio(rdb, key.OrgID, model)
+	groupRatio := r.cachedRatio(key.OrgID, model)
 	holdAmount := price.ImageUSD.Mul(decimal.NewFromInt(int64(n))).Mul(groupRatio)
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
@@ -163,9 +163,13 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 	exclude := map[uint64]bool{}
 	var lastStatus int
 	var lastBody []byte
+	channelSnap, snapErr := r.cachedChannels() // 取一次快照，重试复用（WS-2）
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if snapErr != nil {
+			break
+		}
 		var pickErr error
-		ch, pickErr = PickChannelForAttempt(rdb, model, attempt, exclude, r.healthFactor)
+		ch, pickErr = pickFromSnapshot(channelSnap, model, attempt, exclude, r.healthFactor)
 		if pickErr != nil {
 			break
 		}

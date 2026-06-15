@@ -20,6 +20,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -69,6 +70,21 @@ type Relay struct {
 	ratePolAt    time.Time
 	rateEnabled  bool
 	rateRPM      int
+
+	// 热读缓存（WS-2）：极少变、读极热的运营配置。命中即把每请求 DB 读从 ~5 降到 0。
+	// 失效=本地写后同步 invalidate + 跨实例 Redis pub/sub（invalidate.go）；TTL 兜底。
+	// 绝不缓存任何资金可变字段（used_amount/quota/balance 永远走 DB 原子写）。
+	channels *snapCache[[]Channel]                // status=1 渠道全表快照（#1 读瓶颈，8s）
+	prices   *ttlCache[string, *ModelPrice]       // model → 定价（45s）
+	ratios   *ttlCache[ratioKey, decimal.Decimal] // (org,model) → 最终倍率（45s）
+	invRedis *redis.Client                        // 跨实例失效 pub/sub（nil = 单实例 TTL 兜底）
+	invStop  chan struct{}
+}
+
+// ratioKey：倍率缓存键（org × model 的最终倍率，含一层+二层合并）。
+type ratioKey struct {
+	org   uint64
+	model string
 }
 
 // clientFor：渠道无代理 → 共享 Client；有代理 → 按 proxy URL 复用一个带代理 Transport 的 Client。
@@ -97,16 +113,21 @@ func (r *Relay) clientFor(ch *Channel) *http.Client {
 }
 
 func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Logger) *Relay {
+	now := time.Now
 	return &Relay{
-		DB:         db,
-		Keyring:    kr,
-		Client:     &http.Client{Timeout: upstreamTimeout},
-		Log:        log,
-		Rec:        rec,
-		Now:         time.Now,
+		DB:          db,
+		Keyring:     kr,
+		Client:      &http.Client{Timeout: upstreamTimeout},
+		Log:         log,
+		Rec:         rec,
+		Now:         now,
 		failCounts:  map[uint64]int{},
 		health:      map[uint64]float64{},
 		rateWindows: map[string]*rateWindow{},
+		// 热读缓存 TTL：渠道快照短(8s，禁用/重启用要较快跟随)；价目/倍率长(45s，纯运营低频改)。
+		channels: newSnapCache[[]Channel](8*time.Second, now),
+		prices:   newTTLCache[string, *ModelPrice](45*time.Second, now),
+		ratios:   newTTLCache[ratioKey, decimal.Decimal](45*time.Second, now),
 	}
 }
 
@@ -351,8 +372,8 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	}
 	inv.Model, inv.IsStream = model, stream
 
-	// 3. 定价
-	price, err := GetPrice(rdb, model)
+	// 3. 定价（热读缓存：命中即免 DB 查；hold/capture 仍取同一个 *price 局部变量）
+	price, err := r.cachedPrice(model)
 	if err != nil {
 		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", model))
 		return
@@ -361,7 +382,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	// 4. Hold：按 tiktoken 估算输入 + max_tokens 上限 冻结（整个重试周期只 hold 一次）
 	estIn := CountChatTokens(req, len(body))
 	// 计费倍率（0011 一层 + 0027 二层 (分组,模型)）：hold/capture 取同一次值，避免中途改配置导致 release 算错
-	groupRatio := EffectiveRatio(rdb, key.OrgID, model)
+	groupRatio := r.cachedRatio(key.OrgID, model)
 	holdAmount := price.ChatCost(estIn, 0, holdOutput).Mul(groupRatio) // holdOutput 含 n 倍；按次固定价时忽略 token（gap P2-F）
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
@@ -414,9 +435,14 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	exclude := map[uint64]bool{}
 	var lastStatus int
 	var lastBody []byte
+	// 渠道快照取一次（8s 缓存），3 次重试复用同一份；exclude 走内存（WS-2 #1 读瓶颈消除）。
+	channelSnap, snapErr := r.cachedChannels()
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if snapErr != nil {
+			break // 快照加载失败：当作无渠道，落循环后失败处理
+		}
 		var pickErr error
-		ch, pickErr = PickChannelForAttempt(rdb, model, attempt, exclude, r.healthFactor)
+		ch, pickErr = pickFromSnapshot(channelSnap, model, attempt, exclude, r.healthFactor)
 		if pickErr != nil {
 			break // 无渠道可用：落到循环后的失败处理
 		}
@@ -587,6 +613,7 @@ func (r *Relay) disableChannel(channelID uint64, reason string) {
 			r.Log.Error("channel auto-disable failed", "channel", channelID, "err", err)
 			return
 		}
+		r.broadcastInvalidate(KindChannel, "") // 渠道快照即时失效（本地 + 跨实例），坏渠道不再被选
 		r.Log.Warn("channel auto-disabled", "channel", channelID, "reason", reason)
 	}()
 }
@@ -601,9 +628,44 @@ func (r *Relay) enableChannelIfDisabled(ch *Channel) {
 	go func() {
 		if err := r.DB.Model(&Channel{}).Where("id = ? AND status = 2", ch.ID).
 			Update("status", 1).Error; err == nil {
+			r.broadcastInvalidate(KindChannel, "") // 重启用的渠道即时回到快照可被选
 			r.Log.Info("channel auto-re-enabled after success", "channel", ch.ID)
 		}
 	}()
+}
+
+// ---- 热读缓存包裹（WS-2）----
+// 一律用 r.DB（裸库）加载，不用请求级 rdb：缓存值跨请求共享，绑某个请求 context 会让该请求
+// 断连时取消别人正复用的加载查询。代价：填充那一次查询不随客户端断连取消（极快小表，净收益正）。
+
+// cachedChannels 返回 status=1 活跃渠道快照（8s TTL）。返回只读 slice，调用方绝不可原地改元素。
+func (r *Relay) cachedChannels() ([]Channel, error) {
+	return r.channels.getOrLoad(func() ([]Channel, error) {
+		var chs []Channel
+		if err := r.DB.Where("status = 1").Order("priority DESC, id").Find(&chs).Error; err != nil {
+			return nil, err
+		}
+		return chs, nil
+	})
+}
+
+// cachedPrice 返回模型定价（45s TTL）。GetPrice 是纯函数，原样复用。
+func (r *Relay) cachedPrice(model string) (*ModelPrice, error) {
+	return r.prices.getOrLoad(model, func() (*ModelPrice, error) {
+		return GetPrice(r.DB, model)
+	})
+}
+
+// cachedRatio 返回 (org,model) 最终倍率（45s TTL）。整体作一个值缓存，保证 hold/capture 取同值
+// （不拆一层/二层，不破坏合并语义）。任何异常回退 1（绝不返回 0 倍率致免费/错算钱）。
+func (r *Relay) cachedRatio(org uint64, model string) decimal.Decimal {
+	v, err := r.ratios.getOrLoad(ratioKey{org, model}, func() (decimal.Decimal, error) {
+		return EffectiveRatio(r.DB, org, model), nil // EffectiveRatio 内部 fail-to-1，永不 err
+	})
+	if err != nil || !v.IsPositive() {
+		return decimal.NewFromInt(1)
+	}
+	return v
 }
 
 func relayErr(c *gin.Context, code int, msg string) {

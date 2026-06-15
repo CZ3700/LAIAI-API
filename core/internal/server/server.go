@@ -93,7 +93,8 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 	var rl *relay.Relay
 	if opts.Keyring != nil {
 		rl = relay.New(db, opts.Keyring, opts.Recorder, log.With("component", "relay"))
-		rl.UseRedisRateLimiter(opts.RedisRateLimiter) // 非 nil 才接入；nil 退化进程内限流
+		rl.UseRedisRateLimiter(opts.RedisRateLimiter)    // 非 nil 才接入；nil 退化进程内限流
+		rl.SubscribeInvalidations(opts.RedisRateLimiter) // 跨实例热读缓存失效（同一 Redis 客户端复用）
 		s.relay = rl
 	}
 

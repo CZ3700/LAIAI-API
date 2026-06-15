@@ -120,7 +120,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 	}
 	inv.Model = req.Model
 
-	price, err := GetPrice(rdb, req.Model)
+	price, err := r.cachedPrice(req.Model)
 	if err != nil {
 		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", req.Model))
 		return
@@ -131,7 +131,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		return
 	}
 
-	groupRatio := EffectiveRatio(rdb, key.OrgID, req.Model) // 一层+二层倍率（0011/0027），hold/capture 同值
+	groupRatio := r.cachedRatio(key.OrgID, req.Model) // 一层+二层倍率（0011/0027），hold/capture 同值
 	holdAmount := price.ImageUSD.Mul(decimal.NewFromInt(int64(n))).Mul(groupRatio)
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
@@ -179,9 +179,13 @@ func (r *Relay) HandleImages(c *gin.Context) {
 	exclude := map[uint64]bool{}
 	var lastStatus int
 	var lastBody []byte
+	channelSnap, snapErr := r.cachedChannels() // 取一次快照，重试复用（WS-2）
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if snapErr != nil {
+			break
+		}
 		var pickErr error
-		ch, pickErr = PickChannelForAttempt(rdb, req.Model, attempt, exclude, r.healthFactor)
+		ch, pickErr = pickFromSnapshot(channelSnap, req.Model, attempt, exclude, r.healthFactor)
 		if pickErr != nil {
 			break
 		}

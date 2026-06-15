@@ -18,19 +18,19 @@ var (
 )
 
 type Channel struct {
-	ID            uint64 `gorm:"primaryKey"`
-	Name          string `gorm:"column:name"`
-	Provider      string `gorm:"column:provider"`
-	BaseURL       string `gorm:"column:base_url"`
-	CredentialEnc string `gorm:"column:credential_enc"`
-	Models        string `gorm:"column:models"` // 逗号分隔
-	Weight        int    `gorm:"column:weight"`
-	Priority      int    `gorm:"column:priority"`             // 大者先用（0004）
-	MaxConcurrentTasks int `gorm:"column:max_concurrent_tasks"` // 任务并发闸（0006，Seedance 公测 3）
-	StrictResponse int8  `gorm:"column:strict_response"`      // 1=校验上游响应 content-type（0008）
-	ModelMapping  string `gorm:"column:model_mapping"`        // JSON {对外名:上游名}（0009，空=不映射）
-	Proxy         string `gorm:"column:proxy"`                // 渠道级出网代理（0019，空=直连）
-	Status        int8   `gorm:"column:status"`
+	ID                 uint64 `gorm:"primaryKey"`
+	Name               string `gorm:"column:name"`
+	Provider           string `gorm:"column:provider"`
+	BaseURL            string `gorm:"column:base_url"`
+	CredentialEnc      string `gorm:"column:credential_enc"`
+	Models             string `gorm:"column:models"` // 逗号分隔
+	Weight             int    `gorm:"column:weight"`
+	Priority           int    `gorm:"column:priority"`             // 大者先用（0004）
+	MaxConcurrentTasks int    `gorm:"column:max_concurrent_tasks"` // 任务并发闸（0006，Seedance 公测 3）
+	StrictResponse     int8   `gorm:"column:strict_response"`      // 1=校验上游响应 content-type（0008）
+	ModelMapping       string `gorm:"column:model_mapping"`        // JSON {对外名:上游名}（0009，空=不映射）
+	Proxy              string `gorm:"column:proxy"`                // 渠道级出网代理（0019，空=直连）
+	Status             int8   `gorm:"column:status"`
 }
 
 // UpstreamModel 返回该渠道上游实际使用的模型名（无映射/解析失败 → 原名）。
@@ -90,12 +90,12 @@ func (c *Channel) ServesModel(model string) bool {
 }
 
 type ModelPrice struct {
-	ID             uint64          `gorm:"primaryKey"`
-	Model          string          `gorm:"column:model"`
-	InputUSDPer1M  decimal.Decimal `gorm:"column:input_usd_per_1m"`
-	OutputUSDPer1M decimal.Decimal `gorm:"column:output_usd_per_1m"`
-	ImageUSD       decimal.Decimal `gorm:"column:image_usd"`              // 每张图 USD（0007，0=非图像模型）
-	CachedInputUSDPer1M decimal.Decimal `gorm:"column:cached_input_usd_per_1m"` // 缓存命中输入价（0010，0=按 input 全价）
+	ID                   uint64          `gorm:"primaryKey"`
+	Model                string          `gorm:"column:model"`
+	InputUSDPer1M        decimal.Decimal `gorm:"column:input_usd_per_1m"`
+	OutputUSDPer1M       decimal.Decimal `gorm:"column:output_usd_per_1m"`
+	ImageUSD             decimal.Decimal `gorm:"column:image_usd"`                  // 每张图 USD（0007，0=非图像模型）
+	CachedInputUSDPer1M  decimal.Decimal `gorm:"column:cached_input_usd_per_1m"`    // 缓存命中输入价（0010，0=按 input 全价）
 	PerCallUSD           decimal.Decimal `gorm:"column:per_call_usd"`               // 按次固定价（0027，>0 时 chat/embeddings 忽略 token 按次收）
 	TTSPer1KChars        decimal.Decimal `gorm:"column:tts_usd_per_1k_chars"`       // TTS 每千字符 USD（0027）
 	TranscriptionPerCall decimal.Decimal `gorm:"column:transcription_usd_per_call"` // 转录每次固定价 USD（0027）
@@ -192,6 +192,14 @@ func PickChannelForAttempt(db *gorm.DB, model string, attempt int, exclude map[u
 	if err := db.Where("status = 1").Order("priority DESC, id").Find(&channels).Error; err != nil {
 		return nil, err
 	}
+	return pickFromSnapshot(channels, model, attempt, exclude, health)
+}
+
+// pickFromSnapshot：从内存中的 status=1 渠道快照按同款算法选路（WS-2 #1 读瓶颈优化）。
+// 与 PickChannelForAttempt 行为逐字等价，但输入已是内存 slice（不查 DB），供 relay 在 3 次
+// 重试循环外取一次快照、循环内复用——把每请求 1~3 次全表扫降为命中时 0 次。
+// 调用方只读 channels（exclude/健康分都走外部），绝不原地改快照元素。
+func pickFromSnapshot(channels []Channel, model string, attempt int, exclude map[uint64]bool, health func(uint64) float64) (*Channel, error) {
 	// 过滤：服务该模型且未被排除，按 priority 分层（保持降序）
 	var tiers [][]*Channel
 	var curPriority int

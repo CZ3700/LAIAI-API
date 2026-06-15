@@ -24,8 +24,10 @@ import (
 // M3 Console 落地后升级为正式 root RBAC；资金类操作的审计 = journal 本身（kind=grant 全留痕）。
 
 // resolveAdmin：解析「带有效身份」的访问者（RBAC，0020）。只解析身份与角色，不做门槛判定
-//  —— 门槛交给 adminRequired(min)，这样 min 参数对所有层级（support/admin/superadmin）都生效。
-//  优先级：1) X-Admin-Token 命中 → root 破玻璃（视同 superadmin）；2) Bearer session 有效且用户在职 → 该用户身份与角色。
+//
+//	—— 门槛交给 adminRequired(min)，这样 min 参数对所有层级（support/admin/superadmin）都生效。
+//	优先级：1) X-Admin-Token 命中 → root 破玻璃（视同 superadmin）；2) Bearer session 有效且用户在职 → 该用户身份与角色。
+//
 // 返回 (审计标签, 角色, userID, 是否有有效身份)。
 func (s *Server) resolveAdmin(c *gin.Context) (label, role string, uid uint64, ok bool) {
 	if len(s.adminToken) > 0 {
@@ -55,7 +57,8 @@ func (s *Server) resolveAdmin(c *gin.Context) (label, role string, uid uint64, o
 }
 
 // adminRequired：后台门禁，要求访问者角色 ≥ min。
-//   无有效身份 → 401；有身份但权限不足 → 403。通过后把身份写进 context（审计/二次校验用）。
+//
+//	无有效身份 → 401；有身份但权限不足 → 403。通过后把身份写进 context（审计/二次校验用）。
 func (s *Server) adminRequired(min string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		label, role, uid, ok := s.resolveAdmin(c)
@@ -187,16 +190,16 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 }
 
 type channelReq struct {
-	Name     string   `json:"name" binding:"required"`
-	Provider string   `json:"provider" binding:"required"`
-	BaseURL  string   `json:"base_url"` // 缺省取厂商档案默认端点（providers.go）
-	APIKey   string   `json:"api_key" binding:"required"`
-	Models   []string `json:"models" binding:"required"`
-	Weight   int      `json:"weight"`
-	Priority int      `json:"priority"`             // 大者先用；重试降层
-	MaxConcurrentTasks int `json:"max_concurrent_tasks"` // 任务并发闸，默认 3
-	ModelMapping map[string]string `json:"model_mapping"` // 对外名→上游名（可选）
-	Proxy        string `json:"proxy"`                 // 渠道级出网代理（0019，可选）
+	Name               string            `json:"name" binding:"required"`
+	Provider           string            `json:"provider" binding:"required"`
+	BaseURL            string            `json:"base_url"` // 缺省取厂商档案默认端点（providers.go）
+	APIKey             string            `json:"api_key" binding:"required"`
+	Models             []string          `json:"models" binding:"required"`
+	Weight             int               `json:"weight"`
+	Priority           int               `json:"priority"`             // 大者先用；重试降层
+	MaxConcurrentTasks int               `json:"max_concurrent_tasks"` // 任务并发闸，默认 3
+	ModelMapping       map[string]string `json:"model_mapping"`        // 对外名→上游名（可选）
+	Proxy              string            `json:"proxy"`                // 渠道级出网代理（0019，可选）
 }
 
 // marshalMapping：映射序列化为存储格式（空 map → 空串 = 不映射）。
@@ -209,6 +212,14 @@ func marshalMapping(m map[string]string) (string, bool) {
 		return "", false
 	}
 	return string(b), true
+}
+
+// invalidateCache：admin 写后失效 relay 热读缓存（本地 + 跨实例 Redis 广播）。
+// relay 缺失（keyring 未配的测试路径）时安全 no-op。WS-2 多实例一致性 + 单实例改配即时生效。
+func (s *Server) invalidateCache(kind, key string) {
+	if s.relay != nil {
+		s.relay.InvalidateCache(kind, key)
+	}
 }
 
 func (s *Server) adminCreateChannel(c *gin.Context) {
@@ -248,7 +259,7 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 	}
 	ch := &relay.Channel{
 		Name: req.Name, Provider: req.Provider,
-		BaseURL: strings.TrimRight(req.BaseURL, "/"),
+		BaseURL:       strings.TrimRight(req.BaseURL, "/"),
 		CredentialEnc: enc, Models: strings.Join(req.Models, ","),
 		Weight: weight, Priority: req.Priority,
 		MaxConcurrentTasks: maxTasks, StrictResponse: 1,
@@ -259,18 +270,19 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		return
 	}
 	s.writeAudit(c, "channel_create", strconv.FormatUint(ch.ID, 10), "created channel "+ch.Name+" ("+ch.Provider+")")
+	s.invalidateCache(relay.KindChannel, "")
 	c.JSON(http.StatusCreated, gin.H{"id": ch.ID, "name": ch.Name})
 }
 
 type updateChannelReq struct {
-	BaseURL  *string  `json:"base_url"`
-	APIKey   *string  `json:"api_key"` // 省略=不改凭证
-	Models   []string `json:"models"`
-	Weight   *int     `json:"weight"`
-	Priority *int     `json:"priority"`
-	StrictResponse *bool `json:"strict_response"`
-	ModelMapping *map[string]string `json:"model_mapping"` // 指针区分"不改"与"清空"
-	Proxy    *string  `json:"proxy"` // 指针区分"不改"与"清空代理"
+	BaseURL        *string            `json:"base_url"`
+	APIKey         *string            `json:"api_key"` // 省略=不改凭证
+	Models         []string           `json:"models"`
+	Weight         *int               `json:"weight"`
+	Priority       *int               `json:"priority"`
+	StrictResponse *bool              `json:"strict_response"`
+	ModelMapping   *map[string]string `json:"model_mapping"` // 指针区分"不改"与"清空"
+	Proxy          *string            `json:"proxy"`         // 指针区分"不改"与"清空代理"
 }
 
 // adminUpdateChannel：PUT /api/admin/channels/:id —— 编辑渠道（部署冒烟暴露的高频缺口）。
@@ -343,6 +355,7 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 		return
 	}
 	s.writeAudit(c, "channel_update", strconv.FormatUint(id, 10), "channel config updated")
+	s.invalidateCache(relay.KindChannel, "")
 	c.JSON(http.StatusOK, gin.H{"updated": id})
 }
 
@@ -374,7 +387,7 @@ func (s *Server) adminListChannels(c *gin.Context) {
 			"base_url": ch.BaseURL, "models": ch.Models, "model_count": modelCount,
 			"weight": ch.Weight, "priority": ch.Priority,
 			"strict_response": ch.EnforcesStrictResponse(),
-			"model_mapping": ch.ModelMapping, "calls": total, "status": ch.Status,
+			"model_mapping":   ch.ModelMapping, "calls": total, "status": ch.Status,
 			"success_rate": successRate, "avg_latency_ms": q.AvgDuration, "errors": q.Errors,
 			"proxy": ch.Proxy,
 		})
@@ -395,15 +408,16 @@ func (s *Server) adminDisableChannel(c *gin.Context) {
 		return
 	}
 	s.writeAudit(c, "channel_disable", strconv.FormatUint(id, 10), "channel disabled")
+	s.invalidateCache(relay.KindChannel, "")
 	c.JSON(http.StatusOK, gin.H{"disabled": id})
 }
 
 type priceReq struct {
-	Model          string `json:"model" binding:"required"`
-	InputUSDPer1M  string `json:"input_usd_per_1m" binding:"required"`
-	OutputUSDPer1M string `json:"output_usd_per_1m" binding:"required"`
-	ImageUSD       string `json:"image_usd"`              // 每张图 USD；图像模型必填，其他模型省略
-	CachedInputUSDPer1M string `json:"cached_input_usd_per_1m"` // 缓存命中输入价（0010，省略=按 input 全价）
+	Model                string `json:"model" binding:"required"`
+	InputUSDPer1M        string `json:"input_usd_per_1m" binding:"required"`
+	OutputUSDPer1M       string `json:"output_usd_per_1m" binding:"required"`
+	ImageUSD             string `json:"image_usd"`                  // 每张图 USD；图像模型必填，其他模型省略
+	CachedInputUSDPer1M  string `json:"cached_input_usd_per_1m"`    // 缓存命中输入价（0010，省略=按 input 全价）
 	PerCallUSD           string `json:"per_call_usd"`               // 按次固定价（0027，gap P2-F）
 	TTSPer1KChars        string `json:"tts_usd_per_1k_chars"`       // TTS 每千字符 USD（0027）
 	TranscriptionPerCall string `json:"transcription_usd_per_call"` // 转录每次固定价 USD（0027）
@@ -483,6 +497,7 @@ func (s *Server) adminUpsertPrice(c *gin.Context) {
 		return
 	}
 	s.writeAudit(c, "price_upsert", p.Model, "set price in="+req.InputUSDPer1M+" out="+req.OutputUSDPer1M+" /1M USD")
+	s.invalidateCache(relay.KindPrice, p.Model)
 	c.JSON(http.StatusOK, gin.H{"model": p.Model})
 }
 
@@ -707,13 +722,13 @@ func (s *Server) adminOverview(c *gin.Context) {
 		successRate = float64(succeeded) / float64(callsWindow)
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"window_days": windowDays,
-		"channels":    gin.H{"total": total, "active": active, "disabled": disabled, "auto_disabled": autoDisabled},
-		"calls_today": callsToday,
-		"calls_window": callsWindow,
-		"success_rate": successRate,
+		"window_days":    windowDays,
+		"channels":       gin.H{"total": total, "active": active, "disabled": disabled, "auto_disabled": autoDisabled},
+		"calls_today":    callsToday,
+		"calls_window":   callsWindow,
+		"success_rate":   successRate,
 		"revenue_window": revenue,
-		"top_models":    topModels,
+		"top_models":     topModels,
 		"channel_health": health,
 	})
 }
@@ -847,6 +862,7 @@ func (s *Server) adminUpsertGroupRatio(c *gin.Context) {
 		return
 	}
 	s.writeAudit(c, "group_ratio_set", g.Name, "ratio = "+req.Ratio)
+	s.invalidateCache(relay.KindRatio, "")
 	c.JSON(http.StatusOK, gin.H{"name": g.Name})
 }
 
@@ -862,6 +878,7 @@ func (s *Server) adminDeleteGroupRatio(c *gin.Context) {
 		return
 	}
 	s.writeAudit(c, "group_ratio_delete", name, "group ratio deleted")
+	s.invalidateCache(relay.KindRatio, "")
 	c.JSON(http.StatusOK, gin.H{"deleted": name})
 }
 
@@ -910,6 +927,7 @@ func (s *Server) adminUpsertModelGroupRatio(c *gin.Context) {
 		return
 	}
 	s.writeAudit(c, "model_group_ratio_set", req.GroupName+"/"+req.Model, "ratio = "+req.Ratio)
+	s.invalidateCache(relay.KindRatio, "")
 	c.JSON(http.StatusOK, gin.H{"group_name": req.GroupName, "model": req.Model})
 }
 
@@ -925,6 +943,7 @@ func (s *Server) adminDeleteModelGroupRatio(c *gin.Context) {
 		return
 	}
 	s.writeAudit(c, "model_group_ratio_delete", groupName+"/"+model, "deleted")
+	s.invalidateCache(relay.KindRatio, "")
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
 }
 
@@ -952,6 +971,7 @@ func (s *Server) adminSetOrgGroup(c *gin.Context) {
 		return
 	}
 	s.writeAudit(c, "org_group_set", strconv.FormatUint(id, 10), "group → "+req.Group)
+	s.invalidateCache(relay.KindRatio, "") // 改 org 分组影响该 org 所有 (org,model) 倍率
 	c.JSON(http.StatusOK, gin.H{"id": id, "group": req.Group})
 }
 
@@ -1032,7 +1052,7 @@ func (s *Server) adminListUsers(c *gin.Context) {
 		Email        string          `json:"email"`
 		DisplayName  string          `json:"display_name"`
 		Status       int8            `json:"status"`
-		Role         string          `json:"role"`           // 平台角色（0020 RBAC）
+		Role         string          `json:"role"` // 平台角色（0020 RBAC）
 		OrgID        uint64          `json:"org_id"`
 		Balance      decimal.Decimal `json:"balance"`
 		Group        string          `json:"group"`          // 个人组织计费分组（=层级/tier）

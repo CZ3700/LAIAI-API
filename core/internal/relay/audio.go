@@ -50,7 +50,6 @@ func audioUpstreamURL(ch *Channel, model, suffix string) (string, string, string
 // HandleAudioSpeech：POST /v1/audio/speech —— TTS。按输入字符数计价，响应为二进制音频透传。
 func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 	t0 := r.Now()
-	rdb := r.DB.WithContext(c.Request.Context())
 	key, inv, finish, ok := r.audioPreamble(c, t0)
 	if !ok {
 		return
@@ -79,7 +78,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 		return
 	}
 	inv.Model = req.Model
-	price, err := GetPrice(rdb, req.Model)
+	price, err := r.cachedPrice(req.Model)
 	if err != nil {
 		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", req.Model))
 		return
@@ -90,7 +89,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 	}
 
 	chars := int64(len([]rune(req.Input)))
-	groupRatio := EffectiveRatio(rdb, key.OrgID, req.Model)
+	groupRatio := r.cachedRatio(key.OrgID, req.Model)
 	cost := price.SpeechCost(chars).Mul(groupRatio) // TTS 确定性计价：字符数已知，hold=capture
 	hold, ok := r.audioHold(c, key, req.Model, cost, finish)
 	if !ok {
@@ -125,7 +124,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 		hr.Header.Set(ah, av+cred)
 		return hr, nil
 	}
-	resp, ferr := r.audioForward(c, rdb, inv, req.Model, hold, build, finish)
+	resp, ferr := r.audioForward(c, inv, req.Model, hold, build, finish)
 	if ferr {
 		return
 	}
@@ -150,7 +149,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 	c.Data(http.StatusOK, ct, raw)
 
 	r.audioSettle(c, key, req.Model, hold, cost, fmt.Sprintf("tts model=%s chars=%d ×%s", req.Model, chars, groupRatio))
-	quotaSettled = true // 预留即等于 cost（确定性计价），成功无需对账
+	quotaSettled = true      // 预留即等于 cost（确定性计价），成功无需对账
 	inv.PromptTokens = chars // 字符数记入 prompt 槽（语义：计价单位量）
 	inv.CostUSD = cost
 	finish(invocation.StatusSuccess, http.StatusOK, "")
@@ -166,7 +165,6 @@ func (r *Relay) HandleAudioTranslation(c *gin.Context) { r.sttHandler(c, "transl
 // sttHandler：STT 共用实现。multipart(file+model)，按次固定价（时长不可靠，按次最稳妥），响应透传。
 func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 	t0 := r.Now()
-	rdb := r.DB.WithContext(c.Request.Context())
 	key, inv, finish, ok := r.audioPreamble(c, t0)
 	if !ok {
 		return
@@ -193,7 +191,7 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 		return
 	}
 	inv.Model = model
-	price, err := GetPrice(rdb, model)
+	price, err := r.cachedPrice(model)
 	if err != nil {
 		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", model))
 		return
@@ -203,7 +201,7 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 		return
 	}
 
-	groupRatio := EffectiveRatio(rdb, key.OrgID, model)
+	groupRatio := r.cachedRatio(key.OrgID, model)
 	cost := price.TranscriptionPerCall.Mul(groupRatio) // 按次固定，hold=capture
 	hold, ok := r.audioHold(c, key, model, cost, finish)
 	if !ok {
@@ -239,7 +237,7 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 		hr.Header.Set(ah, av+cred)
 		return hr, nil
 	}
-	resp, ferr := r.audioForward(c, rdb, inv, model, hold, build, finish)
+	resp, ferr := r.audioForward(c, inv, model, hold, build, finish)
 	if ferr {
 		return
 	}
@@ -324,14 +322,18 @@ func (r *Relay) audioHold(c *gin.Context, key *identity.APIKey, model string, am
 
 // audioForward：换渠道重试转发（与 images 同款分类驱动）。返回成功的 *http.Response；
 // 第二返回值 true 表示已结束（已 release hold + 写响应），调用方应直接 return。
-func (r *Relay) audioForward(c *gin.Context, rdb *gorm.DB, inv *invocation.Invocation, model string, hold *ledger.Hold,
+func (r *Relay) audioForward(c *gin.Context, inv *invocation.Invocation, model string, hold *ledger.Hold,
 	build func(context.Context, *Channel, string) (*http.Request, error), finish func(string, int, string)) (*http.Response, bool) {
 	var resp *http.Response
 	exclude := map[uint64]bool{}
 	var lastStatus int
 	var lastBody []byte
+	channelSnap, snapErr := r.cachedChannels() // 取一次快照，3 次重试复用（WS-2）
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		ch, pickErr := PickChannelForAttempt(rdb, model, attempt, exclude, r.healthFactor)
+		if snapErr != nil {
+			break
+		}
+		ch, pickErr := pickFromSnapshot(channelSnap, model, attempt, exclude, r.healthFactor)
 		if pickErr != nil {
 			break
 		}
