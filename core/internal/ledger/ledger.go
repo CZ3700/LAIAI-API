@@ -15,9 +15,12 @@
 //   - Capture(actual>0)   写 1 条 KindCapture(delta=-actual)，改 posted_balance；并 -整笔 held。
 //   - Capture(actual==0)  不写 journal；只 -整笔 held（纯解冻，无消费）。
 //   - Release             不写 journal；只 -整笔 held。
+//
 // 由此得两条对账恒等式（CheckDrift 巡检；设计 §4.5）：
-//   (A) posted_balance == Σ journal.delta            （append-only，过账唯一来源）
-//   (B) held_amount    == Σ holds.amount WHERE status=Active （仅活跃冻结占用）
+//
+//	(A) posted_balance == Σ journal.delta            （append-only，过账唯一来源）
+//	(B) held_amount    == Σ holds.amount WHERE status=Active （仅活跃冻结占用）
+//
 // 任一不成立即资金漂移——只可能源于绕开本包写余额、或局部写入损坏，必须告警人工裁定。
 package ledger
 
@@ -156,17 +159,14 @@ func Post(tx *gorm.DB, in PostInput) (*JournalEntry, bool, error) {
 	case !errors.Is(err, gorm.ErrRecordNotFound):
 		return nil, false, err
 	}
-	acc, err := lockAccount(tx, in.AccountID)
-	if err != nil {
-		return nil, false, err
+	// 方案A：plain 读账户（不加 FOR UPDATE）算 balance_after 锚点。乐观模型下高并发跨事务
+	// 交错时 balance_after 是尽力快照（恒等式A: posted==Σjournal.delta 不依赖它，CheckDrift 仍精确）；
+	// 顺序场景（admin override 已持 LockAccount、settle 同事务内 overage）回读即精确。
+	acc := &Account{}
+	if err := tx.Select("posted_balance").First(acc, in.AccountID).Error; err != nil {
+		return nil, false, fmt.Errorf("ledger: account %d: %w", in.AccountID, err)
 	}
 	newBalance := acc.PostedBalance.Add(in.Delta)
-	if in.Delta.IsNegative() && !in.AllowNegative {
-		// 扣减不得击穿可用余额（held 部分已被预留，不可被直接 debit 挪用）
-		if newBalance.Sub(acc.HeldAmount).IsNegative() {
-			return nil, false, ErrInsufficientBalance
-		}
-	}
 	entry := &JournalEntry{
 		IdempotencyKey: in.IdempotencyKey,
 		AccountID:      in.AccountID,
@@ -177,6 +177,8 @@ func Post(tx *gorm.DB, in PostInput) (*JournalEntry, bool, error) {
 		RefID:          in.RefID,
 		Reason:         in.Reason,
 	}
+	// 先插 journal（UNIQUE(idempotency_key) 是并发幂等 tripwire），再条件过账：
+	// 只有赢得 INSERT 的事务才继续改余额，杜绝并发同键双重过账。
 	if err := tx.Create(entry).Error; err != nil {
 		if isDuplicate(err) {
 			prior, ferr := findEntryByIdem(tx, in.IdempotencyKey)
@@ -184,8 +186,24 @@ func Post(tx *gorm.DB, in PostInput) (*JournalEntry, bool, error) {
 		}
 		return nil, false, err
 	}
-	if err := setBalances(tx, acc.ID, newBalance, acc.HeldAmount); err != nil {
-		return nil, false, err
+	// 条件过账：posted += delta。debit 且不允许负 → 守卫 posted+delta-held>=0（held 已预留，
+	// 不可被 debit 挪用）；credit/grant/AllowNegative → 无守卫必成功。守卫把参数折进算术（见 applyBalanceDelta）。
+	var n int64
+	var derr error
+	if in.Delta.IsNegative() && !in.AllowNegative {
+		n, derr = applyBalanceDelta(tx, in.AccountID, in.Delta, decimal.Zero,
+			"ROUND(posted_balance + ? - held_amount, 8) >= 0", in.Delta)
+	} else {
+		n, derr = applyBalanceDelta(tx, in.AccountID, in.Delta, decimal.Zero, "")
+	}
+	if derr != nil {
+		return nil, false, derr
+	}
+	if n == 0 {
+		if in.Delta.IsNegative() && !in.AllowNegative {
+			return nil, false, ErrInsufficientBalance // debit 守卫未过 → 上层回滚撤销 journal
+		}
+		return nil, false, fmt.Errorf("ledger: post affected 0 rows on account %d", in.AccountID)
 	}
 	return entry, false, nil
 }
@@ -214,13 +232,10 @@ func CreateHold(tx *gorm.DB, in HoldInput) (*Hold, bool, error) {
 	case !errors.Is(err, gorm.ErrRecordNotFound):
 		return nil, false, err
 	}
-	acc, err := lockAccount(tx, in.AccountID)
-	if err != nil {
-		return nil, false, err
-	}
-	if acc.Available().LessThan(in.Amount) {
-		return nil, false, ErrInsufficientBalance
-	}
+	// 方案A（去 FOR UPDATE 行锁，乐观条件原子写）：先插 hold 行（UNIQUE(idempotency_key)
+	// 是并发幂等 tripwire，也是恒等式 B 的派生来源），再发条件冻结 UPDATE。
+	// 顺序理由：hold 行先落 → 并发同键重放在此处即被 UNIQUE 拦下，绝不会双重进入条件冻结；
+	// 若随后条件冻结失败（余额不足）返回 error → 同事务回滚把刚插的 hold 行一并撤销。
 	h := &Hold{
 		IdempotencyKey: in.IdempotencyKey,
 		AccountID:      in.AccountID,
@@ -237,8 +252,15 @@ func CreateHold(tx *gorm.DB, in HoldInput) (*Hold, bool, error) {
 		}
 		return nil, false, err
 	}
-	if err := setBalances(tx, acc.ID, acc.PostedBalance, acc.HeldAmount.Add(in.Amount)); err != nil {
+	// 条件冻结：held += amount，守卫 available(=posted-held) >= amount。
+	// 守卫把 amount 折进算术（- ? >= 0）而非直接比较（>= ?）——见 applyBalanceDelta 注释（SQLite 方言）。
+	n, err := applyBalanceDelta(tx, in.AccountID, decimal.Zero, in.Amount,
+		"ROUND(posted_balance - held_amount - ?, 8) >= 0", in.Amount)
+	if err != nil {
 		return nil, false, err
+	}
+	if n == 0 {
+		return nil, false, ErrInsufficientBalance // 余额不足 → 上层回滚，hold 行随之撤销
 	}
 	return h, false, nil
 }
@@ -259,20 +281,40 @@ func Capture(tx *gorm.DB, holdID uint64, actual decimal.Decimal, reason string) 
 	if actual.GreaterThan(h.Amount) {
 		return nil, ErrCaptureExceedsHold
 	}
-	acc, err := lockAccount(tx, h.AccountID)
+	// 方案A：状态机 CAS 先行（active→captured）作 capture 的并发幂等闸——只有一个事务能赢得
+	// 该转移，故后续余额写与 journal 插入无需账户行锁（去掉 lockAccount FOR UPDATE 热点）。
+	res := tx.Model(&Hold{}).Where("id = ? AND status = ?", h.ID, HoldActive).
+		Updates(map[string]any{"status": HoldCaptured, "captured_amount": actual})
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil, ErrHoldNotActive // 并发已抢走该 hold
+	}
+	// posted -= actual；held -= h.Amount（整笔 hold 解除，未用差额自动回到可用）。
+	// held 守卫 held-h.Amount>=0：把旧 setBalances 的 held 负值防御从「兜底」提为「强制前置守卫」。
+	n, err := applyBalanceDelta(tx, h.AccountID, actual.Neg(), h.Amount.Neg(),
+		"ROUND(held_amount - ?, 8) >= 0", h.Amount)
 	if err != nil {
 		return nil, err
 	}
-	newPosted := acc.PostedBalance.Sub(actual)
-	newHeld := acc.HeldAmount.Sub(h.Amount) // 整个 hold 解除，未用差额自动回到可用
+	if n == 0 {
+		return nil, fmt.Errorf("ledger: capture would drive held_amount negative on account %d (invariant violation)", h.AccountID)
+	}
 	var entry *JournalEntry
 	if actual.IsPositive() {
+		// 回读 posted 填 balance_after：本事务上一条 UPDATE 已持该账户行锁、并发写被挡到提交后，
+		// 故回读即结算后真实余额（精确）。绝不 UPDATE journal（红线4 append-only）。
+		posted, perr := readPosted(tx, h.AccountID)
+		if perr != nil {
+			return nil, perr
+		}
 		entry = &JournalEntry{
 			IdempotencyKey: fmt.Sprintf("capture:%d", h.ID), // hold 一次性，天然唯一
 			AccountID:      h.AccountID,
 			Kind:           KindCapture,
 			Delta:          actual.Neg(),
-			BalanceAfter:   newPosted,
+			BalanceAfter:   posted,
 			HoldID:         &h.ID,
 			RefType:        h.RefType,
 			RefID:          h.RefID,
@@ -281,13 +323,6 @@ func Capture(tx *gorm.DB, holdID uint64, actual decimal.Decimal, reason string) 
 		if err := tx.Create(entry).Error; err != nil {
 			return nil, err
 		}
-	}
-	if err := tx.Model(&Hold{}).Where("id = ? AND status = ?", h.ID, HoldActive).
-		Updates(map[string]any{"status": HoldCaptured, "captured_amount": actual}).Error; err != nil {
-		return nil, err
-	}
-	if err := setBalances(tx, acc.ID, newPosted, newHeld); err != nil {
-		return nil, err
 	}
 	return entry, nil
 }
@@ -336,15 +371,24 @@ func Release(tx *gorm.DB, holdID uint64) error {
 	if h.Status != HoldActive {
 		return ErrHoldNotActive
 	}
-	acc, err := lockAccount(tx, h.AccountID)
+	// 方案A：状态机 CAS 先行（active→released）作幂等闸，再条件解冻 held（去账户行锁）。
+	res := tx.Model(&Hold{}).Where("id = ? AND status = ?", h.ID, HoldActive).
+		Update("status", HoldReleased)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrHoldNotActive // 并发已结算
+	}
+	n, err := applyBalanceDelta(tx, h.AccountID, decimal.Zero, h.Amount.Neg(),
+		"ROUND(held_amount - ?, 8) >= 0", h.Amount)
 	if err != nil {
 		return err
 	}
-	if err := tx.Model(&Hold{}).Where("id = ? AND status = ?", h.ID, HoldActive).
-		Update("status", HoldReleased).Error; err != nil {
-		return err
+	if n == 0 {
+		return fmt.Errorf("ledger: release would drive held_amount negative on account %d (invariant violation)", h.AccountID)
 	}
-	return setBalances(tx, acc.ID, acc.PostedBalance, acc.HeldAmount.Sub(h.Amount))
+	return nil
 }
 
 // SweepStuckHolds 释放超时仍 Active 的 hold（审查 H-1）。
@@ -477,13 +521,46 @@ func lockHold(tx *gorm.DB, id uint64) (*Hold, error) {
 	return h, nil
 }
 
-// setBalances 是全代码库唯一允许写余额列的位置（红线 1）。
-func setBalances(tx *gorm.DB, accID uint64, posted, held decimal.Decimal) error {
-	if held.IsNegative() {
-		return fmt.Errorf("ledger: invariant violation: held_amount would go negative on account %d", accID)
+// applyBalanceDelta 是全代码库唯一允许写余额列的位置（红线 1 的等价路径）。
+// 方案A 核心：单条条件增量 UPDATE——posted/held 用 gorm.Expr 自增自减（绝不全量覆盖，杜绝
+// 读改写 TOCTOU）；guard 为附加 WHERE 守卫（守住余额不变量），空串=无附加守卫。
+// 返回 rowsAffected：0 表示守卫未通过（余额不足/不变量将被破坏），由调用方据此判定。
+//
+// 🚨 SQLite 方言铁律（已实测）：guard 里的 decimal 参数必须折进算术表达式（如 "... - ? >= 0"）
+// 而非直接比较（"... >= ?"）。因 shopspring decimal 绑定为字符串(TEXT)，SQLite 下
+// numeric >= text 按存储类排序恒为假（numeric < text）→ RowsAffected 永远 0；把 ? 折进算术
+// 会强制 text→numeric 数值化，MySQL/SQLite 均得正确比较。直接比较形式在 MySQL 工作、SQLite 失效，
+// 是最隐蔽的护栏盲区，绝不可用。
+func applyBalanceDelta(tx *gorm.DB, accID uint64, postedDelta, heldDelta decimal.Decimal, guard string, guardArgs ...any) (int64, error) {
+	// ROUND(..,8) 把结果钳到货币精度（DECIMAL(20,8) 列契约）：MySQL 上对精确 DECIMAL 是恒等，
+	// SQLite 上把 NUMERIC 列的 REAL(float64) 运算噪声（如 9.995→9.995000000000001）钳回 8 位，
+	// 两方言存储口径一致（实为修掉旧 setBalances 时代 SQLite 存全精度、MySQL 存 8 位的隐性分叉）。
+	updates := map[string]any{}
+	if !postedDelta.IsZero() {
+		updates["posted_balance"] = gorm.Expr("ROUND(posted_balance + ?, 8)", postedDelta)
 	}
-	return tx.Model(&Account{}).Where("id = ?", accID).
-		Updates(map[string]any{"posted_balance": posted, "held_amount": held}).Error
+	if !heldDelta.IsZero() {
+		updates["held_amount"] = gorm.Expr("ROUND(held_amount + ?, 8)", heldDelta)
+	}
+	if len(updates) == 0 {
+		return 1, nil // 无余额变化（如 actual==0 的 capture 不动 posted）：视为成功 noop
+	}
+	q := tx.Model(&Account{}).Where("id = ?", accID)
+	if guard != "" {
+		q = q.Where(guard, guardArgs...)
+	}
+	res := q.Updates(updates)
+	return res.RowsAffected, res.Error
+}
+
+// readPosted 回读账户 posted_balance（填 capture 的 balance_after 锚点）。
+// 调用方应在已对该账户行发过写（持行锁）的事务内调用，回读即结算后真实余额。
+func readPosted(tx *gorm.DB, accID uint64) (decimal.Decimal, error) {
+	acc := &Account{}
+	if err := tx.Select("posted_balance").First(acc, accID).Error; err != nil {
+		return decimal.Zero, fmt.Errorf("ledger: account %d: %w", accID, err)
+	}
+	return acc.PostedBalance, nil
 }
 
 func findEntryByIdem(tx *gorm.DB, key string) (*JournalEntry, error) {
