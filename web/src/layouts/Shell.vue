@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useAuth } from '@/stores/auth'
 import ThemeLocale from '@/components/ThemeLocale.vue'
 import OrgSwitcher from '@/components/OrgSwitcher.vue'
+import BrandMark from '@/components/BrandMark.vue'
 
 const { t } = useI18n()
 const auth = useAuth()
@@ -50,40 +51,43 @@ onMounted(() => { void auth.fetchMe() })
 </script>
 
 <template>
-  <div class="min-h-screen flex">
-    <aside class="w-60 shrink-0 border-r border-line/60 flex flex-col backdrop-blur-xl"
-      style="background: rgb(var(--c-glass) / 0.5)">
-      <!-- 品牌：点击回公开首页 -->
+  <div class="app-shell min-h-screen bg-bg text-ink lg:flex">
+    <header class="app-mobile-header sticky top-0 z-40 flex items-center gap-3 border-b border-line bg-panel/90 px-4 py-3 backdrop-blur lg:hidden">
       <router-link
         to="/"
-        class="group flex items-center gap-2.5 px-5 pt-5 pb-4 transition-opacity hover:opacity-80"
+        class="group flex items-center gap-2.5 transition-opacity hover:opacity-80"
         :title="t('nav.home')"
       >
-        <div
-          class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-sm font-bold text-white transition-transform group-hover:scale-105"
-          style="background: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)))"
-          aria-hidden="true"
-        >
-          L
-        </div>
-        <span class="text-lg font-semibold tracking-tight">LAIAI</span>
-        <svg class="ml-auto h-4 w-4 text-muted opacity-0 transition-opacity group-hover:opacity-100" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M9 6l6 6-6 6" />
-        </svg>
+        <BrandMark size="sm" />
       </router-link>
+      <div class="ml-auto flex items-center gap-2">
+        <ThemeLocale />
+        <button class="btn-ghost !min-h-0 !px-3 !py-1.5 text-xs" @click="auth.logout()">{{ t('nav.logout') }}</button>
+      </div>
+    </header>
+
+    <aside class="app-sidebar hidden h-screen w-[18rem] shrink-0 border-r border-line bg-panel/82 lg:sticky lg:top-0 lg:flex lg:flex-col">
+      <router-link
+        to="/"
+        class="group flex items-center gap-2.5 px-5 py-5 transition-opacity hover:opacity-85"
+        :title="t('nav.home')"
+      >
+        <BrandMark size="md" :subtitle="t('surface.brandSubtitle')" />
+      </router-link>
+
       <div class="px-3 pb-3">
         <OrgSwitcher />
       </div>
-      <nav class="flex-1 overflow-y-auto px-3 pb-2 space-y-4">
+
+      <nav class="flex-1 overflow-y-auto px-3 pb-4 space-y-5">
         <div v-for="(sec, si) in visibleSections" :key="si">
-          <p class="px-3 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted/70">{{ sec.title() }}</p>
-          <div class="space-y-0.5">
+          <p class="app-nav-label px-3 pb-1.5 pt-1 text-[10px] font-semibold uppercase text-muted/70">{{ sec.title() }}</p>
+          <div class="space-y-1">
             <router-link
               v-for="item in sec.items"
               :key="item.to"
               :to="item.to"
-              class="group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted
-                transition-colors hover:text-ink hover:bg-elev"
+              class="app-nav-item group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-elev/80 hover:text-ink"
               :active-class="item.to === '/app' ? '' : ACTIVE"
               :exact-active-class="ACTIVE"
             >
@@ -99,10 +103,11 @@ onMounted(() => { void auth.fetchMe() })
           </div>
         </div>
       </nav>
-      <div class="p-3 border-t border-line space-y-2.5">
+
+      <div class="app-sidebar-footer border-t border-line p-3 space-y-2.5">
         <router-link
           to="/app/settings"
-          class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted transition-colors hover:bg-elev hover:text-ink"
+          class="flex items-center gap-2 rounded-lg px-2 py-2 text-xs text-muted transition-colors hover:bg-elev hover:text-ink"
           active-class="!text-ink bg-elev"
           :title="auth.email"
         >
@@ -115,12 +120,39 @@ onMounted(() => { void auth.fetchMe() })
         <button class="btn-ghost w-full !py-1.5 text-xs" @click="auth.logout()">{{ t('nav.logout') }}</button>
       </div>
     </aside>
-    <main class="flex-1 min-w-0 p-8">
+
+    <main class="app-main min-w-0 flex-1">
+      <div class="mx-auto w-full max-w-[1480px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
+        <div class="app-topbar mb-6 hidden items-center justify-between gap-4 lg:flex">
+          <div>
+            <p class="text-xs font-medium uppercase text-muted/70">{{ t('nav.console') }}</p>
+            <p class="mt-1 text-sm text-muted">{{ t('surface.consoleSubtitle') }}</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <router-link to="/app/playground" class="btn-ghost !py-1.5 text-xs">{{ t('nav.playground') }}</router-link>
+            <router-link to="/app/keys" class="btn-primary !py-1.5 text-xs">{{ t('keys.create') }}</router-link>
+          </div>
+        </div>
+        <nav class="app-mobile-tabs mb-5 flex min-w-0 max-w-full gap-2 overflow-x-auto pb-1 lg:hidden" aria-label="Mobile navigation">
+          <template v-for="sec in visibleSections" :key="sec.title()">
+            <router-link
+              v-for="item in sec.items"
+              :key="item.to"
+              :to="item.to"
+              class="shrink-0 rounded-lg border border-line bg-panel px-3 py-2 text-sm text-muted"
+              :active-class="item.to === '/app' ? '' : ACTIVE"
+              :exact-active-class="ACTIVE"
+            >
+              {{ item.label() }}
+            </router-link>
+          </template>
+        </nav>
       <router-view v-slot="{ Component }">
         <transition name="page" mode="out-in">
           <component :is="Component" :key="$route.path" />
         </transition>
       </router-view>
+      </div>
     </main>
   </div>
 </template>
@@ -130,12 +162,12 @@ onMounted(() => { void auth.fetchMe() })
 .nav-active::before {
   content: '';
   position: absolute;
-  left: -12px;
+  left: -13px;
   top: 50%;
   transform: translateY(-50%);
-  height: 18px;
-  width: 3px;
-  border-radius: 3px;
-  background: linear-gradient(180deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)));
+  height: 20px;
+  width: 2px;
+  border-radius: 2px;
+  background: rgb(var(--c-accent));
 }
 </style>

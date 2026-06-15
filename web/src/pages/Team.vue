@@ -85,18 +85,23 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="max-w-3xl space-y-6">
-    <h1 class="text-2xl font-semibold tracking-tight">{{ t('team.title') }}</h1>
+  <div class="app-page">
+    <div class="app-page-header">
+      <div>
+        <p class="app-eyebrow">{{ t('surface.teamEyebrow') }}</p>
+        <h1 class="app-page-title">{{ t('team.title') }}</h1>
+        <p class="app-page-subtitle">{{ t('team.addHint') }}</p>
+      </div>
+    </div>
 
     <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
-    <p v-if="loading" class="text-sm text-muted">{{ t('common.loading') }}</p>
+    <div v-if="loading" class="app-panel p-5 text-sm text-muted">{{ t('common.loading') }}</div>
 
     <template v-else>
-      <form v-if="canManage" class="card p-5 flex items-end gap-3" @submit.prevent="addMember">
+      <form v-if="canManage" class="app-panel grid gap-3 p-5 md:grid-cols-[1fr_auto_auto] md:items-end" @submit.prevent="addMember">
         <div class="flex-1">
           <label class="label" for="memail">{{ t('team.email') }}</label>
           <input id="memail" v-model="addEmail" class="input" type="email" required />
-          <p class="mt-1 text-xs text-muted">{{ t('team.addHint') }}</p>
         </div>
         <div>
           <label class="label" for="mrole">{{ t('team.role') }}</label>
@@ -106,10 +111,10 @@ onMounted(load)
             <option value="billing">{{ t('team.roleBilling') }}</option>
           </select>
         </div>
-        <button class="btn-primary mb-5" :disabled="adding">{{ t('team.add') }}</button>
+        <button class="btn-primary" :disabled="adding">{{ t('team.add') }}</button>
       </form>
 
-      <div class="card overflow-hidden">
+      <div class="data-table-wrap">
         <table class="table w-full text-sm">
           <thead>
             <tr class="border-b border-line text-left text-muted">

@@ -59,14 +59,19 @@ function compLabel(key: string): string {
 </script>
 
 <template>
-  <div class="mx-auto max-w-2xl px-4 py-16">
-    <h1 class="text-2xl font-semibold text-ink">{{ t('status.title') }}</h1>
+  <div class="mx-auto max-w-3xl px-4 py-16">
+    <div class="app-page-header">
+      <div>
+        <p class="app-eyebrow">{{ t('surface.statusEyebrow') }}</p>
+        <h1 class="app-page-title">{{ t('status.title') }}</h1>
+      </div>
+    </div>
 
     <div v-if="loading" class="mt-8 text-muted">{{ t('common.loading') }}</div>
 
     <template v-else>
       <!-- 整体状态横幅 -->
-      <div class="mt-6 flex items-center gap-3 rounded-xl border border-line bg-panel px-5 py-4">
+      <div class="app-panel mt-6 flex items-center gap-3 px-5 py-4">
         <span class="relative flex h-3 w-3">
           <span
             class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60"
@@ -80,7 +85,7 @@ function compLabel(key: string): string {
       </div>
 
       <!-- 组件列表 -->
-      <div v-if="!failed && data" class="mt-6 divide-y divide-line rounded-xl border border-line bg-panel">
+      <div v-if="!failed && data" class="app-panel mt-6 divide-y divide-line">
         <div
           v-for="c in data.components"
           :key="c.key"

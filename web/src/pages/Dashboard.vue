@@ -132,25 +132,41 @@ onBeforeUnmount(() => clearInterval(perfTimer))
 </script>
 
 <template>
-  <div class="space-y-6">
-    <h1 class="text-2xl font-semibold tracking-tight">
-      👋 {{ t('dashboard.greeting') }}, <span class="text-accent">{{ userName }}</span>
-    </h1>
-
-    <!-- 主统计：余额 / 调用 / token / 费用，每张带 sparkline -->
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <div class="enter card relative overflow-hidden p-5" style="animation-delay: 0ms">
-        <div class="flex items-start justify-between">
+  <div class="app-page">
+    <section class="grid gap-4 lg:grid-cols-[1fr_24rem]">
+      <div class="console-hero p-5 sm:p-6">
+        <p class="text-sm text-muted">{{ t('dashboard.greeting') }}, {{ userName }}</p>
+        <div class="mt-3 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 class="app-page-title">{{ t('nav.dashboard') }}</h1>
+            <p class="mt-2 max-w-2xl text-sm leading-6 text-muted">{{ t('surface.dashboardSubtitle') }}</p>
+          </div>
+          <router-link to="/app/playground" class="btn-primary">{{ t('nav.playground') }}</router-link>
+        </div>
+      </div>
+      <div class="app-panel-strong p-5">
+        <div class="flex items-start justify-between gap-3">
           <div>
             <p class="text-xs text-muted">{{ t('dashboard.balance') }}</p>
-            <p class="mt-1 text-2xl font-semibold font-mono">${{ balance }}</p>
+            <p class="mt-1 font-mono text-3xl font-semibold">${{ balance }}</p>
           </div>
-          <router-link to="/app/wallet" class="badge-ok cursor-pointer">{{ t('wallet.topup') }}</router-link>
+          <router-link to="/app/wallet" class="btn-ghost !min-h-0 !px-3 !py-1.5 text-xs">{{ t('wallet.topup') }}</router-link>
         </div>
-        <p class="mt-2 text-xs text-muted">{{ t('dashboard.histSpend') }}: ${{ totals.cost.toFixed(2) }}</p>
+        <div class="mt-4 grid grid-cols-2 gap-3 text-xs">
+          <div class="soft-panel p-3">
+            <p class="text-muted">{{ t('wallet.held') }}</p>
+            <p class="mt-1 font-mono text-ink">${{ held }}</p>
+          </div>
+          <div class="soft-panel p-3">
+            <p class="text-muted">{{ t('dashboard.histSpend') }}</p>
+            <p class="mt-1 font-mono text-ink">${{ totals.cost.toFixed(2) }}</p>
+          </div>
+        </div>
       </div>
+    </section>
 
-      <div class="enter card p-5" style="animation-delay: 70ms">
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div class="enter metric-card" style="animation-delay: 0ms">
         <div class="flex items-start justify-between">
           <div>
             <p class="text-xs text-muted">{{ t('dashboard.todayCalls') }}</p>
@@ -161,7 +177,7 @@ onBeforeUnmount(() => clearInterval(perfTimer))
         <p class="mt-2 text-xs text-muted">{{ t('admin.ovWindowCalls', { n: totals.calls, days: summaryDays }) }}</p>
       </div>
 
-      <div class="enter card p-5" style="animation-delay: 140ms">
+      <div class="enter metric-card" style="animation-delay: 70ms">
         <div class="flex items-start justify-between">
           <div>
             <p class="text-xs text-muted">{{ t('usage.sumCost', { days: summaryDays }) }}</p>
@@ -174,7 +190,7 @@ onBeforeUnmount(() => clearInterval(perfTimer))
         </p>
       </div>
 
-      <div class="enter card p-5" style="animation-delay: 210ms">
+      <div class="enter metric-card" style="animation-delay: 140ms">
         <div class="flex items-start justify-between">
           <div>
             <p class="text-xs text-muted">{{ t('dashboard.tokens') }}</p>
@@ -182,18 +198,31 @@ onBeforeUnmount(() => clearInterval(perfTimer))
           </div>
           <Sparkline :data="series.tokens" />
         </div>
+        <p class="mt-2 text-xs text-muted">{{ fmtTokens(totals.inTok) }} in / {{ fmtTokens(totals.outTok) }} out</p>
+      </div>
+
+      <div class="enter metric-card" style="animation-delay: 210ms">
+        <div class="flex items-start justify-between">
+          <div>
+            <p class="text-xs text-muted">{{ t('surface.dashboardThroughput') }}</p>
+            <p class="mt-1 text-2xl font-semibold font-mono">{{ perf.rpm }} RPM</p>
+          </div>
+          <span class="badge-muted">15s</span>
+        </div>
         <div class="mt-2 flex gap-4 text-xs text-muted">
-          <span>RPM <span class="font-mono text-ink">{{ perf.rpm }}</span></span>
           <span>TPM <span class="font-mono text-ink">{{ fmtTokens(perf.tpm) }}</span></span>
         </div>
       </div>
     </div>
 
     <!-- 模型数据分析：多视图 -->
-    <div class="card p-5">
+    <div class="app-panel p-5">
       <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <h2 class="font-semibold">{{ t('dashboard.modelAnalysis') }}</h2>
-        <div class="flex gap-1 rounded-lg bg-elev p-1">
+        <div>
+          <h2 class="font-semibold">{{ t('dashboard.modelAnalysis') }}</h2>
+          <p class="mt-1 text-xs text-muted">{{ t('surface.dashboardModelHint') }}</p>
+        </div>
+        <div class="flex gap-1 rounded-lg border border-line bg-elev/45 p-1">
           <button
             v-for="v in modelViews"
             :key="v.key"
@@ -238,7 +267,7 @@ onBeforeUnmount(() => clearInterval(perfTimer))
     <div class="grid gap-6 lg:grid-cols-2">
       <div class="space-y-3">
         <h2 class="font-semibold">{{ t('dashboard.byModel') }}</h2>
-        <div class="card overflow-hidden">
+      <div class="data-table-wrap">
           <table class="table w-full text-sm">
             <thead>
               <tr class="border-b border-line text-left text-muted">
@@ -268,7 +297,7 @@ onBeforeUnmount(() => clearInterval(perfTimer))
           <h2 class="font-semibold">{{ t('dashboard.recent') }}</h2>
           <router-link class="text-sm text-accent hover:underline" to="/app/usage">{{ t('usage.title') }} →</router-link>
         </div>
-        <div class="card overflow-x-auto">
+        <div class="data-table-wrap">
           <table class="table w-full text-sm whitespace-nowrap">
             <thead>
               <tr class="border-b border-line text-left text-muted">

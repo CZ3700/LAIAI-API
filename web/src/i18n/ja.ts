@@ -1,4 +1,4 @@
-import type { Messages } from './en'
+import en, { type Messages } from './en'
 
 export default {
   common: {
@@ -52,6 +52,7 @@ export default {
     theme: 'テーマ切替',
     language: '言語',
   },
+  surface: en.surface,
   legal: {
     terms: '利用規約',
     privacy: 'プライバシー',
@@ -137,6 +138,7 @@ export default {
     modality: 'モダリティ',
     modChat: 'チャット',
     modImage: '画像',
+    modVideo: '動画',
     modEmbed: '埋め込み',
     openPlayground: 'プレイグラウンドで開く',
   },  play: {
@@ -156,9 +158,9 @@ export default {
     inputPlaceholder: 'メッセージを入力…',
     send: '送信',
     stop: '停止',
-    noReply: '上流からの応答が空です —— チャネル/モデルの到達性と API キーの権限を確認してください。',
-    nonChatModel: 'これは {category} モデルです —— プレイグラウンドはテキスト/チャットモデルのみ対応。API から直接呼び出してください。',
     usage: '使用量：入力 {input} / 出力 {output} トークン',
+    noReply: "上流からの応答が空です —— チャネル/モデルの到達性と API キーの権限を確認してください。",
+    nonChatModel: "これは {category} モデルです —— プレイグラウンドはテキスト/チャットモデルのみ対応。API から直接呼び出してください。",
   },  usage: {
     title: '使用量',
     time: '時刻',
@@ -271,7 +273,7 @@ export default {
     f_billing_t: '透明な課金',
     f_billing_d: 'hold→capture で実使用量に従って計量。想定外の請求なし、完全な呼び出しログ。',
     f_global_t: '東西を繋ぐ',
-    f_global_d: 'Seedance、Doubao、Qwen、GLM を OpenAI、Anthropic、Gemini と並べて。',
+    f_global_d: 'Seedance、DeepSeek、Qwen、GLM、MiniMax を OpenAI、Anthropic、Gemini と並べて。',
     codeTitle: 'そのまま使える OpenAI 互換',
     ctaTitle: '数分で開発を開始',
     ctaSub: 'アカウントを作成し、キーを入れ、一つのエンドポイントから任意のモデルを呼び出しましょう。',
@@ -332,6 +334,7 @@ export default {
     tokenHint: 'X-Admin-Token として送信。このブラウザタブにのみ保存されます。',
     unlock: 'ロック解除',
     clear: 'クリア',
+    overview: '概要',
     channels: 'チャネル',
     analytics: '運用分析',
     health: 'チャネル健全性',

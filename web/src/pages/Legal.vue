@@ -28,10 +28,15 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="mx-auto max-w-3xl px-6 py-12">
-    <h1 class="text-2xl font-semibold tracking-tight">{{ title }}</h1>
-    <div v-if="loaded" class="mt-6">
-      <p v-if="body" class="whitespace-pre-wrap text-sm leading-relaxed text-muted">{{ body }}</p>
+  <div class="mx-auto max-w-4xl px-4 py-14 sm:px-6 lg:px-8">
+    <div class="app-page-header">
+      <div>
+        <p class="app-eyebrow">{{ t('surface.legalEyebrow') }}</p>
+        <h1 class="app-page-title">{{ title }}</h1>
+      </div>
+    </div>
+    <div v-if="loaded" class="app-panel mt-8 p-6 sm:p-8">
+      <p v-if="body" class="whitespace-pre-wrap text-sm leading-7 text-muted">{{ body }}</p>
       <p v-else class="text-sm text-muted">{{ t('legal.empty') }}</p>
     </div>
   </div>

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test:models": "node --test src/lib/modelCatalog.test.mjs",
     "check:i18n": "node scripts/check-i18n.mjs",
     "build": "node scripts/check-i18n.mjs && vue-tsc -b && vite build",
     "typecheck": "vue-tsc -b",

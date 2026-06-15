@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useAuth } from '@/stores/auth'
 import { api } from '@/lib/api'
 import ThemeLocale from '@/components/ThemeLocale.vue'
+import BrandMark from '@/components/BrandMark.vue'
 
 const { t } = useI18n()
 const auth = useAuth()
@@ -40,37 +41,30 @@ const links = [
 </script>
 
 <template>
-  <div class="min-h-screen flex flex-col">
-    <header class="sticky top-0 z-40 border-b border-line bg-bg/80 backdrop-blur">
-      <div class="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3.5">
+  <div class="min-h-screen flex flex-col bg-bg text-ink">
+    <header class="sticky top-0 z-40 border-b border-line bg-bg/88 backdrop-blur">
+      <div class="public-header-inner mx-auto flex max-w-7xl items-center gap-6 px-4 py-3.5 sm:px-6 lg:px-8">
         <router-link to="/" class="flex items-center gap-2.5">
-          <div
-            class="grid h-8 w-8 place-items-center rounded-lg text-sm font-bold text-white"
-            style="background: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)))"
-            aria-hidden="true"
-          >
-            L
-          </div>
-          <span class="text-lg font-semibold tracking-tight">LAIAI</span>
+          <BrandMark size="sm" />
         </router-link>
         <nav class="hidden gap-1 sm:flex">
           <router-link
             v-for="l in links"
             :key="l.to"
             :to="l.to"
-            class="rounded-lg px-3 py-1.5 text-sm text-muted transition-colors hover:bg-elev hover:text-ink"
+            class="rounded-lg px-3 py-1.5 text-sm text-muted transition-colors hover:bg-elev/75 hover:text-ink"
             active-class="!text-ink"
           >
             {{ l.label() }}
           </router-link>
         </nav>
-        <div class="ml-auto flex items-center gap-2">
+        <div class="public-header-actions ml-auto flex items-center gap-2">
           <ThemeLocale />
           <router-link v-if="auth.isAuthed" to="/app" class="btn-primary !py-1.5 text-sm">
             {{ t('nav.console') }}
           </router-link>
           <template v-else>
-            <router-link to="/login" class="btn-ghost !py-1.5 text-sm">{{ t('auth.signin') }}</router-link>
+            <router-link to="/login" class="public-login btn-ghost !py-1.5 text-sm">{{ t('auth.signin') }}</router-link>
             <router-link to="/register" class="btn-primary !py-1.5 text-sm">{{ t('auth.signup') }}</router-link>
           </template>
         </div>
@@ -91,9 +85,12 @@ const links = [
     </main>
 
     <footer class="border-t border-line">
-      <div class="mx-auto max-w-6xl space-y-3 px-6 py-8">
+      <div class="mx-auto max-w-7xl space-y-3 px-4 py-8 sm:px-6 lg:px-8">
         <div class="flex flex-wrap items-center justify-between gap-4 text-sm text-muted">
-          <span>© {{ siteName }}</span>
+          <div class="flex items-center gap-3">
+            <BrandMark size="sm" />
+            <span>© {{ siteName }}</span>
+          </div>
           <div class="flex flex-wrap gap-x-4 gap-y-2">
             <router-link class="hover:text-ink" to="/models">{{ t('nav.models') }}</router-link>
             <router-link class="hover:text-ink" to="/rankings">{{ t('nav.rankings') }}</router-link>

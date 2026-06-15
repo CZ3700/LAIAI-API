@@ -1,4 +1,4 @@
-import type { Messages } from './en'
+import en, { type Messages } from './en'
 
 export default {
   common: {
@@ -52,6 +52,7 @@ export default {
     theme: 'Tukar tema',
     language: 'Bahasa',
   },
+  surface: en.surface,
   legal: {
     terms: 'Terma',
     privacy: 'Privasi',
@@ -138,6 +139,7 @@ export default {
     modality: 'Modaliti',
     modChat: 'Sembang',
     modImage: 'Imej',
+    modVideo: 'Video',
     modEmbed: 'Embedding',
     openPlayground: 'Buka dalam playground',
   },  play: {
@@ -157,9 +159,9 @@ export default {
     inputPlaceholder: 'Taip mesej…',
     send: 'Hantar',
     stop: 'Henti',
-    noReply: 'Huluan tidak mengembalikan kandungan — semak saluran/model boleh dicapai dan kunci API mempunyai akses.',
-    nonChatModel: 'Ini model {category} — playground hanya menyokong model teks/chat. Panggil terus melalui API.',
     usage: 'Penggunaan: {input} masuk / {output} keluar token',
+    noReply: "Huluan tidak mengembalikan kandungan — semak saluran/model boleh dicapai dan kunci API mempunyai akses.",
+    nonChatModel: "Ini model {category} — playground hanya menyokong model teks/chat. Panggil terus melalui API.",
   },  usage: {
     title: 'Penggunaan',
     time: 'Masa',
@@ -272,7 +274,7 @@ export default {
     f_billing_t: 'Pengebilan telus',
     f_billing_d: 'Hold-then-capture bermeter mengikut penggunaan sebenar. Tiada caj mengejut, log panggilan penuh.',
     f_global_t: 'Timur bertemu Barat',
-    f_global_d: 'Seedance, Doubao, Qwen, GLM bersama OpenAI, Anthropic, Gemini.',
+    f_global_d: 'Seedance, DeepSeek, Qwen, GLM, MiniMax bersama OpenAI, Anthropic, Gemini.',
     codeTitle: 'Serasi OpenAI, terus pakai',
     ctaTitle: 'Mula membina dalam beberapa minit',
     ctaSub: 'Cipta akaun, masukkan kunci, dan panggil mana-mana model melalui satu endpoint.',
@@ -333,6 +335,7 @@ export default {
     tokenHint: 'Dihantar sebagai X-Admin-Token. Disimpan dalam tab pelayar ini sahaja.',
     unlock: 'Buka kunci',
     clear: 'Kosongkan',
+    overview: 'Gambaran keseluruhan',
     channels: 'Saluran',
     analytics: 'Analitik',
     health: 'Kesihatan',

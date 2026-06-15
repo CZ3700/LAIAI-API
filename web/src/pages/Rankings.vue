@@ -32,9 +32,14 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="mx-auto max-w-4xl px-6 py-12">
-    <h1 class="text-3xl font-bold tracking-tight">{{ t('rankings.title') }}</h1>
-    <p class="mt-3 text-muted">{{ t('rankings.lead') }}</p>
+  <div class="mx-auto max-w-5xl px-4 py-14 sm:px-6 lg:px-8">
+    <div class="app-page-header">
+      <div>
+        <p class="app-eyebrow">{{ t('surface.rankingsEyebrow') }}</p>
+        <h1 class="app-page-title">{{ t('rankings.title') }}</h1>
+        <p class="app-page-subtitle">{{ t('rankings.lead') }}</p>
+      </div>
+    </div>
 
     <div v-if="loading" class="mt-10 space-y-3">
       <div v-for="i in 8" :key="i" class="skeleton h-8"></div>
@@ -44,7 +49,7 @@ onMounted(async () => {
       <!-- 模型排行 -->
       <section class="mt-10">
         <h2 class="mb-4 text-xl font-semibold">{{ t('rankings.topModels') }}</h2>
-        <div v-if="models.length === 0" class="card p-8 text-center text-muted">{{ t('common.empty') }}</div>
+        <div v-if="models.length === 0" class="empty-state">{{ t('common.empty') }}</div>
         <div v-else class="card divide-y divide-line">
           <div
             v-for="(m, i) in models"
@@ -73,7 +78,7 @@ onMounted(async () => {
       <!-- 厂商排行 -->
       <section class="mt-10">
         <h2 class="mb-4 text-xl font-semibold">{{ t('rankings.topProviders') }}</h2>
-        <div v-if="providers.length === 0" class="card p-8 text-center text-muted">{{ t('common.empty') }}</div>
+        <div v-if="providers.length === 0" class="empty-state">{{ t('common.empty') }}</div>
         <div v-else class="grid gap-3 sm:grid-cols-2">
           <div v-for="p in providers" :key="p.provider" class="card card-lift p-4">
             <div class="flex items-baseline justify-between">

@@ -2,21 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, copyText, errorMessage } from '@/lib/api'
+import { filterModels, modelModality, type ModelModality, type PricedModel } from '@/lib/modelCatalog'
 
-interface PricedModel {
-  model: string
-  provider: string
-  input_usd_per_1m: string
-  output_usd_per_1m: string
-  image_usd: string
-  // 模型元数据（gap P2-D）：运营配置则有，否则缺省回退到 provider
-  vendor?: string
-  category?: string
-  tags?: string
-  context_length?: number
-}
-
-const { t } = useI18n()
+const { t, n } = useI18n()
 const models = ref<PricedModel[]>([])
 const search = ref('')
 const loading = ref(true)
@@ -24,16 +12,33 @@ const error = ref('')
 const copiedModel = ref('')
 let copyTimer: ReturnType<typeof setTimeout> | undefined
 
+function modalityLabel(m: PricedModel): string {
+  const labels: Record<ModelModality, string> = {
+    chat: t('models.modChat'),
+    image: t('models.modImage'),
+    video: t('models.modVideo'),
+    embedding: t('models.modEmbed'),
+  }
+  return labels[modelModality(m)]
+}
+
 const filtered = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  if (!q) return models.value
-  return models.value.filter(
-    (m) =>
-      m.model.toLowerCase().includes(q) ||
-      m.provider.toLowerCase().includes(q) ||
-      (m.vendor ?? '').toLowerCase().includes(q) ||
-      (m.tags ?? '').toLowerCase().includes(q),
-  )
+  return filterModels(models.value, search.value)
+})
+const providerCount = computed(() => new Set(models.value.map((m) => m.vendor || m.provider)).size)
+const modalityCounts = computed(() => {
+  let chat = 0
+  let image = 0
+  let video = 0
+  let embed = 0
+  for (const m of models.value) {
+    const kind = modelModality(m)
+    if (kind === 'image') image++
+    else if (kind === 'video') video++
+    else if (kind === 'embedding') embed++
+    else chat++
+  }
+  return { chat, image, video, embed }
 })
 
 async function copyName(model: string) {
@@ -58,70 +63,102 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="mx-auto max-w-4xl space-y-6 px-6 py-10">
-    <div class="flex items-center justify-between gap-4">
-      <h1 class="text-2xl font-semibold tracking-tight">{{ t('models.title') }}</h1>
-      <input v-model="search" class="input max-w-xs" :placeholder="t('models.search')" />
-    </div>
-
-    <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
-    <!-- 加载骨架屏 -->
-    <div v-if="loading" class="card p-4 space-y-3">
-      <div v-for="i in 6" :key="i" class="flex items-center gap-4">
-        <div class="skeleton h-4 flex-1" :style="{ maxWidth: `${50 + ((i * 13) % 40)}%` }"></div>
-        <div class="skeleton h-4 w-20"></div>
-        <div class="skeleton h-4 w-16"></div>
-        <div class="skeleton h-4 w-16"></div>
+  <div class="models-page overflow-hidden">
+    <section class="models-hero border-b border-line">
+      <div class="mx-auto grid max-w-7xl gap-10 px-4 py-14 sm:px-6 lg:grid-cols-[0.95fr_1.05fr] lg:items-end lg:px-8">
+        <div>
+          <p class="text-sm font-medium text-accent">{{ t('surface.modelsCatalog') }}</p>
+          <h1 class="models-title mt-4">{{ t('models.title') }}</h1>
+          <p class="models-lead mt-5 max-w-2xl">{{ t('models.consoleHint') }}</p>
+        </div>
+        <div class="models-search-panel">
+          <label class="label" for="model-search">{{ t('models.search') }}</label>
+          <input id="model-search" v-model="search" class="input" :placeholder="t('models.search')" />
+          <div class="mt-5 grid grid-cols-3 gap-px overflow-hidden rounded-lg bg-line text-sm">
+            <div class="bg-panel p-4">
+              <p class="font-mono text-2xl font-semibold">{{ models.length || '—' }}</p>
+              <p class="mt-1 text-xs uppercase text-muted">{{ t('surface.statModels') }}</p>
+            </div>
+            <div class="bg-panel p-4">
+              <p class="font-mono text-2xl font-semibold">{{ providerCount || '—' }}</p>
+              <p class="mt-1 text-xs uppercase text-muted">{{ t('surface.statProviders') }}</p>
+            </div>
+            <div class="bg-panel p-4">
+              <p class="font-mono text-2xl font-semibold">{{ filtered.length }}</p>
+              <p class="mt-1 text-xs uppercase text-muted">{{ t('surface.statShown') }}</p>
+            </div>
+          </div>
+          <div class="mt-4 flex flex-wrap gap-2 text-xs">
+            <span class="badge-muted">{{ t('models.modChat') }} {{ modalityCounts.chat }}</span>
+            <span class="badge-muted">{{ t('models.modImage') }} {{ modalityCounts.image }}</span>
+            <span class="badge-muted">{{ t('models.modVideo') }} {{ modalityCounts.video }}</span>
+            <span class="badge-muted">{{ t('models.modEmbed') }} {{ modalityCounts.embed }}</span>
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
 
-    <div v-else class="card overflow-x-auto">
-      <table class="table w-full text-sm whitespace-nowrap">
-        <thead>
-          <tr class="border-b border-line text-left text-muted">
-            <th class="px-4 py-3 font-medium">{{ t('models.model') }}</th>
-            <th class="px-4 py-3 font-medium">{{ t('models.provider') }}</th>
-            <th class="px-4 py-3 font-medium text-right">{{ t('models.input') }}</th>
-            <th class="px-4 py-3 font-medium text-right">{{ t('models.output') }}</th>
-            <th class="px-4 py-3 font-medium text-right">{{ t('models.image') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="filtered.length === 0">
-            <td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
-          </tr>
-          <tr v-for="m in filtered" :key="m.model">
-            <td class="px-4 py-2.5">
+    <section class="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
+      <p v-if="error" class="inline-alert" role="alert">{{ error }}</p>
+    <!-- 加载骨架屏 -->
+      <div v-if="loading" class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div v-for="i in 9" :key="i" class="model-card p-5">
+          <div class="skeleton h-4 w-2/3"></div>
+          <div class="mt-5 grid grid-cols-3 gap-2">
+            <div class="skeleton h-12"></div>
+            <div class="skeleton h-12"></div>
+            <div class="skeleton h-12"></div>
+          </div>
+        </div>
+      </div>
+
+      <div v-else-if="filtered.length === 0" class="empty-state">{{ t('common.empty') }}</div>
+
+      <div v-else class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <article v-for="(m, i) in filtered" :key="m.model" v-reveal="(i % 9) * 35" class="model-card p-5">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <p class="truncate font-mono text-sm font-semibold" :title="m.model">{{ m.model }}</p>
+              <div class="mt-2 flex flex-wrap gap-1.5">
+                <span class="badge-muted">{{ m.vendor || m.provider }}</span>
+                <span class="badge-muted">{{ modalityLabel(m) }}</span>
+                <span v-if="m.category" class="badge-muted">{{ m.category }}</span>
+              </div>
+            </div>
+            <div class="model-card-index">{{ String(i + 1).padStart(2, '0') }}</div>
+          </div>
+
+          <div class="mt-6 grid grid-cols-3 gap-px overflow-hidden rounded-lg bg-line text-xs">
+            <div class="bg-panel p-3">
+              <p class="text-muted">{{ t('models.input') }}</p>
+              <p class="mt-1 font-mono font-semibold">${{ m.input_usd_per_1m }}</p>
+            </div>
+            <div class="bg-panel p-3">
+              <p class="text-muted">{{ t('models.output') }}</p>
+              <p class="mt-1 font-mono font-semibold">${{ m.output_usd_per_1m }}</p>
+            </div>
+            <div class="bg-panel p-3">
+              <p class="text-muted">{{ t('models.image') }}</p>
+              <p class="mt-1 font-mono font-semibold">{{ m.image_usd !== '0' ? `$${m.image_usd}` : '—' }}</p>
+            </div>
+          </div>
+
+          <div class="mt-5 flex items-center justify-between gap-3">
+            <p class="truncate text-xs text-muted">
+              <span v-if="m.context_length">{{ n(m.context_length) }} context</span>
+              <span v-else>{{ t('models.unitHint') }}</span>
+            </p>
               <button
-                class="group inline-flex items-center gap-2 font-mono text-left hover:text-accent transition-colors"
+                class="btn-ghost !min-h-0 shrink-0 !px-2.5 !py-1.5 text-xs"
                 :title="t('common.copy')"
                 @click="copyName(m.model)"
               >
-                {{ m.model }}
-                <span v-if="copiedModel === m.model" class="text-xs text-ok">{{ t('common.copied') }}</span>
-                <svg
-                  v-else
-                  class="h-3.5 w-3.5 opacity-0 transition-opacity group-hover:opacity-60"
-                  viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
-                >
-                  <path d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75" />
-                </svg>
+                {{ copiedModel === m.model ? t('common.copied') : t('common.copy') }}
               </button>
-            </td>
-            <td class="px-4 py-2.5">
-              <span class="badge-muted">{{ m.vendor || m.provider }}</span>
-              <span v-if="m.category" class="ml-1.5 text-xs text-muted">{{ m.category }}</span>
-            </td>
-            <td class="px-4 py-2.5 text-right font-mono">${{ m.input_usd_per_1m }}</td>
-            <td class="px-4 py-2.5 text-right font-mono">${{ m.output_usd_per_1m }}</td>
-            <td class="px-4 py-2.5 text-right font-mono text-muted">
-              {{ m.image_usd !== '0' ? `$${m.image_usd}` : '—' }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="text-xs text-muted">{{ t('models.unitHint') }}</p>
+          </div>
+        </article>
+      </div>
+      <p class="mt-6 text-xs text-muted">{{ t('models.unitHint') }}</p>
+    </section>
   </div>
 </template>

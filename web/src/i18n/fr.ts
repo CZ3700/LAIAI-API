@@ -1,4 +1,4 @@
-import type { Messages } from './en'
+import en, { type Messages } from './en'
 
 export default {
   common: {
@@ -52,6 +52,7 @@ export default {
     theme: 'Changer de thème',
     language: 'Langue',
   },
+  surface: en.surface,
   legal: {
     terms: 'Conditions',
     privacy: 'Confidentialité',
@@ -138,6 +139,7 @@ export default {
     modality: 'Modalité',
     modChat: 'Chat',
     modImage: 'Image',
+    modVideo: 'Vidéo',
     modEmbed: 'Embedding',
     openPlayground: 'Ouvrir dans le playground',
   },  play: {
@@ -157,9 +159,9 @@ export default {
     inputPlaceholder: 'Saisissez un message…',
     send: 'Envoyer',
     stop: 'Arrêter',
-    noReply: 'Le fournisseur n’a renvoyé aucun contenu — vérifiez que le canal/modèle est joignable et que la clé API a accès.',
-    nonChatModel: 'Ce modèle est de type {category} — le playground ne gère que les modèles texte/chat. Appelez-le directement via l’API.',
     usage: 'Usage : {input} entrée / {output} sortie tokens',
+    noReply: "Le fournisseur n’a renvoyé aucun contenu — vérifiez que le canal/modèle est joignable et que la clé API a accès.",
+    nonChatModel: "Ce modèle est de type {category} — le playground ne gère que les modèles texte/chat. Appelez-le directement via l’API.",
   },  usage: {
     title: 'Utilisation',
     time: 'Heure',
@@ -272,7 +274,7 @@ export default {
     f_billing_t: 'Facturation transparente',
     f_billing_d: 'Hold-then-capture mesuré à l’usage réel. Pas de frais surprise, journaux d’appels complets.',
     f_global_t: 'L’Orient rencontre l’Occident',
-    f_global_d: 'Seedance, Doubao, Qwen, GLM aux côtés d’OpenAI, Anthropic, Gemini.',
+    f_global_d: 'Seedance, DeepSeek, Qwen, GLM, MiniMax aux côtés d’OpenAI, Anthropic, Gemini.',
     codeTitle: 'Compatible OpenAI, prêt à l’emploi',
     ctaTitle: 'Commencez à construire en quelques minutes',
     ctaSub: 'Créez un compte, ajoutez une clé et appelez n’importe quel modèle via un seul endpoint.',
@@ -333,6 +335,7 @@ export default {
     tokenHint: 'Envoyé comme X-Admin-Token. Conservé uniquement dans cet onglet.',
     unlock: 'Déverrouiller',
     clear: 'Effacer',
+    overview: 'Vue d’ensemble',
     channels: 'Canaux',
     analytics: 'Analytique',
     health: 'Santé',

@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/lib/api'
+import heroImage from '@/assets/ai-routing-hero.jpg'
 
 interface PricedModel {
   model: string
@@ -23,89 +24,155 @@ onMounted(async () => {
 })
 
 const features = [
-  { icon: 'M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z', key: 'unified' },
-  { icon: 'M13 10V3L4 14h7v7l9-11h-7Z', key: 'streaming' },
-  { icon: 'M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z', key: 'billing' },
-  { icon: 'M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418', key: 'global' },
+  { value: 'Gateway', key: 'unified' },
+  { value: 'Stream', key: 'streaming' },
+  { value: 'Ledger', key: 'billing' },
+  { value: 'Global', key: 'global' },
+]
+
+const lanes = [
+  { name: 'GPT-5.2', side: 'OpenAI', load: '91%', tone: 'bg-accent' },
+  { name: 'Claude', side: 'Anthropic', load: '84%', tone: 'bg-ok' },
+  { name: 'Gemini', side: 'Google', load: '76%', tone: 'bg-accent2' },
+  { name: 'Qwen / DeepSeek', side: 'CN models', load: '88%', tone: 'bg-accent' },
+  { name: 'GLM / MiniMax', side: 'CN models', load: '82%', tone: 'bg-ok' },
 ]
 </script>
 
 <template>
-  <div>
-    <!-- Hero -->
-    <section class="aurora">
-      <div class="mx-auto max-w-4xl px-6 py-24 text-center sm:py-32">
-        <span class="enter badge-muted" style="animation-delay: 0ms">{{ t('landing.tag') }}</span>
-        <h1 class="enter mt-6 text-4xl font-bold tracking-tight sm:text-6xl" style="animation-delay: 70ms">
-          {{ t('landing.h1a') }}
-          <span
-            class="bg-clip-text text-transparent"
-            style="background-image: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)))"
-          >{{ t('landing.h1b') }}</span>
-        </h1>
-        <p class="enter mx-auto mt-6 max-w-2xl text-lg text-muted" style="animation-delay: 140ms">{{ t('landing.sub') }}</p>
-        <div class="enter mt-10 flex flex-wrap justify-center gap-3" style="animation-delay: 210ms">
-          <router-link to="/register" class="btn-primary px-6 !py-2.5">{{ t('landing.ctaStart') }}</router-link>
-          <router-link to="/models" class="btn-ghost px-6 !py-2.5">{{ t('landing.ctaModels') }}</router-link>
-        </div>
-        <p v-if="models.length" class="enter mt-8 text-sm text-muted" style="animation-delay: 280ms">
-          {{ t('landing.stat', { models: models.length, providers: providerCount }) }}
-        </p>
-      </div>
-    </section>
+  <div class="overflow-hidden">
+    <section class="landing-hero relative min-h-[calc(100svh-65px)] border-b border-line">
+      <img
+        :src="heroImage"
+        alt=""
+        class="landing-hero-image absolute inset-0 h-full w-full object-cover"
+        aria-hidden="true"
+      />
+      <div class="landing-hero-wash absolute inset-0"></div>
+      <div class="landing-hero-grid absolute inset-0" aria-hidden="true"></div>
 
-    <!-- Features -->
-    <section class="mx-auto max-w-6xl px-6 py-16">
-      <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-        <div
-          v-for="(f, i) in features"
-          :key="f.key"
-          v-reveal="i * 90"
-          class="card card-lift p-6"
-        >
-          <div
-            class="grid h-10 w-10 place-items-center rounded-lg text-accent"
-            style="background: rgb(var(--c-accent) / 0.12)"
-          >
-            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path :d="f.icon" />
-            </svg>
+      <div class="relative mx-auto flex min-h-[calc(100svh-65px)] max-w-7xl items-center px-4 py-16 sm:px-6 lg:px-8">
+        <div class="max-w-2xl">
+          <span class="enter landing-kicker inline-flex items-center gap-2 px-2.5 py-1 text-xs font-medium backdrop-blur" style="animation-delay: 0ms">
+            <span class="h-1.5 w-1.5 rounded-full bg-ok"></span>
+            {{ t('landing.tag') }}
+          </span>
+          <h1 class="enter landing-title mt-7 text-5xl font-semibold leading-[0.98] sm:text-7xl lg:text-8xl" style="animation-delay: 70ms">
+            LAIAI
+          </h1>
+          <p class="enter landing-headline mt-5 max-w-xl text-xl leading-8 sm:text-2xl" style="animation-delay: 140ms">
+            {{ t('landing.h1a') }} {{ t('landing.h1b') }}
+          </p>
+          <p class="enter landing-sub mt-5 max-w-lg text-sm leading-6 sm:text-base" style="animation-delay: 190ms">{{ t('landing.sub') }}</p>
+          <div class="enter mt-9 flex flex-wrap gap-3" style="animation-delay: 250ms">
+            <router-link to="/register" class="btn-primary px-5 !py-2.5">{{ t('landing.ctaStart') }}</router-link>
+            <router-link to="/models" class="landing-secondary-btn px-5 !py-2.5">{{ t('landing.ctaModels') }}</router-link>
           </div>
-          <h3 class="mt-4 font-semibold">{{ t(`landing.f_${f.key}_t`) }}</h3>
-          <p class="mt-1.5 text-sm text-muted">{{ t(`landing.f_${f.key}_d`) }}</p>
+          <div class="enter landing-stat-strip mt-10 grid max-w-xl grid-cols-3 divide-x py-4" style="animation-delay: 310ms">
+            <div>
+              <p class="text-2xl font-semibold">{{ models.length || '120+' }}</p>
+              <p class="mt-1 text-xs uppercase">{{ t('surface.statModels') }}</p>
+            </div>
+            <div class="pl-5">
+              <p class="text-2xl font-semibold">{{ providerCount || '18+' }}</p>
+              <p class="mt-1 text-xs uppercase">{{ t('surface.statProviders') }}</p>
+            </div>
+            <div class="pl-5">
+              <p class="text-2xl font-semibold">SSE</p>
+              <p class="mt-1 text-xs uppercase">{{ t('surface.statStream') }}</p>
+            </div>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- Code sample -->
-    <section class="mx-auto max-w-4xl px-6 pb-16">
-      <div v-reveal class="card overflow-hidden">
-        <div class="flex items-center gap-1.5 border-b border-line px-4 py-2.5">
-          <span class="h-2.5 w-2.5 rounded-full bg-danger/60"></span>
-          <span class="h-2.5 w-2.5 rounded-full bg-muted/40"></span>
-          <span class="h-2.5 w-2.5 rounded-full bg-ok/50"></span>
-          <span class="ml-2 text-xs text-muted">{{ t('landing.codeTitle') }}</span>
+    <section class="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
+      <div class="grid gap-10 lg:grid-cols-[0.78fr_1.22fr] lg:items-start">
+        <div v-reveal>
+          <p class="text-sm font-medium text-accent">{{ t('surface.landingControlPlane') }}</p>
+          <h2 class="mt-3 max-w-md text-3xl font-semibold leading-tight sm:text-4xl">{{ t('landing.ctaTitle') }}</h2>
+          <p class="mt-4 max-w-sm text-sm leading-6 text-muted">{{ t('landing.ctaSub') }}</p>
+        </div>
+        <div class="landing-feature-grid grid gap-px overflow-hidden border border-line bg-line sm:grid-cols-2">
+          <div
+            v-for="(f, i) in features"
+            :key="f.key"
+            v-reveal="i * 80"
+            class="landing-feature bg-panel p-6"
+          >
+            <p class="font-mono text-xs text-accent">{{ f.value }}</p>
+            <h3 class="mt-10 font-semibold">{{ t(`landing.f_${f.key}_t`) }}</h3>
+            <p class="mt-2 text-sm leading-6 text-muted">{{ t(`landing.f_${f.key}_d`) }}</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="mx-auto grid max-w-7xl gap-8 px-4 pb-20 sm:px-6 lg:grid-cols-[1fr_0.9fr] lg:px-8">
+      <div v-reveal class="landing-terminal overflow-hidden border border-line bg-[#05080d] text-slate-200 shadow-card">
+        <div class="flex items-center justify-between border-b border-white/10 px-4 py-3">
+          <span class="text-xs text-slate-500">{{ t('landing.codeTitle') }}</span>
+          <span class="text-xs text-cyan-300">{{ t('surface.landingCompat') }}</span>
         </div>
         <pre class="overflow-x-auto p-5 text-xs leading-relaxed"><code>curl https://your-domain/v1/chat/completions \
   -H "Authorization: Bearer sk-laiai-..." \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-5.2",
-    "messages": [{"role": "user", "content": "Hello"}]
+    "messages": [{"role": "user", "content": "Hello"}],
+    "stream": true
   }'</code></pre>
+      </div>
+
+      <div v-reveal class="space-y-5">
+        <div class="landing-routing p-5">
+          <div class="flex items-center justify-between">
+            <p class="text-sm font-medium">{{ t('surface.landingLiveRouting') }}</p>
+            <span class="rounded-full bg-ok/10 px-2 py-0.5 text-xs font-medium text-ok">{{ t('surface.statusHealthy') }}</span>
+          </div>
+          <div class="mt-5 space-y-3">
+            <div v-for="lane in lanes" :key="lane.name" class="landing-lane">
+              <div class="flex items-center justify-between gap-4 text-sm">
+                <span class="font-medium">{{ lane.name }}</span>
+                <span class="text-muted">{{ lane.side }}</span>
+              </div>
+              <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-line">
+                <div class="landing-lane-bar h-full rounded-full" :class="lane.tone" :style="{ width: lane.load }"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          class="landing-ledger p-5"
+        >
+          <p class="text-sm font-medium">{{ t('surface.landingBillingKernel') }}</p>
+          <p class="mt-3 text-sm leading-6 text-muted">{{ t('landing.f_billing_d') }}</p>
+          <div class="mt-5 grid grid-cols-3 gap-px overflow-hidden rounded-lg bg-line text-center text-xs">
+            <div class="bg-panel p-3">
+              <p class="font-semibold text-ink">{{ t('surface.ledgerHold') }}</p>
+              <p class="mt-1 text-muted">{{ t('surface.ledgerReserve') }}</p>
+            </div>
+            <div class="bg-panel p-3">
+              <p class="font-semibold text-ink">{{ t('surface.ledgerCapture') }}</p>
+              <p class="mt-1 text-muted">{{ t('surface.ledgerMeter') }}</p>
+            </div>
+            <div class="bg-panel p-3">
+              <p class="font-semibold text-ink">{{ t('surface.ledgerLedger') }}</p>
+              <p class="mt-1 text-muted">{{ t('surface.ledgerAudit') }}</p>
+            </div>
+          </div>
+          <router-link to="/docs" class="mt-5 inline-flex text-sm font-medium text-accent hover:underline">{{ t('nav.docs') }}</router-link>
+        </div>
       </div>
     </section>
 
-    <!-- CTA -->
-    <section class="mx-auto max-w-4xl px-6 pb-24 text-center">
-      <div
-        v-reveal
-        class="card overflow-hidden p-12"
-        style="background: linear-gradient(135deg, rgb(var(--c-accent) / 0.08), rgb(var(--c-accent-2) / 0.08))"
-      >
-        <h2 class="text-2xl font-semibold tracking-tight">{{ t('landing.ctaTitle') }}</h2>
-        <p class="mx-auto mt-3 max-w-xl text-muted">{{ t('landing.ctaSub') }}</p>
-        <router-link to="/register" class="btn-primary mt-6 inline-flex px-6 !py-2.5">{{ t('landing.ctaStart') }}</router-link>
+    <section class="landing-final border-t border-line">
+      <div class="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-12 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
+        <div>
+          <h2 class="text-2xl font-semibold">{{ t('landing.ctaTitle') }}</h2>
+          <p class="mt-2 max-w-2xl text-sm text-muted">{{ t('landing.ctaSub') }}</p>
+        </div>
+        <router-link to="/register" class="btn-primary w-fit px-5 !py-2.5">{{ t('landing.ctaStart') }}</router-link>
       </div>
     </section>
   </div>

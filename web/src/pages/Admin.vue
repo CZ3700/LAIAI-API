@@ -959,8 +959,7 @@ async function submitGrant() {
 
 async function loadAll() {
   try {
-    // 运营(admin)可见的资源；group-ratios/model-group-ratios 是 superadmin-only 端点，
-    // 非超管加载会 403——按角色分支，避免后台首屏报错（FE-1，配合后端 RBAC）。
+    // group-ratios/model-group-ratios 是 superadmin-only 端点，非超管加载会 403 → 按角色分支（FE-1）
     const tasks = [loadOverview(), loadChannels(), loadPrices(), loadCatalog(), loadOrgs()]
     if (auth.isSuperadmin) {
       tasks.push(loadGroupRatios(), loadModelGroupRatios())
@@ -980,14 +979,20 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="max-w-6xl space-y-6">
-    <h1 class="text-2xl font-semibold tracking-tight">{{ t('admin.title') }}</h1>
+  <div class="app-page">
+    <div class="app-page-header">
+      <div>
+        <p class="app-eyebrow">{{ t('surface.adminEyebrow') }}</p>
+        <h1 class="app-page-title">{{ t('admin.title') }}</h1>
+        <p class="app-page-subtitle">{{ t('surface.adminSubtitle') }}</p>
+      </div>
+    </div>
 
     <!-- 角色解析中：不闪 token 表单 -->
     <p v-if="roleLoading" class="text-sm text-muted">{{ t('common.loading') }}</p>
 
     <!-- 门禁：非 admin 角色 → root-token 破玻璃（引导首个超管 / 应急） -->
-    <form v-else-if="!unlocked" class="card max-w-md p-6 space-y-4" @submit.prevent="unlock">
+    <form v-else-if="!unlocked" class="app-panel max-w-md p-6 space-y-4" @submit.prevent="unlock">
       <div>
         <label class="label" for="admintoken">{{ t('admin.token') }}</label>
         <input id="admintoken" v-model="tokenInput" class="input" type="password" required autocomplete="off" />
@@ -998,16 +1003,16 @@ onMounted(async () => {
     </form>
 
     <template v-else>
-      <div class="flex items-center justify-between">
-        <div class="flex gap-1" role="tablist">
+      <div class="toolbar-panel">
+        <div class="flex max-w-full gap-1 overflow-x-auto" role="tablist">
           <button
             v-for="tb in visibleTabs"
             :key="tb"
             type="button"
             role="tab"
             :aria-selected="tab === tb"
-            class="btn-ghost !py-1.5"
-            :class="tab === tb ? '!bg-panel !text-ink' : '!border-transparent text-muted'"
+            class="shrink-0 rounded-md px-3 py-1.5 text-sm transition-colors"
+            :class="tab === tb ? 'bg-panel text-ink shadow-sm' : 'text-muted hover:text-ink'"
             @click="tab = tb"
           >
             {{ t(`admin.${tb}`) }}
@@ -1020,8 +1025,8 @@ onMounted(async () => {
 
       <!-- 概览 -->
       <template v-if="tab === 'overview' && overview">
-        <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <div class="card p-4">
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div class="metric-card">
             <p class="text-xs text-muted">{{ t('admin.ovChannels') }}</p>
             <p class="mt-1 text-2xl font-semibold font-mono">
               {{ overview.channels.active }}<span class="text-base text-muted">/{{ overview.channels.total }}</span>
@@ -1033,17 +1038,17 @@ onMounted(async () => {
               <span v-else>{{ t('admin.ovAllHealthy') }}</span>
             </p>
           </div>
-          <div class="card p-4">
+          <div class="metric-card">
             <p class="text-xs text-muted">{{ t('dashboard.todayCalls') }}</p>
             <p class="mt-1 text-2xl font-semibold font-mono">{{ overview.calls_today }}</p>
             <p class="mt-1 text-xs text-muted">{{ t('admin.ovWindowCalls', { n: overview.calls_window, days: overview.window_days }) }}</p>
           </div>
-          <div class="card p-4">
+          <div class="metric-card">
             <p class="text-xs text-muted">{{ t('admin.ovSuccessRate') }}</p>
             <p class="mt-1 text-2xl font-semibold font-mono">{{ (overview.success_rate * 100).toFixed(1) }}%</p>
             <p class="mt-1 text-xs text-muted">{{ t('admin.ovLastDays', { days: overview.window_days }) }}</p>
           </div>
-          <div class="card p-4">
+          <div class="metric-card">
             <p class="text-xs text-muted">{{ t('admin.ovRevenue') }}</p>
             <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(overview.revenue_window).toFixed(4) }}</p>
             <p class="mt-1 text-xs text-muted">{{ t('admin.ovLastDays', { days: overview.window_days }) }}</p>
@@ -1052,7 +1057,7 @@ onMounted(async () => {
 
         <div class="grid gap-4 lg:grid-cols-2">
           <!-- 模型 top -->
-          <div class="card p-5">
+          <div class="app-panel p-5">
             <h2 class="mb-4 font-semibold">{{ t('admin.ovTopModels') }}</h2>
             <div v-if="overview.top_models.length === 0" class="text-sm text-muted">{{ t('common.empty') }}</div>
             <div v-else class="space-y-3">
@@ -1073,7 +1078,7 @@ onMounted(async () => {
           </div>
 
           <!-- 渠道健康 -->
-          <div class="card p-5">
+          <div class="app-panel p-5">
             <h2 class="mb-4 font-semibold">{{ t('admin.ovChannelHealth') }}</h2>
             <div v-if="overview.channel_health.length === 0" class="text-sm text-muted">{{ t('common.empty') }}</div>
             <div v-else class="space-y-2">
@@ -1108,22 +1113,22 @@ onMounted(async () => {
 
           <!-- 资金大卡 -->
           <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <div class="card p-4">
+            <div class="app-panel p-4">
               <p class="text-xs text-muted">{{ t('admin.anCashIn') }}</p>
               <p class="mt-1 text-2xl font-semibold font-mono text-ok">${{ Number(analytics.finance.cash_in).toFixed(2) }}</p>
               <Sparkline :data="cashSeries" :width="140" :height="34" class="mt-2" />
             </div>
-            <div class="card p-4">
+            <div class="app-panel p-4">
               <p class="text-xs text-muted">{{ t('admin.anConsumption') }}</p>
               <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.finance.consumption).toFixed(4) }}</p>
               <Sparkline :data="costSeries" :width="140" :height="34" class="mt-2" />
             </div>
-            <div class="card p-4">
+            <div class="app-panel p-4">
               <p class="text-xs text-muted">{{ t('admin.anFloat') }}</p>
               <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.finance.float).toFixed(2) }}</p>
               <p class="mt-1 text-xs text-muted">{{ t('admin.anFloatHint') }}</p>
             </div>
-            <div class="card p-4">
+            <div class="app-panel p-4">
               <p class="text-xs text-muted">{{ t('admin.anConversion') }}</p>
               <p class="mt-1 text-2xl font-semibold font-mono">{{ (analytics.finance.topup_conversion * 100).toFixed(1) }}%</p>
               <p class="mt-1 text-xs text-muted">
@@ -1136,24 +1141,24 @@ onMounted(async () => {
 
           <!-- 用户指标 -->
           <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <div class="card p-4">
+            <div class="app-panel p-4">
               <p class="text-xs text-muted">{{ t('admin.anUsers') }}</p>
               <p class="mt-1 text-2xl font-semibold font-mono">{{ analytics.users.total_users }}</p>
               <p class="mt-1 text-xs text-ok">+{{ analytics.users.new_users }} {{ t('admin.anNew') }}</p>
             </div>
-            <div class="card p-4">
+            <div class="app-panel p-4">
               <p class="text-xs text-muted">{{ t('admin.anActiveOrgs') }}</p>
               <p class="mt-1 text-2xl font-semibold font-mono">
                 {{ analytics.users.active_orgs }}<span class="text-base text-muted">/{{ analytics.users.total_orgs }}</span>
               </p>
               <p class="mt-1 text-xs text-muted">{{ t('admin.anActiveHint') }}</p>
             </div>
-            <div class="card p-4">
+            <div class="app-panel p-4">
               <p class="text-xs text-muted">{{ t('admin.anArpu') }}</p>
               <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.users.arpu).toFixed(4) }}</p>
               <p class="mt-1 text-xs text-muted">{{ t('admin.anArpuHint') }}</p>
             </div>
-            <div class="card p-4">
+            <div class="app-panel p-4">
               <p class="text-xs text-muted">{{ t('admin.anErrorRate') }}</p>
               <p class="mt-1 text-2xl font-semibold font-mono" :class="errorRate > 0.05 ? 'text-danger' : ''">{{ (errorRate * 100).toFixed(2) }}%</p>
               <p class="mt-1 text-xs text-muted">
@@ -1164,7 +1169,7 @@ onMounted(async () => {
 
           <div class="grid gap-4 lg:grid-cols-2">
             <!-- Top 消费组织 -->
-            <div class="card p-5">
+            <div class="app-panel p-5">
               <h2 class="mb-4 font-semibold">{{ t('admin.anTopOrgs') }}</h2>
               <div v-if="analytics.top_orgs.length === 0" class="text-sm text-muted">{{ t('common.empty') }}</div>
               <table v-else class="table w-full text-sm">
@@ -1183,7 +1188,7 @@ onMounted(async () => {
 
             <!-- 厂商分布 + 充值渠道 -->
             <div class="space-y-4">
-              <div class="card p-5">
+              <div class="app-panel p-5">
                 <h2 class="mb-3 font-semibold">{{ t('admin.anByProvider') }}</h2>
                 <div v-if="analytics.quality.by_provider.length === 0" class="text-sm text-muted">{{ t('common.empty') }}</div>
                 <div v-else class="space-y-2">
@@ -1193,7 +1198,7 @@ onMounted(async () => {
                   </div>
                 </div>
               </div>
-              <div class="card p-5">
+              <div class="app-panel p-5">
                 <h2 class="mb-3 font-semibold">{{ t('admin.anCashByProvider') }}</h2>
                 <div v-if="analytics.finance.by_provider.length === 0" class="text-sm text-muted">{{ t('common.empty') }}</div>
                 <div v-else class="space-y-2">
@@ -1207,7 +1212,7 @@ onMounted(async () => {
           </div>
 
           <!-- 调用量日趋势 -->
-          <div class="card p-5">
+          <div class="app-panel p-5">
             <div class="mb-3 flex items-baseline justify-between">
               <h2 class="font-semibold">{{ t('admin.anCallTrend') }}</h2>
               <span class="text-xs text-muted">{{ t('admin.ovLastDays', { days: analytics.days }) }}</span>
@@ -1215,7 +1220,7 @@ onMounted(async () => {
             <Sparkline :data="callsSeries" :width="640" :height="48" class="w-full" />
           </div>
         </div>
-        <div v-else-if="analyticsErr" class="card p-6 text-sm">
+        <div v-else-if="analyticsErr" class="app-panel p-6 text-sm">
           <p class="text-danger">{{ analyticsErr }}</p>
           <button class="btn-ghost mt-3 !py-1.5 text-sm" @click="loadAnalytics().catch(showError)">{{ t('common.retry') }}</button>
         </div>
@@ -1224,7 +1229,7 @@ onMounted(async () => {
 
       <!-- 渠道 -->
       <template v-if="tab === 'channels'">
-        <div v-if="channelsErr" class="card mb-3 flex items-center gap-3 p-4 text-sm">
+        <div v-if="channelsErr" class="app-panel mb-3 flex items-center gap-3 p-4 text-sm">
           <span class="text-danger">{{ channelsErr }}</span>
           <button class="btn-ghost !py-1 text-xs" @click="loadChannels().catch(showError)">{{ t('common.retry') }}</button>
         </div>
@@ -1235,7 +1240,7 @@ onMounted(async () => {
 
         <!-- 探测弹窗 -->
         <div v-if="showProbe" class="modal-backdrop" @click.self="showProbe = false">
-          <div class="card modal-panel w-full max-w-lg p-6 space-y-4">
+          <div class="app-panel modal-panel w-full max-w-lg p-6 space-y-4">
             <h2 class="font-semibold">{{ t('admin.probeTitle') }}</h2>
             <p class="text-xs text-muted">{{ t('admin.probeHint') }}</p>
             <form class="space-y-3" @submit.prevent="runProbe">
@@ -1299,7 +1304,7 @@ onMounted(async () => {
           </div>
         </div>
 
-        <form class="card p-5 grid grid-cols-2 gap-4" @submit.prevent="addChannel">
+        <form class="app-panel grid gap-4 p-5 sm:grid-cols-2" @submit.prevent="addChannel">
           <div>
             <label class="label" for="ch-name">{{ t('admin.chName') }}</label>
             <input id="ch-name" v-model="ch.name" class="input" required />
@@ -1312,16 +1317,16 @@ onMounted(async () => {
               </option>
             </select>
           </div>
-          <div class="col-span-2">
+          <div class="sm:col-span-2">
             <label class="label" for="ch-baseurl">{{ t('admin.chBaseUrl') }}</label>
             <input id="ch-baseurl" v-model="ch.base_url" class="input font-mono text-xs" :placeholder="providerDefault || 'https://…'" />
             <p class="mt-1 text-xs text-muted">{{ t('admin.chBaseUrlHint') }}</p>
           </div>
-          <div class="col-span-2">
+          <div class="sm:col-span-2">
             <label class="label" for="ch-key">{{ t('admin.chKey') }}</label>
             <input id="ch-key" v-model="ch.api_key" class="input font-mono text-xs" type="password" required autocomplete="off" />
           </div>
-          <div class="col-span-2">
+          <div class="sm:col-span-2">
             <label class="label" for="ch-models">{{ t('admin.chModels') }}</label>
             <input id="ch-models" v-model="ch.models" class="input font-mono text-xs" placeholder="gpt-4o-mini, gpt-4o" required />
           </div>
@@ -1333,12 +1338,12 @@ onMounted(async () => {
             <label class="label" for="ch-priority">{{ t('admin.chPriority') }}</label>
             <input id="ch-priority" v-model.number="ch.priority" class="input" type="number" />
           </div>
-          <div class="col-span-2">
+          <div class="sm:col-span-2">
             <label class="label" for="ch-proxy">{{ t('admin.chProxy') }}</label>
             <input id="ch-proxy" v-model="ch.proxy" class="input font-mono text-xs" placeholder="http://user:pass@host:port" />
             <p class="mt-1 text-xs text-muted">{{ t('admin.chProxyHint') }}</p>
           </div>
-          <div class="col-span-2">
+          <div class="sm:col-span-2">
             <button class="btn-primary" :disabled="chBusy">{{ t('admin.chAdd') }}</button>
           </div>
         </form>
@@ -1346,7 +1351,7 @@ onMounted(async () => {
         <!-- 测试结果条 -->
         <div
           v-if="testResult"
-          class="card p-4 text-sm flex items-start gap-3"
+          class="app-panel p-4 text-sm flex items-start gap-3"
           role="status"
           aria-live="polite"
         >
@@ -1357,7 +1362,7 @@ onMounted(async () => {
           <button class="btn-ghost !py-0.5 ml-auto text-xs shrink-0" @click="testResult = null">✕</button>
         </div>
 
-        <div class="card overflow-x-auto">
+        <div class="data-table-wrap">
           <table class="table w-full text-sm whitespace-nowrap">
             <thead>
               <tr class="border-b border-line text-left text-muted">
@@ -1426,7 +1431,7 @@ onMounted(async () => {
 
         <!-- 编辑渠道弹窗 -->
         <div v-if="editing" class="modal-backdrop" @click.self="editing = null">
-          <form class="card modal-panel w-full max-w-md p-6 space-y-4" @submit.prevent="saveEdit">
+          <form class="app-panel modal-panel w-full max-w-md p-6 space-y-4" @submit.prevent="saveEdit">
             <h2 class="font-semibold">{{ t('admin.chEdit') }} · {{ editing.name }}</h2>
             <div>
               <label class="label" for="edit-baseurl">{{ t('admin.chBaseUrl') }}</label>
@@ -1481,7 +1486,7 @@ onMounted(async () => {
 
         <!-- 拉取上游模型结果（gap P2-D）：缺失/多余/未定价差集 -->
         <div v-if="fetchModelsResult" class="modal-backdrop" @click.self="fetchModelsResult = null">
-          <div class="card modal-panel w-full max-w-lg p-6 space-y-4">
+          <div class="app-panel modal-panel w-full max-w-lg p-6 space-y-4">
             <h2 class="font-semibold">{{ t('admin.chFetchModels') }} · {{ fetchModelsResult.channel }}</h2>
             <p v-if="!fetchModelsResult.ok" class="text-sm text-danger">{{ fetchModelsResult.message }}</p>
             <template v-else>
@@ -1518,7 +1523,7 @@ onMounted(async () => {
 
           <!-- 渠道卡片 -->
           <div v-if="payChannels.length" class="grid gap-4 lg:grid-cols-2">
-            <div v-for="ch in payChannels" :key="ch.id" class="card p-5">
+            <div v-for="ch in payChannels" :key="ch.id" class="app-panel p-5">
               <div class="flex items-start justify-between">
                 <div class="flex items-center gap-2.5">
                   <span class="grid h-9 w-9 place-items-center rounded-lg text-sm font-bold text-white"
@@ -1555,10 +1560,10 @@ onMounted(async () => {
               </div>
             </div>
           </div>
-          <p v-else-if="payLoaded" class="card p-6 text-center text-sm text-muted">{{ t('admin.pcEmpty') }}</p>
+          <p v-else-if="payLoaded" class="app-panel p-6 text-center text-sm text-muted">{{ t('admin.pcEmpty') }}</p>
 
           <!-- 支付路由预览 -->
-          <div v-if="payChannels.length" class="card p-5">
+          <div v-if="payChannels.length" class="app-panel p-5">
             <h3 class="mb-1 font-semibold">{{ t('admin.payRouteTitle') }}</h3>
             <p class="mb-4 text-xs text-muted">{{ t('admin.payRouteHint') }}</p>
             <table class="table w-full text-sm">
@@ -1588,7 +1593,7 @@ onMounted(async () => {
 
           <!-- 渠道编辑器 -->
           <div v-if="pcEdit" class="modal-backdrop" @click.self="pcEdit = null">
-            <form class="card modal-panel w-full max-w-lg p-6 space-y-4" @submit.prevent="savePayChannel">
+            <form class="app-panel modal-panel w-full max-w-lg p-6 space-y-4" @submit.prevent="savePayChannel">
               <h2 class="font-semibold">{{ pcEdit.id ? t('admin.chEdit') : t('admin.pcAdd') }}</h2>
               <div class="grid gap-3 sm:grid-cols-2">
                 <div>
@@ -1660,7 +1665,7 @@ onMounted(async () => {
           </div>
 
           <!-- 全局结算设置（汇率 / 最低充值 / 返佣）—— 从「设置」迁来，统一在支付页 (#2) -->
-          <div class="card p-5">
+          <div class="app-panel p-5">
             <h3 class="mb-1 font-semibold">{{ t('admin.payGlobalsTitle') }}</h3>
             <p class="mb-4 text-xs text-muted">{{ t('admin.payGlobalsHint') }}</p>
             <div class="grid gap-3 sm:grid-cols-3">
@@ -1698,7 +1703,7 @@ onMounted(async () => {
 
       <!-- 定价 -->
       <template v-if="tab === 'prices'">
-        <form class="card p-5 grid grid-cols-5 gap-4 items-end" @submit.prevent="upsertPrice">
+        <form class="app-panel grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-5 xl:items-end" @submit.prevent="upsertPrice">
           <div>
             <label class="label" for="pr-model">{{ t('admin.prModel') }}</label>
             <input id="pr-model" v-model="pr.model" class="input font-mono text-xs" required />
@@ -1731,15 +1736,15 @@ onMounted(async () => {
             <label class="label" for="pr-stt">{{ t('admin.prTranscription') }}</label>
             <input id="pr-stt" v-model="pr.transcription_usd_per_call" class="input" placeholder="0" />
           </div>
-          <div class="col-span-5 flex items-center gap-3">
+          <div class="flex flex-col gap-3 sm:col-span-2 sm:flex-row sm:items-center xl:col-span-5">
             <button class="btn-primary" :disabled="prBusy">{{ t('admin.prUpsert') }}</button>
             <span class="text-xs text-muted">{{ t('admin.prAdvancedHint') }}</span>
           </div>
         </form>
 
         <!-- 模型元数据（gap P2-D）：厂商/分类/标签等展示元数据，前端据此替代按名猜 -->
-        <form class="card p-5 grid grid-cols-2 sm:grid-cols-4 gap-4 items-end" @submit.prevent="upsertMeta">
-          <div class="col-span-2 sm:col-span-4 -mb-1">
+        <form class="app-panel grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4 xl:items-end" @submit.prevent="upsertMeta">
+          <div class="sm:col-span-2 xl:col-span-4 -mb-1">
             <h2 class="font-semibold">{{ t('admin.metaTitle') }}</h2>
             <p class="mt-0.5 text-xs text-muted">{{ t('admin.metaHint') }}</p>
           </div>
@@ -1767,17 +1772,17 @@ onMounted(async () => {
             <label class="label" for="meta-icon">{{ t('admin.metaIcon') }}</label>
             <input id="meta-icon" v-model="metaForm.icon" class="input" maxlength="128" placeholder="openai" />
           </div>
-          <div class="col-span-2">
+          <div class="sm:col-span-2">
             <label class="label" for="meta-desc">{{ t('admin.metaDescription') }}</label>
             <input id="meta-desc" v-model="metaForm.description" class="input" maxlength="500" />
           </div>
-          <div class="col-span-2 sm:col-span-4">
+          <div class="sm:col-span-2 xl:col-span-4">
             <button class="btn-primary" :disabled="metaBusy">{{ t('admin.metaSave') }}</button>
           </div>
         </form>
 
         <!-- 模型目录：上游已上货模型 + 所在渠道 + 是否漏配价 -->
-        <div v-if="catalog" class="card p-5">
+        <div v-if="catalog" class="app-panel p-5">
           <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 class="font-semibold">{{ t('admin.catTitle') }}</h2>
@@ -1794,7 +1799,7 @@ onMounted(async () => {
               </label>
             </div>
           </div>
-          <div class="max-h-96 overflow-y-auto rounded-xl border border-line">
+          <div class="max-h-96 overflow-y-auto rounded-lg border border-line">
             <table class="table w-full text-sm">
               <thead class="sticky top-0 bg-panel/80 backdrop-blur">
                 <tr class="text-left text-muted">
@@ -1839,7 +1844,7 @@ onMounted(async () => {
           </div>
         </div>
 
-        <div class="card overflow-hidden">
+        <div class="data-table-wrap">
           <table class="table w-full text-sm">
             <thead>
               <tr class="border-b border-line text-left text-muted">
@@ -1868,7 +1873,7 @@ onMounted(async () => {
 
       <!-- 分组倍率 -->
       <template v-if="tab === 'groups'">
-        <form class="card p-5 grid grid-cols-3 gap-4 items-end" @submit.prevent="upsertGroupRatio">
+        <form class="app-panel grid gap-4 p-5 sm:grid-cols-3 sm:items-end" @submit.prevent="upsertGroupRatio">
           <div>
             <label class="label" for="gr-name">{{ t('admin.grName') }}</label>
             <input id="gr-name" v-model="gr.name" class="input font-mono text-xs" placeholder="vip" required />
@@ -1880,10 +1885,10 @@ onMounted(async () => {
           <div>
             <button class="btn-primary w-full" type="submit">{{ t('admin.prUpsert') }}</button>
           </div>
-          <p class="col-span-3 text-xs text-muted">{{ t('admin.grHint') }}</p>
+          <p class="text-xs text-muted sm:col-span-3">{{ t('admin.grHint') }}</p>
         </form>
 
-        <div class="card overflow-hidden">
+        <div class="data-table-wrap">
           <table class="table w-full text-sm">
             <thead>
               <tr class="border-b border-line text-left text-muted">
@@ -1908,7 +1913,7 @@ onMounted(async () => {
 
         <!-- 二层 (分组,模型) 倍率（gap P2-F）：叠加在分组倍率之上 -->
         <h3 class="mt-2 font-semibold">{{ t('admin.mgrTitle') }}</h3>
-        <form class="card p-5 grid grid-cols-4 gap-4 items-end" @submit.prevent="upsertModelGroupRatio">
+        <form class="app-panel grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4 xl:items-end" @submit.prevent="upsertModelGroupRatio">
           <div>
             <label class="label" for="mgr-group">{{ t('admin.grName') }}</label>
             <input id="mgr-group" v-model="mgr.group_name" class="input font-mono text-xs" placeholder="vip" required />
@@ -1924,9 +1929,9 @@ onMounted(async () => {
           <div>
             <button class="btn-primary" :disabled="prBusy">{{ t('admin.prUpsert') }}</button>
           </div>
-          <p class="col-span-4 text-xs text-muted">{{ t('admin.mgrHint') }}</p>
+          <p class="text-xs text-muted sm:col-span-2 xl:col-span-4">{{ t('admin.mgrHint') }}</p>
         </form>
-        <div v-if="modelGroupRatios.length" class="card overflow-hidden">
+        <div v-if="modelGroupRatios.length" class="data-table-wrap">
           <table class="table w-full text-sm">
             <thead>
               <tr class="border-b border-line text-left text-muted">
@@ -1953,7 +1958,7 @@ onMounted(async () => {
       <!-- 授信 -->
       <!-- 授信入账弹窗（用户管理 / 组织列表共用） -->
       <div v-if="grantModal" class="modal-backdrop" @click.self="grantModal = null">
-        <form class="card modal-panel w-full max-w-sm p-6 space-y-4" @submit.prevent="submitGrant">
+        <form class="app-panel modal-panel w-full max-w-sm p-6 space-y-4" @submit.prevent="submitGrant">
           <h2 class="font-semibold">{{ t('admin.crTitle') }}</h2>
           <p class="text-xs text-muted">{{ t('admin.crTarget') }}: <span class="font-mono">{{ grantModal.label }}</span> · org #{{ grantModal.orgId }}</p>
           <div>
@@ -1992,7 +1997,7 @@ onMounted(async () => {
       <!-- 渠道健康看板（M2，只读可观测；不反馈选路） -->
       <template v-if="tab === 'health'">
         <p class="text-xs text-muted">{{ t('admin.healthHint') }}</p>
-        <div class="card overflow-x-auto">
+        <div class="data-table-wrap">
           <table class="table w-full text-sm whitespace-nowrap">
             <thead>
               <tr class="border-b border-line text-left text-muted">
@@ -2037,7 +2042,7 @@ onMounted(async () => {
 
       <!-- 组织 -->
       <template v-if="tab === 'orgs'">
-        <div class="card overflow-x-auto">
+        <div class="data-table-wrap">
           <table class="table w-full text-sm whitespace-nowrap">
             <thead>
               <tr class="border-b border-line text-left text-muted">
@@ -2123,7 +2128,7 @@ onMounted(async () => {
 
       <!-- 日志（全局调用） -->
       <template v-if="tab === 'logs'">
-        <form class="card flex flex-wrap items-end gap-3 p-4" @submit.prevent="applyLogFilter">
+        <form class="app-panel flex flex-wrap items-end gap-3 p-4" @submit.prevent="applyLogFilter">
           <div>
             <label class="label" for="lg-status">{{ t('usage.status') }}</label>
             <select id="lg-status" v-model="logFilter.status" class="input !w-36">
@@ -2157,7 +2162,7 @@ onMounted(async () => {
           <button class="btn-primary">{{ t('admin.lgApply') }}</button>
         </form>
 
-        <div class="card overflow-x-auto">
+        <div class="data-table-wrap">
           <table class="table w-full text-sm whitespace-nowrap">
             <thead>
               <tr class="border-b border-line text-left text-muted">
@@ -2228,7 +2233,7 @@ onMounted(async () => {
           <input v-model="userQuery" class="input max-w-xs" :placeholder="t('admin.userSearch')" />
           <button class="btn-ghost">{{ t('admin.lgApply') }}</button>
         </form>
-        <div class="card overflow-x-auto">
+        <div class="data-table-wrap">
           <table class="table w-full text-sm">
             <thead>
               <tr class="border-b border-line text-left text-muted">
@@ -2286,7 +2291,7 @@ onMounted(async () => {
                   <span v-else class="text-xs text-muted">{{ u.group }}</span>
                 </td>
                 <td class="px-4 py-2.5 text-xs text-muted whitespace-nowrap">
-                  <span :title="t('admin.userInvited')">👥 {{ u.invited }}</span>
+                  <span :title="t('admin.userInvited')">Inv {{ u.invited }}</span>
                   <span class="ml-2 text-ok" :title="t('admin.userEarned')">${{ Number(u.earned).toFixed(2) }}</span>
                   <span v-if="u.inviter_org_id" class="ml-2" :title="t('admin.userInviter')">← #{{ u.inviter_org_id }}</span>
                 </td>
@@ -2312,7 +2317,7 @@ onMounted(async () => {
         <p class="text-xs text-muted">{{ t('admin.userTierHint') }}</p>
 
         <!-- 按用户聚合用量 + CSV 导出（gap P2-B） -->
-        <div class="card p-6 space-y-4">
+        <div class="app-panel p-6 space-y-4">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <h3 class="font-semibold">{{ t('admin.usageByUser') }}</h3>
             <div class="flex items-center gap-2">
@@ -2353,7 +2358,7 @@ onMounted(async () => {
 
       <!-- 设置（分区子导航，避免一页过长） -->
       <template v-if="tab === 'settings'">
-        <form class="card max-w-3xl p-6 space-y-5" @submit.prevent="saveSettings">
+        <form class="app-panel max-w-3xl p-6 space-y-5" @submit.prevent="saveSettings">
           <div class="flex flex-wrap gap-1 border-b border-line pb-4">
             <button
               v-for="sec in SET_SECTIONS"
@@ -2570,7 +2575,7 @@ onMounted(async () => {
 
       <!-- 审计日志 -->
       <template v-if="tab === 'audit'">
-        <div class="card mb-4 flex items-start gap-3 p-4">
+        <div class="app-panel mb-4 flex items-start gap-3 p-4">
           <svg class="mt-0.5 h-5 w-5 shrink-0 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 12.75 11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 0 1-1.043 3.296 3.745 3.745 0 0 1-3.296 1.043A3.745 3.745 0 0 1 12 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 0 1-3.296-1.043 3.745 3.745 0 0 1-1.043-3.296A3.745 3.745 0 0 1 3 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 0 1 1.043-3.296 3.746 3.746 0 0 1 3.296-1.043A3.746 3.746 0 0 1 12 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 0 1 3.296 1.043 3.746 3.746 0 0 1 1.043 3.296A3.745 3.745 0 0 1 21 12Z" />
           </svg>
@@ -2579,7 +2584,7 @@ onMounted(async () => {
             <p class="mt-0.5 text-xs text-muted">{{ t('admin.auWhat') }}</p>
           </div>
         </div>
-        <div class="card overflow-x-auto">
+        <div class="data-table-wrap">
           <table class="table w-full text-sm whitespace-nowrap">
             <thead>
               <tr class="border-b border-line text-left text-muted">

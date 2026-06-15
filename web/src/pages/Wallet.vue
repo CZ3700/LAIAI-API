@@ -139,24 +139,54 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="max-w-3xl space-y-6">
-    <h1 class="text-2xl font-semibold tracking-tight">{{ t('wallet.title') }}</h1>
-
-    <!-- 余额 -->
-    <div
-      class="card p-6 text-white"
-      style="background: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)))"
-    >
-      <p class="text-xs opacity-80">{{ t('dashboard.balance') }}</p>
-      <p class="mt-1 text-4xl font-semibold font-mono">${{ balance }}</p>
-      <p v-if="Number(held) > 0" class="mt-1 text-xs opacity-80">
-        {{ t('wallet.held') }}: <span class="font-mono">${{ held }}</span>
-      </p>
+  <div class="app-page">
+    <div class="app-page-header">
+      <div>
+        <p class="app-eyebrow">{{ t('surface.walletEyebrow') }}</p>
+        <h1 class="app-page-title">{{ t('wallet.title') }}</h1>
+        <p class="app-page-subtitle">{{ t('surface.walletSubtitle') }}</p>
+      </div>
     </div>
 
+    <section class="grid gap-4 lg:grid-cols-[1fr_0.72fr]">
+      <!-- 余额 -->
+      <div class="console-hero p-6 text-ink">
+        <p class="text-xs text-muted">{{ t('dashboard.balance') }}</p>
+        <p class="mt-2 text-4xl font-semibold font-mono">${{ balance }}</p>
+        <div class="mt-5 grid gap-3 sm:grid-cols-2">
+          <div class="soft-panel p-3">
+            <p class="text-xs text-muted">{{ t('wallet.held') }}</p>
+            <p class="mt-1 font-mono text-lg">${{ held }}</p>
+          </div>
+          <div class="soft-panel p-3">
+            <p class="text-xs text-muted">{{ t('wallet.transactions') }}</p>
+            <p class="mt-1 font-mono text-lg">{{ ledger.length }}</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="app-panel p-5">
+        <p class="text-sm font-medium">{{ t('wallet.history') }}</p>
+        <p class="mt-2 text-sm leading-6 text-muted">{{ t('surface.walletHistoryHint') }}</p>
+        <div class="mt-5 grid grid-cols-2 gap-3 text-xs">
+          <div class="soft-panel p-3">
+            <p class="text-muted">{{ t('wallet.method') }}</p>
+            <p class="mt-1 font-mono text-ink">{{ methods.length }}</p>
+          </div>
+          <div class="soft-panel p-3">
+            <p class="text-muted">{{ t('wallet.history') }}</p>
+            <p class="mt-1 font-mono text-ink">{{ orders.length }}</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- 充值 -->
-    <div class="card p-6 space-y-5">
-      <h2 class="font-semibold">{{ t('wallet.topup') }}</h2>
+    <div class="app-panel p-6 space-y-5">
+      <div>
+        <h2 class="font-semibold">{{ t('wallet.topup') }}</h2>
+        <p class="mt-1 text-sm text-muted">{{ t('surface.walletTopupHint') }}</p>
+      </div>
       <p v-if="methodsErr" class="text-sm text-danger" role="alert">{{ t('common.error') }}</p>
       <p v-else-if="noMethods" class="text-sm text-muted">{{ t('wallet.noMethods') }}</p>
       <template v-else>
@@ -201,7 +231,7 @@ onMounted(load)
     </div>
 
     <!-- 邀请返佣 -->
-    <div v-if="aff && aff.rate && aff.rate !== '0'" class="card p-6 space-y-4">
+    <div v-if="aff && aff.rate && aff.rate !== '0'" class="app-panel p-6 space-y-4">
       <h2 class="font-semibold">{{ t('wallet.affTitle') }}</h2>
       <p class="text-sm text-muted">{{ t('wallet.affDesc', { rate: (Number(aff.rate) * 100).toFixed(0) }) }}</p>
       <div class="flex gap-2">
@@ -217,7 +247,7 @@ onMounted(load)
     <!-- 资金流水（统一账本：充值/赠送/消费/释放） -->
     <div class="space-y-3">
       <h2 class="font-semibold">{{ t('wallet.transactions') }}</h2>
-      <div class="card overflow-x-auto">
+      <div class="data-table-wrap">
         <table class="table w-full text-sm whitespace-nowrap">
           <thead>
             <tr class="border-b border-line text-left text-muted">
@@ -252,7 +282,7 @@ onMounted(load)
     <!-- 充值记录 -->
     <div class="space-y-3">
       <h2 class="font-semibold">{{ t('wallet.history') }}</h2>
-      <div class="card overflow-x-auto">
+      <div class="data-table-wrap">
         <table class="table w-full text-sm whitespace-nowrap">
           <thead>
             <tr class="border-b border-line text-left text-muted">

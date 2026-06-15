@@ -44,12 +44,14 @@ const totals = computed(() => {
   let calls = 0
   let tokens = 0
   let cost = 0
+  let succeeded = 0
   for (const s of summary.value) {
     calls += s.calls
+    succeeded += s.succeeded
     tokens += s.prompt_tokens + s.completion_tokens
     cost += Number(s.cost_usd)
   }
-  return { calls, tokens, cost }
+  return { calls, tokens, cost, successRate: calls ? succeeded / calls : 1 }
 })
 async function loadSummary() {
   try {
@@ -105,10 +107,17 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <h1 class="text-2xl font-semibold tracking-tight">{{ t('usage.title') }}</h1>
-      <div class="flex gap-2">
+  <div class="app-page">
+    <div class="app-page-header">
+      <div>
+        <p class="app-eyebrow">{{ t('surface.usageEyebrow') }}</p>
+        <h1 class="app-page-title">{{ t('usage.title') }}</h1>
+        <p class="app-page-subtitle">{{ t('surface.usageSubtitle') }}</p>
+      </div>
+    </div>
+
+    <div class="toolbar-panel">
+      <div class="flex flex-wrap gap-2">
         <select v-model="status" class="input !w-40">
           <option value="">{{ t('usage.allStatuses') }}</option>
           <option value="success">success</option>
@@ -118,37 +127,55 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
         </select>
         <input v-model="model" class="input max-w-xs" :placeholder="t('usage.filterModel')" />
       </div>
+      <span class="text-xs text-muted">{{ t('usage.total', { total }) }}</span>
     </div>
 
     <!-- 近 14 天概览 -->
-    <div class="grid grid-cols-3 gap-4">
-      <div class="card p-4">
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div class="metric-card">
         <p class="text-xs text-muted">{{ t('usage.sumCalls', { days: summaryDays }) }}</p>
         <p class="mt-1 text-2xl font-semibold font-mono">{{ n(totals.calls) }}</p>
       </div>
-      <div class="card p-4">
+      <div class="metric-card">
         <p class="text-xs text-muted">{{ t('usage.sumTokens', { days: summaryDays }) }}</p>
         <p class="mt-1 text-2xl font-semibold font-mono">{{ n(totals.tokens) }}</p>
       </div>
-      <div class="card p-4">
+      <div class="metric-card">
         <p class="text-xs text-muted">{{ t('usage.sumCost', { days: summaryDays }) }}</p>
         <p class="mt-1 text-2xl font-semibold font-mono">${{ totals.cost.toFixed(4) }}</p>
+      </div>
+      <div class="metric-card sm:col-span-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p class="text-xs text-muted">{{ t('dashboard.successRate', { rate: (totals.successRate * 100).toFixed(1) }) }}</p>
+            <p class="mt-1 text-sm text-muted">{{ t('surface.usageExpandedHint') }}</p>
+          </div>
+          <span :class="totals.successRate >= 0.95 ? 'badge-ok' : 'badge-danger'">
+            {{ (totals.successRate * 100).toFixed(1) }}%
+          </span>
+        </div>
       </div>
     </div>
 
     <!-- 日趋势柱状图：可切换指标（调用/Token/花费/成功率） -->
-    <div>
-      <div class="mb-2 flex gap-1">
+    <div class="app-panel p-5">
+      <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="font-semibold">{{ t('usage.chartAlt') }}</h2>
+          <p class="mt-1 text-xs text-muted">{{ t('surface.usageMetricHint') }}</p>
+        </div>
+        <div class="flex gap-1 rounded-lg border border-line bg-elev/45 p-1">
         <button
           v-for="m in CHART_METRICS"
           :key="m"
           type="button"
-          class="btn-ghost !py-1 text-xs"
-          :class="chartMetric === m ? '!bg-panel !text-ink' : '!border-transparent text-muted'"
+          class="rounded-md px-3 py-1 text-xs transition-colors"
+          :class="chartMetric === m ? 'bg-panel text-ink shadow-sm' : 'text-muted hover:text-ink'"
           @click="chartMetric = m"
         >
           {{ t(`usage.metric_${m}`) }}
         </button>
+        </div>
       </div>
       <DailyBarChart :items="summary" :days="summaryDays" :metric="chartMetric" />
     </div>
@@ -156,7 +183,7 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
     <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
     <p v-if="loading" class="text-sm text-muted">{{ t('common.loading') }}</p>
 
-    <div v-else class="card overflow-x-auto">
+    <div v-else class="data-table-wrap">
       <table class="table w-full text-sm whitespace-nowrap">
         <thead>
           <tr class="border-b border-line text-left text-muted">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError, copyText, errorMessage } from '@/lib/api'
 
@@ -32,6 +32,9 @@ const createdKey = ref('')
 const copied = ref(false)
 const copyError = ref(false)
 const revoking = ref<number | null>(null)
+const activeKeys = computed(() => keys.value.filter((k) => k.status === 1).length)
+const restrictedKeys = computed(() => keys.value.filter((k) => k.model_limits || k.allow_ips).length)
+const cappedKeys = computed(() => keys.value.filter((k) => k.quota_limit !== '0').length)
 
 // —— 弹窗焦点管理 + Escape（无障碍：role=dialog 焦点陷阱 + 关闭即恢复焦点）——
 const createDialog = ref<HTMLElement | null>(null)
@@ -196,16 +199,39 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="max-w-3xl space-y-6">
-    <div class="flex items-center justify-between">
-      <h1 class="text-2xl font-semibold tracking-tight">{{ t('keys.title') }}</h1>
-      <button class="btn-primary" @click="showCreate = true">{{ t('keys.create') }}</button>
+  <div class="app-page">
+    <div class="app-page-header">
+      <div>
+        <p class="app-eyebrow">{{ t('surface.keysEyebrow') }}</p>
+        <h1 class="app-page-title">{{ t('keys.title') }}</h1>
+        <p class="app-page-subtitle">{{ t('keys.controlsHint') }}</p>
+      </div>
+      <button class="btn-primary shrink-0" @click="showCreate = true">{{ t('keys.create') }}</button>
     </div>
 
     <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
-    <p v-if="loading" class="text-sm text-muted">{{ t('common.loading') }}</p>
+    <div class="grid gap-4 sm:grid-cols-3">
+      <div class="metric-card">
+        <p class="text-xs text-muted">{{ t('keys.active') }}</p>
+        <p class="mt-1 font-mono text-2xl font-semibold">{{ activeKeys }}</p>
+      </div>
+      <div class="metric-card">
+        <p class="text-xs text-muted">{{ t('keys.limits') }}</p>
+        <p class="mt-1 font-mono text-2xl font-semibold">{{ restrictedKeys }}</p>
+      </div>
+      <div class="metric-card">
+        <p class="text-xs text-muted">{{ t('keys.quotaLimit') }}</p>
+        <p class="mt-1 font-mono text-2xl font-semibold">{{ cappedKeys }}</p>
+      </div>
+    </div>
+    <div class="inline-success text-sm">
+      {{ t('surface.keysSafety') }}
+    </div>
+    <div v-if="loading" class="app-panel p-5">
+      <p class="text-sm text-muted">{{ t('common.loading') }}</p>
+    </div>
 
-    <div v-else class="card overflow-hidden">
+    <div v-else class="data-table-wrap">
       <table class="table w-full text-sm">
         <thead>
           <tr class="border-b border-line text-left text-muted">
@@ -267,7 +293,7 @@ onMounted(load)
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-key-title"
-        class="card modal-panel w-full max-w-sm p-6 space-y-4"
+        class="app-panel modal-panel w-full max-w-lg p-6 space-y-4"
         @submit.prevent="create"
       >
         <h2 id="create-key-title" class="font-semibold">{{ t('keys.create') }}</h2>
@@ -303,7 +329,7 @@ onMounted(load)
 
     <!-- 二次验证（step-up，仅运营开启时触发） -->
     <div v-if="stepUp.open" class="modal-backdrop" @click.self="stepUp.open = false">
-      <form class="card modal-panel w-full max-w-sm p-6 space-y-4" @submit.prevent="submitStepUp">
+      <form class="app-panel modal-panel w-full max-w-sm p-6 space-y-4" @submit.prevent="submitStepUp">
         <h2 class="font-semibold">{{ t('keys.stepUpTitle') }}</h2>
         <p class="text-sm text-muted">{{ t('keys.stepUpHint') }}</p>
         <div>
@@ -329,7 +355,7 @@ onMounted(load)
         role="dialog"
         aria-modal="true"
         aria-labelledby="created-key-title"
-        class="card modal-panel w-full max-w-lg p-6 space-y-4"
+        class="app-panel modal-panel w-full max-w-lg p-6 space-y-4"
       >
         <h2 id="created-key-title" class="font-semibold">{{ t('keys.createdTitle') }}</h2>
         <p class="text-sm text-danger">{{ t('keys.createdWarning') }}</p>

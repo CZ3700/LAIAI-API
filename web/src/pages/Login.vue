@@ -5,6 +5,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useAuth } from '@/stores/auth'
 import { api, errorMessage } from '@/lib/api'
 import ThemeLocale from '@/components/ThemeLocale.vue'
+import BrandMark from '@/components/BrandMark.vue'
 
 const { t } = useI18n()
 const auth = useAuth()
@@ -102,26 +103,19 @@ async function submit2fa() {
 </script>
 
 <template>
-  <div class="aurora min-h-screen grid place-items-center p-6">
+  <div class="auth-shell min-h-screen grid place-items-center bg-bg p-6">
     <div class="fixed top-4 right-4"><ThemeLocale /></div>
     <div class="w-full max-w-sm space-y-6">
-      <div class="flex items-center justify-center gap-2.5">
-        <div
-          class="grid h-10 w-10 place-items-center rounded-xl text-base font-bold text-white"
-          style="background: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent-2)))"
-          aria-hidden="true"
-        >
-          L
-        </div>
-        <span class="text-2xl font-semibold tracking-tight">LAIAI</span>
+      <div class="flex items-center justify-center">
+        <BrandMark size="lg" />
       </div>
       <!-- 2FA 二阶段 -->
-      <form v-if="need2fa" class="card modal-panel w-full p-8 space-y-5" @submit.prevent="submit2fa">
+      <form v-if="need2fa" class="auth-card card modal-panel w-full p-8 space-y-5" @submit.prevent="submit2fa">
         <h1 class="text-xl font-semibold">{{ t('auth.twofaTitle') }}</h1>
         <p class="text-sm text-muted">{{ t('auth.twofaHint') }}</p>
         <div>
           <label class="label" for="totp">{{ t('auth.verifyCode') }}</label>
-          <input id="totp" v-model="code" class="input font-mono text-center text-lg tracking-widest" maxlength="20" autocomplete="one-time-code" autofocus required />
+          <input id="totp" v-model="code" class="input font-mono text-center text-lg" maxlength="20" autocomplete="one-time-code" autofocus required />
           <p class="mt-1 text-xs text-muted">{{ t('auth.twofaBackupHint') }}</p>
         </div>
         <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
@@ -129,7 +123,7 @@ async function submit2fa() {
       </form>
 
       <!-- 密码登录 -->
-      <form v-else class="card modal-panel w-full p-8 space-y-5" @submit.prevent="submit">
+      <form v-else class="auth-card card modal-panel w-full p-8 space-y-5" @submit.prevent="submit">
         <h1 class="text-xl font-semibold">{{ t('auth.signinTitle') }}</h1>
       <div>
         <label class="label" for="email">{{ t('auth.email') }}</label>

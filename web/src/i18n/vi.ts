@@ -1,4 +1,4 @@
-import type { Messages } from './en'
+import en, { type Messages } from './en'
 
 export default {
   common: {
@@ -52,6 +52,7 @@ export default {
     theme: 'Đổi giao diện',
     language: 'Ngôn ngữ',
   },
+  surface: en.surface,
   legal: {
     terms: 'Điều khoản',
     privacy: 'Quyền riêng tư',
@@ -138,6 +139,7 @@ export default {
     modality: 'Phương thức',
     modChat: 'Trò chuyện',
     modImage: 'Hình ảnh',
+    modVideo: 'Video',
     modEmbed: 'Embedding',
     openPlayground: 'Mở trong playground',
   },  play: {
@@ -157,9 +159,9 @@ export default {
     inputPlaceholder: 'Nhập tin nhắn…',
     send: 'Gửi',
     stop: 'Dừng',
-    noReply: 'Thượng nguồn không trả về nội dung — kiểm tra kênh/mô hình có truy cập được và API key có quyền.',
-    nonChatModel: 'Đây là mô hình {category} — playground chỉ hỗ trợ mô hình văn bản/chat. Hãy gọi trực tiếp qua API.',
     usage: 'Sử dụng: {input} vào / {output} ra token',
+    noReply: "Thượng nguồn không trả về nội dung — kiểm tra kênh/mô hình có truy cập được và API key có quyền.",
+    nonChatModel: "Đây là mô hình {category} — playground chỉ hỗ trợ mô hình văn bản/chat. Hãy gọi trực tiếp qua API.",
   },  usage: {
     title: 'Mức sử dụng',
     time: 'Thời gian',
@@ -272,7 +274,7 @@ export default {
     f_billing_t: 'Tính phí minh bạch',
     f_billing_d: 'Hold-then-capture đo theo mức dùng thực. Không phí bất ngờ, nhật ký gọi đầy đủ.',
     f_global_t: 'Đông gặp Tây',
-    f_global_d: 'Seedance, Doubao, Qwen, GLM song hành cùng OpenAI, Anthropic, Gemini.',
+    f_global_d: 'Seedance, DeepSeek, Qwen, GLM, MiniMax song hành cùng OpenAI, Anthropic, Gemini.',
     codeTitle: 'Tương thích OpenAI, dùng ngay',
     ctaTitle: 'Bắt đầu xây dựng trong vài phút',
     ctaSub: 'Tạo tài khoản, thêm một khóa và gọi bất kỳ mô hình nào qua một endpoint duy nhất.',
@@ -333,6 +335,7 @@ export default {
     tokenHint: 'Gửi dưới dạng X-Admin-Token. Chỉ lưu trong tab trình duyệt này.',
     unlock: 'Mở khóa',
     clear: 'Xóa',
+    overview: 'Tổng quan',
     channels: 'Kênh',
     analytics: 'Phân tích',
     health: 'Sức khỏe',

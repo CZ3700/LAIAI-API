@@ -1,4 +1,4 @@
-import type { Messages } from './en'
+import en, { type Messages } from './en'
 
 export default {
   common: {
@@ -52,6 +52,7 @@ export default {
     theme: 'Сменить тему',
     language: 'Язык',
   },
+  surface: en.surface,
   legal: {
     terms: 'Условия',
     privacy: 'Конфиденциальность',
@@ -138,6 +139,7 @@ export default {
     modality: 'Модальность',
     modChat: 'Чат',
     modImage: 'Изображение',
+    modVideo: 'Видео',
     modEmbed: 'Эмбеддинг',
     openPlayground: 'Открыть в песочнице',
   },  play: {
@@ -157,9 +159,9 @@ export default {
     inputPlaceholder: 'Введите сообщение…',
     send: 'Отправить',
     stop: 'Стоп',
-    noReply: 'Провайдер не вернул контент — проверьте доступность канала/модели и права API-ключа.',
-    nonChatModel: 'Это модель типа {category} — плейграунд поддерживает только текстовые/чат-модели. Вызывайте её напрямую через API.',
     usage: 'Расход: {input} вход / {output} выход токенов',
+    noReply: "Провайдер не вернул контент — проверьте доступность канала/модели и права API-ключа.",
+    nonChatModel: "Это модель типа {category} — плейграунд поддерживает только текстовые/чат-модели. Вызывайте её напрямую через API.",
   },  usage: {
     title: 'Использование',
     time: 'Время',
@@ -272,7 +274,7 @@ export default {
     f_billing_t: 'Прозрачный биллинг',
     f_billing_d: 'Hold-then-capture с учётом по фактическому использованию. Никаких неожиданных списаний, полные журналы вызовов.',
     f_global_t: 'Восток встречает Запад',
-    f_global_d: 'Seedance, Doubao, Qwen, GLM наряду с OpenAI, Anthropic, Gemini.',
+    f_global_d: 'Seedance, DeepSeek, Qwen, GLM, MiniMax наряду с OpenAI, Anthropic, Gemini.',
     codeTitle: 'Готовая OpenAI-совместимость',
     ctaTitle: 'Начните разработку за считанные минуты',
     ctaSub: 'Создайте аккаунт, вставьте ключ и вызывайте любую модель через единый эндпоинт.',
@@ -333,6 +335,7 @@ export default {
     tokenHint: 'Отправляется как X-Admin-Token. Хранится только в этой вкладке.',
     unlock: 'Разблокировать',
     clear: 'Очистить',
+    overview: 'Обзор',
     channels: 'Каналы',
     analytics: 'Аналитика',
     health: 'Здоровье',

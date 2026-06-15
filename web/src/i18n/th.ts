@@ -1,4 +1,4 @@
-import type { Messages } from './en'
+import en, { type Messages } from './en'
 
 export default {
   common: {
@@ -52,6 +52,7 @@ export default {
     theme: 'สลับธีม',
     language: 'ภาษา',
   },
+  surface: en.surface,
   legal: {
     terms: 'ข้อกำหนด',
     privacy: 'ความเป็นส่วนตัว',
@@ -138,6 +139,7 @@ export default {
     modality: 'รูปแบบ',
     modChat: 'แชท',
     modImage: 'รูปภาพ',
+    modVideo: 'วิดีโอ',
     modEmbed: 'เอ็มเบดดิง',
     openPlayground: 'เปิดในเพลย์กราวด์',
   },  play: {
@@ -157,9 +159,9 @@ export default {
     inputPlaceholder: 'พิมพ์ข้อความ…',
     send: 'ส่ง',
     stop: 'หยุด',
-    noReply: 'ต้นทางไม่ส่งเนื้อหากลับ — ตรวจสอบว่าช่อง/โมเดลเข้าถึงได้และคีย์ API มีสิทธิ์',
-    nonChatModel: 'นี่คือโมเดล {category} — เพลย์กราวด์รองรับเฉพาะโมเดลข้อความ/แชต โปรดเรียกผ่าน API โดยตรง',
     usage: 'การใช้งาน: เข้า {input} / ออก {output} โทเคน',
+    noReply: "ต้นทางไม่ส่งเนื้อหากลับ — ตรวจสอบว่าช่อง/โมเดลเข้าถึงได้และคีย์ API มีสิทธิ์",
+    nonChatModel: "นี่คือโมเดล {category} — เพลย์กราวด์รองรับเฉพาะโมเดลข้อความ/แชต โปรดเรียกผ่าน API โดยตรง",
   },  usage: {
     title: 'การใช้งาน',
     time: 'เวลา',
@@ -272,7 +274,7 @@ export default {
     f_billing_t: 'การเรียกเก็บเงินโปร่งใส',
     f_billing_d: 'Hold-then-capture วัดตามการใช้งานจริง ไม่มีค่าใช้จ่ายเซอร์ไพรส์ บันทึกการเรียกครบถ้วน',
     f_global_t: 'ตะวันออกพบตะวันตก',
-    f_global_d: 'Seedance, Doubao, Qwen, GLM เคียงข้าง OpenAI, Anthropic, Gemini',
+    f_global_d: 'Seedance, DeepSeek, Qwen, GLM, MiniMax เคียงข้าง OpenAI, Anthropic, Gemini',
     codeTitle: 'เข้ากันได้กับ OpenAI ใช้ได้ทันที',
     ctaTitle: 'เริ่มสร้างได้ในไม่กี่นาที',
     ctaSub: 'สร้างบัญชี ใส่คีย์ แล้วเรียกโมเดลใดก็ได้ผ่านเอนด์พอยต์เดียว',
@@ -333,6 +335,7 @@ export default {
     tokenHint: 'ส่งเป็น X-Admin-Token เก็บไว้ในแท็บเบราว์เซอร์นี้เท่านั้น',
     unlock: 'ปลดล็อก',
     clear: 'ล้าง',
+    overview: 'ภาพรวม',
     channels: 'ช่องทาง',
     analytics: 'การวิเคราะห์',
     health: 'สุขภาพช่อง',

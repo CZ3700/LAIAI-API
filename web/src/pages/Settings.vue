@@ -148,11 +148,18 @@ async function changePassword() {
 </script>
 
 <template>
-  <div class="max-w-2xl space-y-6">
-    <h1 class="text-2xl font-semibold tracking-tight">{{ t('settings.title') }}</h1>
+  <div class="app-page">
+    <div class="app-page-header">
+      <div>
+        <p class="app-eyebrow">{{ t('surface.settingsEyebrow') }}</p>
+        <h1 class="app-page-title">{{ t('settings.title') }}</h1>
+        <p class="app-page-subtitle">{{ t('surface.settingsSubtitle') }}</p>
+      </div>
+    </div>
 
+    <section class="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
     <!-- 账户信息 -->
-    <div class="card p-6">
+    <div class="app-panel-strong p-6">
       <h2 class="mb-4 font-semibold">{{ t('settings.account') }}</h2>
       <dl class="grid grid-cols-2 gap-y-3 text-sm">
         <dt class="text-muted">{{ t('auth.email') }}</dt>
@@ -172,7 +179,7 @@ async function changePassword() {
     </div>
 
     <!-- 显示名 -->
-    <form class="card p-6 space-y-4" @submit.prevent="saveProfile">
+    <form class="app-panel p-6 space-y-4" @submit.prevent="saveProfile">
       <h2 class="font-semibold">{{ t('settings.profile') }}</h2>
       <div>
         <label class="label" for="dn">{{ t('settings.displayName') }}</label>
@@ -182,9 +189,11 @@ async function changePassword() {
       <p v-if="profileErr" class="text-sm text-danger" role="alert">{{ profileErr }}</p>
       <button class="btn-primary" :disabled="profileBusy">{{ t('settings.save') }}</button>
     </form>
+    </section>
 
+    <section class="grid gap-4 lg:grid-cols-2">
     <!-- 改密码 -->
-    <form class="card p-6 space-y-4" @submit.prevent="changePassword">
+    <form class="app-panel p-6 space-y-4" @submit.prevent="changePassword">
       <h2 class="font-semibold">{{ t('settings.password') }}</h2>
       <div>
         <label class="label" for="op">{{ t('settings.currentPassword') }}</label>
@@ -204,7 +213,7 @@ async function changePassword() {
     </form>
 
     <!-- 2FA -->
-    <div class="card p-6 space-y-4">
+    <div class="app-panel p-6 space-y-4">
       <div class="flex items-center justify-between">
         <h2 class="font-semibold">{{ t('settings.twofa') }}</h2>
         <span :class="totpEnabled ? 'badge-ok' : 'badge-muted'">
@@ -259,5 +268,6 @@ async function changePassword() {
         <button class="btn-ghost !py-1 text-xs" @click="copyBackup">{{ t('settings.twofaBackupCopy') }}</button>
       </div>
     </div>
+    </section>
   </div>
 </template>
