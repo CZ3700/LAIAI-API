@@ -157,6 +157,7 @@ export default {
     inputPlaceholder: 'Saisissez un message…',
     send: 'Envoyer',
     stop: 'Arrêter',
+    noReply: 'Le fournisseur n’a renvoyé aucun contenu — vérifiez que le canal/modèle est joignable et que la clé API a accès.',
     usage: 'Usage : {input} entrée / {output} sortie tokens',
   },  usage: {
     title: 'Utilisation',

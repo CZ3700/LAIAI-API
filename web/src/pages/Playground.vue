@@ -109,6 +109,7 @@ async function send() {
       const reader = resp.body.getReader()
       const decoder = new TextDecoder()
       let buf = ''
+      let streamErr = ''
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
@@ -122,6 +123,10 @@ async function send() {
           if (payload === '[DONE]') continue
           try {
             const j = JSON.parse(payload)
+            if (j.error) { // 上游把错误作为 SSE data 帧下发（OpenAI 风格）——不能静默
+              streamErr = typeof j.error === 'object' ? (j.error.message ?? JSON.stringify(j.error)) : String(j.error)
+              continue
+            }
             const delta = j.choices?.[0]?.delta?.content
             if (delta) {
               assistant.value.content += delta
@@ -133,13 +138,18 @@ async function send() {
           }
         }
       }
+      // 流已开始(200)但全程无内容：把静默"转圈"变成可见原因（上游错误帧 / 空回复 / 非 SSE 响应）
+      if (!assistant.value.content) throw new Error(streamErr || t('play.noReply'))
     } else {
       const j = (await resp.json()) as {
         choices?: { message?: { content?: string } }[]
         usage?: { prompt_tokens: number; completion_tokens: number }
+        error?: { message?: string } | string
       }
+      if (j.error) throw new Error(typeof j.error === 'object' ? (j.error.message ?? JSON.stringify(j.error)) : String(j.error))
       assistant.value.content = j.choices?.[0]?.message?.content ?? ''
       if (j.usage) lastUsage.value = j.usage
+      if (!assistant.value.content) throw new Error(t('play.noReply'))
     }
   } catch (e) {
     if ((e as Error).name === 'AbortError') {

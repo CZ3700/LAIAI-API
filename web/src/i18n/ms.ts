@@ -157,6 +157,7 @@ export default {
     inputPlaceholder: 'Taip mesej…',
     send: 'Hantar',
     stop: 'Henti',
+    noReply: 'Huluan tidak mengembalikan kandungan — semak saluran/model boleh dicapai dan kunci API mempunyai akses.',
     usage: 'Penggunaan: {input} masuk / {output} keluar token',
   },  usage: {
     title: 'Penggunaan',

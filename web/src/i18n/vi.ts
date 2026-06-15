@@ -157,6 +157,7 @@ export default {
     inputPlaceholder: 'Nhập tin nhắn…',
     send: 'Gửi',
     stop: 'Dừng',
+    noReply: 'Thượng nguồn không trả về nội dung — kiểm tra kênh/mô hình có truy cập được và API key có quyền.',
     usage: 'Sử dụng: {input} vào / {output} ra token',
   },  usage: {
     title: 'Mức sử dụng',

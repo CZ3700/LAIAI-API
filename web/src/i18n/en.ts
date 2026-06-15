@@ -158,6 +158,7 @@ const messages = {
     inputPlaceholder: 'Type a message…',
     send: 'Send',
     stop: 'Stop',
+    noReply: 'Upstream returned no content — check the channel/model is reachable and the API key has access.',
     usage: 'Usage: {input} in / {output} out tokens',
   },  usage: {
     title: 'Usage',
