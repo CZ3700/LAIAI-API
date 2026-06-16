@@ -40,6 +40,10 @@ var (
 	reDestructive = regexp.MustCompile(`(?i)(\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bTRUNCATE\b|\bMODIFY\s+COLUMN\b|\bCHANGE\s+COLUMN\b|\bRENAME\s+TABLE\b|\bRENAME\s+COLUMN\b|\bALTER\s+TABLE\s+\S+\s+DROP\b)`)
 	reDDL         = regexp.MustCompile(`(?i)^(CREATE\s+TABLE|ALTER\s+TABLE|CREATE\s+(UNIQUE\s+)?INDEX|DROP\s+INDEX|CREATE\s+VIEW|DROP\s+VIEW)\b`)
 	reAddColumn   = regexp.MustCompile(`(?i)\bALTER\s+TABLE\b.*\bADD\s+COLUMN\b`)
+	// 显式确认标记：迁移文件含 `-- migrate:ack-destructive <理由>` 时，其破坏性 DDL 降级为
+	// "acknowledged"（已人工 runbook 评审），不再 fail CI gate。用于必要的破坏性变更（如分片改唯一键），
+	// 杜绝意外破坏性 DDL 漏网——必须有意识写入标记 + 留理由。
+	reAckDestructive = regexp.MustCompile(`(?i)migrate:ack-destructive`)
 )
 
 // Lint 静态扫描所有迁移的 MySQL 安全风险。返回的 findings 按文件名序排列。
@@ -59,12 +63,16 @@ func Lint(fsys fs.FS) ([]LintFinding, error) {
 			return nil, fmt.Errorf("lint: read %s: %w", f, err)
 		}
 		stmts := splitStatements(string(raw))
+		acked := reAckDestructive.Match(raw) // 文件级显式确认标记
 		ddlCount, addColCount := 0, 0
 		for i, s := range stmts {
 			if reDestructive.MatchString(s) {
+				sev, detail := "danger", "破坏性/类型变更 DDL，须先备份 + 人工 runbook 确认"
+				if acked {
+					sev, detail = "ack", "破坏性 DDL 已显式确认（migrate:ack-destructive，已人工 runbook 评审）"
+				}
 				out = append(out, LintFinding{
-					File: f, Stmt: i + 1, Severity: "danger", Rule: "destructive-ddl",
-					Detail: "破坏性/类型变更 DDL，须先备份 + 人工 runbook 确认",
+					File: f, Stmt: i + 1, Severity: sev, Rule: "destructive-ddl", Detail: detail,
 				})
 			}
 			if reDDL.MatchString(s) {

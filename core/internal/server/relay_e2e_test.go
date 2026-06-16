@@ -19,8 +19,8 @@ import (
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/payment"
-	"github.com/laiai/laiai-next/core/internal/totp"
 	"github.com/laiai/laiai-next/core/internal/relay"
+	"github.com/laiai/laiai-next/core/internal/totp"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -37,10 +37,14 @@ func relaypkgTimeout(d time.Duration) time.Duration {
 const relayTestSchema = `
 CREATE TABLE ledger_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    org_id INTEGER NOT NULL, type TEXT NOT NULL,
+    org_id INTEGER NOT NULL, type TEXT NOT NULL, shard INTEGER NOT NULL DEFAULT 0,
     posted_balance NUMERIC NOT NULL DEFAULT 0, held_amount NUMERIC NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (org_id, type)
+    UNIQUE (org_id, type, shard)
+);
+CREATE TABLE ledger_account_shards (
+    org_id INTEGER NOT NULL, type TEXT NOT NULL, shard_count INTEGER NOT NULL DEFAULT 1,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (org_id, type)
 );
 CREATE TABLE ledger_journal (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

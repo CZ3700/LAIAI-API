@@ -28,6 +28,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"strconv"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/dberr"
@@ -71,11 +73,21 @@ type Account struct {
 	ID            uint64          `gorm:"primaryKey"`
 	OrgID         uint64          `gorm:"column:org_id"`
 	Type          string          `gorm:"column:type"`
+	Shard         int             `gorm:"column:shard"` // 账户分片号（0=主分片；规模化方案B）。默认 0=逻辑单账户。
 	PostedBalance decimal.Decimal `gorm:"column:posted_balance"`
 	HeldAmount    decimal.Decimal `gorm:"column:held_amount"`
 }
 
 func (Account) TableName() string { return "ledger_accounts" }
+
+// AccountShardConfig：(org,type) 的物理分片数（缺省 1）。仅给触顶单账户行写吞吐的巨客户设 >1（规模化）。
+type AccountShardConfig struct {
+	OrgID      uint64 `gorm:"column:org_id"`
+	Type       string `gorm:"column:type"`
+	ShardCount int    `gorm:"column:shard_count"`
+}
+
+func (AccountShardConfig) TableName() string { return "ledger_account_shards" }
 
 // Available 返回可用余额（posted - held）。
 func (a *Account) Available() decimal.Decimal { return a.PostedBalance.Sub(a.HeldAmount) }
@@ -108,17 +120,26 @@ type Hold struct {
 
 func (Hold) TableName() string { return "ledger_holds" }
 
-// EnsureAccount 取出（或创建）org 的某类型账户。幂等：依赖 UNIQUE(org_id, type)。
+// EnsureAccount 取出（或创建）org 的某类型账户的**主分片(shard=0)**。幂等：UNIQUE(org_id,type,shard)。
+//
+// 🚨 分片表上 (org_id,type) 不再唯一（uk_account_org_type_shard），故必须显式钉 shard=0——否则
+// `First WHERE org_id AND type` 在 N>1 时非确定命中任意分片（admin override 据此算 delta 会严重订偏，
+// 对抗评审 high）。充值/grant/admin-override-base 等「逻辑账户级」写都入主分片；hold 走 CreateHoldSharded 选片。
 func EnsureAccount(tx *gorm.DB, orgID uint64, accType string) (*Account, error) {
 	if orgID == 0 || accType == "" {
 		return nil, fmt.Errorf("%w: orgID/accType required", ErrInvalidInput)
 	}
-	acc := &Account{OrgID: orgID, Type: accType}
-	err := tx.Where("org_id = ? AND type = ?", orgID, accType).First(acc).Error
+	return ensureAccountAt(tx, orgID, accType, 0)
+}
+
+// ensureAccountAt 取出/创建指定分片的账户行（三元唯一键幂等）。
+func ensureAccountAt(tx *gorm.DB, orgID uint64, accType string, shard int) (*Account, error) {
+	acc := &Account{OrgID: orgID, Type: accType, Shard: shard}
+	err := tx.Where("org_id = ? AND type = ? AND shard = ?", orgID, accType, shard).First(acc).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		if cerr := tx.Create(acc).Error; cerr != nil {
 			if isDuplicate(cerr) { // 并发创建竞态：另一事务先建成，重读
-				err = tx.Where("org_id = ? AND type = ?", orgID, accType).First(acc).Error
+				err = tx.Where("org_id = ? AND type = ? AND shard = ?", orgID, accType, shard).First(acc).Error
 			} else {
 				return nil, cerr
 			}
@@ -130,6 +151,180 @@ func EnsureAccount(tx *gorm.DB, orgID uint64, accType string) (*Account, error) 
 		return nil, err
 	}
 	return acc, nil
+}
+
+// shardCountFor 返回 (org,type) 的分片数（无配置=1）。
+func shardCountFor(tx *gorm.DB, orgID uint64, accType string) (int, error) {
+	cfg := &AccountShardConfig{}
+	err := tx.Where("org_id = ? AND type = ?", orgID, accType).First(cfg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 1, nil // 缺省单分片 → 与现状逐字一致
+	}
+	if err != nil {
+		return 0, err
+	}
+	if cfg.ShardCount < 1 {
+		return 1, nil
+	}
+	return cfg.ShardCount, nil
+}
+
+// shardForKey 确定性哈希选片（同 key 总落同片）。幂等仍由 UNIQUE(idempotency_key) 全表兜底，与此无关。
+func shardForKey(key string, n int) int {
+	if n <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return int(h.Sum32() % uint32(n))
+}
+
+// shardOrder：primary(hash 分散写热点) 优先 + 其余按升序回退。回退段全局同序限制跨分片回退死锁窗口。
+func shardOrder(primary, n int) []int {
+	order := make([]int, 0, n)
+	order = append(order, primary)
+	for s := 0; s < n; s++ {
+		if s != primary {
+			order = append(order, s)
+		}
+	}
+	return order
+}
+
+// EnsureShardedAccount：按 shardKey 选片并 ensure（hold 选片用；非 hold 的逻辑账户级写用 EnsureAccount=主分片）。
+func EnsureShardedAccount(tx *gorm.DB, orgID uint64, accType, shardKey string) (*Account, error) {
+	n, err := shardCountFor(tx, orgID, accType)
+	if err != nil {
+		return nil, err
+	}
+	return ensureAccountAt(tx, orgID, accType, shardForKey(shardKey, n))
+}
+
+// CreateHoldSharded：分片感知 hold——按 shardKey 选主分片，余额不足时按 shardOrder 跨分片回退；
+// 各片皆不足才返回 ErrInsufficientBalance（=全 org 真不足）。
+//
+// 🚨 回退命门（对抗评审 high）：CreateHold 先插 hold 行（UNIQUE(idempotency_key) tripwire）再条件冻结；
+// 某片不足时**必须 SAVEPOINT/RollbackTo 撤销该片刚插的 hold 行**，否则下一片 CreateHold 撞自己刚插的
+// 同键脏行→被误判幂等命中、返回 held=0 的错误片 hold。savepoint 名只用循环序号（绝不拼 shardKey，
+// 防 GORM 裸拼接 SQL 的语法破坏/注入）。RollbackTo 也释放失败片本次取得的行锁，配合 shardOrder
+// 的全局同序回退消除跨分片回退死锁。
+//
+// 幂等：重放（同 idempotency_key）无论原 hold 落哪片，第一片 CreateHold 的前置 idem 查询即命中首次 hold
+// 直接返回（already=true），不再选片/回退（注意：重放的 shardKey 可能 hash 到不同 primary，但 idem 查询
+// 是全表按 key，故仍命中——绝不重复冻结）。
+//
+// N<=1（缺省/未分片）→ 直接走 CreateHold，与现状逐字一致（零回归，不引入 SAVEPOINT 开销）。
+func CreateHoldSharded(tx *gorm.DB, orgID uint64, accType, shardKey string, in HoldInput) (*Hold, bool, error) {
+	n, err := shardCountFor(tx, orgID, accType)
+	if err != nil {
+		return nil, false, err
+	}
+	if n <= 1 {
+		acc, e := ensureAccountAt(tx, orgID, accType, 0)
+		if e != nil {
+			return nil, false, e
+		}
+		in.AccountID = acc.ID
+		return CreateHold(tx, in)
+	}
+	for attempt, shard := range shardOrder(shardForKey(shardKey, n), n) {
+		acc, e := ensureAccountAt(tx, orgID, accType, shard)
+		if e != nil {
+			return nil, false, e
+		}
+		in.AccountID = acc.ID
+		sp := "sp_" + strconv.Itoa(attempt) // 受控字符（绝不拼 shardKey）
+		if e := tx.SavePoint(sp).Error; e != nil {
+			return nil, false, e
+		}
+		h, already, herr := CreateHold(tx, in)
+		if herr == nil {
+			return h, already, nil // 成功 或 幂等命中：直接返回，不再换片
+		}
+		if !errors.Is(herr, ErrInsufficientBalance) {
+			return nil, false, herr // 真错误（DB 等）→ 上抛回滚
+		}
+		if e := tx.RollbackTo(sp).Error; e != nil { // 撤销本片脏 hold 行 + 释放本片行锁
+			return nil, false, e
+		}
+	}
+	return nil, false, ErrInsufficientBalance // 各片皆不足 = 全 org 真不足
+}
+
+// OrgAvailable 返回 (org,type) 跨所有分片的可用余额之和（Σ posted - held）。读路径与回退判定复用。
+func OrgAvailable(tx *gorm.DB, orgID uint64, accType string) (decimal.Decimal, error) {
+	posted, held, err := OrgBalances(tx, orgID, accType)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return posted.Sub(held), nil
+}
+
+// OrgBalances 返回 (org,type) 跨所有分片的 (Σposted, Σheld)。供 console/admin 余额展示按分片归并。
+func OrgBalances(tx *gorm.DB, orgID uint64, accType string) (posted, held decimal.Decimal, err error) {
+	var row struct {
+		Posted decimal.Decimal `gorm:"column:posted"`
+		Held   decimal.Decimal `gorm:"column:held"`
+	}
+	e := tx.Model(&Account{}).
+		Select("COALESCE(SUM(posted_balance),0) AS posted, COALESCE(SUM(held_amount),0) AS held").
+		Where("org_id = ? AND type = ?", orgID, accType).Scan(&row).Error
+	return row.Posted, row.Held, e
+}
+
+// ShardAccountIDs 返回 (org,type) 所有分片账户行的 id（getLedger 流水按 account_id IN (...) 过滤用）。
+func ShardAccountIDs(tx *gorm.DB, orgID uint64, accType string) ([]uint64, error) {
+	var ids []uint64
+	err := tx.Model(&Account{}).Where("org_id = ? AND type = ?", orgID, accType).Pluck("id", &ids).Error
+	return ids, err
+}
+
+// LockOrgPosted 锁定 (org,type) 所有分片行（FOR UPDATE）并返回 Σposted_balance。
+// admin override 精确订正用：持锁到事务结束，期间各分片 posted 不被改动，delta=目标-Σposted 精确。
+func LockOrgPosted(tx *gorm.DB, orgID uint64, accType string) (decimal.Decimal, error) {
+	q := tx
+	if tx.Dialector.Name() == "mysql" {
+		q = tx.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	var accs []Account
+	if err := q.Where("org_id = ? AND type = ?", orgID, accType).Find(&accs).Error; err != nil {
+		return decimal.Zero, err
+	}
+	total := decimal.Zero
+	for i := range accs {
+		total = total.Add(accs[i].PostedBalance)
+	}
+	return total, nil
+}
+
+// RebalanceShards 在同 (org,type) 两分片间搬钱：from 片 debit、to 片 credit，成对过账 net=0，
+// 保住恒等式 A（Σjournal.delta 守恒）。供 rebalancer job 抹平分片倾斜（充值默认入主分片、消费打散，
+// 不抹平则非主片饿死→回退反复打主片，分片退化为入金单点）。amount 正数。
+func RebalanceShards(tx *gorm.DB, orgID uint64, accType string, fromShard, toShard int, amount decimal.Decimal, idemKey string) error {
+	if !amount.IsPositive() || fromShard == toShard {
+		return fmt.Errorf("%w: positive amount + distinct shards required", ErrInvalidInput)
+	}
+	from, err := ensureAccountAt(tx, orgID, accType, fromShard)
+	if err != nil {
+		return err
+	}
+	to, err := ensureAccountAt(tx, orgID, accType, toShard)
+	if err != nil {
+		return err
+	}
+	if _, _, err := Post(tx, PostInput{ // debit from（带可用守卫，不可搬出超过其可用额）
+		IdempotencyKey: "rebal_out:" + idemKey, AccountID: from.ID,
+		Kind: KindDebit, Delta: amount.Neg(), RefType: "rebalance", RefID: accType,
+		Reason: fmt.Sprintf("shard rebalance %d->%d", fromShard, toShard),
+	}); err != nil {
+		return err
+	}
+	_, _, err = Post(tx, PostInput{ // credit to
+		IdempotencyKey: "rebal_in:" + idemKey, AccountID: to.ID,
+		Kind: KindCredit, Delta: amount, RefType: "rebalance", RefID: accType,
+		Reason: fmt.Sprintf("shard rebalance %d->%d", fromShard, toShard),
+	})
+	return err
 }
 
 // PostInput 直接过账（充值 credit、扣减 debit、订阅 grant/expire）。
