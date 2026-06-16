@@ -48,9 +48,30 @@ func main() {
 		log.Error("db handle failed", "err", err)
 		os.Exit(1)
 	}
-	sqlDB.SetMaxOpenConns(50)
-	sqlDB.SetMaxIdleConns(10)
+	sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns) // 规模化旋钮（env 可调）
+	sqlDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
+
+	// 读副本（规模化）：把「非金钱、容延迟」的只读（分析/用量历史/排行/公开价目）路由到只读副本，
+	// 扩容读吞吐 = 加副本 + 改 LAIAI_DSN_REPLICAS，零代码。多物理副本置于读端 LB/云只读端点之后即一个 DSN。
+	// 🚨 金钱判定读（余额/quota/hold 预检）永远走主库 db，绝不经 readDB——复制延迟会致超发（资金红线）。
+	readDB := db
+	if len(cfg.ReplicaDSNs) > 0 {
+		rdb, rerr := gorm.Open(mysql.Open(cfg.ReplicaDSNs[0]), &gorm.Config{
+			Logger: gormlogger.Default.LogMode(gormlogger.Warn),
+		})
+		if rerr != nil {
+			log.Error("replica db connect failed, reads fall back to primary", "err", rerr)
+		} else {
+			if rsql, e := rdb.DB(); e == nil {
+				rsql.SetMaxOpenConns(cfg.DBMaxOpenConns)
+				rsql.SetMaxIdleConns(cfg.DBMaxIdleConns)
+				rsql.SetConnMaxLifetime(5 * time.Minute)
+			}
+			readDB = rdb
+			log.Info("read replica enabled for non-money analytics reads", "replica_dsns", len(cfg.ReplicaDSNs))
+		}
+	}
 
 	// Invocation Store：异步记录器（保留期清理循环移至 apiSrv 构建后，见下）
 	rec := invocation.NewRecorder(db, log)
@@ -108,6 +129,7 @@ func main() {
 		Log:                     log,
 		InvocationRetentionDays: cfg.InvocationRetentionDays, // ext_settings.log_retention_days 未配置时的回退默认
 		RedisRateLimiter:        redisRL,
+		ReadDB:                  readDB, // 只读副本（仅非金钱分析读用；nil/同主库=全走主）
 	})
 
 	// 后台维护循环（每小时）：旧日志保留期清理（调用日志 + 审计日志，运营可热配，gap P2-C）

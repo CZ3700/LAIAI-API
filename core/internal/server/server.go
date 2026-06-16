@@ -32,6 +32,9 @@ type Options struct {
 	Log           *slog.Logger
 	// RedisRateLimiter：接入 Redis 跨实例限流（多实例部署用）；nil = relay 退化进程内限流。
 	RedisRateLimiter *redis.Client
+	// ReadDB：只读副本句柄（规模化）；nil = 用主库。🚨 只供「非金钱、容延迟」的分析/用量/排行/
+	// 公开价目只读；余额/quota/hold 等金钱判定读永远用主 db（复制延迟致超发，资金红线）。
+	ReadDB *gorm.DB
 	// InvocationRetentionDays：调用日志保留天数的「启动期默认」（env 注入）。
 	// 运营可用 ext_settings.log_retention_days 热覆盖；该值仅作未配置时的回退。0 = 永久保留。
 	InvocationRetentionDays int
@@ -39,6 +42,7 @@ type Options struct {
 
 type Server struct {
 	db                  *gorm.DB
+	readDB              *gorm.DB // 只读副本（规模化）；nil 时 readOnly() 回退主 db。仅非金钱分析读用。
 	secret              []byte
 	adminToken          []byte
 	keyring             *crypto.Keyring
@@ -48,6 +52,15 @@ type Server struct {
 	log                 *slog.Logger
 	now                 func() time.Time // 可注入时钟，测试用
 	invRetentionDefault int              // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
+}
+
+// readOnly 返回只读副本句柄（规模化：分析/用量/排行/公开价目等重读卸载到副本）；未配副本回退主库。
+// 🚨 资金红线：仅用于「非金钱、容延迟」只读。余额/quota/hold 预检/任何写永远用 s.db（复制延迟致超发）。
+func (s *Server) readOnly() *gorm.DB {
+	if s.readDB != nil {
+		return s.readDB
+	}
+	return s.db
 }
 
 // Log 返回服务器 logger（payment/audit 等用）。
@@ -77,7 +90,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		authBurst = 5 // 生产默认：5 突发 + 1/秒补充
 	}
 	s := &Server{
-		db: db, secret: opts.AuthSecret,
+		db: db, readDB: opts.ReadDB, secret: opts.AuthSecret,
 		adminToken: opts.AdminToken, keyring: opts.Keyring,
 		authLimiter:         newIPLimiter(rate.Every(time.Second), authBurst),
 		mailer:              opts.Mailer,

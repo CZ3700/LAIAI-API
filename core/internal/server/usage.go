@@ -30,7 +30,7 @@ func (s *Server) getUsage(c *gin.Context) {
 		pageSize = usageDefaultPageSize
 	}
 
-	q := s.db.WithContext(c.Request.Context()).Model(&invocation.Invocation{}).Where("org_id = ?", claims.OrgID)
+	q := s.readOnly().WithContext(c.Request.Context()).Model(&invocation.Invocation{}).Where("org_id = ?", claims.OrgID)
 	if model := c.Query("model"); model != "" {
 		q = q.Where("model = ?", model)
 	}
@@ -105,7 +105,7 @@ func (s *Server) getUsageSummary(c *gin.Context) {
 		CompletionTokens int64           `json:"completion_tokens"`
 		CostUSD          decimal.Decimal `json:"cost_usd"`
 	}
-	err := s.db.Raw(`
+	err := s.readOnly().Raw(`
 		SELECT DATE(created_at) AS day,
 		       COUNT(*) AS calls,
 		       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS succeeded,
@@ -163,7 +163,7 @@ func (s *Server) getUsagePerf(c *gin.Context) {
 		Calls  int64 `json:"rpm"`
 		Tokens int64 `json:"tpm"`
 	}
-	s.db.WithContext(c.Request.Context()).Raw(`
+	s.readOnly().WithContext(c.Request.Context()).Raw(`
 		SELECT COUNT(*) AS calls,
 		       COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
 		FROM invocations WHERE org_id = ? AND created_at >= ?`,
