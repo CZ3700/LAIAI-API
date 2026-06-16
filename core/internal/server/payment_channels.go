@@ -55,6 +55,18 @@ func buildPaymentEngine(protocol string, cfg map[string]string) payment.Engine {
 			return nil
 		}
 		return &payment.EPay{PID: cfg["pid"], Key: cfg["key"], APIURL: cfg["api_url"]}
+	case "crypto":
+		// 通用加密货币网关骨架（处理商无关，admin 后台热配置——EBPay/OxaPay/NOWPayments 等三段式处理商）。
+		// 渠道 config 提供 processor/api_base/api_key/webhook_secret/sign_algo/create_path/query_path。
+		// ⚠ 默认禁用——渠道 enabled 由 admin 验真后手动开；验签 fail-closed + 金额校验防误入金（见 crypto_gateway.go 红线）。
+		if cfg["api_key"] == "" || cfg["webhook_secret"] == "" {
+			return nil
+		}
+		return &payment.CryptoGateway{
+			Processor: cfg["processor"], APIBase: cfg["api_base"], APIKey: cfg["api_key"],
+			WebhookSecret: cfg["webhook_secret"], SignAlgo: cfg["sign_algo"],
+			CreatePath: cfg["create_path"], QueryPath: cfg["query_path"],
+		}
 	case "coinbase":
 		// 加密货币主通道（WS-4）：api_key + webhook_secret 两个独立密钥齐全才构建。
 		// ⚠ 上线前须接真实账号抓 raw 写 fixture 验真（见 coinbase_commerce.go 红线）。
@@ -130,10 +142,11 @@ func (s *Server) adminUpsertPaymentChannel(c *gin.Context) {
 		return
 	}
 	code := strings.TrimSpace(req.Code)
-	// coinbase 暂不开放表渠道创建（与 x402 同：字段未接真实 fixture 验真前，仅经 ext_settings +
-	// coinbase_enabled 显式启用，避免运营在 Console 误开真金通道）。
-	if code == "" || (req.Protocol != "stripe" && req.Protocol != "epay") {
-		fail(c, http.StatusBadRequest, "invalid code or protocol (stripe|epay)")
+	// crypto = 通用加密货币网关骨架，开放表渠道热接入（admin 配置处理商 + enabled 即生效）：验签
+	// fail-closed + 实付金额校验使其即便误启用也不致误入金。coinbase 仍仅经 ext_settings+coinbase_enabled
+	// 显式启用（其字段层级待真实 fixture 验真）。
+	if code == "" || (req.Protocol != "stripe" && req.Protocol != "epay" && req.Protocol != "crypto") {
+		fail(c, http.StatusBadRequest, "invalid code or protocol (stripe|epay|crypto)")
 		return
 	}
 
