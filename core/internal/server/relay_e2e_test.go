@@ -169,6 +169,8 @@ func setupRelayServer(t *testing.T) (*gin999, *gorm.DB) {
 			t.Fatalf("schema: %v", err)
 		}
 	}
+	// 测试基线：默认关邮箱验证（多数 relay/e2e 测试直接注册无验证码）；验证相关测试各自 OR REPLACE 开。
+	db.Exec("INSERT INTO ext_settings (name, value) VALUES ('email_verification_enabled', 'false')")
 	rec := invocation.NewRecorder(db, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	t.Cleanup(rec.Close)
 	engine, srv := NewWithServer(db, Options{
@@ -558,6 +560,8 @@ func TestRelayChannelAutoDisable(t *testing.T) {
 	}))
 	defer up.Close()
 	setupChannelAndPrice(t, srv, up.URL)
+	// 渠道自动禁用默认关闭（用户要求改手动）；本测试显式开启以验证开启后的行为。
+	db.Exec("INSERT OR REPLACE INTO ext_settings (name, value) VALUES ('channel_auto_disable','true')")
 	apiKey, orgID := seedUserWithCredit(t, srv, "disable@example.com", "10")
 
 	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
@@ -1706,54 +1710,8 @@ func TestPaymentCreditFlow(t *testing.T) {
 	}
 }
 
-// 邀请返佣：被邀请人充值 → 邀请人按 rate 返佣入账。
-func TestAffiliateRebate(t *testing.T) {
-	srv, db := setupRelayServer(t)
-	mock := &mockPayEngine{}
-	engineForTest = func(p string) payment.Engine {
-		if p == "stripe" {
-			return mock
-		}
-		return nil
-	}
-	defer func() { engineForTest = nil }()
-	// 开启返佣 5%
-	db.Exec("INSERT INTO ext_settings (name, value) VALUES ('affiliate_rate', '0.05')")
-
-	// 邀请人注册，拿邀请码
-	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "inviter@example.com", "password": "longenough1"})
-	_, il := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "inviter@example.com", "password": "longenough1"})
-	inviterToken := il["token"].(string)
-	inviterOrg := uint64(il["org_id"].(float64))
-	_, aff := srv.do(t, "GET", "/api/affiliate", inviterToken, nil)
-	code := aff["aff_code"].(string)
-	if len(code) != 8 {
-		t.Fatalf("aff_code = %q", code)
-	}
-
-	// 被邀请人用邀请码注册
-	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "invitee@example.com", "password": "longenough1", "inviter_code": code})
-	_, vl := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "invitee@example.com", "password": "longenough1"})
-	inviteeToken := vl["token"].(string)
-
-	// 被邀请人充值 $100
-	_, out := srv.do(t, "POST", "/api/payment/create", inviteeToken, map[string]any{"provider": "stripe", "amount_usd": "100"})
-	orderNo := out["order_no"].(string)
-	mock.orderNo, mock.tradeNo, mock.amount, mock.success = orderNo, "pi", decimal.RequireFromString("100"), true
-	srv.do(t, "POST", "/api/payment/callback/stripe", "", nil)
-
-	// 邀请人余额应有返佣 $5（100 × 0.05）
-	acc := &ledger.Account{}
-	db.Where("org_id = ? AND type = ?", inviterOrg, ledger.AccountUserCredit).First(acc)
-	if !acc.PostedBalance.Equal(decimal.RequireFromString("5")) {
-		t.Fatalf("inviter rebate balance = %s, want 5", acc.PostedBalance)
-	}
-	// affiliate 统计反映
-	_, aff = srv.do(t, "GET", "/api/affiliate", inviterToken, nil)
-	if aff["invited"].(float64) != 1 || aff["earned"] != "5" {
-		t.Fatalf("affiliate stats = %v", aff)
-	}
-}
+// 注：TestAffiliateRebate 已删除——返佣/affiliate 功能已移除（本站无此功能，旧平台迁移残留）。
+// payAffiliateRebate 现为永久 no-op，相应测试随之删除。
 
 // 二次验证 step-up（gap #4）：默认关闭零摩擦；开启后创建 Key 需 X-Secure-Verify；令牌绑 uid。
 func TestStepUpVerification(t *testing.T) {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, copyText, errorMessage } from '@/lib/api'
+import { api, errorMessage } from '@/lib/api'
 
 interface Method { provider: string; currency: string; label: string }
 interface Order {
@@ -60,19 +60,6 @@ const bonusPreview = computed(() => {
   return (selectedAmount.value * bestRate).toFixed(2).replace(/\.?0+$/, '')
 })
 
-// 邀请返佣
-const aff = ref<{ aff_code: string; invited: number; earned: string; rate: string } | null>(null)
-const inviteLink = computed(() =>
-  aff.value ? `${window.location.origin}/register?ref=${aff.value.aff_code}` : '',
-)
-const copied = ref(false)
-async function copyInvite() {
-  if (await copyText(inviteLink.value)) {
-    copied.value = true
-    setTimeout(() => (copied.value = false), 1500)
-  }
-}
-
 const noMethods = computed(() => methods.value.length === 0)
 
 function statusLabel(s: number): string {
@@ -90,11 +77,10 @@ function kindLabel(kind: string): string {
 }
 
 async function load() {
-  const [bal, m, o, a, lg] = await Promise.allSettled([
+  const [bal, m, o, lg] = await Promise.allSettled([
     api<{ balance: string; held: string }>('GET', '/api/balance'),
     api<{ methods: Method[]; amount_options: number[]; bonus_tiers?: string }>('GET', '/api/payment/methods'),
     api<{ orders: Order[] }>('GET', '/api/payment/orders'),
-    api<{ aff_code: string; invited: number; earned: string; rate: string }>('GET', '/api/affiliate'),
     api<{ items: LedgerEntry[] }>('GET', '/api/ledger'),
   ])
   if (bal.status === 'fulfilled') {
@@ -114,7 +100,6 @@ async function load() {
   }
   ordersErr.value = o.status === 'rejected'
   if (o.status === 'fulfilled') orders.value = o.value.orders
-  if (a.status === 'fulfilled') aff.value = a.value
   ledgerErr.value = lg.status === 'rejected'
   if (lg.status === 'fulfilled') ledger.value = lg.value.items
 }
@@ -228,20 +213,6 @@ onMounted(load)
           {{ creating ? t('wallet.redirecting') : t('wallet.payNow', { amount: selectedAmount }) }}
         </button>
       </template>
-    </div>
-
-    <!-- 邀请返佣 -->
-    <div v-if="aff && aff.rate && aff.rate !== '0'" class="app-panel p-6 space-y-4">
-      <h2 class="font-semibold">{{ t('wallet.affTitle') }}</h2>
-      <p class="text-sm text-muted">{{ t('wallet.affDesc', { rate: (Number(aff.rate) * 100).toFixed(0) }) }}</p>
-      <div class="flex gap-2">
-        <input :value="inviteLink" readonly class="input font-mono text-xs" @focus="($event.target as HTMLInputElement).select()" />
-        <button class="btn-ghost shrink-0" @click="copyInvite">{{ copied ? t('common.copied') : t('common.copy') }}</button>
-      </div>
-      <div class="flex gap-8 text-sm">
-        <div><span class="text-muted">{{ t('wallet.affInvited') }}</span> <span class="font-mono">{{ aff.invited }}</span></div>
-        <div><span class="text-muted">{{ t('wallet.affEarned') }}</span> <span class="font-mono">${{ aff.earned }}</span></div>
-      </div>
     </div>
 
     <!-- 资金流水（统一账本：充值/赠送/消费/释放） -->

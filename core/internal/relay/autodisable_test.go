@@ -45,6 +45,7 @@ func newRelay(db *gorm.DB) *Relay {
 func TestNoteFailureThreshold(t *testing.T) {
 	db := pickerDB(t)
 	withSettings(t, db)
+	db.Exec(`INSERT INTO ext_settings (name, value) VALUES ('channel_auto_disable', 'true')`) // 默认已关，本测专测该功能须显式开
 	db.Exec(`INSERT INTO ext_settings (name, value) VALUES ('channel_disable_threshold', '2')`)
 	id := mkChannel(t, db, "c", 0, 1, 1, "m1")
 	r := newRelay(db)
@@ -77,6 +78,7 @@ func TestNoteFailureSwitchOff(t *testing.T) {
 func TestResetFailuresOnSuccess(t *testing.T) {
 	db := pickerDB(t)
 	withSettings(t, db)
+	db.Exec(`INSERT INTO ext_settings (name, value) VALUES ('channel_auto_disable', 'true')`)
 	db.Exec(`INSERT INTO ext_settings (name, value) VALUES ('channel_disable_threshold', '2')`)
 	id := mkChannel(t, db, "c", 0, 1, 1, "m1")
 	r := newRelay(db)

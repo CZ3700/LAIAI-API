@@ -154,13 +154,9 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 	holdAmount := price.ChatCost(estIn, 0, 0).Mul(groupRatio)
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
-		acc, err := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
-		if err != nil {
-			return err
-		}
-		h, _, err := ledger.CreateHold(tx, ledger.HoldInput{
+		// 分片感知 hold：org 未分片(n≤1)时与 CreateHold 逐字一致（零回归），分片后按 RequestID 散列打散写热点。
+		h, _, err := ledger.CreateHoldSharded(tx, key.OrgID, ledger.AccountUserCredit, inv.RequestID, ledger.HoldInput{
 			IdempotencyKey: "emb:" + inv.RequestID, // 每请求唯一 16-hex（非时间戳，杜绝纳秒碰撞共用 hold）
-			AccountID:      acc.ID,
 			Amount:         holdAmount,
 			RefType:        "usage",
 			RefID:          req.Model,

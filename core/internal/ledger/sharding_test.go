@@ -157,3 +157,95 @@ func TestRebalancePairedJournalNetZero(t *testing.T) {
 		t.Fatalf("drift after rebalance: %+v", drifts)
 	}
 }
+
+// rebalancer 驱动：全部入主片的余额被摊平到各分片均值，总额守恒、drift 干净、二次运行幂等。
+func TestRebalanceOrgShardsEvensOut(t *testing.T) {
+	db := setupDB(t)
+	setShardCount(t, db, 1, AccountUserCredit, 3)
+	creditShard(t, db, 1, AccountUserCredit, 0, "90", "seed") // 全部入主片（模拟充值默认入 shard 0）
+	moves, err := RebalanceOrgShards(db, 1, AccountUserCredit, "run1")
+	if err != nil {
+		t.Fatalf("rebalance: %v", err)
+	}
+	if moves != 2 { // shard0 90 → 各补 30 给 shard1、shard2
+		t.Fatalf("moves = %d, want 2", moves)
+	}
+	for s := 0; s < 3; s++ {
+		var a Account
+		db.Where("org_id = 1 AND type = ? AND shard = ?", AccountUserCredit, s).First(&a)
+		if !a.PostedBalance.Equal(d("30")) {
+			t.Fatalf("shard %d posted = %s, want 30 (even)", s, a.PostedBalance)
+		}
+	}
+	if posted, _, _ := OrgBalances(db, 1, AccountUserCredit); !posted.Equal(d("90")) {
+		t.Fatalf("org posted = %s, want 90 (conserved)", posted)
+	}
+	if drifts, _ := CheckDrift(db); len(drifts) != 0 {
+		t.Fatalf("drift after rebalance: %+v", drifts)
+	}
+	// 已均匀 → 二次运行不搬动（无 donor/receiver）
+	if moves2, _ := RebalanceOrgShards(db, 1, AccountUserCredit, "run2"); moves2 != 0 {
+		t.Fatalf("second run moves = %d, want 0 (already even)", moves2)
+	}
+}
+
+// rebalancer 不搬走 held 占用的钱：富片有冻结时只搬其可用额（held 红线不可挪）。
+func TestRebalanceRespectsHeld(t *testing.T) {
+	db := setupDB(t)
+	setShardCount(t, db, 1, AccountUserCredit, 2)
+	creditShard(t, db, 1, AccountUserCredit, 0, "100", "seed") // 全入 shard0
+	// 在 shard0 冻结 80 → 可用仅 20
+	mustTx(t, db, func(tx *gorm.DB) error {
+		acc, _ := ensureAccountAt(tx, 1, AccountUserCredit, 0)
+		_, _, e := CreateHold(tx, HoldInput{IdempotencyKey: "hold80", AccountID: acc.ID, Amount: d("80"), RefType: "usage"})
+		return e
+	})
+	if _, err := RebalanceOrgShards(db, 1, AccountUserCredit, "runH"); err != nil {
+		t.Fatalf("rebalance: %v", err)
+	}
+	// target=50；shard0 posted 100 但可用仅 20 → 至多搬 20 给 shard1
+	var s0, s1 Account
+	db.Where("org_id = 1 AND type = ? AND shard = 0", AccountUserCredit).First(&s0)
+	db.Where("org_id = 1 AND type = ? AND shard = 1", AccountUserCredit).First(&s1)
+	if !s0.PostedBalance.Equal(d("80")) || !s1.PostedBalance.Equal(d("20")) {
+		t.Fatalf("after rebalance s0=%s s1=%s, want 80/20 (held 80 not moved)", s0.PostedBalance, s1.PostedBalance)
+	}
+	if !s0.HeldAmount.Equal(d("80")) {
+		t.Fatalf("shard0 held = %s, want 80 (untouched)", s0.HeldAmount)
+	}
+	if drifts, _ := CheckDrift(db); len(drifts) != 0 {
+		t.Fatalf("drift: %+v", drifts)
+	}
+}
+
+// SetShardConfig(upsert) + ListShardedOrgs + RebalanceAllShardedOrgs 串通。
+func TestSetShardConfigAndRebalanceAll(t *testing.T) {
+	db := setupDB(t)
+	if err := SetShardConfig(db, 7, AccountUserCredit, 2); err != nil {
+		t.Fatalf("set shard config: %v", err)
+	}
+	if err := SetShardConfig(db, 7, AccountUserCredit, 4); err != nil { // upsert 改数
+		t.Fatalf("upsert shard config: %v", err)
+	}
+	cfgs, err := ListShardedOrgs(db)
+	if err != nil {
+		t.Fatalf("list sharded orgs: %v", err)
+	}
+	if len(cfgs) != 1 || cfgs[0].OrgID != 7 || cfgs[0].ShardCount != 4 {
+		t.Fatalf("sharded orgs = %+v, want org7 count4", cfgs)
+	}
+	creditShard(t, db, 7, AccountUserCredit, 0, "100", "seed7")
+	orgsN, moves, err := RebalanceAllShardedOrgs(db, "runA")
+	if err != nil {
+		t.Fatalf("rebalance all: %v", err)
+	}
+	if orgsN != 1 || moves != 3 { // 4 片：shard0 100 → 各补 25 给 shard1/2/3
+		t.Fatalf("orgs=%d moves=%d, want 1 org / 3 moves", orgsN, moves)
+	}
+	if posted, _, _ := OrgBalances(db, 7, AccountUserCredit); !posted.Equal(d("100")) {
+		t.Fatalf("org7 posted = %s, want 100 (conserved)", posted)
+	}
+	if drifts, _ := CheckDrift(db); len(drifts) != 0 {
+		t.Fatalf("drift: %+v", drifts)
+	}
+}

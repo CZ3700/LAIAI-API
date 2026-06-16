@@ -171,10 +171,11 @@ func (r *Relay) healthFactor(channelID uint64) float64 {
 }
 
 // autoDisablePolicy：从 ext_settings 读取自动禁用策略（开关 + 阈值）。
-// 失败路径才调用（低频），不缓存以支持热更新。缺省：开启、阈值 1（= 沿用既有"判定性错误即禁用"行为）。
-// 运营可调高阈值以容忍瞬时抖动，或关闭开关交人工处理。
+// 失败路径才调用（低频），不缓存以支持热更新。
+// 缺省：**关闭**（手动管理渠道开关，用户要求）——新渠道首调抖动一次不再被误自动下线；
+// 运营如需"坏渠道自动剔除"可把 channel_auto_disable 置 true（并调 channel_disable_threshold 容忍瞬抖）。
 func (r *Relay) autoDisablePolicy() (enabled bool, threshold int) {
-	enabled, threshold = true, 1
+	enabled, threshold = false, 1
 	var rows []struct{ Name, Value string }
 	r.DB.Table("ext_settings").Where("name IN ?",
 		[]string{"channel_auto_disable", "channel_disable_threshold"}).Find(&rows)
@@ -399,13 +400,10 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	holdAmount := price.ChatCost(estIn, 0, holdOutput).Mul(groupRatio) // holdOutput 含 n 倍；按次固定价时忽略 token（gap P2-F）
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
-		acc, err := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
-		if err != nil {
-			return err
-		}
-		h, _, err := ledger.CreateHold(tx, ledger.HoldInput{
+		// 分片感知 hold（CreateHoldSharded）：org 未分片(n≤1)时与 CreateHold 逐字一致（零回归），
+		// 巨客户配 shardCount>1 后按 RequestID 散列打散写热点、不足跨片回退——届时只升级配置即可。
+		h, _, err := ledger.CreateHoldSharded(tx, key.OrgID, ledger.AccountUserCredit, inv.RequestID, ledger.HoldInput{
 			IdempotencyKey: "relay:" + inv.RequestID, // 每请求唯一 16-hex（非时间戳，杜绝纳秒碰撞共用 hold）
-			AccountID:      acc.ID,
 			Amount:         holdAmount,
 			RefType:        "usage",
 			RefID:          model,

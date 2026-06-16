@@ -44,6 +44,7 @@ CREATE TABLE users (
     password_hash TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
     totp_secret_enc TEXT NOT NULL DEFAULT '', totp_enabled INTEGER NOT NULL DEFAULT 0, status INTEGER NOT NULL DEFAULT 1,
     role TEXT NOT NULL DEFAULT 'user', admin_remark TEXT NOT NULL DEFAULT '',
+    email_verified INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE org_members (
@@ -52,6 +53,12 @@ CREATE TABLE org_members (
     role TEXT NOT NULL DEFAULT 'member',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (org_id, user_id)
+);
+CREATE TABLE org_invitations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL, inviter_user_id INTEGER NOT NULL, invitee_user_id INTEGER NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL,
+    UNIQUE (org_id, invitee_user_id)
 );
 CREATE TABLE api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,6 +95,8 @@ func setupServer(t *testing.T) (*gin999, *gorm.DB) {
 	if err := db.Exec(testSchema).Error; err != nil {
 		t.Fatalf("schema: %v", err)
 	}
+	// 测试基线：默认关邮箱验证（多数测试不传验证码直接注册）；验证相关测试各自 INSERT OR REPLACE 开。
+	db.Exec("INSERT INTO ext_settings (name, value) VALUES ('email_verification_enabled', 'false')")
 	engine, srv := NewWithServer(db, Options{AuthSecret: testSecret, AuthRateBurst: 100000, Mailer: &captureMailer{}})
 	return &gin999{engine: engine, srv: srv}, db
 }
@@ -322,7 +331,7 @@ func TestEmailVerification(t *testing.T) {
 	// 开启邮箱验证
 	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "admin@example.com", "password": "longenough1"})
 	// 借 admin token 开关——server_test 的 setupServer 无 admin token，改用 DB 直接写设置
-	db.Exec("INSERT INTO ext_settings (name, value) VALUES ('email_verification_enabled', 'true')")
+	db.Exec("INSERT OR REPLACE INTO ext_settings (name, value) VALUES ('email_verification_enabled', 'true')")
 
 	// 不带验证码注册 → 400
 	w, _ := srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "new@example.com", "password": "longenough1"})

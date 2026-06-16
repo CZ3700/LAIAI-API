@@ -64,6 +64,7 @@ interface OrgRow {
   feature_video: boolean
   max_members: number
   max_api_keys: number
+  shard_count: number
 }
 interface GroupRatio {
   name: string
@@ -209,7 +210,6 @@ async function savePayGlobals() {
     await adminApi('PUT', '/api/admin/settings', {
       cny_per_usd: settings.value.cny_per_usd ?? '',
       min_topup_usd: settings.value.min_topup_usd ?? '',
-      affiliate_rate: settings.value.affiliate_rate ?? '',
       recharge_bonus_tiers: settings.value.recharge_bonus_tiers ?? '',
       invite_grant_usd: settings.value.invite_grant_usd ?? '',
     })
@@ -221,32 +221,61 @@ async function savePayGlobals() {
   }
 }
 // 渠道编辑器（新建/编辑共用）。密钥字段编辑时留空 = 保留原配置。
+// 渠道协议的配置字段元数据（与后端 buildPaymentEngine 一一对应）。新增协议只需在此登记，
+// 模态框按当前协议动态渲染对应字段——这正是「灵活热接入」：crypto 加密货币网关无需改前端硬编码。
+interface PcFieldMeta { key: string; label: string; secret?: boolean; placeholder?: string; required?: boolean; wide?: boolean }
+const PROTOCOL_FIELDS: Record<string, PcFieldMeta[]> = {
+  stripe: [
+    { key: 'secret_key', label: 'Secret Key', secret: true, placeholder: 'sk_live_…', required: true },
+    { key: 'webhook_secret', label: 'Webhook Secret', secret: true, placeholder: 'whsec_…' },
+  ],
+  epay: [
+    { key: 'pid', label: 'PID', placeholder: '1000', required: true },
+    { key: 'key', label: 'Key', secret: true },
+    { key: 'api_url', label: 'API URL', placeholder: 'https://pay.example.com', wide: true },
+  ],
+  // 通用加密货币网关（EBPay / OxaPay / NOWPayments 等三段式处理商）——验签 fail-closed + 实付校验。
+  crypto: [
+    { key: 'processor', label: 'Processor', placeholder: 'ebpay / oxapay / nowpayments', required: true },
+    { key: 'api_base', label: 'API Base URL', placeholder: 'https://api.ebpay.com', wide: true },
+    { key: 'api_key', label: 'API Key', secret: true, required: true },
+    { key: 'webhook_secret', label: 'Webhook / Callback Secret', secret: true, required: true },
+    { key: 'sign_algo', label: 'Sign Algorithm', placeholder: 'sha256 (default) / sha512' },
+    { key: 'create_path', label: 'Create Path', placeholder: '/api/v1/invoice', wide: true },
+    { key: 'query_path', label: 'Query Path', placeholder: '/api/v1/invoice/query', wide: true },
+  ],
+}
+const PROTOCOL_OPTIONS = [
+  { value: 'stripe', label: 'Stripe' },
+  { value: 'epay', label: 'EPay' },
+  { value: 'crypto', label: 'Crypto (USDT/…)' },
+]
 interface PayChannelEdit {
   id: number; code: string; display_name: string; protocol: string
   pay_methods: string; currency: string; priority: number; enabled: boolean
-  secret_key: string; webhook_secret: string; pid: string; key: string; api_url: string
+  config: Record<string, string>
 }
 const pcEdit = ref<PayChannelEdit | null>(null)
 const pcBusy = ref(false)
+// 当前协议的字段元数据（协议切换即变）
+const pcFields = computed<PcFieldMeta[]>(() => (pcEdit.value ? PROTOCOL_FIELDS[pcEdit.value.protocol] ?? [] : []))
 function newPayChannel() {
-  pcEdit.value = { id: 0, code: '', display_name: '', protocol: 'stripe', pay_methods: 'card', currency: 'USD', priority: 0, enabled: true, secret_key: '', webhook_secret: '', pid: '', key: '', api_url: '' }
+  pcEdit.value = { id: 0, code: '', display_name: '', protocol: 'stripe', pay_methods: 'card', currency: 'USD', priority: 0, enabled: true, config: {} }
 }
 function editPayChannel(ch: PayChannelRow) {
-  pcEdit.value = { id: ch.id, code: ch.code, display_name: ch.display_name, protocol: ch.protocol, pay_methods: ch.pay_methods, currency: ch.currency, priority: ch.priority, enabled: ch.enabled === 1, secret_key: '', webhook_secret: '', pid: '', key: '', api_url: '' }
+  // 编辑时密钥字段一律留空（=保留原密文，密钥永不回显）
+  pcEdit.value = { id: ch.id, code: ch.code, display_name: ch.display_name, protocol: ch.protocol, pay_methods: ch.pay_methods, currency: ch.currency, priority: ch.priority, enabled: ch.enabled === 1, config: {} }
 }
 async function savePayChannel() {
   const e = pcEdit.value
   if (!e) return
   pcBusy.value = true
   try {
+    // 仅收集当前协议登记的、非空的字段（编辑时留空=不改）
     const config: Record<string, string> = {}
-    if (e.protocol === 'stripe') {
-      if (e.secret_key) config.secret_key = e.secret_key
-      if (e.webhook_secret) config.webhook_secret = e.webhook_secret
-    } else {
-      if (e.pid) config.pid = e.pid
-      if (e.key) config.key = e.key
-      if (e.api_url) config.api_url = e.api_url
+    for (const f of PROTOCOL_FIELDS[e.protocol] ?? []) {
+      const v = (e.config[f.key] ?? '').trim()
+      if (v) config[f.key] = v
     }
     const body: Record<string, unknown> = {
       code: e.code, display_name: e.display_name, protocol: e.protocol,
@@ -330,7 +359,7 @@ async function saveSettings() {
 interface AdminUser {
   id: number; email: string; display_name: string; status: number; role: string
   org_id: number; balance: string; group: string
-  invited: number; earned: string; inviter_org_id: number; admin_remark: string
+  invited: number; inviter_org_id: number; admin_remark: string
 }
 const PLAT_ROLES = ['user', 'support', 'admin', 'superadmin'] as const
 const users = ref<AdminUser[]>([])
@@ -530,13 +559,14 @@ async function setOrgGroup(o: OrgRow, group: string) {
 // —— Entitlements 功能调配（P0-2）：超管按 org 开关功能 / 设资源上限 ——
 // 整行覆盖语义：保存时提交全部 4 个字段（与后端 UpsertEntitlements 一致）。
 const entOpen = ref<number | null>(null)
-const entForm = reactive({ feature_images: true, feature_video: true, max_members: 0, max_api_keys: 0 })
+const entForm = reactive({ feature_images: true, feature_video: true, max_members: 0, max_api_keys: 0, shard_count: 1 })
 function toggleEnt(o: OrgRow) {
   if (entOpen.value === o.id) { entOpen.value = null; return }
   entForm.feature_images = o.feature_images
   entForm.feature_video = o.feature_video
   entForm.max_members = o.max_members
   entForm.max_api_keys = o.max_api_keys
+  entForm.shard_count = o.shard_count || 1
   entOpen.value = o.id
 }
 async function saveEnt(o: OrgRow) {
@@ -546,6 +576,19 @@ async function saveEnt(o: OrgRow) {
       feature_video: entForm.feature_video,
       max_members: Math.max(0, Math.trunc(Number(entForm.max_members) || 0)),
       max_api_keys: Math.max(0, Math.trunc(Number(entForm.max_api_keys) || 0)),
+    })
+    entOpen.value = null
+    await loadOrgs()
+    error.value = ''
+  } catch (e) {
+    showError(e)
+  }
+}
+// 规模化：单独保存账户分片数（巨客户写吞吐扩容；走 /shards 端点，与功能调配分开提交）。
+async function saveShards(o: OrgRow) {
+  try {
+    await adminApi('PUT', `/api/admin/orgs/${o.id}/shards`, {
+      shard_count: Math.min(64, Math.max(1, Math.trunc(Number(entForm.shard_count) || 1))),
     })
     entOpen.value = null
     await loadOrgs()
@@ -637,6 +680,23 @@ async function addChannel() {
 }
 async function disableChannel(id: number) {
   if (!confirm(t('admin.chDisableConfirm'))) return
+  try {
+    await adminApi('POST', `/api/admin/channels/${id}/disable`)
+    await loadChannels()
+  } catch (e) {
+    showError(e)
+  }
+}
+async function enableChannel(id: number) {
+  try {
+    await adminApi('POST', `/api/admin/channels/${id}/enable`)
+    await loadChannels()
+  } catch (e) {
+    showError(e)
+  }
+}
+async function deleteChannel(id: number) {
+  if (!confirm(t('admin.chDeleteConfirm'))) return
   try {
     await adminApi('DELETE', `/api/admin/channels/${id}`)
     await loadChannels()
@@ -1420,8 +1480,14 @@ onMounted(async () => {
                     {{ fetchingModelsId === c.id ? t('admin.chFetching') : t('admin.chFetchModels') }}
                   </button>
                   <button class="btn-ghost !py-1 text-xs" @click="openEdit(c)">{{ t('admin.chEdit') }}</button>
-                  <button v-if="c.status === 1" class="btn-danger !py-1 text-xs" @click="disableChannel(c.id)">
+                  <button v-if="c.status === 1" class="btn-ghost !py-1 text-xs" @click="disableChannel(c.id)">
                     {{ t('admin.chDisable') }}
+                  </button>
+                  <button v-else class="btn-ghost !py-1 text-xs text-emerald-600" @click="enableChannel(c.id)">
+                    {{ t('admin.chEnable') }}
+                  </button>
+                  <button class="btn-danger !py-1 text-xs" @click="deleteChannel(c.id)">
+                    {{ t('admin.chDelete') }}
                   </button>
                 </td>
               </tr>
@@ -1602,9 +1668,8 @@ onMounted(async () => {
                 </div>
                 <div>
                   <label class="label">{{ t('admin.pcProtocol') }}</label>
-                  <select v-model="pcEdit.protocol" class="input">
-                    <option value="stripe">Stripe</option>
-                    <option value="epay">EPay</option>
+                  <select v-model="pcEdit.protocol" class="input" :disabled="!!pcEdit.id">
+                    <option v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
                   </select>
                 </div>
                 <div>
@@ -1624,35 +1689,20 @@ onMounted(async () => {
                   <input v-model.number="pcEdit.priority" type="number" class="input" />
                 </div>
               </div>
-              <!-- 协议专属密钥（编辑留空=不改）-->
-              <template v-if="pcEdit.protocol === 'stripe'">
-                <div class="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label class="label">Secret Key</label>
-                    <input v-model="pcEdit.secret_key" class="input font-mono text-xs" type="password" autocomplete="off" :placeholder="pcEdit.id ? t('admin.pcKeep') : 'sk_live_…'" />
-                  </div>
-                  <div>
-                    <label class="label">Webhook Secret</label>
-                    <input v-model="pcEdit.webhook_secret" class="input font-mono text-xs" type="password" autocomplete="off" :placeholder="pcEdit.id ? t('admin.pcKeep') : 'whsec_…'" />
-                  </div>
+              <!-- 协议专属配置：按 PROTOCOL_FIELDS 动态渲染（密钥字段编辑留空=保留原配置）-->
+              <div class="grid gap-3 sm:grid-cols-2">
+                <div v-for="f in pcFields" :key="f.key" :class="{ 'sm:col-span-2': f.wide }">
+                  <label class="label">{{ f.label }}<span v-if="f.required" class="text-danger"> *</span></label>
+                  <input
+                    v-model="pcEdit.config[f.key]"
+                    class="input font-mono text-xs"
+                    :type="f.secret ? 'password' : 'text'"
+                    autocomplete="off"
+                    :placeholder="pcEdit.id && f.secret ? t('admin.pcKeep') : (f.placeholder ?? '')"
+                  />
                 </div>
-              </template>
-              <template v-else>
-                <div class="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label class="label">PID</label>
-                    <input v-model="pcEdit.pid" class="input font-mono text-xs" :placeholder="pcEdit.id ? t('admin.pcKeep') : ''" />
-                  </div>
-                  <div>
-                    <label class="label">Key</label>
-                    <input v-model="pcEdit.key" class="input font-mono text-xs" type="password" autocomplete="off" :placeholder="pcEdit.id ? t('admin.pcKeep') : ''" />
-                  </div>
-                  <div class="sm:col-span-2">
-                    <label class="label">API URL</label>
-                    <input v-model="pcEdit.api_url" class="input font-mono text-xs" placeholder="https://pay.example.com" />
-                  </div>
-                </div>
-              </template>
+              </div>
+              <p v-if="pcEdit.protocol === 'crypto'" class="text-xs text-amber-600 dark:text-amber-400">{{ t('admin.pcCryptoHint') }}</p>
               <label class="flex items-center gap-2 text-sm">
                 <input type="checkbox" class="accent-accent" v-model="pcEdit.enabled" />
                 {{ t('admin.pcEnabled') }}
@@ -1664,7 +1714,7 @@ onMounted(async () => {
             </form>
           </div>
 
-          <!-- 全局结算设置（汇率 / 最低充值 / 返佣）—— 从「设置」迁来，统一在支付页 (#2) -->
+          <!-- 全局结算设置（汇率 / 最低充值 / 邀请赠额 / 充值阶梯）—— 从「设置」迁来，统一在支付页 (#2) -->
           <div class="app-panel p-5">
             <h3 class="mb-1 font-semibold">{{ t('admin.payGlobalsTitle') }}</h3>
             <p class="mb-4 text-xs text-muted">{{ t('admin.payGlobalsHint') }}</p>
@@ -1678,21 +1728,16 @@ onMounted(async () => {
                 <input id="pg-min" v-model="settings.min_topup_usd" class="input" placeholder="1" />
               </div>
               <div>
-                <label class="label" for="pg-aff">{{ t('admin.setAffRate') }}</label>
-                <input id="pg-aff" v-model="settings.affiliate_rate" class="input" placeholder="0" />
-              </div>
-              <div>
                 <label class="label" for="pg-invite">{{ t('admin.setInviteGrant') }}</label>
                 <input id="pg-invite" v-model="settings.invite_grant_usd" class="input" placeholder="0" />
                 <p class="mt-1 text-xs text-muted">{{ t('admin.setInviteGrantHint') }}</p>
               </div>
-              <div class="sm:col-span-2">
+              <div class="sm:col-span-3">
                 <label class="label" for="pg-tiers">{{ t('admin.setBonusTiers') }}</label>
                 <input id="pg-tiers" v-model="settings.recharge_bonus_tiers" class="input font-mono text-xs" placeholder='[{"min_usd":"50","rate":"0.05"},{"min_usd":"200","rate":"0.1"}]' />
                 <p class="mt-1 text-xs text-muted">{{ t('admin.setBonusTiersHint') }}</p>
               </div>
             </div>
-            <p class="mt-2 text-xs text-muted">{{ t('admin.setAffHint') }}</p>
             <div class="mt-4 flex items-center gap-3">
               <button class="btn-primary !py-1.5 text-sm" :disabled="payGlobalsBusy" @click="savePayGlobals">{{ t('settings.save') }}</button>
               <span v-if="payGlobalsMsg" class="text-sm text-ok">{{ payGlobalsMsg }}</span>
@@ -2117,6 +2162,15 @@ onMounted(async () => {
                         <button class="btn-primary !py-1.5 text-xs" @click="saveEnt(o)">{{ t('common.save') }}</button>
                         <button class="btn-ghost !py-1.5 text-xs" @click="entOpen = null">{{ t('common.cancel') }}</button>
                       </div>
+                      <!-- 规模化：账户分片数（巨客户写吞吐扩容；单独保存，走 /shards 端点）-->
+                      <div class="flex w-full items-end gap-3 border-t border-line pt-3">
+                        <div>
+                          <label class="label" :for="`ent-shard-${o.id}`">{{ t('admin.entShardCount') }}</label>
+                          <input :id="`ent-shard-${o.id}`" v-model.number="entForm.shard_count" type="number" min="1" max="64" class="input !w-28" />
+                        </div>
+                        <button class="btn-ghost !py-1.5 text-xs" @click="saveShards(o)">{{ t('admin.entShardSave') }}</button>
+                        <p class="flex-1 text-xs text-muted">{{ t('admin.entShardHint') }}</p>
+                      </div>
                     </div>
                   </td>
                 </tr>
@@ -2292,7 +2346,6 @@ onMounted(async () => {
                 </td>
                 <td class="px-4 py-2.5 text-xs text-muted whitespace-nowrap">
                   <span :title="t('admin.userInvited')">Inv {{ u.invited }}</span>
-                  <span class="ml-2 text-ok" :title="t('admin.userEarned')">${{ Number(u.earned).toFixed(2) }}</span>
                   <span v-if="u.inviter_org_id" class="ml-2" :title="t('admin.userInviter')">← #{{ u.inviter_org_id }}</span>
                 </td>
                 <td class="px-4 py-2.5">

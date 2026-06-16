@@ -10,10 +10,10 @@ import (
 func TestTeamRoleHierarchyGuard(t *testing.T) {
 	srv, _ := setupRelayServer(t)
 	ownerTok := registerAndLogin(t, srv, "h3owner@example.com")
-	registerAndLogin(t, srv, "h3alice@example.com")
-	registerAndLogin(t, srv, "h3carol@example.com")
-	registerAndLogin(t, srv, "h3bob@example.com")
-	registerAndLogin(t, srv, "h3eve@example.com")
+	aliceTok := registerAndLogin(t, srv, "h3alice@example.com")
+	carolTok := registerAndLogin(t, srv, "h3carol@example.com")
+	bobTok := registerAndLogin(t, srv, "h3bob@example.com")
+	eveTok := registerAndLogin(t, srv, "h3eve@example.com")
 
 	_, out := srv.do(t, "POST", "/api/orgs", ownerTok, map[string]string{"name": "H3 Team"})
 	teamID := out["org_id"].(float64)
@@ -22,35 +22,51 @@ func TestTeamRoleHierarchyGuard(t *testing.T) {
 	_, me := srv.do(t, "GET", "/api/me", ownerTok, nil)
 	ownerID := me["user_id"].(float64)
 
-	add := func(tok, email, role string) (int, float64) {
+	// invite：发邀请，返回 (httpCode, invitationID, inviteeUserID)。角色门在邀请这一步即生效。
+	invite := func(tok, email, role string) (int, float64, float64) {
 		w, o := srv.do(t, "POST", "/api/org/members", tok, map[string]string{"email": email, "role": role})
-		id := 0.0
-		if v, ok := o["user_id"].(float64); ok {
-			id = v
+		var invID, uid float64
+		if v, ok := o["invitation_id"].(float64); ok {
+			invID = v
 		}
-		return w.Code, id
+		if v, ok := o["user_id"].(float64); ok {
+			uid = v
+		}
+		return w.Code, invID, uid
 	}
-	// owner 加 alice=admin, carol=admin, bob=member
-	if c, _ := add(ownerTeam, "h3alice@example.com", "admin"); c != 201 {
-		t.Fatalf("owner add admin alice = %d", c)
+	// accept：被邀请人接受邀请 → 真正入队。
+	accept := func(invID float64, inviteeTok string) {
+		w, _ := srv.do(t, "POST", fmt.Sprintf("/api/invitations/%.0f/accept", invID), inviteeTok, nil)
+		if w.Code != 200 {
+			t.Fatalf("accept invitation %.0f = %d", invID, w.Code)
+		}
 	}
-	_, carolID := add(ownerTeam, "h3carol@example.com", "admin")
-	_, bobID := add(ownerTeam, "h3bob@example.com", "member")
+	// owner 邀请 alice=admin, carol=admin, bob=member（各自接受才入队）
+	c, aliceInv, _ := invite(ownerTeam, "h3alice@example.com", "admin")
+	if c != 201 {
+		t.Fatalf("owner invite admin alice = %d", c)
+	}
+	accept(aliceInv, aliceTok)
+	_, carolInv, carolID := invite(ownerTeam, "h3carol@example.com", "admin")
+	accept(carolInv, carolTok)
+	_, bobInv, bobID := invite(ownerTeam, "h3bob@example.com", "member")
+	accept(bobInv, bobTok)
 
-	aliceTok := registerAndLoginExisting(t, srv, "h3alice@example.com")
 	_, asw := srv.do(t, "POST", "/api/auth/switch", aliceTok, map[string]any{"org_id": teamID})
 	aliceTeam := asw["token"].(string)
 	_, am := srv.do(t, "GET", "/api/me", aliceTok, nil)
 	aliceID := am["user_id"].(float64)
 
-	// 1. admin 不能授 admin（横向提权）→ 403
-	if c, _ := add(aliceTeam, "h3eve@example.com", "admin"); c != 403 {
+	// 1. admin 不能授 admin（横向提权）→ 邀请即被拒 403
+	if c, _, _ := invite(aliceTeam, "h3eve@example.com", "admin"); c != 403 {
 		t.Fatalf("admin granting admin = %d, want 403", c)
 	}
-	// 2. admin 可加 member → 201
-	if c, _ := add(aliceTeam, "h3eve@example.com", "member"); c != 201 {
-		t.Fatalf("admin adding member = %d, want 201", c)
+	// 2. admin 可邀 member → 201（并接受入队）
+	c2, eveInv, _ := invite(aliceTeam, "h3eve@example.com", "member")
+	if c2 != 201 {
+		t.Fatalf("admin inviting member = %d, want 201", c2)
 	}
+	accept(eveInv, eveTok)
 	del := func(tok string, id float64) int {
 		w, _ := srv.do(t, "DELETE", fmt.Sprintf("/api/org/members/%.0f", id), tok, nil)
 		return w.Code

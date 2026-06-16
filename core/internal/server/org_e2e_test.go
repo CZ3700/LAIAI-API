@@ -20,7 +20,7 @@ func registerAndLogin(t *testing.T, srv *gin999, email string) string {
 func TestTeamLifecycle(t *testing.T) {
 	srv, _ := setupRelayServer(t)
 	ownerTok := registerAndLogin(t, srv, "owner@example.com")
-	registerAndLogin(t, srv, "mate@example.com") // 成员需已注册
+	mateTok := registerAndLogin(t, srv, "mate@example.com") // 成员需已注册
 
 	// 建团队
 	w, out := srv.do(t, "POST", "/api/orgs", ownerTok, map[string]string{"name": "Acme Team"})
@@ -34,9 +34,8 @@ func TestTeamLifecycle(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("list orgs = %d", w.Code)
 	}
-	orgs := out["orgs"].([]any)
-	if len(orgs) != 2 {
-		t.Fatalf("orgs = %d, want 2 (personal + team)", len(orgs))
+	if len(out["orgs"].([]any)) != 2 {
+		t.Fatalf("orgs = %d, want 2 (personal + team)", len(out["orgs"].([]any)))
 	}
 
 	// 切到团队 org
@@ -46,42 +45,68 @@ func TestTeamLifecycle(t *testing.T) {
 	}
 	teamTok := out["token"].(string)
 
-	// 按邮箱加成员（alias 形态也能找到账号——canonical 查找）
+	// 邀请成员（alias 形态也能找到账号——canonical 查找）→ 201 pending，但**不立即入队**
 	w, out = srv.do(t, "POST", "/api/org/members", teamTok, map[string]string{
 		"email": "MATE+work@example.com", "role": "member",
 	})
-	if w.Code != 201 {
-		t.Fatalf("add member = %d %v", w.Code, out)
+	if w.Code != 201 || out["status"] != "pending" {
+		t.Fatalf("invite member = %d %v, want 201 pending", w.Code, out)
 	}
-	mateID := out["user_id"].(float64)
+	inviteID := out["invitation_id"].(float64)
 
-	// 重复添加 → 409；不存在的邮箱 → 404；owner 角色不可经此 API 指派 → 400
+	// 未确认前，团队成员仍只有 owner 1 人（红线：未经同意不得入队、不得访问共享余额）
+	w, out = srv.do(t, "GET", "/api/org/members", teamTok, nil)
+	if w.Code != 200 || len(out["members"].([]any)) != 1 {
+		t.Fatalf("members before accept = %d %v, want 1", w.Code, out)
+	}
+
+	// 重复邀请（已 pending）→ 409；不存在邮箱 → 404；owner 角色不可指派 → 400
 	w, _ = srv.do(t, "POST", "/api/org/members", teamTok, map[string]string{"email": "mate@example.com", "role": "member"})
 	if w.Code != 409 {
-		t.Fatalf("duplicate add = %d, want 409", w.Code)
+		t.Fatalf("duplicate invite = %d, want 409", w.Code)
 	}
 	w, _ = srv.do(t, "POST", "/api/org/members", teamTok, map[string]string{"email": "ghost@example.com", "role": "member"})
 	if w.Code != 404 {
-		t.Fatalf("ghost add = %d, want 404", w.Code)
+		t.Fatalf("ghost invite = %d, want 404", w.Code)
 	}
 	w, _ = srv.do(t, "POST", "/api/org/members", teamTok, map[string]string{"email": "mate@example.com", "role": "owner"})
 	if w.Code != 400 {
-		t.Fatalf("owner-role add = %d, want 400", w.Code)
+		t.Fatalf("owner-role invite = %d, want 400", w.Code)
 	}
 
-	// 成员列表 2 人
+	// 被邀请人能看到这条待确认邀请
+	w, out = srv.do(t, "GET", "/api/invitations", mateTok, nil)
+	if w.Code != 200 || len(out["invitations"].([]any)) != 1 {
+		t.Fatalf("my invitations = %d %v, want 1", w.Code, out)
+	}
+
+	// 非被邀请人不能接受别人的邀请 → 404（按 invitee_user_id 过滤，查不到）
+	strangerTok := registerAndLogin(t, srv, "stranger@example.com")
+	w, _ = srv.do(t, "POST", fmt.Sprintf("/api/invitations/%.0f/accept", inviteID), strangerTok, nil)
+	if w.Code != 404 {
+		t.Fatalf("stranger accept = %d, want 404", w.Code)
+	}
+
+	// 被邀请人接受 → 真正入队
+	w, out = srv.do(t, "POST", fmt.Sprintf("/api/invitations/%.0f/accept", inviteID), mateTok, nil)
+	if w.Code != 200 {
+		t.Fatalf("accept invite = %d %v", w.Code, out)
+	}
+
+	// 现在成员 2 人
 	w, out = srv.do(t, "GET", "/api/org/members", teamTok, nil)
 	if w.Code != 200 || len(out["members"].([]any)) != 2 {
-		t.Fatalf("members = %d %v", w.Code, out)
+		t.Fatalf("members after accept = %d %v, want 2", w.Code, out)
 	}
+	_, mate := srv.do(t, "GET", "/api/me", mateTok, nil)
+	mateID := mate["user_id"].(float64)
 
-	// member 角色不能管理成员（403）；但能看成员列表
-	mateTok := registerAndLoginExisting(t, srv, "mate@example.com")
+	// member 角色不能邀请成员（403）；但能看成员列表
 	_, sw := srv.do(t, "POST", "/api/auth/switch", mateTok, map[string]any{"org_id": teamID})
 	mateTeamTok := sw["token"].(string)
 	w, _ = srv.do(t, "POST", "/api/org/members", mateTeamTok, map[string]string{"email": "owner@example.com", "role": "admin"})
 	if w.Code != 403 {
-		t.Fatalf("member adding member = %d, want 403", w.Code)
+		t.Fatalf("member inviting member = %d, want 403", w.Code)
 	}
 	w, _ = srv.do(t, "GET", "/api/org/members", mateTeamTok, nil)
 	if w.Code != 200 {
@@ -89,16 +114,14 @@ func TestTeamLifecycle(t *testing.T) {
 	}
 
 	// 非成员不能切入别人的 org
-	strangerTok := registerAndLogin(t, srv, "stranger@example.com")
 	w, _ = srv.do(t, "POST", "/api/auth/switch", strangerTok, map[string]any{"org_id": teamID})
 	if w.Code != 403 {
 		t.Fatalf("stranger switch = %d, want 403", w.Code)
 	}
 
 	// 末位 owner 保护：owner 移除自己 → 409
-	var ownerID float64
 	_, me := srv.do(t, "GET", "/api/me", ownerTok, nil)
-	ownerID = me["user_id"].(float64)
+	ownerID := me["user_id"].(float64)
 	w, _ = srv.do(t, "DELETE", fmt.Sprintf("/api/org/members/%.0f", ownerID), teamTok, nil)
 	if w.Code != 409 {
 		t.Fatalf("remove last owner = %d, want 409", w.Code)

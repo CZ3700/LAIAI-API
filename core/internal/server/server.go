@@ -149,6 +149,10 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			authed.GET("/orgs", s.listOrgs)
 			authed.POST("/orgs", s.createOrg)
 			authed.POST("/auth/switch", s.switchOrg)
+			// 团队邀请（被邀请人侧，0029）：未入队前不能 org-scoped，故挂 authed。
+			authed.GET("/invitations", s.listMyInvitations)              // 我收到的待确认邀请
+			authed.POST("/invitations/:id/accept", s.acceptInvitation)  // 接受 → 入队
+			authed.POST("/invitations/:id/decline", s.declineInvitation) // 拒绝
 
 			// —— org-scoped（P0-1：还需 org active + 当前会话用户仍是该 org 成员）——
 			org := authed.Group("", s.requireActiveMembership())
@@ -169,8 +173,10 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/payment/orders", s.listTopups)
 				org.GET("/affiliate", s.getAffiliate)
 				org.GET("/org/members", s.listMembers)
-				org.POST("/org/members", s.addMember)
+				org.POST("/org/members", s.inviteMember) // 发邀请（pending），对方确认后才入队
 				org.DELETE("/org/members/:user_id", s.removeMember)
+				org.GET("/org/invitations", s.listOrgInvitations)        // 本团队待确认邀请（管理者）
+				org.DELETE("/org/invitations/:id", s.revokeOrgInvitation) // 撤销待确认邀请（管理者）
 			}
 		}
 
@@ -180,7 +186,9 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.POST("/channels", s.adminCreateChannel)
 			admin.GET("/channels", s.adminListChannels)
 			admin.PUT("/channels/:id", s.adminUpdateChannel)
-			admin.DELETE("/channels/:id", s.adminDisableChannel)
+			admin.POST("/channels/:id/disable", s.adminDisableChannel) // 手动禁用（status→0）
+			admin.POST("/channels/:id/enable", s.adminEnableChannel)   // 重新启用恢复（→1）
+			admin.DELETE("/channels/:id", s.adminDeleteChannel)        // 真正删除渠道行
 			admin.POST("/channels/:id/test", s.adminTestChannel)
 			admin.POST("/channels/probe", s.adminProbeChannel)
 			admin.GET("/channels/:id/fetch-models", s.adminFetchChannelModels) // 自动拉模型+缺失检测（gap P2-D）
@@ -217,6 +225,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				su.DELETE("/model-group-ratios", s.adminDeleteModelGroupRatio)
 				su.PUT("/orgs/:id/group", s.adminSetOrgGroup)            // 指派计费分组（定价）
 				su.PUT("/orgs/:id/entitlements", s.adminSetEntitlements) // P0-2 功能调配
+				su.PUT("/orgs/:id/shards", s.adminSetOrgShards)          // 规模化：账户分片数（巨客户写吞吐）
 				su.POST("/users/:id/role", s.adminSetUserRole)           // 授角色
 				su.GET("/payment-config", s.adminPaymentConfig)          // 支付配置（含密钥引用）
 				su.GET("/payment-channels", s.adminListPaymentChannels)

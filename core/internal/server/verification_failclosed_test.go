@@ -34,7 +34,7 @@ func setupServerWithMailer(t *testing.T, m interface {
 // 绝不谎报已发（否则验证码只进日志、真实用户收不到，验证名存实亡）。
 func TestSendVerificationFailsClosedWithoutRealMailer(t *testing.T) {
 	srv, db := setupServerWithMailer(t, inactiveMailer{})
-	db.Exec(`INSERT INTO ext_settings (name,value) VALUES ('email_verification_enabled','true')`)
+	db.Exec(`INSERT OR REPLACE INTO ext_settings (name,value) VALUES ('email_verification_enabled','true')`)
 
 	w, _ := srv.do(t, "POST", "/api/auth/send-verification", "", map[string]string{"email": "fc@gmail.com"})
 	if w.Code != 503 {

@@ -108,8 +108,10 @@ type addMemberReq struct {
 	Role  string `json:"role" binding:"required"`
 }
 
-// POST /api/org/members：按邮箱加成员（owner/admin）
-func (s *Server) addMember(c *gin.Context) {
+// POST /api/org/members：按邮箱「邀请」成员（owner/admin）。
+// 不直接拉人入伙——落一条 pending 邀请，对方在 /api/invitations 里 accept 后才成为成员
+// （未经同意拉人 = 让其访问团队共享余额，红线）。
+func (s *Server) inviteMember(c *gin.Context) {
 	claims := mustClaims(c)
 	actorRole, ok := s.requireManager(c, claims.OrgID, claims.UserID)
 	if !ok {
@@ -120,13 +122,14 @@ func (s *Server) addMember(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "email and role are required")
 		return
 	}
-	var added *identity.User
+	var inv *identity.OrgInvitation
+	var invitee *identity.User
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		ent, err := identity.LoadEntitlements(tx, claims.OrgID)
 		if err != nil {
 			return err
 		}
-		added, err = identity.AddMemberByEmail(tx, claims.OrgID, req.Email, req.Role, ent.MaxMembers, actorRole)
+		inv, invitee, err = identity.InviteMember(tx, claims.OrgID, claims.UserID, req.Email, req.Role, ent.MaxMembers, actorRole, s.now().UnixMilli())
 		return err
 	})
 	switch {
@@ -136,14 +139,120 @@ func (s *Server) addMember(c *gin.Context) {
 		fail(c, http.StatusNotFound, "no account with this email")
 	case errors.Is(err, identity.ErrAlreadyMember):
 		fail(c, http.StatusConflict, "already a member")
+	case errors.Is(err, identity.ErrInvitePending):
+		fail(c, http.StatusConflict, "an invitation for this user is already pending")
 	case errors.Is(err, identity.ErrForbiddenRole):
 		fail(c, http.StatusBadRequest, "role must be admin, member or billing")
 	case errors.Is(err, identity.ErrCannotManageTarget):
 		fail(c, http.StatusForbidden, "only an owner can grant the admin role")
 	case err != nil:
-		fail(c, http.StatusInternalServerError, "add member failed")
+		fail(c, http.StatusInternalServerError, "invite member failed")
 	default:
-		c.JSON(http.StatusCreated, gin.H{"user_id": added.ID, "email": added.Email, "role": req.Role})
+		s.writeAudit(c, "org_invite_create", invitee.Email, "invited "+invitee.Email+" as "+req.Role)
+		c.JSON(http.StatusCreated, gin.H{"invitation_id": inv.ID, "user_id": invitee.ID, "email": invitee.Email, "role": req.Role, "status": "pending"})
+	}
+}
+
+// GET /api/org/invitations：本团队待确认邀请（owner/admin）。
+func (s *Server) listOrgInvitations(c *gin.Context) {
+	claims := mustClaims(c)
+	if _, ok := s.requireManager(c, claims.OrgID, claims.UserID); !ok {
+		return
+	}
+	invites, err := identity.InvitationsForOrg(s.db, claims.OrgID)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "invitation list failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"invitations": invites})
+}
+
+// DELETE /api/org/invitations/:id：管理者撤销本团队待确认邀请（owner/admin）。
+func (s *Server) revokeOrgInvitation(c *gin.Context) {
+	claims := mustClaims(c)
+	if _, ok := s.requireManager(c, claims.OrgID, claims.UserID); !ok {
+		return
+	}
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid invitation id")
+		return
+	}
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		return identity.RevokeInvitation(tx, id, claims.OrgID)
+	})
+	switch {
+	case errors.Is(err, identity.ErrInviteNotFound):
+		fail(c, http.StatusNotFound, "invitation not found")
+	case err != nil:
+		fail(c, http.StatusInternalServerError, "revoke invitation failed")
+	default:
+		s.writeAudit(c, "org_invite_revoke", strconv.FormatUint(id, 10), "revoked pending invitation")
+		c.JSON(http.StatusOK, gin.H{"revoked": id})
+	}
+}
+
+// GET /api/invitations：我收到的、待我确认的团队邀请（任何登录用户）。
+func (s *Server) listMyInvitations(c *gin.Context) {
+	claims := mustClaims(c)
+	invites, err := identity.InvitationsForUser(s.db, claims.UserID)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "invitation list failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"invitations": invites})
+}
+
+// POST /api/invitations/:id/accept：接受邀请 → 成为团队成员（仅本人）。
+func (s *Server) acceptInvitation(c *gin.Context) {
+	claims := mustClaims(c)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid invitation id")
+		return
+	}
+	var inv *identity.OrgInvitation
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		inv, e = identity.AcceptInvitation(tx, id, claims.UserID)
+		return e
+	})
+	switch {
+	case errors.Is(err, identity.ErrInviteNotFound):
+		fail(c, http.StatusNotFound, "invitation not found")
+	case errors.Is(err, identity.ErrMemberLimit):
+		fail(c, http.StatusForbidden, "member limit reached for this organization")
+	case errors.Is(err, identity.ErrNotActiveMember):
+		fail(c, http.StatusForbidden, "this team is no longer active")
+	case errors.Is(err, identity.ErrAlreadyMember):
+		// 幂等：已是成员视作成功
+		c.JSON(http.StatusOK, gin.H{"accepted": id, "already_member": true})
+	case err != nil:
+		fail(c, http.StatusInternalServerError, "accept invitation failed")
+	default:
+		s.writeAudit(c, "org_invite_accept", strconv.FormatUint(inv.OrgID, 10), "joined team via invitation")
+		c.JSON(http.StatusOK, gin.H{"accepted": id, "org_id": inv.OrgID, "role": inv.Role})
+	}
+}
+
+// POST /api/invitations/:id/decline：拒绝邀请（仅本人）。
+func (s *Server) declineInvitation(c *gin.Context) {
+	claims := mustClaims(c)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid invitation id")
+		return
+	}
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		return identity.DeclineInvitation(tx, id, claims.UserID)
+	})
+	switch {
+	case errors.Is(err, identity.ErrInviteNotFound):
+		fail(c, http.StatusNotFound, "invitation not found")
+	case err != nil:
+		fail(c, http.StatusInternalServerError, "decline invitation failed")
+	default:
+		c.JSON(http.StatusOK, gin.H{"declined": id})
 	}
 }
 

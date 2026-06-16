@@ -149,14 +149,11 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		if int(active) >= limit {
 			return ErrConcurrencyLimit
 		}
-		acc, err := ledger.EnsureAccount(tx, in.OrgID, ledger.AccountUserCredit)
-		if err != nil {
-			return err
-		}
-		h, _, err := ledger.CreateHold(tx, ledger.HoldInput{
+		// 分片感知 hold：org 未分片(n≤1)时与 CreateHold 逐字一致（零回归），分片后按 TaskID 散列打散写热点。
+		h, _, err := ledger.CreateHoldSharded(tx, in.OrgID, ledger.AccountUserCredit, t.TaskID, ledger.HoldInput{
 			IdempotencyKey: "task:" + t.TaskID,
-			AccountID:      acc.ID, Amount: holdAmount,
-			RefType: "task", RefID: t.TaskID,
+			Amount:         holdAmount,
+			RefType:        "task", RefID: t.TaskID,
 		})
 		if err != nil {
 			return err

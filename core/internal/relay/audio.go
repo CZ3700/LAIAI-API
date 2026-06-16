@@ -296,13 +296,11 @@ func (r *Relay) audioPreamble(c *gin.Context, t0 time.Time) (*identity.APIKey, *
 func (r *Relay) audioHold(c *gin.Context, key *identity.APIKey, model string, amount decimal.Decimal, finish func(string, int, string)) (*ledger.Hold, bool) {
 	var hold *ledger.Hold
 	err := r.DB.Transaction(func(tx *gorm.DB) error {
-		acc, e := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
-		if e != nil {
-			return e
-		}
-		h, _, e := ledger.CreateHold(tx, ledger.HoldInput{
-			IdempotencyKey: "audio:" + c.Writer.Header().Get("X-Request-Id"), // 每请求唯一 16-hex（非时间戳，杜绝纳秒碰撞共用 hold）
-			AccountID:      acc.ID, Amount: amount, RefType: "usage", RefID: model,
+		reqID := c.Writer.Header().Get("X-Request-Id")
+		// 分片感知 hold：org 未分片(n≤1)时与 CreateHold 逐字一致（零回归），分片后按 RequestID 散列打散写热点。
+		h, _, e := ledger.CreateHoldSharded(tx, key.OrgID, ledger.AccountUserCredit, reqID, ledger.HoldInput{
+			IdempotencyKey: "audio:" + reqID, // 每请求唯一 16-hex（非时间戳，杜绝纳秒碰撞共用 hold）
+			Amount:         amount, RefType: "usage", RefID: model,
 		})
 		hold = h
 		return e

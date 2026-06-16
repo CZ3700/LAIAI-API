@@ -167,6 +167,14 @@ func main() {
 							"held_stored", d.HeldStored.String(), "held_derived", d.HeldDerived.String(), "held_drift", d.HeldDrift().String())
 					}
 				}
+				// 账户分片摊平（规模化）：把充值默认入的主片余额周期摊到各片，防非主片饿死 → 分片退化为入金单点。
+				// 未配置分片（今日全部 org，shard_count=1）时 ListShardedOrgs 为空 → 直接 no-op，零开销零回归。
+				runID := "rebal-" + time.Now().UTC().Format("20060102T150405.000")
+				if orgsN, moves, err := ledger.RebalanceAllShardedOrgs(db, runID); err != nil {
+					log.Error("shard rebalance failed", "err", err)
+				} else if moves > 0 {
+					log.Info("shard rebalance applied", "orgs", orgsN, "moves", moves)
+				}
 			case <-retentionDone:
 				return
 			}

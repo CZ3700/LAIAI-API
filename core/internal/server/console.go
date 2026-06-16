@@ -9,26 +9,19 @@ import (
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
-	"gorm.io/gorm"
 )
 
 // getBalance：GET /api/balance —— 当前 org 余额/冻结（Console 仪表盘）。
-// 只读，不 EnsureAccount（首笔授信前没有账户行是正常态，返回 0）。
+// 跨所有分片 SUM 归并（OrgBalances）：未分片(n=1)时与单行读逐字一致；分片后聚合各片，
+// 无账户行（首笔授信前）SUM 自然返回 0。只读不 EnsureAccount。
 func (s *Server) getBalance(c *gin.Context) {
 	claims := mustClaims(c)
-	acc := &ledger.Account{}
-	err := s.db.WithContext(c.Request.Context()).
-		Where("org_id = ? AND type = ?", claims.OrgID, ledger.AccountUserCredit).
-		First(acc).Error
-	if err == gorm.ErrRecordNotFound {
-		c.JSON(http.StatusOK, gin.H{"balance": decimal.Zero, "held": decimal.Zero})
-		return
-	}
+	posted, held, err := ledger.OrgBalances(s.db.WithContext(c.Request.Context()), claims.OrgID, ledger.AccountUserCredit)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "balance query failed")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"balance": acc.PostedBalance, "held": acc.HeldAmount})
+	c.JSON(http.StatusOK, gin.H{"balance": posted, "held": held})
 }
 
 // getLedger：GET /api/ledger?page= —— 当前 org 资金流水（统一账本，钱包页用）。
@@ -44,18 +37,18 @@ func (s *Server) getLedger(c *gin.Context) {
 	}
 	const pageSize = 20
 
-	acc := &ledger.Account{}
-	err := rdb.Where("org_id = ? AND type = ?", claims.OrgID, ledger.AccountUserCredit).First(acc).Error
-	if err == gorm.ErrRecordNotFound {
-		c.JSON(http.StatusOK, gin.H{"total": 0, "page": page, "page_size": pageSize, "items": []any{}})
-		return
-	}
+	// 跨所有分片账户的流水（account_id IN 各分片 id）：未分片(n=1)时即单账户，逐字一致。
+	ids, err := ledger.ShardAccountIDs(rdb, claims.OrgID, ledger.AccountUserCredit)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "ledger query failed")
 		return
 	}
+	if len(ids) == 0 { // 首笔授信前无账户行
+		c.JSON(http.StatusOK, gin.H{"total": 0, "page": page, "page_size": pageSize, "items": []any{}})
+		return
+	}
 	var total int64
-	rdb.Table("ledger_journal").Where("account_id = ?", acc.ID).Count(&total)
+	rdb.Table("ledger_journal").Where("account_id IN ?", ids).Count(&total)
 	var rows []struct {
 		ID           uint64          `json:"id"`
 		Kind         string          `json:"kind"`
@@ -67,8 +60,8 @@ func (s *Server) getLedger(c *gin.Context) {
 		CreatedAt    time.Time       `json:"created_at"` // RFC3339；前端 new Date() 直接可解析（修复 ZZ 崩溃）
 	}
 	rdb.Raw(`SELECT id, kind, delta, balance_after, ref_type, ref_id, reason, created_at
-		FROM ledger_journal WHERE account_id = ?
-		ORDER BY id DESC LIMIT ? OFFSET ?`, acc.ID, pageSize, (page-1)*pageSize).Scan(&rows)
+		FROM ledger_journal WHERE account_id IN ?
+		ORDER BY id DESC LIMIT ? OFFSET ?`, ids, pageSize, (page-1)*pageSize).Scan(&rows)
 	c.JSON(http.StatusOK, gin.H{"total": total, "page": page, "page_size": pageSize, "items": rows})
 }
 

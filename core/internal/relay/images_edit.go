@@ -123,13 +123,10 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 	holdAmount := price.ImageUSD.Mul(decimal.NewFromInt(int64(n))).Mul(groupRatio)
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
-		acc, e := ledger.EnsureAccount(tx, key.OrgID, ledger.AccountUserCredit)
-		if e != nil {
-			return e
-		}
-		h, _, e := ledger.CreateHold(tx, ledger.HoldInput{
-			IdempotencyKey: "imgedit:" + inv.RequestID, AccountID: acc.ID,
-			Amount: holdAmount, RefType: "usage", RefID: model,
+		// 分片感知 hold：org 未分片(n≤1)时与 CreateHold 逐字一致（零回归），分片后按 RequestID 散列打散写热点。
+		h, _, e := ledger.CreateHoldSharded(tx, key.OrgID, ledger.AccountUserCredit, inv.RequestID, ledger.HoldInput{
+			IdempotencyKey: "imgedit:" + inv.RequestID,
+			Amount:         holdAmount, RefType: "usage", RefID: model,
 		})
 		hold = h
 		return e

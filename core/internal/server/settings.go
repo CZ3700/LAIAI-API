@@ -30,7 +30,7 @@ var settingDefaults = map[string]string{
 	"maintenance_mode":   "false",
 	// —— 注册 / 登录 ——
 	"register_enabled":           "true",
-	"email_verification_enabled": "false",
+	"email_verification_enabled": "true", // 默认开启：注册必须验证真实邮箱（绑定邮箱供后续推送，用户要求）。须配 SMTP 才能发码，否则注册 fail-closed。
 	"new_user_grant_usd":         "0", // 注册即赠送额度（USD，0=不送）；register 流程消费
 	// 邮箱准入策略（gap P2-E，checkEmailDomainPolicy 消费；作用于注册/发码/OAuth）
 	"email_domain_whitelist": "", // 逗号分隔允许域名；空=不限制
@@ -47,13 +47,13 @@ var settingDefaults = map[string]string{
 	// 充值阶梯优惠（gap P1-D）：JSON 数组 [{"min_usd":"50","rate":"0.05"},...]，空=无优惠。
 	// 入账时取「amount≥min_usd 的最高档 min_usd」对应 rate，bonus=amount×rate（KindGrant 单列入账）。
 	"recharge_bonus_tiers": "",
-	// —— 返佣 / 邀请 ——
-	"affiliate_rate": "0", // 邀请返佣比例（0..1）；payAffiliateRebate 消费（充值时给邀请人）
+	// —— 邀请 ——
+	// 注：返佣比例（affiliate_rate）已彻底移除——本站不提供「按充值额给邀请人返佣」功能（旧平台迁移残留）。
 	// 被邀请赠额（gap P1-D）：携有效邀请码注册时给「被邀请人」一次性赠额（USD，0=不送）。
 	// 防薅羊毛：开启时应同时开 email_verification_enabled（与 new_user_grant_usd 同口径）。
 	"invite_grant_usd": "0",
 	// —— 渠道治理 ——
-	"channel_auto_disable":      "true", // 上游连续失败自动禁用渠道（relay noteFailure 消费）
+	"channel_auto_disable":      "false", // 默认手动管理渠道开关（用户要求）；置 true 才启用"连续失败自动禁用"
 	"channel_disable_threshold": "1",    // 连续失败次数阈值（1=判定性错误即禁用，与 relay 默认一致）
 	// —— 模型级限流（gap #2，relay allowModelRate 消费）——
 	"model_rate_limit_enabled": "false", // 开关

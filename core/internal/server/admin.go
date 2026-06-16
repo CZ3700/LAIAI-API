@@ -122,11 +122,10 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 
 	// 三档调账，全部走 ledger 事务（红线：余额永不直接 UPDATE；扣减由 Post 的可用余额守卫兜底）：
 	//   add=授信(+) / subtract=扣减(-) / override=订正到目标值(delta=目标-当前，正补负扣)
-	var entry *ledger.JournalEntry
 	var applied, noop bool
 	var balanceAfter decimal.Decimal
 	err = s.db.Transaction(func(tx *gorm.DB) error {
-		acc, err := ledger.EnsureAccount(tx, req.OrgID, ledger.AccountUserCredit)
+		acc, err := ledger.EnsureAccount(tx, req.OrgID, ledger.AccountUserCredit) // 主分片（shard 0），调账落点
 		if err != nil {
 			return err
 		}
@@ -138,15 +137,16 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 		case "subtract":
 			delta, kind, refType = amount.Neg(), ledger.KindDebit, "admin_debit"
 		case "override":
-			// P2-12 严格：行锁读余额再算 delta=目标-当前，并持锁到事务结束，
-			// 确保 Post 看到同一余额 → 订正精确落到目标（旧实现用非锁读，并发会订偏）。
-			locked, lerr := ledger.LockAccount(tx, acc.ID)
+			// P2-12 严格：跨**所有分片**行锁读 Σposted，再算 delta=目标-org总额，持锁到事务结束，
+			// 确保订正精确落到目标。未分片(n=1)时 LockOrgPosted==LockAccount(shard0)，逐字一致；
+			// 分片后必须按 org 总额算 delta（旧的单账户读会忽略其余分片→订偏）。
+			total, lerr := ledger.LockOrgPosted(tx, req.OrgID, ledger.AccountUserCredit)
 			if lerr != nil {
 				return lerr
 			}
-			delta = amount.Sub(locked.PostedBalance)
+			delta = amount.Sub(total)
 			if delta.IsZero() {
-				noop, balanceAfter = true, locked.PostedBalance
+				noop, balanceAfter = true, total
 				return nil // 已等于目标，无需过账
 			}
 			if delta.IsNegative() {
@@ -157,7 +157,9 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 		default:
 			return errBadAdjustMode
 		}
-		entry, applied, err = ledger.Post(tx, ledger.PostInput{
+		// 调账落主分片（shard 0）。⚠ 分片 org 的负向调账（subtract / override-down）若 shard 0 可用
+		// 不足会 409 失败（安全失败，不动其余分片）——运营需先 RebalanceShards 归集到主分片再调。
+		_, applied, err = ledger.Post(tx, ledger.PostInput{
 			IdempotencyKey: "admin_adjust:" + req.IdempotencyKey,
 			AccountID:      acc.ID,
 			Kind:           kind,
@@ -165,10 +167,16 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 			RefType:        refType,
 			Reason:         req.Reason,
 		})
-		if err == nil {
-			balanceAfter = entry.BalanceAfter
+		if err != nil {
+			return err
 		}
-		return err
+		// 报告 org 全分片总额（未分片时 == 该账户余额，与旧 entry.BalanceAfter 一致）。
+		posted, _, berr := ledger.OrgBalances(tx, req.OrgID, ledger.AccountUserCredit)
+		if berr != nil {
+			return berr
+		}
+		balanceAfter = posted
+		return nil
 	})
 	switch {
 	case errors.Is(err, errBadAdjustMode):
@@ -412,6 +420,47 @@ func (s *Server) adminDisableChannel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"disabled": id})
 }
 
+// adminEnableChannel：手动重新启用渠道（手动禁用 status=0 / 自动禁用 status=2 → 1，回到调度池）。
+// 用户要求：被禁用渠道需有「重新开启恢复」功能。
+func (s *Server) adminEnableChannel(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	res := s.db.Model(&relay.Channel{}).Where("id = ?", id).Update("status", 1)
+	if res.Error != nil || res.RowsAffected == 0 {
+		fail(c, http.StatusNotFound, "channel not found")
+		return
+	}
+	s.writeAudit(c, "channel_enable", strconv.FormatUint(id, 10), "channel re-enabled")
+	s.invalidateCache(relay.KindChannel, "")
+	c.JSON(http.StatusOK, gin.H{"enabled": id})
+}
+
+// adminDeleteChannel：真正删除渠道行（用户要求「删除」按钮）。安全：invocations.channel_id 无外键
+// 约束（0005），历史调用记录仅留悬空数字 id（analytics 过滤 channel_id>0，不 JOIN）；在途请求已把
+// *Channel 取进内存（pickFromSnapshot），删除 + 失效缓存只影响下一份快照。
+func (s *Server) adminDeleteChannel(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	res := s.db.Where("id = ?", id).Delete(&relay.Channel{})
+	if res.Error != nil {
+		fail(c, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	if res.RowsAffected == 0 {
+		fail(c, http.StatusNotFound, "channel not found")
+		return
+	}
+	s.writeAudit(c, "channel_delete", strconv.FormatUint(id, 10), "channel deleted")
+	s.invalidateCache(relay.KindChannel, "")
+	c.JSON(http.StatusOK, gin.H{"deleted": id})
+}
+
 type priceReq struct {
 	Model                string `json:"model" binding:"required"`
 	InputUSDPer1M        string `json:"input_usd_per_1m" binding:"required"`
@@ -568,26 +617,31 @@ func (s *Server) adminListOrgs(c *gin.Context) {
 		FeatureVideo  bool `json:"feature_video"`
 		MaxMembers    int  `json:"max_members"`
 		MaxAPIKeys    int  `json:"max_api_keys"`
+		ShardCount    int  `json:"shard_count"` // 规模化：余额账户物理分片数（无配置=1）
 	}
-	// 活跃度子查询独立聚合（每 org 一行），避免与 members 子查询交叉相乘
+	// 活跃度子查询独立聚合（每 org 一行），避免与 members 子查询交叉相乘。
+	// 余额/冻结用相关子查询 SUM 跨所有分片（分片 org 的 ledger_accounts 有多行；JOIN 会扇出→行重复/漏算）。
 	err := s.db.Raw(`
 		SELECT o.id, o.name, o.kind, o.status, o.group_name AS ` + "`group`" + `,
 		       COALESCE(u.email, '') AS owner_email,
 		       (SELECT COUNT(*) FROM org_members m WHERE m.org_id = o.id) AS members,
-		       COALESCE(a.posted_balance, 0) AS posted_balance,
-		       COALESCE(a.held_amount, 0) AS held_amount,
+		       (SELECT COALESCE(SUM(la.posted_balance), 0) FROM ledger_accounts la
+		           WHERE la.org_id = o.id AND la.type = 'user_credit') AS posted_balance,
+		       (SELECT COALESCE(SUM(la.held_amount), 0) FROM ledger_accounts la
+		           WHERE la.org_id = o.id AND la.type = 'user_credit') AS held_amount,
 		       COALESCE(iv.calls, 0) AS calls,
 		       COALESCE(iv.spend, 0) AS spend,
 		       COALESCE(iv.last_active, '') AS last_active,
 		       COALESCE(e.feature_images, 1) AS feature_images,
 		       COALESCE(e.feature_video, 1) AS feature_video,
 		       COALESCE(e.max_members, 0) AS max_members,
-		       COALESCE(e.max_api_keys, 0) AS max_api_keys
+		       COALESCE(e.max_api_keys, 0) AS max_api_keys,
+		       COALESCE(sh.shard_count, 1) AS shard_count
 		FROM organizations o
 		LEFT JOIN org_members om ON om.org_id = o.id AND om.role = 'owner'
 		LEFT JOIN users u ON u.id = om.user_id
-		LEFT JOIN ledger_accounts a ON a.org_id = o.id AND a.type = 'user_credit'
 		LEFT JOIN org_entitlements e ON e.org_id = o.id
+		LEFT JOIN ledger_account_shards sh ON sh.org_id = o.id AND sh.type = 'user_credit'
 		LEFT JOIN (
 		    SELECT org_id, COUNT(*) AS calls,
 		           COALESCE(SUM(cost_usd), 0) AS spend, MAX(created_at) AS last_active
@@ -1027,6 +1081,50 @@ func (s *Server) adminSetEntitlements(c *gin.Context) {
 	})
 }
 
+// adminSetOrgShards：PUT /api/admin/orgs/:id/shards {type?, shard_count} —— 规模化：设置某 org 余额账户
+// 的物理分片数（巨客户单账户行写吞吐触顶时打散）。type 缺省 user_credit。shard_count=1 即关闭分片。
+// 扩容即时生效（hold 立即按新分片数散列）；rebalancer 周期把充值默认入的主片余额摊到各片。
+// ⚠ 缩容（调小 shard_count）前应确认高 shard 资金已 rebalance 回低片，否则其余额暂不被新 hold 选中。
+func (s *Server) adminSetOrgShards(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid org id")
+		return
+	}
+	var req struct {
+		Type       string `json:"type"`
+		ShardCount int    `json:"shard_count"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ShardCount < 1 || req.ShardCount > 64 {
+		fail(c, http.StatusBadRequest, "shard_count must be between 1 and 64")
+		return
+	}
+	accType := req.Type
+	if accType == "" {
+		accType = ledger.AccountUserCredit
+	}
+	var exists int64
+	if err := s.db.Model(&identity.Organization{}).Where("id = ?", id).Count(&exists).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if exists == 0 {
+		fail(c, http.StatusNotFound, "org not found")
+		return
+	}
+	if err := ledger.SetShardConfig(s.db, id, accType, req.ShardCount); err != nil {
+		fail(c, http.StatusInternalServerError, "set shard config failed")
+		return
+	}
+	s.writeAudit(c, "org_shards_set", strconv.FormatUint(id, 10),
+		fmt.Sprintf("type=%s shard_count=%d", accType, req.ShardCount))
+	c.JSON(http.StatusOK, gin.H{"org_id": id, "type": accType, "shard_count": req.ShardCount})
+}
+
 // adminListUsers：GET /api/admin/users?page=&q= —— 用户清单（含状态/注册时间，运营视图）。
 func (s *Server) adminListUsers(c *gin.Context) {
 	page := 1
@@ -1057,7 +1155,6 @@ func (s *Server) adminListUsers(c *gin.Context) {
 		Balance      decimal.Decimal `json:"balance"`
 		Group        string          `json:"group"`          // 个人组织计费分组（=层级/tier）
 		Invited      int64           `json:"invited"`        // 该用户邀请的组织数
-		Earned       decimal.Decimal `json:"earned"`         // 累计返佣（affiliate ledger）
 		InviterOrgID uint64          `json:"inviter_org_id"` // 邀请来源组织（0=无）
 		AdminRemark  string          `json:"admin_remark"`   // 运营备注（0025，gap P2-B）
 	}
@@ -1065,20 +1162,17 @@ func (s *Server) adminListUsers(c *gin.Context) {
 	rdb.Raw(`
 		SELECT u.id, u.email, u.display_name, u.status, u.role, u.admin_remark,
 		       COALESCE(o.id, 0) AS org_id,
-		       COALESCE(a.posted_balance, 0) AS balance,
+		       (SELECT COALESCE(SUM(la.posted_balance), 0) FROM ledger_accounts la
+		           WHERE la.org_id = o.id AND la.type = 'user_credit') AS balance,
 		       COALESCE(o.group_name, 'default') AS `+"`group`"+`,
 		       COALESCE(o.inviter_org_id, 0) AS inviter_org_id,
-		       (SELECT COUNT(*) FROM organizations oi WHERE oi.inviter_org_id = o.id) AS invited,
-		       (SELECT COALESCE(SUM(j.delta), 0) FROM ledger_journal j
-		           JOIN ledger_accounts la ON la.id = j.account_id
-		           WHERE la.org_id = o.id AND j.ref_type = 'affiliate') AS earned
+		       (SELECT COUNT(*) FROM organizations oi WHERE oi.inviter_org_id = o.id) AS invited
 		FROM users u
 		LEFT JOIN organizations o ON o.id = (
 		    SELECT om.org_id FROM org_members om
 		    JOIN organizations oo ON oo.id = om.org_id
 		    WHERE om.user_id = u.id AND om.role = 'owner' AND oo.kind = 0
-		    ORDER BY om.org_id LIMIT 1)
-		LEFT JOIN ledger_accounts a ON a.org_id = o.id AND a.type = 'user_credit'`+
+		    ORDER BY om.org_id LIMIT 1)`+
 		where+` ORDER BY u.id DESC LIMIT ? OFFSET ?`, pageArgs...).Scan(&rows)
 
 	c.JSON(http.StatusOK, gin.H{"total": total, "page": page, "page_size": pageSize, "items": rows})

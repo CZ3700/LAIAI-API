@@ -87,6 +87,7 @@ type User struct {
 	TOTPEnabled    int8   `gorm:"column:totp_enabled"`    // 2FA 是否启用
 	Role           string `gorm:"column:role"`            // 平台角色（0020，RBAC）：user|support|admin|superadmin
 	Status         int8   `gorm:"column:status"`
+	EmailVerified  int8   `gorm:"column:email_verified"` // 0030：邮箱是否已验证（注册时过验证码即 1，供邮件推送/未验证门控）
 	AdminRemark    string `gorm:"column:admin_remark" json:"-"` // 运营备注（0025，gap P2-B）：仅后台可见可改，json:"-" 防原样返回时外露给用户
 }
 
@@ -158,11 +159,32 @@ type OrgMember struct {
 
 func (OrgMember) TableName() string { return "org_members" }
 
+// OrgInvitation：团队邀请（0029）。一行 = 一条「待被邀请人确认」的活动邀请；
+// accept/decline/revoke 后整行删除（不留终态，审计走 audit_logs）。
+type OrgInvitation struct {
+	ID            uint64 `gorm:"primaryKey"`
+	OrgID         uint64 `gorm:"column:org_id"`
+	InviterUserID uint64 `gorm:"column:inviter_user_id"`
+	InviteeUserID uint64 `gorm:"column:invitee_user_id"`
+	Role          string `gorm:"column:role"`
+	CreatedAt     int64  `gorm:"column:created_at"`
+}
+
+func (OrgInvitation) TableName() string { return "org_invitations" }
+
 type RegisterInput struct {
-	Email       string
-	Password    string
-	DisplayName string
-	InviterCode string // 邀请码（0016，可选）
+	Email         string
+	Password      string
+	DisplayName   string
+	InviterCode   string // 邀请码（0016，可选）
+	EmailVerified bool   // 注册时是否已过邮箱验证码（email_verification_enabled 开启且校验通过）→ 持久化绑定邮箱
+}
+
+func b2i8(b bool) int8 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // genAffCode：8 hex 邀请码（crypto/rand）。碰撞概率可忽略，UNIQUE 兜底。
@@ -195,6 +217,7 @@ func Register(tx *gorm.DB, in RegisterInput) (*User, *Organization, error) {
 		PasswordHash:   hash,
 		DisplayName:    name,
 		Status:         StatusActive,
+		EmailVerified:  b2i8(in.EmailVerified),
 	}
 	if err := tx.Create(u).Error; err != nil {
 		if isDuplicate(err) {

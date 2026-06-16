@@ -73,13 +73,17 @@ func (s *Server) register(c *gin.Context) {
 			inviteGrant = v
 		}
 	}
+	// 邮箱已验证标记：同样必须在事务**外**读（事务内查 ext_settings 单连接池自死锁）。
+	// 开了验证码门槛且能走到这里 = 上面 verifyEmailCode 已通过 → 绑定真实邮箱。
+	emailVerified := s.getBoolSetting("email_verification_enabled")
 	var user *identity.User
 	var org *identity.Organization
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var err error
 		user, org, err = identity.Register(tx, identity.RegisterInput{
 			Email: req.Email, Password: req.Password, DisplayName: req.DisplayName,
-			InviterCode: req.InviterCode,
+			InviterCode:   req.InviterCode,
+			EmailVerified: emailVerified,
 		})
 		if err != nil {
 			return err

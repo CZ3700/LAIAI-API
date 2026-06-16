@@ -284,8 +284,7 @@ func (s *Server) paymentCallback(c *gin.Context) {
 		c.String(http.StatusInternalServerError, "credit failed")
 		return
 	}
-	if !already { // 首次入金才返佣 + 审计；重复 callback 静默 ack（返佣本身也幂等）
-		s.payAffiliateRebate(res.OrderNo) // 邀请返佣（0016，尽力而为，失败不影响入金）
+	if !already { // 首次入金才审计；重复 callback 静默 ack
 		s.writeAudit(c, "topup_paid", res.OrderNo, "topup credited via "+provider)
 	}
 	c.String(http.StatusOK, engine.AckBody())
@@ -357,7 +356,6 @@ func (s *Server) x402Settle(c *gin.Context) {
 		return
 	}
 	if !already {
-		s.payAffiliateRebate(order.OrderNo)
 		s.writeAudit(c, "topup_paid", order.OrderNo, "topup credited via x402 tx "+txHash)
 	}
 	c.JSON(http.StatusOK, gin.H{"order_no": orderNo, "tx_hash": txHash, "status": "paid"})
@@ -467,7 +465,6 @@ func (s *Server) ReconcileTopups(ctx context.Context, minAge time.Duration, limi
 				continue
 			}
 			if !already {
-				s.payAffiliateRebate(o.OrderNo)
 				credited++
 				s.Log().Warn("reconcile credited settled-but-uncredited x402 order", "order", o.OrderNo)
 			}
@@ -492,7 +489,6 @@ func (s *Server) ReconcileTopups(ctx context.Context, minAge time.Duration, limi
 			continue
 		}
 		if !already { // 真正补回了一笔漏发 callback 的入金
-			s.payAffiliateRebate(o.OrderNo)
 			credited++
 			s.Log().Warn("reconcile credited orphan paid order", "provider", o.Provider, "order", o.OrderNo)
 		}
@@ -540,47 +536,12 @@ func rechargeBonusFromTiers(raw string, amountUSD decimal.Decimal) decimal.Decim
 	return amountUSD.Mul(bestRate).Round(2)
 }
 
-// payAffiliateRebate：充值入账后给邀请组织返佣（affiliate_rate × 充值额，settings 热更新）。
-// 幂等键 affiliate:<order_no> 防重复；rate=0 或无邀请人则跳过。
-func (s *Server) payAffiliateRebate(orderNo string) {
-	rateStr := s.getSetting("affiliate_rate")
-	if rateStr == "" {
-		return
-	}
-	rate, err := decimal.NewFromString(rateStr)
-	if err != nil || !rate.IsPositive() {
-		return
-	}
-	var order TopupOrder
-	if s.db.Where("order_no = ?", orderNo).First(&order).Error != nil {
-		return
-	}
-	var org identity.Organization
-	if s.db.First(&org, order.OrgID).Error != nil || org.InviterOrgID == 0 {
-		return
-	}
-	rebate := order.AmountUSD.Mul(rate)
-	if !rebate.IsPositive() {
-		return
-	}
-	_ = s.db.Transaction(func(tx *gorm.DB) error {
-		acc, e := ledger.EnsureAccount(tx, org.InviterOrgID, ledger.AccountUserCredit)
-		if e != nil {
-			return e
-		}
-		_, _, e = ledger.Post(tx, ledger.PostInput{
-			IdempotencyKey: "affiliate:" + orderNo,
-			AccountID:      acc.ID,
-			Kind:           ledger.KindCredit,
-			Delta:          rebate,
-			RefType:        "affiliate",
-			Reason:         "affiliate rebate from topup " + orderNo,
-		})
-		return e
-	})
-}
+// 注：返佣/affiliate（按充值额给邀请人返佣）是旧平台迁移残留，本站不提供——已彻底移除
+// payAffiliateRebate 函数及其全部调用点（见 0016_affiliate.sql）。邀请码仅驱动「被邀请人注册赠额」。
 
-// getAffiliate：GET /api/affiliate —— 当前 org 的邀请码 + 统计（已邀请数/累计返佣）。
+// getAffiliate：GET /api/affiliate —— 当前 org 的邀请码 + 已邀请数。
+// 注：返佣（earned/rate）已移除——本站不提供按充值额给邀请人返佣。邀请码仅用于
+// 「被邀请人注册赠额」(invite_grant_usd) 与统计，不产生返佣入账。
 func (s *Server) getAffiliate(c *gin.Context) {
 	claims := mustClaims(c)
 	var org identity.Organization
@@ -594,14 +555,7 @@ func (s *Server) getAffiliate(c *gin.Context) {
 	}
 	var invited int64
 	s.db.Model(&identity.Organization{}).Where("inviter_org_id = ?", claims.OrgID).Count(&invited)
-	var earned decimal.Decimal
-	s.db.Raw(`SELECT COALESCE(SUM(j.delta), 0) FROM ledger_journal j
-		JOIN ledger_accounts a ON a.id = j.account_id
-		WHERE a.org_id = ? AND j.ref_type = 'affiliate'`, claims.OrgID).Scan(&earned)
-	c.JSON(http.StatusOK, gin.H{
-		"aff_code": code, "invited": invited, "earned": earned,
-		"rate": s.getSetting("affiliate_rate"),
-	})
+	c.JSON(http.StatusOK, gin.H{"aff_code": code, "invited": invited})
 }
 
 // listTopups：GET /api/payment/orders —— 当前 org 充值记录。
@@ -629,7 +583,7 @@ func init() {
 	for _, k := range []string{
 		"stripe_secret_key", "stripe_webhook_secret",
 		"epay_pid", "epay_key", "epay_api_url", "cny_per_usd",
-		"affiliate_rate", // 邀请返佣比例（0016），如 "0.05" = 5%；空/0=关闭
+		// 注：返佣/affiliate_rate 已移除（本站无此功能，旧平台迁移残留）——不再注册为可配置项。
 		// 加密货币主通道（WS-4，默认禁用，验真后置 coinbase_enabled=true）
 		"coinbase_enabled", "coinbase_api_key", "coinbase_webhook_secret",
 	} {
