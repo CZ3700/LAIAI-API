@@ -35,6 +35,7 @@ const { t, n, d } = useI18n()
 
 const balance = ref('0')
 const held = ref('0')
+const error = ref('')
 const summary = ref<SummaryDay[]>([])
 const byModel = ref<ModelStat[]>([])
 const byModelDaily = ref<ModelDailyRow[]>([])
@@ -125,6 +126,9 @@ onMounted(async () => {
   if (bm.status === 'fulfilled') byModel.value = bm.value.items
   if (bmd.status === 'fulfilled') byModelDaily.value = bmd.value.items.map((r) => ({ ...r, day: r.day.slice(0, 10) }))
   if (use.status === 'fulfilled') recent.value = use.value.items
+  // 区分「加载失败」与「真没数据」（FE-5）：任一首屏接口失败给出明确横幅，而非静默显示全 0。
+  const failed = [bal, sum, bm, bmd, use].filter((r) => r.status === 'rejected').length
+  error.value = failed > 0 ? t('billing.partialError', { count: failed }) : ''
   void loadPerf()
   perfTimer = setInterval(loadPerf, 15000) // 15s 刷新实时指标
 })
@@ -133,6 +137,7 @@ onBeforeUnmount(() => clearInterval(perfTimer))
 
 <template>
   <div class="app-page">
+    <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
     <section class="grid gap-4 lg:grid-cols-[1fr_24rem]">
       <div class="console-hero p-5 sm:p-6">
         <p class="text-sm text-muted">{{ t('dashboard.greeting') }}, {{ userName }}</p>
@@ -166,25 +171,25 @@ onBeforeUnmount(() => clearInterval(perfTimer))
     </section>
 
     <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-      <router-link to="/app/keys" class="action-strip">
-        <span>{{ t('dashboard.actionKey') }}</span>
+      <router-link to="/app/onboarding" class="action-strip">
+        <span>{{ t('dashboard.actionSetup') }}</span>
         <strong>{{ t('dashboard.actionReady') }}</strong>
-        <small>{{ t('dashboard.actionKeyHint') }}</small>
-      </router-link>
-      <router-link to="/app/devex" class="action-strip">
-        <span>{{ t('dashboard.actionDevex') }}</span>
-        <strong>/v1</strong>
-        <small>{{ t('dashboard.actionDevexHint') }}</small>
+        <small>{{ t('dashboard.actionSetupHint') }}</small>
       </router-link>
       <router-link to="/app/logs" class="action-strip">
         <span>{{ t('dashboard.actionLogs') }}</span>
         <strong>{{ totals.calls }}</strong>
         <small>{{ t('dashboard.actionLogsHint') }}</small>
       </router-link>
-      <router-link to="/trust" class="action-strip">
-        <span>{{ t('dashboard.actionTrust') }}</span>
+      <router-link to="/app/billing" class="action-strip">
+        <span>{{ t('dashboard.actionBilling') }}</span>
+        <strong>${{ totals.cost.toFixed(2) }}</strong>
+        <small>{{ t('dashboard.actionBillingHint') }}</small>
+      </router-link>
+      <router-link to="/app/latency" class="action-strip">
+        <span>{{ t('dashboard.actionLatency') }}</span>
         <strong>{{ (totals.rate * 100).toFixed(1) }}%</strong>
-        <small>{{ t('dashboard.actionTrustHint') }}</small>
+        <small>{{ t('dashboard.actionLatencyHint') }}</small>
       </router-link>
     </div>
 

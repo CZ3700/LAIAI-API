@@ -352,6 +352,7 @@ func (r *Relay) audioForward(c *gin.Context, inv *invocation.Invocation, model s
 				relayErr(c, http.StatusBadRequest, fmt.Sprintf("provider %q does not support audio", ch.Provider))
 				return nil, true
 			}
+			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
 			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
 			return nil, true
 		}

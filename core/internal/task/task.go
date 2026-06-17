@@ -109,10 +109,6 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		return nil, err
 	}
 
-	limit := ch.MaxConcurrentTasks
-	if limit <= 0 {
-		limit = 3 // 防御：历史行/手工插入未设值时不至于把渠道闸死
-	}
 	credential, err := s.Keyring.Decrypt(ch.CredentialEnc)
 	if err != nil {
 		return nil, fmt.Errorf("task: channel credential: %w", err)
@@ -139,6 +135,11 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		lockCh := &relay.Channel{}
 		if err := lockTx.First(lockCh, ch.ID).Error; err != nil {
 			return err
+		}
+		// 用锁内重读的并发上限（而非锁外 ch 旧值）：与 FOR UPDATE 重读初衷一致，即便上限被并发下调也按最新值判闸。
+		limit := lockCh.MaxConcurrentTasks
+		if limit <= 0 {
+			limit = 3 // 防御：历史行/手工插入未设值时不至于把渠道闸死
 		}
 		var active int64
 		if err := tx.Model(&Task{}).
@@ -226,6 +227,12 @@ func (s *Service) PollOnce(ctx context.Context) {
 }
 
 func (s *Service) pollOne(ctx context.Context, t *Task) {
+	if t.UpstreamTaskID == "" {
+		// 提交后回填 upstream_task_id 之前的在途窗口被 poller 捞到：空 id 查询注定 404，直接跳过；
+		// 若回填永久失败，sweepTimedOut 会按超时把该 queued 任务 settleFailure 全退（资金不卡）。
+		s.Log.Warn("task has empty upstream_task_id, skipping poll (sweep will time out)", "task", t.TaskID)
+		return
+	}
 	ch := &relay.Channel{}
 	if err := s.DB.First(ch, t.ChannelID).Error; err != nil {
 		s.Log.Error("task channel missing", "task", t.TaskID, "err", err)
@@ -343,14 +350,6 @@ func (s *Service) sweepTimedOut() {
 	}
 	for i := range tasks {
 		s.settleFailure(&tasks[i], fmt.Sprintf("task timeout (%s)", s.TaskTimeout))
-	}
-}
-
-func (s *Service) releaseHold(holdID uint64) {
-	if err := s.DB.Transaction(func(tx *gorm.DB) error {
-		return ledger.Release(tx, holdID)
-	}); err != nil {
-		s.Log.Error("TASK RELEASE FAILED — funds stuck in hold", "hold", holdID, "err", err)
 	}
 }
 

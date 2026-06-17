@@ -415,10 +415,10 @@ func (w *anthropicWriter) Status() int {
 	}
 	return w.status
 }
-func (w *anthropicWriter) Written() bool         { return w.sseStarted }
-func (w *anthropicWriter) Size() int             { return w.body.Len() }
-func (w *anthropicWriter) WriteHeader(code int)  { w.status = code }
-func (w *anthropicWriter) WriteHeaderNow()       {}
+func (w *anthropicWriter) Written() bool                     { return w.sseStarted }
+func (w *anthropicWriter) Size() int                         { return w.body.Len() }
+func (w *anthropicWriter) WriteHeader(code int)              { w.status = code }
+func (w *anthropicWriter) WriteHeaderNow()                   {}
 func (w *anthropicWriter) Write(b []byte) (int, error)       { return w.ingest(b) }
 func (w *anthropicWriter) WriteString(s string) (int, error) { return w.ingest([]byte(s)) }
 

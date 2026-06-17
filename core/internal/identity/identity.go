@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	ErrEmailTaken     = errors.New("identity: email already registered")
-	ErrInvalidInput   = errors.New("identity: invalid input")
+	ErrEmailTaken      = errors.New("identity: email already registered")
+	ErrInvalidInput    = errors.New("identity: invalid input")
 	ErrNotActiveMember = errors.New("identity: account inactive or membership revoked")
 )
 
@@ -87,7 +87,7 @@ type User struct {
 	TOTPEnabled    int8   `gorm:"column:totp_enabled"`    // 2FA 是否启用
 	Role           string `gorm:"column:role"`            // 平台角色（0020，RBAC）：user|support|admin|superadmin
 	Status         int8   `gorm:"column:status"`
-	EmailVerified  int8   `gorm:"column:email_verified"` // 0030：邮箱是否已验证（注册时过验证码即 1，供邮件推送/未验证门控）
+	EmailVerified  int8   `gorm:"column:email_verified"`        // 0030：邮箱是否已验证（注册时过验证码即 1，供邮件推送/未验证门控）
 	AdminRemark    string `gorm:"column:admin_remark" json:"-"` // 运营备注（0025，gap P2-B）：仅后台可见可改，json:"-" 防原样返回时外露给用户
 }
 

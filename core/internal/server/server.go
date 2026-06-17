@@ -47,6 +47,7 @@ type Server struct {
 	adminToken          []byte
 	keyring             *crypto.Keyring
 	authLimiter         *ipLimiter
+	twofaLimiter        *ipLimiter    // 2FA 二阶段 per-account 限流（防中间票窗口内暴力猜 TOTP）
 	relay               *relay.Relay  // 渠道一键测试用；nil = 测试端点 503
 	mailer              mailer.Mailer // 邮件发送；nil = 邮件功能禁用
 	log                 *slog.Logger
@@ -93,13 +94,15 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		db: db, readDB: opts.ReadDB, secret: opts.AuthSecret,
 		adminToken: opts.AdminToken, keyring: opts.Keyring,
 		authLimiter:         newIPLimiter(rate.Every(time.Second), authBurst),
+		twofaLimiter:        newIPLimiter(rate.Every(time.Second), authBurst), // 与 auth 同档（生产默认 5）；测试设大值绕开
 		log:                 log,
 		now:                 time.Now,
 		invRetentionDefault: opts.InvocationRetentionDays,
 	}
 	// 邮件走「settings 热配优先 + env 回退」包装：admin 后台填 SMTP 即生效，无需重启/改 env。
 	s.mailer = &settingsMailer{s: s, env: opts.Mailer}
-	s.authLimiter.useRedis(opts.RedisRateLimiter) // 多实例：auth 限流跨副本聚合（nil 退化进程内）
+	s.authLimiter.useRedis(opts.RedisRateLimiter)  // 多实例：auth 限流跨副本聚合（nil 退化进程内）
+	s.twofaLimiter.useRedis(opts.RedisRateLimiter) // 同上：2FA per-account 限流跨副本聚合
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -152,7 +155,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			authed.POST("/auth/switch", s.switchOrg)
 			// 团队邀请（被邀请人侧，0029）：未入队前不能 org-scoped，故挂 authed。
 			authed.GET("/invitations", s.listMyInvitations)              // 我收到的待确认邀请
-			authed.POST("/invitations/:id/accept", s.acceptInvitation)  // 接受 → 入队
+			authed.POST("/invitations/:id/accept", s.acceptInvitation)   // 接受 → 入队
 			authed.POST("/invitations/:id/decline", s.declineInvitation) // 拒绝
 
 			// —— org-scoped（P0-1：还需 org active + 当前会话用户仍是该 org 成员）——
@@ -163,6 +166,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.DELETE("/keys/:id", s.revokeKey)
 				org.DELETE("/keys/:id/purge", s.deleteKey)
 				org.GET("/usage", s.getUsage)
+				org.GET("/usage/export", s.getUsageExport) // 调用明细 CSV 自助导出（Latency/Usage 页）
 				org.GET("/usage/summary", s.getUsageSummary)
 				org.GET("/usage/by-model", s.getUsageByModel)
 				org.GET("/usage/by-model-daily", s.getUsageByModelDaily)
@@ -176,7 +180,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/org/members", s.listMembers)
 				org.POST("/org/members", s.inviteMember) // 发邀请（pending），对方确认后才入队
 				org.DELETE("/org/members/:user_id", s.removeMember)
-				org.GET("/org/invitations", s.listOrgInvitations)        // 本团队待确认邀请（管理者）
+				org.GET("/org/invitations", s.listOrgInvitations)         // 本团队待确认邀请（管理者）
 				org.DELETE("/org/invitations/:id", s.revokeOrgInvitation) // 撤销待确认邀请（管理者）
 			}
 		}

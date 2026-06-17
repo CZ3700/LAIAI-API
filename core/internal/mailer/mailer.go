@@ -71,6 +71,11 @@ func SendSMTP(cfg Config, to, subject, body string) error {
 	if cfg.From == "" {
 		cfg.From = cfg.Username
 	}
+	// 防邮件头注入：to/subject/from 都会原样进邮件头，含 CR/LF 可注入额外头（Bcc/伪造 From）。
+	// 共享原语在此 fail-closed，覆盖 stdlib Rcpt 不校验的 subject。
+	if strings.ContainsAny(to+subject+cfg.From, "\r\n") {
+		return fmt.Errorf("smtp: refusing to send — CR/LF in recipient, subject, or from")
+	}
 	port := cfg.Port
 	if port == 0 {
 		if cfg.SSL {

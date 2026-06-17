@@ -166,6 +166,13 @@ func (s *Server) twofaVerifyLogin(c *gin.Context) {
 		fail(c, http.StatusUnauthorized, "invalid or expired 2fa session")
 		return
 	}
+	// per-account 限流：中间票 5 分钟有效且可复用，仅 IP 级限流不足以挡 TOTP 暴力（1e6 空间）。
+	// 按 uid 计数（与 IP 限流叠加），令牌桶 5 突发 + 1/秒，配 Redis 时跨副本聚合。
+	if !s.twofaLimiter.allow("2fa:"+strconv.FormatUint(uid, 10), s.now()) {
+		c.Header("Retry-After", "60")
+		fail(c, http.StatusTooManyRequests, "too many 2fa attempts, slow down")
+		return
+	}
 	user := &identity.User{}
 	if err := s.db.First(user, uid).Error; err != nil || user.TOTPEnabled == 0 {
 		fail(c, http.StatusUnauthorized, "2fa not active")

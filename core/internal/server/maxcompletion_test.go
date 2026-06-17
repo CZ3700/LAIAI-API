@@ -9,8 +9,8 @@ import (
 // 而不是放行后借 overage 把余额刷成负数。
 func TestMaxCompletionTokensHeldUpfront(t *testing.T) {
 	srv, _ := setupRelayServer(t)
-	setupChannelAndPrice(t, srv, "http://unused.invalid") // 价格 $2/1M in, $6/1M out
-	apiKey, _ := seedUserWithCredit(t, srv, "mct@gmail.com", "1")  // 余额 $1
+	setupChannelAndPrice(t, srv, "http://unused.invalid")         // 价格 $2/1M in, $6/1M out
+	apiKey, _ := seedUserWithCredit(t, srv, "mct@gmail.com", "1") // 余额 $1
 
 	// 默认 4096 输出 hold ≈ $0.025 < $1 本会放行；但 max_completion_tokens=1000 万
 	// 钳到 1M 上限 → 1M×$6/1M ≈ $6.29 hold ＞ $1 → 必须 402（被输出冻结上限拦在上游调用之前）。
@@ -36,7 +36,7 @@ func TestMaxCompletionTokensHeldUpfront(t *testing.T) {
 // P0-2 同类：n（多候选）必须按 n 倍冻结——n 大 + 适中 max_completion_tokens 应被余额闸拦下。
 func TestMultiChoiceNHeldByMultiplier(t *testing.T) {
 	srv, _ := setupRelayServer(t)
-	setupChannelAndPrice(t, srv, "http://unused.invalid") // $6/1M out
+	setupChannelAndPrice(t, srv, "http://unused.invalid")          // $6/1M out
 	apiKey, _ := seedUserWithCredit(t, srv, "nmul@gmail.com", "1") // $1
 
 	// 单候选：100k 输出 × $6/1M = $0.6 < $1 → 放行（非 402）

@@ -21,27 +21,27 @@ func (Setting) TableName() string { return "ext_settings" }
 // 所以「前端表单/引擎用到的每个键」都必须在此登记，否则保存会被当未知键拒绝。
 var settingDefaults = map[string]string{
 	// —— 通用 / 门面 ——
-	"site_name":          "LAIAI",
-	"announcement":       "",
-	"terms_of_service":   "",
-	"privacy_policy":     "",
-	"support_email":      "",
-	"footer_text":        "",
-	"maintenance_mode":   "false",
+	"site_name":        "LAIAI",
+	"announcement":     "",
+	"terms_of_service": "",
+	"privacy_policy":   "",
+	"support_email":    "",
+	"footer_text":      "",
+	"maintenance_mode": "false",
 	// —— 注册 / 登录 ——
 	"register_enabled":           "true",
 	"email_verification_enabled": "true", // 默认开启：注册必须验证真实邮箱（绑定邮箱供后续推送，用户要求）。须配 SMTP 才能发码，否则注册 fail-closed。
-	"new_user_grant_usd":         "0", // 注册即赠送额度（USD，0=不送）；register 流程消费
+	"new_user_grant_usd":         "0",    // 注册即赠送额度（USD，0=不送）；register 流程消费
 	// 邮箱准入策略（gap P2-E，checkEmailDomainPolicy 消费；作用于注册/发码/OAuth）
-	"email_domain_whitelist": "", // 逗号分隔允许域名；空=不限制
-	"email_domain_blocklist": "", // 逗号分隔禁止域名（挡一次性邮箱）；空=不禁
+	"email_domain_whitelist": "",      // 逗号分隔允许域名；空=不限制
+	"email_domain_blocklist": "",      // 逗号分隔禁止域名（挡一次性邮箱）；空=不禁
 	"email_alias_block":      "false", // 拒绝带 +别名 的邮箱
 	// —— SMTP（admin 后台热配，settingsMailer 消费；改了即生效无需重启/env）——
-	"smtp_host":     "", // SMTP 服务器地址（空=回退 env / logMailer）
-	"smtp_port":     "", // 端口（空=按 SSL 取 465/587 默认）
-	"smtp_username": "", // SMTP 账户
-	"smtp_password": "", // 访问凭证（secret：加密落库 + 掩码回显）
-	"smtp_from":     "", // 发件人邮箱（空=取 username）
+	"smtp_host":     "",      // SMTP 服务器地址（空=回退 env / logMailer）
+	"smtp_port":     "",      // 端口（空=按 SSL 取 465/587 默认）
+	"smtp_username": "",      // SMTP 账户
+	"smtp_password": "",      // 访问凭证（secret：加密落库 + 掩码回显）
+	"smtp_from":     "",      // 发件人邮箱（空=取 username）
 	"smtp_ssl":      "false", // true=隐式 TLS(465)；false=STARTTLS(587)
 	// —— 支付（引擎 engineFor 消费；密钥服务端存，前端永不回显明文）——
 	"stripe_secret_key":     "",
@@ -49,7 +49,7 @@ var settingDefaults = map[string]string{
 	"epay_pid":              "",
 	"epay_key":              "",
 	"epay_api_url":          "",
-	"cny_per_usd":           "", // 空=默认 7.3
+	"cny_per_usd":           "",  // 空=默认 7.3
 	"min_topup_usd":         "1", // 最低充值额（USD）；createTopup 消费
 	// 充值阶梯优惠（gap P1-D）：JSON 数组 [{"min_usd":"50","rate":"0.05"},...]，空=无优惠。
 	// 入账时取「amount≥min_usd 的最高档 min_usd」对应 rate，bonus=amount×rate（KindGrant 单列入账）。
@@ -61,14 +61,14 @@ var settingDefaults = map[string]string{
 	"invite_grant_usd": "0",
 	// —— 渠道治理 ——
 	"channel_auto_disable":      "false", // 默认手动管理渠道开关（用户要求）；置 true 才启用"连续失败自动禁用"
-	"channel_disable_threshold": "1",    // 连续失败次数阈值（1=判定性错误即禁用，与 relay 默认一致）
+	"channel_disable_threshold": "1",     // 连续失败次数阈值（1=判定性错误即禁用，与 relay 默认一致）
 	// —— 模型级限流（gap #2，relay allowModelRate 消费）——
 	"model_rate_limit_enabled": "false", // 开关
 	"model_rate_limit_rpm":     "0",     // 每 (org, model) 每分钟请求上限；0=不限
 	// —— 二次验证（gap #4，requireStepUpForKeys 消费）——
 	"require_stepup_for_keys": "false", // 开启则创建 API Key 需 step-up 再认证（默认关，零摩擦）
 	// —— 旧日志清理（gap P2-C，RunLogRetention 每小时消费；0/空=永久保留）——
-	"log_retention_days":       "", // 调用日志保留天数；空=回退到 env 默认（INVOCATION_RETENTION_DAYS）
+	"log_retention_days":       "",  // 调用日志保留天数；空=回退到 env 默认（INVOCATION_RETENTION_DAYS）
 	"audit_log_retention_days": "0", // 审计日志保留天数；0=永久保留（审计默认不删，合规优先）
 	// —— OAuth（oauthStart/Callback 消费）——
 	"github_client_id":     "",

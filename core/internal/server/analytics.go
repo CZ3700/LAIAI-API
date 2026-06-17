@@ -29,9 +29,9 @@ func (s *Server) adminAnalytics(c *gin.Context) {
 	}
 	now := s.now().UTC() // 与 DATETIME 列的 UTC 存储口径一致（DSN loc=UTC），避免跨时区窗口偏移
 	sinceTime := now.AddDate(0, 0, -days+1)
-	sinceDate := sinceTime.Format("2006-01-02")                                             // datetime 列阈值
+	sinceDate := sinceTime.Format("2006-01-02") // datetime 列阈值
 	startOfDay := time.Date(sinceTime.Year(), sinceTime.Month(), sinceTime.Day(), 0, 0, 0, 0, sinceTime.Location())
-	startUnix := startOfDay.Unix()                                                          // bigint 列阈值
+	startUnix := startOfDay.Unix() // bigint 列阈值
 
 	// —— 资金：真金入账（已支付充值，按 amount_usd 入账口径） ——
 	var cashIn decimal.Decimal

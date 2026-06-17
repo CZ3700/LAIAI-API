@@ -196,6 +196,8 @@ func (r *Relay) HandleRerank(c *gin.Context) {
 		upBody, _ := mappedRawBody(ch, body, req.Model) // 模型映射（0009）
 		upReq, berr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, url, bytes.NewReader(upBody))
 		if berr != nil {
+			r.release(hold.ID) // 此分支原既不 release 也不 finish：hold 泄漏 + 漏记调用
+			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
 			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
 			return
 		}

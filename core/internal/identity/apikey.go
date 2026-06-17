@@ -80,11 +80,11 @@ func (k *APIKey) QuotaExhausted() bool {
 }
 
 type IssueKeyInput struct {
-	OrgID     uint64
-	UserID    *uint64 // per-member key；org 级 key 传 nil
-	Name      string
-	Scopes    string
-	ExpiresAt *time.Time
+	OrgID       uint64
+	UserID      *uint64 // per-member key；org 级 key 传 nil
+	Name        string
+	Scopes      string
+	ExpiresAt   *time.Time
 	QuotaLimit  decimal.Decimal // 累计消费上限 USD，0=无限
 	ModelLimits string          // 模型白名单
 	AllowIPs    string          // IP 白名单
@@ -115,14 +115,14 @@ func IssueKey(tx *gorm.DB, in IssueKeyInput) (string, *APIKey, error) {
 	sum := sha256.Sum256([]byte(plaintext))
 
 	k := &APIKey{
-		OrgID:     in.OrgID,
-		UserID:    in.UserID,
-		Name:      in.Name,
-		Prefix:    plaintext[:len(keyPrefix)+7], // 展示用 "sk-laiai-Ab3dEf9"
-		KeyHash:   hex.EncodeToString(sum[:]),
-		Scopes:    in.Scopes,
-		Status:    StatusActive,
-		ExpiresAt: in.ExpiresAt,
+		OrgID:       in.OrgID,
+		UserID:      in.UserID,
+		Name:        in.Name,
+		Prefix:      plaintext[:len(keyPrefix)+7], // 展示用 "sk-laiai-Ab3dEf9"
+		KeyHash:     hex.EncodeToString(sum[:]),
+		Scopes:      in.Scopes,
+		Status:      StatusActive,
+		ExpiresAt:   in.ExpiresAt,
 		QuotaLimit:  in.QuotaLimit,
 		ModelLimits: in.ModelLimits,
 		AllowIPs:    in.AllowIPs,
@@ -167,16 +167,6 @@ func VerifyKey(db *gorm.DB, plaintext string, now time.Time) (*APIKey, error) {
 // RevokeKey 吊销（幂等：重复吊销无害）。
 func RevokeKey(tx *gorm.DB, keyID uint64) error {
 	return tx.Model(&APIKey{}).Where("id = ?", keyID).Update("status", StatusDisabled).Error
-}
-
-// AddKeyUsage 原子累加 Key 的累计消费（capture 后调用，喂 quota_limit 判断）。
-// 尽力而为：失败只记日志不阻断（计费事实源仍是 journal），调用方忽略返回错误即可。
-func AddKeyUsage(db *gorm.DB, keyID uint64, amount decimal.Decimal) error {
-	if !amount.IsPositive() {
-		return nil
-	}
-	return db.Model(&APIKey{}).Where("id = ?", keyID).
-		Update("used_amount", gorm.Expr("used_amount + ?", amount)).Error
 }
 
 // AddKeyUsageSigned 原子调整 used_amount（允许负 delta），用于 reserve→actual 对账与失败退还。

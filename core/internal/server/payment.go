@@ -593,14 +593,13 @@ func init() {
 
 // adminPaymentConfig：GET /api/admin/payment-config —— 支付渠道状态（脱敏，运营总览）。
 func (s *Server) adminPaymentConfig(c *gin.Context) {
+	// 红线4：支付密钥绝不回显任何明文片段（首尾4位也会确认/缩小密钥并暴露环境）。
+	// 与 settings.go 的 adminGetSettings 同口径——已配置回全掩码、未配置回空。
 	mask := func(v string) string {
 		if v == "" {
 			return ""
 		}
-		if len(v) <= 8 {
-			return "****"
-		}
-		return v[:4] + "****" + v[len(v)-4:]
+		return secretMask
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"stripe": gin.H{

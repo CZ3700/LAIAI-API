@@ -76,7 +76,8 @@ type Recorder struct {
 	ch      chan *Invocation
 	wg      sync.WaitGroup
 	dropped atomic.Int64
-	closed  atomic.Bool
+	mu      sync.RWMutex // 保护 closed 并使「向 ch 发送」与「close(ch)」互斥（防关停期 send-on-closed panic）
+	closed  bool
 }
 
 func NewRecorder(db *gorm.DB, log *slog.Logger) *Recorder {
@@ -91,8 +92,12 @@ func NewRecorder(db *gorm.DB, log *slog.Logger) *Recorder {
 }
 
 // Record 非阻塞投递。队列满 → 丢弃 + 计数告警（绝不阻塞 relay 热路径）。
+// 持 RLock 做「检查 closed + 发送」一体化：与 Close 的 Lock 互斥，杜绝 check-then-send 间隙里
+// Close 抢先 close(ch) 导致的 send-on-closed panic。发送是非阻塞 select，RLock 只持极短一瞬。
 func (r *Recorder) Record(inv *Invocation) {
-	if r.closed.Load() {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
 		return
 	}
 	select {
@@ -108,11 +113,17 @@ func (r *Recorder) Record(inv *Invocation) {
 func (r *Recorder) Dropped() int64 { return r.dropped.Load() }
 
 // Close 停止接收并排空队列（优雅停机路径调用；幂等）。
+// 持 Lock 置 closed 并 close(ch)，与 Record 的 RLock 互斥；释放锁后再 wg.Wait 排空（worker 不取此锁，
+// 不必在锁内等待）。
 func (r *Recorder) Close() {
-	if r.closed.Swap(true) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
 		return
 	}
+	r.closed = true
 	close(r.ch)
+	r.mu.Unlock()
 	r.wg.Wait()
 }
 

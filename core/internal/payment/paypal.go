@@ -24,16 +24,18 @@ import (
 //	或 PAYMENT.CAPTURE.COMPLETED 直接到账）。
 //
 // 🚨 资金红线 —— 与旧引擎的关键差异：
-//   旧 engine_paypal.go 的 VerifyCallback **完全不验签**，只解析 JSON 后信任
-//   resource.status=="COMPLETED" 即入金。这是伪造回调入金漏洞。本移植版按红线
-//   FAIL-CLOSED 补上 PayPal 官方 webhook 验签：调
-//   POST /v1/notifications/verify-webhook-signature（需 WebhookID + 5 个
-//   PAYPAL-* 头）→ 仅当上游回 verification_status=="SUCCESS" 才继续解析；
-//   验签失败/缺头/缺 WebhookID/网络错误一律 Success=false（绝不在未验真前入金）。
+//
+//	旧 engine_paypal.go 的 VerifyCallback **完全不验签**，只解析 JSON 后信任
+//	resource.status=="COMPLETED" 即入金。这是伪造回调入金漏洞。本移植版按红线
+//	FAIL-CLOSED 补上 PayPal 官方 webhook 验签：调
+//	POST /v1/notifications/verify-webhook-signature（需 WebhookID + 5 个
+//	PAYPAL-* 头）→ 仅当上游回 verification_status=="SUCCESS" 才继续解析；
+//	验签失败/缺头/缺 WebhookID/网络错误一律 Success=false（绝不在未验真前入金）。
 //
 // API 基址（旧引擎的 sandbox 开关原样保留）：
-//   Sandbox=true  → https://api-m.sandbox.paypal.com
-//   Sandbox=false → https://api-m.paypal.com
+//
+//	Sandbox=true  → https://api-m.sandbox.paypal.com
+//	Sandbox=false → https://api-m.paypal.com
 type PayPal struct {
 	ClientID     string // PayPal App Client ID（OAuth basic auth 用户名）
 	ClientSecret string // PayPal App Secret（OAuth basic auth 密码）
@@ -214,18 +216,20 @@ type ppMoney struct {
 // 验真（防伪造回调入金），通过后再解析事件。
 //
 // 验签需 5 个入站 PAYPAL-* 头 + 配置的 WebhookID + 原始 body：
-//   POST /v1/notifications/verify-webhook-signature
-//   { auth_algo, cert_url, transmission_id, transmission_sig, transmission_time,
-//     webhook_id, webhook_event:<原始事件 JSON> }
-//   仅当响应 verification_status=="SUCCESS" 才放行（任何其它值/错误 → 验签失败）。
+//
+//	POST /v1/notifications/verify-webhook-signature
+//	{ auth_algo, cert_url, transmission_id, transmission_sig, transmission_time,
+//	  webhook_id, webhook_event:<原始事件 JSON> }
+//	仅当响应 verification_status=="SUCCESS" 才放行（任何其它值/错误 → 验签失败）。
 //
 // Engine.VerifyCallback 无 context 形参（与 stripe/epay 一致），而 PayPal 验签
 // 是一次内部基础设施 HTTP 调用——这里用带 15s 超时的 background context。
 //
 // 成功态映射（与旧引擎一致）：
-//   CHECKOUT.ORDER.APPROVED   → 自动 capture（POST .../capture），按 capture 结果入金
-//   PAYMENT.CAPTURE.COMPLETED → 直接据事件入金（resource.status=="COMPLETED"）
-//   其它事件 → Success=false（非成功通知，不入金）
+//
+//	CHECKOUT.ORDER.APPROVED   → 自动 capture（POST .../capture），按 capture 结果入金
+//	PAYMENT.CAPTURE.COMPLETED → 直接据事件入金（resource.status=="COMPLETED"）
+//	其它事件 → Success=false（非成功通知，不入金）
 func (p *PayPal) VerifyCallback(rawBody []byte, headers, _ map[string]string) (*CallbackResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -440,8 +444,9 @@ func (p *PayPal) QueryOrder(ctx context.Context, req QueryRequest) (*QueryResult
 // verification_status!="SUCCESS" 一律返回 error（上层据此 Success=false 拒收）。
 //
 // 入站头（PayPal webhook 投递时随附，大小写不敏感容错）：
-//   PAYPAL-AUTH-ALGO / PAYPAL-CERT-URL / PAYPAL-TRANSMISSION-ID /
-//   PAYPAL-TRANSMISSION-SIG / PAYPAL-TRANSMISSION-TIME
+//
+//	PAYPAL-AUTH-ALGO / PAYPAL-CERT-URL / PAYPAL-TRANSMISSION-ID /
+//	PAYPAL-TRANSMISSION-SIG / PAYPAL-TRANSMISSION-TIME
 func (p *PayPal) verifyWebhookSignature(ctx context.Context, rawBody []byte, headers map[string]string) error {
 	if p.WebhookID == "" {
 		return fmt.Errorf("paypal: webhook_id not configured (fail-closed)")

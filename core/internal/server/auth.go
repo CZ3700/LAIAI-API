@@ -149,11 +149,15 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 	user, err := identity.FindUserByEmail(s.db, req.Email)
-	if err != nil || user.Status != identity.StatusActive {
+	if err != nil {
+		// 防时延型用户枚举：无有效用户（不存在/邮箱非法）时也跑一次等量 argon2 再统一返回。
+		identity.VerifyDummyPassword(req.Password)
 		fail(c, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	if err := identity.VerifyPassword(req.Password, user.PasswordHash); err != nil {
+	// 密码校验先于 status 判定：被封/未激活用户也照常付出一次 argon2，
+	// 时延与「存在且 active」一致，不泄露账户状态。
+	if vErr := identity.VerifyPassword(req.Password, user.PasswordHash); vErr != nil || user.Status != identity.StatusActive {
 		fail(c, http.StatusUnauthorized, "invalid credentials")
 		return
 	}

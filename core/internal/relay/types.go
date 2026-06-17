@@ -263,21 +263,6 @@ func weightedPick(tier []*Channel, health func(uint64) float64) *Channel {
 	return tier[len(tier)-1]
 }
 
-// GroupRatio 返回组织所属分组的计费倍率（0011，差异化定价）。
-// 最终费用 = 基础 token 费 × 此倍率。查不到/异常一律回退 1（绝不因配置缺失乱算钱）。
-// hold 与 capture 必须用同一次取值（调用方取一次传两处），避免中途改配置导致 release 算错。
-func GroupRatio(db *gorm.DB, orgID uint64) decimal.Decimal {
-	var ratio decimal.Decimal
-	err := db.Raw(
-		`SELECT COALESCE(gr.ratio, 1) FROM organizations o
-		 LEFT JOIN group_ratios gr ON gr.name = o.group_name
-		 WHERE o.id = ?`, orgID).Scan(&ratio).Error
-	if err != nil || !ratio.IsPositive() {
-		return decimal.NewFromInt(1)
-	}
-	return ratio
-}
-
 func GetPrice(db *gorm.DB, model string) (*ModelPrice, error) {
 	p := &ModelPrice{}
 	if err := db.Where("model = ?", model).First(p).Error; err != nil {

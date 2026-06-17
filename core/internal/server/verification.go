@@ -95,14 +95,11 @@ func (s *Server) verifyEmailCode(canonical, code string) bool {
 	if code == "" {
 		return false
 	}
-	var rec EmailVerification
-	if err := s.db.Where("email_canonical = ?", canonical).First(&rec).Error; err != nil {
-		return false
-	}
-	if rec.Code != code || s.now().Unix() > rec.ExpiresAt {
-		return false
-	}
-	// 用后即焚，防重放
-	s.db.Where("email_canonical = ?", canonical).Delete(&EmailVerification{})
-	return true
+	// 原子「校验即消费」：用单条带条件的 DELETE 完成「匹配未过期码 + 删除」，
+	// 并发下只有一方 RowsAffected==1，杜绝 read-compare-delete 间隙导致的同码重放。
+	res := s.db.Where(
+		"email_canonical = ? AND code = ? AND expires_at >= ?",
+		canonical, code, s.now().Unix(),
+	).Delete(&EmailVerification{})
+	return res.Error == nil && res.RowsAffected == 1
 }

@@ -53,8 +53,15 @@ func Load() (*Config, error) {
 			c.ReplicaDSNs = append(c.ReplicaDSNs, s)
 		}
 	}
-	c.DBMaxOpenConns = getenvInt("LAIAI_DB_MAX_OPEN_CONNS", 50)
-	c.DBMaxIdleConns = getenvInt("LAIAI_DB_MAX_IDLE_CONNS", 10)
+	var perr error
+	// open conns 最小 1：database/sql 中 0 = 无上限，高负载会打爆 MySQL max_connections（与旧默认相反）。
+	if c.DBMaxOpenConns, perr = getenvInt("LAIAI_DB_MAX_OPEN_CONNS", 50, 1); perr != nil {
+		return nil, perr
+	}
+	// idle conns 允许 0：显式设 0 可避免复用被 MySQL wait_timeout 杀掉的陈旧连接。
+	if c.DBMaxIdleConns, perr = getenvInt("LAIAI_DB_MAX_IDLE_CONNS", 10, 0); perr != nil {
+		return nil, perr
+	}
 	// MySQL DSN 必须带 parseTime=true：否则 DATETIME 列扫成 []byte，ledger/analytics 静默损坏。
 	// 失败要响——宁可启动即报错，不要上线后资金流水悄悄读不出。
 	if strings.Contains(c.DSN, "@tcp(") && !strings.Contains(c.DSN, "parseTime=true") {
@@ -114,11 +121,17 @@ func getenvDefault(key, def string) string {
 	return def
 }
 
-func getenvInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
+// getenvInt 解析整数 env（连接池旋钮）。区分「未设置」与「设了非法值」：未设置用 def；设了就必须是
+// ≥min 的合法整数，否则 fail-loud 报错而非静默回退——与 RETENTION_DAYS 等必填项纪律一致，不让运维
+// 误以为生效的配置被悄悄吞掉。min 让调用方区分「允许 0」(idle) 与「必须 ≥1」(open，0=无上限有害)。
+func getenvInt(key string, def, min int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
 	}
-	return def
+	n, err := strconv.Atoi(v)
+	if err != nil || n < min {
+		return 0, fmt.Errorf("config: %s must be an integer >= %d", key, min)
+	}
+	return n, nil
 }

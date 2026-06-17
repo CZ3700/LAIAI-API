@@ -27,6 +27,7 @@ const sections = [
     title: () => t('nav.grpWorkspace'),
     items: [
       { to: '/app', label: () => t('nav.dashboard'), icon: DASH },
+      { to: '/app/onboarding', label: () => t('nav.onboarding'), icon: DOC },
       { to: '/app/devex', label: () => t('nav.devex'), icon: DOC },
       { to: '/app/playground', label: () => t('nav.playground'), icon: DOC },
       { to: '/app/models', label: () => t('nav.models'), icon: 'm21 7.5-9-5.25L3 7.5m18 0-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9' },
@@ -45,6 +46,8 @@ const sections = [
     items: [
       { to: '/app/usage', label: () => t('nav.usage'), icon: CHART },
       { to: '/app/logs', label: () => t('nav.requestLogs'), icon: DOC },
+      { to: '/app/latency', label: () => t('nav.latency'), icon: CHART },
+      { to: '/app/billing', label: () => t('nav.billing'), icon: WALLET },
       { to: '/app/wallet', label: () => t('nav.wallet'), icon: WALLET },
     ],
   },

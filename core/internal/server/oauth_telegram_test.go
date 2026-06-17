@@ -176,11 +176,11 @@ func TestOIDCEmailVerified(t *testing.T) {
 		{`{"email":"a@x.com","email_verified":true}`, "a@x.com", false},
 		{`{"email":"a@x.com","email_verified":"true"}`, "a@x.com", false},
 		{`{"email":"a@x.com","email_verified":"1"}`, "a@x.com", false},
-		{`{"email":"a@x.com","email_verified":1}`, "a@x.com", false},  // JSON 数字 1 → float64
-		{`{"email":"a@x.com","email_verified":0}`, "", true},          // JSON 数字 0 → 拒
+		{`{"email":"a@x.com","email_verified":1}`, "a@x.com", false}, // JSON 数字 1 → float64
+		{`{"email":"a@x.com","email_verified":0}`, "", true},         // JSON 数字 0 → 拒
 		{`{"email":"a@x.com","email_verified":false}`, "", true},
 		{`{"email":"a@x.com","email_verified":"false"}`, "", true},
-		{`{"email":"a@x.com"}`, "", true}, // 缺省 → 拒（安全优先）
+		{`{"email":"a@x.com"}`, "", true},     // 缺省 → 拒（安全优先）
 		{`{"email_verified":true}`, "", true}, // 无 email
 	}
 	for i, cse := range cases {

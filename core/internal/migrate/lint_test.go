@@ -32,9 +32,9 @@ func TestLintClassifies(t *testing.T) {
 		"0002_multi.sql": {Data: []byte(
 			"ALTER TABLE t ADD COLUMN a TEXT NOT NULL DEFAULT '';\n" +
 				"ALTER TABLE t ADD COLUMN b TEXT NOT NULL DEFAULT '';")},
-		"0003_drop.sql":     {Data: []byte("DROP TABLE t;")},
-		"0004_modify.sql":   {Data: []byte("ALTER TABLE t MODIFY COLUMN a BIGINT;")},
-		"0005_seed.sql":     {Data: []byte("INSERT INTO t (id) VALUES (1);")},
+		"0003_drop.sql":   {Data: []byte("DROP TABLE t;")},
+		"0004_modify.sql": {Data: []byte("ALTER TABLE t MODIFY COLUMN a BIGINT;")},
+		"0005_seed.sql":   {Data: []byte("INSERT INTO t (id) VALUES (1);")},
 	}
 	findings, err := Lint(fsys)
 	if err != nil {

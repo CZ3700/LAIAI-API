@@ -109,11 +109,18 @@ async function topup() {
   creating.value = true
   error.value = ''
   try {
-    const r = await api<{ pay_url: string }>('POST', '/api/payment/create', {
+    const r = await api<{ pay_url?: string }>('POST', '/api/payment/create', {
       provider: selectedProvider.value,
       amount_usd: String(selectedAmount.value),
     })
-    window.location.href = r.pay_url // 跳转去支付
+    if (r.pay_url) {
+      window.location.href = r.pay_url // 跳转去支付
+    } else {
+      // 防御：x402 等渠道不返回 pay_url（改返回 requirements，需链上结算 UI，当前未接入）。
+      // 不跳到 undefined；x402 默认禁用，正式启用并做钱包签名 UI 时再换专用文案。
+      error.value = t('common.error')
+      creating.value = false
+    }
   } catch (e) {
     error.value = errorMessage(e, t('common.error'))
     creating.value = false

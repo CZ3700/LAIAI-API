@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/csv"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,6 +14,7 @@ import (
 const (
 	usageDefaultPageSize = 20
 	usageMaxPageSize     = 100
+	usageExportMaxRows   = 5000 // 自助导出上限：够日常对账，又不至于把内存/连接拖垮
 )
 
 // getUsage：GET /api/usage?page=&page_size=&model=
@@ -53,6 +55,46 @@ func (s *Server) getUsage(c *gin.Context) {
 	})
 }
 
+// getUsageExport：GET /api/usage/export?days=N&model=&status= —— 当前 org 调用明细 CSV 自助下载。
+// 与 getUsage 同 org 隔离口径（红线 5）；按 days 截最近 N 天（默认 30，1..365），上限 usageExportMaxRows。
+// CSV 注入防护走 csvSafe（与 admin 导出一致）；只导出对外字段，不含渠道/上游 id 等平台内部信息。
+func (s *Server) getUsageExport(c *gin.Context) {
+	claims := mustClaims(c)
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+	if days < 1 || days > 365 {
+		days = 30
+	}
+	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
+	q := s.readOnly().WithContext(c.Request.Context()).Model(&invocation.Invocation{}).
+		Where("org_id = ? AND created_at >= ?", claims.OrgID, since)
+	if model := c.Query("model"); model != "" {
+		q = q.Where("model = ?", model)
+	}
+	if status := c.Query("status"); status != "" {
+		q = q.Where("status = ?", status)
+	}
+	var rows []invocation.Invocation
+	if err := q.Order("id DESC").Limit(usageExportMaxRows).Find(&rows).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "usage export query failed")
+		return
+	}
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="usage.csv"`)
+	w := csv.NewWriter(c.Writer)
+	_ = w.Write([]string{"time", "request_id", "model", "status", "status_code", "stream",
+		"prompt_tokens", "completion_tokens", "cost_usd", "frt_ms", "duration_ms"})
+	for i := range rows {
+		r := &rows[i]
+		_ = w.Write([]string{
+			r.CreatedAt.UTC().Format(time.RFC3339), csvSafe(r.RequestID), csvSafe(r.Model), csvSafe(r.Status),
+			strconv.Itoa(r.StatusCode), strconv.FormatBool(r.IsStream),
+			strconv.FormatInt(r.PromptTokens, 10), strconv.FormatInt(r.CompletionTokens, 10),
+			r.CostUSD.String(), strconv.Itoa(r.FRTMs), strconv.Itoa(r.DurationMs),
+		})
+	}
+	w.Flush()
+}
+
 // getUsageByModel：GET /api/usage/by-model?days=N —— 当前 org 近 N 天按模型聚合。
 // 调用数/成功数/输入输出 token/费用，按调用量降序。仪表盘"模型分布"用。
 func (s *Server) getUsageByModel(c *gin.Context) {
@@ -70,7 +112,7 @@ func (s *Server) getUsageByModel(c *gin.Context) {
 		CompletionTokens int64           `json:"completion_tokens"`
 		CostUSD          decimal.Decimal `json:"cost_usd"`
 	}
-	err := s.db.WithContext(c.Request.Context()).Raw(`
+	err := s.readOnly().WithContext(c.Request.Context()).Raw(`
 		SELECT model,
 		       COUNT(*) AS calls,
 		       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS succeeded,
@@ -138,7 +180,7 @@ func (s *Server) getUsageByModelDaily(c *gin.Context) {
 		Calls   int64           `json:"calls"`
 		CostUSD decimal.Decimal `json:"cost_usd"`
 	}
-	err := s.db.WithContext(c.Request.Context()).Raw(`
+	err := s.readOnly().WithContext(c.Request.Context()).Raw(`
 		SELECT DATE(created_at) AS day, model,
 		       COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS cost_usd
 		FROM invocations
@@ -163,7 +205,9 @@ func (s *Server) getUsagePerf(c *gin.Context) {
 		Calls  int64 `json:"rpm"`
 		Tokens int64 `json:"tpm"`
 	}
-	s.readOnly().WithContext(c.Request.Context()).Raw(`
+	// 实时指标（近 60 秒）必须走主库：只读副本的复制延迟会让窗口过滤掉尚未复制到的最近行，
+	// 在线却显示 0 RPM/0 TPM 或严重低估。其余可容延迟的用量聚合(getUsage/Export/Summary/ByModel*)才用 readOnly()。
+	s.db.WithContext(c.Request.Context()).Raw(`
 		SELECT COUNT(*) AS calls,
 		       COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
 		FROM invocations WHERE org_id = ? AND created_at >= ?`,

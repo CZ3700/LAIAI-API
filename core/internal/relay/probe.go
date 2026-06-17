@@ -102,9 +102,10 @@ func (r *Relay) ProbeExistingChannel(ctx context.Context, ch *Channel) *ProbeRes
 }
 
 // fetchModels：GET {base}/models 拉模型列表，按协议族选鉴权头与响应解析（P2-10）：
-//   openai    Authorization: Bearer；解析 {data:[{id}]}
-//   anthropic x-api-key + anthropic-version；解析 {data:[{id}]}
-//   gemini    ?key= 查询参数；解析 {models:[{name:"models/x"}]}（去 models/ 前缀）
+//
+//	openai    Authorization: Bearer；解析 {data:[{id}]}
+//	anthropic x-api-key + anthropic-version；解析 {data:[{id}]}
+//	gemini    ?key= 查询参数；解析 {models:[{name:"models/x"}]}（去 models/ 前缀）
 func (r *Relay) fetchModels(ctx context.Context, base, apiKey, family string) (models []string, gateway string, status int, err error) {
 	ctx, cancel := context.WithTimeout(ctx, probePerCandidateTimeout)
 	defer cancel()

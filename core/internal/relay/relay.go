@@ -358,6 +358,15 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			maxTokens = maxOutputTokensCeiling // 钳上限（审查 L-2）：防超大值把 hold 撑成误导性"余额不足"
 		}
 	}
+	// 把**转发体**的输出上限也钳到 ceiling：上面只钳了 hold 估算用的局部变量 maxTokens，转发体里客户端
+	// 原始的超大 max_tokens 仍会被各 adapter 原样转发；若上游真按其产出 >hold 口径，capture 的 actual 会
+	// 超 hold、走 overage 把 org 余额刷负（与下方 n 倍同类资金红线）。只钳「已存在且确超 ceiling」的字段——
+	// 不给未带该字段的请求平添字段，也不误抬小字段（如仅 max_completion_tokens 超限时不动 max_tokens）。
+	for _, f := range []string{"max_tokens", "max_completion_tokens"} {
+		if v, ok := req[f].(float64); ok && v > float64(maxOutputTokensCeiling) {
+			req[f] = float64(maxOutputTokensCeiling)
+		}
+	}
 	// 扩展思考（Anthropic thinking）：thinking token 计入 output 计费，anthropic 适配器会把上游
 	// max_tokens 上调到 budget+4096。hold 必须同口径计入，否则低余额可借 overage 把 org 余额刷负
 	// （与下方 n 倍同类资金红线）。对非 anthropic 渠道无害（只多冻结、settle 按真实 usage 退差）。
@@ -474,6 +483,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		upReq, err := ad.buildRequest(c.Request.Context(), ch, credential, req, stream)
 		if err != nil {
 			r.release(hold.ID)
+			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
 			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
 			return // 请求本身不合法，换渠道无意义
 		}
@@ -633,12 +643,13 @@ func (r *Relay) disableChannel(channelID uint64, reason string) {
 func (r *Relay) enableChannelIfDisabled(ch *Channel) {
 	r.resetFailures(ch.ID)
 	r.observe(ch.ID, true) // 健康分：一次成功（三类 relay 共用此成功钩子）
-	if ch.Status != 2 {
-		return
-	}
+	// 不预读 ch.Status——它来自 status=1 活跃快照恒为 1，预读判定(if ch.Status!=2)会让本函数永不重启用（旧 BUG）。
+	// 直接用条件 UPDATE 作原子闸：仅当当前确为 auto-disabled(status=2) 才翻回 1（对 status=1 是零行 no-op）。
+	// 这样在另一实例持陈旧快照、把刚被禁的渠道选中并成功时仍能自愈。广播只在真发生翻转(RowsAffected>0)时发，
+	// 不对每个成功请求都广播失效。
 	go func() {
-		if err := r.DB.Model(&Channel{}).Where("id = ? AND status = 2", ch.ID).
-			Update("status", 1).Error; err == nil {
+		res := r.DB.Model(&Channel{}).Where("id = ? AND status = 2", ch.ID).Update("status", 1)
+		if res.Error == nil && res.RowsAffected > 0 {
 			r.broadcastInvalidate(KindChannel, "") // 重启用的渠道即时回到快照可被选
 			r.Log.Info("channel auto-re-enabled after success", "channel", ch.ID)
 		}

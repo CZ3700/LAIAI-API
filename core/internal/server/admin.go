@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
@@ -821,7 +822,11 @@ func (s *Server) adminListInvocations(c *gin.Context) {
 		q = q.Where("created_at >= ?", v)
 	}
 	if v := c.Query("until"); v != "" {
-		q = q.Where("created_at < ?", v+" 23:59:59")
+		// until 当天全部毫秒都要含进来：created_at 是 DATETIME(3)，旧 `< v+" 23:59:59"` 会漏掉
+		// 23:59:59.001–.999 的毫秒级记录。改用「次日 00:00 严格上界」与 since 左闭对称；解析失败则忽略该过滤。
+		if d, err := time.Parse("2006-01-02", v); err == nil {
+			q = q.Where("created_at < ?", d.AddDate(0, 0, 1).Format("2006-01-02"))
+		}
 	}
 
 	var total int64

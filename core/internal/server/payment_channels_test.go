@@ -53,7 +53,7 @@ func TestPaymentChannelCRUD(t *testing.T) {
 	w, out := srv.doAdmin(t, "POST", "/api/admin/payment-channels", map[string]any{
 		"code": "stripe_main", "display_name": "Stripe Main", "protocol": "stripe",
 		"config":      map[string]string{"secret_key": "sk_test_SECRET", "webhook_secret": "whsec_x"},
-		"pay_methods": "card", "currency": "USD",
+		"pay_methods": "card", "currency": "USD", "enabled": true, // 新建默认禁用，须显式启用才进路由/支付方式
 	})
 	if w.Code != 200 {
 		t.Fatalf("create = %d %v", w.Code, out)
@@ -115,5 +115,35 @@ func TestPaymentChannelCRUD(t *testing.T) {
 	w, _ = srv.doAdmin(t, "DELETE", fmt.Sprintf("/api/admin/payment-channels/%d", id), nil)
 	if w.Code != 200 {
 		t.Fatalf("delete = %d", w.Code)
+	}
+}
+
+// 安全不变量：新建渠道（省略 enabled）默认禁用——admin 须显式 enable 才进路由/支付方式，
+// 挡住字段名/密钥写错的半成品渠道直接进真金选择列表。
+func TestPaymentChannelDefaultsDisabled(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	w, _ := srv.doAdmin(t, "POST", "/api/admin/payment-channels", map[string]any{
+		"code": "stripe_off", "display_name": "Stripe Off", "protocol": "stripe",
+		"config":      map[string]string{"secret_key": "sk_test_x", "webhook_secret": "whsec_x"},
+		"pay_methods": "card", "currency": "USD", // 故意不带 enabled
+	})
+	if w.Code != 200 {
+		t.Fatalf("create = %d", w.Code)
+	}
+	// 列表：该渠道 enabled=0（默认禁用）
+	_, out := srv.doAdmin(t, "GET", "/api/admin/payment-channels", nil)
+	chs := out["channels"].([]any)
+	if len(chs) != 1 {
+		t.Fatalf("channels = %d, want 1", len(chs))
+	}
+	if en := chs[0].(map[string]any)["enabled"]; en != float64(0) {
+		t.Fatalf("new channel must default disabled (enabled=0), got %v", en)
+	}
+	// 用户侧支付方式：禁用渠道不出现（真金选择列表为空）
+	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "dd@gmail.com", "password": "longenough1"})
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "dd@gmail.com", "password": "longenough1"})
+	_, mo := srv.do(t, "GET", "/api/payment/methods", login["token"].(string), nil)
+	if methods := mo["methods"].([]any); len(methods) != 0 {
+		t.Fatalf("disabled channel must not appear in payment methods, got %v", methods)
 	}
 }

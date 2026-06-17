@@ -129,7 +129,7 @@ func TestAnthropicInboundToolUse(t *testing.T) {
 	w, out := srv.do(t, "POST", "/anthropic/v1/messages", apiKey, map[string]any{
 		"model": "test-model", "max_tokens": 100,
 		"messages": []map[string]any{{"role": "user", "content": "weather?"}},
-		"tools": []map[string]any{{"name": "get_weather", "description": "w", "input_schema": map[string]any{"type": "object"}}},
+		"tools":    []map[string]any{{"name": "get_weather", "description": "w", "input_schema": map[string]any{"type": "object"}}},
 	})
 	if w.Code != 200 {
 		t.Fatalf("anthropic tool = %d %v", w.Code, out)

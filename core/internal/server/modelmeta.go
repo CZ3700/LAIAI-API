@@ -87,9 +87,11 @@ func (s *Server) adminUpsertModelMeta(c *gin.Context) {
 
 // adminFetchChannelModels：GET /api/admin/channels/:id/fetch-models —— 自动拉模型 + 缺失检测（gap P2-D）。
 // 解密渠道凭证 → 拉上游 /v1/models → 与「渠道已配模型」「平台已定价模型」做差集：
-//   missing_in_config = 上游有、渠道 Models 未列（漏上货）
-//   extra_in_config   = 渠道列了、上游已无（可能已下线，建议清理）
-//   unpriced          = 上游有、model_prices 无（漏配价）
+//
+//	missing_in_config = 上游有、渠道 Models 未列（漏上货）
+//	extra_in_config   = 渠道列了、上游已无（可能已下线，建议清理）
+//	unpriced          = 上游有、model_prices 无（漏配价）
+//
 // 只读探测，不改任何库（admin 据此再手动上货/定价，避免自动改动误伤）。
 func (s *Server) adminFetchChannelModels(c *gin.Context) {
 	if s.relay == nil {

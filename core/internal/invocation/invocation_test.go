@@ -72,7 +72,7 @@ func TestRecorderCloseIdempotentAndPostCloseNoop(t *testing.T) {
 	db := setup(t)
 	rec := NewRecorder(db, testLog())
 	rec.Close()
-	rec.Close()                                                  // 幂等不 panic
+	rec.Close()                                                                                       // 幂等不 panic
 	rec.Record(&Invocation{OrgID: 1, APIKeyID: 1, RequestID: "x", Model: "m", Status: StatusSuccess}) // 关闭后投递安全 no-op
 }
 

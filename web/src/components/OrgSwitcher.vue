@@ -38,6 +38,9 @@ async function onSwitch(event: Event) {
     location.reload()
   } catch (e) {
     error.value = errorMessage(e, t('common.error'))
+    // 切换失败：把原生 select 的显示值复位回真实 orgId。:value 是单向绑定且 auth.orgId 未变，
+    // 不会自动回退，否则下拉框会停在「看似已切换实则没切」的错误选项上。
+    ;(event.target as HTMLSelectElement).value = String(auth.orgId)
   }
 }
 

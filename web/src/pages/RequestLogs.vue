@@ -47,7 +47,7 @@ const filteredRows = computed(() => {
 const selected = computed(() => filteredRows.value.find((r) => r.id === selectedId.value) ?? filteredRows.value[0] ?? null)
 const totals = computed(() => {
   const calls = filteredRows.value.length
-  const succeeded = filteredRows.value.filter((r) => r.status === 'success' || r.status_code < 400).length
+  const succeeded = filteredRows.value.filter((r) => r.status === 'success').length // 与后端聚合口径一致（仅 status='success'，不靠 status_code）
   const tokens = filteredRows.value.reduce((sum, r) => sum + r.prompt_tokens + r.completion_tokens, 0)
   const cost = filteredRows.value.reduce((sum, r) => sum + Number(r.cost_usd || 0), 0)
   const latency = filteredRows.value.reduce((sum, r) => sum + r.duration_ms, 0)
@@ -114,7 +114,7 @@ function fmtMs(ms: number): string {
 }
 
 function statusClass(row: UsageRow): string {
-  return row.status === 'success' || row.status_code < 400 ? 'badge-ok' : 'badge-danger'
+  return row.status === 'success' ? 'badge-ok' : 'badge-danger'
 }
 
 let filterTimer: ReturnType<typeof setTimeout> | undefined

@@ -26,8 +26,9 @@ import (
 const ppToken = "A21AA-fake-access-token"
 
 // ppMux 构造一个模拟 PayPal API 的 httptest server。
-//   verifyStatus："SUCCESS" / "FAILURE"（verify-webhook-signature 返回值）
-//   captureStatus：capture 端点返回的 order status（如 "COMPLETED"）
+//
+//	verifyStatus："SUCCESS" / "FAILURE"（verify-webhook-signature 返回值）
+//	captureStatus：capture 端点返回的 order status（如 "COMPLETED"）
 func ppMux(t *testing.T, verifyStatus, captureStatus string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()

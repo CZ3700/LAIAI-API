@@ -7,7 +7,8 @@ import (
 
 // 上游错误分类（知识库 §2.1，提炼自 NewAPI service/channel.go:47-102 的生产规则）。
 // 决定：① 是否禁用渠道（鉴权失效/配额耗尽 = 渠道坏了，禁用）；
-//        ② 是否换渠道重试（M2 接重试循环时用）。
+//
+//	② 是否换渠道重试（M2 接重试循环时用）。
 type upstreamDisposition struct {
 	DisableChannel bool   // 该渠道应自动禁用（凭证/配额类硬故障）
 	Retryable      bool   // 可换渠道重试（M2）
@@ -55,12 +56,12 @@ func classifyUpstreamError(provider string, statusCode int, body []byte) upstrea
 	// —— 可重试性（知识库 §2.1 ShouldRetry）——
 	// 504/524 网关超时、400/408 永不重试；其余 5xx 与 429 可换渠道重试。
 	switch {
-	case statusCode == 504 || statusCode == 524 || statusCode == 400 || statusCode == 408:
-		d.Retryable = false
-	case statusCode == 429 || (statusCode >= 500 && statusCode < 600):
-		d.Retryable = true
-	case d.DisableChannel:
-		d.Retryable = true // 渠道坏了，换一个
+	case statusCode == 504 || statusCode == 524:
+		d.Retryable = false // 真网关超时：换渠道大概率也超时，重试无意义
+	case (statusCode == 400 || statusCode == 408) && !d.DisableChannel:
+		d.Retryable = false // 纯客户端 400/408：请求本身的问题，换渠道无意义
+	case d.DisableChannel || statusCode == 429 || (statusCode >= 500 && statusCode < 600):
+		d.Retryable = true // 渠道坏了（含 400+认证类禁用）/限流/5xx：换一个健康渠道重试
 	}
 	return d
 }

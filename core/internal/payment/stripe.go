@@ -62,7 +62,7 @@ func (s *Stripe) CreatePayment(ctx context.Context, req *CreateRequest) (*Create
 	form.Set("line_items[0][price_data][product_data][name]", req.Description)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api.stripe.com/v1/checkout/sessions", strings.NewReader(form.Encode()))
+		s.apiBase()+"/v1/checkout/sessions", strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}

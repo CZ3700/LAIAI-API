@@ -600,6 +600,7 @@ watch(tab, (v) => {
   if (v === 'users' && usageByUser.value.length === 0) void loadUsageByUser().catch(showError)
   if (v === 'audit' && audit.value.length === 0) void loadAudit().catch(showError)
   if (v === 'health') void loadHealth().catch(showError)
+  if (v === 'logs' && logs.value.length === 0) void loadLogs().catch(showError)
 })
 
 // —— 渠道健康看板（M2，只读可观测；不反馈选路）——
@@ -748,10 +749,6 @@ function toggleLog(id: number) {
   expandedLog.value = expandedLog.value === id ? null : id
 }
 watch(logPage, () => void loadLogs().catch(showError))
-// 切到日志 tab 时首次加载
-watch(tab, (v) => {
-  if (v === 'logs' && logs.value.length === 0) void loadLogs().catch(showError)
-})
 
 // —— 平台概览 ——
 const overview = ref<Overview | null>(null)

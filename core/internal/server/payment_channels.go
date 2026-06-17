@@ -258,11 +258,15 @@ func (s *Server) adminUpsertPaymentChannel(c *gin.Context) {
 		return
 	}
 
-	enabled := int8(1)
-	if req.Enabled != nil && !*req.Enabled {
-		enabled = 0
-	} else if found && req.Enabled == nil {
-		enabled = existing.Enabled
+	// 新建渠道默认禁用：admin 须先 test 连通再手动 enable，挡住字段名/密钥写错的半成品渠道直接进真金选择列表。
+	// 真值表：新建+nil→0；新建+true→1；新建+false→0；编辑+nil→保留 existing；编辑+true→1；编辑+false→0。
+	enabled := int8(0)
+	if req.Enabled != nil {
+		if *req.Enabled {
+			enabled = 1
+		}
+	} else if found {
+		enabled = existing.Enabled // 编辑时未带 enabled = 保留原状态
 	}
 	currency := req.Currency
 	if currency == "" {

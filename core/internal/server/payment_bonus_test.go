@@ -22,7 +22,7 @@ func TestComputeRechargeBonus(t *testing.T) {
 	db.Exec(`UPDATE ext_settings SET value=? WHERE name='recharge_bonus_tiers'`,
 		`[{"min_usd":"50","rate":"0.05"},{"min_usd":"200","rate":"0.1"}]`)
 	for _, c := range []struct{ amount, want string }{
-		{"20", "0"},   // 低于首档 → 无优惠
+		{"20", "0"}, // 低于首档 → 无优惠
 		{"49.99", "0"},
 		{"50", "2.5"}, // 首档 5%
 		{"100", "5"},

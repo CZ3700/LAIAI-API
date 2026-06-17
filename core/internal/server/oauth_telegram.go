@@ -60,9 +60,10 @@ func tgFieldString(v any) string {
 }
 
 // verifyTelegramAuth：按 Telegram 规范校验 widget 回传数据的 HMAC。
-//   secret = SHA256(bot_token)；data_check_string = **收到的所有字段(除 hash)** 按 key 排序的
-//   "k=v" 以 \n 连接；期望 hash = hex(HMAC_SHA256(data_check_string, secret))。
-//   用全量字段（而非硬编码子集）才符合规范——Telegram 未来新增字段不会令验签失败。
+//
+//	secret = SHA256(bot_token)；data_check_string = **收到的所有字段(除 hash)** 按 key 排序的
+//	"k=v" 以 \n 连接；期望 hash = hex(HMAC_SHA256(data_check_string, secret))。
+//	用全量字段（而非硬编码子集）才符合规范——Telegram 未来新增字段不会令验签失败。
 func verifyTelegramAuth(data map[string]any, botToken string) bool {
 	hashVal, _ := data["hash"].(string)
 	if hashVal == "" {

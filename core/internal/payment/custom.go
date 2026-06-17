@@ -33,7 +33,8 @@ import (
 //     HMAC-SHA256/HMAC-MD5），不臆造。具体处理商上线前仍需抓真实 raw 校正字段点路径与签名口径。
 //
 // 模板可用变量（customRenderTemplate 把 {{key}} 整串替换）：
-//   {{order_no}} {{amount}} {{currency}} {{notify_url}} {{return_url}} {{desc}} {{client_ip}} {{api_key}}
+//
+//	{{order_no}} {{amount}} {{currency}} {{notify_url}} {{return_url}} {{desc}} {{client_ip}} {{api_key}}
 //
 // 其中 {{amount}} 经币种最小单位规整（customCanonicalAmount，沿用旧 AmountToMinor→AmountFromMinor 往返）：
 // USD/CNY 等两位小数、JPY 等零位、BHD 等三位，输出与币种小数位一致。

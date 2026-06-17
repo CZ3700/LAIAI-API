@@ -13,15 +13,15 @@ import (
 // 个人 = 单成员 org；团队 = 多成员 org（共享余额、角色、per-member key）。
 
 var (
-	ErrNotMember       = errors.New("identity: user is not a member of this organization")
-	ErrAlreadyMember   = errors.New("identity: user is already a member")
-	ErrUserNotFound    = errors.New("identity: no account with this email")
-	ErrLastOwner       = errors.New("identity: cannot remove the only owner")
-	ErrForbiddenRole   = errors.New("identity: role not assignable via this API")
-	ErrInsufficientRole = errors.New("identity: requires owner or admin role")
+	ErrNotMember          = errors.New("identity: user is not a member of this organization")
+	ErrAlreadyMember      = errors.New("identity: user is already a member")
+	ErrUserNotFound       = errors.New("identity: no account with this email")
+	ErrLastOwner          = errors.New("identity: cannot remove the only owner")
+	ErrForbiddenRole      = errors.New("identity: role not assignable via this API")
+	ErrInsufficientRole   = errors.New("identity: requires owner or admin role")
 	ErrCannotManageTarget = errors.New("identity: cannot manage or assign a member of equal or higher role")
-	ErrInvitePending   = errors.New("identity: an invitation for this user is already pending")
-	ErrInviteNotFound  = errors.New("identity: invitation not found")
+	ErrInvitePending      = errors.New("identity: an invitation for this user is already pending")
+	ErrInviteNotFound     = errors.New("identity: invitation not found")
 )
 
 // Membership：用户视角的 org 列表行。

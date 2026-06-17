@@ -223,6 +223,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 					fmt.Sprintf("provider %q does not support embeddings", ch.Provider))
 				return
 			}
+			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
 			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
 			return
 		}

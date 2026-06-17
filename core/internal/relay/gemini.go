@@ -320,7 +320,8 @@ func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error
 	cand := resp.Candidates[0]
 	var text strings.Builder
 	var toolCalls []gin.H
-	for i, p := range cand.Content.Parts {
+	toolIdx := 0 // 只数 tool_use（与 pipeSSE 的 toolCount 同口径），避免按 parts 下标编号致流/非流 id 不一致
+	for _, p := range cand.Content.Parts {
 		if p.Text != "" {
 			text.WriteString(p.Text)
 		}
@@ -330,10 +331,11 @@ func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error
 				args = "{}"
 			}
 			toolCalls = append(toolCalls, gin.H{
-				"id":       fmt.Sprintf("call_gemini_%d", i), // Gemini 无 call id，合成稳定 id
+				"id":       fmt.Sprintf("call_gemini_%d", toolIdx), // Gemini 无 call id，合成稳定 id
 				"type":     "function",
 				"function": gin.H{"name": p.FunctionCall.Name, "arguments": args},
 			})
+			toolIdx++
 		}
 	}
 	message := gin.H{"role": "assistant", "content": text.String()}

@@ -193,7 +193,9 @@ func (s *Server) oauthCallback(c *gin.Context) {
 	if err != nil {
 		err = s.db.Transaction(func(tx *gorm.DB) error {
 			u, _, e := identity.Register(tx, identity.RegisterInput{
-				Email: email, Password: randomPassword(),
+				// OAuth provider 已验证邮箱归属（oauthFetchEmail 各分支均拒未验证邮箱），建号即置已验证，
+				// 与密码注册过验证码置 1 口径一致，避免真实用户被「未验证门控/邮件推送」误判。
+				Email: email, Password: randomPassword(), EmailVerified: true,
 			})
 			user = u
 			return e

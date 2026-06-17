@@ -189,6 +189,8 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 		upBody, upCT := mappedMultipartBody(ch, body, ctHeader, model) // 重写 multipart 的 model 字段
 		upReq, berr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, url, bytes.NewReader(upBody))
 		if berr != nil {
+			r.release(hold.ID) // 此分支原既不 release 也不 finish：hold 泄漏 + 漏记调用
+			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
 			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
 			return
 		}

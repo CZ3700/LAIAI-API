@@ -39,6 +39,17 @@ func HashPassword(password string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(key)), nil
 }
 
+// dummyHash：固定的合法 argon2id PHC 串（离线用生产同参 m=64MiB,t=3,p=2 生成）。仅供「无有效用户」
+// 路径跑等量 argon2，绝不是任何真实凭证。用编译期常量而非运行时计算——避免 rand.Read 等运行时失败
+// 导致 dummyHash 为空而静默跳过 argon2，反而重开时延型用户枚举缺口（TestDummyHashRunsArgon2 守住其合法性）。
+const dummyHash = "$argon2id$v=19$m=65536,t=3,p=2$bGFpYWktZml4ZWQtc2FsdA$r30mqdU0mol6lev8kQ4aasgbXc32xafGwTI3TyuJKWY"
+
+// VerifyDummyPassword 对固定 dummy hash 跑一次 argon2 校验（恒不匹配），用于 login 没有真实用户可
+// 校验时吃掉等量 CPU，消除「邮箱存在且 active / 不存在 / 被封」之间的响应时延差——防时延型用户枚举。
+func VerifyDummyPassword(password string) {
+	_ = VerifyPassword(password, dummyHash)
+}
+
 // VerifyPassword 按 hash 内编码的参数校验（常数时间比较）。
 func VerifyPassword(password, encoded string) error {
 	parts := strings.Split(encoded, "$")
