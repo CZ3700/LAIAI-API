@@ -223,20 +223,21 @@ async function savePayGlobals() {
 // 渠道编辑器（新建/编辑共用）。密钥字段编辑时留空 = 保留原配置。
 // 渠道协议的配置字段元数据（与后端 buildPaymentEngine 一一对应）。新增协议只需在此登记，
 // 模态框按当前协议动态渲染对应字段——这正是「灵活热接入」：crypto 加密货币网关无需改前端硬编码。
-interface PcFieldMeta { key: string; label: string; secret?: boolean; placeholder?: string; required?: boolean; wide?: boolean }
+// 渠道字段元数据：与后端 buildPaymentEngine 的 cfg 键一一对应。新增协议只需在此登记，模态框动态渲染。
+interface PcFieldMeta { key: string; label: string; secret?: boolean; placeholder?: string; required?: boolean; wide?: boolean; textarea?: boolean; bool?: boolean }
 const PROTOCOL_FIELDS: Record<string, PcFieldMeta[]> = {
   stripe: [
     { key: 'secret_key', label: 'Secret Key', secret: true, placeholder: 'sk_live_…', required: true },
     { key: 'webhook_secret', label: 'Webhook Secret', secret: true, placeholder: 'whsec_…' },
   ],
   epay: [
-    { key: 'pid', label: 'PID', placeholder: '1000', required: true },
-    { key: 'key', label: 'Key', secret: true },
-    { key: 'api_url', label: 'API URL', placeholder: 'https://pay.example.com', wide: true },
+    { key: 'pid', label: 'PID / 商户ID', placeholder: '1000', required: true },
+    { key: 'key', label: '商户密钥 Key', secret: true, required: true },
+    { key: 'api_url', label: 'API 地址', placeholder: 'https://pay.example.com', wide: true, required: true },
   ],
   // 通用加密货币网关（EBPay / OxaPay / NOWPayments 等三段式处理商）——验签 fail-closed + 实付校验。
   crypto: [
-    { key: 'processor', label: 'Processor', placeholder: 'ebpay / oxapay / nowpayments', required: true },
+    { key: 'processor', label: 'Processor 处理商', placeholder: 'ebpay / oxapay / nowpayments', required: true },
     { key: 'api_base', label: 'API Base URL', placeholder: 'https://api.ebpay.com', wide: true },
     { key: 'api_key', label: 'API Key', secret: true, required: true },
     { key: 'webhook_secret', label: 'Webhook / Callback Secret', secret: true, required: true },
@@ -244,27 +245,116 @@ const PROTOCOL_FIELDS: Record<string, PcFieldMeta[]> = {
     { key: 'create_path', label: 'Create Path', placeholder: '/api/v1/invoice', wide: true },
     { key: 'query_path', label: 'Query Path', placeholder: '/api/v1/invoice/query', wide: true },
   ],
+  // PayPal Orders v2：client_id+secret+webhook_id 必填（webhook_id 是官方验签必需，缺则回调全 fail-closed）。
+  paypal: [
+    { key: 'client_id', label: 'Client ID', required: true },
+    { key: 'client_secret', label: 'Client Secret', secret: true, required: true },
+    { key: 'webhook_id', label: 'Webhook ID（验签必需）', required: true },
+    { key: 'sandbox', label: 'Sandbox 沙箱环境', bool: true },
+  ],
+  // 通用 Webhook（REST 建单 + Webhook 回调；Airwallex/UseePay/Adyen 等）。webhook_secret 必填=强制验签防伪造。
+  webhook: [
+    { key: 'api_base_url', label: 'API Base URL', placeholder: 'https://api.airwallex.com', wide: true, required: true },
+    { key: 'webhook_secret', label: 'Webhook 验签密钥', secret: true, required: true },
+    { key: 'auth_type', label: 'Auth Type', placeholder: 'bearer / basic / header' },
+    { key: 'auth_endpoint', label: 'Auth Endpoint', placeholder: '/authentication/login' },
+    { key: 'auth_creds', label: 'Auth Creds (JSON)', placeholder: '{"client_id":"..","api_key":".."}', wide: true, textarea: true },
+    { key: 'sig_header', label: 'Sig Header', placeholder: 'x-signature' },
+    { key: 'sig_algo', label: 'Sig Algo', placeholder: 'hmac-sha256 / hmac-md5' },
+    { key: 'sig_payload_format', label: 'Sig Payload', placeholder: 'body / timestamp+body' },
+    { key: 'create_method', label: 'Create Method', placeholder: 'POST' },
+    { key: 'create_path', label: 'Create Path', placeholder: '/v1/payment_intents' },
+    { key: 'create_body_template', label: 'Create Body 模板', placeholder: '{"amount":"{{amount}}","order":"{{order_no}}"}', wide: true, textarea: true },
+    { key: 'pay_url_extract', label: 'Pay URL 字段路径', placeholder: 'next_action.redirect_url' },
+    { key: 'ref_extract', label: 'Ref 字段路径', placeholder: 'id' },
+    { key: 'success_event', label: 'Success Event', placeholder: 'payment_intent.succeeded' },
+    { key: 'event_type_extract', label: 'Event Type 路径', placeholder: 'type' },
+    { key: 'order_extract', label: 'Order No 路径', placeholder: 'data.object.metadata.order_no' },
+    { key: 'amount_extract', label: 'Amount 路径', placeholder: 'data.object.amount' },
+    { key: 'trade_no_extract', label: 'Trade No 路径', placeholder: 'data.object.id' },
+    { key: 'currency_extract', label: 'Currency 路径' },
+    { key: 'amount_unit', label: 'Amount Unit', placeholder: 'major / minor' },
+  ],
+  // 自定义可编程 HTTP 模板（接入任何非标准接口）。webhook_secret 必填=强制验签（默认 hmac-sha256）防伪造。
+  custom: [
+    { key: 'create_url', label: 'Create URL 模板', placeholder: 'https://gw.example.com/pay?order={{order_no}}', wide: true, required: true },
+    { key: 'webhook_secret', label: 'Webhook 验签密钥', secret: true, required: true },
+    { key: 'api_key', label: 'API Key（{{api_key}} 变量）', secret: true },
+    { key: 'create_method', label: 'Create Method', placeholder: 'POST / GET' },
+    { key: 'create_headers', label: 'Create Headers (JSON)', placeholder: '{"Authorization":"Bearer {{api_key}}"}', wide: true, textarea: true },
+    { key: 'create_body', label: 'Create Body 模板', placeholder: '{"order":"{{order_no}}","amount":"{{amount}}"}', wide: true, textarea: true },
+    { key: 'pay_url_path', label: 'Pay URL 字段路径', placeholder: 'pay_url' },
+    { key: 'ref_path', label: 'Ref 字段路径', placeholder: 'id' },
+    { key: 'sig_header', label: 'Sig Header', placeholder: 'x-signature' },
+    { key: 'sig_algo', label: 'Sig Algo', placeholder: 'hmac-sha256 / hmac-md5' },
+    { key: 'sig_payload', label: 'Sig Payload', placeholder: 'body / timestamp+body' },
+    { key: 'success_condition', label: 'Success Condition', placeholder: 'status=PAID（空=有 order_no 即成功）' },
+    { key: 'order_path', label: 'Order No 路径', placeholder: 'order_no' },
+    { key: 'amount_path', label: 'Amount 路径', placeholder: 'amount' },
+    { key: 'trade_no_path', label: 'Trade No 路径', placeholder: 'trade_no' },
+    { key: 'currency_path', label: 'Currency 路径' },
+  ],
 }
+// 协议选择网格（卡片）：图标用首字母彩色徽标（与渠道列表一致）；desc 走 i18n。
 const PROTOCOL_OPTIONS = [
-  { value: 'stripe', label: 'Stripe' },
-  { value: 'epay', label: 'EPay' },
-  { value: 'crypto', label: 'Crypto (USDT/…)' },
+  { value: 'epay', label: 'EPay 易支付', color: '#16a34a' },
+  { value: 'stripe', label: 'Stripe', color: '#635bff' },
+  { value: 'paypal', label: 'PayPal', color: '#0070ba' },
+  { value: 'webhook', label: 'Webhook', color: '#0891b2' },
+  { value: 'crypto', label: 'Crypto', color: '#f59e0b' },
+  { value: 'custom', label: 'Custom', color: '#64748b' },
+] as const
+// 支付方式 + 币种选项
+const PAY_METHOD_OPTIONS = [
+  { value: 'alipay', label: '支付宝' }, { value: 'wechat', label: '微信支付' },
+  { value: 'card', label: '银行卡' }, { value: 'usdt', label: 'USDT' }, { value: 'paypal', label: 'PayPal' },
 ]
+const CURRENCY_OPTIONS = ['USD', 'CNY', 'EUR', 'GBP', 'HKD', 'JPY', 'SGD', 'USDT']
+// 选协议时的合理默认（pay_methods / 币种）
+const PROTOCOL_DEFAULTS: Record<string, { pm: string; cur: string }> = {
+  epay: { pm: 'alipay,wechat', cur: 'CNY' },
+  stripe: { pm: 'card', cur: 'USD' },
+  paypal: { pm: 'paypal', cur: 'USD' },
+  webhook: { pm: 'card', cur: 'USD' },
+  crypto: { pm: 'usdt', cur: 'USDT' },
+  custom: { pm: 'card', cur: 'USD' },
+}
 interface PayChannelEdit {
   id: number; code: string; display_name: string; protocol: string
   pay_methods: string; currency: string; priority: number; enabled: boolean
   config: Record<string, string>
 }
+const pcPicker = ref(false) // 协议选择网格弹窗
 const pcEdit = ref<PayChannelEdit | null>(null)
 const pcBusy = ref(false)
 // 当前协议的字段元数据（协议切换即变）
 const pcFields = computed<PcFieldMeta[]>(() => (pcEdit.value ? PROTOCOL_FIELDS[pcEdit.value.protocol] ?? [] : []))
-function newPayChannel() {
-  pcEdit.value = { id: 0, code: '', display_name: '', protocol: 'stripe', pay_methods: 'card', currency: 'USD', priority: 0, enabled: true, config: {} }
+const pcProtocolLabel = computed(() => PROTOCOL_OPTIONS.find((p) => p.value === pcEdit.value?.protocol)?.label ?? pcEdit.value?.protocol ?? '')
+// 第一步：打开协议选择网格
+function openPayPicker() { pcPicker.value = true }
+// 第二步：选定协议 → 打开 rich form（新建渠道默认 disabled，测试连通后再手动启用——资金红线）
+function pickProtocol(proto: string) {
+  pcPicker.value = false
+  const d = PROTOCOL_DEFAULTS[proto] ?? { pm: '', cur: 'USD' }
+  pcEdit.value = { id: 0, code: '', display_name: '', protocol: proto, pay_methods: d.pm, currency: d.cur, priority: 100, enabled: false, config: {} }
 }
 function editPayChannel(ch: PayChannelRow) {
   // 编辑时密钥字段一律留空（=保留原密文，密钥永不回显）
   pcEdit.value = { id: ch.id, code: ch.code, display_name: ch.display_name, protocol: ch.protocol, pay_methods: ch.pay_methods, currency: ch.currency, priority: ch.priority, enabled: ch.enabled === 1, config: {} }
+}
+// 支付方式 CSV ↔ 勾选
+function hasPayMethod(m: string): boolean {
+  return (pcEdit.value?.pay_methods ?? '').split(',').map((s) => s.trim()).includes(m)
+}
+function togglePayMethod(m: string, on: boolean) {
+  if (!pcEdit.value) return
+  const set = new Set(pcEdit.value.pay_methods.split(',').map((s) => s.trim()).filter(Boolean))
+  if (on) set.add(m)
+  else set.delete(m)
+  pcEdit.value.pay_methods = Array.from(set).join(',')
+}
+function protoColor(p: string): string {
+  return PROTOCOL_OPTIONS.find((o) => o.value === p)?.color ?? '#06f'
 }
 async function savePayChannel() {
   const e = pcEdit.value
@@ -353,6 +443,22 @@ async function saveSettings() {
   } finally {
     settingsBusy.value = false
   }
+}
+// 邮箱域名白名单：CSV ↔ 标签（chip）UI（防临时邮箱批量注册，参考旧平台便捷管理）
+const wlInput = ref('')
+function csvTags(csv: string): string[] {
+  return (csv ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+}
+function addWhitelistDomain() {
+  const v = wlInput.value.trim().toLowerCase()
+  wlInput.value = ''
+  if (!v) return
+  const set = new Set(csvTags(settings.value.email_domain_whitelist ?? ''))
+  set.add(v)
+  settings.value.email_domain_whitelist = Array.from(set).join(',')
+}
+function removeWhitelistDomain(d: string) {
+  settings.value.email_domain_whitelist = csvTags(settings.value.email_domain_whitelist ?? '').filter((x) => x !== d).join(',')
 }
 
 // —— 用户管理 ——
@@ -1584,7 +1690,7 @@ onMounted(async () => {
         <div class="space-y-6">
           <div class="flex items-center justify-between">
             <p class="text-sm text-muted">{{ t('admin.pcIntro') }}</p>
-            <button class="btn-primary !py-1.5 text-sm" @click="newPayChannel">{{ t('admin.pcAdd') }}</button>
+            <button class="btn-primary !py-1.5 text-sm" @click="openPayPicker">{{ t('admin.pcAdd') }}</button>
           </div>
 
           <!-- 渠道卡片 -->
@@ -1593,7 +1699,7 @@ onMounted(async () => {
               <div class="flex items-start justify-between">
                 <div class="flex items-center gap-2.5">
                   <span class="grid h-9 w-9 place-items-center rounded-lg text-sm font-bold text-white"
-                    :style="{ background: ch.protocol === 'stripe' ? '#635bff' : '#06f' }">{{ ch.protocol[0].toUpperCase() }}</span>
+                    :style="{ background: protoColor(ch.protocol) }">{{ ch.protocol[0].toUpperCase() }}</span>
                   <div>
                     <p class="font-semibold leading-tight">{{ ch.display_name || ch.code }}</p>
                     <p class="font-mono text-xs text-muted">{{ ch.code }} · {{ ch.protocol }}</p>
@@ -1622,7 +1728,7 @@ onMounted(async () => {
               <div class="mt-4 flex gap-2">
                 <button class="btn-ghost !py-1 text-xs" @click="testPayChannel(ch)">{{ t('admin.pcTest') }}</button>
                 <button class="btn-ghost !py-1 text-xs" @click="editPayChannel(ch)">{{ t('admin.chEdit') }}</button>
-                <button class="btn-danger !py-1 text-xs" @click="deletePayChannel(ch)">{{ t('admin.chDisable') }}</button>
+                <button class="btn-danger !py-1 text-xs" @click="deletePayChannel(ch)">{{ t('admin.chDelete') }}</button>
               </div>
             </div>
           </div>
@@ -1657,52 +1763,91 @@ onMounted(async () => {
             </table>
           </div>
 
-          <!-- 渠道编辑器 -->
+          <!-- 第一步：协议选择网格（卡片）-->
+          <div v-if="pcPicker" class="modal-backdrop" @click.self="pcPicker = false">
+            <div class="app-panel modal-panel w-full max-w-2xl p-6 space-y-4">
+              <div class="flex items-center justify-between">
+                <h2 class="font-semibold">{{ t('admin.pcPickProtocol') }}</h2>
+                <button type="button" class="btn-ghost !p-1.5 text-xs" @click="pcPicker = false">✕</button>
+              </div>
+              <div class="grid gap-3 sm:grid-cols-3">
+                <button
+                  v-for="p in PROTOCOL_OPTIONS"
+                  :key="p.value"
+                  type="button"
+                  class="app-panel flex flex-col items-start gap-2 p-4 text-left transition hover:border-accent hover:shadow-sm"
+                  @click="pickProtocol(p.value)"
+                >
+                  <span class="grid h-9 w-9 place-items-center rounded-lg text-sm font-bold text-white" :style="{ background: p.color }">{{ p.label[0] }}</span>
+                  <span class="font-medium">{{ p.label }}</span>
+                  <span class="text-xs text-muted">{{ t('admin.pcProto_' + p.value) }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 第二步：渠道编辑器（按协议动态渲染的 rich form）-->
           <div v-if="pcEdit" class="modal-backdrop" @click.self="pcEdit = null">
-            <form class="app-panel modal-panel w-full max-w-lg p-6 space-y-4" @submit.prevent="savePayChannel">
-              <h2 class="font-semibold">{{ pcEdit.id ? t('admin.chEdit') : t('admin.pcAdd') }}</h2>
+            <form class="app-panel modal-panel w-full max-w-lg max-h-[88vh] overflow-y-auto p-6 space-y-4" @submit.prevent="savePayChannel">
+              <div class="flex items-center gap-2.5">
+                <span class="grid h-9 w-9 place-items-center rounded-lg text-sm font-bold text-white" :style="{ background: protoColor(pcEdit.protocol) }">{{ pcEdit.protocol[0].toUpperCase() }}</span>
+                <h2 class="font-semibold">{{ pcEdit.id ? t('admin.chEdit') : t('admin.pcAdd') }} · {{ pcProtocolLabel }}</h2>
+              </div>
               <div class="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <label class="label">{{ t('admin.pcCode') }}</label>
-                  <input v-model="pcEdit.code" class="input font-mono text-xs" :disabled="!!pcEdit.id" required placeholder="stripe_main" />
-                </div>
-                <div>
-                  <label class="label">{{ t('admin.pcProtocol') }}</label>
-                  <select v-model="pcEdit.protocol" class="input" :disabled="!!pcEdit.id">
-                    <option v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
-                  </select>
+                  <label class="label">{{ t('admin.pcCode') }}<span class="text-danger"> *</span></label>
+                  <input v-model="pcEdit.code" class="input font-mono text-xs" :disabled="!!pcEdit.id" required placeholder="epay_main" />
+                  <p class="mt-1 text-xs text-muted">{{ t('admin.pcCodeHint') }}</p>
                 </div>
                 <div>
                   <label class="label">{{ t('admin.pcDisplayName') }}</label>
                   <input v-model="pcEdit.display_name" class="input" />
                 </div>
                 <div>
-                  <label class="label">{{ t('admin.pcPayMethods') }}</label>
-                  <input v-model="pcEdit.pay_methods" class="input font-mono text-xs" placeholder="card,alipay,wechat" />
+                  <label class="label">{{ t('admin.pcPriority') }}</label>
+                  <input v-model.number="pcEdit.priority" type="number" class="input" />
+                  <p class="mt-1 text-xs text-muted">{{ t('admin.pcPriorityHint') }}</p>
                 </div>
                 <div>
                   <label class="label">{{ t('admin.payCurrency') }}</label>
-                  <input v-model="pcEdit.currency" class="input" placeholder="USD" />
-                </div>
-                <div>
-                  <label class="label">{{ t('admin.pcPriority') }}</label>
-                  <input v-model.number="pcEdit.priority" type="number" class="input" />
+                  <select v-model="pcEdit.currency" class="input cursor-pointer">
+                    <option v-for="c in CURRENCY_OPTIONS" :key="c" :value="c">{{ c }}</option>
+                  </select>
                 </div>
               </div>
-              <!-- 协议专属配置：按 PROTOCOL_FIELDS 动态渲染（密钥字段编辑留空=保留原配置）-->
-              <div class="grid gap-3 sm:grid-cols-2">
-                <div v-for="f in pcFields" :key="f.key" :class="{ 'sm:col-span-2': f.wide }">
-                  <label class="label">{{ f.label }}<span v-if="f.required" class="text-danger"> *</span></label>
-                  <input
-                    v-model="pcEdit.config[f.key]"
-                    class="input font-mono text-xs"
-                    :type="f.secret ? 'password' : 'text'"
-                    autocomplete="off"
-                    :placeholder="pcEdit.id && f.secret ? t('admin.pcKeep') : (f.placeholder ?? '')"
-                  />
+              <!-- 支付方式（多选）-->
+              <div>
+                <label class="label">{{ t('admin.pcPayMethods') }}</label>
+                <div class="flex flex-wrap gap-x-4 gap-y-2">
+                  <label v-for="pm in PAY_METHOD_OPTIONS" :key="pm.value" class="flex items-center gap-1.5 text-sm">
+                    <input type="checkbox" class="accent-accent" :checked="hasPayMethod(pm.value)"
+                      @change="togglePayMethod(pm.value, ($event.target as HTMLInputElement).checked)" />
+                    {{ pm.label }}
+                  </label>
+                </div>
+              </div>
+              <!-- 协议专属密钥/配置：按 PROTOCOL_FIELDS 动态渲染（密钥字段编辑留空=保留原配置）-->
+              <div class="border-t border-line pt-3">
+                <p class="mb-2 text-xs font-medium text-muted">{{ t('admin.pcKeyConfig') }}</p>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div v-for="f in pcFields" :key="f.key" :class="{ 'sm:col-span-2': f.wide || f.textarea }">
+                    <label v-if="f.bool" class="flex items-center gap-2 text-sm">
+                      <input type="checkbox" class="accent-accent" :checked="pcEdit.config[f.key] === 'true'"
+                        @change="pcEdit.config[f.key] = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
+                      {{ f.label }}
+                    </label>
+                    <template v-else>
+                      <label class="label">{{ f.label }}<span v-if="f.required" class="text-danger"> *</span></label>
+                      <textarea v-if="f.textarea" v-model="pcEdit.config[f.key]" class="input font-mono text-xs" rows="2" :placeholder="f.placeholder ?? ''"></textarea>
+                      <input v-else v-model="pcEdit.config[f.key]" class="input font-mono text-xs"
+                        :type="f.secret ? 'password' : 'text'" autocomplete="off"
+                        :placeholder="pcEdit.id && f.secret ? t('admin.pcKeep') : (f.placeholder ?? '')" />
+                    </template>
+                  </div>
                 </div>
               </div>
               <p v-if="pcEdit.protocol === 'crypto'" class="text-xs text-amber-600 dark:text-amber-400">{{ t('admin.pcCryptoHint') }}</p>
+              <p v-if="pcEdit.protocol === 'webhook' || pcEdit.protocol === 'custom'" class="text-xs text-amber-600 dark:text-amber-400">{{ t('admin.pcVerifyHint') }}</p>
               <label class="flex items-center gap-2 text-sm">
                 <input type="checkbox" class="accent-accent" v-model="pcEdit.enabled" />
                 {{ t('admin.pcEnabled') }}
@@ -2488,8 +2633,15 @@ onMounted(async () => {
               <!-- 邮箱准入策略（gap P2-E） -->
               <div class="border-t border-line pt-3 space-y-3">
                 <div>
-                  <label class="label" for="set-emwl">{{ t('admin.setEmailWhitelist') }}</label>
-                  <input id="set-emwl" v-model="settings.email_domain_whitelist" class="input font-mono text-xs" placeholder="company.com, partner.com" />
+                  <label class="label">{{ t('admin.setEmailWhitelist') }}</label>
+                  <div class="flex flex-wrap items-center gap-1.5 rounded-lg border border-line bg-elev/40 p-2">
+                    <span v-for="d in csvTags(settings.email_domain_whitelist ?? '')" :key="d" class="inline-flex items-center gap-1 rounded bg-elev px-2 py-0.5 text-xs">
+                      {{ d }}
+                      <button type="button" class="text-muted hover:text-danger" @click="removeWhitelistDomain(d)">✕</button>
+                    </span>
+                    <input v-model="wlInput" class="min-w-[8rem] flex-1 bg-transparent px-1 text-sm outline-none" :placeholder="t('admin.setEmailWhitelistAdd')"
+                      @keydown.enter.prevent="addWhitelistDomain" />
+                  </div>
                   <p class="mt-1 text-xs text-muted">{{ t('admin.setEmailWhitelistHint') }}</p>
                 </div>
                 <div>
@@ -2503,6 +2655,42 @@ onMounted(async () => {
                   {{ t('admin.setEmailAliasBlock') }}
                 </label>
                 <p class="-mt-1 text-xs text-muted">{{ t('admin.setEmailAliasBlockHint') }}</p>
+              </div>
+              <!-- SMTP 邮件发送（admin 后台热配，改了即生效，无需重启/改 env）-->
+              <div class="border-t border-line pt-3 space-y-3">
+                <div>
+                  <p class="text-sm font-medium">{{ t('admin.setSmtpTitle') }}</p>
+                  <p class="text-xs text-muted">{{ t('admin.setSmtpHint') }}</p>
+                </div>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label class="label" for="smtp-host">{{ t('admin.setSmtpHost') }}</label>
+                    <input id="smtp-host" v-model="settings.smtp_host" class="input font-mono text-xs" placeholder="smtppro.zoho.com" />
+                  </div>
+                  <div>
+                    <label class="label" for="smtp-port">{{ t('admin.setSmtpPort') }}</label>
+                    <input id="smtp-port" v-model="settings.smtp_port" class="input" type="number" placeholder="465" />
+                  </div>
+                  <div>
+                    <label class="label" for="smtp-user">{{ t('admin.setSmtpUser') }}</label>
+                    <input id="smtp-user" v-model="settings.smtp_username" class="input font-mono text-xs" placeholder="info@laiai.ai" autocomplete="off" />
+                  </div>
+                  <div>
+                    <label class="label" for="smtp-from">{{ t('admin.setSmtpFrom') }}</label>
+                    <input id="smtp-from" v-model="settings.smtp_from" class="input font-mono text-xs" placeholder="info@laiai.ai（空=取账户）" />
+                  </div>
+                  <div>
+                    <label class="label" for="smtp-pass">{{ t('admin.setSmtpPass') }}</label>
+                    <input id="smtp-pass" v-model="settings.smtp_password" class="input font-mono text-xs" type="password" autocomplete="new-password" :placeholder="t('admin.setSmtpPassPh')" />
+                  </div>
+                  <div class="flex items-end pb-2">
+                    <label class="flex items-center gap-2 text-sm">
+                      <input type="checkbox" class="accent-accent" :checked="settings.smtp_ssl === 'true'"
+                        @change="settings.smtp_ssl = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
+                      {{ t('admin.setSmtpSsl') }}
+                    </label>
+                  </div>
+                </div>
               </div>
           </div>
 

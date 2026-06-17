@@ -42,6 +42,25 @@ func (s *Server) paymentChannelInfo(code string) (protocol string, isTable, enab
 	return code, false, true
 }
 
+// allowedChannelProtocol：表渠道可热接入的协议白名单（与 buildPaymentEngine 的 case 一一对应）。
+func allowedChannelProtocol(p string) bool {
+	switch p {
+	case "stripe", "epay", "crypto", "webhook", "custom", "paypal":
+		return true
+	}
+	return false
+}
+
+// verifyingSigAlgo：webhook/custom 引擎真正会验签的算法集合。🚨 资金红线：none/未知一律拒，
+// 否则配了 secret 但 algo=none → 回调跳过验签 = 伪造回调入金漏洞（对抗评审 H-1/H-2）。
+func verifyingSigAlgo(algo string) bool {
+	switch algo {
+	case "hmac-sha256", "hmac-md5", "md5":
+		return true
+	}
+	return false
+}
+
 // buildPaymentEngine：按协议 + 解密后的配置 map 构造引擎。返回 nil = 必填项缺失。
 func buildPaymentEngine(protocol string, cfg map[string]string) payment.Engine {
 	switch protocol {
@@ -74,6 +93,67 @@ func buildPaymentEngine(protocol string, cfg map[string]string) payment.Engine {
 			return nil
 		}
 		return &payment.CoinbaseCommerce{APIKey: cfg["api_key"], WebhookSecret: cfg["webhook_secret"]}
+	case "webhook":
+		// 通用「REST 建单 + Webhook 回调」引擎（Airwallex/UseePay/Adyen 等）。
+		// 🚨 资金红线：必须配 webhook_secret + 有效验签算法——否则 VerifyCallback 跳过验签=伪造回调入金漏洞。
+		if cfg["api_base_url"] == "" || cfg["webhook_secret"] == "" {
+			return nil
+		}
+		sigAlgo := cfg["sig_algo"]
+		if sigAlgo == "" {
+			sigAlgo = "hmac-sha256" // 安全默认（引擎也默认 hmac-sha256；显式拒 none/未知见下）
+		}
+		if !verifyingSigAlgo(sigAlgo) { // 拒绝 none/未知 → 不建无验签渠道（H-2）
+			return nil
+		}
+		var authCreds map[string]string
+		if s := cfg["auth_creds"]; s != "" {
+			_ = json.Unmarshal([]byte(s), &authCreds)
+		}
+		return &payment.Webhook{
+			APIBaseURL: cfg["api_base_url"], AuthType: cfg["auth_type"], AuthCreds: authCreds, AuthEndpoint: cfg["auth_endpoint"],
+			WebhookSecret: cfg["webhook_secret"], SigHeader: cfg["sig_header"], SigAlgo: sigAlgo, SigPayloadFormat: cfg["sig_payload_format"],
+			CreateMethod: cfg["create_method"], CreatePath: cfg["create_path"], CreateBodyTemplate: cfg["create_body_template"],
+			PayURLExtract: cfg["pay_url_extract"], RefExtract: cfg["ref_extract"],
+			SuccessEvent: cfg["success_event"], EventTypeExtract: cfg["event_type_extract"], OrderExtract: cfg["order_extract"],
+			AmountExtract: cfg["amount_extract"], TradeNoExtract: cfg["trade_no_extract"], CurrencyExtract: cfg["currency_extract"],
+			Currency: cfg["currency"], AmountUnit: cfg["amount_unit"],
+		}
+	case "custom":
+		// 可编程 HTTP 模板引擎（接入任何非标准接口）。
+		// 🚨 资金红线：必须配 webhook_secret + 有效验签算法——否则回调不验签=伪造入金漏洞，故缺/none/未知则不构建。
+		if cfg["create_url"] == "" || cfg["webhook_secret"] == "" {
+			return nil
+		}
+		sigAlgo := cfg["sig_algo"]
+		if sigAlgo == "" {
+			sigAlgo = "hmac-sha256" // 安全默认：配了 secret 即验签
+		}
+		if !verifyingSigAlgo(sigAlgo) { // 拒绝 none/未知 → 不建无验签渠道（H-1）
+			return nil
+		}
+		var headers map[string]string
+		if s := cfg["create_headers"]; s != "" {
+			_ = json.Unmarshal([]byte(s), &headers)
+		}
+		return &payment.Custom{
+			DisplayName: cfg["display_name"], APIKey: cfg["api_key"], WebhookSecret: cfg["webhook_secret"], Currency: cfg["currency"],
+			CreateMethod: cfg["create_method"], CreateURL: cfg["create_url"], CreateHeaders: headers, CreateBody: cfg["create_body"],
+			PayURLPath: cfg["pay_url_path"], RefPath: cfg["ref_path"],
+			SigHeader: cfg["sig_header"], SigAlgo: sigAlgo, SigPayload: cfg["sig_payload"],
+			SuccessCondition: cfg["success_condition"], OrderPath: cfg["order_path"], AmountPath: cfg["amount_path"],
+			TradeNoPath: cfg["trade_no_path"], CurrencyPath: cfg["currency_path"],
+		}
+	case "paypal":
+		// PayPal Orders v2。client_id + client_secret + webhook_id 三者齐全才构建——
+		// 🚨 webhook_id 是官方验签必需（缺则所有回调 fail-closed 拒收，渠道无法入金），故缺则不构建。
+		if cfg["client_id"] == "" || cfg["client_secret"] == "" || cfg["webhook_id"] == "" {
+			return nil
+		}
+		return &payment.PayPal{
+			ClientID: cfg["client_id"], ClientSecret: cfg["client_secret"], WebhookID: cfg["webhook_id"],
+			Sandbox: cfg["sandbox"] == "true", Currency: cfg["currency"],
+		}
 	case "x402":
 		// 默认禁用：facilitator/收款地址/资产三者齐全才构建（见 x402.go 合约校验注记）
 		if cfg["facilitator_url"] == "" || cfg["pay_to"] == "" || cfg["asset"] == "" {
@@ -142,11 +222,11 @@ func (s *Server) adminUpsertPaymentChannel(c *gin.Context) {
 		return
 	}
 	code := strings.TrimSpace(req.Code)
-	// crypto = 通用加密货币网关骨架，开放表渠道热接入（admin 配置处理商 + enabled 即生效）：验签
-	// fail-closed + 实付金额校验使其即便误启用也不致误入金。coinbase 仍仅经 ext_settings+coinbase_enabled
-	// 显式启用（其字段层级待真实 fixture 验真）。
-	if code == "" || (req.Protocol != "stripe" && req.Protocol != "epay" && req.Protocol != "crypto") {
-		fail(c, http.StatusBadRequest, "invalid code or protocol (stripe|epay|crypto)")
+	// 表渠道热接入协议白名单：stripe/epay/crypto/webhook/custom/paypal（与 buildPaymentEngine 一一对应）。
+	// 全部验签 fail-closed + 实付金额校验（server 层），即便误启用也不致误入金；新建渠道默认 disabled，
+	// admin 测试连通后再手动 enable。coinbase/x402 仍仅经 ext_settings 显式开（字段层级待真实 fixture 验真）。
+	if code == "" || !allowedChannelProtocol(req.Protocol) {
+		fail(c, http.StatusBadRequest, "invalid code or protocol (stripe|epay|crypto|webhook|custom|paypal)")
 		return
 	}
 

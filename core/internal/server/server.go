@@ -93,11 +93,12 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		db: db, readDB: opts.ReadDB, secret: opts.AuthSecret,
 		adminToken: opts.AdminToken, keyring: opts.Keyring,
 		authLimiter:         newIPLimiter(rate.Every(time.Second), authBurst),
-		mailer:              opts.Mailer,
 		log:                 log,
 		now:                 time.Now,
 		invRetentionDefault: opts.InvocationRetentionDays,
 	}
+	// 邮件走「settings 热配优先 + env 回退」包装：admin 后台填 SMTP 即生效，无需重启/改 env。
+	s.mailer = &settingsMailer{s: s, env: opts.Mailer}
 	s.authLimiter.useRedis(opts.RedisRateLimiter) // 多实例：auth 限流跨副本聚合（nil 退化进程内）
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

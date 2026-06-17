@@ -7,6 +7,45 @@ import (
 	"testing"
 )
 
+// 资金红线回归（对抗评审 H-1/H-2）：webhook/custom 即便配了 webhook_secret，若 sig_algo=none/未知
+// 则回调不验签=伪造入金漏洞，buildPaymentEngine 必须拒绝构建（返回 nil，渠道不可用）。
+func TestBuildEngineRejectsUnverifiedWebhookCustom(t *testing.T) {
+	base := map[string]string{
+		"api_base_url": "https://api.x.com", "create_url": "https://api.x.com/pay", "webhook_secret": "s3cr3t",
+	}
+	clone := func(extra map[string]string) map[string]string {
+		m := map[string]string{}
+		for k, v := range base {
+			m[k] = v
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	for _, proto := range []string{"webhook", "custom"} {
+		if buildPaymentEngine(proto, clone(nil)) == nil { // 留空 sig_algo → 默认 hmac-sha256 → 建得起
+			t.Fatalf("%s with default sig_algo should build", proto)
+		}
+		if buildPaymentEngine(proto, clone(map[string]string{"sig_algo": "none"})) != nil {
+			t.Fatalf("%s sig_algo=none MUST NOT build (forgery hole)", proto)
+		}
+		if buildPaymentEngine(proto, clone(map[string]string{"sig_algo": "rot13"})) != nil {
+			t.Fatalf("%s unknown sig_algo MUST NOT build", proto)
+		}
+		if buildPaymentEngine(proto, clone(map[string]string{"webhook_secret": ""})) != nil {
+			t.Fatalf("%s without webhook_secret MUST NOT build", proto)
+		}
+	}
+	// paypal：webhook_id 是验签必需，缺则不建（否则回调全 fail-closed，渠道无用且误导）。
+	if buildPaymentEngine("paypal", map[string]string{"client_id": "a", "client_secret": "b"}) != nil {
+		t.Fatal("paypal without webhook_id MUST NOT build")
+	}
+	if buildPaymentEngine("paypal", map[string]string{"client_id": "a", "client_secret": "b", "webhook_id": "wh"}) == nil {
+		t.Fatal("paypal with id+secret+webhook_id should build")
+	}
+}
+
 func TestPaymentChannelCRUD(t *testing.T) {
 	srv, _ := setupRelayServer(t)
 

@@ -36,6 +36,13 @@ var settingDefaults = map[string]string{
 	"email_domain_whitelist": "", // 逗号分隔允许域名；空=不限制
 	"email_domain_blocklist": "", // 逗号分隔禁止域名（挡一次性邮箱）；空=不禁
 	"email_alias_block":      "false", // 拒绝带 +别名 的邮箱
+	// —— SMTP（admin 后台热配，settingsMailer 消费；改了即生效无需重启/env）——
+	"smtp_host":     "", // SMTP 服务器地址（空=回退 env / logMailer）
+	"smtp_port":     "", // 端口（空=按 SSL 取 465/587 默认）
+	"smtp_username": "", // SMTP 账户
+	"smtp_password": "", // 访问凭证（secret：加密落库 + 掩码回显）
+	"smtp_from":     "", // 发件人邮箱（空=取 username）
+	"smtp_ssl":      "false", // true=隐式 TLS(465)；false=STARTTLS(587)
 	// —— 支付（引擎 engineFor 消费；密钥服务端存，前端永不回显明文）——
 	"stripe_secret_key":     "",
 	"stripe_webhook_secret": "",
@@ -81,6 +88,7 @@ var secretSettingKeys = map[string]bool{
 	"google_client_secret":  true,
 	"discord_client_secret": true,
 	"oidc_client_secret":    true,
+	"smtp_password":         true, // SMTP 访问凭证：加密落库 + 掩码回显（admin 后台热配）
 }
 
 // settingEncPrefix：加密落库的 secret 值前缀，getSetting 据此判定是否解密。
