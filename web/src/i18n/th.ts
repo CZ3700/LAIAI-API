@@ -34,7 +34,6 @@ export default {
     updated: 'อัปเดต',
   },
   nav: {
-    ...en.nav,
     grpConsole: 'คอนโซล',
     grpPersonal: 'ส่วนตัว',
     grpAdmin: 'ผู้ดูแล',
@@ -112,7 +111,6 @@ export default {
       'นี่เป็นครั้งเดียวที่คีย์เต็มจะแสดง โปรดเก็บไว้อย่างปลอดภัย — ไม่สามารถเรียกดูได้อีก',
   },
   dashboard: {
-    ...en.dashboard,
     greeting: 'ยินดีต้อนรับกลับ',
     histSpend: 'ใช้จ่ายทั้งหมด',
     modelAnalysis: 'วิเคราะห์โมเดล',
@@ -129,7 +127,6 @@ export default {
     recent: 'คำขอล่าสุด',
   },
   models: {
-    ...en.models,
     title: 'โมเดล',
     search: 'ค้นหาโมเดล…',
     model: 'โมเดล',
@@ -189,20 +186,7 @@ export default {
     allStatuses: 'ทุกสถานะ',
     filterModel: 'กรองตามโมเดล…',
     total: '{total} การเรียก',
-    tokenSplit: 'Token split',
-    tokenSplitHint: 'Input/output mix helps spot retrieval-heavy or generation-heavy workloads.',
-    inputTokens: 'Input tokens',
-    outputTokens: 'Output tokens',
-    modelShare: 'Model share',
-    modelShareHint: 'Top models by token volume across the last {days} days.',
-    tokenUnit: 'tok',
   },
-  onboarding: en.onboarding,
-  billing: en.billing,
-  latency: en.latency,
-  logs: en.logs,
-  devex: en.devex,
-  trust: en.trust,
   wallet: {
     title: 'กระเป๋าเงิน',
     topup: 'เติมเงิน',
@@ -357,7 +341,6 @@ export default {
     personal: 'ส่วนตัว',
   },
   admin: {
-    ...en.admin,
     title: 'ผู้ดูแลระบบ',
     token: 'โทเคนผู้ดูแล',
     tokenHint: 'ส่งเป็น X-Admin-Token เก็บไว้ในแท็บเบราว์เซอร์นี้เท่านั้น',

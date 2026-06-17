@@ -34,7 +34,6 @@ export default {
     updated: '更新',
   },
   nav: {
-    ...en.nav,
     grpConsole: 'コンソール',
     grpPersonal: '個人',
     grpAdmin: '管理',
@@ -111,7 +110,6 @@ export default {
     createdWarning: '完全なキーが表示されるのはこの一度だけです。安全に保管してください——後から再表示はできません。',
   },
   dashboard: {
-    ...en.dashboard,
     greeting: 'おかえりなさい',
     histSpend: '累計消費',
     modelAnalysis: 'モデル分析',
@@ -128,7 +126,6 @@ export default {
     recent: '最近のリクエスト',
   },
   models: {
-    ...en.models,
     title: 'モデル',
     search: 'モデルを検索…',
     model: 'モデル',
@@ -188,20 +185,7 @@ export default {
     allStatuses: 'すべての状態',
     filterModel: 'モデルで絞り込み…',
     total: '合計 {total} 回の呼び出し',
-    tokenSplit: 'Token split',
-    tokenSplitHint: 'Input/output mix helps spot retrieval-heavy or generation-heavy workloads.',
-    inputTokens: 'Input tokens',
-    outputTokens: 'Output tokens',
-    modelShare: 'Model share',
-    modelShareHint: 'Top models by token volume across the last {days} days.',
-    tokenUnit: 'tok',
   },
-  onboarding: en.onboarding,
-  billing: en.billing,
-  latency: en.latency,
-  logs: en.logs,
-  devex: en.devex,
-  trust: en.trust,
   wallet: {
     title: 'ウォレット',
     topup: 'チャージ',
@@ -356,7 +340,6 @@ export default {
     personal: '個人',
   },
   admin: {
-    ...en.admin,
     title: '管理',
     token: '管理トークン',
     tokenHint: 'X-Admin-Token として送信。このブラウザタブにのみ保存されます。',

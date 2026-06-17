@@ -34,7 +34,6 @@ export default {
     updated: 'Mis à jour',
   },
   nav: {
-    ...en.nav,
     grpConsole: 'Console',
     grpPersonal: 'Personnel',
     grpAdmin: 'Admin',
@@ -112,7 +111,6 @@ export default {
       "La clé complète n'est affichée qu'une seule fois. Conservez-la en lieu sûr — elle ne pourra pas être récupérée.",
   },
   dashboard: {
-    ...en.dashboard,
     greeting: 'Bon retour',
     histSpend: 'Depense totale',
     modelAnalysis: 'Analyse des modeles',
@@ -129,7 +127,6 @@ export default {
     recent: 'Requêtes récentes',
   },
   models: {
-    ...en.models,
     title: 'Modèles',
     search: 'Rechercher des modèles…',
     model: 'Modèle',
@@ -189,20 +186,7 @@ export default {
     allStatuses: 'Tous les statuts',
     filterModel: 'Filtrer par modèle…',
     total: '{total} appels',
-    tokenSplit: 'Token split',
-    tokenSplitHint: 'Input/output mix helps spot retrieval-heavy or generation-heavy workloads.',
-    inputTokens: 'Input tokens',
-    outputTokens: 'Output tokens',
-    modelShare: 'Model share',
-    modelShareHint: 'Top models by token volume across the last {days} days.',
-    tokenUnit: 'tok',
   },
-  onboarding: en.onboarding,
-  billing: en.billing,
-  latency: en.latency,
-  logs: en.logs,
-  devex: en.devex,
-  trust: en.trust,
   wallet: {
     title: 'Portefeuille',
     topup: 'Recharger',
@@ -357,7 +341,6 @@ export default {
     personal: 'Personnel',
   },
   admin: {
-    ...en.admin,
     title: 'Administration',
     token: "Jeton d'administration",
     tokenHint: 'Envoyé comme X-Admin-Token. Conservé uniquement dans cet onglet.',

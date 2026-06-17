@@ -117,7 +117,7 @@ async function topup() {
       window.location.href = r.pay_url // 跳转去支付
     } else {
       // 防御：x402 等渠道不返回 pay_url（改返回 requirements，需链上结算 UI，当前未接入）。
-      // 不跳到 undefined；x402 默认禁用，正式启用并做钱包签名 UI 时再换专用文案。
+      // 不跳到 undefined，并复位按钮避免永久卡在“跳转中”。
       error.value = t('common.error')
       creating.value = false
     }

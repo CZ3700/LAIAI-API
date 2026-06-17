@@ -34,7 +34,6 @@ export default {
     updated: 'Cập nhật',
   },
   nav: {
-    ...en.nav,
     grpConsole: 'Bảng điều khiển',
     grpPersonal: 'Cá nhân',
     grpAdmin: 'Quản trị',
@@ -112,7 +111,6 @@ export default {
       'Khóa đầy đủ chỉ hiển thị một lần này. Hãy lưu trữ an toàn — không thể xem lại sau.',
   },
   dashboard: {
-    ...en.dashboard,
     greeting: 'Chào mừng trở lại',
     histSpend: 'Tổng chi tiêu',
     modelAnalysis: 'Phân tích mô hình',
@@ -129,7 +127,6 @@ export default {
     recent: 'Yêu cầu gần đây',
   },
   models: {
-    ...en.models,
     title: 'Mô hình',
     search: 'Tìm mô hình…',
     model: 'Mô hình',
@@ -189,20 +186,7 @@ export default {
     allStatuses: 'Mọi trạng thái',
     filterModel: 'Lọc theo mô hình…',
     total: '{total} lượt gọi',
-    tokenSplit: 'Token split',
-    tokenSplitHint: 'Input/output mix helps spot retrieval-heavy or generation-heavy workloads.',
-    inputTokens: 'Input tokens',
-    outputTokens: 'Output tokens',
-    modelShare: 'Model share',
-    modelShareHint: 'Top models by token volume across the last {days} days.',
-    tokenUnit: 'tok',
   },
-  onboarding: en.onboarding,
-  billing: en.billing,
-  latency: en.latency,
-  logs: en.logs,
-  devex: en.devex,
-  trust: en.trust,
   wallet: {
     title: 'Ví',
     topup: 'Nạp tiền',
@@ -357,7 +341,6 @@ export default {
     personal: 'Cá nhân',
   },
   admin: {
-    ...en.admin,
     title: 'Quản trị',
     token: 'Mã quản trị',
     tokenHint: 'Gửi dưới dạng X-Admin-Token. Chỉ lưu trong tab trình duyệt này.',

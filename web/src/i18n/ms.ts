@@ -34,7 +34,6 @@ export default {
     updated: 'Dikemas kini',
   },
   nav: {
-    ...en.nav,
     grpConsole: 'Konsol',
     grpPersonal: 'Peribadi',
     grpAdmin: 'Pentadbir',
@@ -112,7 +111,6 @@ export default {
       'Inilah satu-satunya kali kunci penuh dipaparkan. Simpan dengan selamat — ia tidak boleh diperoleh semula.',
   },
   dashboard: {
-    ...en.dashboard,
     greeting: 'Selamat kembali',
     histSpend: 'Jumlah belanja',
     modelAnalysis: 'Analitik model',
@@ -129,7 +127,6 @@ export default {
     recent: 'Permintaan terkini',
   },
   models: {
-    ...en.models,
     title: 'Model',
     search: 'Cari model…',
     model: 'Model',
@@ -189,20 +186,7 @@ export default {
     allStatuses: 'Semua status',
     filterModel: 'Tapis mengikut model…',
     total: '{total} panggilan',
-    tokenSplit: 'Token split',
-    tokenSplitHint: 'Input/output mix helps spot retrieval-heavy or generation-heavy workloads.',
-    inputTokens: 'Input tokens',
-    outputTokens: 'Output tokens',
-    modelShare: 'Model share',
-    modelShareHint: 'Top models by token volume across the last {days} days.',
-    tokenUnit: 'tok',
   },
-  onboarding: en.onboarding,
-  billing: en.billing,
-  latency: en.latency,
-  logs: en.logs,
-  devex: en.devex,
-  trust: en.trust,
   wallet: {
     title: 'Dompet',
     topup: 'Tambah nilai',
@@ -357,7 +341,6 @@ export default {
     personal: 'Peribadi',
   },
   admin: {
-    ...en.admin,
     title: 'Pentadbir',
     token: 'Token pentadbir',
     tokenHint: 'Dihantar sebagai X-Admin-Token. Disimpan dalam tab pelayar ini sahaja.',

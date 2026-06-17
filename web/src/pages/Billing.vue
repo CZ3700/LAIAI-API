@@ -1,34 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, errorMessage } from '@/lib/api'
+import { api } from '@/lib/api'
 import type { SummaryDay } from '@/components/DailyBarChart.vue'
-
-interface Order {
-  id: number
-  order_no: string
-  provider: string
-  amount_usd: string
-  pay_amount: string
-  pay_currency: string
-  status: number
-  created_at: number
-}
 
 interface LedgerEntry {
   id: number
   kind: string
   delta: string
   balance_after: string
-  ref_type: string
-  ref_id: string
   reason: string
   created_at: string
 }
-
 interface UsageRow {
   id: number
-  request_id: string
   model: string
   status: string
   prompt_tokens: number
@@ -36,211 +21,183 @@ interface UsageRow {
   cost_usd: string
   created_at: string
 }
+interface Order {
+  id: number
+  order_no: string
+  amount_usd: string
+  status: number
+  created_at: number
+}
 
-const { t, n, d } = useI18n()
-
+const { n, d } = useI18n()
+const activeTab = ref<'monthly' | 'ledger' | 'usage'>('monthly')
 const balance = ref('0')
 const held = ref('0')
 const summary = ref<SummaryDay[]>([])
-const orders = ref<Order[]>([])
 const ledger = ref<LedgerEntry[]>([])
 const usage = ref<UsageRow[]>([])
+const orders = ref<Order[]>([])
 const loading = ref(true)
-const error = ref('')
-const tab = ref<'monthly' | 'ledger' | 'orders' | 'consumption'>('monthly')
-const tabs = ['monthly', 'ledger', 'orders', 'consumption'] as const
 
-const monthRows = computed(() => {
-  const map = new Map<string, { period: string; calls: number; tokens: number; cost: number }>()
-  for (const row of summary.value) {
-    const period = row.day.slice(0, 7)
-    const current = map.get(period) ?? { period, calls: 0, tokens: 0, cost: 0 }
-    current.calls += row.calls
-    current.tokens += row.prompt_tokens + row.completion_tokens
-    current.cost += Number(row.cost_usd || 0)
-    map.set(period, current)
-  }
-  return [...map.values()].sort((a, b) => b.period.localeCompare(a.period))
-})
-
-const totals = computed(() => ({
-  cost: monthRows.value.reduce((sum, row) => sum + row.cost, 0),
-  ledger: ledger.value.length,
-}))
-
-function statusLabel(status: number): string {
-  if (status === 1) return 'paid'
-  if (status === 2) return 'failed'
-  if (status === 4) return 'expired'
-  return 'pending'
+function num(v: string | number): number {
+  const out = Number(v)
+  return Number.isFinite(out) ? out : 0
 }
+function fmtMoney(v: number): string {
+  return `$${v.toFixed(v >= 1 ? 2 : 4)}`
+}
+const monthSpend = computed(() => summary.value.reduce((sum, s) => sum + num(s.cost_usd), 0))
+const monthTokens = computed(() => summary.value.reduce((sum, s) => sum + s.prompt_tokens + s.completion_tokens, 0))
+const monthCalls = computed(() => summary.value.reduce((sum, s) => sum + s.calls, 0))
+const paidThisMonth = computed(() => orders.value.filter((o) => o.status === 1).reduce((sum, o) => sum + num(o.amount_usd), 0))
+const pendingOrders = computed(() => orders.value.filter((o) => o.status === 0).length)
+const monthLabel = computed(() => new Date().toISOString().slice(0, 7))
 
-async function load() {
+onMounted(async () => {
   loading.value = true
-  try {
-    const results = await Promise.allSettled([
-      api<{ balance: string; held: string }>('GET', '/api/balance'),
-      api<{ items: SummaryDay[] }>('GET', '/api/usage/summary?days=90'),
-      api<{ orders: Order[] }>('GET', '/api/payment/orders'),
-      api<{ items: LedgerEntry[] }>('GET', '/api/ledger'),
-      api<{ items: UsageRow[] }>('GET', '/api/usage?page=1&page_size=12'),
-    ])
-    const [bal, sum, ord, led, use] = results
-    if (bal.status === 'fulfilled') {
-      balance.value = bal.value.balance
-      held.value = bal.value.held
-    }
-    if (sum.status === 'fulfilled') summary.value = sum.value.items.map((s) => ({ ...s, day: s.day.slice(0, 10) }))
-    if (ord.status === 'fulfilled') orders.value = ord.value.orders
-    if (led.status === 'fulfilled') ledger.value = led.value.items
-    if (use.status === 'fulfilled') usage.value = use.value.items
-    const failedCount = results.filter((result) => result.status === 'rejected').length
-    error.value = failedCount > 0 ? t('billing.partialError', { count: failedCount }) : ''
-  } catch (e) {
-    error.value = errorMessage(e, t('common.error'))
-  } finally {
-    loading.value = false
+  const [bal, sum, lg, use, ord] = await Promise.allSettled([
+    api<{ balance: string; held: string }>('GET', '/api/balance'),
+    api<{ items: SummaryDay[] }>('GET', '/api/usage/summary?days=31'),
+    api<{ items: LedgerEntry[] }>('GET', '/api/ledger'),
+    api<{ items: UsageRow[] }>('GET', '/api/usage?page=1&page_size=20'),
+    api<{ orders: Order[] }>('GET', '/api/payment/orders'),
+  ])
+  if (bal.status === 'fulfilled') {
+    balance.value = bal.value.balance
+    held.value = bal.value.held
   }
-}
-
-onMounted(load)
+  if (sum.status === 'fulfilled') summary.value = sum.value.items.map((s) => ({ ...s, day: s.day.slice(0, 10) }))
+  if (lg.status === 'fulfilled') ledger.value = lg.value.items
+  if (use.status === 'fulfilled') usage.value = use.value.items
+  if (ord.status === 'fulfilled') orders.value = ord.value.orders
+  loading.value = false
+})
 </script>
 
 <template>
-  <div class="app-page billing-page">
+  <div class="app-page">
     <div class="app-page-header">
       <div>
-        <p class="app-eyebrow">{{ t('surface.billingEyebrow') }}</p>
-        <h1 class="app-page-title">{{ t('billing.title') }}</h1>
-        <p class="app-page-subtitle">{{ t('billing.subtitle') }}</p>
+        <h1 class="app-page-title">账单与余额</h1>
+        <p class="app-page-subtitle">查看当前余额、冻结金额、账本流水和最近调用消费明细。</p>
       </div>
-      <router-link to="/app/wallet" class="btn-primary shrink-0">{{ t('billing.topupCta') }}</router-link>
     </div>
-
-    <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
 
     <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <div class="metric-card">
-        <p class="text-xs text-muted">{{ t('billing.available') }}</p>
-        <p class="mt-1 font-mono text-2xl font-semibold">${{ balance }}</p>
+        <p class="text-xs text-muted">账户余额</p>
+        <p class="mt-3 font-mono text-2xl font-semibold">{{ loading ? '…' : fmtMoney(num(balance)) }}</p>
+        <p class="mt-2 text-xs text-muted">冻结 {{ fmtMoney(num(held)) }}</p>
       </div>
       <div class="metric-card">
-        <p class="text-xs text-muted">{{ t('billing.held') }}</p>
-        <p class="mt-1 font-mono text-2xl font-semibold">${{ held }}</p>
+        <p class="text-xs text-muted">本月充值</p>
+        <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtMoney(paidThisMonth) }}</p>
       </div>
       <div class="metric-card">
-        <p class="text-xs text-muted">{{ t('billing.monthSpend') }}</p>
-        <p class="mt-1 font-mono text-2xl font-semibold">${{ totals.cost.toFixed(4) }}</p>
+        <p class="text-xs text-muted">本月消耗</p>
+        <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtMoney(monthSpend) }}</p>
       </div>
-      <div class="metric-card">
-        <p class="text-xs text-muted">{{ t('billing.ledgerRows') }}</p>
-        <p class="mt-1 font-mono text-2xl font-semibold">{{ n(totals.ledger) }}</p>
+      <router-link to="/app/recharges" class="metric-card block">
+        <p class="text-xs text-muted">待支付充值单</p>
+        <p class="mt-3 font-mono text-2xl font-semibold">{{ pendingOrders }} 单</p>
+        <p class="mt-2 text-xs text-muted">查看充值记录 →</p>
+      </router-link>
+    </div>
+
+    <div class="border-b border-line">
+      <div class="tabs-row">
+        <button type="button" :class="{ active: activeTab === 'monthly' }" @click="activeTab = 'monthly'">月度账单</button>
+        <button type="button" :class="{ active: activeTab === 'ledger' }" @click="activeTab = 'ledger'">费用流水</button>
+        <button type="button" :class="{ active: activeTab === 'usage' }" @click="activeTab = 'usage'">消费明细</button>
       </div>
     </div>
 
-    <div class="toolbar-panel">
-      <div class="seg-control">
-        <button v-for="item in tabs" :key="item" type="button" :class="tab === item ? 'is-active' : ''" @click="tab = item">
-          {{ t(`billing.${item}`) }}
-        </button>
+    <div v-if="activeTab === 'monthly'" class="space-y-3">
+      <p class="text-sm text-muted">当前账期汇总。现有接口按日返回用量，月度历史账单待后端开放后补齐。</p>
+      <div class="data-table-wrap">
+        <table class="table w-full text-sm whitespace-nowrap">
+          <thead>
+            <tr class="border-b border-line text-left text-muted">
+              <th class="px-4 py-3">账期</th>
+              <th class="px-4 py-3 text-right">总消耗</th>
+              <th class="px-4 py-3 text-right">赠送消耗</th>
+              <th class="px-4 py-3 text-right">付费消耗</th>
+              <th class="px-4 py-3 text-right">请求数</th>
+              <th class="px-4 py-3 text-right">Token 数</th>
+              <th class="px-4 py-3">状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="px-4 py-2.5 font-mono">{{ monthLabel }}</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(monthSpend) }}</td>
+              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
+              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ n(monthCalls) }}</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ n(monthTokens) }}</td>
+              <td class="px-4 py-2.5"><span class="badge-ok">已统计</span></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-      <span class="text-xs text-muted">{{ t(`billing.${tab}Hint`) }}</span>
     </div>
 
-    <p v-if="loading" class="text-sm text-muted">{{ t('common.loading') }}</p>
-
-    <div v-else-if="tab === 'monthly'" class="data-table-wrap">
-      <table class="table w-full text-sm">
-        <thead>
-          <tr class="border-b border-line text-left text-muted">
-            <th class="px-4 py-3 font-medium">{{ t('billing.period') }}</th>
-            <th class="px-4 py-3 font-medium text-right">{{ t('billing.calls') }}</th>
-            <th class="px-4 py-3 font-medium text-right">{{ t('billing.tokens') }}</th>
-            <th class="px-4 py-3 font-medium text-right">{{ t('billing.cost') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="monthRows.length === 0"><td colspan="4" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td></tr>
-          <tr v-for="row in monthRows" :key="row.period" class="border-b border-line last:border-0">
-            <td class="px-4 py-2.5 font-mono">{{ row.period }}</td>
-            <td class="px-4 py-2.5 text-right font-mono">{{ n(row.calls) }}</td>
-            <td class="px-4 py-2.5 text-right font-mono">{{ n(row.tokens) }}</td>
-            <td class="px-4 py-2.5 text-right font-mono">${{ row.cost.toFixed(4) }}</td>
-          </tr>
-        </tbody>
-      </table>
+    <div v-else-if="activeTab === 'ledger'" class="space-y-3">
+      <p class="text-sm text-muted">共 {{ ledger.length }} 条记录，每页 20 条</p>
+      <div class="data-table-wrap">
+        <table class="table w-full text-sm whitespace-nowrap">
+          <thead>
+            <tr class="border-b border-line text-left text-muted">
+              <th class="px-4 py-3">时间</th>
+              <th class="px-4 py-3">类型</th>
+              <th class="px-4 py-3 text-right">Credits 变动</th>
+              <th class="px-4 py-3 text-right">赠送变动</th>
+              <th class="px-4 py-3 text-right">变动后余额</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="ledger.length === 0"><td colspan="5" class="px-4 py-8 text-center text-muted">暂无数据</td></tr>
+            <tr v-for="e in ledger" :key="e.id">
+              <td class="px-4 py-2.5 text-muted">{{ d(new Date(e.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
+              <td class="px-4 py-2.5"><span class="badge-muted">{{ e.kind }}</span></td>
+              <td class="px-4 py-2.5 text-right font-mono" :class="num(e.delta) >= 0 ? 'text-ok' : 'text-danger'">{{ e.delta }}</td>
+              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ e.balance_after }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
-    <div v-else-if="tab === 'ledger'" class="data-table-wrap">
-      <table class="table w-full text-sm whitespace-nowrap">
-        <thead>
-          <tr class="border-b border-line text-left text-muted">
-            <th class="px-4 py-3 font-medium">{{ t('usage.time') }}</th>
-            <th class="px-4 py-3 font-medium">{{ t('billing.kind') }}</th>
-            <th class="px-4 py-3 font-medium">{{ t('wallet.txDetail') }}</th>
-            <th class="px-4 py-3 font-medium text-right">{{ t('billing.delta') }}</th>
-            <th class="px-4 py-3 font-medium text-right">{{ t('billing.balanceAfter') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="ledger.length === 0"><td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td></tr>
-          <tr v-for="entry in ledger" :key="entry.id" class="border-b border-line last:border-0">
-            <td class="px-4 py-2.5 text-muted">{{ d(new Date(entry.created_at), { dateStyle: 'short', timeStyle: 'short' }) }}</td>
-            <td class="px-4 py-2.5"><span class="badge-muted">{{ entry.kind }}</span></td>
-            <td class="px-4 py-2.5 text-muted">{{ entry.reason || entry.ref_type || '—' }}</td>
-            <td class="px-4 py-2.5 text-right font-mono" :class="Number(entry.delta) >= 0 ? 'text-ok' : 'text-danger'">{{ Number(entry.delta) >= 0 ? '+' : '' }}{{ entry.delta }}</td>
-            <td class="px-4 py-2.5 text-right font-mono text-muted">${{ entry.balance_after }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div v-else-if="tab === 'orders'" class="data-table-wrap">
-      <table class="table w-full text-sm">
-        <thead>
-          <tr class="border-b border-line text-left text-muted">
-            <th class="px-4 py-3 font-medium">{{ t('billing.order') }}</th>
-            <th class="px-4 py-3 font-medium">{{ t('billing.provider') }}</th>
-            <th class="px-4 py-3 font-medium text-right">{{ t('billing.amount') }}</th>
-            <th class="px-4 py-3 font-medium">{{ t('billing.status') }}</th>
-            <th class="px-4 py-3 font-medium">{{ t('usage.time') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="orders.length === 0"><td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td></tr>
-          <tr v-for="order in orders" :key="order.id" class="border-b border-line last:border-0">
-            <td class="px-4 py-2.5 font-mono text-xs">{{ order.order_no }}</td>
-            <td class="px-4 py-2.5">{{ order.provider }}</td>
-            <td class="px-4 py-2.5 text-right font-mono">${{ order.amount_usd }}</td>
-            <td class="px-4 py-2.5"><span class="badge-muted">{{ statusLabel(order.status) }}</span></td>
-            <td class="px-4 py-2.5 text-muted">{{ d(new Date(order.created_at * 1000), { dateStyle: 'short', timeStyle: 'short' }) }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div v-else class="data-table-wrap">
-      <table class="table w-full text-sm whitespace-nowrap">
-        <thead>
-          <tr class="border-b border-line text-left text-muted">
-            <th class="px-4 py-3 font-medium">{{ t('usage.time') }}</th>
-            <th class="px-4 py-3 font-medium">{{ t('billing.model') }}</th>
-            <th class="px-4 py-3 font-medium text-right">{{ t('billing.tokens') }}</th>
-            <th class="px-4 py-3 font-medium text-right">{{ t('billing.cost') }}</th>
-            <th class="px-4 py-3 font-medium">{{ t('billing.requestId') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="usage.length === 0"><td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td></tr>
-          <tr v-for="row in usage" :key="row.id" class="border-b border-line last:border-0">
-            <td class="px-4 py-2.5 text-muted">{{ d(new Date(row.created_at), { dateStyle: 'short', timeStyle: 'short' }) }}</td>
-            <td class="px-4 py-2.5 font-mono text-xs">{{ row.model }}</td>
-            <td class="px-4 py-2.5 text-right font-mono">{{ n(row.prompt_tokens + row.completion_tokens) }}</td>
-            <td class="px-4 py-2.5 text-right font-mono">${{ Number(row.cost_usd).toFixed(4) }}</td>
-            <td class="max-w-72 truncate px-4 py-2.5 font-mono text-xs text-muted" :title="row.request_id">{{ row.request_id }}</td>
-          </tr>
-        </tbody>
-      </table>
+    <div v-else class="space-y-3">
+      <p class="text-sm text-muted">最近 31 天记录，共 {{ usage.length }} 条，每页 20 条</p>
+      <div class="data-table-wrap">
+        <table class="table w-full text-sm whitespace-nowrap">
+          <thead>
+            <tr class="border-b border-line text-left text-muted">
+              <th class="px-4 py-3">时间</th>
+              <th class="px-4 py-3">模型</th>
+              <th class="px-4 py-3 text-right">Token 数</th>
+              <th class="px-4 py-3 text-right">消耗</th>
+              <th class="px-4 py-3 text-right">赠送消耗</th>
+              <th class="px-4 py-3 text-right">付费消耗</th>
+              <th class="px-4 py-3">状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="usage.length === 0"><td colspan="7" class="px-4 py-8 text-center text-muted">暂无数据</td></tr>
+            <tr v-for="r in usage" :key="r.id">
+              <td class="px-4 py-2.5 text-muted">{{ d(new Date(r.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
+              <td class="px-4 py-2.5 font-mono text-xs">{{ r.model }}</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ n(r.prompt_tokens + r.completion_tokens) }}</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(num(r.cost_usd)) }}</td>
+              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
+              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
+              <td class="px-4 py-2.5"><span :class="r.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ r.status }}</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 </template>
