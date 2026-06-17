@@ -107,3 +107,18 @@ func bodyLimit(maxBytes int64) gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// echoTraceHeaders：把客户端可观测性头（x-trace-id / x-user-id / x-agent-name）原样回显到响应头，
+// 让调用方把自己的 trace 与我方 X-Request-Id 对齐（DevEx「请求头」承诺）。在 handler 前设置，
+// 首次写响应时随头一起刷出。值由 Go net/http 自动剔除非法字符，无注入面。
+func echoTraceHeaders() gin.HandlerFunc {
+	keys := []string{"X-Trace-Id", "X-User-Id", "X-Agent-Name"}
+	return func(c *gin.Context) {
+		for _, k := range keys {
+			if v := c.GetHeader(k); v != "" {
+				c.Header(k, v)
+			}
+		}
+		c.Next()
+	}
+}

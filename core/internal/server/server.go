@@ -240,16 +240,22 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 
 	// Relay 数据面（M1 暂驻 core 进程，M2/M3 拆独立二进制）
 	if rl != nil {
-		r.GET("/v1/models", rl.HandleListModels)
-		r.POST("/v1/chat/completions", rl.HandleChatCompletions)
-		r.POST("/v1/embeddings", rl.HandleEmbeddings)
-		r.POST("/v1/rerank", rl.HandleRerank) // 重排序（WS-1，RAG；Jina/SiliconFlow/Cohere/Qwen）
-		r.POST("/v1/images/generations", rl.HandleImages)
-		r.POST("/v1/images/edits", rl.HandleImageEdits)                 // 图生图编辑（D1，multipart，按张计价）
-		r.POST("/v1/images/variations", rl.HandleImageVariations)       // 图像变体（D1，multipart）
-		r.POST("/v1/audio/speech", rl.HandleAudioSpeech)                // TTS（gap P2-F，按字符计价）
-		r.POST("/v1/audio/transcriptions", rl.HandleAudioTranscription) // STT（gap P2-F，按次固定价）
-		r.POST("/v1/audio/translations", rl.HandleAudioTranslation)     // STT 翻译到英文（D1，同转写计价）
+		// 客户端可观测性头透传（DevEx 承诺）：x-trace-id / x-user-id / x-agent-name 原样回显到响应头，
+		// 客户端据此把自己的 trace 与我方 X-Request-Id 对齐。中间件挂在 relay 路由组，不动各 handler。
+		rg := r.Group("", echoTraceHeaders())
+		rg.GET("/v1/models", rl.HandleListModels)
+		rg.POST("/v1/chat/completions", rl.HandleChatCompletions)
+		// Anthropic 原生入站（Claude Code / Anthropic SDK 把 base 指到 /anthropic 即用）：
+		// ingress 转 OpenAI canonical → 复用未改动的 HandleChatCompletions 全套计费/路由 → egress 转回 Anthropic。
+		rg.POST("/anthropic/v1/messages", rl.HandleAnthropicMessages)
+		rg.POST("/v1/embeddings", rl.HandleEmbeddings)
+		rg.POST("/v1/rerank", rl.HandleRerank) // 重排序（WS-1，RAG；Jina/SiliconFlow/Cohere/Qwen）
+		rg.POST("/v1/images/generations", rl.HandleImages)
+		rg.POST("/v1/images/edits", rl.HandleImageEdits)                 // 图生图编辑（D1，multipart，按张计价）
+		rg.POST("/v1/images/variations", rl.HandleImageVariations)       // 图像变体（D1，multipart）
+		rg.POST("/v1/audio/speech", rl.HandleAudioSpeech)                // TTS（gap P2-F，按字符计价）
+		rg.POST("/v1/audio/transcriptions", rl.HandleAudioTranscription) // STT（gap P2-F，按次固定价）
+		rg.POST("/v1/audio/translations", rl.HandleAudioTranslation)     // STT 翻译到英文（D1，同转写计价）
 
 		// 异步任务（Seedance 类视频生成，设计 §4.4 Task API）
 		ts := opts.TaskService
