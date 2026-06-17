@@ -34,6 +34,7 @@ export default {
     updated: 'Обновлено',
   },
   nav: {
+    ...en.nav,
     grpConsole: 'Консоль',
     grpPersonal: 'Личное',
     grpAdmin: 'Админ',
@@ -111,6 +112,7 @@ export default {
       'Полный ключ показывается только один раз. Сохраните его в надёжном месте — восстановить его нельзя.',
   },
   dashboard: {
+    ...en.dashboard,
     greeting: 'С возвращением',
     histSpend: 'Всего потрачено',
     modelAnalysis: 'Аналитика моделей',
@@ -127,6 +129,7 @@ export default {
     recent: 'Недавние запросы',
   },
   models: {
+    ...en.models,
     title: 'Модели',
     search: 'Поиск моделей…',
     model: 'Модель',
@@ -186,7 +189,17 @@ export default {
     allStatuses: 'Все статусы',
     filterModel: 'Фильтр по модели…',
     total: 'Всего вызовов: {total}',
+    tokenSplit: 'Token split',
+    tokenSplitHint: 'Input/output mix helps spot retrieval-heavy or generation-heavy workloads.',
+    inputTokens: 'Input tokens',
+    outputTokens: 'Output tokens',
+    modelShare: 'Model share',
+    modelShareHint: 'Top models by token volume across the last {days} days.',
+    tokenUnit: 'tok',
   },
+  logs: en.logs,
+  devex: en.devex,
+  trust: en.trust,
   wallet: {
     title: 'Кошелёк',
     topup: 'Пополнить',
@@ -341,6 +354,7 @@ export default {
     personal: 'Личное',
   },
   admin: {
+    ...en.admin,
     title: 'Администрирование',
     token: 'Админ-токен',
     tokenHint: 'Отправляется как X-Admin-Token. Хранится только в этой вкладке.',

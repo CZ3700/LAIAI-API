@@ -165,6 +165,29 @@ onBeforeUnmount(() => clearInterval(perfTimer))
       </div>
     </section>
 
+    <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <router-link to="/app/keys" class="action-strip">
+        <span>{{ t('dashboard.actionKey') }}</span>
+        <strong>{{ t('dashboard.actionReady') }}</strong>
+        <small>{{ t('dashboard.actionKeyHint') }}</small>
+      </router-link>
+      <router-link to="/app/devex" class="action-strip">
+        <span>{{ t('dashboard.actionDevex') }}</span>
+        <strong>/v1</strong>
+        <small>{{ t('dashboard.actionDevexHint') }}</small>
+      </router-link>
+      <router-link to="/app/logs" class="action-strip">
+        <span>{{ t('dashboard.actionLogs') }}</span>
+        <strong>{{ totals.calls }}</strong>
+        <small>{{ t('dashboard.actionLogsHint') }}</small>
+      </router-link>
+      <router-link to="/trust" class="action-strip">
+        <span>{{ t('dashboard.actionTrust') }}</span>
+        <strong>{{ (totals.rate * 100).toFixed(1) }}%</strong>
+        <small>{{ t('dashboard.actionTrustHint') }}</small>
+      </router-link>
+    </div>
+
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <div class="enter metric-card" style="animation-delay: 0ms">
         <div class="flex items-start justify-between">

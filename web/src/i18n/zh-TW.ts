@@ -1,4 +1,4 @@
-import type { Messages } from './en'
+import en, { type Messages } from './en'
 
 export default {
   common: {
@@ -34,6 +34,7 @@ export default {
     updated: '更新於',
   },
   nav: {
+    ...en.nav,
     grpConsole: '控制台',
     grpPersonal: '個人中心',
     grpAdmin: '管理員',
@@ -53,6 +54,7 @@ export default {
     language: '語言',
   },
   surface: {
+    ...en.surface,
     brandSubtitle: '模型控制面',
     consoleSubtitle: '統一管理組織內的流量路由、成本觀察與存取控制。',
     landingControlPlane: '控制面',
@@ -164,6 +166,7 @@ export default {
     createdWarning: '完整金鑰只顯示這一次，請妥善保存——之後無法再次查看。',
   },
   dashboard: {
+    ...en.dashboard,
     greeting: '歡迎回來',
     histSpend: '歷史消耗',
     modelAnalysis: '模型數據分析',
@@ -180,6 +183,7 @@ export default {
     recent: '最近請求',
   },
   models: {
+    ...en.models,
     title: '模型',
     search: '搜尋模型…',
     model: '模型',
@@ -239,7 +243,17 @@ export default {
     allStatuses: '全部狀態',
     filterModel: '按模型篩選…',
     total: '共 {total} 次呼叫',
+    tokenSplit: 'Token 拆分',
+    tokenSplitHint: '輸入/輸出比例可協助判斷工作負載偏檢索或偏生成。',
+    inputTokens: '輸入 Token',
+    outputTokens: '輸出 Token',
+    modelShare: '模型占比',
+    modelShareHint: '最近 {days} 天按 Token 量排序的主要模型。',
+    tokenUnit: 'tok',
   },
+  logs: en.logs,
+  devex: en.devex,
+  trust: en.trust,
   wallet: {
     title: '錢包',
     topup: '儲值',
@@ -396,6 +410,7 @@ export default {
     personal: '個人',
   },
   admin: {
+    ...en.admin,
     title: '管理',
     token: '管理權杖',
     tokenHint: '以 X-Admin-Token 發送，僅保存在目前瀏覽器分頁。',

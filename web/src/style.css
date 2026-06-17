@@ -374,6 +374,14 @@ body::before {
   padding: 0.75rem 0.9rem;
   font-size: 0.875rem;
 }
+.inline-info {
+  border: 1px solid rgb(var(--c-accent) / 0.24);
+  border-radius: 8px;
+  background: rgb(var(--c-accent) / 0.08);
+  color: rgb(var(--c-muted));
+  padding: 0.75rem 0.9rem;
+  font-size: 0.875rem;
+}
 
 .modal-backdrop {
   @apply fixed inset-0 z-50 grid place-items-center bg-black/60 p-4;
@@ -1192,6 +1200,270 @@ body::before {
   color: rgb(var(--c-ink));
   background: rgb(var(--c-panel));
   box-shadow: var(--shadow-card);
+}
+
+.seg-control {
+  display: inline-flex;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid rgb(var(--c-line) / 0.75);
+  border-radius: 8px;
+  background: rgb(var(--c-elev) / 0.45);
+  padding: 0.2rem;
+}
+.seg-control button {
+  flex-shrink: 0;
+  border-radius: 6px;
+  padding: 0.38rem 0.7rem;
+  color: rgb(var(--c-muted));
+  font-size: 0.75rem;
+  font-weight: 540;
+  transition: color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+.seg-control button:hover,
+.seg-control button.is-active {
+  color: rgb(var(--c-ink));
+  background: rgb(var(--c-panel));
+  box-shadow: var(--shadow-card);
+}
+
+.action-strip,
+.admin-workflow-card,
+.devex-path-card,
+.devex-step-link {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid rgb(var(--c-line) / 0.76);
+  border-radius: 8px;
+  background: rgb(var(--c-panel) / 0.74);
+  padding: 1rem;
+  box-shadow: var(--shadow-card);
+  transition: border-color 0.16s ease, transform 0.16s ease, background 0.16s ease;
+}
+.action-strip:hover,
+.admin-workflow-card:hover,
+.devex-path-card:hover,
+.devex-step-link:hover {
+  border-color: rgb(var(--c-accent) / 0.54);
+  background: rgb(var(--c-panel) / 0.92);
+  transform: translateY(-1px);
+}
+.action-strip span,
+.admin-workflow-card span,
+.devex-path-card span {
+  color: rgb(var(--c-muted));
+  font-size: 0.75rem;
+}
+.action-strip strong,
+.admin-workflow-card strong,
+.devex-path-card strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 1.35rem;
+  line-height: 1.15;
+}
+.action-strip small,
+.admin-workflow-card small,
+.devex-path-card small {
+  color: rgb(var(--c-muted));
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+.devex-path-card code {
+  margin-top: 0.25rem;
+  width: fit-content;
+  border-radius: 6px;
+  background: rgb(var(--c-elev) / 0.72);
+  padding: 0.24rem 0.42rem;
+  color: rgb(var(--c-accent));
+  font-size: 0.72rem;
+}
+
+.detail-group {
+  border-top: 1px solid rgb(var(--c-line) / 0.75);
+  padding-top: 1rem;
+}
+.detail-group h2 {
+  margin-bottom: 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+.detail-group dl {
+  display: grid;
+  gap: 0.55rem;
+}
+.detail-group div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.75rem;
+}
+.detail-group dt {
+  color: rgb(var(--c-muted));
+}
+.detail-group dd {
+  min-width: 0;
+  max-width: 68%;
+  overflow-wrap: anywhere;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid rgb(var(--c-line) / 0.82);
+  border-radius: 999px;
+  background: rgb(var(--c-panel) / 0.7);
+  padding: 0.42rem 0.75rem;
+  color: rgb(var(--c-muted));
+  font-size: 0.82rem;
+  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+.model-chip span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem;
+}
+.model-chip:hover,
+.model-chip.is-active {
+  border-color: rgb(var(--c-accent) / 0.58);
+  background: rgb(var(--c-accent) / 0.08);
+  color: rgb(var(--c-ink));
+}
+.model-card {
+  cursor: pointer;
+}
+.model-card p {
+  overflow-wrap: anywhere;
+}
+.line-clamp-3 {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.admin-tab-groups {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  gap: 0.75rem;
+  overflow-x: auto;
+}
+.admin-tab-group {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid rgb(var(--c-line) / 0.7);
+  border-radius: 8px;
+  background: rgb(var(--c-elev) / 0.38);
+  padding: 0.25rem;
+}
+.admin-tab-group > span {
+  padding: 0 0.45rem;
+  color: rgb(var(--c-muted));
+  font-size: 0.68rem;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+.admin-workflow-map {
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid rgb(var(--c-line) / 0.72);
+  border-radius: 8px;
+  background: rgb(var(--c-line) / 0.72);
+}
+@media (min-width: 768px) {
+  .admin-workflow-map {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (min-width: 1280px) {
+  .admin-workflow-map {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.admin-workflow-map > div {
+  display: grid;
+  gap: 0.35rem;
+  background: rgb(var(--c-panel) / 0.78);
+  padding: 1rem;
+}
+.admin-workflow-map span {
+  color: rgb(var(--c-accent));
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.admin-workflow-map strong {
+  font-size: 0.9rem;
+}
+.admin-workflow-map small {
+  color: rgb(var(--c-muted));
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.devex-step-link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: rgb(var(--c-ink));
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+.devex-step-link span {
+  display: grid;
+  place-items: center;
+  height: 1.85rem;
+  width: 1.85rem;
+  border-radius: 8px;
+  background: rgb(var(--c-accent) / 0.12);
+  color: rgb(var(--c-accent));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+}
+
+.trust-hero {
+  border-bottom: 1px solid rgb(var(--c-line) / 0.76);
+  background:
+    linear-gradient(135deg, rgb(var(--c-panel) / 0.9), rgb(var(--c-bg))),
+    radial-gradient(circle at 82% 12%, rgb(var(--c-accent) / 0.16), transparent 36%);
+}
+.trust-map {
+  border: 1px solid rgb(var(--c-line) / 0.78);
+  border-radius: 8px;
+  background: rgb(var(--c-panel) / 0.8);
+  padding: 1.25rem;
+  box-shadow: var(--shadow-pop);
+}
+.trust-map-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+}
+.trust-map-row span {
+  border: 1px solid rgb(var(--c-line) / 0.7);
+  border-radius: 8px;
+  background: rgb(var(--c-elev) / 0.44);
+  padding: 0.85rem;
+  text-align: center;
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+.trust-map-line {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+  padding: 1rem 0;
+}
+.trust-map-line i {
+  display: block;
+  height: 2.6rem;
+  border-right: 1px solid rgb(var(--c-accent) / 0.42);
+  border-left: 1px solid rgb(var(--c-accent) / 0.12);
 }
 
 .enter {

@@ -20,6 +20,14 @@ interface UsageRow {
   error_brief?: string
   created_at: string
 }
+interface ModelStat {
+  model: string
+  calls: number
+  succeeded: number
+  prompt_tokens: number
+  completion_tokens: number
+  cost_usd: string
+}
 
 const { t, n, d } = useI18n()
 const rows = ref<UsageRow[]>([])
@@ -37,22 +45,34 @@ function toggle(id: number) {
 
 // —— 近 14 天日聚合（仪表盘）——
 const summary = ref<SummaryDay[]>([])
+const byModel = ref<ModelStat[]>([])
 const summaryDays = 14
 const chartMetric = ref<ChartMetric>('calls')
 const CHART_METRICS: ChartMetric[] = ['calls', 'tokens', 'cost', 'success']
 const totals = computed(() => {
   let calls = 0
-  let tokens = 0
+  let prompt = 0
+  let completion = 0
   let cost = 0
   let succeeded = 0
   for (const s of summary.value) {
     calls += s.calls
     succeeded += s.succeeded
-    tokens += s.prompt_tokens + s.completion_tokens
+    prompt += s.prompt_tokens
+    completion += s.completion_tokens
     cost += Number(s.cost_usd)
   }
-  return { calls, tokens, cost, successRate: calls ? succeeded / calls : 1 }
+  const tokens = prompt + completion
+  return { calls, prompt, completion, tokens, cost, successRate: calls ? succeeded / calls : 1 }
 })
+const tokenSplit = computed(() => {
+  const totalTokens = Math.max(1, totals.value.tokens)
+  return {
+    prompt: (totals.value.prompt / totalTokens) * 100,
+    completion: (totals.value.completion / totalTokens) * 100,
+  }
+})
+const maxModelTokens = computed(() => Math.max(1, ...byModel.value.map((m) => m.prompt_tokens + m.completion_tokens)))
 async function loadSummary() {
   try {
     const r = await api<{ items: SummaryDay[] }>('GET', `/api/usage/summary?days=${summaryDays}`)
@@ -60,6 +80,14 @@ async function loadSummary() {
     summary.value = r.items.map((s) => ({ ...s, day: s.day.slice(0, 10) }))
   } catch {
     // 仪表盘失败不阻塞明细表（明细自身有错误展示）
+  }
+}
+async function loadByModel() {
+  try {
+    const r = await api<{ items: ModelStat[] }>('GET', `/api/usage/by-model?days=${summaryDays}`)
+    byModel.value = r.items ?? []
+  } catch {
+    // 模型分布失败不阻塞明细表
   }
 }
 
@@ -101,6 +129,7 @@ watch(page, () => void load())
 onMounted(() => {
   void load()
   void loadSummary()
+  void loadByModel()
 })
 // 防抖定时器在卸载时清理：避免组件销毁后 setTimeout 仍触发 load（陈旧请求 + 内存泄漏）
 onBeforeUnmount(() => clearTimeout(filterTimer))
@@ -139,6 +168,7 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
       <div class="metric-card">
         <p class="text-xs text-muted">{{ t('usage.sumTokens', { days: summaryDays }) }}</p>
         <p class="mt-1 text-2xl font-semibold font-mono">{{ n(totals.tokens) }}</p>
+        <p class="mt-1 text-xs text-muted">{{ n(totals.prompt) }} / {{ n(totals.completion) }}</p>
       </div>
       <div class="metric-card">
         <p class="text-xs text-muted">{{ t('usage.sumCost', { days: summaryDays }) }}</p>
@@ -178,6 +208,55 @@ onBeforeUnmount(() => clearTimeout(filterTimer))
         </div>
       </div>
       <DailyBarChart :items="summary" :days="summaryDays" :metric="chartMetric" />
+    </div>
+
+    <div class="grid gap-4 lg:grid-cols-[0.42fr_0.58fr]">
+      <section class="app-panel p-5">
+        <h2 class="font-semibold">{{ t('usage.tokenSplit') }}</h2>
+        <p class="mt-1 text-xs text-muted">{{ t('usage.tokenSplitHint') }}</p>
+        <div class="mt-5 overflow-hidden rounded-lg border border-line bg-line">
+          <div class="flex h-4 bg-elev">
+            <div class="bg-accent" :style="{ width: `${tokenSplit.prompt}%` }"></div>
+            <div class="bg-ok" :style="{ width: `${tokenSplit.completion}%` }"></div>
+          </div>
+        </div>
+        <div class="mt-4 grid grid-cols-2 gap-3 text-sm">
+          <div class="soft-panel p-3">
+            <p class="text-xs text-muted">{{ t('usage.inputTokens') }}</p>
+            <p class="mt-1 font-mono font-semibold">{{ n(totals.prompt) }}</p>
+            <p class="mt-1 text-xs text-muted">{{ tokenSplit.prompt.toFixed(1) }}%</p>
+          </div>
+          <div class="soft-panel p-3">
+            <p class="text-xs text-muted">{{ t('usage.outputTokens') }}</p>
+            <p class="mt-1 font-mono font-semibold">{{ n(totals.completion) }}</p>
+            <p class="mt-1 text-xs text-muted">{{ tokenSplit.completion.toFixed(1) }}%</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="app-panel p-5">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 class="font-semibold">{{ t('usage.modelShare') }}</h2>
+            <p class="mt-1 text-xs text-muted">{{ t('usage.modelShareHint', { days: summaryDays }) }}</p>
+          </div>
+          <router-link to="/app/models" class="btn-ghost !py-1.5 text-xs">{{ t('nav.models') }}</router-link>
+        </div>
+        <div v-if="byModel.length === 0" class="py-8 text-center text-sm text-muted">{{ t('common.empty') }}</div>
+        <div v-else class="space-y-3">
+          <div v-for="m in byModel.slice(0, 8)" :key="m.model" class="space-y-1.5">
+            <div class="flex items-baseline justify-between gap-3 text-sm">
+              <span class="truncate font-mono text-xs" :title="m.model">{{ m.model }}</span>
+              <span class="shrink-0 text-xs text-muted">
+                {{ n(m.calls) }} · {{ n(m.prompt_tokens + m.completion_tokens) }} {{ t('usage.tokenUnit') }} · ${{ Number(m.cost_usd).toFixed(4) }}
+              </span>
+            </div>
+            <div class="h-2 overflow-hidden rounded-full bg-line">
+              <div class="h-full rounded-full bg-rainbow" :style="{ width: `${((m.prompt_tokens + m.completion_tokens) / maxModelTokens) * 100}%` }"></div>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
 
     <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>

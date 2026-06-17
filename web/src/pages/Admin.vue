@@ -132,9 +132,30 @@ const tab = ref<'overview' | 'analytics' | 'health' | 'channels' | 'payments' | 
 
 // 标签分级（对标后端 RBAC）：资金/系统/定价类仅 superadmin 可见，admin 看运营类。
 const ALL_TABS = ['overview', 'analytics', 'health', 'channels', 'payments', 'prices', 'groups', 'orgs', 'users', 'logs', 'settings', 'audit'] as const
+function setTab(value: string) {
+  if ((ALL_TABS as readonly string[]).includes(value)) tab.value = value as typeof tab.value
+}
 // logs（全局调用明细）跨租户 → superadmin-only（配合后端 P2-3 把 /invocations 收归超管）
 const SUPER_ONLY_TABS = new Set(['payments', 'groups', 'settings', 'logs'])
 const visibleTabs = computed(() => ALL_TABS.filter((tb) => auth.isSuperadmin || !SUPER_ONLY_TABS.has(tb)))
+const TAB_GROUPS = [
+  { key: 'ops', tabs: ['overview', 'analytics', 'health', 'logs'] },
+  { key: 'network', tabs: ['channels', 'prices', 'groups'] },
+  { key: 'revenue', tabs: ['payments', 'orgs', 'users'] },
+  { key: 'governance', tabs: ['settings', 'audit'] },
+] as const
+const visibleTabGroups = computed(() =>
+  TAB_GROUPS.map((group) => ({
+    ...group,
+    tabs: group.tabs.filter((tb) => visibleTabs.value.includes(tb as (typeof ALL_TABS)[number])),
+  })).filter((group) => group.tabs.length > 0),
+)
+const workflowCards = computed(() => [
+  { key: 'traffic', tab: 'channels', value: overview.value ? `${overview.value.channels.active}/${overview.value.channels.total}` : '—' },
+  { key: 'quality', tab: 'health', value: overview.value ? `${(overview.value.success_rate * 100).toFixed(1)}%` : '—' },
+  { key: 'revenue', tab: 'analytics', value: overview.value ? `$${Number(overview.value.revenue_window).toFixed(2)}` : '—' },
+  { key: 'governance', tab: auth.isSuperadmin ? 'settings' : 'audit', value: auth.isSuperadmin ? t('admin.workflowRoot') : t('admin.workflowAudit') },
+])
 
 // —— 运营分析（资金 / 用户 / 质量 颗粒度） ——
 interface Analytics {
@@ -1170,21 +1191,46 @@ onMounted(async () => {
 
     <template v-else>
       <div class="toolbar-panel">
-        <div class="flex max-w-full gap-1 overflow-x-auto" role="tablist">
-          <button
-            v-for="tb in visibleTabs"
-            :key="tb"
-            type="button"
-            role="tab"
-            :aria-selected="tab === tb"
-            class="shrink-0 rounded-md px-3 py-1.5 text-sm transition-colors"
-            :class="tab === tb ? 'bg-panel text-ink shadow-sm' : 'text-muted hover:text-ink'"
-            @click="tab = tb"
-          >
-            {{ t(`admin.${tb}`) }}
-          </button>
+        <div class="admin-tab-groups" role="tablist">
+          <div v-for="group in visibleTabGroups" :key="group.key" class="admin-tab-group">
+            <span>{{ t(`admin.tabGroup_${group.key}`) }}</span>
+            <button
+              v-for="tb in group.tabs"
+              :key="tb"
+              type="button"
+              role="tab"
+              :aria-selected="tab === tb"
+              class="shrink-0 rounded-md px-3 py-1.5 text-sm transition-colors"
+              :class="tab === tb ? 'bg-panel text-ink shadow-sm' : 'text-muted hover:text-ink'"
+              @click="setTab(tb)"
+            >
+              {{ t(`admin.${tb}`) }}
+            </button>
+          </div>
         </div>
         <button class="btn-ghost !py-1.5 text-xs" @click="lock">{{ t('admin.clear') }}</button>
+      </div>
+
+      <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <button
+          v-for="card in workflowCards"
+          :key="card.key"
+          type="button"
+          class="admin-workflow-card"
+          @click="setTab(card.tab)"
+        >
+          <span>{{ t(`admin.workflow_${card.key}`) }}</span>
+          <strong>{{ card.value }}</strong>
+          <small>{{ t(`admin.workflow_${card.key}_hint`) }}</small>
+        </button>
+      </div>
+
+      <div class="admin-workflow-map">
+        <div v-for="group in visibleTabGroups" :key="group.key">
+          <span>{{ t(`admin.tabGroup_${group.key}`) }}</span>
+          <strong>{{ t(`admin.tabGroup_${group.key}_job`) }}</strong>
+          <small>{{ group.tabs.map((tb) => t(`admin.${tb}`)).join(' / ') }}</small>
+        </div>
       </div>
 
       <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
