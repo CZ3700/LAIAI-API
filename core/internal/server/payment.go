@@ -566,6 +566,27 @@ func (s *Server) listTopups(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"orders": orders})
 }
 
+// getRechargeStats：GET /api/payment/recharge-stats —— 仪表盘卡片用：本月 + 近 7 个 UTC 自然日
+// 已到账(status=paid)充值额(USD)，**服务端聚合**。避免前端对分页(50 条)明细本地求和静默漏算（金额红线）。
+// 近 7 日窗口与仪表盘 sumDays(-6,7) 取同样 7 个 UTC 自然日，保证 net7d 被减数/减数口径一致。
+func (s *Server) getRechargeStats(c *gin.Context) {
+	claims := mustClaims(c)
+	now := s.now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Unix()
+	last7Start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -6).Unix()
+	var out struct {
+		MonthUSD decimal.Decimal `json:"month_usd"`
+		Last7USD decimal.Decimal `json:"last7_usd"`
+	}
+	// 用主库：充值额是金额展示，避免副本滞后让用户误判刚充的钱没到（与余额读同等谨慎）。
+	s.db.WithContext(c.Request.Context()).Raw(`
+		SELECT COALESCE(SUM(CASE WHEN created_at >= ? THEN amount_usd ELSE 0 END), 0) AS month_usd,
+		       COALESCE(SUM(CASE WHEN created_at >= ? THEN amount_usd ELSE 0 END), 0) AS last7_usd
+		FROM topup_orders WHERE org_id = ? AND status = ?`,
+		monthStart, last7Start, claims.OrgID, topupPaid).Scan(&out)
+	c.JSON(http.StatusOK, gin.H{"month_usd": out.MonthUSD, "last7_usd": out.Last7USD})
+}
+
 // newOrderNo：订单号 = USR{org}NO{rand}{ts}（移植旧平台格式）。
 func newOrderNo(orgID uint64) string {
 	b := make([]byte, 4)

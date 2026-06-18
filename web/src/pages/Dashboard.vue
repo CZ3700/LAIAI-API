@@ -23,7 +23,6 @@ interface KeyStat {
   cost_usd: string
 }
 interface KeyRow { id: number; status: number }
-interface Order { status: number; amount_usd: string; created_at: number }
 
 const { n, t } = useI18n()
 
@@ -34,7 +33,8 @@ const byModel = ref<ModelStat[]>([])
 const byKey = ref<KeyStat[]>([])
 const recent = ref<UsageRow[]>([])
 const keys = ref<KeyRow[]>([])
-const orders = ref<Order[]>([])
+const monthRechargeUSD = ref(0)
+const last7RechargeUSD = ref(0)
 const fx = ref(7.3)
 const loading = ref(true)
 
@@ -110,23 +110,10 @@ const last7 = computed(() => sumDays(-6, 7))
 const prev7 = computed(() => sumDays(-13, 7))
 const activeKeys = computed(() => keys.value.filter((k) => k.status === 1).length)
 
-const monthRecharge = computed(() => {
-  const now = new Date()
-  return orders.value
-    .filter((o) => o.status === 1)
-    .filter((o) => {
-      const dt = new Date(o.created_at * 1000)
-      return dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth()
-    })
-    .reduce((s, o) => s + num(o.amount_usd), 0)
-})
-const net7d = computed(() => {
-  const cutoff = Date.now() - 7 * 86_400_000
-  const income = orders.value
-    .filter((o) => o.status === 1 && o.created_at * 1000 >= cutoff)
-    .reduce((s, o) => s + num(o.amount_usd), 0)
-  return income - last7.value.cost
-})
+// 本月/近7日充值额来自服务端聚合（/api/payment/recharge-stats），避免对分页明细本地求和漏算；
+// 近7日窗口与后端 sumDays(-6,7) 同为 7 个 UTC 自然日，故 net7d 收入与支出同窗、口径一致。
+const monthRecharge = computed(() => monthRechargeUSD.value)
+const net7d = computed(() => last7RechargeUSD.value - last7.value.cost)
 
 // 费用构成环图：按模型 credits 占比，top6 + 其他。
 const donutItems = computed(() => {
@@ -183,7 +170,7 @@ onMounted(async () => {
     api<{ items: KeyStat[] }>('GET', '/api/usage/by-key?days=30'),
     api<{ items: UsageRow[] }>('GET', '/api/usage?page=1&page_size=100'),
     api<{ keys: KeyRow[] }>('GET', '/api/keys'),
-    api<{ orders: Order[] }>('GET', '/api/payment/orders'),
+    api<{ month_usd: string; last7_usd: string }>('GET', '/api/payment/recharge-stats'),
     api<{ cny_per_usd: string }>('GET', '/api/config', undefined, { auth: false }),
   ])
   if (bal.status === 'fulfilled') {
@@ -195,7 +182,10 @@ onMounted(async () => {
   if (bk.status === 'fulfilled') byKey.value = bk.value.items
   if (use.status === 'fulfilled') recent.value = use.value.items
   if (keyRows.status === 'fulfilled') keys.value = keyRows.value.keys
-  if (ords.status === 'fulfilled') orders.value = ords.value.orders
+  if (ords.status === 'fulfilled') {
+    monthRechargeUSD.value = num(ords.value.month_usd)
+    last7RechargeUSD.value = num(ords.value.last7_usd)
+  }
   if (cfg.status === 'fulfilled') {
     const rate = Number(cfg.value.cny_per_usd)
     if (Number.isFinite(rate) && rate > 0) fx.value = rate
@@ -318,7 +308,7 @@ onMounted(async () => {
             </button>
           </div>
         </div>
-        <DailyBarChart :items="summary" :days="30" :metric="chartMetric" />
+        <DailyBarChart :items="summary" :days="30" :metric="chartMetric" :credits-fx="fx" />
       </div>
 
       <div class="app-panel p-5">

@@ -13,7 +13,9 @@ export interface SummaryDay {
 
 export type ChartMetric = 'calls' | 'tokens' | 'cost' | 'success'
 
-const props = withDefaults(defineProps<{ items: SummaryDay[]; days: number; metric?: ChartMetric }>(), {
+// creditsFx：传入汇率则成本 tooltip 以 credits 展示（credits = USD × fx × 1e6），与 credits 主题一致；
+// 不传则回退美元（$），保持其它调用方行为不变。
+const props = withDefaults(defineProps<{ items: SummaryDay[]; days: number; metric?: ChartMetric; creditsFx?: number }>(), {
   metric: 'calls',
 })
 const { t } = useI18n()
@@ -58,7 +60,8 @@ const chart = computed(() => {
 
 const color = computed(() => METRIC_COLOR[props.metric])
 function fmtTip(b: Bar): string {
-  return `${b.label} · ${b.calls} calls · ${b.tokens.toLocaleString()} tok · $${b.cost.toFixed(4)} · ${(b.success * 100).toFixed(0)}% ok`
+  const costStr = props.creditsFx ? `${Math.round(b.cost * props.creditsFx * 1e6).toLocaleString()} cr` : `$${b.cost.toFixed(4)}`
+  return `${b.label} · ${b.calls} calls · ${b.tokens.toLocaleString()} tok · ${costStr} · ${(b.success * 100).toFixed(0)}% ok`
 }
 </script>
 

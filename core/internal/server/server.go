@@ -177,6 +177,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/payment/methods", s.getPaymentMethods)
 				org.POST("/payment/create", s.createTopup)
 				org.GET("/payment/orders", s.listTopups)
+				org.GET("/payment/recharge-stats", s.getRechargeStats) // 仪表盘本月/近7日充值聚合
 				org.GET("/affiliate", s.getAffiliate)
 				org.GET("/org/members", s.listMembers)
 				org.POST("/org/members", s.inviteMember) // 发邀请（pending），对方确认后才入队
