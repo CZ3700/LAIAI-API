@@ -9,7 +9,7 @@
   --c-line: 224 221 214;
   --c-ink: 24 24 22;
   --c-muted: 110 108 102;
-  --c-accent: 79 70 229;
+  --c-accent: 14 165 233;
   --c-accent-2: 16 185 129;
   --c-danger: 220 38 38;
   --c-ok: 5 150 105;
@@ -1409,12 +1409,13 @@ a.metric-card:active {
   transform: translateY(-1px);
 }
 .btn-primary {
-  color: white;
+  /* 深色字：天蓝(sky)是高亮色，白字对比不足（< AA 3:1）。深墨字在亮色高饱和按钮上更清晰，与 v1 一致。 */
+  color: rgb(3 12 18);
   background: linear-gradient(135deg, rgb(var(--c-accent)), rgb(var(--c-accent) / 0.86));
-  box-shadow: 0 1px 1px rgb(255 255 255 / 0.14) inset, 0 10px 24px -16px rgb(var(--c-accent));
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.28) inset, 0 10px 24px -16px rgb(var(--c-accent));
 }
 .btn-primary:hover {
-  filter: brightness(1.03);
+  filter: brightness(1.04);
 }
 .filter-group {
   display: grid;
@@ -1753,8 +1754,8 @@ select:focus-visible,
 
 /* 原生 select 自绘 chevron（去系统三角、明暗各一套，质感对齐 input/button）。 */
 select.input {
-  appearance: none;
   -webkit-appearance: none;
+  appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='16'%20height='16'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%236e6c66'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='m6%209%206%206%206-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.6rem center;
@@ -1949,6 +1950,61 @@ input[type="checkbox"] {
     transform: none;
   }
   .btn-busy::before {
+    animation: none;
+  }
+}
+
+/* ===================== v1 精华回植：指标卡逐张入场编排 + 强调面板高级深度 ===================== */
+
+/* 指标卡"逐张升入"入场（v1 的灵动细节）。用 backwards 填充：仅在延迟期保持隐藏起始态，
+   动画结束后回归常规样式——不会与 :hover 的 translateY 抬升冲突（这是 forwards/both 的坑）。 */
+.metric-card {
+  animation: enter-up 0.46s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.metric-card:nth-child(2) {
+  animation-delay: 0.05s;
+}
+.metric-card:nth-child(3) {
+  animation-delay: 0.1s;
+}
+.metric-card:nth-child(4) {
+  animation-delay: 0.15s;
+}
+.metric-card:nth-child(5) {
+  animation-delay: 0.2s;
+}
+.metric-card:nth-child(6) {
+  animation-delay: 0.25s;
+}
+.metric-card:nth-child(7) {
+  animation-delay: 0.3s;
+}
+.metric-card:nth-child(8) {
+  animation-delay: 0.35s;
+}
+
+/* 强调面板（概览英雄区 / 强调面板）加"高级深度"：顶部 1px 高光 + 分层投影 + 角落品牌微光，
+   不用毛玻璃（省 GPU + 保可读），用光影制造维度感。 */
+.console-hero,
+.app-panel-strong {
+  background-image:
+    linear-gradient(135deg, rgb(var(--c-panel)), rgb(var(--c-panel) / 0.92)),
+    radial-gradient(120% 80% at 96% 0%, rgb(var(--c-accent) / 0.1), transparent 52%);
+  box-shadow:
+    inset 0 1px 0 var(--hairline-top),
+    0 1px 2px rgb(15 23 42 / 0.05),
+    0 20px 44px -30px rgb(15 23 42 / 0.34);
+}
+.dark .console-hero,
+.dark .app-panel-strong {
+  box-shadow:
+    inset 0 1px 0 var(--hairline-top),
+    0 1px 2px rgb(0 0 0 / 0.4),
+    0 24px 52px -28px rgb(0 0 0 / 0.6);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .metric-card {
     animation: none;
   }
 }
