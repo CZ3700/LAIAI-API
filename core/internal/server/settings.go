@@ -194,7 +194,12 @@ func (s *Server) adminSetSettings(c *gin.Context) {
 
 // getConfig：GET /api/config —— 公开运营配置（无需登录；前端门面/注册页用）。
 func (s *Server) getConfig(c *gin.Context) {
+	cny := s.getSetting("cny_per_usd")
+	if cny == "" {
+		cny = "7.3" // 与 settingDefaults 注释一致的回退（前端 ≈¥ 展示用）
+	}
 	c.JSON(http.StatusOK, gin.H{
+		"cny_per_usd":                cny, // 前端把 USD 金额换算 ≈¥ 展示（运营可在设置热配）
 		"site_name":                  s.getSetting("site_name"),
 		"register_enabled":           s.getBoolSetting("register_enabled"),
 		"email_verification_enabled": s.getBoolSetting("email_verification_enabled"),

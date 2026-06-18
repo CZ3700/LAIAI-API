@@ -13,7 +13,7 @@ interface UsageRow {
 }
 interface ModelStat { model: string }
 
-const { n } = useI18n()
+const { t, n } = useI18n()
 const model = ref('')
 const window = ref<'24h' | '7d' | '30d'>('24h')
 const search = ref('')
@@ -104,39 +104,39 @@ onMounted(load)
   <div class="app-page">
     <div class="app-page-header">
       <div>
-        <h1 class="app-page-title">响应与成功率</h1>
+        <h1 class="app-page-title">{{ t('lat.title') }}</h1>
       </div>
     </div>
 
     <div class="toolbar-panel items-end">
       <div class="filter-group min-w-[180px]">
-        <label>图表筛选</label>
+        <label>{{ t('lat.filterChart') }}</label>
         <select v-model="model" class="input">
-          <option value="">全部模型</option>
+          <option value="">{{ t('lat.allModels') }}</option>
           <option v-for="m in models" :key="m.model" :value="m.model">{{ m.model }}</option>
         </select>
       </div>
       <div class="filter-group min-w-[160px]">
-        <label>时间窗口</label>
+        <label>{{ t('lat.timeWindow') }}</label>
         <select v-model="window" class="input">
-          <option value="24h">最近 24 小时</option>
-          <option value="7d">最近 7 天</option>
-          <option value="30d">最近 30 天</option>
+          <option value="24h">{{ t('lat.window24h') }}</option>
+          <option value="7d">{{ t('lat.window7d') }}</option>
+          <option value="30d">{{ t('lat.window30d') }}</option>
         </select>
       </div>
     </div>
 
     <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-      <div class="metric-card"><p class="text-xs text-muted">P50 首 Token 延迟</p><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(pct(frts, 50)) }}</p></div>
-      <div class="metric-card"><p class="text-xs text-muted">P95 首 Token 延迟</p><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(pct(frts, 95)) }}</p></div>
-      <div class="metric-card"><p class="text-xs text-muted">P99 首 Token 延迟</p><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(pct(frts, 99)) }}</p></div>
-      <div class="metric-card"><p class="text-xs text-muted">成功率</p><p class="mt-2 font-mono text-2xl font-semibold">{{ visible.length ? (successRate * 100).toFixed(1) + '%' : '—' }}</p></div>
-      <div class="metric-card"><p class="text-xs text-muted">请求数</p><p class="mt-2 font-mono text-2xl font-semibold">{{ n(visible.length) }}<span class="text-sm text-muted"> reqs</span></p></div>
+      <div class="metric-card"><p class="text-xs text-muted">{{ t('lat.metricP50Frt') }}</p><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(pct(frts, 50)) }}</p></div>
+      <div class="metric-card"><p class="text-xs text-muted">{{ t('lat.metricP95Frt') }}</p><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(pct(frts, 95)) }}</p></div>
+      <div class="metric-card"><p class="text-xs text-muted">{{ t('lat.metricP99Frt') }}</p><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(pct(frts, 99)) }}</p></div>
+      <div class="metric-card"><p class="text-xs text-muted">{{ t('lat.metricSuccessRate') }}</p><p class="mt-2 font-mono text-2xl font-semibold">{{ visible.length ? (successRate * 100).toFixed(1) + '%' : '—' }}</p></div>
+      <div class="metric-card"><p class="text-xs text-muted">{{ t('lat.metricRequests') }}</p><p class="mt-2 font-mono text-2xl font-semibold">{{ n(visible.length) }}<span class="text-sm text-muted"> reqs</span></p></div>
     </div>
 
     <div class="grid gap-4 xl:grid-cols-3">
       <div class="app-panel p-5">
-        <h2 class="font-semibold">总延迟分布</h2>
+        <h2 class="font-semibold">{{ t('lat.chartTotalDist') }}</h2>
         <div class="mt-6 flex h-48 items-end gap-3">
           <div v-for="b in buckets" :key="b.label" class="flex flex-1 flex-col items-center gap-2">
             <div class="w-full rounded-t bg-accent/80" :style="{ height: `${(b.count / maxBucket) * 100}%`, minHeight: b.count ? '8px' : '0' }"></div>
@@ -145,37 +145,37 @@ onMounted(load)
         </div>
       </div>
       <div class="app-panel p-5">
-        <h2 class="font-semibold">成功率趋势</h2>
+        <h2 class="font-semibold">{{ t('lat.chartSuccessTrend') }}</h2>
         <div class="mt-16 text-center font-mono text-3xl font-semibold">{{ visible.length ? (successRate * 100).toFixed(1) + '%' : '—' }}</div>
       </div>
       <div class="app-panel p-5">
-        <h2 class="font-semibold">流式首 Token 延迟</h2>
+        <h2 class="font-semibold">{{ t('lat.chartStreamFrt') }}</h2>
         <div class="mt-16 text-center font-mono text-3xl font-semibold">{{ fmtMs(pct(frts, 50)) }}</div>
       </div>
     </div>
 
     <div class="space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-3">
-        <h2 class="font-semibold">按模型排行</h2>
+        <h2 class="font-semibold">{{ t('lat.byModelTitle') }}</h2>
         <div class="flex gap-2">
-          <input v-model="search" class="input max-w-xs" placeholder="搜索模型" />
-          <button class="btn-ghost shrink-0 whitespace-nowrap !py-2" type="button" @click="exportCsv">导出 CSV</button>
+          <input v-model="search" class="input max-w-xs" :placeholder="t('lat.searchModel')" />
+          <button class="btn-ghost shrink-0 whitespace-nowrap !py-2" type="button" @click="exportCsv">{{ t('lat.exportCsv') }}</button>
         </div>
       </div>
       <div class="data-table-wrap">
         <table class="table w-full text-sm whitespace-nowrap">
           <thead>
             <tr class="border-b border-line text-left text-muted">
-              <th class="px-4 py-3">模型</th>
+              <th class="px-4 py-3">{{ t('lat.colModel') }}</th>
               <th class="px-4 py-3 text-right">P50</th>
               <th class="px-4 py-3 text-right">P95</th>
               <th class="px-4 py-3 text-right">P99</th>
-              <th class="px-4 py-3 text-right">成功率</th>
-              <th class="px-4 py-3 text-right">请求数</th>
+              <th class="px-4 py-3 text-right">{{ t('lat.colSuccessRate') }}</th>
+              <th class="px-4 py-3 text-right">{{ t('lat.colRequests') }}</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="modelRows.length === 0"><td colspan="6" class="px-4 py-8 text-center text-muted">暂无模型数据</td></tr>
+            <tr v-if="modelRows.length === 0"><td colspan="6" class="px-4 py-8 text-center text-muted">{{ t('lat.emptyData') }}</td></tr>
             <tr v-for="r in modelRows" :key="r.model">
               <td class="px-4 py-2.5 font-mono text-xs">{{ r.model }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ fmtMs(r.p50) }}</td>

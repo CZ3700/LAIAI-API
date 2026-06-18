@@ -13,7 +13,7 @@ interface ModelStat {
 }
 interface KeyRow { id: number; name: string; prefix: string }
 
-const { n } = useI18n()
+const { t, n } = useI18n()
 const days = ref(7)
 const metric = ref<ChartMetric>('tokens')
 const grain = ref<'day' | 'hour'>('day')
@@ -68,58 +68,58 @@ onMounted(load)
   <div class="app-page">
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div>
-        <h1 class="app-page-title">Tokens 分析</h1>
+        <h1 class="app-page-title">{{ t('tokana.title') }}</h1>
       </div>
-      <button class="btn-primary" type="button" @click="profileNotice = '用户画像接口尚未接入；当前仅展示可由用量接口计算的聚合指标。'">用户画像</button>
+      <button class="btn-primary" type="button" @click="profileNotice = t('tokana.profileNotice')">{{ t('tokana.btnProfile') }}</button>
     </div>
 
     <p v-if="profileNotice" class="inline-success">{{ profileNotice }}</p>
 
     <div class="toolbar-panel items-end">
       <div class="filter-group min-w-[160px]">
-        <label>筛选密钥标签</label>
-        <input v-model="tag" class="input" placeholder="输入标签筛选..." />
+        <label>{{ t('tokana.filterTag') }}</label>
+        <input v-model="tag" class="input" :placeholder="t('tokana.filterTagPlaceholder')" />
       </div>
       <div class="filter-group min-w-[160px]">
-        <label>筛选密钥</label>
+        <label>{{ t('tokana.filterKey') }}</label>
         <select class="input">
-          <option>全部密钥</option>
+          <option>{{ t('tokana.allKeys') }}</option>
           <option v-for="k in keys" :key="k.id">{{ k.name || k.prefix }}</option>
         </select>
       </div>
       <div class="filter-group">
-        <label>时间范围</label>
+        <label>{{ t('tokana.timeRange') }}</label>
         <div class="segmented-control">
-          <button type="button" :class="{ active: days === 1 }" @click="days = 1; load()">今天</button>
-          <button type="button" :class="{ active: days === 7 }" @click="days = 7; load()">近 7 天</button>
-          <button type="button" :class="{ active: days === 31 }" @click="days = 31; load()">本月</button>
-          <button type="button" disabled>自定义</button>
+          <button type="button" :class="{ active: days === 1 }" @click="days = 1; load()">{{ t('tokana.rangeToday') }}</button>
+          <button type="button" :class="{ active: days === 7 }" @click="days = 7; load()">{{ t('tokana.range7d') }}</button>
+          <button type="button" :class="{ active: days === 31 }" @click="days = 31; load()">{{ t('tokana.rangeMonth') }}</button>
+          <button type="button" disabled>{{ t('tokana.rangeCustom') }}</button>
         </div>
       </div>
       <div class="filter-group min-w-[160px]">
-        <label>筛选x-user-id</label>
-        <input v-model="userId" class="input" placeholder="搜索用户ID..." />
+        <label>{{ t('tokana.filterUserId') }}</label>
+        <input v-model="userId" class="input" :placeholder="t('tokana.filterUserIdPlaceholder')" />
       </div>
       <div class="filter-group min-w-[160px]">
-        <label>筛选x-agent-name</label>
-        <input v-model="agent" class="input" placeholder="搜索Agent..." />
+        <label>{{ t('tokana.filterAgent') }}</label>
+        <input v-model="agent" class="input" :placeholder="t('tokana.filterAgentPlaceholder')" />
       </div>
-      <button class="btn-primary !min-h-0 !px-4 !py-2" type="button" @click="load">查 询</button>
+      <button class="btn-primary !min-h-0 !px-4 !py-2" type="button" @click="load">{{ t('tokana.btnQuery') }}</button>
     </div>
 
     <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <div class="metric-card"><p class="text-xs text-muted">Tokens 总量</p><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtTokens(totals.tokens) }}</p><p class="text-xs text-muted">所选范围内总输出</p></div>
-      <div class="metric-card"><p class="text-xs text-muted">预估费用</p><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMoney(totals.cost) }}</p><p class="text-xs text-muted">按系统计费标准折算</p></div>
-      <div class="metric-card"><p class="text-xs text-muted">请求总数</p><p class="mt-2 font-mono text-2xl font-semibold">{{ n(totals.calls) }}</p><p class="text-xs text-muted">所选范围内总请求</p></div>
-      <div class="metric-card"><p class="text-xs text-muted">平均 Tokens/请求</p><p class="mt-2 font-mono text-2xl font-semibold">{{ n(Math.round(totals.avg)) }}</p><p class="text-xs text-muted">单次请求均值</p></div>
+      <div class="metric-card"><p class="text-xs text-muted">{{ t('tokana.metricTokensTotal') }}</p><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtTokens(totals.tokens) }}</p><p class="text-xs text-muted">{{ t('tokana.metricTokensHint') }}</p></div>
+      <div class="metric-card"><p class="text-xs text-muted">{{ t('tokana.metricCost') }}</p><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMoney(totals.cost) }}</p><p class="text-xs text-muted">{{ t('tokana.metricCostHint') }}</p></div>
+      <div class="metric-card"><p class="text-xs text-muted">{{ t('tokana.metricCalls') }}</p><p class="mt-2 font-mono text-2xl font-semibold">{{ n(totals.calls) }}</p><p class="text-xs text-muted">{{ t('tokana.metricCallsHint') }}</p></div>
+      <div class="metric-card"><p class="text-xs text-muted">{{ t('tokana.metricAvg') }}</p><p class="mt-2 font-mono text-2xl font-semibold">{{ n(Math.round(totals.avg)) }}</p><p class="text-xs text-muted">{{ t('tokana.metricAvgHint') }}</p></div>
     </div>
 
     <div class="app-panel p-5">
       <div class="mb-4 flex items-center justify-between gap-3">
-        <h2 class="font-semibold">用量趋势</h2>
+        <h2 class="font-semibold">{{ t('tokana.usageTrend') }}</h2>
         <div class="flex gap-2">
-          <div class="segmented-control"><button :class="{ active: grain === 'day' }" @click="grain = 'day'">按天</button><button :class="{ active: grain === 'hour' }" @click="grain = 'hour'">按小时</button></div>
-          <div class="segmented-control"><button :class="{ active: metric === 'tokens' }" @click="metric = 'tokens'">Tokens</button><button :class="{ active: metric === 'cost' }" @click="metric = 'cost'">Credits</button><button :class="{ active: metric === 'calls' }" @click="metric = 'calls'">请求量</button></div>
+          <div class="segmented-control"><button :class="{ active: grain === 'day' }" @click="grain = 'day'">{{ t('tokana.grainDay') }}</button><button :class="{ active: grain === 'hour' }" @click="grain = 'hour'">{{ t('tokana.grainHour') }}</button></div>
+          <div class="segmented-control"><button :class="{ active: metric === 'tokens' }" @click="metric = 'tokens'">Tokens</button><button :class="{ active: metric === 'cost' }" @click="metric = 'cost'">Credits</button><button :class="{ active: metric === 'calls' }" @click="metric = 'calls'">{{ t('tokana.metricCallsLabel') }}</button></div>
         </div>
       </div>
       <DailyBarChart :items="summary" :days="days" :metric="metric" />
@@ -127,22 +127,22 @@ onMounted(load)
 
     <div class="grid gap-4 lg:grid-cols-2">
       <div class="app-panel p-5">
-        <h2 class="font-semibold">标签用量排行</h2>
-        <p class="mt-2 text-xs text-muted">排名范围：当前所选时间与筛选</p>
+        <h2 class="font-semibold">{{ t('tokana.tagRanking') }}</h2>
+        <p class="mt-2 text-xs text-muted">{{ t('tokana.rankingScope') }}</p>
         <div class="mt-4 flex items-center justify-between text-sm">
-          <span>未分类密钥</span>
+          <span>{{ t('tokana.uncategorizedKeys') }}</span>
           <span class="font-mono">{{ fmtTokens(totals.tokens) }}</span>
         </div>
       </div>
       <div class="app-panel p-5">
-        <h2 class="font-semibold">密钥用量排行</h2>
-        <p class="mt-2 text-xs text-muted">排名范围：当前所选时间与筛选</p>
+        <h2 class="font-semibold">{{ t('tokana.keyRanking') }}</h2>
+        <p class="mt-2 text-xs text-muted">{{ t('tokana.rankingScope') }}</p>
         <div class="mt-4 space-y-2">
           <div v-for="k in keys" :key="k.id" class="flex items-center justify-between text-sm">
             <span>{{ k.name || k.prefix }}</span>
             <span class="font-mono text-muted">—</span>
           </div>
-          <p v-if="keys.length === 0" class="text-sm text-muted">暂无密钥数据</p>
+          <p v-if="keys.length === 0" class="text-sm text-muted">{{ t('tokana.emptyKeys') }}</p>
         </div>
       </div>
     </div>

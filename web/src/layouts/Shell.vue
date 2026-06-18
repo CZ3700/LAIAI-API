@@ -31,32 +31,28 @@ const icons = {
 
 type NavItem = { to: string; label: string; icon: keyof typeof icons; admin?: boolean }
 const sections: { title: string; items: NavItem[] }[] = [
-  { title: '工作台', items: [
-    { to: '/app', label: '概览', icon: 'dashboard' },
-    { to: '/app/models', label: '模型列表', icon: 'model' },
-    { to: '/app/docs', label: '使用文档', icon: 'docs' },
+  { title: 'shell.groupWorkspace', items: [
+    { to: '/app', label: 'shell.navOverview', icon: 'dashboard' },
+    { to: '/app/models', label: 'shell.navModels', icon: 'model' },
   ] },
-  { title: '访问与控制', items: [
-    { to: '/app/keys', label: 'API 密钥', icon: 'key' },
-    { to: '/app/team', label: '团队成员', icon: 'team' },
+  { title: 'shell.groupAccess', items: [
+    { to: '/app/keys', label: 'shell.navKeys', icon: 'key' },
+    { to: '/app/team', label: 'shell.navTeam', icon: 'team' },
   ] },
-  { title: '用量与成本', items: [
-    { to: '/app/usage', label: '用量分析', icon: 'dashboard' },
-    { to: '/app/billing', label: '账单与余额', icon: 'wallet' },
-    { to: '/app/recharges', label: '充值记录', icon: 'wallet' },
-    { to: '/app/invoices', label: '开票管理', icon: 'invoice' },
+  { title: 'shell.groupUsage', items: [
+    { to: '/app/usage', label: 'shell.navUsage', icon: 'dashboard' },
+    { to: '/app/billing', label: 'shell.navBilling', icon: 'wallet' },
+    { to: '/app/recharges', label: 'shell.navRecharges', icon: 'wallet' },
   ] },
-  { title: '请求日志', items: [
-    { to: '/app/request-logs', label: '文本模型', icon: 'log' },
-    { to: '/app/image-logs', label: '图像模型', icon: 'image' },
+  { title: 'shell.groupObservability', items: [
+    { to: '/app/request-logs', label: 'shell.navRequestLogs', icon: 'log' },
+    { to: '/app/image-logs', label: 'shell.navImageLogs', icon: 'image' },
+    { to: '/app/token-analysis', label: 'shell.navTokenAnalysis', icon: 'node' },
+    { to: '/app/latency', label: 'shell.navLatency', icon: 'clock' },
   ] },
-  { title: '可观测性', items: [
-    { to: '/app/token-analysis', label: 'Tokens分析', icon: 'node' },
-    { to: '/app/latency', label: '响应与成功率', icon: 'clock' },
-  ] },
-  { title: '系统', items: [
-    { to: '/app/settings', label: '账户设置', icon: 'team' },
-    { to: '/app/admin', label: '管理后台', icon: 'admin', admin: true },
+  { title: 'shell.groupSystem', items: [
+    { to: '/app/settings', label: 'shell.navSettings', icon: 'team' },
+    { to: '/app/admin', label: 'shell.navAdmin', icon: 'admin', admin: true },
   ] },
 ]
 
@@ -69,7 +65,7 @@ const currentTitle = computed(() => {
     if (item.to === '/app') return route.path === '/app'
     return route.path.startsWith(item.to)
   })
-  return found?.label ?? t('nav.console')
+  return found ? t(found.label) : t('nav.console')
 })
 
 const accountLabel = computed(() => (auth.email || 'Laiai').split('@')[0])
@@ -95,15 +91,11 @@ onMounted(() => { void auth.fetchMe() })
     >
       <router-link to="/" class="flex items-center gap-2.5 px-4 py-4 transition-opacity hover:opacity-85">
         <BrandMark :size="collapsed ? 'sm' : 'md'" />
-        <span v-if="!collapsed" class="min-w-0">
-          <span class="block truncate font-semibold leading-tight">连连智枢</span>
-          <span class="block text-[11px] leading-tight text-muted">v1.0.29</span>
-        </span>
       </router-link>
 
       <nav class="flex-1 overflow-y-auto px-2 pb-4">
         <div v-for="sec in visibleSections" :key="sec.title" class="mb-4">
-          <p v-if="!collapsed" class="px-3 pb-1.5 pt-1 text-xs text-muted">{{ sec.title }}</p>
+          <p v-if="!collapsed" class="px-3 pb-1.5 pt-1 text-xs text-muted">{{ t(sec.title) }}</p>
           <div class="space-y-1">
             <router-link
               v-for="item in sec.items"
@@ -112,12 +104,12 @@ onMounted(() => { void auth.fetchMe() })
               class="app-nav-item group relative flex items-center gap-3 rounded px-3 py-2 text-sm text-muted transition-colors hover:bg-elev/80 hover:text-ink"
               :active-class="item.to === '/app' ? '' : ACTIVE"
               :exact-active-class="ACTIVE"
-              :title="item.label"
+              :title="t(item.label)"
             >
               <svg class="h-[18px] w-[18px] shrink-0 opacity-70 transition-opacity group-hover:opacity-100" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path :d="icons[item.icon]" />
               </svg>
-              <span v-if="!collapsed" class="truncate">{{ item.label }}</span>
+              <span v-if="!collapsed" class="truncate">{{ t(item.label) }}</span>
             </router-link>
           </div>
         </div>
@@ -132,15 +124,15 @@ onMounted(() => { void auth.fetchMe() })
 
     <main class="app-main min-w-0 flex-1">
       <div class="sticky top-0 z-30 hidden h-14 items-center gap-3 border-b border-line bg-bg/92 px-6 backdrop-blur lg:flex">
-        <button class="btn-ghost !h-8 !min-h-0 !w-8 !px-0 !py-0" type="button" :aria-label="collapsed ? '展开侧栏' : '收起侧栏'" @click="collapsed = !collapsed">
+        <button class="btn-ghost !h-8 !min-h-0 !w-8 !px-0 !py-0" type="button" :aria-label="collapsed ? t('shell.ariaExpandSidebar') : t('shell.ariaCollapseSidebar')" @click="collapsed = !collapsed">
           <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
             <path d="M4 7h16M4 12h16M4 17h16" />
           </svg>
         </button>
         <h1 class="text-base font-semibold">{{ currentTitle }}</h1>
         <div class="ml-auto flex items-center gap-2">
-          <router-link to="/app/recharges" class="btn-primary !min-h-0 !px-3 !py-1.5 text-xs">充值</router-link>
-          <router-link to="/app/billing" class="btn-ghost !min-h-0 !px-3 !py-1.5 text-xs">余额</router-link>
+          <router-link to="/app/recharges" class="btn-primary !min-h-0 !px-3 !py-1.5 text-xs">{{ t('shell.btnRecharge') }}</router-link>
+          <router-link to="/app/billing" class="btn-ghost !min-h-0 !px-3 !py-1.5 text-xs">{{ t('shell.btnBalance') }}</router-link>
           <ThemeLocale />
           <router-link to="/app/settings" class="btn-ghost !min-h-0 !px-3 !py-1.5 text-xs">
             {{ accountLabel }}
@@ -149,7 +141,7 @@ onMounted(() => { void auth.fetchMe() })
       </div>
 
       <div class="mx-auto w-full max-w-[1480px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
-        <nav class="mb-5 flex min-w-0 max-w-full gap-2 overflow-x-auto pb-1 lg:hidden" aria-label="Mobile navigation">
+        <nav class="mb-5 flex min-w-0 max-w-full gap-2 overflow-x-auto pb-1 lg:hidden" :aria-label="t('shell.ariaMobileNav')">
           <template v-for="sec in visibleSections" :key="sec.title">
             <router-link
               v-for="item in sec.items"
@@ -159,7 +151,7 @@ onMounted(() => { void auth.fetchMe() })
               :active-class="item.to === '/app' ? '' : ACTIVE"
               :exact-active-class="ACTIVE"
             >
-              {{ item.label }}
+              {{ t(item.label) }}
             </router-link>
           </template>
         </nav>

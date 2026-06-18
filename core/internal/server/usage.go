@@ -130,6 +130,43 @@ func (s *Server) getUsageByModel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"days": days, "items": rows})
 }
 
+// getUsageByKey：GET /api/usage/by-key?days=N —— 当前 org 近 N 天按 API Key 聚合
+// （调用数/输入输出 token/费用），仪表盘"密钥排行榜"用。LEFT JOIN api_keys 取名字（已删除的 key
+// 名为空，前端回退 #id 展示）。org_id 过滤保证只见本组织 key。
+func (s *Server) getUsageByKey(c *gin.Context) {
+	claims := mustClaims(c)
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+	if days < 1 || days > 90 {
+		days = 30
+	}
+	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
+	var rows []struct {
+		APIKeyID         uint64          `json:"api_key_id"`
+		Name             string          `json:"name"`
+		Calls            int64           `json:"calls"`
+		PromptTokens     int64           `json:"prompt_tokens"`
+		CompletionTokens int64           `json:"completion_tokens"`
+		CostUSD          decimal.Decimal `json:"cost_usd"`
+	}
+	err := s.readOnly().WithContext(c.Request.Context()).Raw(`
+		SELECT i.api_key_id AS api_key_id,
+		       COALESCE(MAX(k.name), '') AS name,
+		       COUNT(*) AS calls,
+		       COALESCE(SUM(i.prompt_tokens), 0) AS prompt_tokens,
+		       COALESCE(SUM(i.completion_tokens), 0) AS completion_tokens,
+		       COALESCE(SUM(i.cost_usd), 0) AS cost_usd
+		FROM invocations i
+		LEFT JOIN api_keys k ON k.id = i.api_key_id
+		WHERE i.org_id = ? AND i.created_at >= ?
+		GROUP BY i.api_key_id
+		ORDER BY calls DESC`, claims.OrgID, since).Scan(&rows).Error
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "by-key query failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"days": days, "items": rows})
+}
+
 // getUsageSummary：GET /api/usage/summary?days=N —— 当前 org 近 N 天按日聚合
 // （调用数/成功数/token/费用），供 Console 仪表盘图表。DATE() 在 MySQL 与 SQLite 同义。
 func (s *Server) getUsageSummary(c *gin.Context) {

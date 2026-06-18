@@ -19,9 +19,9 @@ interface KeyRow {
   status: number
 }
 
-const { n } = useI18n()
+const { t, n } = useI18n()
 const range = ref<7 | 30 | 31 | 60>(30)
-const rangeLabel = ref('30 天')
+const rangeLabel = ref('30d')
 const granularity = ref<'hour' | 'day' | 'month'>('day')
 const metric = ref<ChartMetric>('tokens')
 const modelFilter = ref('')
@@ -35,16 +35,16 @@ const sortKey = ref<'model' | 'calls' | 'input' | 'output' | 'tokens' | 'cost'>(
 const sortDir = ref<'asc' | 'desc'>('desc')
 
 const rangeOptions = [
-  { label: '7 天', days: 7 as const },
-  { label: '30 天', days: 30 as const },
-  { label: '31 天', days: 31 as const },
-  { label: '60 天', days: 60 as const },
+  { label: '7d', days: 7 as const },
+  { label: '30d', days: 30 as const },
+  { label: '31d', days: 31 as const },
+  { label: '60d', days: 60 as const },
 ]
-const metricOptions: { key: ChartMetric; label: string }[] = [
+const metricOptions = computed<{ key: ChartMetric; label: string }[]>(() => [
   { key: 'tokens', label: 'Tokens' },
   { key: 'cost', label: 'Credits' },
-  { key: 'calls', label: '请求量' },
-]
+  { key: 'calls', label: t('usagex.metricCalls') },
+])
 
 function num(v: string | number): number {
   const out = Number(v)
@@ -94,7 +94,7 @@ const totals = computed(() => {
 })
 const maxModelTokens = computed(() => Math.max(1, ...filteredModels.value.map((m) => m.prompt_tokens + m.completion_tokens)))
 const keyRows = computed(() => {
-  return [{ name: '全部密钥', calls: totals.value.calls, input: totals.value.input, output: totals.value.output, cost: totals.value.cost }]
+  return [{ name: t('usagex.allKeys'), calls: totals.value.calls, input: totals.value.input, output: totals.value.output, cost: totals.value.cost }]
 })
 
 async function load() {
@@ -109,7 +109,7 @@ async function load() {
   if (models.status === 'fulfilled') byModel.value = models.value.items
   if (keyRowsResult.status === 'fulfilled') keys.value = keyRowsResult.value.keys
   const failed = [sum, models].find((r) => r.status === 'rejected')
-  if (failed?.status === 'rejected') error.value = errorMessage(failed.reason, '加载失败')
+  if (failed?.status === 'rejected') error.value = errorMessage(failed.reason, t('usagex.loadFailed'))
   loading.value = false
 }
 
@@ -121,52 +121,52 @@ onMounted(load)
   <div class="app-page">
     <div class="app-page-header">
       <div>
-        <h1 class="app-page-title">用量分析</h1>
+        <h1 class="app-page-title">{{ t('usagex.title') }}</h1>
       </div>
     </div>
 
     <div class="toolbar-panel items-end">
       <div class="filter-group">
-        <label>时间范围</label>
+        <label>{{ t('usagex.filterRange') }}</label>
         <div class="segmented-control">
           <button v-for="r in rangeOptions" :key="r.label" type="button" :class="{ active: rangeLabel === r.label }" @click="setRange(r.label, r.days)">{{ r.label }}</button>
         </div>
       </div>
       <div class="filter-group">
-        <label>粒度</label>
+        <label>{{ t('usagex.filterGranularity') }}</label>
         <div class="segmented-control">
-          <button type="button" disabled :class="{ active: granularity === 'hour' }" @click="granularity = 'hour'">按小时</button>
-          <button type="button" :class="{ active: granularity === 'day' }" @click="granularity = 'day'">按天</button>
-          <button type="button" disabled :class="{ active: granularity === 'month' }" @click="granularity = 'month'">按月</button>
+          <button type="button" disabled :class="{ active: granularity === 'hour' }" @click="granularity = 'hour'">{{ t('usagex.granHour') }}</button>
+          <button type="button" :class="{ active: granularity === 'day' }" @click="granularity = 'day'">{{ t('usagex.granDay') }}</button>
+          <button type="button" disabled :class="{ active: granularity === 'month' }" @click="granularity = 'month'">{{ t('usagex.granMonth') }}</button>
         </div>
       </div>
       <div class="filter-group min-w-[180px]">
-        <label>模型</label>
+        <label>{{ t('usagex.filterModel') }}</label>
         <select v-model="modelFilter" class="input">
-          <option value="">全部模型 ({{ byModel.length }})</option>
+          <option value="">{{ t('usagex.allModels', { n: byModel.length }) }}</option>
           <option v-for="m in byModel" :key="m.model" :value="m.model">{{ m.model }}</option>
         </select>
       </div>
       <div class="filter-group min-w-[180px]">
-        <label>密钥（待接口）</label>
+        <label>{{ t('usagex.filterKey') }}</label>
         <select class="input" disabled>
-          <option value="">全部密钥</option>
+          <option value="">{{ t('usagex.allKeys') }}</option>
           <option v-for="k in keys" :key="k.id" :value="String(k.id)">{{ k.name || k.prefix }}</option>
         </select>
       </div>
     </div>
 
-    <p class="text-xs text-muted">时间范围会重新请求后端聚合接口；当前后端暂不返回按小时、按月或按密钥聚合，相关控件保留为后续接入位。</p>
+    <p class="text-xs text-muted">{{ t('usagex.toolbarHint') }}</p>
 
     <p v-if="error" class="inline-alert" role="alert">{{ error }}</p>
 
     <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
       <div class="metric-card">
-        <p class="text-xs text-muted">Tokens 总量</p>
+        <p class="text-xs text-muted">{{ t('usagex.metricTotalTokens') }}</p>
         <p class="mt-2 font-mono text-2xl font-semibold">{{ loading ? '—' : fmtTokens(totals.tokens) }}</p>
       </div>
       <div class="metric-card">
-        <p class="text-xs text-muted">输入 / 输出</p>
+        <p class="text-xs text-muted">{{ t('usagex.metricInputOutput') }}</p>
         <p class="mt-2 flex flex-wrap items-baseline gap-x-1.5 font-mono text-xl font-semibold">
           <span>{{ fmtTokens(totals.input) }}</span>
           <span class="text-sm text-muted">/</span>
@@ -174,15 +174,15 @@ onMounted(load)
         </p>
       </div>
       <div class="metric-card">
-        <p class="text-xs text-muted">请求总量</p>
+        <p class="text-xs text-muted">{{ t('usagex.metricTotalCalls') }}</p>
         <p class="mt-2 font-mono text-2xl font-semibold">{{ n(totals.calls) }}</p>
       </div>
       <div class="metric-card">
-        <p class="text-xs text-muted">预估费用</p>
+        <p class="text-xs text-muted">{{ t('usagex.metricEstCost') }}</p>
         <p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMoney(totals.cost) }}</p>
       </div>
       <div class="metric-card">
-        <p class="text-xs text-muted">输入/输出占比</p>
+        <p class="text-xs text-muted">{{ t('usagex.metricIoRatio') }}</p>
         <p class="mt-2 font-mono text-lg font-semibold">
           {{ totals.tokens ? ((totals.input / totals.tokens) * 100).toFixed(1) : '0.0' }}% / {{ totals.tokens ? ((totals.output / totals.tokens) * 100).toFixed(1) : '0.0' }}%
         </p>
@@ -192,7 +192,7 @@ onMounted(load)
     <div class="grid gap-4 xl:grid-cols-[1fr_0.72fr]">
       <div class="app-panel p-5">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 class="font-semibold">{{ granularity === 'hour' ? '按小时' : granularity === 'month' ? '按月' : '按天' }} {{ metric === 'tokens' ? 'Tokens' : metric === 'cost' ? 'Credits' : '请求量' }} 趋势</h2>
+          <h2 class="font-semibold">{{ t('usagex.trendTitle', { period: granularity === 'hour' ? t('usagex.granHour') : granularity === 'month' ? t('usagex.granMonth') : t('usagex.granDay'), metric: metric === 'tokens' ? 'Tokens' : metric === 'cost' ? 'Credits' : t('usagex.metricCalls') }) }}</h2>
           <div class="segmented-control">
             <button v-for="m in metricOptions" :key="m.key" type="button" :class="{ active: metric === m.key }" @click="metric = m.key">{{ m.label }}</button>
           </div>
@@ -201,7 +201,7 @@ onMounted(load)
       </div>
 
       <div class="app-panel p-5">
-        <h2 class="font-semibold">模型用量占比（按 Tokens）</h2>
+        <h2 class="font-semibold">{{ t('usagex.modelShareTitle') }}</h2>
         <div class="mt-4 space-y-3">
           <div v-for="m in filteredModels.slice(0, 8)" :key="m.model" class="flex items-center gap-3">
             <span class="w-36 truncate font-mono text-xs" :title="m.model">{{ m.model }}</span>
@@ -210,34 +210,34 @@ onMounted(load)
             </div>
             <span class="w-16 text-right font-mono text-xs text-muted">{{ fmtTokens(m.prompt_tokens + m.completion_tokens) }}</span>
           </div>
-          <p v-if="filteredModels.length === 0" class="empty-state">暂无数据</p>
+          <p v-if="filteredModels.length === 0" class="empty-state">{{ t('usagex.emptyData') }}</p>
         </div>
       </div>
     </div>
 
     <div class="app-panel p-5">
       <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 class="font-semibold">按模型</h2>
-        <input v-model="modelSearch" class="input max-w-xs" placeholder="搜索模型名称..." />
+        <h2 class="font-semibold">{{ t('usagex.byModelTitle') }}</h2>
+        <input v-model="modelSearch" class="input max-w-xs" :placeholder="t('usagex.searchModelPlaceholder')" />
       </div>
       <div class="data-table-wrap">
         <table class="table w-full text-sm whitespace-nowrap">
           <thead>
             <tr class="border-b border-line text-left text-muted">
-              <th class="px-4 py-3"><button class="table-sort" @click="setSort('model')">模型 ↕</button></th>
-              <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('calls')">请求数 ↕</button></th>
-              <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('input')">输入 Tokens ↕</button></th>
-              <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('output')">输出 Tokens ↕</button></th>
-              <th class="px-4 py-3 text-right">推理 Tokens</th>
-              <th class="px-4 py-3 text-right">缓存命中 Tokens</th>
-              <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('tokens')">Tokens 合计 {{ sortKey === 'tokens' ? (sortDir === 'desc' ? '↓' : '↑') : '↕' }}</button></th>
+              <th class="px-4 py-3"><button class="table-sort" @click="setSort('model')">{{ t('usagex.colModel') }} ↕</button></th>
+              <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('calls')">{{ t('usagex.colCalls') }} ↕</button></th>
+              <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('input')">{{ t('usagex.colInputTokens') }} ↕</button></th>
+              <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('output')">{{ t('usagex.colOutputTokens') }} ↕</button></th>
+              <th class="px-4 py-3 text-right">{{ t('usagex.colReasoningTokens') }}</th>
+              <th class="px-4 py-3 text-right">{{ t('usagex.colCacheTokens') }}</th>
+              <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('tokens')">{{ t('usagex.colTotalTokens') }} {{ sortKey === 'tokens' ? (sortDir === 'desc' ? '↓' : '↑') : '↕' }}</button></th>
               <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('cost')">Credits ↕</button></th>
-              <th class="px-4 py-3 text-right">费用</th>
+              <th class="px-4 py-3 text-right">{{ t('usagex.colCost') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="filteredModels.length === 0">
-              <td colspan="9" class="px-4 py-8 text-center text-muted">暂无数据</td>
+              <td colspan="9" class="px-4 py-8 text-center text-muted">{{ t('usagex.emptyData') }}</td>
             </tr>
             <tr v-for="m in filteredModels" :key="m.model">
               <td class="px-4 py-2.5 font-mono text-xs">{{ m.model }}</td>
@@ -256,20 +256,20 @@ onMounted(load)
     </div>
 
     <div class="app-panel p-5">
-      <h2 class="mb-4 font-semibold">按密钥</h2>
+      <h2 class="mb-4 font-semibold">{{ t('usagex.byKeyTitle') }}</h2>
       <div class="data-table-wrap">
         <table class="table w-full text-sm whitespace-nowrap">
           <thead>
             <tr class="border-b border-line text-left text-muted">
-              <th class="px-4 py-3">密钥 ↕</th>
-              <th class="px-4 py-3 text-right">请求数 ↕</th>
-              <th class="px-4 py-3 text-right">输入 Tokens ↕</th>
-              <th class="px-4 py-3 text-right">输出 Tokens ↕</th>
-              <th class="px-4 py-3 text-right">推理 Tokens ↕</th>
-              <th class="px-4 py-3 text-right">缓存命中 Tokens ↕</th>
-              <th class="px-4 py-3 text-right">Tokens 合计 ↓</th>
+              <th class="px-4 py-3">{{ t('usagex.colKey') }} ↕</th>
+              <th class="px-4 py-3 text-right">{{ t('usagex.colCalls') }} ↕</th>
+              <th class="px-4 py-3 text-right">{{ t('usagex.colInputTokens') }} ↕</th>
+              <th class="px-4 py-3 text-right">{{ t('usagex.colOutputTokens') }} ↕</th>
+              <th class="px-4 py-3 text-right">{{ t('usagex.colReasoningTokens') }} ↕</th>
+              <th class="px-4 py-3 text-right">{{ t('usagex.colCacheTokens') }} ↕</th>
+              <th class="px-4 py-3 text-right">{{ t('usagex.colTotalTokens') }} ↓</th>
               <th class="px-4 py-3 text-right">Credits ↕</th>
-              <th class="px-4 py-3 text-right">费用</th>
+              <th class="px-4 py-3 text-right">{{ t('usagex.colCost') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -287,7 +287,7 @@ onMounted(load)
           </tbody>
         </table>
       </div>
-      <p class="mt-3 text-xs text-muted">用户侧用量接口暂不暴露每条请求的 API key 归属；密钥表保留参考站结构，待后端开放后可直接填充。</p>
+      <p class="mt-3 text-xs text-muted">{{ t('usagex.byKeyHint') }}</p>
     </div>
   </div>
 </template>

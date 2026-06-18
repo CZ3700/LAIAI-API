@@ -169,6 +169,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/usage/export", s.getUsageExport) // 调用明细 CSV 自助导出（Latency/Usage 页）
 				org.GET("/usage/summary", s.getUsageSummary)
 				org.GET("/usage/by-model", s.getUsageByModel)
+				org.GET("/usage/by-key", s.getUsageByKey) // 仪表盘密钥排行榜
 				org.GET("/usage/by-model-daily", s.getUsageByModelDaily)
 				org.GET("/usage/perf", s.getUsagePerf)
 				org.GET("/balance", s.getBalance)

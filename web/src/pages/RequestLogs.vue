@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
+import { toCredits, ensureFx } from '@/lib/money'
 
 interface UsageRow {
   id: number
@@ -22,7 +23,7 @@ interface UsageRow {
 interface ModelStat { model: string }
 interface KeyRow { id: number; name: string; prefix: string }
 
-const { n, d } = useI18n()
+const { t, n, d } = useI18n()
 const rows = ref<UsageRow[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -39,15 +40,12 @@ const models = ref<ModelStat[]>([])
 const keys = ref<KeyRow[]>([])
 const selected = ref<UsageRow | null>(null)
 
-function num(v: string | number): number {
-  const out = Number(v)
-  return Number.isFinite(out) ? out : 0
-}
-function fmtMoney(v: number): string {
-  return `$${v.toFixed(v >= 1 ? 2 : 4)}`
+function statusText(r: UsageRow): string {
+  if (r.status === 'success') return `${r.status_code || 200} OK`
+  return r.status_code ? String(r.status_code) : r.status
 }
 function fmtMs(v: number): string {
-  return v >= 1000 ? `${(v / 1000).toFixed(3)} 秒` : `${v}ms`
+  return v >= 1000 ? `${(v / 1000).toFixed(3)} ${t('reqlog.unitSec')}` : `${v}ms`
 }
 function rangeMatches(row: UsageRow): boolean {
   if (range.value === '30d') return true
@@ -99,7 +97,7 @@ async function load() {
     rows.value = r.items
     total.value = r.total
   } catch (e) {
-    error.value = errorMessage(e, '加载失败')
+    error.value = errorMessage(e, t('reqlog.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -111,6 +109,7 @@ watch([model, result], () => {
 })
 watch(page, () => void load())
 onMounted(() => {
+  void ensureFx()
   void loadMeta()
   void load()
 })
@@ -120,80 +119,80 @@ onMounted(() => {
   <div class="app-page">
     <div class="app-page-header">
       <div>
-        <h1 class="app-page-title">请求日志</h1>
+        <h1 class="app-page-title">{{ t('reqlog.title') }}</h1>
       </div>
     </div>
 
     <div class="toolbar-panel items-end">
       <div class="filter-group">
-        <label>时间范围</label>
+        <label>{{ t('reqlog.filterTimeRange') }}</label>
         <div class="segmented-control">
-          <button type="button" :class="{ active: range === '7d' }" @click="range = '7d'">7 天</button>
-          <button type="button" :class="{ active: range === '30d' }" @click="range = '30d'">30 天</button>
-          <button type="button" :class="{ active: range === 'month' }" @click="range = 'month'">本月</button>
-          <button type="button" :class="{ active: range === 'prev' }" @click="range = 'prev'">上月</button>
-          <button type="button" :class="{ active: range === 'custom' }" @click="range = 'custom'">自定义</button>
+          <button type="button" :class="{ active: range === '7d' }" @click="range = '7d'">{{ t('reqlog.range7d') }}</button>
+          <button type="button" :class="{ active: range === '30d' }" @click="range = '30d'">{{ t('reqlog.range30d') }}</button>
+          <button type="button" :class="{ active: range === 'month' }" @click="range = 'month'">{{ t('reqlog.rangeMonth') }}</button>
+          <button type="button" :class="{ active: range === 'prev' }" @click="range = 'prev'">{{ t('reqlog.rangePrev') }}</button>
+          <button type="button" :class="{ active: range === 'custom' }" @click="range = 'custom'">{{ t('reqlog.rangeCustom') }}</button>
         </div>
       </div>
       <div v-if="range === 'custom'" class="filter-group min-w-[260px]">
-        <label>自定义日期</label>
+        <label>{{ t('reqlog.customDate') }}</label>
         <div class="grid grid-cols-2 gap-2">
-          <input v-model="customStart" class="input" type="date" placeholder="开始日期" />
-          <input v-model="customEnd" class="input" type="date" placeholder="结束日期" />
+          <input v-model="customStart" class="input" type="date" :placeholder="t('reqlog.startDate')" />
+          <input v-model="customEnd" class="input" type="date" :placeholder="t('reqlog.endDate')" />
         </div>
       </div>
       <div class="filter-group min-w-[180px]">
-        <label>模型</label>
+        <label>{{ t('reqlog.filterModel') }}</label>
         <select v-model="model" class="input">
-          <option value="">全部模型</option>
+          <option value="">{{ t('reqlog.allModels') }}</option>
           <option v-for="m in models" :key="m.model" :value="m.model">{{ m.model }}</option>
         </select>
       </div>
       <div class="filter-group min-w-[180px]">
-        <label>API 密钥（待接口）</label>
+        <label>{{ t('reqlog.filterApiKey') }}</label>
         <select class="input" disabled>
-          <option value="">全部密钥</option>
+          <option value="">{{ t('reqlog.allKeys') }}</option>
           <option v-for="k in keys" :key="k.id" :value="String(k.id)">{{ k.name || k.prefix }}</option>
         </select>
       </div>
       <div class="filter-group min-w-[180px]">
-        <label>请求 ID</label>
-        <input v-model="requestId" class="input" placeholder="输入请求 ID" />
+        <label>{{ t('reqlog.filterRequestId') }}</label>
+        <input v-model="requestId" class="input" :placeholder="t('reqlog.requestIdPlaceholder')" />
       </div>
       <div class="filter-group">
-        <label>结果</label>
+        <label>{{ t('reqlog.filterResult') }}</label>
         <div class="segmented-control">
-          <button type="button" :class="{ active: result === 'all' }" @click="result = 'all'">全部</button>
-          <button type="button" :class="{ active: result === 'success' }" @click="result = 'success'">成功</button>
-          <button type="button" :class="{ active: result === 'failed' }" @click="result = 'failed'">失败</button>
+          <button type="button" :class="{ active: result === 'all' }" @click="result = 'all'">{{ t('reqlog.resultAll') }}</button>
+          <button type="button" :class="{ active: result === 'success' }" @click="result = 'success'">{{ t('reqlog.resultSuccess') }}</button>
+          <button type="button" :class="{ active: result === 'failed' }" @click="result = 'failed'">{{ t('reqlog.resultFailed') }}</button>
         </div>
       </div>
-      <button class="btn-primary !min-h-0 !px-4 !py-2" type="button" @click="load">查 询</button>
+      <button class="btn-primary !min-h-0 !px-4 !py-2" type="button" @click="load">{{ t('reqlog.btnQuery') }}</button>
     </div>
 
-    <p class="text-xs text-muted">模型和成功状态会请求后端；时间范围、请求 ID 是当前页本地筛选；API 密钥维度待后端返回 request-key 归属后启用。</p>
+    <p class="text-xs text-muted">{{ t('reqlog.localFilterNote') }}</p>
 
     <p v-if="error" class="inline-alert" role="alert">{{ error }}</p>
-    <p v-if="loading" class="text-sm text-muted">加载中…</p>
+    <p v-if="loading" class="text-sm text-muted">{{ t('reqlog.loading') }}</p>
 
     <div v-else class="data-table-wrap">
       <table class="table w-full text-sm whitespace-nowrap">
         <thead>
           <tr class="border-b border-line text-left text-muted">
-            <th class="px-4 py-3">请求 ID</th>
-            <th class="px-4 py-3">时间</th>
-            <th class="px-4 py-3">模型</th>
-            <th class="px-4 py-3">协议</th>
-            <th class="px-4 py-3 text-right">Token 数</th>
-            <th class="px-4 py-3 text-right">消耗</th>
-            <th class="px-4 py-3 text-right">延迟</th>
-            <th class="px-4 py-3">状态</th>
-            <th class="sticky right-0 z-10 bg-panel px-4 py-3 text-right">操作</th>
+            <th class="px-4 py-3">{{ t('reqlog.colRequestId') }}</th>
+            <th class="px-4 py-3">{{ t('reqlog.colTime') }}</th>
+            <th class="px-4 py-3">{{ t('reqlog.colModel') }}</th>
+            <th class="px-4 py-3">{{ t('reqlog.colProtocol') }}</th>
+            <th class="px-4 py-3 text-right">{{ t('reqlog.colTokens') }}</th>
+            <th class="px-4 py-3 text-right">{{ t('reqlog.colCost') }}</th>
+            <th class="px-4 py-3 text-right">{{ t('reqlog.colLatency') }}</th>
+            <th class="px-4 py-3">{{ t('reqlog.colStatus') }}</th>
+            <th class="sticky right-0 z-10 bg-panel px-4 py-3 text-right">{{ t('reqlog.colActions') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="visibleRows.length === 0">
-            <td colspan="9" class="px-4 py-8 text-center text-muted">暂无数据</td>
+            <td colspan="9" class="px-4 py-8 text-center text-muted">{{ t('reqlog.emptyData') }}</td>
           </tr>
           <tr v-for="r in visibleRows" :key="r.id">
             <td class="max-w-[17rem] truncate px-4 py-2.5 font-mono text-xs" :title="r.request_id">{{ r.request_id }}</td>
@@ -201,10 +200,10 @@ onMounted(() => {
             <td class="px-4 py-2.5 font-mono text-xs">{{ r.model }}</td>
             <td class="px-4 py-2.5"><span class="badge-muted">OpenAI</span></td>
             <td class="px-4 py-2.5 text-right font-mono">{{ n(r.prompt_tokens + r.completion_tokens) }}</td>
-            <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(num(r.cost_usd)) }}</td>
+            <td class="px-4 py-2.5 text-right font-mono">{{ n(toCredits(r.cost_usd)) }}</td>
             <td class="px-4 py-2.5 text-right font-mono">{{ r.duration_ms }}ms</td>
-            <td class="px-4 py-2.5"><span :class="r.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ r.status_code || r.status }}</span></td>
-            <td class="sticky right-0 bg-panel px-4 py-2.5 text-right"><button class="table-link" type="button" @click="selected = r">详情</button></td>
+            <td class="px-4 py-2.5"><span :class="r.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ statusText(r) }}</span></td>
+            <td class="sticky right-0 bg-panel px-4 py-2.5 text-right"><button class="table-link" type="button" @click="selected = r">{{ t('reqlog.btnDetail') }}</button></td>
           </tr>
         </tbody>
       </table>
@@ -223,61 +222,61 @@ onMounted(() => {
       <aside class="detail-drawer" role="dialog" aria-modal="true">
         <div class="drawer-head">
           <button class="btn-ghost !h-8 !min-h-0 !w-8 !px-0 !py-0" type="button" @click="selected = null">×</button>
-          <h2 class="font-semibold">请求详情 #{{ selected.id }}</h2>
+          <h2 class="font-semibold">{{ t('reqlog.drawerTitle', { id: selected.id }) }}</h2>
         </div>
         <div class="drawer-body">
           <div class="grid grid-cols-3 divide-x divide-line rounded border border-line bg-panel">
             <div class="p-4 text-center">
-              <p class="text-xs text-muted">Tokens 合计</p>
+              <p class="text-xs text-muted">{{ t('reqlog.statTokensTotal') }}</p>
               <p class="mt-1 font-mono text-2xl font-semibold">{{ n(selected.prompt_tokens + selected.completion_tokens) }}</p>
             </div>
             <div class="p-4 text-center">
-              <p class="text-xs text-muted">消耗 USD</p>
-              <p class="mt-1 font-mono text-2xl font-semibold">{{ fmtMoney(num(selected.cost_usd)) }}</p>
+              <p class="text-xs text-muted">{{ t('reqlog.statCostCredits') }}</p>
+              <p class="mt-1 font-mono text-2xl font-semibold">{{ n(toCredits(selected.cost_usd)) }}</p>
             </div>
             <div class="p-4 text-center">
-              <p class="text-xs text-muted">延迟</p>
+              <p class="text-xs text-muted">{{ t('reqlog.statLatency') }}</p>
               <p class="mt-1 font-mono text-2xl font-semibold">{{ selected.duration_ms }}ms</p>
             </div>
           </div>
 
           <section class="drawer-section">
-            <h3>标识</h3>
+            <h3>{{ t('reqlog.sectionIdentity') }}</h3>
             <dl class="detail-grid">
               <div><dt>ID</dt><dd>{{ selected.id }}</dd></div>
-              <div><dt>时间</dt><dd>{{ d(new Date(selected.created_at), { dateStyle: 'medium', timeStyle: 'medium' }) }}</dd></div>
-              <div class="sm:col-span-2"><dt>请求 ID</dt><dd class="select-all break-all">{{ selected.request_id }}</dd></div>
-              <div><dt>模型</dt><dd>{{ selected.model }}</dd></div>
-              <div><dt>来源协议</dt><dd><span class="badge-muted">OpenAI</span></dd></div>
-              <div><dt>请求模型（原始）</dt><dd>{{ selected.model }}</dd></div>
-              <div><dt>API 密钥</dt><dd>接口暂未返回</dd></div>
+              <div><dt>{{ t('reqlog.dtTime') }}</dt><dd>{{ d(new Date(selected.created_at), { dateStyle: 'medium', timeStyle: 'medium' }) }}</dd></div>
+              <div class="sm:col-span-2"><dt>{{ t('reqlog.dtRequestId') }}</dt><dd class="select-all break-all">{{ selected.request_id }}</dd></div>
+              <div><dt>{{ t('reqlog.dtModel') }}</dt><dd>{{ selected.model }}</dd></div>
+              <div><dt>{{ t('reqlog.dtSourceProtocol') }}</dt><dd><span class="badge-muted">OpenAI</span></dd></div>
+              <div><dt>{{ t('reqlog.dtRequestModelRaw') }}</dt><dd>{{ selected.model }}</dd></div>
+              <div><dt>{{ t('reqlog.dtApiKey') }}</dt><dd>{{ t('reqlog.notReturned') }}</dd></div>
             </dl>
           </section>
 
           <section class="drawer-section">
-            <h3>用量与消耗</h3>
+            <h3>{{ t('reqlog.sectionUsage') }}</h3>
             <dl class="detail-grid">
-              <div><dt>输入 Tokens</dt><dd>{{ n(selected.prompt_tokens) }}</dd></div>
-              <div><dt>输出 Tokens</dt><dd>{{ n(selected.completion_tokens) }}</dd></div>
-              <div><dt>Tokens 合计</dt><dd>{{ n(selected.prompt_tokens + selected.completion_tokens) }}</dd></div>
-              <div><dt>推理 Tokens</dt><dd>—</dd></div>
-              <div><dt>缓存输入 Tokens</dt><dd>—</dd></div>
-              <div><dt>缓存读取 Tokens</dt><dd>—</dd></div>
-              <div><dt>赠送消耗</dt><dd>—</dd></div>
-              <div><dt>付费消耗</dt><dd>—</dd></div>
-              <div><dt>消耗 USD</dt><dd>{{ fmtMoney(num(selected.cost_usd)) }}</dd></div>
+              <div><dt>{{ t('reqlog.dtInputTokens') }}</dt><dd>{{ n(selected.prompt_tokens) }}</dd></div>
+              <div><dt>{{ t('reqlog.dtOutputTokens') }}</dt><dd>{{ n(selected.completion_tokens) }}</dd></div>
+              <div><dt>{{ t('reqlog.dtTokensTotal') }}</dt><dd>{{ n(selected.prompt_tokens + selected.completion_tokens) }}</dd></div>
+              <div><dt>{{ t('reqlog.dtReasoningTokens') }}</dt><dd>—</dd></div>
+              <div><dt>{{ t('reqlog.dtCacheInputTokens') }}</dt><dd>—</dd></div>
+              <div><dt>{{ t('reqlog.dtCacheReadTokens') }}</dt><dd>—</dd></div>
+              <div><dt>{{ t('reqlog.dtGiftCost') }}</dt><dd>—</dd></div>
+              <div><dt>{{ t('reqlog.dtPaidCost') }}</dt><dd>—</dd></div>
+              <div><dt>{{ t('reqlog.dtCostCredits') }}</dt><dd>{{ n(toCredits(selected.cost_usd)) }}</dd></div>
             </dl>
           </section>
 
           <section class="drawer-section">
-            <h3>结果</h3>
+            <h3>{{ t('reqlog.sectionResult') }}</h3>
             <dl class="detail-grid">
-              <div><dt>状态</dt><dd><span :class="selected.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ selected.status_code || selected.status }}</span></dd></div>
-              <div><dt>完成原因</dt><dd>{{ selected.status === 'success' ? 'stop' : '—' }}</dd></div>
-              <div><dt>流式</dt><dd>{{ selected.is_stream ? '是' : '否' }}</dd></div>
-              <div><dt>延迟</dt><dd>{{ fmtMs(selected.duration_ms) }}</dd></div>
-              <div><dt>首 Token</dt><dd>{{ fmtMs(selected.frt_ms) }}</dd></div>
-              <div><dt>错误摘要</dt><dd>{{ selected.error_brief || '—' }}</dd></div>
+              <div><dt>{{ t('reqlog.dtStatus') }}</dt><dd><span :class="selected.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ statusText(selected) }}</span></dd></div>
+              <div><dt>{{ t('reqlog.dtFinishReason') }}</dt><dd>{{ selected.status === 'success' ? 'stop' : '—' }}</dd></div>
+              <div><dt>{{ t('reqlog.dtStream') }}</dt><dd>{{ selected.is_stream ? t('reqlog.yes') : t('reqlog.no') }}</dd></div>
+              <div><dt>{{ t('reqlog.dtLatency') }}</dt><dd>{{ fmtMs(selected.duration_ms) }}</dd></div>
+              <div><dt>{{ t('reqlog.dtFirstToken') }}</dt><dd>{{ fmtMs(selected.frt_ms) }}</dd></div>
+              <div><dt>{{ t('reqlog.dtErrorBrief') }}</dt><dd>{{ selected.error_brief || '—' }}</dd></div>
             </dl>
           </section>
 
@@ -287,7 +286,7 @@ onMounted(() => {
               <div><dt>IP</dt><dd>—</dd></div>
               <div><dt>User-Agent</dt><dd>—</dd></div>
               <div><dt>Referer</dt><dd>—</dd></div>
-              <div><dt>用量来源</dt><dd>{{ selected.usage_source || '—' }}</dd></div>
+              <div><dt>{{ t('reqlog.dtUsageSource') }}</dt><dd>{{ selected.usage_source || '—' }}</dd></div>
             </dl>
           </section>
         </div>

@@ -224,20 +224,20 @@ async function savePayGlobals() {
 // 渠道协议的配置字段元数据（与后端 buildPaymentEngine 一一对应）。新增协议只需在此登记，
 // 模态框按当前协议动态渲染对应字段——这正是「灵活热接入」：crypto 加密货币网关无需改前端硬编码。
 // 渠道字段元数据：与后端 buildPaymentEngine 的 cfg 键一一对应。新增协议只需在此登记，模态框动态渲染。
-interface PcFieldMeta { key: string; label: string; secret?: boolean; placeholder?: string; required?: boolean; wide?: boolean; textarea?: boolean; bool?: boolean }
+interface PcFieldMeta { key: string; label: string; labelKey?: string; secret?: boolean; placeholder?: string; phKey?: string; required?: boolean; wide?: boolean; textarea?: boolean; bool?: boolean }
 const PROTOCOL_FIELDS: Record<string, PcFieldMeta[]> = {
   stripe: [
     { key: 'secret_key', label: 'Secret Key', secret: true, placeholder: 'sk_live_…', required: true },
     { key: 'webhook_secret', label: 'Webhook Secret', secret: true, placeholder: 'whsec_…' },
   ],
   epay: [
-    { key: 'pid', label: 'PID / 商户ID', placeholder: '1000', required: true },
-    { key: 'key', label: '商户密钥 Key', secret: true, required: true },
-    { key: 'api_url', label: 'API 地址', placeholder: 'https://pay.example.com', wide: true, required: true },
+    { key: 'pid', label: 'PID / Merchant ID', labelKey: 'adminx.pcfPidLabel', placeholder: '1000', required: true },
+    { key: 'key', label: 'Merchant Key', labelKey: 'adminx.pcfMerchantKeyLabel', secret: true, required: true },
+    { key: 'api_url', label: 'API URL', labelKey: 'adminx.pcfApiUrlLabel', placeholder: 'https://pay.example.com', wide: true, required: true },
   ],
   // 通用加密货币网关（EBPay / OxaPay / NOWPayments 等三段式处理商）——验签 fail-closed + 实付校验。
   crypto: [
-    { key: 'processor', label: 'Processor 处理商', placeholder: 'ebpay / oxapay / nowpayments', required: true },
+    { key: 'processor', label: 'Processor', labelKey: 'adminx.pcfProcessorLabel', placeholder: 'ebpay / oxapay / nowpayments', required: true },
     { key: 'api_base', label: 'API Base URL', placeholder: 'https://api.ebpay.com', wide: true },
     { key: 'api_key', label: 'API Key', secret: true, required: true },
     { key: 'webhook_secret', label: 'Webhook / Callback Secret', secret: true, required: true },
@@ -249,13 +249,13 @@ const PROTOCOL_FIELDS: Record<string, PcFieldMeta[]> = {
   paypal: [
     { key: 'client_id', label: 'Client ID', required: true },
     { key: 'client_secret', label: 'Client Secret', secret: true, required: true },
-    { key: 'webhook_id', label: 'Webhook ID（验签必需）', required: true },
-    { key: 'sandbox', label: 'Sandbox 沙箱环境', bool: true },
+    { key: 'webhook_id', label: 'Webhook ID (required for verification)', labelKey: 'adminx.pcfWebhookIdLabel', required: true },
+    { key: 'sandbox', label: 'Sandbox', labelKey: 'adminx.pcfSandboxLabel', bool: true },
   ],
   // 通用 Webhook（REST 建单 + Webhook 回调；Airwallex/UseePay/Adyen 等）。webhook_secret 必填=强制验签防伪造。
   webhook: [
     { key: 'api_base_url', label: 'API Base URL', placeholder: 'https://api.airwallex.com', wide: true, required: true },
-    { key: 'webhook_secret', label: 'Webhook 验签密钥', secret: true, required: true },
+    { key: 'webhook_secret', label: 'Webhook Verification Secret', labelKey: 'adminx.pcfWebhookSecretLabel', secret: true, required: true },
     { key: 'auth_type', label: 'Auth Type', placeholder: 'bearer / basic / header' },
     { key: 'auth_endpoint', label: 'Auth Endpoint', placeholder: '/authentication/login' },
     { key: 'auth_creds', label: 'Auth Creds (JSON)', placeholder: '{"client_id":"..","api_key":".."}', wide: true, textarea: true },
@@ -264,51 +264,66 @@ const PROTOCOL_FIELDS: Record<string, PcFieldMeta[]> = {
     { key: 'sig_payload_format', label: 'Sig Payload', placeholder: 'body / timestamp+body' },
     { key: 'create_method', label: 'Create Method', placeholder: 'POST' },
     { key: 'create_path', label: 'Create Path', placeholder: '/v1/payment_intents' },
-    { key: 'create_body_template', label: 'Create Body 模板', placeholder: '{"amount":"{{amount}}","order":"{{order_no}}"}', wide: true, textarea: true },
-    { key: 'pay_url_extract', label: 'Pay URL 字段路径', placeholder: 'next_action.redirect_url' },
-    { key: 'ref_extract', label: 'Ref 字段路径', placeholder: 'id' },
+    { key: 'create_body_template', label: 'Create Body Template', labelKey: 'adminx.pcfCreateBodyTplLabel', placeholder: '{"amount":"{{amount}}","order":"{{order_no}}"}', wide: true, textarea: true },
+    { key: 'pay_url_extract', label: 'Pay URL Field Path', labelKey: 'adminx.pcfPayUrlPathLabel', placeholder: 'next_action.redirect_url' },
+    { key: 'ref_extract', label: 'Ref Field Path', labelKey: 'adminx.pcfRefPathLabel', placeholder: 'id' },
     { key: 'success_event', label: 'Success Event', placeholder: 'payment_intent.succeeded' },
-    { key: 'event_type_extract', label: 'Event Type 路径', placeholder: 'type' },
-    { key: 'order_extract', label: 'Order No 路径', placeholder: 'data.object.metadata.order_no' },
-    { key: 'amount_extract', label: 'Amount 路径', placeholder: 'data.object.amount' },
-    { key: 'trade_no_extract', label: 'Trade No 路径', placeholder: 'data.object.id' },
-    { key: 'currency_extract', label: 'Currency 路径' },
+    { key: 'event_type_extract', label: 'Event Type Path', labelKey: 'adminx.pcfEventTypePathLabel', placeholder: 'type' },
+    { key: 'order_extract', label: 'Order No Path', labelKey: 'adminx.pcfOrderNoPathLabel', placeholder: 'data.object.metadata.order_no' },
+    { key: 'amount_extract', label: 'Amount Path', labelKey: 'adminx.pcfAmountPathLabel', placeholder: 'data.object.amount' },
+    { key: 'trade_no_extract', label: 'Trade No Path', labelKey: 'adminx.pcfTradeNoPathLabel', placeholder: 'data.object.id' },
+    { key: 'currency_extract', label: 'Currency Path', labelKey: 'adminx.pcfCurrencyPathLabel' },
     { key: 'amount_unit', label: 'Amount Unit', placeholder: 'major / minor' },
   ],
   // 自定义可编程 HTTP 模板（接入任何非标准接口）。webhook_secret 必填=强制验签（默认 hmac-sha256）防伪造。
   custom: [
-    { key: 'create_url', label: 'Create URL 模板', placeholder: 'https://gw.example.com/pay?order={{order_no}}', wide: true, required: true },
-    { key: 'webhook_secret', label: 'Webhook 验签密钥', secret: true, required: true },
-    { key: 'api_key', label: 'API Key（{{api_key}} 变量）', secret: true },
+    { key: 'create_url', label: 'Create URL Template', labelKey: 'adminx.pcfCreateUrlTplLabel', placeholder: 'https://gw.example.com/pay?order={{order_no}}', wide: true, required: true },
+    { key: 'webhook_secret', label: 'Webhook Verification Secret', labelKey: 'adminx.pcfWebhookSecretLabel', secret: true, required: true },
+    { key: 'api_key', label: 'API Key ({{api_key}} variable)', labelKey: 'adminx.pcfApiKeyVarLabel', secret: true },
     { key: 'create_method', label: 'Create Method', placeholder: 'POST / GET' },
     { key: 'create_headers', label: 'Create Headers (JSON)', placeholder: '{"Authorization":"Bearer {{api_key}}"}', wide: true, textarea: true },
-    { key: 'create_body', label: 'Create Body 模板', placeholder: '{"order":"{{order_no}}","amount":"{{amount}}"}', wide: true, textarea: true },
-    { key: 'pay_url_path', label: 'Pay URL 字段路径', placeholder: 'pay_url' },
-    { key: 'ref_path', label: 'Ref 字段路径', placeholder: 'id' },
+    { key: 'create_body', label: 'Create Body Template', labelKey: 'adminx.pcfCreateBodyTplLabel', placeholder: '{"order":"{{order_no}}","amount":"{{amount}}"}', wide: true, textarea: true },
+    { key: 'pay_url_path', label: 'Pay URL Field Path', labelKey: 'adminx.pcfPayUrlPathLabel', placeholder: 'pay_url' },
+    { key: 'ref_path', label: 'Ref Field Path', labelKey: 'adminx.pcfRefPathLabel', placeholder: 'id' },
     { key: 'sig_header', label: 'Sig Header', placeholder: 'x-signature' },
     { key: 'sig_algo', label: 'Sig Algo', placeholder: 'hmac-sha256 / hmac-md5' },
     { key: 'sig_payload', label: 'Sig Payload', placeholder: 'body / timestamp+body' },
-    { key: 'success_condition', label: 'Success Condition', placeholder: 'status=PAID（空=有 order_no 即成功）' },
-    { key: 'order_path', label: 'Order No 路径', placeholder: 'order_no' },
-    { key: 'amount_path', label: 'Amount 路径', placeholder: 'amount' },
-    { key: 'trade_no_path', label: 'Trade No 路径', placeholder: 'trade_no' },
-    { key: 'currency_path', label: 'Currency 路径' },
+    { key: 'success_condition', label: 'Success Condition', placeholder: 'status=PAID (empty = success when order_no present)', phKey: 'adminx.pcfSuccessCondPh' },
+    { key: 'order_path', label: 'Order No Path', labelKey: 'adminx.pcfOrderNoPathLabel', placeholder: 'order_no' },
+    { key: 'amount_path', label: 'Amount Path', labelKey: 'adminx.pcfAmountPathLabel', placeholder: 'amount' },
+    { key: 'trade_no_path', label: 'Trade No Path', labelKey: 'adminx.pcfTradeNoPathLabel', placeholder: 'trade_no' },
+    { key: 'currency_path', label: 'Currency Path', labelKey: 'adminx.pcfCurrencyPathLabel' },
   ],
 }
 // 协议选择网格（卡片）：图标用首字母彩色徽标（与渠道列表一致）；desc 走 i18n。
 const PROTOCOL_OPTIONS = [
-  { value: 'epay', label: 'EPay 易支付', color: '#16a34a' },
+  { value: 'epay', label: 'EPay', labelKey: 'adminx.protoEpay', color: '#16a34a' },
   { value: 'stripe', label: 'Stripe', color: '#635bff' },
   { value: 'paypal', label: 'PayPal', color: '#0070ba' },
   { value: 'webhook', label: 'Webhook', color: '#0891b2' },
   { value: 'crypto', label: 'Crypto', color: '#f59e0b' },
   { value: 'custom', label: 'Custom', color: '#64748b' },
 ] as const
+// 协议选项 label：带 labelKey 的走 i18n（如 EPay 易支付），其余英文/品牌名原样
+function protoOptLabel(p: { label: string; labelKey?: string }): string {
+  return p.labelKey ? t(p.labelKey) : p.label
+}
 // 支付方式 + 币种选项
 const PAY_METHOD_OPTIONS = [
-  { value: 'alipay', label: '支付宝' }, { value: 'wechat', label: '微信支付' },
-  { value: 'card', label: '银行卡' }, { value: 'usdt', label: 'USDT' }, { value: 'paypal', label: 'PayPal' },
+  { value: 'alipay', label: 'Alipay', labelKey: 'adminx.payMethodAlipay' }, { value: 'wechat', label: 'WeChat Pay', labelKey: 'adminx.payMethodWechat' },
+  { value: 'card', label: 'Bank Card', labelKey: 'adminx.payMethodCard' }, { value: 'usdt', label: 'USDT' }, { value: 'paypal', label: 'PayPal' },
 ]
+// 支付方式 label：带 labelKey 的走 i18n（支付宝/微信/银行卡），USDT/PayPal 原样
+function payMethodLabel(pm: { label: string; labelKey?: string }): string {
+  return pm.labelKey ? t(pm.labelKey) : pm.label
+}
+// 字段 label / placeholder：带 key 的走 i18n（中文字段名），纯英文/技术标识原样
+function fieldLabel(f: PcFieldMeta): string {
+  return f.labelKey ? t(f.labelKey) : f.label
+}
+function fieldPlaceholder(f: PcFieldMeta): string {
+  return f.phKey ? t(f.phKey) : (f.placeholder ?? '')
+}
 const CURRENCY_OPTIONS = ['USD', 'CNY', 'EUR', 'GBP', 'HKD', 'JPY', 'SGD', 'USDT']
 // 选协议时的合理默认（pay_methods / 币种）
 const PROTOCOL_DEFAULTS: Record<string, { pm: string; cur: string }> = {
@@ -329,7 +344,10 @@ const pcEdit = ref<PayChannelEdit | null>(null)
 const pcBusy = ref(false)
 // 当前协议的字段元数据（协议切换即变）
 const pcFields = computed<PcFieldMeta[]>(() => (pcEdit.value ? PROTOCOL_FIELDS[pcEdit.value.protocol] ?? [] : []))
-const pcProtocolLabel = computed(() => PROTOCOL_OPTIONS.find((p) => p.value === pcEdit.value?.protocol)?.label ?? pcEdit.value?.protocol ?? '')
+const pcProtocolLabel = computed(() => {
+  const p = PROTOCOL_OPTIONS.find((o) => o.value === pcEdit.value?.protocol)
+  return p ? protoOptLabel(p) : pcEdit.value?.protocol ?? ''
+})
 // 第一步：打开协议选择网格
 function openPayPicker() { pcPicker.value = true }
 // 第二步：选定协议 → 打开 rich form（新建渠道默认 disabled，测试连通后再手动启用——资金红线）
@@ -1779,7 +1797,7 @@ onMounted(async () => {
                   @click="pickProtocol(p.value)"
                 >
                   <span class="grid h-9 w-9 place-items-center rounded-lg text-sm font-bold text-white" :style="{ background: p.color }">{{ p.label[0] }}</span>
-                  <span class="font-medium">{{ p.label }}</span>
+                  <span class="font-medium">{{ protoOptLabel(p) }}</span>
                   <span class="text-xs text-muted">{{ t('admin.pcProto_' + p.value) }}</span>
                 </button>
               </div>
@@ -1822,7 +1840,7 @@ onMounted(async () => {
                   <label v-for="pm in PAY_METHOD_OPTIONS" :key="pm.value" class="flex items-center gap-1.5 text-sm">
                     <input type="checkbox" class="accent-accent" :checked="hasPayMethod(pm.value)"
                       @change="togglePayMethod(pm.value, ($event.target as HTMLInputElement).checked)" />
-                    {{ pm.label }}
+                    {{ payMethodLabel(pm) }}
                   </label>
                 </div>
               </div>
@@ -1834,14 +1852,14 @@ onMounted(async () => {
                     <label v-if="f.bool" class="flex items-center gap-2 text-sm">
                       <input type="checkbox" class="accent-accent" :checked="pcEdit.config[f.key] === 'true'"
                         @change="pcEdit.config[f.key] = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
-                      {{ f.label }}
+                      {{ fieldLabel(f) }}
                     </label>
                     <template v-else>
-                      <label class="label">{{ f.label }}<span v-if="f.required" class="text-danger"> *</span></label>
-                      <textarea v-if="f.textarea" v-model="pcEdit.config[f.key]" class="input font-mono text-xs" rows="2" :placeholder="f.placeholder ?? ''"></textarea>
+                      <label class="label">{{ fieldLabel(f) }}<span v-if="f.required" class="text-danger"> *</span></label>
+                      <textarea v-if="f.textarea" v-model="pcEdit.config[f.key]" class="input font-mono text-xs" rows="2" :placeholder="fieldPlaceholder(f)"></textarea>
                       <input v-else v-model="pcEdit.config[f.key]" class="input font-mono text-xs"
                         :type="f.secret ? 'password' : 'text'" autocomplete="off"
-                        :placeholder="pcEdit.id && f.secret ? t('admin.pcKeep') : (f.placeholder ?? '')" />
+                        :placeholder="pcEdit.id && f.secret ? t('admin.pcKeep') : fieldPlaceholder(f)" />
                     </template>
                   </div>
                 </div>
@@ -2677,7 +2695,7 @@ onMounted(async () => {
                   </div>
                   <div>
                     <label class="label" for="smtp-from">{{ t('admin.setSmtpFrom') }}</label>
-                    <input id="smtp-from" v-model="settings.smtp_from" class="input font-mono text-xs" placeholder="info@laiai.ai（空=取账户）" />
+                    <input id="smtp-from" v-model="settings.smtp_from" class="input font-mono text-xs" :placeholder="t('adminx.setSmtpFromPh')" />
                   </div>
                   <div>
                     <label class="label" for="smtp-pass">{{ t('admin.setSmtpPass') }}</label>
