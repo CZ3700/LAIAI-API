@@ -153,7 +153,7 @@ onMounted(load)
                 <td class="px-4 py-2.5 text-right font-mono">{{ o.pay_amount }} {{ o.pay_currency }}</td>
                 <td class="px-4 py-2.5">{{ o.provider }}</td>
                 <td class="px-4 py-2.5">
-                  <span :class="o.status === 1 ? 'badge-ok' : o.status === 0 ? 'badge-muted' : 'badge-danger'">{{ statusLabel(o.status) }}</span>
+                  <span :class="o.status === 1 ? 'badge-ok' : o.status === 0 ? 'badge-warn' : 'badge-danger'">{{ statusLabel(o.status) }}</span>
                 </td>
                 <td class="px-4 py-2.5 font-mono text-xs text-muted">{{ o.trade_no || '—' }}</td>
                 <td class="px-4 py-2.5 text-muted">{{ d(new Date(o.created_at * 1000), { dateStyle: 'short', timeStyle: 'short' }) }}</td>

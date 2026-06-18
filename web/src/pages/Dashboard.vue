@@ -44,7 +44,7 @@ const chartMetrics: ChartMetric[] = ['tokens', 'cost', 'calls']
 const modelMetric = ref<RankMetric>('tokens')
 const keyMetric = ref<RankMetric>('tokens')
 const RANK_METRICS: RankMetric[] = ['tokens', 'credits', 'calls']
-const DONUT_COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#a855f7', '#94a3b8']
+const DONUT_COLORS = ['rgb(var(--chart-1))', 'rgb(var(--chart-2))', 'rgb(var(--chart-3))', 'rgb(var(--chart-4))', 'rgb(var(--chart-5))', 'rgb(var(--chart-6))', 'rgb(var(--c-muted))']
 
 function num(v: string | number): number {
   const out = Number(v)
@@ -207,43 +207,67 @@ onMounted(async () => {
     <!-- 指标卡 -->
     <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <div class="metric-card">
-        <p class="text-xs font-medium text-muted">{{ t('dash.cardTokensTitle') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-indigo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z" /></svg></span>
+          <p class="text-xs font-medium text-muted">{{ t('dash.cardTokensTitle') }}</p>
+        </div>
         <p class="mt-3 font-mono text-3xl font-semibold">{{ loading ? '—' : fmtTokens(totals.tokens) }}</p>
         <p class="mt-2 text-xs text-muted">{{ t('dash.cardTokensSub', { input: fmtTokens(totals.input), output: fmtTokens(totals.output) }) }}</p>
       </div>
       <div class="metric-card">
-        <p class="text-xs font-medium text-muted">{{ t('dash.cardCostTitle') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
+          <p class="text-xs font-medium text-muted">{{ t('dash.cardCostTitle') }}</p>
+        </div>
         <p class="mt-3 font-mono text-3xl font-semibold">{{ loading ? '—' : fmtCredits(totals.cost) }}</p>
         <p class="mt-2 text-xs text-muted">{{ cnyText(totals.cost) }}</p>
       </div>
       <div class="metric-card">
-        <p class="text-xs font-medium text-muted">{{ t('dash.cardRequestsTitle') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" /></svg></span>
+          <p class="text-xs font-medium text-muted">{{ t('dash.cardRequestsTitle') }}</p>
+        </div>
         <p class="mt-3 font-mono text-3xl font-semibold">{{ loading ? '—' : n(totals.calls) }}</p>
         <p class="mt-2 text-xs"><span class="text-ok">{{ n(totals.succeeded) }}</span> <span class="text-muted">{{ t('dash.cardRequestsSucceeded') }}</span></p>
       </div>
       <div class="metric-card">
-        <p class="text-xs font-medium text-muted">{{ t('dash.cardKeysTitle') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-rose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z" /></svg></span>
+          <p class="text-xs font-medium text-muted">{{ t('dash.cardKeysTitle') }}</p>
+        </div>
         <p class="mt-3 font-mono text-3xl font-semibold">{{ activeKeys }}<span class="text-base text-muted">/{{ keys.length }}</span></p>
         <p class="mt-2 text-xs text-muted">{{ activeKeys === keys.length ? t('dash.cardKeysAllActive') : t('dash.cardKeysHasInactive') }}</p>
       </div>
 
       <router-link to="/app/billing" class="metric-card block">
-        <p class="text-xs font-medium text-muted">{{ t('dash.cardBalanceTitle') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-sky"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3" /></svg></span>
+          <p class="text-xs font-medium text-muted">{{ t('dash.cardBalanceTitle') }}</p>
+        </div>
         <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtCredits(balance) }}</p>
         <p class="mt-2 text-xs text-muted">{{ t('dash.cardBalanceSub', { cny: cnyText(balance), held: fmtCredits(held) }) }}</p>
       </router-link>
       <router-link to="/app/recharges" class="metric-card block">
-        <p class="text-xs font-medium text-muted">{{ t('dash.cardMonthRechargeTitle') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-violet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z" /></svg></span>
+          <p class="text-xs font-medium text-muted">{{ t('dash.cardMonthRechargeTitle') }}</p>
+        </div>
         <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtCredits(monthRecharge) }}</p>
         <p class="mt-2 text-xs text-muted">{{ t('dash.cardMonthRechargeSub', { cny: cnyText(monthRecharge) }) }}</p>
       </router-link>
       <div class="metric-card">
-        <p class="text-xs font-medium text-muted">{{ t('dash.cardNet7dTitle') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 18 9 11.25l4.306 4.306a11.95 11.95 0 0 1 5.814-5.518l2.74-1.22m0 0-5.94-2.281m5.94 2.28-2.28 5.941" /></svg></span>
+          <p class="text-xs font-medium text-muted">{{ t('dash.cardNet7dTitle') }}</p>
+        </div>
         <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtCredits(net7d) }}</p>
         <p class="mt-2 text-xs text-muted">{{ t('dash.cardNet7dSub') }}</p>
       </div>
       <div class="metric-card">
-        <p class="text-xs font-medium text-muted">{{ t('dash.cardSuccessRateTitle') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
+          <p class="text-xs font-medium text-muted">{{ t('dash.cardSuccessRateTitle') }}</p>
+        </div>
         <p class="mt-3 font-mono text-2xl font-semibold">{{ (totals.successRate * 100).toFixed(1) }}%</p>
         <p class="mt-2 text-xs text-muted">{{ t('dash.cardSuccessRateSub', { n: n(totals.calls) }) }}</p>
       </div>

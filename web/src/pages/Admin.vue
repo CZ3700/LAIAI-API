@@ -1211,7 +1211,10 @@ onMounted(async () => {
       <template v-if="tab === 'overview' && overview">
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div class="metric-card">
-            <p class="text-xs text-muted">{{ t('admin.ovChannels') }}</p>
+            <div class="flex items-center gap-3">
+              <span class="metric-icon mi-sky"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" /></svg></span>
+              <p class="text-xs text-muted">{{ t('admin.ovChannels') }}</p>
+            </div>
             <p class="mt-1 text-2xl font-semibold font-mono">
               {{ overview.channels.active }}<span class="text-base text-muted">/{{ overview.channels.total }}</span>
             </p>
@@ -1223,17 +1226,26 @@ onMounted(async () => {
             </p>
           </div>
           <div class="metric-card">
-            <p class="text-xs text-muted">{{ t('dashboard.todayCalls') }}</p>
+            <div class="flex items-center gap-3">
+              <span class="metric-icon mi-indigo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" /></svg></span>
+              <p class="text-xs text-muted">{{ t('dashboard.todayCalls') }}</p>
+            </div>
             <p class="mt-1 text-2xl font-semibold font-mono">{{ overview.calls_today }}</p>
             <p class="mt-1 text-xs text-muted">{{ t('admin.ovWindowCalls', { n: overview.calls_window, days: overview.window_days }) }}</p>
           </div>
           <div class="metric-card">
-            <p class="text-xs text-muted">{{ t('admin.ovSuccessRate') }}</p>
+            <div class="flex items-center gap-3">
+              <span class="metric-icon mi-green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
+              <p class="text-xs text-muted">{{ t('admin.ovSuccessRate') }}</p>
+            </div>
             <p class="mt-1 text-2xl font-semibold font-mono">{{ (overview.success_rate * 100).toFixed(1) }}%</p>
             <p class="mt-1 text-xs text-muted">{{ t('admin.ovLastDays', { days: overview.window_days }) }}</p>
           </div>
           <div class="metric-card">
-            <p class="text-xs text-muted">{{ t('admin.ovRevenue') }}</p>
+            <div class="flex items-center gap-3">
+              <span class="metric-icon mi-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
+              <p class="text-xs text-muted">{{ t('admin.ovRevenue') }}</p>
+            </div>
             <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(overview.revenue_window).toFixed(4) }}</p>
             <p class="mt-1 text-xs text-muted">{{ t('admin.ovLastDays', { days: overview.window_days }) }}</p>
           </div>
@@ -1298,22 +1310,34 @@ onMounted(async () => {
           <!-- 资金大卡 -->
           <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <div class="app-panel p-4">
-              <p class="text-xs text-muted">{{ t('admin.anCashIn') }}</p>
+              <div class="flex items-center gap-3">
+                <span class="metric-icon mi-indigo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z" /></svg></span>
+                <p class="text-xs text-muted">{{ t('admin.anCashIn') }}</p>
+              </div>
               <p class="mt-1 text-2xl font-semibold font-mono text-ok">${{ Number(analytics.finance.cash_in).toFixed(2) }}</p>
               <Sparkline :data="cashSeries" :width="140" :height="34" class="mt-2" />
             </div>
             <div class="app-panel p-4">
-              <p class="text-xs text-muted">{{ t('admin.anConsumption') }}</p>
+              <div class="flex items-center gap-3">
+                <span class="metric-icon mi-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
+                <p class="text-xs text-muted">{{ t('admin.anConsumption') }}</p>
+              </div>
               <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.finance.consumption).toFixed(4) }}</p>
               <Sparkline :data="costSeries" :width="140" :height="34" class="mt-2" />
             </div>
             <div class="app-panel p-4">
-              <p class="text-xs text-muted">{{ t('admin.anFloat') }}</p>
+              <div class="flex items-center gap-3">
+                <span class="metric-icon mi-amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3" /></svg></span>
+                <p class="text-xs text-muted">{{ t('admin.anFloat') }}</p>
+              </div>
               <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.finance.float).toFixed(2) }}</p>
               <p class="mt-1 text-xs text-muted">{{ t('admin.anFloatHint') }}</p>
             </div>
             <div class="app-panel p-4">
-              <p class="text-xs text-muted">{{ t('admin.anConversion') }}</p>
+              <div class="flex items-center gap-3">
+                <span class="metric-icon mi-rose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" /></svg></span>
+                <p class="text-xs text-muted">{{ t('admin.anConversion') }}</p>
+              </div>
               <p class="mt-1 text-2xl font-semibold font-mono">{{ (analytics.finance.topup_conversion * 100).toFixed(1) }}%</p>
               <p class="mt-1 text-xs text-muted">
                 <span class="text-ok">{{ analytics.finance.topup_paid }} {{ t('admin.anPaid') }}</span> ·
@@ -1326,24 +1350,36 @@ onMounted(async () => {
           <!-- 用户指标 -->
           <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <div class="app-panel p-4">
-              <p class="text-xs text-muted">{{ t('admin.anUsers') }}</p>
+              <div class="flex items-center gap-3">
+                <span class="metric-icon mi-sky"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 18 9 11.25l4.306 4.306a11.95 11.95 0 0 1 5.814-5.518l2.74-1.22m0 0-5.94-2.281m5.94 2.28-2.28 5.941" /></svg></span>
+                <p class="text-xs text-muted">{{ t('admin.anUsers') }}</p>
+              </div>
               <p class="mt-1 text-2xl font-semibold font-mono">{{ analytics.users.total_users }}</p>
               <p class="mt-1 text-xs text-ok">+{{ analytics.users.new_users }} {{ t('admin.anNew') }}</p>
             </div>
             <div class="app-panel p-4">
-              <p class="text-xs text-muted">{{ t('admin.anActiveOrgs') }}</p>
+              <div class="flex items-center gap-3">
+                <span class="metric-icon mi-violet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 13.5h8.25l-3.696 3.696a8.25 8.25 0 1 1 0-11.668L10.5 9.75H2.25v3.75Z" /></svg></span>
+                <p class="text-xs text-muted">{{ t('admin.anActiveOrgs') }}</p>
+              </div>
               <p class="mt-1 text-2xl font-semibold font-mono">
                 {{ analytics.users.active_orgs }}<span class="text-base text-muted">/{{ analytics.users.total_orgs }}</span>
               </p>
               <p class="mt-1 text-xs text-muted">{{ t('admin.anActiveHint') }}</p>
             </div>
             <div class="app-panel p-4">
-              <p class="text-xs text-muted">{{ t('admin.anArpu') }}</p>
+              <div class="flex items-center gap-3">
+                <span class="metric-icon mi-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
+                <p class="text-xs text-muted">{{ t('admin.anArpu') }}</p>
+              </div>
               <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.users.arpu).toFixed(4) }}</p>
               <p class="mt-1 text-xs text-muted">{{ t('admin.anArpuHint') }}</p>
             </div>
             <div class="app-panel p-4">
-              <p class="text-xs text-muted">{{ t('admin.anErrorRate') }}</p>
+              <div class="flex items-center gap-3">
+                <span class="metric-icon mi-green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
+                <p class="text-xs text-muted">{{ t('admin.anErrorRate') }}</p>
+              </div>
               <p class="mt-1 text-2xl font-semibold font-mono" :class="errorRate > 0.05 ? 'text-danger' : ''">{{ (errorRate * 100).toFixed(2) }}%</p>
               <p class="mt-1 text-xs text-muted">
                 {{ t('admin.anLatency') }} {{ Math.round(analytics.quality.avg_duration_ms) }}ms · FRT {{ Math.round(analytics.quality.avg_frt_ms) }}ms

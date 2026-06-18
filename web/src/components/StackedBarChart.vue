@@ -14,9 +14,9 @@ const props = withDefaults(defineProps<{ rows: ModelDailyRow[]; days: number; me
 })
 const { t } = useI18n()
 
-// 10 色调色板（与仪表盘其它分色视图一致）；超出 top-N 的模型归入「其它」灰
-const PALETTE = ['99 102 241', '168 85 247', '236 72 153', '245 158 11', '34 197 94', '14 165 233', '244 63 94', '139 92 246', '20 184 166', '234 179 8']
-const OTHER = '148 163 184'
+// 与全站 --chart-* / 指标卡芯片同源的品牌分类色板（明暗主题各自校准）；超出 top-N 归入「其它」中性灰。
+const PALETTE = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)', 'var(--chart-6)', 'var(--chart-7)', 'var(--chart-8)']
+const OTHER = 'var(--c-muted)'
 
 const val = (r: ModelDailyRow) => (props.metric === 'cost' ? Number(r.cost_usd) : r.calls)
 

@@ -162,11 +162,17 @@ onMounted(load)
 
     <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
       <div class="metric-card">
-        <p class="text-xs text-muted">{{ t('usagex.metricTotalTokens') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-indigo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z" /></svg></span>
+          <p class="text-xs text-muted">{{ t('usagex.metricTotalTokens') }}</p>
+        </div>
         <p class="mt-2 font-mono text-2xl font-semibold">{{ loading ? '—' : fmtTokens(totals.tokens) }}</p>
       </div>
       <div class="metric-card">
-        <p class="text-xs text-muted">{{ t('usagex.metricInputOutput') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" /></svg></span>
+          <p class="text-xs text-muted">{{ t('usagex.metricInputOutput') }}</p>
+        </div>
         <p class="mt-2 flex flex-wrap items-baseline gap-x-1.5 font-mono text-xl font-semibold">
           <span>{{ fmtTokens(totals.input) }}</span>
           <span class="text-sm text-muted">/</span>
@@ -174,15 +180,24 @@ onMounted(load)
         </p>
       </div>
       <div class="metric-card">
-        <p class="text-xs text-muted">{{ t('usagex.metricTotalCalls') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 18 9 11.25l4.306 4.306a11.95 11.95 0 0 1 5.814-5.518l2.74-1.22m0 0-5.94-2.281m5.94 2.28-2.28 5.941" /></svg></span>
+          <p class="text-xs text-muted">{{ t('usagex.metricTotalCalls') }}</p>
+        </div>
         <p class="mt-2 font-mono text-2xl font-semibold">{{ n(totals.calls) }}</p>
       </div>
       <div class="metric-card">
-        <p class="text-xs text-muted">{{ t('usagex.metricEstCost') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-rose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
+          <p class="text-xs text-muted">{{ t('usagex.metricEstCost') }}</p>
+        </div>
         <p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMoney(totals.cost) }}</p>
       </div>
       <div class="metric-card">
-        <p class="text-xs text-muted">{{ t('usagex.metricIoRatio') }}</p>
+        <div class="flex items-center gap-3">
+          <span class="metric-icon mi-sky"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 13.5h8.25l-3.696 3.696a8.25 8.25 0 1 1 0-11.668L10.5 9.75H2.25v3.75Z" /></svg></span>
+          <p class="text-xs text-muted">{{ t('usagex.metricIoRatio') }}</p>
+        </div>
         <p class="mt-2 font-mono text-lg font-semibold">
           {{ totals.tokens ? ((totals.input / totals.tokens) * 100).toFixed(1) : '0.0' }}% / {{ totals.tokens ? ((totals.output / totals.tokens) * 100).toFixed(1) : '0.0' }}%
         </p>

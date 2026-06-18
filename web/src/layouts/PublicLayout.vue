@@ -52,8 +52,8 @@ const links = [
             v-for="l in links"
             :key="l.to"
             :to="l.to"
-            class="rounded-lg px-3 py-1.5 text-sm text-muted transition-colors hover:bg-elev/75 hover:text-ink"
-            active-class="!text-ink"
+            class="public-nav-link rounded-lg px-3 py-1.5 text-sm text-muted transition-colors hover:bg-elev/75 hover:text-ink"
+            exact-active-class="is-active"
           >
             {{ l.label() }}
           </router-link>
