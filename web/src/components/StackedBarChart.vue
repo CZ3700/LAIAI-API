@@ -33,12 +33,11 @@ const data = computed(() => {
     a.push(r)
     byDay.set(r.day, a)
   }
-  const today = new Date()
+  // UTC 自然日键，与后端 by-model-daily 的 DATE(created_at) UTC 桶对齐（纯 UTC 毫秒整日位移，避免本地时区日界错位）
+  const todayMs = Date.now()
   const days: { label: string; total: number; segs: { model: string; value: number; color: string }[] }[] = []
   for (let i = props.days - 1; i >= 0; i--) {
-    const dt = new Date(today)
-    dt.setDate(today.getDate() - i)
-    const key = dt.toISOString().slice(0, 10)
+    const key = new Date(todayMs - i * 86400_000).toISOString().slice(0, 10)
     const segMap = new Map<string, number>()
     for (const r of byDay.get(key) ?? []) {
       const m = colorOf.has(r.model) ? r.model : '__other'

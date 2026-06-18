@@ -710,7 +710,7 @@ func (s *Server) channelQualityStats(rdb *gorm.DB, since string) map[uint64]chQu
 func (s *Server) adminOverview(c *gin.Context) {
 	rdb := s.db.WithContext(c.Request.Context())
 	const windowDays = 14
-	now := s.now()
+	now := s.now().UTC() // 与 created_at 的 UTC 存储口径一致（DSN loc=UTC），与 analytics.go/渠道健康同窗，避免跨时区日界偏移
 	since := now.AddDate(0, 0, -windowDays+1).Format("2006-01-02")
 	today := now.Format("2006-01-02")
 

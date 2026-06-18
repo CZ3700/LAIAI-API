@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/csv"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -14,7 +16,8 @@ import (
 const (
 	usageDefaultPageSize = 20
 	usageMaxPageSize     = 100
-	usageExportMaxRows   = 5000 // 自助导出上限：够日常对账，又不至于把内存/连接拖垮
+	usageExportMaxRows   = 5000  // 自助导出上限：够日常对账，又不至于把内存/连接拖垮
+	usagePerfMaxRows     = 20000 // 性能分位最多取窗口内最近 N 行；超出则置 sampled=true，避免大 org 把内存/连接拖垮
 )
 
 // getUsage：GET /api/usage?page=&page_size=&model=
@@ -36,8 +39,24 @@ func (s *Server) getUsage(c *gin.Context) {
 	if model := c.Query("model"); model != "" {
 		q = q.Where("model = ?", model)
 	}
+	// status：精确匹配真实枚举；特殊值 "failed" = 非 success（覆盖 upstream_error/no_channel/
+	// insufficient_balance），让"失败"筛选在服务端完成——分页与 total 才能正确反映过滤结果，
+	// 而不是前端只对当前页本地隐藏 success（会少计失败、total 也对不上）。
 	if status := c.Query("status"); status != "" {
-		q = q.Where("status = ?", status)
+		if status == "failed" {
+			q = q.Where("status <> ?", invocation.StatusSuccess)
+		} else {
+			q = q.Where("status = ?", status)
+		}
+	}
+	// 时间窗（UTC）服务端过滤：since/until 为 YYYY-MM-DD 或 datetime 串（与 summary/by-model 同口径，
+	// created_at 按 UTC 存储）。请求日志页"本月/上月/近 7 日/自定义"走此路径，避免对分页页本地按浏览器时区筛
+	// （会漏算窗口内分页外的行、且边界日按本地月误分桶）。区间为左闭右开 [since, until)。
+	if since := c.Query("since"); since != "" {
+		q = q.Where("created_at >= ?", since)
+	}
+	if until := c.Query("until"); until != "" {
+		q = q.Where("created_at < ?", until)
 	}
 
 	var total int64
@@ -250,4 +269,171 @@ func (s *Server) getUsagePerf(c *gin.Context) {
 		FROM invocations WHERE org_id = ? AND created_at >= ?`,
 		claims.OrgID, since).Scan(&row)
 	c.JSON(http.StatusOK, gin.H{"rpm": row.Calls, "tpm": row.Tokens})
+}
+
+// percentiles：与前端原口径一致的分位（过滤 0/负值后升序，idx = ceil(p/100*n)-1，封顶 [0, n-1]）。
+// 返回 p50/p95/p99（毫秒整数）。空样本返回全 0。
+func percentiles(values []int) (p50, p95, p99 int) {
+	f := make([]int, 0, len(values))
+	for _, v := range values {
+		if v > 0 {
+			f = append(f, v)
+		}
+	}
+	if len(f) == 0 {
+		return 0, 0, 0
+	}
+	sort.Ints(f)
+	at := func(p float64) int {
+		idx := int(math.Ceil(p/100*float64(len(f)))) - 1
+		if idx < 0 {
+			idx = 0
+		}
+		if idx > len(f)-1 {
+			idx = len(f) - 1
+		}
+		return f[idx]
+	}
+	return at(50), at(95), at(99)
+}
+
+// getUsagePerfStats：GET /api/usage/perf-stats?mins=N —— 当前 org 滚动时间窗的性能分位/成功率/时长分布，
+// **服务端聚合**。取代前端对最近 100 行(page_size=100)本地算分位——那既被分页截断、时间窗选择器又形同虚设
+// （7d/30d 与 24h 拿的是同一批 ≤100 行）。本端口在窗口全量上计算，与仪表盘成功率(SUM(success)/COUNT)同定义，
+// 跨页一致。mins 默认 1440(近 24h)，上限 43200(30 天)。frt 取 frt_ms，缺则回退 duration_ms；时长桶取 duration_ms，
+// 缺则回退 frt_ms——与前端原口径一致，保证迁移后数值含义不变。窗口内行数超 usagePerfMaxRows 时取最近样本并置
+// sampled=true（前端据此提示"仅统计最近 N 条"，不谎称全量）。
+func (s *Server) getUsagePerfStats(c *gin.Context) {
+	claims := mustClaims(c)
+	mins, _ := strconv.Atoi(c.DefaultQuery("mins", "1440"))
+	if mins < 1 || mins > 43200 {
+		mins = 1440
+	}
+	since := s.now().Add(-time.Duration(mins) * time.Minute).UTC().Format("2006-01-02 15:04:05")
+
+	type prow struct {
+		Model      string
+		Status     string
+		FRTMs      int `gorm:"column:frt_ms"`
+		DurationMs int `gorm:"column:duration_ms"`
+	}
+	var rows []prow
+	// 可容延迟，用只读副本；多取一行以判定是否触顶（sampled）。
+	s.readOnly().WithContext(c.Request.Context()).Model(&invocation.Invocation{}).
+		Select("model, status, frt_ms, duration_ms").
+		Where("org_id = ? AND created_at >= ?", claims.OrgID, since).
+		Order("id DESC").Limit(usagePerfMaxRows + 1).Scan(&rows)
+	sampled := len(rows) > usagePerfMaxRows
+	if sampled {
+		rows = rows[:usagePerfMaxRows]
+	}
+
+	frtSample := func(r prow) int {
+		if r.FRTMs > 0 {
+			return r.FRTMs
+		}
+		return r.DurationMs
+	}
+	durSample := func(r prow) int {
+		if r.DurationMs > 0 {
+			return r.DurationMs
+		}
+		return r.FRTMs
+	}
+
+	bucketDefs := []struct {
+		label    string
+		min, max int
+	}{
+		{"<1s", 0, 1000},
+		{"1-3s", 1000, 3000},
+		{"3-10s", 3000, 10000},
+		{">10s", 10000, math.MaxInt},
+	}
+	buckets := make([]int64, len(bucketDefs))
+
+	type magg struct {
+		calls, succeeded int64
+		frts             []int
+	}
+	models := map[string]*magg{}
+	var modelOrder []string
+
+	frts := make([]int, 0, len(rows))
+	durs := make([]int, 0, len(rows))
+	var succeeded int64
+	for i := range rows {
+		r := rows[i]
+		frts = append(frts, frtSample(r))
+		d := durSample(r)
+		durs = append(durs, d)
+		ok := r.Status == invocation.StatusSuccess
+		if ok {
+			succeeded++
+		}
+		for bi := range bucketDefs {
+			if d > bucketDefs[bi].min && d <= bucketDefs[bi].max {
+				buckets[bi]++
+				break
+			}
+		}
+		m := models[r.Model]
+		if m == nil {
+			m = &magg{}
+			models[r.Model] = m
+			modelOrder = append(modelOrder, r.Model)
+		}
+		m.calls++
+		if ok {
+			m.succeeded++
+		}
+		m.frts = append(m.frts, frtSample(r))
+	}
+
+	calls := int64(len(rows))
+	successRate := 1.0
+	if calls > 0 {
+		successRate = float64(succeeded) / float64(calls)
+	}
+	frtP50, frtP95, frtP99 := percentiles(frts)
+	durP50, durP95, durP99 := percentiles(durs)
+
+	bucketOut := make([]gin.H, len(bucketDefs))
+	for i := range bucketDefs {
+		bucketOut[i] = gin.H{"label": bucketDefs[i].label, "count": buckets[i]}
+	}
+
+	type modelStat struct {
+		Model       string  `json:"model"`
+		Calls       int64   `json:"calls"`
+		Succeeded   int64   `json:"succeeded"`
+		SuccessRate float64 `json:"success_rate"`
+		P50         int     `json:"p50"`
+		P95         int     `json:"p95"`
+		P99         int     `json:"p99"`
+	}
+	modelOut := make([]modelStat, 0, len(modelOrder))
+	for _, name := range modelOrder {
+		m := models[name]
+		p50, p95, p99 := percentiles(m.frts)
+		sr := 1.0
+		if m.calls > 0 {
+			sr = float64(m.succeeded) / float64(m.calls)
+		}
+		modelOut = append(modelOut, modelStat{name, m.calls, m.succeeded, sr, p50, p95, p99})
+	}
+	sort.SliceStable(modelOut, func(i, j int) bool { return modelOut[i].Calls > modelOut[j].Calls })
+
+	c.JSON(http.StatusOK, gin.H{
+		"window_mins":  mins,
+		"calls":        calls,
+		"succeeded":    succeeded,
+		"success_rate": successRate,
+		"frt":          gin.H{"p50": frtP50, "p95": frtP95, "p99": frtP99},
+		"dur":          gin.H{"p50": durP50, "p95": durP95, "p99": durP99},
+		"buckets":      bucketOut,
+		"models":       modelOut,
+		"sampled":      sampled,
+		"sample_size":  calls,
+	})
 }

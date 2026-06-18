@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { api } from '@/lib/api'
 import DailyBarChart, { type ChartMetric, type SummaryDay } from '@/components/DailyBarChart.vue'
 import DonutChart from '@/components/DonutChart.vue'
+import { ensureFx, fmtUsd, fmtCny } from '@/lib/money'
 
 interface UsageRow { id: number; model: string; status: string; duration_ms: number }
 interface ModelStat {
@@ -35,15 +36,14 @@ const recent = ref<UsageRow[]>([])
 const keys = ref<KeyRow[]>([])
 const monthRechargeUSD = ref(0)
 const last7RechargeUSD = ref(0)
-const fx = ref(7.3)
 const loading = ref(true)
 
-type RankMetric = 'tokens' | 'credits' | 'calls'
+type RankMetric = 'tokens' | 'cost' | 'calls'
 const chartMetric = ref<ChartMetric>('tokens')
 const chartMetrics: ChartMetric[] = ['tokens', 'cost', 'calls']
 const modelMetric = ref<RankMetric>('tokens')
 const keyMetric = ref<RankMetric>('tokens')
-const RANK_METRICS: RankMetric[] = ['tokens', 'credits', 'calls']
+const RANK_METRICS: RankMetric[] = ['tokens', 'cost', 'calls']
 const DONUT_COLORS = ['rgb(var(--chart-1))', 'rgb(var(--chart-2))', 'rgb(var(--chart-3))', 'rgb(var(--chart-4))', 'rgb(var(--chart-5))', 'rgb(var(--chart-6))', 'rgb(var(--c-muted))']
 
 function num(v: string | number): number {
@@ -55,24 +55,22 @@ function fmtTokens(v: number): string {
   if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`
   return n(v)
 }
-// 资金统一以 credits 展示（1 credit = 0.000001 元；credits = USD × 汇率 × 100 万），并附 ≈¥ 估算。
-function credits(usd: string | number): number {
-  return Math.round(num(usd) * fx.value * 1_000_000)
-}
-function fmtCredits(usd: string | number): string {
-  return n(credits(usd))
-}
-function cnyText(usd: string | number): string {
-  return `≈¥${(num(usd) * fx.value).toFixed(2)}`
-}
+// 资金一律以 USD（$）展示，与后端记账单位一致（参考 OpenRouter）；fmtUsd/fmtCny 来自共享 money.ts。
 function rankLabel(m: RankMetric): string {
-  return m === 'tokens' ? 'Tokens' : m === 'credits' ? 'Credits' : t('dash.rankCalls')
+  return m === 'tokens' ? 'Tokens' : m === 'cost' ? t('dash.rankCost') : t('dash.rankCalls')
+}
+function modelRankText(m: ModelStat): string {
+  return modelMetric.value === 'cost' ? fmtUsd(m.cost_usd) : modelMetric.value === 'tokens' ? fmtTokens(m.prompt_tokens + m.completion_tokens) : n(m.calls)
+}
+function keyRankText(k: KeyStat): string {
+  return keyMetric.value === 'cost' ? fmtUsd(k.cost_usd) : keyMetric.value === 'tokens' ? fmtTokens(k.prompt_tokens + k.completion_tokens) : n(k.calls)
 }
 
 function dayKey(offset: number): string {
-  const dt = new Date()
-  dt.setDate(dt.getDate() + offset)
-  return dt.toISOString().slice(0, 10)
+  // UTC 自然日键：与后端 DATE(created_at) 的 UTC 桶、recharge-stats 的 UTC 近 7 日窗严格对齐，
+  // 保证 today/last7/prev7 取数与服务端同窗、net7d 收(服务端 UTC)与支(本地汇总)同口径。
+  // 纯 UTC 毫秒整日位移，DST 区也不偏（不能用 setDate 本地日位移 + toISOString UTC 切片，会跨时区错位一天）。
+  return new Date(Date.now() + offset * 86400_000).toISOString().slice(0, 10)
 }
 function sumDays(startOffset: number, count: number) {
   const days = new Set<string>()
@@ -115,21 +113,21 @@ const activeKeys = computed(() => keys.value.filter((k) => k.status === 1).lengt
 const monthRecharge = computed(() => monthRechargeUSD.value)
 const net7d = computed(() => last7RechargeUSD.value - last7.value.cost)
 
-// 费用构成环图：按模型 credits 占比，top6 + 其他。
+// 费用构成环图：按模型费用(USD)占比，top6 + 其他（占比与单位无关，直接用 USD 数值）。
 const donutItems = computed(() => {
   const sorted = [...byModel.value].sort((a, b) => num(b.cost_usd) - num(a.cost_usd))
   const top = sorted.slice(0, 6)
   const restCost = sorted.slice(6).reduce((s, m) => s + num(m.cost_usd), 0)
-  const items = top.map((m, i) => ({ label: m.model, value: credits(m.cost_usd), color: DONUT_COLORS[i] }))
-  if (restCost > 0) items.push({ label: t('dash.donutOther'), value: credits(restCost), color: DONUT_COLORS[6] })
+  const items = top.map((m, i) => ({ label: m.model, value: num(m.cost_usd), color: DONUT_COLORS[i] }))
+  if (restCost > 0) items.push({ label: t('dash.donutOther'), value: restCost, color: DONUT_COLORS[6] })
   return items
 })
 
 function modelVal(m: ModelStat): number {
-  return modelMetric.value === 'tokens' ? m.prompt_tokens + m.completion_tokens : modelMetric.value === 'credits' ? credits(m.cost_usd) : m.calls
+  return modelMetric.value === 'tokens' ? m.prompt_tokens + m.completion_tokens : modelMetric.value === 'cost' ? num(m.cost_usd) : m.calls
 }
 function keyVal(k: KeyStat): number {
-  return keyMetric.value === 'tokens' ? k.prompt_tokens + k.completion_tokens : keyMetric.value === 'credits' ? credits(k.cost_usd) : k.calls
+  return keyMetric.value === 'tokens' ? k.prompt_tokens + k.completion_tokens : keyMetric.value === 'cost' ? num(k.cost_usd) : k.calls
 }
 const modelRanked = computed(() => [...byModel.value].sort((a, b) => modelVal(b) - modelVal(a)).slice(0, 6))
 const keyRanked = computed(() => [...byKey.value].sort((a, b) => keyVal(b) - keyVal(a)).slice(0, 6))
@@ -163,7 +161,8 @@ function pctClass(cur: number, prev: number): string {
 
 onMounted(async () => {
   loading.value = true
-  const [bal, sum, bm, bk, use, keyRows, ords, cfg] = await Promise.allSettled([
+  void ensureFx() // 拉取 cny_per_usd（≈¥ 提示用），全局缓存；不阻塞主数据
+  const [bal, sum, bm, bk, use, keyRows, ords] = await Promise.allSettled([
     api<{ balance: string; held: string }>('GET', '/api/balance'),
     api<{ items: SummaryDay[] }>('GET', '/api/usage/summary?days=30'),
     api<{ items: ModelStat[] }>('GET', '/api/usage/by-model?days=30'),
@@ -171,7 +170,6 @@ onMounted(async () => {
     api<{ items: UsageRow[] }>('GET', '/api/usage?page=1&page_size=100'),
     api<{ keys: KeyRow[] }>('GET', '/api/keys'),
     api<{ month_usd: string; last7_usd: string }>('GET', '/api/payment/recharge-stats'),
-    api<{ cny_per_usd: string }>('GET', '/api/config', undefined, { auth: false }),
   ])
   if (bal.status === 'fulfilled') {
     balance.value = bal.value.balance
@@ -185,10 +183,6 @@ onMounted(async () => {
   if (ords.status === 'fulfilled') {
     monthRechargeUSD.value = num(ords.value.month_usd)
     last7RechargeUSD.value = num(ords.value.last7_usd)
-  }
-  if (cfg.status === 'fulfilled') {
-    const rate = Number(cfg.value.cny_per_usd)
-    if (Number.isFinite(rate) && rate > 0) fx.value = rate
   }
   loading.value = false
 })
@@ -219,8 +213,8 @@ onMounted(async () => {
           <span class="metric-icon mi-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
           <p class="text-xs font-medium text-muted">{{ t('dash.cardCostTitle') }}</p>
         </div>
-        <p class="mt-3 font-mono text-3xl font-semibold">{{ loading ? '—' : fmtCredits(totals.cost) }}</p>
-        <p class="mt-2 text-xs text-muted">{{ cnyText(totals.cost) }}</p>
+        <p class="mt-3 font-mono text-3xl font-semibold">{{ loading ? '—' : fmtUsd(totals.cost) }}</p>
+        <p class="mt-2 text-xs text-muted">{{ fmtCny(totals.cost) }}</p>
       </div>
       <div class="metric-card">
         <div class="flex items-center gap-3">
@@ -244,23 +238,23 @@ onMounted(async () => {
           <span class="metric-icon mi-sky"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3" /></svg></span>
           <p class="text-xs font-medium text-muted">{{ t('dash.cardBalanceTitle') }}</p>
         </div>
-        <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtCredits(balance) }}</p>
-        <p class="mt-2 text-xs text-muted">{{ t('dash.cardBalanceSub', { cny: cnyText(balance), held: fmtCredits(held) }) }}</p>
+        <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtUsd(balance) }}</p>
+        <p class="mt-2 text-xs text-muted">{{ t('dash.cardBalanceSub', { cny: fmtCny(balance), held: fmtUsd(held) }) }}</p>
       </router-link>
       <router-link to="/app/recharges" class="metric-card block">
         <div class="flex items-center gap-3">
           <span class="metric-icon mi-violet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z" /></svg></span>
           <p class="text-xs font-medium text-muted">{{ t('dash.cardMonthRechargeTitle') }}</p>
         </div>
-        <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtCredits(monthRecharge) }}</p>
-        <p class="mt-2 text-xs text-muted">{{ t('dash.cardMonthRechargeSub', { cny: cnyText(monthRecharge) }) }}</p>
+        <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtUsd(monthRecharge) }}</p>
+        <p class="mt-2 text-xs text-muted">{{ t('dash.cardMonthRechargeSub', { cny: fmtCny(monthRecharge) }) }}</p>
       </router-link>
       <div class="metric-card">
         <div class="flex items-center gap-3">
           <span class="metric-icon mi-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 18 9 11.25l4.306 4.306a11.95 11.95 0 0 1 5.814-5.518l2.74-1.22m0 0-5.94-2.281m5.94 2.28-2.28 5.941" /></svg></span>
           <p class="text-xs font-medium text-muted">{{ t('dash.cardNet7dTitle') }}</p>
         </div>
-        <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtCredits(net7d) }}</p>
+        <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtUsd(net7d) }}</p>
         <p class="mt-2 text-xs text-muted">{{ t('dash.cardNet7dSub') }}</p>
       </div>
       <div class="metric-card">
@@ -290,8 +284,8 @@ onMounted(async () => {
           </div>
           <div>
             <p class="text-xs text-muted">{{ t('dash.colCost') }}</p>
-            <p class="mt-2 font-mono text-xl font-semibold">{{ fmtCredits(today.cost) }}</p>
-            <p class="text-xs text-muted">{{ t('dash.yesterdayValue', { v: fmtCredits(yesterday.cost) }) }}</p>
+            <p class="mt-2 font-mono text-xl font-semibold">{{ fmtUsd(today.cost) }}</p>
+            <p class="text-xs text-muted">{{ t('dash.yesterdayValue', { v: fmtUsd(yesterday.cost) }) }}</p>
           </div>
         </div>
         <p class="mt-3 text-xs text-muted">{{ t('dash.partialDayNote') }}</p>
@@ -314,8 +308,8 @@ onMounted(async () => {
           </div>
           <div>
             <p class="text-xs text-muted">{{ t('dash.colCost') }}</p>
-            <p class="mt-2 font-mono text-xl font-semibold">{{ fmtCredits(last7.cost) }}</p>
-            <p class="text-xs" :class="pctClass(last7.cost, prev7.cost)">{{ pctText(last7.cost, prev7.cost) || t('dash.prev7Value', { v: fmtCredits(prev7.cost) }) }}</p>
+            <p class="mt-2 font-mono text-xl font-semibold">{{ fmtUsd(last7.cost) }}</p>
+            <p class="text-xs" :class="pctClass(last7.cost, prev7.cost)">{{ pctText(last7.cost, prev7.cost) || t('dash.prev7Value', { v: fmtUsd(prev7.cost) }) }}</p>
           </div>
         </div>
       </div>
@@ -328,11 +322,11 @@ onMounted(async () => {
           <h2 class="font-semibold">{{ t('dash.usageTrendTitle') }}</h2>
           <div class="segmented-control">
             <button v-for="m in chartMetrics" :key="m" type="button" :class="{ active: chartMetric === m }" @click="chartMetric = m">
-              {{ m === 'tokens' ? 'Tokens' : m === 'cost' ? 'Credits' : t('dash.rankCalls') }}
+              {{ m === 'tokens' ? 'Tokens' : m === 'cost' ? t('dash.rankCost') : t('dash.rankCalls') }}
             </button>
           </div>
         </div>
-        <DailyBarChart :items="summary" :days="30" :metric="chartMetric" :credits-fx="fx" />
+        <DailyBarChart :items="summary" :days="30" :metric="chartMetric" />
       </div>
 
       <div class="app-panel p-5">
@@ -358,7 +352,7 @@ onMounted(async () => {
             <div class="h-2 flex-1 overflow-hidden rounded-full bg-line">
               <div class="h-full rounded-full bg-accent" :style="{ width: `${(modelVal(m) / maxModel) * 100}%` }"></div>
             </div>
-            <span class="w-20 text-right font-mono text-xs text-muted">{{ n(modelVal(m)) }}</span>
+            <span class="w-20 text-right font-mono text-xs text-muted">{{ modelRankText(m) }}</span>
           </div>
           <p v-if="modelRanked.length === 0" class="empty-state">{{ t('dash.emptyData') }}</p>
         </div>
@@ -377,7 +371,7 @@ onMounted(async () => {
             <div class="h-2 flex-1 overflow-hidden rounded-full bg-line">
               <div class="h-full rounded-full bg-accent2" :style="{ width: `${(keyVal(k) / maxKey) * 100}%` }"></div>
             </div>
-            <span class="w-20 text-right font-mono text-xs text-muted">{{ n(keyVal(k)) }}</span>
+            <span class="w-20 text-right font-mono text-xs text-muted">{{ keyRankText(k) }}</span>
           </div>
           <p v-if="keyRanked.length === 0" class="empty-state">{{ t('dash.emptyData') }}</p>
         </div>

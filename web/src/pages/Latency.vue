@@ -1,15 +1,29 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/lib/api'
 
-interface UsageRow {
-  id: number
+interface ModelPerf {
   model: string
-  status: string
-  frt_ms: number
-  duration_ms: number
-  created_at: string
+  calls: number
+  succeeded: number
+  success_rate: number
+  p50: number
+  p95: number
+  p99: number
+}
+interface Bucket { label: string; count: number }
+interface PerfStats {
+  window_mins: number
+  calls: number
+  succeeded: number
+  success_rate: number
+  frt: { p50: number; p95: number; p99: number }
+  dur: { p50: number; p95: number; p99: number }
+  buckets: Bucket[]
+  models: ModelPerf[]
+  sampled: boolean
+  sample_size: number
 }
 interface ModelStat { model: string }
 
@@ -17,76 +31,40 @@ const { t, n } = useI18n()
 const model = ref('')
 const window = ref<'24h' | '7d' | '30d'>('24h')
 const search = ref('')
-const rows = ref<UsageRow[]>([])
+const stats = ref<PerfStats | null>(null)
 const models = ref<ModelStat[]>([])
+const loading = ref(true)
 
-function pct(values: number[], p: number): number {
-  const list = values.filter((v) => v > 0).sort((a, b) => a - b)
-  if (!list.length) return 0
-  const idx = Math.min(list.length - 1, Math.ceil((p / 100) * list.length) - 1)
-  return list[idx]
-}
+// 窗口 → 回看分钟数（与后端 perf-stats 的 mins 参数对齐）。分位/成功率/时长分布均由后端在窗口全量上聚合，
+// 切窗口即重新拉取——不再像旧实现那样对最近 100 行本地算（被分页截断、且 7d/30d 与 24h 拿同一批行）。
+const WINDOW_MINS: Record<'24h' | '7d' | '30d', number> = { '24h': 1440, '7d': 10080, '30d': 43200 }
+
 function fmtMs(v: number): string {
   return v ? `${Math.round(v)}ms` : '—'
 }
-function withinWindow(row: UsageRow): boolean {
-  const t = new Date(row.created_at).getTime()
-  if (!Number.isFinite(t)) return true
-  const ms = window.value === '24h' ? 86400_000 : window.value === '7d' ? 7 * 86400_000 : 30 * 86400_000
-  return t >= Date.now() - ms
-}
 
-const visible = computed(() => rows.value
-  .filter(withinWindow)
-  .filter((r) => !model.value || r.model === model.value)
-  .filter((r) => !search.value || r.model.toLowerCase().includes(search.value.toLowerCase())))
-const frts = computed(() => visible.value.map((r) => r.frt_ms || r.duration_ms))
-const successRate = computed(() => visible.value.length ? visible.value.filter((r) => r.status === 'success').length / visible.value.length : 0)
-const modelRows = computed(() => {
-  const map = new Map<string, UsageRow[]>()
-  for (const r of visible.value) {
-    const list = map.get(r.model) ?? []
-    list.push(r)
-    map.set(r.model, list)
-  }
-  return [...map.entries()].map(([name, list]) => {
-    const values = list.map((r) => r.frt_ms || r.duration_ms)
-    return {
-      model: name,
-      p50: pct(values, 50),
-      p95: pct(values, 95),
-      p99: pct(values, 99),
-      success: list.length ? list.filter((r) => r.status === 'success').length / list.length : 0,
-      calls: list.length,
-    }
-  }).sort((a, b) => b.calls - a.calls)
-})
-const buckets = computed(() => {
-  const defs = [
-    { label: '<1s', max: 1000 },
-    { label: '1-3s', max: 3000 },
-    { label: '3-10s', max: 10000 },
-    { label: '>10s', max: Infinity },
-  ]
-  return defs.map((b, i) => ({ ...b, count: visible.value.filter((r) => {
-    const v = r.duration_ms || r.frt_ms
-    const min = i === 0 ? 0 : defs[i - 1].max
-    return v > min && v <= b.max
-  }).length }))
-})
+const frt = computed(() => stats.value?.frt ?? { p50: 0, p95: 0, p99: 0 })
+const successRate = computed(() => stats.value?.success_rate ?? 0)
+const calls = computed(() => stats.value?.calls ?? 0)
+const buckets = computed(() => stats.value?.buckets ?? [])
 const maxBucket = computed(() => Math.max(1, ...buckets.value.map((b) => b.count)))
+const modelRows = computed(() => (stats.value?.models ?? [])
+  .filter((m) => !model.value || m.model === model.value)
+  .filter((m) => !search.value || m.model.toLowerCase().includes(search.value.toLowerCase())))
 
 async function load() {
-  const [use, bm] = await Promise.allSettled([
-    api<{ items: UsageRow[] }>('GET', '/api/usage?page=1&page_size=100'),
+  loading.value = true
+  const [st, bm] = await Promise.allSettled([
+    api<PerfStats>('GET', `/api/usage/perf-stats?mins=${WINDOW_MINS[window.value]}`),
     api<{ items: ModelStat[] }>('GET', '/api/usage/by-model?days=30'),
   ])
-  if (use.status === 'fulfilled') rows.value = use.value.items
+  if (st.status === 'fulfilled') stats.value = st.value
   if (bm.status === 'fulfilled') models.value = bm.value.items
+  loading.value = false
 }
 function exportCsv() {
   const body = ['model,p50,p95,p99,success,calls']
-    .concat(modelRows.value.map((r) => `${r.model},${Math.round(r.p50)},${Math.round(r.p95)},${Math.round(r.p99)},${(r.success * 100).toFixed(1)}%,${r.calls}`))
+    .concat(modelRows.value.map((r) => `${r.model},${Math.round(r.p50)},${Math.round(r.p95)},${Math.round(r.p99)},${(r.success_rate * 100).toFixed(1)}%,${r.calls}`))
     .join('\n')
   const blob = new Blob([body], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -97,6 +75,7 @@ function exportCsv() {
   URL.revokeObjectURL(url)
 }
 
+watch(window, () => void load())
 onMounted(load)
 </script>
 
@@ -127,12 +106,14 @@ onMounted(load)
     </div>
 
     <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-      <div class="metric-card"><div class="flex items-center gap-3"><span class="metric-icon mi-indigo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><p class="text-xs text-muted">{{ t('lat.metricP50Frt') }}</p></div><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(pct(frts, 50)) }}</p></div>
-      <div class="metric-card"><div class="flex items-center gap-3"><span class="metric-icon mi-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><p class="text-xs text-muted">{{ t('lat.metricP95Frt') }}</p></div><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(pct(frts, 95)) }}</p></div>
-      <div class="metric-card"><div class="flex items-center gap-3"><span class="metric-icon mi-sky"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><p class="text-xs text-muted">{{ t('lat.metricP99Frt') }}</p></div><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(pct(frts, 99)) }}</p></div>
-      <div class="metric-card"><div class="flex items-center gap-3"><span class="metric-icon mi-green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><p class="text-xs text-muted">{{ t('lat.metricSuccessRate') }}</p></div><p class="mt-2 font-mono text-2xl font-semibold">{{ visible.length ? (successRate * 100).toFixed(1) + '%' : '—' }}</p></div>
-      <div class="metric-card"><div class="flex items-center gap-3"><span class="metric-icon mi-amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" /></svg></span><p class="text-xs text-muted">{{ t('lat.metricRequests') }}</p></div><p class="mt-2 font-mono text-2xl font-semibold">{{ n(visible.length) }}<span class="text-sm text-muted"> reqs</span></p></div>
+      <div class="metric-card"><div class="flex items-center gap-3"><span class="metric-icon mi-indigo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><p class="text-xs text-muted">{{ t('lat.metricP50Frt') }}</p></div><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(frt.p50) }}</p></div>
+      <div class="metric-card"><div class="flex items-center gap-3"><span class="metric-icon mi-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><p class="text-xs text-muted">{{ t('lat.metricP95Frt') }}</p></div><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(frt.p95) }}</p></div>
+      <div class="metric-card"><div class="flex items-center gap-3"><span class="metric-icon mi-sky"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><p class="text-xs text-muted">{{ t('lat.metricP99Frt') }}</p></div><p class="mt-2 font-mono text-2xl font-semibold">{{ fmtMs(frt.p99) }}</p></div>
+      <div class="metric-card"><div class="flex items-center gap-3"><span class="metric-icon mi-green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><p class="text-xs text-muted">{{ t('lat.metricSuccessRate') }}</p></div><p class="mt-2 font-mono text-2xl font-semibold">{{ calls ? (successRate * 100).toFixed(1) + '%' : '—' }}</p></div>
+      <div class="metric-card"><div class="flex items-center gap-3"><span class="metric-icon mi-amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" /></svg></span><p class="text-xs text-muted">{{ t('lat.metricRequests') }}</p></div><p class="mt-2 font-mono text-2xl font-semibold">{{ n(calls) }}<span class="text-sm text-muted"> reqs</span></p></div>
     </div>
+
+    <p v-if="stats?.sampled" class="text-xs text-muted">{{ t('lat.sampledNote', { n: n(stats.sample_size) }) }}</p>
 
     <div class="grid gap-4 xl:grid-cols-3">
       <div class="app-panel p-5">
@@ -146,11 +127,11 @@ onMounted(load)
       </div>
       <div class="app-panel p-5">
         <h2 class="font-semibold">{{ t('lat.chartSuccessTrend') }}</h2>
-        <div class="mt-16 text-center font-mono text-3xl font-semibold">{{ visible.length ? (successRate * 100).toFixed(1) + '%' : '—' }}</div>
+        <div class="mt-16 text-center font-mono text-3xl font-semibold">{{ calls ? (successRate * 100).toFixed(1) + '%' : '—' }}</div>
       </div>
       <div class="app-panel p-5">
         <h2 class="font-semibold">{{ t('lat.chartStreamFrt') }}</h2>
-        <div class="mt-16 text-center font-mono text-3xl font-semibold">{{ fmtMs(pct(frts, 50)) }}</div>
+        <div class="mt-16 text-center font-mono text-3xl font-semibold">{{ fmtMs(frt.p50) }}</div>
       </div>
     </div>
 
@@ -181,7 +162,7 @@ onMounted(load)
               <td class="px-4 py-2.5 text-right font-mono">{{ fmtMs(r.p50) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ fmtMs(r.p95) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ fmtMs(r.p99) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono">{{ (r.success * 100).toFixed(1) }}%</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ (r.success_rate * 100).toFixed(1) }}%</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(r.calls) }}</td>
             </tr>
           </tbody>

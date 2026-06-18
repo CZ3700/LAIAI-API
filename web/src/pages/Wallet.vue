@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
+import { fmtUsd } from '@/lib/money'
 
 interface Method { provider: string; currency: string; label: string }
 interface Order {
@@ -33,6 +34,8 @@ const methods = ref<Method[]>([])
 const amountOptions = ref<number[]>([])
 const orders = ref<Order[]>([])
 const ledger = ref<LedgerEntry[]>([])
+const ledgerTotal = ref(0)
+const ordersTotal = ref(0)
 const selectedAmount = ref(20)
 const selectedProvider = ref('')
 const creating = ref(false)
@@ -80,8 +83,8 @@ async function load() {
   const [bal, m, o, lg] = await Promise.allSettled([
     api<{ balance: string; held: string }>('GET', '/api/balance'),
     api<{ methods: Method[]; amount_options: number[]; bonus_tiers?: string }>('GET', '/api/payment/methods'),
-    api<{ orders: Order[] }>('GET', '/api/payment/orders'),
-    api<{ items: LedgerEntry[] }>('GET', '/api/ledger'),
+    api<{ orders: Order[]; total: number }>('GET', '/api/payment/orders'),
+    api<{ items: LedgerEntry[]; total: number }>('GET', '/api/ledger'),
   ])
   if (bal.status === 'fulfilled') {
     balance.value = bal.value.balance
@@ -99,9 +102,15 @@ async function load() {
     }
   }
   ordersErr.value = o.status === 'rejected'
-  if (o.status === 'fulfilled') orders.value = o.value.orders
+  if (o.status === 'fulfilled') {
+    orders.value = o.value.orders
+    ordersTotal.value = o.value.total
+  }
   ledgerErr.value = lg.status === 'rejected'
-  if (lg.status === 'fulfilled') ledger.value = lg.value.items
+  if (lg.status === 'fulfilled') {
+    ledger.value = lg.value.items
+    ledgerTotal.value = lg.value.total
+  }
 }
 
 async function topup() {
@@ -144,15 +153,15 @@ onMounted(load)
       <!-- 余额 -->
       <div class="console-hero p-6 text-ink">
         <p class="text-xs text-muted">{{ t('dashboard.balance') }}</p>
-        <p class="mt-2 text-4xl font-semibold font-mono">${{ balance }}</p>
+        <p class="mt-2 text-4xl font-semibold font-mono">{{ fmtUsd(balance) }}</p>
         <div class="mt-5 grid gap-3 sm:grid-cols-2">
           <div class="soft-panel p-3">
             <p class="text-xs text-muted">{{ t('wallet.held') }}</p>
-            <p class="mt-1 font-mono text-lg">${{ held }}</p>
+            <p class="mt-1 font-mono text-lg">{{ fmtUsd(held) }}</p>
           </div>
           <div class="soft-panel p-3">
             <p class="text-xs text-muted">{{ t('wallet.transactions') }}</p>
-            <p class="mt-1 font-mono text-lg">{{ ledger.length }}</p>
+            <p class="mt-1 font-mono text-lg">{{ ledgerTotal }}</p>
           </div>
         </div>
       </div>
@@ -167,7 +176,7 @@ onMounted(load)
           </div>
           <div class="soft-panel p-3">
             <p class="text-muted">{{ t('wallet.history') }}</p>
-            <p class="mt-1 font-mono text-ink">{{ orders.length }}</p>
+            <p class="mt-1 font-mono text-ink">{{ ordersTotal }}</p>
           </div>
         </div>
       </div>
@@ -248,9 +257,9 @@ onMounted(load)
               <td class="px-4 py-2.5"><span class="badge-muted">{{ kindLabel(e.kind) }}</span></td>
               <td class="px-4 py-2.5 text-muted">{{ e.reason || e.ref_type }}</td>
               <td class="px-4 py-2.5 text-right font-mono" :class="Number(e.delta) >= 0 ? 'text-ok' : 'text-danger'">
-                {{ Number(e.delta) >= 0 ? '+' : '' }}{{ e.delta }}
+                {{ Number(e.delta) >= 0 ? '+' : '-' }}{{ fmtUsd(Math.abs(Number(e.delta))) }}
               </td>
-              <td class="px-4 py-2.5 text-right font-mono text-muted">${{ e.balance_after }}</td>
+              <td class="px-4 py-2.5 text-right font-mono text-muted">{{ fmtUsd(e.balance_after) }}</td>
             </tr>
           </tbody>
         </table>
@@ -279,7 +288,7 @@ onMounted(load)
             </tr>
             <tr v-for="o in orders" :key="o.id" class="border-b border-line last:border-0">
               <td class="px-4 py-2.5 text-muted">{{ d(new Date(o.created_at * 1000), { dateStyle: 'short', timeStyle: 'short' }) }}</td>
-              <td class="px-4 py-2.5 font-mono">${{ o.amount_usd }}</td>
+              <td class="px-4 py-2.5 font-mono">{{ fmtUsd(o.amount_usd) }}</td>
               <td class="px-4 py-2.5">{{ o.provider }}</td>
               <td class="px-4 py-2.5">
                 <span :class="o.status === 1 ? 'badge-ok' : o.status === 0 ? 'badge-muted' : 'badge-danger'">

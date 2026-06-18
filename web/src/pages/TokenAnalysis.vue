@@ -119,7 +119,7 @@ onMounted(load)
         <h2 class="font-semibold">{{ t('tokana.usageTrend') }}</h2>
         <div class="flex gap-2">
           <div class="segmented-control"><button :class="{ active: grain === 'day' }" @click="grain = 'day'">{{ t('tokana.grainDay') }}</button><button :class="{ active: grain === 'hour' }" @click="grain = 'hour'">{{ t('tokana.grainHour') }}</button></div>
-          <div class="segmented-control"><button :class="{ active: metric === 'tokens' }" @click="metric = 'tokens'">Tokens</button><button :class="{ active: metric === 'cost' }" @click="metric = 'cost'">Credits</button><button :class="{ active: metric === 'calls' }" @click="metric = 'calls'">{{ t('tokana.metricCallsLabel') }}</button></div>
+          <div class="segmented-control"><button :class="{ active: metric === 'tokens' }" @click="metric = 'tokens'">Tokens</button><button :class="{ active: metric === 'cost' }" @click="metric = 'cost'">{{ t('usagex.colCost') }}</button><button :class="{ active: metric === 'calls' }" @click="metric = 'calls'">{{ t('tokana.metricCallsLabel') }}</button></div>
         </div>
       </div>
       <DailyBarChart :items="summary" :days="days" :metric="metric" />

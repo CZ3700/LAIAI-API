@@ -42,7 +42,7 @@ const rangeOptions = [
 ]
 const metricOptions = computed<{ key: ChartMetric; label: string }[]>(() => [
   { key: 'tokens', label: 'Tokens' },
-  { key: 'cost', label: 'Credits' },
+  { key: 'cost', label: t('usagex.colCost') },
   { key: 'calls', label: t('usagex.metricCalls') },
 ])
 
@@ -207,7 +207,7 @@ onMounted(load)
     <div class="grid gap-4 xl:grid-cols-[1fr_0.72fr]">
       <div class="app-panel p-5">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 class="font-semibold">{{ t('usagex.trendTitle', { period: granularity === 'hour' ? t('usagex.granHour') : granularity === 'month' ? t('usagex.granMonth') : t('usagex.granDay'), metric: metric === 'tokens' ? 'Tokens' : metric === 'cost' ? 'Credits' : t('usagex.metricCalls') }) }}</h2>
+          <h2 class="font-semibold">{{ t('usagex.trendTitle', { period: granularity === 'hour' ? t('usagex.granHour') : granularity === 'month' ? t('usagex.granMonth') : t('usagex.granDay'), metric: metric === 'tokens' ? 'Tokens' : metric === 'cost' ? t('usagex.colCost') : t('usagex.metricCalls') }) }}</h2>
           <div class="segmented-control">
             <button v-for="m in metricOptions" :key="m.key" type="button" :class="{ active: metric === m.key }" @click="metric = m.key">{{ m.label }}</button>
           </div>
@@ -246,13 +246,12 @@ onMounted(load)
               <th class="px-4 py-3 text-right">{{ t('usagex.colReasoningTokens') }}</th>
               <th class="px-4 py-3 text-right">{{ t('usagex.colCacheTokens') }}</th>
               <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('tokens')">{{ t('usagex.colTotalTokens') }} {{ sortKey === 'tokens' ? (sortDir === 'desc' ? '↓' : '↑') : '↕' }}</button></th>
-              <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('cost')">Credits ↕</button></th>
-              <th class="px-4 py-3 text-right">{{ t('usagex.colCost') }}</th>
+              <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('cost')">{{ t('usagex.colCost') }} {{ sortKey === 'cost' ? (sortDir === 'desc' ? '↓' : '↑') : '↕' }}</button></th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="filteredModels.length === 0">
-              <td colspan="9" class="px-4 py-8 text-center text-muted">{{ t('usagex.emptyData') }}</td>
+              <td colspan="8" class="px-4 py-8 text-center text-muted">{{ t('usagex.emptyData') }}</td>
             </tr>
             <tr v-for="m in filteredModels" :key="m.model">
               <td class="px-4 py-2.5 font-mono text-xs">{{ m.model }}</td>
@@ -262,7 +261,6 @@ onMounted(load)
               <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
               <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(m.prompt_tokens + m.completion_tokens) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono">{{ n(Math.round(num(m.cost_usd) * 1_000_000)) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(num(m.cost_usd)) }}</td>
             </tr>
           </tbody>
@@ -283,7 +281,6 @@ onMounted(load)
               <th class="px-4 py-3 text-right">{{ t('usagex.colReasoningTokens') }} ↕</th>
               <th class="px-4 py-3 text-right">{{ t('usagex.colCacheTokens') }} ↕</th>
               <th class="px-4 py-3 text-right">{{ t('usagex.colTotalTokens') }} ↓</th>
-              <th class="px-4 py-3 text-right">Credits ↕</th>
               <th class="px-4 py-3 text-right">{{ t('usagex.colCost') }}</th>
             </tr>
           </thead>
@@ -296,7 +293,6 @@ onMounted(load)
               <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
               <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(row.input + row.output) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono">{{ n(Math.round(row.cost * 1_000_000)) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(row.cost) }}</td>
             </tr>
           </tbody>

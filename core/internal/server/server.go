@@ -172,6 +172,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/usage/by-key", s.getUsageByKey) // 仪表盘密钥排行榜
 				org.GET("/usage/by-model-daily", s.getUsageByModelDaily)
 				org.GET("/usage/perf", s.getUsagePerf)
+				org.GET("/usage/perf-stats", s.getUsagePerfStats) // 延迟/成功率 服务端分位聚合（Latency 页）
 				org.GET("/balance", s.getBalance)
 				org.GET("/ledger", s.getLedger)
 				org.GET("/payment/methods", s.getPaymentMethods)

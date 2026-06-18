@@ -1244,7 +1244,7 @@ onMounted(async () => {
           <div class="metric-card">
             <div class="flex items-center gap-3">
               <span class="metric-icon mi-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
-              <p class="text-xs text-muted">{{ t('admin.ovRevenue') }}</p>
+              <p class="text-xs text-muted">{{ t('admin.anConsumption') }}</p>
             </div>
             <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(overview.revenue_window).toFixed(4) }}</p>
             <p class="mt-1 text-xs text-muted">{{ t('admin.ovLastDays', { days: overview.window_days }) }}</p>
@@ -2324,8 +2324,8 @@ onMounted(async () => {
                     <span v-else class="text-xs text-muted">{{ o.group }}</span>
                   </td>
                   <td class="px-4 py-2.5 text-right">{{ o.members }}{{ o.max_members ? `/${o.max_members}` : '' }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono">${{ o.balance }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono text-muted">${{ o.held }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono">${{ Number(o.balance).toFixed(2) }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-muted">${{ Number(o.held).toFixed(2) }}</td>
                   <td class="px-4 py-2.5 text-right font-mono">${{ Number(o.spend).toFixed(4) }}</td>
                   <td class="px-4 py-2.5 text-right font-mono text-muted">{{ o.calls }}</td>
                   <td class="px-4 py-2.5 text-xs text-muted">{{ o.last_active ? o.last_active.slice(0, 10) : '—' }}</td>
@@ -2358,7 +2358,7 @@ onMounted(async () => {
                         <input :id="`ent-key-${o.id}`" v-model.number="entForm.max_api_keys" type="number" min="0" class="input !w-28" />
                       </div>
                       <div class="flex gap-2">
-                        <button class="btn-primary !py-1.5 text-xs" @click="saveEnt(o)">{{ t('common.save') }}</button>
+                        <button class="btn-primary !py-1.5 text-xs" @click="saveEnt(o)">{{ t('settings.save') }}</button>
                         <button class="btn-ghost !py-1.5 text-xs" @click="entOpen = null">{{ t('common.cancel') }}</button>
                       </div>
                       <!-- 规模化：账户分片数（巨客户写吞吐扩容；单独保存，走 /shards 端点）-->
@@ -2442,7 +2442,7 @@ onMounted(async () => {
                     <span :class="l.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ l.status }}</span>
                   </td>
                   <td class="px-4 py-2.5 text-right font-mono">{{ l.prompt_tokens }} / {{ l.completion_tokens }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono">{{ l.cost_usd }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono">${{ Number(l.cost_usd).toFixed(4) }}</td>
                 </tr>
                 <tr v-if="expandedLog === l.id" class="!border-0 bg-elev/40">
                   <td colspan="7" class="px-4 pb-4 pt-1">

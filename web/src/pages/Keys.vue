@@ -265,7 +265,7 @@ onMounted(load)
               <span v-if="!k.model_limits && !k.allow_ips" class="text-muted">—</span>
             </td>
             <td class="px-4 py-3 text-right font-mono text-xs">
-              ${{ Number(k.used_amount).toFixed(4) }}<span v-if="k.quota_limit !== '0'" class="text-muted"> / ${{ k.quota_limit }}</span>
+              ${{ Number(k.used_amount).toFixed(4) }}<span v-if="k.quota_limit !== '0'" class="text-muted"> / ${{ Number(k.quota_limit).toFixed(2) }}</span>
             </td>
             <td class="px-4 py-3">
               <span :class="k.status === 1 ? 'badge-ok' : 'badge-muted'">

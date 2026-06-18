@@ -13,9 +13,7 @@ export interface SummaryDay {
 
 export type ChartMetric = 'calls' | 'tokens' | 'cost' | 'success'
 
-// creditsFx：传入汇率则成本 tooltip 以 credits 展示（credits = USD × fx × 1e6），与 credits 主题一致；
-// 不传则回退美元（$），保持其它调用方行为不变。
-const props = withDefaults(defineProps<{ items: SummaryDay[]; days: number; metric?: ChartMetric; creditsFx?: number }>(), {
+const props = withDefaults(defineProps<{ items: SummaryDay[]; days: number; metric?: ChartMetric }>(), {
   metric: 'calls',
 })
 const { t } = useI18n()
@@ -41,11 +39,11 @@ interface Bar {
 const chart = computed(() => {
   const byDay = new Map(props.items.map((s) => [s.day, s]))
   const out: Bar[] = []
-  const today = new Date()
+  // UTC 自然日键，与后端 summary 的 DATE(created_at) UTC 桶对齐（纯 UTC 毫秒整日位移，
+  // 避免本地时区 setDate + toISOString 切片在日界附近把某天的柱错位成 0）。
+  const todayMs = Date.now()
   for (let i = props.days - 1; i >= 0; i--) {
-    const dt = new Date(today)
-    dt.setDate(today.getDate() - i)
-    const key = dt.toISOString().slice(0, 10)
+    const key = new Date(todayMs - i * 86400_000).toISOString().slice(0, 10)
     const s = byDay.get(key)
     const calls = s?.calls ?? 0
     const tokens = (s?.prompt_tokens ?? 0) + (s?.completion_tokens ?? 0)
@@ -60,8 +58,7 @@ const chart = computed(() => {
 
 const color = computed(() => METRIC_COLOR[props.metric])
 function fmtTip(b: Bar): string {
-  const costStr = props.creditsFx ? `${Math.round(b.cost * props.creditsFx * 1e6).toLocaleString()} cr` : `$${b.cost.toFixed(4)}`
-  return `${b.label} · ${b.calls} calls · ${b.tokens.toLocaleString()} tok · ${costStr} · ${(b.success * 100).toFixed(0)}% ok`
+  return `${b.label} · ${b.calls} calls · ${b.tokens.toLocaleString()} tok · $${b.cost.toFixed(4)} · ${(b.success * 100).toFixed(0)}% ok`
 }
 </script>
 

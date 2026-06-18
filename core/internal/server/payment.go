@@ -558,12 +558,16 @@ func (s *Server) getAffiliate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"aff_code": code, "invited": invited})
 }
 
-// listTopups：GET /api/payment/orders —— 当前 org 充值记录。
+// listTopups：GET /api/payment/orders —— 当前 org 充值记录（最近 50 条明细 + 权威总数）。
+// 返回 total 让前端"共 N 条/交易数"等计数显示真实总量，而不是被 Limit(50) 截断后的明细条数。
+// 注：本月已到账金额请用 /api/payment/recharge-stats（服务端聚合），不要对这 50 条明细本地求和（会漏算）。
 func (s *Server) listTopups(c *gin.Context) {
 	claims := mustClaims(c)
+	var total int64
+	s.db.Model(&TopupOrder{}).Where("org_id = ?", claims.OrgID).Count(&total)
 	var orders []TopupOrder
 	s.db.Where("org_id = ?", claims.OrgID).Order("id DESC").Limit(50).Find(&orders)
-	c.JSON(http.StatusOK, gin.H{"orders": orders})
+	c.JSON(http.StatusOK, gin.H{"orders": orders, "total": total})
 }
 
 // getRechargeStats：GET /api/payment/recharge-stats —— 仪表盘卡片用：本月 + 近 7 个 UTC 自然日

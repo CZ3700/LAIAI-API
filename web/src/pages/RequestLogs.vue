@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
-import { toCredits, ensureFx } from '@/lib/money'
+import { fmtUsd, ensureFx } from '@/lib/money'
 
 interface UsageRow {
   id: number
@@ -47,35 +47,37 @@ function statusText(r: UsageRow): string {
 function fmtMs(v: number): string {
   return v >= 1000 ? `${(v / 1000).toFixed(3)} ${t('reqlog.unitSec')}` : `${v}ms`
 }
-function rangeMatches(row: UsageRow): boolean {
-  if (range.value === '30d') return true
-  const created = new Date(row.created_at).getTime()
-  if (!Number.isFinite(created)) return true
-  const now = Date.now()
-  if (range.value === '7d') return created >= now - 7 * 86400_000
-  if (range.value === 'month') {
-    const d0 = new Date()
-    return new Date(created).getMonth() === d0.getMonth() && new Date(created).getFullYear() === d0.getFullYear()
-  }
+// 时间窗按 UTC 自然日界计算（与后端 created_at 的 UTC 存储/聚合口径一致），下推到后端 since/until 过滤，
+// 由后端分页 + 计 total——不再对当前页本地按浏览器时区筛（旧实现会漏算窗口内分页外的行、且把边界日按本地月误分桶，
+// 还让 footer 的 N/total 用本地子集分子配全局分母变得不自洽）。区间左闭右开 [since, until)。
+function utcDate(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10)
+}
+function windowParams(): { since?: string; until?: string } {
+  const now = new Date()
+  const y = now.getUTCFullYear()
+  const m = now.getUTCMonth() // 0-based
+  const thisMonth1 = `${y}-${String(m + 1).padStart(2, '0')}-01`
+  if (range.value === '7d') return { since: utcDate(Date.now() - 6 * 86400_000) }
+  if (range.value === '30d') return { since: utcDate(Date.now() - 29 * 86400_000) }
+  if (range.value === 'month') return { since: thisMonth1 }
   if (range.value === 'prev') {
-    const d0 = new Date()
-    const prevMonth = d0.getMonth() === 0 ? 11 : d0.getMonth() - 1
-    const prevYear = d0.getMonth() === 0 ? d0.getFullYear() - 1 : d0.getFullYear()
-    const dt = new Date(created)
-    return dt.getMonth() === prevMonth && dt.getFullYear() === prevYear
+    const py = m === 0 ? y - 1 : y
+    const pm = m === 0 ? 12 : m // 上月（1-based）
+    return { since: `${py}-${String(pm).padStart(2, '0')}-01`, until: thisMonth1 }
   }
   if (range.value === 'custom') {
-    const start = customStart.value ? new Date(customStart.value).getTime() : -Infinity
-    const end = customEnd.value ? new Date(customEnd.value).getTime() + 86400_000 : Infinity
-    return created >= start && created <= end
+    const out: { since?: string; until?: string } = {}
+    if (customStart.value) out.since = customStart.value
+    if (customEnd.value) out.until = utcDate(new Date(customEnd.value).getTime() + 86400_000) // 含结束日 → 右开到次日
+    return out
   }
-  return true
+  return {}
 }
 
+// 模型/状态(success|failed)/时间窗均已服务端过滤并计入分页与 total；request_id 为当前页本地子串筛（见说明）。
 const visibleRows = computed(() => rows.value
-  .filter((r) => rangeMatches(r))
-  .filter((r) => !requestId.value || r.request_id.toLowerCase().includes(requestId.value.toLowerCase()))
-  .filter((r) => result.value === 'all' || (result.value === 'success' ? r.status === 'success' : r.status !== 'success')))
+  .filter((r) => !requestId.value || r.request_id.toLowerCase().includes(requestId.value.toLowerCase())))
 
 async function loadMeta() {
   const [bm, k] = await Promise.allSettled([
@@ -92,7 +94,10 @@ async function load() {
   try {
     const q = new URLSearchParams({ page: String(page.value), page_size: String(pageSize) })
     if (model.value) q.set('model', model.value)
-    if (result.value === 'success') q.set('status', 'success')
+    if (result.value !== 'all') q.set('status', result.value) // 'success' 精确；'failed' 后端识别为非 success
+    const w = windowParams()
+    if (w.since) q.set('since', w.since)
+    if (w.until) q.set('until', w.until)
     const r = await api<{ total: number; items: UsageRow[] }>('GET', `/api/usage?${q}`)
     rows.value = r.items
     total.value = r.total
@@ -103,7 +108,7 @@ async function load() {
   }
 }
 
-watch([model, result], () => {
+watch([model, result, range, customStart, customEnd], () => {
   page.value = 1
   void load()
 })
@@ -200,7 +205,7 @@ onMounted(() => {
             <td class="px-4 py-2.5 font-mono text-xs">{{ r.model }}</td>
             <td class="px-4 py-2.5"><span class="badge-muted">OpenAI</span></td>
             <td class="px-4 py-2.5 text-right font-mono">{{ n(r.prompt_tokens + r.completion_tokens) }}</td>
-            <td class="px-4 py-2.5 text-right font-mono">{{ n(toCredits(r.cost_usd)) }}</td>
+            <td class="px-4 py-2.5 text-right font-mono">{{ fmtUsd(r.cost_usd) }}</td>
             <td class="px-4 py-2.5 text-right font-mono">{{ r.duration_ms }}ms</td>
             <td class="px-4 py-2.5"><span :class="r.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ statusText(r) }}</span></td>
             <td class="sticky right-0 bg-panel px-4 py-2.5 text-right"><button class="table-link" type="button" @click="selected = r">{{ t('reqlog.btnDetail') }}</button></td>
@@ -231,8 +236,8 @@ onMounted(() => {
               <p class="mt-1 font-mono text-2xl font-semibold">{{ n(selected.prompt_tokens + selected.completion_tokens) }}</p>
             </div>
             <div class="p-4 text-center">
-              <p class="text-xs text-muted">{{ t('reqlog.statCostCredits') }}</p>
-              <p class="mt-1 font-mono text-2xl font-semibold">{{ n(toCredits(selected.cost_usd)) }}</p>
+              <p class="text-xs text-muted">{{ t('reqlog.statCostUSD') }}</p>
+              <p class="mt-1 font-mono text-2xl font-semibold">{{ fmtUsd(selected.cost_usd) }}</p>
             </div>
             <div class="p-4 text-center">
               <p class="text-xs text-muted">{{ t('reqlog.statLatency') }}</p>
@@ -264,7 +269,7 @@ onMounted(() => {
               <div><dt>{{ t('reqlog.dtCacheReadTokens') }}</dt><dd>—</dd></div>
               <div><dt>{{ t('reqlog.dtGiftCost') }}</dt><dd>—</dd></div>
               <div><dt>{{ t('reqlog.dtPaidCost') }}</dt><dd>—</dd></div>
-              <div><dt>{{ t('reqlog.dtCostCredits') }}</dt><dd>{{ n(toCredits(selected.cost_usd)) }}</dd></div>
+              <div><dt>{{ t('reqlog.dtCostUSD') }}</dt><dd>{{ fmtUsd(selected.cost_usd) }}</dd></div>
             </dl>
           </section>
 
