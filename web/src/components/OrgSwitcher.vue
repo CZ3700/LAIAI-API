@@ -103,25 +103,27 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
     </div>
     <p v-if="error" class="px-2 text-xs text-danger" role="alert">{{ error }}</p>
 
-    <div v-if="showCreate" class="modal-backdrop" @click.self="showCreate = false">
-      <form
-        ref="createDialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="new-team-title"
-        class="card modal-panel w-full max-w-sm p-6 space-y-4"
-        @submit.prevent="createTeam"
-      >
-        <h2 id="new-team-title" class="font-semibold">{{ t('team.newTeam') }}</h2>
-        <div>
-          <label class="label" for="teamname">{{ t('team.teamName') }}</label>
-          <input id="teamname" v-model="newName" class="input" required maxlength="64" />
-        </div>
-        <div class="flex justify-end gap-2">
-          <button type="button" class="btn-ghost" @click="showCreate = false">{{ t('common.cancel') }}</button>
-          <button class="btn-primary" :disabled="busy">{{ t('team.create') }}</button>
-        </div>
-      </form>
-    </div>
+    <Teleport to="body">
+      <div v-if="showCreate" class="modal-backdrop" @click.self="showCreate = false">
+        <form
+          ref="createDialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="new-team-title"
+          class="card modal-panel w-full max-w-sm p-6 space-y-4"
+          @submit.prevent="createTeam"
+        >
+          <h2 id="new-team-title" class="font-semibold">{{ t('team.newTeam') }}</h2>
+          <div>
+            <label class="label" for="teamname">{{ t('team.teamName') }}</label>
+            <input id="teamname" v-model="newName" class="input" required maxlength="64" />
+          </div>
+          <div class="flex justify-end gap-2">
+            <button type="button" class="btn-ghost" @click="showCreate = false">{{ t('common.cancel') }}</button>
+            <button class="btn-primary" :disabled="busy">{{ t('team.create') }}</button>
+          </div>
+        </form>
+      </div>
+    </Teleport>
   </div>
 </template>

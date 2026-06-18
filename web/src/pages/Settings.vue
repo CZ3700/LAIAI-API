@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, copyText, errorMessage } from '@/lib/api'
+import QrCode from '@/components/QrCode.vue'
 
 interface Me {
   user_id: number
@@ -229,10 +230,7 @@ async function changePassword() {
         <button v-if="!setupUri" class="btn-primary" @click="start2fa">{{ t('settings.twofaSetup') }}</button>
         <div v-else class="space-y-4">
           <p class="text-sm">{{ t('settings.twofaScan') }}</p>
-          <img
-            :src="`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(setupUri)}`"
-            alt="2FA QR" class="rounded-lg border border-line" width="180" height="180"
-          />
+          <QrCode :value="setupUri" :size="180" />
           <p class="text-xs text-muted">{{ t('settings.twofaManual') }} <code class="select-all font-mono">{{ setupSecret }}</code></p>
           <div class="flex gap-2">
             <input v-model="twofaCode" class="input max-w-[10rem] font-mono" inputmode="numeric" maxlength="6" :placeholder="t('auth.verifyCode')" />
