@@ -22,8 +22,12 @@
 		}
 		lb_policy round_robin
 		lb_try_duration 5s
-		fail_duration 30s   # 被动健康：拨号失败/坏响应的副本摘除 30s
-		unhealthy_status 5xx
+		# 被动健康：只对「拨号失败/不可达」摘除副本 30s。
+		# ⚠️ 绝不用 unhealthy_status 5xx：relay 把 5xx 当正常业务响应下发（无可用渠道 503 /
+		#    上游不可达 502 / 配置错误 503，且各带 JSON 错误体）。若按 5xx 摘副本，单副本下任一业务 5xx
+		#    都会把整个后端标记不健康 30s，并因 lb_try_duration 找不到健康副本而吞掉 relay 的 JSON 错误体、
+		#    回成空体 503（体验场报 request failed(503) 即此）——既级联宕机又掩盖真实原因。
+		fail_duration 30s
 	}
 }
 
