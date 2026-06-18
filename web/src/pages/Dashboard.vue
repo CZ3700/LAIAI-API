@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { api } from '@/lib/api'
 import DailyBarChart, { type ChartMetric, type SummaryDay } from '@/components/DailyBarChart.vue'
 import DonutChart from '@/components/DonutChart.vue'
-import { ensureFx, fmtUsd, fmtCny } from '@/lib/money'
+import { fmtUsd } from '@/lib/money'
 
 interface UsageRow { id: number; model: string; status: string; duration_ms: number }
 interface ModelStat {
@@ -55,7 +55,7 @@ function fmtTokens(v: number): string {
   if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`
   return n(v)
 }
-// 资金一律以 USD（$）展示，与后端记账单位一致（参考 OpenRouter）；fmtUsd/fmtCny 来自共享 money.ts。
+// 资金一律以 USD（$）展示，与后端记账单位一致（参考 OpenRouter）；fmtUsd 来自共享 money.ts。
 function rankLabel(m: RankMetric): string {
   return m === 'tokens' ? 'Tokens' : m === 'cost' ? t('dash.rankCost') : t('dash.rankCalls')
 }
@@ -161,7 +161,6 @@ function pctClass(cur: number, prev: number): string {
 
 onMounted(async () => {
   loading.value = true
-  void ensureFx() // 拉取 cny_per_usd（≈¥ 提示用），全局缓存；不阻塞主数据
   const [bal, sum, bm, bk, use, keyRows, ords] = await Promise.allSettled([
     api<{ balance: string; held: string }>('GET', '/api/balance'),
     api<{ items: SummaryDay[] }>('GET', '/api/usage/summary?days=30'),
@@ -214,7 +213,6 @@ onMounted(async () => {
           <p class="text-xs font-medium text-muted">{{ t('dash.cardCostTitle') }}</p>
         </div>
         <p class="mt-3 font-mono text-3xl font-semibold">{{ loading ? '—' : fmtUsd(totals.cost) }}</p>
-        <p class="mt-2 text-xs text-muted">{{ fmtCny(totals.cost) }}</p>
       </div>
       <div class="metric-card">
         <div class="flex items-center gap-3">
@@ -239,7 +237,7 @@ onMounted(async () => {
           <p class="text-xs font-medium text-muted">{{ t('dash.cardBalanceTitle') }}</p>
         </div>
         <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtUsd(balance) }}</p>
-        <p class="mt-2 text-xs text-muted">{{ t('dash.cardBalanceSub', { cny: fmtCny(balance), held: fmtUsd(held) }) }}</p>
+        <p class="mt-2 text-xs text-muted">{{ t('dash.cardBalanceSub', { held: fmtUsd(held) }) }}</p>
       </router-link>
       <router-link to="/app/recharges" class="metric-card block">
         <div class="flex items-center gap-3">
@@ -247,7 +245,7 @@ onMounted(async () => {
           <p class="text-xs font-medium text-muted">{{ t('dash.cardMonthRechargeTitle') }}</p>
         </div>
         <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtUsd(monthRecharge) }}</p>
-        <p class="mt-2 text-xs text-muted">{{ t('dash.cardMonthRechargeSub', { cny: fmtCny(monthRecharge) }) }}</p>
+        <p class="mt-2 text-xs text-muted">{{ t('dash.cardMonthRechargeSub') }}</p>
       </router-link>
       <div class="metric-card">
         <div class="flex items-center gap-3">

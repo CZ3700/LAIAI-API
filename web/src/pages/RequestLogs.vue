@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
-import { fmtUsd, ensureFx } from '@/lib/money'
+import { fmtUsd } from '@/lib/money'
 
 interface UsageRow {
   id: number
@@ -114,7 +114,6 @@ watch([model, result, range, customStart, customEnd], () => {
 })
 watch(page, () => void load())
 onMounted(() => {
-  void ensureFx()
   void loadMeta()
   void load()
 })

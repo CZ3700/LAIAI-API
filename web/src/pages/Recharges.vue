@@ -18,7 +18,6 @@ interface Order {
 
 const { t, d } = useI18n()
 const amount = ref(50)
-const productName = ref(t('recharge.defaultProductName'))
 const methods = ref<Method[]>([])
 const amountOptions = ref<number[]>([])
 const selectedProvider = ref('')
@@ -108,10 +107,6 @@ onMounted(load)
             </div>
             <input v-model.number="amount" class="input mt-2" type="number" min="1" step="1" :placeholder="t('recharge.customAmountPlaceholder')" />
             <p class="mt-2 text-xs text-muted">{{ t('recharge.estimated', { amount: estimated }) }}</p>
-          </div>
-          <div>
-            <label class="label">{{ t('recharge.productNameLabel') }}</label>
-            <input v-model="productName" class="input" />
           </div>
           <div>
             <label class="label">{{ t('recharge.payMethodLabel') }}</label>
