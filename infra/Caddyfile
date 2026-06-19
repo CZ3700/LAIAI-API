@@ -41,7 +41,9 @@
 		Referrer-Policy "strict-origin-when-cross-origin"
 		# CSP（审查 L6）：token 存于 JS storage，CSP 是 XSS 的关键兜底。
 		# Vite 产物无内联脚本；style 'unsafe-inline' 因 Tailwind 运行时注入需要。
-		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+		# img-src 含 https:：体验场生图结果可能是上游 CDN 的 https 图片 URL（非 base64），需允许内联显示；
+		# 图片是被动内容、不执行脚本，风险低。关键的 connect-src 仍锁死 'self'（XSS 数据外泄的主控制不放松）。
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
 		-Server
 	}
 
