@@ -290,6 +290,23 @@ func (u usage) Cached() int64 {
 // HandleChatCompletions：POST /v1/chat/completions
 // 计费时序 = hold（按估算上限冻结）→ 转发 → capture（按真实 usage 结算，差额自动解冻）。
 // 上游失败 → release 全额解冻。结构性消灭"预检黑盒"类问题（TrustQuota 事故）。
+// setClientMeta 记录访客侧元数据（请求日志详情 CLIENT 栏）。真实 IP 走 gin ClientIP——core 仅经
+// Caddy 内网可达、X-Forwarded-For 由 Caddy 设置（不可被客户端伪造），与 keyGate 的 IP 白名单同源。
+// UA/Referer 截断防滥长。绝不存 payload/PII 正文（仅请求元数据）。
+func setClientMeta(inv *invocation.Invocation, c *gin.Context) {
+	inv.ClientIP = clipMeta(c.ClientIP(), 64)
+	inv.UserAgent = clipMeta(c.GetHeader("User-Agent"), 256)
+	inv.Referer = clipMeta(c.GetHeader("Referer"), 256)
+}
+
+// clipMeta 按字节截断并去除尾部半个 rune（防 utf8mb4 列存进非法 UTF-8）。
+func clipMeta(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	return strings.ToValidUTF8(s[:maxBytes], "")
+}
+
 func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	t0 := r.Now()
 	// 纯读预检绑请求 context（审查 M-6）：客户端断连/超时即取消这些查询、卸载 DB 负载。
@@ -315,6 +332,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		APIKeyID:  key.ID,
 		RequestID: newRequestID(),
 	}
+	setClientMeta(inv, c)
 	c.Header("X-Request-Id", inv.RequestID)
 	finish := func(status string, code int, brief string) {
 		if r.Rec == nil {

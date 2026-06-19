@@ -57,7 +57,11 @@ type Invocation struct {
 	UpstreamRequestID string          `gorm:"column:upstream_request_id" json:"-"`
 	ErrorBrief        string          `gorm:"column:error_brief" json:"error_brief,omitempty"`
 	PayloadObjectKey  string          `gorm:"column:payload_object_key" json:"-"`
-	CreatedAt         time.Time       `gorm:"column:created_at;autoCreateTime:milli" json:"created_at"`
+	// 访客侧元数据（请求日志详情 CLIENT 栏）：真实 IP 经 Caddy XFF；UA/Referer 截断。属请求元数据非 payload。
+	ClientIP   string    `gorm:"column:client_ip" json:"client_ip,omitempty"`
+	UserAgent  string    `gorm:"column:user_agent" json:"user_agent,omitempty"`
+	Referer    string    `gorm:"column:referer" json:"referer,omitempty"`
+	CreatedAt  time.Time `gorm:"column:created_at;autoCreateTime:milli" json:"created_at"`
 }
 
 func (Invocation) TableName() string { return "invocations" }

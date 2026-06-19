@@ -85,6 +85,7 @@ func (r *Relay) HandleRerank(c *gin.Context) {
 		return
 	}
 	inv := &invocation.Invocation{OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID, RequestID: newRequestID()}
+	setClientMeta(inv, c)
 	c.Header("X-Request-Id", inv.RequestID)
 	finish := func(status string, code int, brief string) {
 		if r.Rec == nil {

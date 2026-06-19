@@ -148,6 +148,29 @@ func TestUsageTimeWindow(t *testing.T) {
 	}
 }
 
+// 请求日志 CLIENT 栏：调用记录采集并通过 /api/usage 返回访客 IP / UA / Referer（org 隔离不变）。
+func TestUsageClientMeta(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	tok := registerAndLogin(t, srv, "cm@example.com")
+	_, me := srv.do(t, "GET", "/api/me", tok, nil)
+	orgID := me["org_id"].(float64)
+	if err := db.Exec(`INSERT INTO invocations
+		(org_id, api_key_id, request_id, model, status, status_code, client_ip, user_agent, referer, created_at)
+		VALUES (?, 0, 'cm1', 'gpt-4o', 'success', 200, '203.0.113.7', 'curl/8.5', 'https://app.example/', ?)`,
+		orgID, time.Now().UTC().Format("2006-01-02 15:04:05")).Error; err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	_, out := srv.do(t, "GET", "/api/usage", tok, nil)
+	items := out["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("items = %v, want 1", out["items"])
+	}
+	row := items[0].(map[string]any)
+	if row["client_ip"] != "203.0.113.7" || row["user_agent"] != "curl/8.5" || row["referer"] != "https://app.example/" {
+		t.Fatalf("client meta = %v / %v / %v", row["client_ip"], row["user_agent"], row["referer"])
+	}
+}
+
 // listTopups：返回权威 total（不被 Limit(50) 截断），供前端计数显示真实总量。
 func TestListTopupsTotal(t *testing.T) {
 	srv, db := setupRelayServer(t)

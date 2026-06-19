@@ -18,6 +18,9 @@ interface UsageRow {
   frt_ms: number
   duration_ms: number
   error_brief?: string
+  client_ip?: string
+  user_agent?: string
+  referer?: string
   created_at: string
 }
 interface ModelStat { model: string }
@@ -287,9 +290,9 @@ onMounted(() => {
           <section class="drawer-section">
             <h3>CLIENT</h3>
             <dl class="detail-grid">
-              <div><dt>IP</dt><dd>—</dd></div>
-              <div><dt>User-Agent</dt><dd>—</dd></div>
-              <div><dt>Referer</dt><dd>—</dd></div>
+              <div><dt>IP</dt><dd class="select-all break-all">{{ selected.client_ip || '—' }}</dd></div>
+              <div class="sm:col-span-2"><dt>User-Agent</dt><dd class="break-all">{{ selected.user_agent || '—' }}</dd></div>
+              <div class="sm:col-span-2"><dt>Referer</dt><dd class="break-all">{{ selected.referer || '—' }}</dd></div>
               <div><dt>{{ t('reqlog.dtUsageSource') }}</dt><dd>{{ selected.usage_source || '—' }}</dd></div>
             </dl>
           </section>

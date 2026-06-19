@@ -109,6 +109,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 		OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID,
 		RequestID: newRequestID(),
 	}
+	setClientMeta(inv, c)
 	c.Header("X-Request-Id", inv.RequestID)
 	finish := func(status string, code int, brief string) {
 		if r.Rec == nil {
