@@ -15,7 +15,7 @@ xAI Grok / Mistral / Groq / OpenRouter / Together / Fireworks / Perplexity / Coh
 
 ```
 core/         控制面（模块化单体）：Identity / Org / Catalog / Ledger / Payments / AgentTrust / Diagnostics / Notify / Admin
-relay/        数据面：协议转换网关 + 异步 Task API（M2 开工）
+relay/        数据面独立 module（当前为占位壳；协议转换网关与异步 Task API 实际驻 core/internal/relay 与 core/internal/task，M3 拆分部署时迁出）
 web/          用户 Console + 管理后台（Vue 3 SPA）
 site/         营销站（SSG → CF Pages）
 migrations/   版本化 SQL（本平台永久禁用 AutoMigrate）
@@ -73,7 +73,7 @@ curl -H "Authorization: Bearer <token>" -X POST localhost/api/keys -d '{"name":"
 
 ## 平台红线（违反即 review 驳回）
 
-1. 资金动作必须在事务内 + ledger journal 同写；余额永不直接 UPDATE（唯一写点：`ledger.setBalances`）
+1. 资金动作必须在事务内 + ledger journal 同写；余额永不直接 UPDATE（唯一写点：`ledger.applyBalanceDelta`）
 2. 幂等键由 UNIQUE 约束兜底，不依赖应用层判断
 3. 入金状态机接受 `pending|expired`；终态只 ACK 不翻转
 4. 支付引擎必须实现 QueryOrder（可主动对账）才准上线；fixture 必须用真实 raw response

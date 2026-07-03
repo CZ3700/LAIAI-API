@@ -65,3 +65,38 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
 - 上线动作：配好渠道后先跑**小额真实充值**全链路：create → 支付 → callback 入账 →
   `GET /api/payment/orders` 确认 → 对账 job（5 分钟）不产生重复入账 → ledger journal 有且仅有一笔。
 - 抓真实 callback raw body 后回填对应 `core/internal/payment/*_test.go` 的合成 fixture（文件内有 ⚠ 标注）。
+- 过期语义：24h 未支付 pending 单由每小时维护循环标 expired（运营口径）；expired **非终态**，
+  极晚 callback 仍入金（红线 3）；只有 failed 是终态。
+
+## 4. Launch Checklist（0-14 天红线封口验收，2026-07-04 起用）
+
+上线/大版本发布前逐项打勾；任何一项不过 = 不发。
+
+**代码门禁**
+- [ ] `make ci` 全绿（vet + migrate-lint + test + build，core 与 relay 两 module）
+- [ ] `make web` 全绿（check:i18n 9 语种 + vue-tsc + vite build）
+- [ ] `make migrate-smoke` 通过（真 MySQL apply×2 幂等 + schema-doctor 漂移体检）
+- [ ] P0/P1 回归全过：task admission（task_admission_test.go）、XFF 信任链（trustedproxy_test.go）、
+      key 过滤（usage_keyfilter_test.go）、expired 入金（topup_expire_test.go）
+
+**数据面**
+- [ ] `/v1/video/generations` 五项准入抽查：IP 白名单 403 / 模型白名单 403 / key quota 402 /
+      模型限流 429 / 超大体 413（生产配置下手工各打一发）
+- [ ] 渠道真机 smoke：每个启用渠道 `POST /api/admin/channels/:id/test` 通过
+- [ ] 多实例时 `LAIAI_REDIS_ADDR` 已配（否则模型级限流每副本独立计数）
+
+**边缘与安全**
+- [ ] §1.3 IP 信任链三条冒烟全过（伪造 XFF 不生效 / 白名单口径正确）
+- [ ] TLS 生效、安全头齐全（curl -I 检查 HSTS/CSP/XCTO）
+- [ ] 生产日志抽查：无 API Key / PII / payload 明文（红线 7）
+
+**资金**
+- [ ] §3 支付小额真实充值全链路跑通（每个启用 provider 各一笔）
+- [ ] 账本漂移巡检（CheckDrift 每小时）近 24h 无告警
+- [ ] 未验真支付引擎确认处于禁用态
+
+**部署**
+- [ ] 叠加 docker-compose.prod.yml 且 MYSQL_IMAGE/REDIS_IMAGE 为 digest 形式
+- [ ] `release-manifest.sh generate` 留档；对上一基线 `diff` 只有预期变化
+- [ ] 备份任务在跑 + 至少一次恢复演练记录
+- [ ] /status 状态页返回 operational；/healthz 200

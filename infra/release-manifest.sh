@@ -22,7 +22,7 @@ CADDYFILE="$INFRA_DIR/Caddyfile"
 ENVFILE="$INFRA_DIR/.env"
 
 # 容器名（与 docker-compose.yml 的 container_name 对齐）
-C_CORE=laiai-core
+# core 刻意无 container_name（--scale 多副本，WS-3），按 compose service 标签动态解析全部副本。
 C_CADDY=laiai-caddy
 C_MYSQL=laiai-mysql
 C_REDIS=laiai-redis
@@ -38,6 +38,22 @@ sha_of() { # 文件 sha256（缺失则 MISSING）；只输出哈希，不泄露�
 running_image_id() { docker inspect --format '{{.Image}}' "$1" 2>/dev/null || echo "ABSENT"; }
 # 容器配置镜像引用（如 mysql:8.4@sha256:...）；容器不存在则 ABSENT
 configured_image_ref() { docker inspect --format '{{.Config.Image}}' "$1" 2>/dev/null || echo "ABSENT"; }
+
+# core 多副本：全部副本的镜像指纹去重后用 | 连接。正常滚动完成后应恰好 1 个值；
+# 出现多值 = 副本间镜像不一致（半截滚动/静默回滚），diff 会把它当漂移暴露。
+# （修复：此前按 container_name=laiai-core 抓取，compose 为 --scale 已去掉该名 → 恒 ABSENT，
+#  快照对最关键的 core 镜像失效。）
+core_ids() { docker ps --filter "label=com.docker.compose.service=core" --format '{{.ID}}' 2>/dev/null; }
+core_image_id() {
+  ids=$(core_ids)
+  [ -z "$ids" ] && { echo "ABSENT"; return; }
+  docker inspect --format '{{.Image}}' $ids 2>/dev/null | sort -u | paste -sd'|' -
+}
+core_image_ref() {
+  ids=$(core_ids)
+  [ -z "$ids" ] && { echo "ABSENT"; return; }
+  docker inspect --format '{{.Config.Image}}' $ids 2>/dev/null | sort -u | paste -sd'|' -
+}
 
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
@@ -65,7 +81,7 @@ generate() {
     "env": "$env_sha"
   },
   "services": {
-    "core":  { "image_id": "$(running_image_id $C_CORE)",  "image_ref": "$(json_escape "$(configured_image_ref $C_CORE)")" },
+    "core":  { "image_id": "$(core_image_id)",  "image_ref": "$(json_escape "$(core_image_ref)")" },
     "caddy": { "image_id": "$(running_image_id $C_CADDY)", "image_ref": "$(json_escape "$(configured_image_ref $C_CADDY)")" },
     "mysql": { "image_id": "$(running_image_id $C_MYSQL)", "image_ref": "$(json_escape "$(configured_image_ref $C_MYSQL)")" },
     "redis": { "image_id": "$(running_image_id $C_REDIS)", "image_ref": "$(json_escape "$(configured_image_ref $C_REDIS)")" }
