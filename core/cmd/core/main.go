@@ -172,6 +172,13 @@ func main() {
 							"held_stored", d.HeldStored.String(), "held_derived", d.HeldDerived.String(), "held_drift", d.HeldDrift().String())
 					}
 				}
+				// 过期充值单标记（指令 P1-3）：24h 未支付的 pending → expired（运营口径 + 收敛对账扫描集；
+				// 非终态——极晚 callback 仍可入金，creditPaidOrder 接受 pending|expired）。
+				if n, err := apiSrv.ExpireStaleTopups(context.Background(), 24*time.Hour, 500); err != nil {
+					log.Error("topup expire sweep failed", "err", err)
+				} else if n > 0 {
+					log.Info("topup orders expired", "count", n)
+				}
 				// 账户分片摊平（规模化）：把充值默认入的主片余额周期摊到各片，防非主片饿死 → 分片退化为入金单点。
 				// 未配置分片（今日全部 org，shard_count=1）时 ListShardedOrgs 为空 → 直接 no-op，零开销零回归。
 				runID := "rebal-" + time.Now().UTC().Format("20060102T150405.000")

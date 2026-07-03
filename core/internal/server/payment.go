@@ -496,6 +496,30 @@ func (s *Server) ReconcileTopups(ctx context.Context, minAge time.Duration, limi
 	return checked, credited, nil
 }
 
+// ExpireStaleTopups：把长期未支付的 pending 单标记为 expired（指令 P1-3；此前 topupExpired
+// 全库无写入点，"expired 单独清理"的承诺是空转）。expired 只是运营/展示口径 + 收敛
+// ReconcileTopups 的 pending 扫描集——**绝不是入金终态**：用户极晚支付时 callback 仍走
+// creditPaidOrder（接受 pending|expired，uid=967 语义）正常入账；只有 failed 是终态。
+// x402 已结算待重放的单（trade_no 非空）不标过期，留给对账重放兜底。
+func (s *Server) ExpireStaleTopups(ctx context.Context, maxAge time.Duration, limit int) (int, error) {
+	cutoff := s.now().Add(-maxAge).Unix()
+	// 先选 id 再限批 UPDATE（与日志清理同款分批纪律，避免大表长事务）
+	var ids []uint64
+	if e := s.db.WithContext(ctx).Model(&TopupOrder{}).
+		Where("status = ? AND created_at < ? AND NOT (provider = ? AND trade_no <> '')",
+			topupPending, cutoff, "x402").
+		Order("id").Limit(limit).Pluck("id", &ids).Error; e != nil {
+		return 0, e
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res := s.db.WithContext(ctx).Model(&TopupOrder{}).
+		Where("id IN ? AND status = ?", ids, topupPending). // 复核 status：选取间隙被支付的单不误标
+		Update("status", topupExpired)
+	return int(res.RowsAffected), res.Error
+}
+
 // computeRechargeBonus：按充值阶梯优惠（recharge_bonus_tiers，gap P1-D）算赠额（读 settings + 计算）。
 // 注意：**不可在已开启的 DB 事务内调用**——会嵌套查 ext_settings，单连接池下与持锁事务自死锁
 // （creditPaidOrder 已先取 raw 再进事务，改调 rechargeBonusFromTiers 纯函数）。
