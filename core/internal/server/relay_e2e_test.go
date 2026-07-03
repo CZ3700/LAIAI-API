@@ -1640,7 +1640,8 @@ type mockPayEngine struct {
 	orderNo, tradeNo      string
 	amount                decimal.Decimal
 	success               bool
-	queryFound, queryPaid bool // QueryOrder（对账）受控返回
+	queryFound, queryPaid bool  // QueryOrder（对账/过期确认）受控返回
+	queryErr              error // 非 nil = 模拟网关查询故障
 }
 
 func (m *mockPayEngine) Name() string { return "mock" }
@@ -1652,6 +1653,9 @@ func (m *mockPayEngine) VerifyCallback(_ []byte, _, _ map[string]string) (*payme
 }
 func (m *mockPayEngine) AckBody() string { return "ok" }
 func (m *mockPayEngine) QueryOrder(_ context.Context, _ payment.QueryRequest) (*payment.QueryResult, error) {
+	if m.queryErr != nil {
+		return nil, m.queryErr
+	}
 	return &payment.QueryResult{Found: m.queryFound, Paid: m.queryPaid, TradeNo: m.tradeNo, Amount: m.amount, Currency: "USD"}, nil
 }
 

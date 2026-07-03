@@ -6,6 +6,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -74,5 +75,57 @@ func TestTopupExpireSweepAndExpiredCredit(t *testing.T) {
 	db.Raw("SELECT status FROM topup_orders WHERE order_no = ?", staleNo).Scan(&status)
 	if status != topupPaid {
 		t.Fatalf("expired order after credit = %d, want paid(1)", status)
+	}
+}
+
+// 标过期前的最终网关确认（对抗 review：expired 永久退出 reconcile 扫描集，盲标 = 切断
+// "晚支付 + callback 丢失"的兜底）：网关侧已付 → 入账而非过期；网关查询故障 → 保持 pending。
+func TestTopupExpireGatewayConfirmation(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	mock := &mockPayEngine{}
+	engineForTest = func(p string) payment.Engine {
+		if p == "stripe" {
+			return mock
+		}
+		return nil
+	}
+	defer func() { engineForTest = nil }()
+
+	_, orgID := seedUserWithCredit(t, srv, "expire-gw@example.com", "")
+	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "expire-gw@example.com", "password": "longenough1"})
+	token := login["token"].(string)
+	w, out := srv.do(t, "POST", "/api/payment/create", token, map[string]any{"provider": "stripe", "amount_usd": "80"})
+	if w.Code != 200 {
+		t.Fatalf("create topup = %d %v", w.Code, out)
+	}
+	orderNo := out["order_no"].(string)
+	db.Exec("UPDATE topup_orders SET created_at = ? WHERE order_no = ?", time.Now().Add(-48*time.Hour).Unix(), orderNo)
+
+	// 场景 1：网关查询故障 → 本轮不标过期（留 pending 下轮重试），绝不盲标
+	mock.queryErr = fmt.Errorf("gateway 5xx")
+	if n, err := srv.srv.ExpireStaleTopups(context.Background(), 24*time.Hour, 200); err != nil || n != 0 {
+		t.Fatalf("expire during gateway outage = (%d, %v), want 0 expired", n, err)
+	}
+	var status int8
+	db.Raw("SELECT status FROM topup_orders WHERE order_no = ?", orderNo).Scan(&status)
+	if status != topupPending {
+		t.Fatalf("order during outage = %d, must stay pending", status)
+	}
+
+	// 场景 2：网关侧已付（callback 丢失）→ 入账而非过期
+	mock.queryErr = nil
+	mock.orderNo, mock.tradeNo, mock.amount = orderNo, "pi_lost_cb", decimal.RequireFromString("80")
+	mock.queryFound, mock.queryPaid = true, true
+	if n, err := srv.srv.ExpireStaleTopups(context.Background(), 24*time.Hour, 200); err != nil || n != 0 {
+		t.Fatalf("expire of gateway-paid order = (%d, %v), want 0 expired", n, err)
+	}
+	db.Raw("SELECT status FROM topup_orders WHERE order_no = ?", orderNo).Scan(&status)
+	if status != topupPaid {
+		t.Fatalf("gateway-paid order after sweep = %d, want paid(1)", status)
+	}
+	acc := &ledger.Account{}
+	db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("80")) {
+		t.Fatalf("balance after sweep credit = %s, want 80", acc.PostedBalance)
 	}
 }

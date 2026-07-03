@@ -221,7 +221,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 // abortSubmit：预占后上游提交失败——CAS 把任务转 failed 并释放 hold（与轮询失败同款语义，
 // 保证槽位释放 + 资金退还，且不与并发轮询重复结算）。
 func (s *Service) abortSubmit(t *Task, reason string) {
-	s.settleFailure(t, "submit failed: "+reason)
+	s.settleFailure(t, "submit failed: "+reason, false)
 }
 
 // Get：org 隔离读取（红线 5）。
@@ -301,7 +301,7 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 	case StatusSucceeded:
 		s.settleSuccess(t, result)
 	case StatusFailed:
-		s.settleFailure(t, result.FailReason)
+		s.settleFailure(t, result.FailReason, true) // FailReason 是上游原文（可能回显 prompt 片段）
 	}
 }
 
@@ -358,12 +358,19 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 	s.Log.Info("task succeeded", "task", t.TaskID, "cost", actual)
 }
 
-func (s *Service) settleFailure(t *Task, reason string) {
+// settleFailure：CAS 终态转移 + 全额退款。upstreamOrigin=true 表示 reason 是上游原文
+// （审核类失败 message 可能回显 prompt 片段）：完整 clipped 原文只落 tasks.fail_reason
+// （org 隔离、用户可见的 API 数据，与向客户端转发上游错误同性质）；invocation error_brief
+// 与 stdout 日志一律用合成摘要——上游可控文本不进操作日志/请求日志（红线 7，对抗 review）。
+func (s *Service) settleFailure(t *Task, reason string, upstreamOrigin bool) {
 	if reason == "" {
 		reason = "upstream reported failure"
 	}
-	// 上游 message 原文截断（fail_reason VARCHAR(255) 上限；也压缩进日志的上游可控文本面，红线 7）
-	reason = clipReason(reason, 255)
+	reason = clipReason(reason, 255) // fail_reason VARCHAR(255) 上限
+	brief := reason
+	if upstreamOrigin {
+		brief = "upstream reported failure"
+	}
 	won := false
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		now := s.Now()
@@ -389,8 +396,8 @@ func (s *Service) settleFailure(t *Task, reason string) {
 	if t.HoldAmountUSD.IsPositive() {
 		_ = identity.AddKeyUsageSigned(s.DB, t.APIKeyID, t.HoldAmountUSD.Neg()) // 预留全退（与 ledger Release 同向）
 	}
-	s.recordInvocation(t, invocation.StatusUpstreamError, http.StatusBadGateway, 0, decimal.Zero, "", reason)
-	s.Log.Warn("task failed", "task", t.TaskID, "reason", reason)
+	s.recordInvocation(t, invocation.StatusUpstreamError, http.StatusBadGateway, 0, decimal.Zero, "", brief)
+	s.Log.Warn("task failed", "task", t.TaskID, "reason", brief)
 }
 
 // recordInvocation：任务终态落 Invocation Store（视频消费进请求日志/用量口径，P0-1 配套）。
@@ -427,7 +434,7 @@ func (s *Service) sweepTimedOut() {
 		return
 	}
 	for i := range tasks {
-		s.settleFailure(&tasks[i], fmt.Sprintf("task timeout (%s)", s.TaskTimeout))
+		s.settleFailure(&tasks[i], fmt.Sprintf("task timeout (%s)", s.TaskTimeout), false)
 	}
 }
 

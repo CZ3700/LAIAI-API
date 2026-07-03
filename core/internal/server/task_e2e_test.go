@@ -188,6 +188,13 @@ func TestTaskConcurrencyGate(t *testing.T) {
 	if !acc.HeldAmount.Equal(decimal.RequireFromString("15")) {
 		t.Fatalf("held = %s, want 15 (3 holds only)", acc.HeldAmount)
 	}
+	// key quota 同样无残渣（变异实测守卫）：被并发闸拒绝的第 4 笔必须退还预留，
+	// 否则每次 429 永久泄漏 used_amount → 带 quota_limit 的 key 被虚耗额度收假 402
+	var used decimal.Decimal
+	_ = db.Raw("SELECT used_amount FROM api_keys ORDER BY id DESC LIMIT 1").Scan(&used)
+	if !used.Equal(decimal.RequireFromString("15")) {
+		t.Fatalf("used_amount = %s, want 15 (rejected 4th submit must refund key quota reserve)", used)
+	}
 }
 
 func TestTaskTimeoutSweep(t *testing.T) {

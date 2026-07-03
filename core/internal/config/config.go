@@ -109,6 +109,15 @@ func Load() (*Config, error) {
 		}
 		c.TrustedProxies = append(c.TrustedProxies, s)
 	}
+	// "none" 只能单独出现（对抗 review）：混填 "none,10.0.0.0/8" 语义矛盾，若放行会在运行期
+	// 被 gin 当无效 CIDR 静默降级为「不信任任何代理头」——Caddy 拓扑下 IP 白名单全体 403。
+	if len(c.TrustedProxies) > 1 {
+		for _, p := range c.TrustedProxies {
+			if p == "none" {
+				return nil, fmt.Errorf("config: LAIAI_TRUSTED_PROXIES value \"none\" must be used alone, not mixed with CIDR entries")
+			}
+		}
+	}
 
 	if spec := os.Getenv("LAIAI_DATA_KEYS"); spec != "" {
 		active := os.Getenv("LAIAI_DATA_KEY_ACTIVE")

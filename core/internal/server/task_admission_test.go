@@ -201,6 +201,84 @@ func TestTaskGroupRatioBillingAndSettleAdjust(t *testing.T) {
 	}
 }
 
+// estimate 分支的倍率（对抗 review：此前零覆盖）：上游 succeeded 但缺 usage → 按预估收，
+// 倍率必须与 hold 同值参与（否则 ratio=2 的 org 在上游漏报 usage 时静默按 1 倍少收）。
+func TestTaskEstimateBranchAppliesRatio(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	ark := newMockArk(t)
+	svc := setupTaskEnv(t, srv, db, ark.srv.URL)
+	rec := invocation.NewRecorder(db, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	t.Cleanup(rec.Close)
+	svc.Rec = rec
+	apiKey, orgID := seedUserWithCredit(t, srv, "video-est@example.com", "20")
+
+	if w, out := srv.doAdmin(t, "POST", "/api/admin/group-ratios", map[string]any{"name": "est2x", "ratio": "2"}); w.Code != 200 {
+		t.Fatalf("group ratio = %d %v", w.Code, out)
+	}
+	if w, out := srv.doAdmin(t, "PUT", "/api/admin/orgs/"+trimFloat(orgID)+"/group", map[string]any{"group": "est2x"}); w.Code != 200 {
+		t.Fatalf("set org group = %d %v", w.Code, out)
+	}
+
+	taskID := submitVideoTask(t, srv, apiKey)
+	// succeeded 但不带 usage：按 est 500k × $10/1M × ratio 2 = $10 全额收
+	ark.queryState.Store(`{"id":"cgt-1","status":"succeeded",
+		"content":{"video_url":"https://cdn.example.com/v.mp4"}}`)
+	svc.PollOnce(context.Background())
+
+	acc := &ledger.Account{}
+	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("10")) || !acc.HeldAmount.IsZero() {
+		t.Fatalf("estimate settle with ratio: posted=%s held=%s, want 10/0", acc.PostedBalance, acc.HeldAmount)
+	}
+	if used := keyUsedAmount(t, db, orgID); !used.Equal(decimal.RequireFromString("10")) {
+		t.Fatalf("used after estimate settle = %s, want 10", used)
+	}
+	inv := waitInvocation(t, db, "request_id = ?", taskID)
+	if inv.UsageSource != invocation.UsageSourceEstimated || !inv.CostUSD.Equal(decimal.RequireFromString("10")) {
+		t.Fatalf("estimate invocation = source %q cost %s, want estimated/10", inv.UsageSource, inv.CostUSD)
+	}
+}
+
+// 生产装配守卫（对抗 review 变异实测曾全绿）：NewWithServer 必须把 Gate 与 Recorder
+// 装配到 TaskService 上——装配线被删则视频调用静默丢准入/丢请求日志，此测试变红。
+func TestTaskServiceProductionAssembly(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	_ = srv
+	rec := invocation.NewRecorder(db, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	t.Cleanup(rec.Close)
+	ts := task.NewService(db, testKeyring(t), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	NewWithServer(db, Options{
+		AuthSecret: testSecret, AdminToken: []byte(testAdminToken),
+		Keyring: testKeyring(t), Recorder: rec, TaskService: ts,
+		AuthRateBurst: 100000,
+	})
+	if ts.Gate == nil {
+		t.Fatal("NewWithServer must wire task admission Gate (P0-1 fail-closed depends on it)")
+	}
+	if ts.Rec != rec {
+		t.Fatal("NewWithServer must wire Options.Recorder into TaskService.Rec (video invocations silently vanish otherwise)")
+	}
+}
+
+// GET /v1/video/generations/:id 的 IP 白名单（对抗 review）：响应含 result_url 等租户数据，
+// 泄露的受限 Key 不得从白名单外 IP 读取。
+func TestTaskGetHonorsIPWhitelist(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	ark := newMockArk(t)
+	_ = setupTaskEnv(t, srv, db, ark.srv.URL)
+	token, orgID := seedUserSession(t, srv, "video-get-ip@example.com")
+	grantCredit(t, srv, orgID, "10", "seed-video-get-ip")
+	// 白名单含测试请求源 192.0.2.1 → 提交成功；随后收窄白名单 → GET 被拒
+	apiKey := issueControlledKey(t, srv, token, map[string]any{"allow_ips": "192.0.2.1"})
+	taskID := submitVideoTask(t, srv, apiKey)
+
+	db.Exec("UPDATE api_keys SET allow_ips = '203.0.113.7' WHERE org_id = ?", uint64(orgID))
+	w, out := srv.do(t, "GET", "/v1/video/generations/"+taskID, apiKey, nil)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("ip-blocked GET = %d %v, want 403", w.Code, out)
+	}
+}
+
 // (org,model) 模型级限流对 video 生效（与 chat 同一限流器实例/窗口）。
 func TestTaskModelRateLimit(t *testing.T) {
 	srv, db := setupRelayServer(t)

@@ -84,6 +84,12 @@ func (s *Service) HandleGet(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// IP 白名单对读取同样生效（对抗 review）：响应含 result_url/费用等租户数据，
+	// 受 allow_ips 限制的 Key 泄露后不得从白名单外读取。模型白名单/quota 与读取无关，不检。
+	if !key.AllowsIP(c.ClientIP()) {
+		taskErr(c, http.StatusForbidden, "this api key is not allowed from your ip address")
+		return
+	}
 	t, err := s.Get(key.OrgID, c.Param("id"))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

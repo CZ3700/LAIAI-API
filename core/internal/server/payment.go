@@ -343,9 +343,13 @@ func (s *Server) x402Settle(c *gin.Context) {
 		// 链上已不可逆结算但本地入账失败：单独把 txHash 落库作恢复锚点（仅当尚未写入），
 		// 使 ReconcileTopups 的 x402 修复分支可据 trade_no 自动重放入账，绝不丢链上付款。
 		// 该锚点写入再失败＝两次独立 DB 故障：显式告警，运维可据日志 txHash 手工补。
+		// 同时把 status 拉回 pending（对抗 review #4）：极晚结算的单可能已被 ExpireStaleTopups
+		// 标成 expired，而 reconcile 只扫 pending——不拉回则锚点单永久脱离自动重放集。
+		// 谓词限定 pending|expired，绝不触碰 paid/failed 终态。
 		if pe := s.db.Model(&TopupOrder{}).
-			Where("order_no = ? AND (trade_no = '' OR trade_no IS NULL)", order.OrderNo).
-			Update("trade_no", txHash).Error; pe != nil {
+			Where("order_no = ? AND (trade_no = '' OR trade_no IS NULL) AND status IN ?",
+				order.OrderNo, []int8{topupPending, topupExpired}).
+			Updates(map[string]any{"trade_no": txHash, "status": topupPending}).Error; pe != nil {
 			s.Log().Error("x402 SETTLED ON-CHAIN BUT BOTH CREDIT AND PROOF-PERSIST FAILED — manual credit needed",
 				"order", orderNo, "tx", txHash, "credit_err", cerr, "persist_err", pe)
 		} else {
@@ -501,23 +505,55 @@ func (s *Server) ReconcileTopups(ctx context.Context, minAge time.Duration, limi
 // ReconcileTopups 的 pending 扫描集——**绝不是入金终态**：用户极晚支付时 callback 仍走
 // creditPaidOrder（接受 pending|expired，uid=967 语义）正常入账；只有 failed 是终态。
 // x402 已结算待重放的单（trade_no 非空）不标过期，留给对账重放兜底。
+//
+// 标过期前做**最终网关确认**（对抗 review #5：expired 单永久退出 reconcile 扫描集，若不
+// 确认就标，"晚支付 + callback 丢失"的兜底双保险被 24h 悬崖静默切断）：
+//   - 网关侧已付 → 走统一入账，绝不标过期；
+//   - 网关查询失败 → 本轮跳过（留 pending 下轮再试），绝不盲标；
+//   - 网关确认未付/查无此单/引擎不可解析（渠道已删，callback 腿依旧有效）→ 标过期。
+// 逐行 UPDATE 复核完整谓词（含 x402 锚点排除，对抗 review #4 TOCTOU）：选取间隙被支付/
+// 被落锚点的单不误标。
 func (s *Server) ExpireStaleTopups(ctx context.Context, maxAge time.Duration, limit int) (int, error) {
 	cutoff := s.now().Add(-maxAge).Unix()
-	// 先选 id 再限批 UPDATE（与日志清理同款分批纪律，避免大表长事务）
-	var ids []uint64
-	if e := s.db.WithContext(ctx).Model(&TopupOrder{}).
+	var orders []TopupOrder
+	if e := s.db.WithContext(ctx).
 		Where("status = ? AND created_at < ? AND NOT (provider = ? AND trade_no <> '')",
 			topupPending, cutoff, "x402").
-		Order("id").Limit(limit).Pluck("id", &ids).Error; e != nil {
+		Order("id").Limit(limit).Find(&orders).Error; e != nil {
 		return 0, e
 	}
-	if len(ids) == 0 {
-		return 0, nil
+	expired := 0
+	for i := range orders {
+		o := &orders[i]
+		if ctx.Err() != nil {
+			break
+		}
+		if engine := s.engineFor(o.Provider); engine != nil {
+			qr, qe := engine.QueryOrder(ctx, payment.QueryRequest{OrderNo: o.OrderNo, ProviderRef: o.ProviderRef})
+			if qe != nil {
+				s.Log().Warn("expire sweep: gateway query failed, keeping pending for next round",
+					"provider", o.Provider, "order", o.OrderNo, "err", qe)
+				continue
+			}
+			if qr != nil && qr.Found && qr.Paid {
+				if _, ce := s.creditPaidOrder(o.Provider, o.OrderNo, qr.TradeNo, qr.Amount, qr.Currency); ce != nil {
+					s.Log().Error("expire sweep: credit of gateway-paid order failed", "order", o.OrderNo, "err", ce)
+				} else {
+					s.Log().Warn("expire sweep credited late-paid order (callback was lost)", "order", o.OrderNo)
+				}
+				continue // 已付：绝不标过期
+			}
+		}
+		res := s.db.WithContext(ctx).Model(&TopupOrder{}).
+			Where("id = ? AND status = ? AND NOT (provider = ? AND trade_no <> '')",
+				o.ID, topupPending, "x402").
+			Update("status", topupExpired)
+		if res.Error != nil {
+			return expired, res.Error
+		}
+		expired += int(res.RowsAffected)
 	}
-	res := s.db.WithContext(ctx).Model(&TopupOrder{}).
-		Where("id IN ? AND status = ?", ids, topupPending). // 复核 status：选取间隙被支付的单不误标
-		Update("status", topupExpired)
-	return int(res.RowsAffected), res.Error
+	return expired, nil
 }
 
 // computeRechargeBonus：按充值阶梯优惠（recharge_bonus_tiers，gap P1-D）算赠额（读 settings + 计算）。
