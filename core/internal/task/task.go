@@ -13,9 +13,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/crypto"
+	"github.com/laiai/laiai-next/core/internal/identity"
+	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
@@ -51,12 +54,21 @@ type Task struct {
 	ActualTokens     int64           `gorm:"column:actual_tokens" json:"completion_tokens,omitempty"`
 	CostUSD          decimal.Decimal `gorm:"column:cost_usd" json:"cost_usd"`
 	PriceOutUSDPer1M decimal.Decimal `gorm:"column:price_out_usd_per_1m" json:"-"` // 计费快照（陷阱 2）
+	HoldAmountUSD    decimal.Decimal `gorm:"column:hold_amount_usd" json:"-"`      // 冻结额快照 = key quota 预留额（0032）；0=旧行无预留
+	GroupRatio       decimal.Decimal `gorm:"column:group_ratio" json:"-"`          // 计费倍率快照（0032）：hold 与结算同值纪律
 	SubmittedAt      time.Time       `gorm:"column:submitted_at;autoCreateTime:milli" json:"submitted_at"`
 	StartedAt        *time.Time      `gorm:"column:started_at" json:"started_at,omitempty"`
 	FinishedAt       *time.Time      `gorm:"column:finished_at" json:"finished_at,omitempty"`
 }
 
 func (Task) TableName() string { return "tasks" }
+
+// Gate：数据面准入原语（keyGate 三项 + (org,model) 模型级限流），由 *relay.Relay 实现。
+// task 不自建白名单/限流逻辑——与 chat 同一实例、同一 Redis/进程内窗口、同一语义（指令 P0-1）。
+type Gate interface {
+	GateKey(key *identity.APIKey, clientIP, model string) (code int, msg string, ok bool)
+	AllowModelRate(orgID uint64, model string) (ok bool, rpm int)
+}
 
 // Service：任务编排服务。M1 驻 core 进程，与 relay 同享 DB/Keyring。
 type Service struct {
@@ -65,7 +77,9 @@ type Service struct {
 	Client      *http.Client
 	Log         *slog.Logger
 	Now         func() time.Time
-	TaskTimeout time.Duration // 超过此时长未终态 → failed + 全退（陷阱 8：可配置，不硬编码）
+	TaskTimeout time.Duration        // 超过此时长未终态 → failed + 全退（陷阱 8：可配置，不硬编码）
+	Gate        Gate                 // 准入（P0-1）：server 装配时注入 relay 实例；HandleCreate 缺装配即拒绝
+	Rec         *invocation.Recorder // 任务终态落 Invocation Store（请求日志可见视频消费）；nil=不记录
 }
 
 func NewService(db *gorm.DB, kr *crypto.Keyring, log *slog.Logger) *Service {
@@ -90,6 +104,7 @@ type SubmitInput struct {
 var (
 	ErrConcurrencyLimit = fmt.Errorf("task: channel concurrency limit reached")
 	ErrNoTaskAdaptor    = fmt.Errorf("task: provider has no task adaptor")
+	ErrKeyQuotaExceeded = fmt.Errorf("task: api key quota exceeded")
 )
 
 // Submit：计费快照 → 并发闸 → hold → 上游提交 → 落任务行。
@@ -118,13 +133,22 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 	// 同事务内重新计数 → hold + 插入 queued 任务行（即"占住槽位"，下一个 Submit 数得到它）。
 	// 消灭 count-then-act 竞态：N 个并发不会全部过闸。
 	estTokens := ad.EstimateOutputTokens(in.Model, in.Content)
-	holdAmount := price.Cost(0, 0, estTokens)
+	// 计费倍率快照（0011 一层 × 0027 二层）：hold 与结算取同一次值（chat 同款纪律）。
+	// 提交 QPS 低，直读 DB 不走 relay 热读缓存。
+	ratio := relay.EffectiveRatio(s.DB, in.OrgID, in.Model)
+	holdAmount := price.Cost(0, 0, estTokens).Mul(ratio)
+	// API Key 额度原子预留（P0-1，chat 的 P0-3 同款）：防并发提交超 key quota。
+	// 退还全覆盖：下方事务失败立即退；任务行落地后由 settle 终态按 hold_amount_usd 快照对账/退还。
+	if !identity.ReserveKeyQuota(s.DB, in.APIKeyID, holdAmount) {
+		return nil, ErrKeyQuotaExceeded
+	}
 	t := &Task{
 		TaskID: "task_" + randHex(12),
 		OrgID:  in.OrgID, UserID: in.UserID, APIKeyID: in.APIKeyID,
 		Model: in.Model, ChannelID: ch.ID, Provider: ch.Provider,
 		Status: StatusQueued, EstTokens: estTokens,
 		PriceOutUSDPer1M: price.OutputUSDPer1M,
+		HoldAmountUSD:    holdAmount, GroupRatio: ratio,
 	}
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
 		// 锁渠道行（MySQL FOR UPDATE；SQLite 测试靠单连接串行）
@@ -162,6 +186,8 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		t.HoldID = h.ID
 		return tx.Create(t).Error // 占住槽位
 	}); err != nil {
+		// 任务行未落地：这里是 key quota 预留退还的唯一同步出口（落地后统一由 settle 终态退/调）
+		_ = identity.AddKeyUsageSigned(s.DB, in.APIKeyID, holdAmount.Neg())
 		return nil, err
 	}
 
@@ -281,15 +307,22 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 
 // settleSuccess：CAS 终态转移 + 资金结算在同一事务（赢者结算，输者无操作）。
 func (s *Service) settleSuccess(t *Task, result QueryResult) {
-	actual := decimal.Zero
 	price := &relay.ModelPrice{OutputUSDPer1M: t.PriceOutUSDPer1M} // 计费快照，不读实时价
+	ratio := t.GroupRatio
+	if !ratio.IsPositive() {
+		ratio = decimal.NewFromInt(1) // 0032 前旧行/异常快照：按 1 兜底（与历史行为一致）
+	}
+	actual := decimal.Zero
+	usageSource := invocation.UsageSourceUpstream
 	if result.CompletionTokens > 0 {
-		actual = price.Cost(0, 0, result.CompletionTokens)
+		actual = price.Cost(0, 0, result.CompletionTokens).Mul(ratio)
 	} else {
 		// 上游没给 usage：按预估收（保守；上游 usage 缺失会在日志可见）
-		actual = price.Cost(0, 0, t.EstTokens)
+		actual = price.Cost(0, 0, t.EstTokens).Mul(ratio)
+		usageSource = invocation.UsageSourceEstimated
 		s.Log.Warn("task usage missing from upstream, charged by estimate", "task", t.TaskID)
 	}
+	won := false
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		now := s.Now()
 		res := tx.Model(&Task{}).
@@ -305,6 +338,7 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 		if res.RowsAffected == 0 {
 			return nil // CAS 输了：另一个轮询已结算，本事务什么都不做（陷阱 1）
 		}
+		won = true
 		_, err := ledger.SettleHoldExact(tx, t.HoldID, actual, "task", t.TaskID,
 			fmt.Sprintf("task model=%s tokens=%d", t.Model, result.CompletionTokens))
 		return err
@@ -313,6 +347,14 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 		s.Log.Error("TASK SETTLE FAILED — manual reconcile needed", "task", t.TaskID, "err", err)
 		return
 	}
+	if !won {
+		return
+	}
+	// key 额度对账到实收（chat capture 同款，best-effort）：0032 前旧行（快照=0）无预留、不调整。
+	if t.HoldAmountUSD.IsPositive() {
+		_ = identity.AddKeyUsageSigned(s.DB, t.APIKeyID, actual.Sub(t.HoldAmountUSD))
+	}
+	s.recordInvocation(t, invocation.StatusSuccess, http.StatusOK, result.CompletionTokens, actual, usageSource, "")
 	s.Log.Info("task succeeded", "task", t.TaskID, "cost", actual)
 }
 
@@ -320,6 +362,9 @@ func (s *Service) settleFailure(t *Task, reason string) {
 	if reason == "" {
 		reason = "upstream reported failure"
 	}
+	// 上游 message 原文截断（fail_reason VARCHAR(255) 上限；也压缩进日志的上游可控文本面，红线 7）
+	reason = clipReason(reason, 255)
+	won := false
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		now := s.Now()
 		res := tx.Model(&Task{}).
@@ -331,13 +376,46 @@ func (s *Service) settleFailure(t *Task, reason string) {
 		if res.RowsAffected == 0 {
 			return nil // CAS 输了
 		}
+		won = true
 		return ledger.Release(tx, t.HoldID) // 失败全退
 	})
 	if err != nil {
 		s.Log.Error("TASK FAIL-RELEASE FAILED — funds stuck", "task", t.TaskID, "err", err)
 		return
 	}
+	if !won {
+		return
+	}
+	if t.HoldAmountUSD.IsPositive() {
+		_ = identity.AddKeyUsageSigned(s.DB, t.APIKeyID, t.HoldAmountUSD.Neg()) // 预留全退（与 ledger Release 同向）
+	}
+	s.recordInvocation(t, invocation.StatusUpstreamError, http.StatusBadGateway, 0, decimal.Zero, "", reason)
 	s.Log.Warn("task failed", "task", t.TaskID, "reason", reason)
+}
+
+// recordInvocation：任务终态落 Invocation Store（视频消费进请求日志/用量口径，P0-1 配套）。
+// request_id 复用对外 task_id（uk_inv_request 唯一键 + CAS 赢者唯一，天然不重）。
+func (s *Service) recordInvocation(t *Task, status string, code int, tokens int64, cost decimal.Decimal, usageSource, brief string) {
+	if s.Rec == nil {
+		return
+	}
+	s.Rec.Record(&invocation.Invocation{
+		OrgID: t.OrgID, UserID: t.UserID, APIKeyID: t.APIKeyID,
+		RequestID: t.TaskID, Model: t.Model,
+		ChannelID: t.ChannelID, Provider: t.Provider,
+		Status: status, StatusCode: code,
+		CompletionTokens: tokens, CostUSD: cost, UsageSource: usageSource,
+		DurationMs: int(s.Now().Sub(t.SubmittedAt).Milliseconds()),
+		ErrorBrief: brief,
+	})
+}
+
+// clipReason：按字节截断并去除尾部半个 rune（utf8mb4 列防非法 UTF-8，与 relay.clipMeta 同款）。
+func clipReason(sv string, maxBytes int) string {
+	if len(sv) <= maxBytes {
+		return sv
+	}
+	return strings.ToValidUTF8(sv[:maxBytes], "")
 }
 
 // sweepTimedOut：僵尸任务清扫（CAS + 全退；上限每轮 100，知识库 §6.2）。

@@ -32,7 +32,29 @@ func (s *Service) HandleCreate(c *gin.Context) {
 	}
 	var req createReq
 	if err := c.ShouldBindJSON(&req); err != nil {
+		// 路由挂 MaxBytesReader（指令 P0-2）：超限读中断 → 413 诚实错误，不做大内存分配
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			taskErr(c, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		taskErr(c, http.StatusBadRequest, "model and content are required")
+		return
+	}
+	// 准入统一（指令 P0-1）：与 chat 同一套 Key 精细管控（IP 白名单/累计额度/模型白名单）
+	// + (org,model) 模型级限流。Gate 未装配 = 部署错误，fail-closed 拒绝而非放行。
+	if s.Gate == nil {
+		s.Log.Error("task admission gate not wired — refusing request")
+		taskErr(c, http.StatusInternalServerError, "server misconfigured")
+		return
+	}
+	if code, msg, allowed := s.Gate.GateKey(key, c.ClientIP(), req.Model); !allowed {
+		taskErr(c, code, msg)
+		return
+	}
+	if allowed, _ := s.Gate.AllowModelRate(key.OrgID, req.Model); !allowed {
+		c.Header("Retry-After", "60")
+		taskErr(c, http.StatusTooManyRequests, "model rate limit exceeded, slow down")
 		return
 	}
 	t, err := s.Submit(c.Request.Context(), SubmitInput{
@@ -45,6 +67,8 @@ func (s *Service) HandleCreate(c *gin.Context) {
 	case errors.Is(err, ErrConcurrencyLimit):
 		c.Header("Retry-After", "10")
 		taskErr(c, http.StatusTooManyRequests, "concurrency limit reached, retry later")
+	case errors.Is(err, ErrKeyQuotaExceeded):
+		taskErr(c, http.StatusPaymentRequired, "this api key has reached its quota limit") // chat 同文案
 	case errors.Is(err, ledger.ErrInsufficientBalance):
 		taskErr(c, http.StatusPaymentRequired, "insufficient balance")
 	case err != nil:

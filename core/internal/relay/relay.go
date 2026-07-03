@@ -33,6 +33,10 @@ const (
 	maxErrorBodyBytes      = 2048 // 超大上游错误体截断（NewAPI rc.10 教训）
 	maxRequestBodySize     = 10 << 20
 	maxAttempts            = 3 // 1 次 + 2 次换渠道重试（知识库 §1）
+
+	// MaxRequestBodySize：数据面统一请求体上限的导出别名。relay 各端点自身用 io.LimitReader，
+	// task/video 等非本包数据面路由挂 MaxBytesReader 时复用同一上限（指令 P0-2）。
+	MaxRequestBodySize = maxRequestBodySize
 )
 
 type Relay struct {
@@ -229,6 +233,17 @@ func keyGate(key *identity.APIKey, clientIP, model string) (int, string, bool) {
 		return http.StatusForbidden, "this api key is not allowed to use model " + model, false
 	}
 	return 0, "", true
+}
+
+// GateKey / AllowModelRate：准入原语的导出封装（指令 P0-1 统一 admission）。
+// task/video 等非本包数据面入口复用同一实例——同一 keyGate 语义、同一 (org,model)
+// 限流窗口（Redis 或进程内），不另建第二套状态。
+func (r *Relay) GateKey(key *identity.APIKey, clientIP, model string) (code int, msg string, ok bool) {
+	return keyGate(key, clientIP, model)
+}
+
+func (r *Relay) AllowModelRate(orgID uint64, model string) (ok bool, rpm int) {
+	return r.allowModelRate(orgID, model)
 }
 
 // requestedMaxOutput：取请求声明的输出 token 上限，用于 hold 估算与上游 max_tokens 映射。

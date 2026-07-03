@@ -269,8 +269,16 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		if ts == nil {
 			ts = task.NewService(db, opts.Keyring, log.With("component", "task"))
 		}
-		r.POST("/v1/video/generations", ts.HandleCreate)
-		r.GET("/v1/video/generations/:id", ts.HandleGet)
+		if ts.Gate == nil {
+			ts.Gate = rl // 准入统一（P0-1）：与 chat 同一实例——同一 keyGate 语义、同一限流窗口
+		}
+		if ts.Rec == nil {
+			ts.Rec = opts.Recorder // 任务终态进 Invocation Store（请求日志可见视频消费）
+		}
+		// 数据面体上限（P0-2）：与 relay 各端点 io.LimitReader 同一上限，超限 413
+		vg := r.Group("", bodyLimit(relay.MaxRequestBodySize))
+		vg.POST("/v1/video/generations", ts.HandleCreate)
+		vg.GET("/v1/video/generations/:id", ts.HandleGet)
 	}
 
 	return r, s
