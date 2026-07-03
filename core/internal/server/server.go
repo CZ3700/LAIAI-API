@@ -38,6 +38,9 @@ type Options struct {
 	// InvocationRetentionDays：调用日志保留天数的「启动期默认」（env 注入）。
 	// 运营可用 ext_settings.log_retention_days 热覆盖；该值仅作未配置时的回退。0 = 永久保留。
 	InvocationRetentionDays int
+	// TrustedProxies（指令 P1-2）：可信反代 CIDR/IP。空 = 私网段默认；["none"] = 不信任任何代理头。
+	// ClientIP 是 keyGate IP 白名单/认证限流/审计 IP 的共同口径。
+	TrustedProxies []string
 }
 
 type Server struct {
@@ -106,6 +109,23 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	// 可信反代（指令 P1-2）：gin 默认信任一切来源的 X-Forwarded-For——直连 core 的请求可伪造
+	// 客户端 IP，绕过 keyGate IP 白名单/认证限流/审计口径。显式收窄：
+	//   未配置 → 私网段默认（容器拓扑：core 仅经同网 Caddy 可达，Caddy 会重写不可信 XFF）；
+	//   "none" → 不信任任何代理头（core 直接对公网时用）；
+	//   其余  → 运营显式给出的 CIDR/IP 列表（CN2/CF 前置拓扑照 runbook 配）。
+	trusted := opts.TrustedProxies
+	switch {
+	case len(trusted) == 1 && trusted[0] == "none":
+		trusted = nil
+	case len(trusted) == 0:
+		trusted = []string{"127.0.0.1/32", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"}
+	}
+	if err := r.SetTrustedProxies(trusted); err != nil {
+		// config.Load 已做启动校验；此处仅兜底直连构造（测试）传坏值
+		log.Error("invalid trusted proxies, refusing all proxy headers", "err", err)
+		_ = r.SetTrustedProxies(nil)
+	}
 
 	// relay 实例先建（admin 渠道测试 + 数据面共用）；keyring 缺失则两者一并禁用
 	var rl *relay.Relay

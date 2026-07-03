@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -28,6 +29,11 @@ type Config struct {
 	DBMaxIdleConns int      // LAIAI_DB_MAX_IDLE_CONNS，默认 10
 	// LAIAI_INVOCATION_RETENTION_DAYS：Invocation Store 保留天数（设计 §6.1 默认 30；0 = 关闭清理）
 	InvocationRetentionDays int
+	// LAIAI_TRUSTED_PROXIES（指令 P1-2 生产边缘 IP 信任链）：逗号分隔的可信反代 CIDR/IP。
+	// 未设置 = 私网段默认（容器拓扑：core 仅经同网 Caddy 可达）；"none" = 不信任任何代理头
+	// （core 直接对公网时用，X-Forwarded-For 一律忽略）。ClientIP 是 keyGate IP 白名单 /
+	// 认证限流 / 审计 IP 的共同口径，信任链错配 = 三者同时失真。
+	TrustedProxies []string
 	// SMTP（0014，可选）：全空 = 邮件退化为日志，不真实发送
 	SMTPHost     string // LAIAI_SMTP_HOST
 	SMTPPort     int    // LAIAI_SMTP_PORT，默认 587
@@ -87,6 +93,21 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LAIAI_INVOCATION_RETENTION_DAYS must be a non-negative integer")
 		}
 		c.InvocationRetentionDays = n
+	}
+
+	// 可信反代（P1-2）：启动即校验 CIDR/IP 合法性——信任链配错宁可启动失败，不要上线后
+	// IP 白名单/限流/审计三处口径静默失真。"none" 原样传给 server 层解释（不信任任何代理头）。
+	for _, p := range strings.Split(os.Getenv("LAIAI_TRUSTED_PROXIES"), ",") {
+		s := strings.TrimSpace(p)
+		if s == "" {
+			continue
+		}
+		if s != "none" {
+			if _, _, err := net.ParseCIDR(s); err != nil && net.ParseIP(s) == nil {
+				return nil, fmt.Errorf("config: LAIAI_TRUSTED_PROXIES entry %q is not a valid IP or CIDR", s)
+			}
+		}
+		c.TrustedProxies = append(c.TrustedProxies, s)
 	}
 
 	if spec := os.Getenv("LAIAI_DATA_KEYS"); spec != "" {

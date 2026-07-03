@@ -6,6 +6,17 @@
 #  1. respond/file_server 必须包在 handle 块里（directive 顺序陷阱）
 #  2. 若前面还有一层反代/CDN，必须配置 servers>trusted_proxies，否则 X-Forwarded-* 被覆写
 #
+# ⚠️ CF/CN2 前置本 Caddy 时（P1-2 IP 信任链，详见 docs/生产runbook.md §1）：
+#    取消下面全局块注释并按真实边缘网段填写。不配的后果：Caddy 把 CF 设置的 XFF 重写成
+#    CF 边缘 IP → core 看到的"客户端 IP"全是 CF 节点，keyGate IP 白名单/限流/审计全体失真。
+#    Cloudflare 网段清单：https://www.cloudflare.com/ips/ （官方变更需跟进）
+# {
+# 	servers {
+# 		trusted_proxies static 173.245.48.0/20 103.21.244.0/22   # ← 换成完整真实边缘网段
+# 	}
+# }
+#    Caddy 作为最外层边缘（默认拓扑）时保持注释——对来源 XFF 的默认重写本身就是防伪造。
+#
 # WS-3 多实例：core 用 docker compose --scale 起多副本（无 container_name）。Caddy 用
 # 「动态 DNS upstream」(dynamic a) 跟随 Docker 内嵌 DNS 解析出的全部副本 IP 做轮询负载均衡；
 # 每 5s 重解析，副本增减自动跟随。

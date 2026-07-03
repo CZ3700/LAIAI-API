@@ -133,7 +133,8 @@ func main() {
 		Log:                     log,
 		InvocationRetentionDays: cfg.InvocationRetentionDays, // ext_settings.log_retention_days 未配置时的回退默认
 		RedisRateLimiter:        redisRL,
-		ReadDB:                  readDB, // 只读副本（仅非金钱分析读用；nil/同主库=全走主）
+		ReadDB:                  readDB,             // 只读副本（仅非金钱分析读用；nil/同主库=全走主）
+		TrustedProxies:          cfg.TrustedProxies, // 可信反代（P1-2）：空=私网默认；"none"=不信任代理头
 	})
 
 	// 后台维护循环（每小时）：旧日志保留期清理（调用日志 + 审计日志，运营可热配，gap P2-C）
