@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/laiai/laiai-next/core/internal/alert"
 	"github.com/laiai/laiai-next/core/internal/config"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/leader"
@@ -28,7 +29,10 @@ import (
 )
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "laiai-core")
+	// root logger 外层包 alert.Handler：命中 critical 的资金事件（漂移/结算失败/
+	// 链上已扣但入账失败）自动推飞书告警。所有经此 logger 派生的 main/server/relay
+	// 日志全覆盖，零改高危点。未配 LAIAI_ALERT_WEBHOOK 时纯 pass-through。
+	log := slog.New(alert.NewHandler(slog.NewJSONHandler(os.Stdout, nil))).With("service", "laiai-core")
 
 	cfg, err := config.Load()
 	if err != nil {
