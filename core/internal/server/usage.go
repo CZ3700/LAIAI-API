@@ -39,6 +39,16 @@ func (s *Server) getUsage(c *gin.Context) {
 	if model := c.Query("model"); model != "" {
 		q = q.Where("model = ?", model)
 	}
+	// api_key_id：按 Key 维度筛调用（指令 0-14 天「Request Logs 补 API key filter」）。
+	// org_id 谓词已在链上，跨 org 的 key id 只会得到空集，无越权面。
+	if keyID := c.Query("api_key_id"); keyID != "" {
+		id, err := strconv.ParseUint(keyID, 10, 64)
+		if err != nil {
+			fail(c, http.StatusBadRequest, "api_key_id must be an integer")
+			return
+		}
+		q = q.Where("api_key_id = ?", id)
+	}
 	// status：精确匹配真实枚举；特殊值 "failed" = 非 success（覆盖 upstream_error/no_channel/
 	// insufficient_balance），让"失败"筛选在服务端完成——分页与 total 才能正确反映过滤结果，
 	// 而不是前端只对当前页本地隐藏 success（会少计失败、total 也对不上）。

@@ -7,6 +7,7 @@ import { fmtUsd } from '@/lib/money'
 interface UsageRow {
   id: number
   request_id: string
+  api_key_id?: number
   model: string
   status: string
   status_code: number
@@ -35,6 +36,7 @@ const loading = ref(true)
 const error = ref('')
 const range = ref<'7d' | '30d' | 'month' | 'prev' | 'custom'>('7d')
 const model = ref('')
+const apiKeyId = ref('')
 const requestId = ref('')
 const result = ref<'all' | 'success' | 'failed'>('all')
 const customStart = ref('')
@@ -49,6 +51,12 @@ function statusText(r: UsageRow): string {
 }
 function fmtMs(v: number): string {
   return v >= 1000 ? `${(v / 1000).toFixed(3)} ${t('reqlog.unitSec')}` : `${v}ms`
+}
+// 按 id 还原密钥名（已吊销/已清除的 key 不在 /api/keys 列表里，退化显示 #id）
+function keyLabel(id?: number): string {
+  if (!id) return '—'
+  const k = keys.value.find((x) => x.id === id)
+  return k ? k.name || k.prefix : `#${id}`
 }
 // 时间窗按 UTC 自然日界计算（与后端 created_at 的 UTC 存储/聚合口径一致），下推到后端 since/until 过滤，
 // 由后端分页 + 计 total——不再对当前页本地按浏览器时区筛（旧实现会漏算窗口内分页外的行、且把边界日按本地月误分桶，
@@ -97,6 +105,7 @@ async function load() {
   try {
     const q = new URLSearchParams({ page: String(page.value), page_size: String(pageSize) })
     if (model.value) q.set('model', model.value)
+    if (apiKeyId.value) q.set('api_key_id', apiKeyId.value)
     if (result.value !== 'all') q.set('status', result.value) // 'success' 精确；'failed' 后端识别为非 success
     const w = windowParams()
     if (w.since) q.set('since', w.since)
@@ -111,7 +120,7 @@ async function load() {
   }
 }
 
-watch([model, result, range, customStart, customEnd], () => {
+watch([model, apiKeyId, result, range, customStart, customEnd], () => {
   page.value = 1
   void load()
 })
@@ -157,7 +166,7 @@ onMounted(() => {
       </div>
       <div class="filter-group min-w-[180px]">
         <label>{{ t('reqlog.filterApiKey') }}</label>
-        <select class="input" disabled>
+        <select v-model="apiKeyId" class="input">
           <option value="">{{ t('reqlog.allKeys') }}</option>
           <option v-for="k in keys" :key="k.id" :value="String(k.id)">{{ k.name || k.prefix }}</option>
         </select>
@@ -256,7 +265,7 @@ onMounted(() => {
               <div><dt>{{ t('reqlog.dtModel') }}</dt><dd>{{ selected.model }}</dd></div>
               <div><dt>{{ t('reqlog.dtSourceProtocol') }}</dt><dd><span class="badge-muted">OpenAI</span></dd></div>
               <div><dt>{{ t('reqlog.dtRequestModelRaw') }}</dt><dd>{{ selected.model }}</dd></div>
-              <div><dt>{{ t('reqlog.dtApiKey') }}</dt><dd>{{ t('reqlog.notReturned') }}</dd></div>
+              <div><dt>{{ t('reqlog.dtApiKey') }}</dt><dd>{{ keyLabel(selected.api_key_id) }}</dd></div>
             </dl>
           </section>
 
