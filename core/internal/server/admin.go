@@ -209,6 +209,17 @@ type channelReq struct {
 	MaxConcurrentTasks int               `json:"max_concurrent_tasks"` // 任务并发闸，默认 3
 	ModelMapping       map[string]string `json:"model_mapping"`        // 对外名→上游名（可选）
 	Proxy              string            `json:"proxy"`                // 渠道级出网代理（0019，可选）
+	ParamOverride      string            `json:"param_override"`       // JSON 请求体深合并（0033，可选）
+	HeaderOverride     string            `json:"header_override"`      // JSON 请求头覆盖（0033，可选）
+}
+
+// auditOverrideKeys：override 变更审计明细——只记 keys 列表，绝不记值（指令 §3.4）。
+func auditOverrideKeys(kind, raw string) string {
+	keys := relay.OverrideKeys(raw)
+	if len(keys) == 0 {
+		return kind + " cleared"
+	}
+	return kind + " keys: [" + strings.Join(keys, " ") + "]"
 }
 
 // marshalMapping：映射序列化为存储格式（空 map → 空串 = 不映射）。
@@ -266,19 +277,36 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid model_mapping")
 		return
 	}
+	if err := relay.ValidateParamOverride(req.ParamOverride); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := relay.ValidateHeaderOverride(req.HeaderOverride); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	ch := &relay.Channel{
 		Name: req.Name, Provider: req.Provider,
 		BaseURL:       strings.TrimRight(req.BaseURL, "/"),
 		CredentialEnc: enc, Models: strings.Join(req.Models, ","),
 		Weight: weight, Priority: req.Priority,
 		MaxConcurrentTasks: maxTasks, StrictResponse: 1,
-		ModelMapping: mapping, Proxy: strings.TrimSpace(req.Proxy), Status: 1,
+		ModelMapping: mapping, Proxy: strings.TrimSpace(req.Proxy),
+		ParamOverride: strings.TrimSpace(req.ParamOverride), HeaderOverride: strings.TrimSpace(req.HeaderOverride),
+		Status: 1,
 	}
 	if err := s.db.Create(ch).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "channel create failed")
 		return
 	}
-	s.writeAudit(c, "channel_create", strconv.FormatUint(ch.ID, 10), "created channel "+ch.Name+" ("+ch.Provider+")")
+	detail := "created channel " + ch.Name + " (" + ch.Provider + ")"
+	if ch.ParamOverride != "" {
+		detail += "; " + auditOverrideKeys("param_override", ch.ParamOverride)
+	}
+	if ch.HeaderOverride != "" {
+		detail += "; " + auditOverrideKeys("header_override", ch.HeaderOverride)
+	}
+	s.writeAudit(c, "channel_create", strconv.FormatUint(ch.ID, 10), detail)
 	s.invalidateCache(relay.KindChannel, "")
 	c.JSON(http.StatusCreated, gin.H{"id": ch.ID, "name": ch.Name})
 }
@@ -290,8 +318,10 @@ type updateChannelReq struct {
 	Weight         *int               `json:"weight"`
 	Priority       *int               `json:"priority"`
 	StrictResponse *bool              `json:"strict_response"`
-	ModelMapping   *map[string]string `json:"model_mapping"` // 指针区分"不改"与"清空"
-	Proxy          *string            `json:"proxy"`         // 指针区分"不改"与"清空代理"
+	ModelMapping   *map[string]string `json:"model_mapping"`   // 指针区分"不改"与"清空"
+	Proxy          *string            `json:"proxy"`           // 指针区分"不改"与"清空代理"
+	ParamOverride  *string            `json:"param_override"`  // 指针区分"不改"与"清空"（0033）
+	HeaderOverride *string            `json:"header_override"` // 同上
 }
 
 // adminUpdateChannel：PUT /api/admin/channels/:id —— 编辑渠道（部署冒烟暴露的高频缺口）。
@@ -342,6 +372,23 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 	if req.Proxy != nil {
 		updates["proxy"] = strings.TrimSpace(*req.Proxy)
 	}
+	auditDetail := "channel config updated"
+	if req.ParamOverride != nil {
+		if err := relay.ValidateParamOverride(*req.ParamOverride); err != nil {
+			fail(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		updates["param_override"] = strings.TrimSpace(*req.ParamOverride)
+		auditDetail += "; " + auditOverrideKeys("param_override", *req.ParamOverride)
+	}
+	if req.HeaderOverride != nil {
+		if err := relay.ValidateHeaderOverride(*req.HeaderOverride); err != nil {
+			fail(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		updates["header_override"] = strings.TrimSpace(*req.HeaderOverride)
+		auditDetail += "; " + auditOverrideKeys("header_override", *req.HeaderOverride)
+	}
 	if req.APIKey != nil && *req.APIKey != "" {
 		enc, err := s.keyring.Encrypt(*req.APIKey)
 		if err != nil {
@@ -363,7 +410,7 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 		fail(c, http.StatusNotFound, "channel not found")
 		return
 	}
-	s.writeAudit(c, "channel_update", strconv.FormatUint(id, 10), "channel config updated")
+	s.writeAudit(c, "channel_update", strconv.FormatUint(id, 10), auditDetail)
 	s.invalidateCache(relay.KindChannel, "")
 	c.JSON(http.StatusOK, gin.H{"updated": id})
 }
@@ -399,6 +446,8 @@ func (s *Server) adminListChannels(c *gin.Context) {
 			"model_mapping":   ch.ModelMapping, "calls": total, "status": ch.Status,
 			"success_rate": successRate, "avg_latency_ms": q.AvgDuration, "errors": q.Errors,
 			"proxy": ch.Proxy,
+			// override 配置回显给编辑表单（值本身非凭证——凭证只经 {{credential}} 占位符注入）
+			"param_override": ch.ParamOverride, "header_override": ch.HeaderOverride,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": out})

@@ -513,13 +513,19 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		// 模型映射（0009）：每次 attempt 按当前渠道覆盖写，无跨渠道残留；
 		// 计费/记录/对外响应仍用对外名（inv.Model / price 已定）。
 		req["model"] = ch.UpstreamModel(model)
-		upReq, err := ad.buildRequest(c.Request.Context(), ch, credential, req, stream)
+		// 渠道级 param override（0033，指令 §3.4）：在**本 attempt 的副本**上深合并（无 override
+		// 零拷贝返回原 map）——换渠道重试各用各的 override，绝不残留。资金钳制键受保护（overrides.go）。
+		upReq, err := ad.buildRequest(c.Request.Context(), ch, credential,
+			applyParamOverride(req, ch.ParamOverride), stream)
 		if err != nil {
 			r.release(hold.ID)
 			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
 			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
 			return // 请求本身不合法，换渠道无意义
 		}
+		// 渠道级 header override（0033）：adapter 默认头之后应用（运营优先级最高），
+		// {{credential}} 占位符注入解密凭证——自定义认证头不需要明文 key 进配置。
+		applyHeaderOverride(upReq, ch.HeaderOverride, credential)
 		resp, err = r.clientFor(ch).Do(upReq)
 		if err != nil {
 			r.Log.Warn("upstream unreachable", "channel", ch.ID, "attempt", attempt, "err", err)

@@ -30,6 +30,8 @@ type Channel struct {
 	StrictResponse     int8   `gorm:"column:strict_response"`      // 1=校验上游响应 content-type（0008）
 	ModelMapping       string `gorm:"column:model_mapping"`        // JSON {对外名:上游名}（0009，空=不映射）
 	Proxy              string `gorm:"column:proxy"`                // 渠道级出网代理（0019，空=直连）
+	ParamOverride      string `gorm:"column:param_override"`       // JSON 请求体深合并，null 删字段（0033，空=无）
+	HeaderOverride     string `gorm:"column:header_override"`      // JSON 请求头覆盖，{{credential}} 占位（0033，空=无）
 	Status             int8   `gorm:"column:status"`
 }
 

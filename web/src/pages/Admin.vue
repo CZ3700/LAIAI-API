@@ -30,6 +30,8 @@ interface Channel {
   avg_latency_ms: number
   errors: number
   proxy: string
+  param_override: string
+  header_override: string
 }
 interface Overview {
   window_days: number
@@ -923,7 +925,7 @@ function linesToMapping(lines: string): Record<string, string> {
 
 // —— 编辑渠道 ——
 const editing = ref<Channel | null>(null)
-const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '', proxy: '' })
+const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '', proxy: '', param_override: '', header_override: '' })
 const editBusy = ref(false)
 
 function openEdit(ch: Channel) {
@@ -937,6 +939,8 @@ function openEdit(ch: Channel) {
     strict_response: ch.strict_response,
     mapping: mappingToLines(ch.model_mapping),
     proxy: ch.proxy,
+    param_override: ch.param_override || '',
+    header_override: ch.header_override || '',
   }
 }
 async function saveEdit() {
@@ -951,6 +955,8 @@ async function saveEdit() {
       strict_response: editForm.value.strict_response,
       model_mapping: linesToMapping(editForm.value.mapping), // 空对象 = 清空映射
       proxy: editForm.value.proxy, // 空串 = 清空代理（直连）
+      param_override: editForm.value.param_override.trim(), // 空串 = 清空 override
+      header_override: editForm.value.header_override.trim(),
     }
     if (editForm.value.api_key) body.api_key = editForm.value.api_key
     await adminApi('PUT', `/api/admin/channels/${editing.value.id}`, body)
@@ -1697,6 +1703,28 @@ onMounted(async () => {
               <label class="label" for="edit-proxy">{{ t('admin.chProxy') }}</label>
               <input id="edit-proxy" v-model="editForm.proxy" class="input font-mono text-xs" placeholder="http://user:pass@host:port" />
               <p class="mt-1 text-xs text-muted">{{ t('admin.chProxyHint') }}</p>
+            </div>
+            <div>
+              <label class="label" for="edit-param-override">{{ t('admin.chParamOverride') }}</label>
+              <textarea
+                id="edit-param-override"
+                v-model="editForm.param_override"
+                class="input font-mono text-xs"
+                rows="3"
+                :placeholder="'{&quot;service_tier&quot;:&quot;flex&quot;,&quot;parallel_tool_calls&quot;:null}'"
+              ></textarea>
+              <p class="mt-1 text-xs text-muted">{{ t('admin.chParamOverrideHint') }}</p>
+            </div>
+            <div>
+              <label class="label" for="edit-header-override">{{ t('admin.chHeaderOverride') }}</label>
+              <textarea
+                id="edit-header-override"
+                v-model="editForm.header_override"
+                class="input font-mono text-xs"
+                rows="3"
+                :placeholder="'{&quot;X-Api-Key&quot;:&quot;{{credential}}&quot;,&quot;Authorization&quot;:null}'"
+              ></textarea>
+              <p class="mt-1 text-xs text-muted">{{ t('admin.chHeaderOverrideHint') }}</p>
             </div>
             <label class="flex items-center gap-2 text-sm">
               <input v-model="editForm.strict_response" type="checkbox" class="accent-accent" />
