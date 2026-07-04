@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math/rand/v2"
 	"strings"
+	"time"
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -18,24 +19,28 @@ var (
 )
 
 type Channel struct {
-	ID                 uint64 `gorm:"primaryKey"`
-	Name               string `gorm:"column:name"`
-	Provider           string `gorm:"column:provider"`
-	BaseURL            string `gorm:"column:base_url"`
-	CredentialEnc      string `gorm:"column:credential_enc"`
-	Models             string `gorm:"column:models"` // 逗号分隔
-	Weight             int    `gorm:"column:weight"`
-	Priority           int    `gorm:"column:priority"`             // 大者先用（0004）
-	MaxConcurrentTasks int    `gorm:"column:max_concurrent_tasks"` // 任务并发闸（0006，Seedance 公测 3）
-	StrictResponse     int8   `gorm:"column:strict_response"`      // 1=校验上游响应 content-type（0008）
-	ModelMapping       string `gorm:"column:model_mapping"`        // JSON {对外名:上游名}（0009，空=不映射）
-	Proxy              string `gorm:"column:proxy"`                // 渠道级出网代理（0019，空=直连）
-	ParamOverride      string `gorm:"column:param_override"`       // JSON 请求体深合并，null 删字段（0033，空=无）
-	HeaderOverride     string `gorm:"column:header_override"`      // JSON 请求头覆盖，{{credential}} 占位（0033，空=无）
-	CredentialMode     string `gorm:"column:credential_mode"`      // random|polling|weighted 选 key（0034）
-	Converter          string `gorm:"column:converter"`            // 格式转换器（0036 advanced_custom，空=按 provider）
-	UpstreamPath       string `gorm:"column:upstream_path"`        // 自定义端点路径，覆盖 adapter 默认（0036，空=默认）
-	Status             int8   `gorm:"column:status"`
+	ID                 uint64     `gorm:"primaryKey"`
+	Name               string     `gorm:"column:name"`
+	Provider           string     `gorm:"column:provider"`
+	BaseURL            string     `gorm:"column:base_url"`
+	CredentialEnc      string     `gorm:"column:credential_enc"`
+	Models             string     `gorm:"column:models"` // 逗号分隔
+	Weight             int        `gorm:"column:weight"`
+	Priority           int        `gorm:"column:priority"`             // 大者先用（0004）
+	MaxConcurrentTasks int        `gorm:"column:max_concurrent_tasks"` // 任务并发闸（0006，Seedance 公测 3）
+	StrictResponse     int8       `gorm:"column:strict_response"`      // 1=校验上游响应 content-type（0008）
+	ModelMapping       string     `gorm:"column:model_mapping"`        // JSON {对外名:上游名}（0009，空=不映射）
+	Proxy              string     `gorm:"column:proxy"`                // 渠道级出网代理（0019，空=直连）
+	ParamOverride      string     `gorm:"column:param_override"`       // JSON 请求体深合并，null 删字段（0033，空=无）
+	HeaderOverride     string     `gorm:"column:header_override"`      // JSON 请求头覆盖，{{credential}} 占位（0033，空=无）
+	CredentialMode     string     `gorm:"column:credential_mode"`      // random|polling|weighted 选 key（0034）
+	Converter          string     `gorm:"column:converter"`            // 格式转换器（0036 advanced_custom，空=按 provider）
+	UpstreamPath       string     `gorm:"column:upstream_path"`        // 自定义端点路径，覆盖 adapter 默认（0036，空=默认）
+	ModelSyncEnabled   int8       `gorm:"column:model_sync_enabled"`   // opt-in 周期自动检测上游模型（0037，默认关）
+	LastSyncAt         *time.Time `gorm:"column:last_sync_at"`         // 上次自动检测时刻（0037）
+	DetectedModels     string     `gorm:"column:detected_models"`      // 上次检测出的上游新增模型 CSV（0037）
+	IgnoredModels      string     `gorm:"column:ignored_models"`       // 忽略清单 CSV，detect 不再提示（0037）
+	Status             int8       `gorm:"column:status"`
 
 	// Credentials：该渠道的启用 key 列表（非持久列；快照/选择器按需填充，0034 Multi-key）。
 	// 空 = 回退 CredentialEnc 单 key（legacy）。调用方只读，绝不原地改。
@@ -70,6 +75,19 @@ func (c *Channel) UpstreamModel(model string) string {
 		return v
 	}
 	return model
+}
+
+// MappingPairs 解析 model_mapping（对外名→上游名）；空/非法 → nil。
+// 模型同步 diff 用：channels.models 存对外名，上游 /models 返回上游原名，需按此表对齐两轴。
+func (c *Channel) MappingPairs() map[string]string {
+	if c.ModelMapping == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(c.ModelMapping), &m); err != nil {
+		return nil
+	}
+	return m
 }
 
 // mappedRawBody：embeddings/images 等透传 rawBody 的路径上应用模型映射。

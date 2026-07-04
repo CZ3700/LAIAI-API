@@ -226,6 +226,10 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.POST("/channels/:id/credentials/:cid/enable", s.adminEnableChannelKey)
 			admin.DELETE("/channels/:id/credentials/:cid", s.adminDeleteChannelKey)
 			admin.GET("/channels/:id/fetch-models", s.adminFetchChannelModels) // 自动拉模型+缺失检测（gap P2-D）
+			// 上游模型同步动作（0037 §3.10）：一键上货/下架/忽略
+			admin.POST("/channels/:id/apply-models", s.adminApplyChannelModels)
+			admin.POST("/channels/:id/mark-removed", s.adminMarkChannelModelsRemoved)
+			admin.POST("/channels/:id/ignore-models", s.adminIgnoreChannelModels)
 			admin.POST("/model-prices", s.adminUpsertPrice)
 			admin.GET("/model-prices", s.adminListPrices)
 			admin.POST("/model-meta", s.adminUpsertModelMeta) // 模型元数据 upsert（gap P2-D）

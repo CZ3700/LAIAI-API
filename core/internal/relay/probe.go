@@ -99,7 +99,19 @@ func (r *Relay) ProbeChannel(ctx context.Context, apiKey, rawURL, provider strin
 
 // ProbeExistingChannel：对已落库渠道拉取上游模型列表（gap P2-D，自动拉模型/缺失检测用）。
 // 解密渠道存储的凭证后复用 ProbeChannel（凭证处理留在 relay 内，与 TestChannel 同口径）。
+// guarded 随渠道类型（advanced_custom 才守卫），与数据面信任口径一致。
 func (r *Relay) ProbeExistingChannel(ctx context.Context, ch *Channel) *ProbeResult {
+	return r.probeExisting(ctx, ch, ch.isAdvancedCustom())
+}
+
+// ProbeExistingChannelGuarded：后台无人值守自动同步（§3.10 SyncChannelModels）专用——
+// 无论渠道类型一律经 SSRF 拨号守卫（红线 5：周期 job 不得被 admin 误配的内网/metadata base_url
+// 牵着打内网；operator 的合法内网上游用 advanced_custom_allow_private 逃生阀放行）。
+func (r *Relay) ProbeExistingChannelGuarded(ctx context.Context, ch *Channel) *ProbeResult {
+	return r.probeExisting(ctx, ch, true)
+}
+
+func (r *Relay) probeExisting(ctx context.Context, ch *Channel, guarded bool) *ProbeResult {
 	_, credEnc, credOK := r.selectCredential(ch) // 选 key（0034 Multi-key；probe 诊断不禁用）
 	if !credOK {
 		return &ProbeResult{Message: "channel has no usable credential"}
@@ -108,7 +120,7 @@ func (r *Relay) ProbeExistingChannel(ctx context.Context, ch *Channel) *ProbeRes
 	if err != nil {
 		return &ProbeResult{Message: "credential decrypt failed"}
 	}
-	return r.ProbeChannel(ctx, cred, ch.BaseURL, ch.Provider, ch.isAdvancedCustom())
+	return r.ProbeChannel(ctx, cred, ch.BaseURL, ch.Provider, guarded)
 }
 
 // fetchModels：GET {base}/models 拉模型列表，按协议族选鉴权头与响应解析（P2-10）：

@@ -36,6 +36,10 @@ interface Channel {
   key_count: number
   converter: string
   upstream_path: string
+  model_sync_enabled: boolean
+  detected_models: string
+  ignored_models: string
+  last_sync_at: string | null
 }
 interface Overview {
   window_days: number
@@ -929,7 +933,7 @@ function linesToMapping(lines: string): Record<string, string> {
 
 // —— 编辑渠道 ——
 const editing = ref<Channel | null>(null)
-const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '', proxy: '', param_override: '', header_override: '', credential_mode: 'random', converter: '', upstream_path: '' })
+const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '', proxy: '', param_override: '', header_override: '', credential_mode: 'random', converter: '', upstream_path: '', model_sync_enabled: false })
 const editBusy = ref(false)
 const editError = ref('') // 弹窗内错误（页面顶部横幅会被弹窗遮罩盖住，校验 400 必须在弹窗里可见）
 
@@ -988,6 +992,7 @@ function openEdit(ch: Channel) {
     credential_mode: ch.credential_mode || 'random',
     converter: ch.converter || '',
     upstream_path: ch.upstream_path || '',
+    model_sync_enabled: !!ch.model_sync_enabled,
   }
   void loadKeys(ch.id)
 }
@@ -1008,6 +1013,7 @@ async function saveEdit() {
       credential_mode: editForm.value.credential_mode,
       converter: editForm.value.converter,
       upstream_path: editForm.value.upstream_path.trim(),
+      model_sync_enabled: editForm.value.model_sync_enabled,
     }
     if (editForm.value.api_key) body.api_key = editForm.value.api_key
     await adminApi('PUT', `/api/admin/channels/${editing.value.id}`, body)
@@ -1143,17 +1149,39 @@ interface FetchModelsResult {
   ok: boolean; message?: string; detected_base_url?: string; upstream_count?: number
   missing_in_config?: string[]; extra_in_config?: string[]; unpriced?: string[]
 }
-const fetchModelsResult = ref<(FetchModelsResult & { channel: string }) | null>(null)
+const fetchModelsResult = ref<(FetchModelsResult & { channel: string; channelId: number }) | null>(null)
 const fetchingModelsId = ref<number | null>(null)
+const modelActionBusy = ref(false)
+// 后台同步（§3.10）检测到的、尚未上货/忽略的新上游模型数——列表徽标用。
+function detectedCount(c: Channel): number {
+  return c.detected_models ? c.detected_models.split(',').filter(Boolean).length : 0
+}
 async function fetchChannelModels(c: Channel) {
   fetchingModelsId.value = c.id
   try {
     const r = await adminApi<FetchModelsResult>('GET', `/api/admin/channels/${c.id}/fetch-models`)
-    fetchModelsResult.value = { ...r, channel: c.name }
+    fetchModelsResult.value = { ...r, channel: c.name, channelId: c.id }
   } catch (e) {
     showError(e)
   } finally {
     fetchingModelsId.value = null
+  }
+}
+
+// 上货闭环（§3.10）：apply=追加进 channels.models（可路由，绝不自动定价）；
+// ignore=加忽略清单（不再提示）；mark-removed=从 models 移除上游已下架模型。
+async function channelModelAction(path: 'apply-models' | 'ignore-models' | 'mark-removed', models: string[]) {
+  const r = fetchModelsResult.value
+  if (!r || !models.length) return
+  modelActionBusy.value = true
+  try {
+    await adminApi('POST', `/api/admin/channels/${r.channelId}/${path}`, { models })
+    fetchModelsResult.value = null
+    await loadChannels()
+  } catch (e) {
+    showError(e)
+  } finally {
+    modelActionBusy.value = false
   }
 }
 
@@ -1668,6 +1696,9 @@ onMounted(async () => {
                   {{ c.name }}
                   <span v-if="c.model_mapping" class="ml-1 badge-muted" :title="t('admin.chMapping')">map</span>
                   <span v-if="!c.strict_response" class="ml-1 badge-danger" :title="t('admin.chStrict')">lax</span>
+                  <button v-if="detectedCount(c)" class="ml-1 badge-accent cursor-pointer"
+                    :title="t('admin.chDetectedHint', { models: c.detected_models })"
+                    @click="fetchChannelModels(c)">+{{ detectedCount(c) }}</button>
                 </td>
                 <td class="px-4 py-2.5 font-mono text-xs">{{ c.provider }}</td>
                 <td class="px-4 py-2.5 font-mono text-xs max-w-48 truncate text-muted" :title="c.base_url">{{ c.base_url }}</td>
@@ -1805,6 +1836,13 @@ onMounted(async () => {
             </div>
             <p class="text-xs text-muted">{{ t('admin.chAdvancedHint') }}</p>
 
+            <!-- 上游模型自动检测（0037 §3.10）：开启后后台周期 probe 上游 /models，新模型进徽标 -->
+            <label class="flex items-center gap-2 text-sm">
+              <input v-model="editForm.model_sync_enabled" type="checkbox" class="accent-accent" />
+              {{ t('admin.chModelSync') }}
+            </label>
+            <p class="text-xs text-muted">{{ t('admin.chModelSyncHint') }}</p>
+
             <!-- 多 key 管理（0034 Multi-key）-->
             <div class="rounded border border-line p-3 space-y-2">
               <div class="flex items-center justify-between">
@@ -1856,6 +1894,17 @@ onMounted(async () => {
               <div>
                 <p class="text-sm font-medium text-danger">{{ t('admin.fmMissing') }} ({{ fetchModelsResult.missing_in_config?.length ?? 0 }})</p>
                 <p class="mt-1 break-words font-mono text-xs text-muted">{{ fetchModelsResult.missing_in_config?.join(', ') || '—' }}</p>
+                <div v-if="fetchModelsResult.missing_in_config?.length" class="mt-2 flex gap-2">
+                  <button class="btn-primary !py-1 text-xs" :disabled="modelActionBusy"
+                    @click="channelModelAction('apply-models', fetchModelsResult!.missing_in_config!)">
+                    {{ t('admin.fmApply') }}
+                  </button>
+                  <button class="btn-ghost !py-1 text-xs" :disabled="modelActionBusy"
+                    @click="channelModelAction('ignore-models', fetchModelsResult!.missing_in_config!)">
+                    {{ t('admin.fmIgnore') }}
+                  </button>
+                </div>
+                <p class="mt-1 text-[11px] text-muted">{{ t('admin.fmApplyHint') }}</p>
               </div>
               <div>
                 <p class="text-sm font-medium">{{ t('admin.fmUnpriced') }} ({{ fetchModelsResult.unpriced?.length ?? 0 }})</p>
@@ -1864,6 +1913,10 @@ onMounted(async () => {
               <div v-if="fetchModelsResult.extra_in_config?.length">
                 <p class="text-sm font-medium text-muted">{{ t('admin.fmExtra') }} ({{ fetchModelsResult.extra_in_config.length }})</p>
                 <p class="mt-1 break-words font-mono text-xs text-muted">{{ fetchModelsResult.extra_in_config.join(', ') }}</p>
+                <button class="btn-ghost !py-1 mt-2 text-xs" :disabled="modelActionBusy"
+                  @click="channelModelAction('mark-removed', fetchModelsResult!.extra_in_config!)">
+                  {{ t('admin.fmMarkRemoved') }}
+                </button>
               </div>
             </template>
             <div class="flex justify-end">

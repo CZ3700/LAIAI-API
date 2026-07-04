@@ -139,6 +139,9 @@ func main() {
 
 	// 后台维护循环（每小时）：旧日志保留期清理（调用日志 + 审计日志，运营可热配，gap P2-C）
 	//   + relay 卡死 hold 清扫（审查 H-1）。放在 apiSrv 构建后以复用 RunLogRetention（读 ext_settings）。
+	// maintCtx：可取消，shutdown 时 maintCancel 让在途长任务（SyncChannelModels 单趟最坏 ~小时级）能中断。
+	maintCtx, maintCancel := context.WithCancel(context.Background())
+	defer maintCancel()
 	go func() {
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
@@ -178,6 +181,11 @@ func main() {
 					log.Error("topup expire sweep failed", "err", err)
 				} else if n > 0 {
 					log.Info("topup orders expired", "count", n)
+				}
+				// 上游模型自动检测（0037 §3.10）：opt-in 渠道 probe 上游 /models，存新模型徽标。
+				// 只写元数据（detected_models/last_sync_at），绝不改 models/prices（上货仍手动）。
+				if checked, withNew := apiSrv.SyncChannelModels(maintCtx, 200); withNew > 0 {
+					log.Info("model sync detected new upstream models", "channels_checked", checked, "channels_with_new", withNew)
 				}
 				// 账户分片摊平（规模化）：把充值默认入的主片余额周期摊到各片，防非主片饿死 → 分片退化为入金单点。
 				// 未配置分片（今日全部 org，shard_count=1）时 ListShardedOrgs 为空 → 直接 no-op，零开销零回归。
@@ -239,6 +247,7 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Error("shutdown error", "err", err)
 	}
+	maintCancel() // 中断在途维护长任务（SyncChannelModels probe 循环），再停维护 goroutine
 	close(retentionDone)
 	rec.Close() // 排空调用记录队列后再关库
 	_ = sqlDB.Close()

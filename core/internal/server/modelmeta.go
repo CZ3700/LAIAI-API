@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -118,47 +117,18 @@ func (s *Server) adminFetchChannelModels(c *gin.Context) {
 		return
 	}
 
-	configured := map[string]bool{}
-	for _, m := range strings.Split(ch.Models, ",") {
-		if t := strings.TrimSpace(m); t != "" {
-			configured[t] = true
-		}
-	}
-	var prices []relay.ModelPrice
-	s.db.WithContext(c.Request.Context()).Find(&prices)
-	priced := make(map[string]bool, len(prices))
-	for _, p := range prices {
-		priced[p.Model] = true
-	}
-
-	upstreamSet := map[string]bool{}
-	missingInConfig, unpriced := []string{}, []string{}
-	for _, m := range res.Models {
-		upstreamSet[m] = true
-		if !configured[m] {
-			missingInConfig = append(missingInConfig, m)
-		}
-		if !priced[m] {
-			unpriced = append(unpriced, m)
-		}
-	}
-	extraInConfig := []string{}
-	for m := range configured {
-		if !upstreamSet[m] {
-			extraInConfig = append(extraInConfig, m)
-		}
-	}
-	sort.Strings(missingInConfig)
-	sort.Strings(unpriced)
-	sort.Strings(extraInConfig)
+	// 差集（0037：missing 排除已忽略模型，与后台 job 同口径 computeModelDiff）。
+	// 传 model_mapping：映射渠道的 channels.models 是对外名、上游返回上游原名，须换算到同一轴再比。
+	diff := computeModelDiff(res.Models,
+		csvSet(ch.Models), s.pricedSet(c.Request.Context()), csvSet(ch.IgnoredModels), ch.MappingPairs())
 
 	c.JSON(http.StatusOK, gin.H{
 		"ok":                true,
 		"detected_base_url": res.DetectedBaseURL,
 		"upstream":          res.Models,
 		"upstream_count":    len(res.Models),
-		"missing_in_config": missingInConfig, // 上游有、渠道未配
-		"extra_in_config":   extraInConfig,   // 渠道配了、上游已无
-		"unpriced":          unpriced,        // 上游有、平台未定价
+		"missing_in_config": diff.Missing,  // 上游有、渠道未配、未忽略
+		"extra_in_config":   diff.Extra,    // 渠道配了、上游已无
+		"unpriced":          diff.Unpriced, // 上游有、平台未定价
 	})
 }

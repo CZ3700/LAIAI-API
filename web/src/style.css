@@ -329,6 +329,9 @@ body::before {
 .badge-muted {
   @apply badge bg-muted/10 text-muted;
 }
+.badge-accent {
+  @apply badge bg-accent/10 text-accent;
+}
 
 .table {
   border-collapse: separate;

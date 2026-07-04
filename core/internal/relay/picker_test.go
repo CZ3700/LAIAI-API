@@ -19,6 +19,8 @@ CREATE TABLE channels (
     param_override TEXT NOT NULL DEFAULT '', header_override TEXT NOT NULL DEFAULT '',
     credential_mode TEXT NOT NULL DEFAULT 'random',
     converter TEXT NOT NULL DEFAULT '', upstream_path TEXT NOT NULL DEFAULT '',
+    model_sync_enabled INTEGER NOT NULL DEFAULT 0, last_sync_at DATETIME,
+    detected_models TEXT NOT NULL DEFAULT '', ignored_models TEXT NOT NULL DEFAULT '',
     status INTEGER NOT NULL DEFAULT 1
 );
 `

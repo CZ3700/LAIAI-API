@@ -214,6 +214,7 @@ type channelReq struct {
 	CredentialMode     string            `json:"credential_mode"`      // random|polling|weighted（0034，可选）
 	Converter          string            `json:"converter"`            // 格式转换器（0036 advanced_custom，可选）
 	UpstreamPath       string            `json:"upstream_path"`        // 自定义端点路径（0036，可选）
+	ModelSyncEnabled   bool              `json:"model_sync_enabled"`   // opt-in 周期自动检测上游模型（0037）
 }
 
 // validateAdvancedFields：converter 枚举 + upstream_path 组合 + advanced_custom 的 SSRF base_url 校验。
@@ -343,7 +344,8 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		ParamOverride: strings.TrimSpace(req.ParamOverride), HeaderOverride: strings.TrimSpace(req.HeaderOverride),
 		CredentialMode: credMode,
 		Converter:      strings.TrimSpace(req.Converter), UpstreamPath: strings.TrimSpace(req.UpstreamPath),
-		Status: 1,
+		ModelSyncEnabled: b2i8(req.ModelSyncEnabled),
+		Status:           1,
 	}
 	// 渠道行 + 首个 key 子表行同事务落库（0034 Multi-key）：channels.credential_enc 保留作
 	// legacy mirror，子表行为选 key 的实际来源，与 0034 迁移回填的形态一致。
@@ -387,8 +389,9 @@ type updateChannelReq struct {
 	ParamOverride  *string            `json:"param_override"`  // 指针区分"不改"与"清空"（0033）
 	HeaderOverride *string            `json:"header_override"` // 同上
 	CredentialMode *string            `json:"credential_mode"` // random|polling|weighted（0034）
-	Converter      *string            `json:"converter"`       // 格式转换器（0036）
-	UpstreamPath   *string            `json:"upstream_path"`   // 自定义端点路径（0036）
+	Converter        *string          `json:"converter"`          // 格式转换器（0036）
+	UpstreamPath     *string          `json:"upstream_path"`      // 自定义端点路径（0036）
+	ModelSyncEnabled *bool            `json:"model_sync_enabled"` // 周期自动检测上游模型（0037）
 }
 
 // adminUpdateChannel：PUT /api/admin/channels/:id —— 编辑渠道（部署冒烟暴露的高频缺口）。
@@ -438,6 +441,9 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 	}
 	if req.Proxy != nil {
 		updates["proxy"] = strings.TrimSpace(*req.Proxy)
+	}
+	if req.ModelSyncEnabled != nil {
+		updates["model_sync_enabled"] = b2i8(*req.ModelSyncEnabled)
 	}
 	// advanced_custom（0036）：converter/upstream_path 变更 + SSRF 复核。converter 或 base_url
 	// 任一改动即按（现有 provider + 生效 converter + 生效 base_url）重跑校验，防改配置绕过 SSRF。
@@ -599,6 +605,9 @@ func (s *Server) adminListChannels(c *gin.Context) {
 			"param_override": ch.ParamOverride, "header_override": ch.HeaderOverride,
 			"credential_mode": ch.CredentialMode, "key_count": keyCounts[ch.ID],
 			"converter": ch.Converter, "upstream_path": ch.UpstreamPath,
+			// 模型同步（0037）：徽标显示新检测到的可上货模型 + 忽略清单 + 开关
+			"model_sync_enabled": ch.ModelSyncEnabled == 1, "detected_models": ch.DetectedModels,
+			"ignored_models": ch.IgnoredModels, "last_sync_at": ch.LastSyncAt,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": out})
