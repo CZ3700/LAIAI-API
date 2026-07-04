@@ -22,7 +22,12 @@ const channelTestTimeout = 30 * time.Second
 // 不计费、不写调用记录、不触发自动禁用——纯诊断。禁用中的渠道也可测（修好后再启用）。
 func (r *Relay) TestChannel(ctx context.Context, ch *Channel, model string) *ChannelTestResult {
 	res := &ChannelTestResult{Model: model}
-	credential, err := r.Keyring.Decrypt(ch.CredentialEnc)
+	_, credEnc, credOK := r.selectCredential(ch) // 选 key（0034 Multi-key）
+	if !credOK {
+		res.Message = "channel has no usable credential"
+		return res
+	}
+	credential, err := r.Keyring.Decrypt(credEnc)
 	if err != nil {
 		res.Message = "channel credential decrypt failed (key rotation issue?)"
 		return res

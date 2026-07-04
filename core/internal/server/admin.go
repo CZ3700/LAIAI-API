@@ -211,6 +211,18 @@ type channelReq struct {
 	Proxy              string            `json:"proxy"`                // 渠道级出网代理（0019，可选）
 	ParamOverride      string            `json:"param_override"`       // JSON 请求体深合并（0033，可选）
 	HeaderOverride     string            `json:"header_override"`      // JSON 请求头覆盖（0033，可选）
+	CredentialMode     string            `json:"credential_mode"`      // random|polling|weighted（0034，可选）
+}
+
+// validCredentialMode：空/合法返回规范值，非法返回空+false。
+func validCredentialMode(m string) (string, bool) {
+	switch m {
+	case "":
+		return relay.CredentialModeRandom, true
+	case relay.CredentialModeRandom, relay.CredentialModePolling, relay.CredentialModeWeighted:
+		return m, true
+	}
+	return "", false
 }
 
 // auditOverrideKeys：override 变更审计明细——只记 keys 列表，绝不记值（指令 §3.4）。
@@ -285,6 +297,11 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	credMode, ok := validCredentialMode(req.CredentialMode)
+	if !ok {
+		fail(c, http.StatusBadRequest, "credential_mode must be random|polling|weighted")
+		return
+	}
 	ch := &relay.Channel{
 		Name: req.Name, Provider: req.Provider,
 		BaseURL:       strings.TrimRight(req.BaseURL, "/"),
@@ -293,9 +310,20 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		MaxConcurrentTasks: maxTasks, StrictResponse: 1,
 		ModelMapping: mapping, Proxy: strings.TrimSpace(req.Proxy),
 		ParamOverride: strings.TrimSpace(req.ParamOverride), HeaderOverride: strings.TrimSpace(req.HeaderOverride),
-		Status: 1,
+		CredentialMode: credMode, Status: 1,
 	}
-	if err := s.db.Create(ch).Error; err != nil {
+	// 渠道行 + 首个 key 子表行同事务落库（0034 Multi-key）：channels.credential_enc 保留作
+	// legacy mirror，子表行为选 key 的实际来源，与 0034 迁移回填的形态一致。
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if e := tx.Create(ch).Error; e != nil {
+			return e
+		}
+		return tx.Create(&relay.ChannelCredential{
+			ChannelID: ch.ID, CredentialEnc: enc,
+			Fingerprint: relay.CredentialFingerprint(req.APIKey),
+			Status:      relay.CredentialActive, ModeWeight: 1,
+		}).Error
+	}); err != nil {
 		fail(c, http.StatusInternalServerError, "channel create failed")
 		return
 	}
@@ -322,6 +350,7 @@ type updateChannelReq struct {
 	Proxy          *string            `json:"proxy"`           // 指针区分"不改"与"清空代理"
 	ParamOverride  *string            `json:"param_override"`  // 指针区分"不改"与"清空"（0033）
 	HeaderOverride *string            `json:"header_override"` // 同上
+	CredentialMode *string            `json:"credential_mode"` // random|polling|weighted（0034）
 }
 
 // adminUpdateChannel：PUT /api/admin/channels/:id —— 编辑渠道（部署冒烟暴露的高频缺口）。
@@ -389,13 +418,30 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 		updates["header_override"] = strings.TrimSpace(*req.HeaderOverride)
 		auditDetail += "; " + auditOverrideKeys("header_override", *req.HeaderOverride)
 	}
+	if req.CredentialMode != nil {
+		cm, ok := validCredentialMode(*req.CredentialMode)
+		if !ok {
+			fail(c, http.StatusBadRequest, "credential_mode must be random|polling|weighted")
+			return
+		}
+		updates["credential_mode"] = cm
+	}
+	var syncCredEnc, syncFingerprint string
 	if req.APIKey != nil && *req.APIKey != "" {
+		// 单 key 渠道：api_key 编辑同步到唯一子表行（多 key 渠道请用凭证管理端点，避免歧义）。
+		var active int64
+		s.db.Model(&relay.ChannelCredential{}).Where("channel_id = ? AND status = ?", id, relay.CredentialActive).Count(&active)
+		if active > 1 {
+			fail(c, http.StatusBadRequest, "channel has multiple keys — edit via credential management, not the single api_key field")
+			return
+		}
 		enc, err := s.keyring.Encrypt(*req.APIKey)
 		if err != nil {
 			fail(c, http.StatusInternalServerError, "credential encrypt failed")
 			return
 		}
-		updates["credential_enc"] = enc
+		updates["credential_enc"] = enc // legacy mirror
+		syncCredEnc, syncFingerprint = enc, relay.CredentialFingerprint(*req.APIKey)
 	}
 	if len(updates) == 0 {
 		fail(c, http.StatusBadRequest, "nothing to update")
@@ -409,6 +455,18 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 	if res.RowsAffected == 0 {
 		fail(c, http.StatusNotFound, "channel not found")
 		return
+	}
+	// api_key 编辑同步到子表：有子表行则更新唯一 active 行，无则插入（迁移未覆盖/首次）。
+	if syncCredEnc != "" {
+		upd := s.db.Model(&relay.ChannelCredential{}).
+			Where("channel_id = ? AND status = ?", id, relay.CredentialActive).
+			Updates(map[string]any{"credential_enc": syncCredEnc, "fingerprint": syncFingerprint})
+		if upd.RowsAffected == 0 {
+			s.db.Create(&relay.ChannelCredential{
+				ChannelID: id, CredentialEnc: syncCredEnc, Fingerprint: syncFingerprint,
+				Status: relay.CredentialActive, ModeWeight: 1,
+			})
+		}
 	}
 	s.writeAudit(c, "channel_update", strconv.FormatUint(id, 10), auditDetail)
 	s.invalidateCache(relay.KindChannel, "")
@@ -426,6 +484,18 @@ func (s *Server) adminListChannels(c *gin.Context) {
 	since := s.now().UTC().AddDate(0, 0, -13).Format("2006-01-02")
 	calls := s.channelCallCounts(rdb, since)
 	quality := s.channelQualityStats(rdb, since)
+	// 每渠道启用 key 数（0034 Multi-key）：一次聚合查询，避免 N+1。
+	keyCounts := map[uint64]int{}
+	var kcRows []struct {
+		ChannelID uint64
+		N         int
+	}
+	rdb.Model(&relay.ChannelCredential{}).
+		Select("channel_id, count(*) as n").
+		Where("status = ?", relay.CredentialActive).Group("channel_id").Scan(&kcRows)
+	for _, r := range kcRows {
+		keyCounts[r.ChannelID] = r.N
+	}
 	out := make([]gin.H, 0, len(channels))
 	for _, ch := range channels {
 		modelCount := 0
@@ -448,6 +518,7 @@ func (s *Server) adminListChannels(c *gin.Context) {
 			"proxy": ch.Proxy,
 			// override 配置回显给编辑表单（值本身非凭证——凭证只经 {{credential}} 占位符注入）
 			"param_override": ch.ParamOverride, "header_override": ch.HeaderOverride,
+			"credential_mode": ch.CredentialMode, "key_count": keyCounts[ch.ID],
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": out})

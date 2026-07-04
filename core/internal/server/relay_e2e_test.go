@@ -69,8 +69,16 @@ CREATE TABLE channels (
     max_concurrent_tasks INTEGER NOT NULL DEFAULT 3, strict_response INTEGER NOT NULL DEFAULT 1, model_mapping TEXT NOT NULL DEFAULT '',
     proxy TEXT NOT NULL DEFAULT '',
     param_override TEXT NOT NULL DEFAULT '', header_override TEXT NOT NULL DEFAULT '',
+    credential_mode TEXT NOT NULL DEFAULT 'random',
     status INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE channel_credentials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id INTEGER NOT NULL, credential_enc TEXT NOT NULL,
+    fingerprint TEXT NOT NULL DEFAULT '', status INTEGER NOT NULL DEFAULT 1,
+    disabled_reason TEXT NOT NULL DEFAULT '', disabled_at DATETIME, last_used_at DATETIME,
+    mode_weight INTEGER NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

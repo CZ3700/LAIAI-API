@@ -32,7 +32,12 @@ type Channel struct {
 	Proxy              string `gorm:"column:proxy"`                // 渠道级出网代理（0019，空=直连）
 	ParamOverride      string `gorm:"column:param_override"`       // JSON 请求体深合并，null 删字段（0033，空=无）
 	HeaderOverride     string `gorm:"column:header_override"`      // JSON 请求头覆盖，{{credential}} 占位（0033，空=无）
+	CredentialMode     string `gorm:"column:credential_mode"`      // random|polling|weighted 选 key（0034）
 	Status             int8   `gorm:"column:status"`
+
+	// Credentials：该渠道的启用 key 列表（非持久列；快照/选择器按需填充，0034 Multi-key）。
+	// 空 = 回退 CredentialEnc 单 key（legacy）。调用方只读，绝不原地改。
+	Credentials []ChannelCredential `gorm:"-"`
 }
 
 // UpstreamModel 返回该渠道上游实际使用的模型名（无映射/解析失败 → 原名）。

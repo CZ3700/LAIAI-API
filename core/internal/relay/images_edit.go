@@ -173,9 +173,16 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 		}
 		inv.Attempts = attempt + 1
 		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
-		cred, derr := r.Keyring.Decrypt(ch.CredentialEnc)
+		credID, credEnc, credOK := r.selectCredential(ch) // 选 key（0034 Multi-key）
+		if !credOK {
+			r.Log.Error("channel has no usable credential", "channel", ch.ID)
+			exclude[ch.ID] = true
+			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
+			continue
+		}
+		cred, derr := r.Keyring.Decrypt(credEnc)
 		if derr != nil {
-			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "err", derr)
+			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "cred", credID, "err", derr)
 			exclude[ch.ID] = true
 			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
 			continue
@@ -208,6 +215,7 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			r.enableChannelIfDisabled(ch)
+			r.resetKeyFailures(credID)
 			break
 		}
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
@@ -217,7 +225,7 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 			r.observe(ch.ID, false)
 		}
 		if disp.DisableChannel {
-			r.noteFailure(ch.ID, disp.Reason)
+			r.noteKeyFailure(credID, ch.ID, disp.Reason) // 多 key：禁 key 而非渠道（0034）
 		}
 		lastStatus, lastBody = resp.StatusCode, errBody
 		resp = nil

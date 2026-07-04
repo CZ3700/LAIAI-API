@@ -124,7 +124,13 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		return nil, err
 	}
 
-	credential, err := s.Keyring.Decrypt(ch.CredentialEnc)
+	// 选 key（0034 Multi-key）：任务渠道同样支持多 key（低 QPS，直查 DB）。task 不做 key 级
+	// 自动禁用（异步轮询与提交分离，禁用语义留给 relay 主链路的健康信号）。
+	_, credEnc, credOK := relay.SelectCredential(s.DB, ch)
+	if !credOK {
+		return nil, fmt.Errorf("task: channel has no usable credential")
+	}
+	credential, err := s.Keyring.Decrypt(credEnc)
 	if err != nil {
 		return nil, fmt.Errorf("task: channel credential: %w", err)
 	}
@@ -269,7 +275,12 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 		s.Log.Error("task adaptor missing", "task", t.TaskID, "provider", t.Provider)
 		return
 	}
-	credential, err := s.Keyring.Decrypt(ch.CredentialEnc)
+	_, credEnc, credOK := relay.SelectCredential(s.DB, ch) // 选 key（0034，查询用任一启用 key）
+	if !credOK {
+		s.Log.Error("task channel has no usable credential", "task", t.TaskID)
+		return
+	}
+	credential, err := s.Keyring.Decrypt(credEnc)
 	if err != nil {
 		s.Log.Error("task channel credential", "task", t.TaskID, "err", err)
 		return

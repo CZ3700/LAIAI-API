@@ -94,7 +94,11 @@ func (r *Relay) ProbeChannel(ctx context.Context, apiKey, rawURL, provider strin
 // ProbeExistingChannel：对已落库渠道拉取上游模型列表（gap P2-D，自动拉模型/缺失检测用）。
 // 解密渠道存储的凭证后复用 ProbeChannel（凭证处理留在 relay 内，与 TestChannel 同口径）。
 func (r *Relay) ProbeExistingChannel(ctx context.Context, ch *Channel) *ProbeResult {
-	cred, err := r.Keyring.Decrypt(ch.CredentialEnc)
+	_, credEnc, credOK := r.selectCredential(ch) // 选 key（0034 Multi-key；probe 诊断不禁用）
+	if !credOK {
+		return &ProbeResult{Message: "channel has no usable credential"}
+	}
+	cred, err := r.Keyring.Decrypt(credEnc)
 	if err != nil {
 		return &ProbeResult{Message: "credential decrypt failed"}
 	}

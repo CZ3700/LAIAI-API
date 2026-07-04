@@ -32,6 +32,8 @@ interface Channel {
   proxy: string
   param_override: string
   header_override: string
+  credential_mode: string
+  key_count: number
 }
 interface Overview {
   window_days: number
@@ -925,9 +927,47 @@ function linesToMapping(lines: string): Record<string, string> {
 
 // —— 编辑渠道 ——
 const editing = ref<Channel | null>(null)
-const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '', proxy: '', param_override: '', header_override: '' })
+const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '', proxy: '', param_override: '', header_override: '', credential_mode: 'random' })
 const editBusy = ref(false)
 const editError = ref('') // 弹窗内错误（页面顶部横幅会被弹窗遮罩盖住，校验 400 必须在弹窗里可见）
+
+// —— 渠道多 key（0034 Multi-key）——
+interface ChannelKey { id: number; fingerprint: string; status: number; mode_weight: number; disabled_reason?: string }
+const editKeys = ref<ChannelKey[]>([])
+const newKey = ref('')
+const keyBusy = ref(false)
+
+async function loadKeys(chID: number) {
+  try {
+    editKeys.value = (await adminApi<{ credentials: ChannelKey[] }>('GET', `/api/admin/channels/${chID}/credentials`)).credentials
+  } catch { editKeys.value = [] }
+}
+async function addKey() {
+  if (!editing.value || !newKey.value.trim()) return
+  keyBusy.value = true
+  try {
+    await adminApi('POST', `/api/admin/channels/${editing.value.id}/credentials`, { api_key: newKey.value.trim() })
+    newKey.value = ''
+    await loadKeys(editing.value.id)
+    editError.value = ''
+  } catch (e) { editError.value = errorMessage(e, t('common.error')) } finally { keyBusy.value = false }
+}
+async function toggleKey(k: ChannelKey) {
+  if (!editing.value) return
+  const action = k.status === 1 ? 'disable' : 'enable'
+  try {
+    await adminApi('POST', `/api/admin/channels/${editing.value.id}/credentials/${k.id}/${action}`, {})
+    await loadKeys(editing.value.id)
+  } catch (e) { editError.value = errorMessage(e, t('common.error')) }
+}
+async function deleteKey(k: ChannelKey) {
+  if (!editing.value) return
+  try {
+    await adminApi('DELETE', `/api/admin/channels/${editing.value.id}/credentials/${k.id}`, {})
+    await loadKeys(editing.value.id)
+    editError.value = ''
+  } catch (e) { editError.value = errorMessage(e, t('common.error')) }
+}
 
 function openEdit(ch: Channel) {
   editing.value = ch
@@ -943,7 +983,9 @@ function openEdit(ch: Channel) {
     proxy: ch.proxy,
     param_override: ch.param_override || '',
     header_override: ch.header_override || '',
+    credential_mode: ch.credential_mode || 'random',
   }
+  void loadKeys(ch.id)
 }
 async function saveEdit() {
   if (!editing.value) return
@@ -959,6 +1001,7 @@ async function saveEdit() {
       proxy: editForm.value.proxy, // 空串 = 清空代理（直连）
       param_override: editForm.value.param_override.trim(), // 空串 = 清空 override
       header_override: editForm.value.header_override.trim(),
+      credential_mode: editForm.value.credential_mode,
     }
     if (editForm.value.api_key) body.api_key = editForm.value.api_key
     await adminApi('PUT', `/api/admin/channels/${editing.value.id}`, body)
@@ -1736,6 +1779,38 @@ onMounted(async () => {
               {{ t('admin.chStrict') }}
             </label>
             <p class="text-xs text-muted">{{ t('admin.chStrictHint') }}</p>
+
+            <!-- 多 key 管理（0034 Multi-key）-->
+            <div class="rounded border border-line p-3 space-y-2">
+              <div class="flex items-center justify-between">
+                <label class="label !mb-0">{{ t('admin.chKeys') }}</label>
+                <select v-model="editForm.credential_mode" class="input !h-8 !w-32 !py-1 text-xs">
+                  <option value="random">{{ t('admin.chModeRandom') }}</option>
+                  <option value="polling">{{ t('admin.chModePolling') }}</option>
+                  <option value="weighted">{{ t('admin.chModeWeighted') }}</option>
+                </select>
+              </div>
+              <ul class="space-y-1">
+                <li v-for="k in editKeys" :key="k.id" class="flex items-center gap-2 text-xs">
+                  <span class="font-mono">{{ k.fingerprint }}…</span>
+                  <span :class="k.status === 1 ? 'badge-ok' : 'badge-danger'">
+                    {{ k.status === 1 ? t('admin.chKeyActive') : t('admin.chKeyDisabled') }}
+                  </span>
+                  <span class="flex-1"></span>
+                  <button type="button" class="table-link" @click="toggleKey(k)">
+                    {{ k.status === 1 ? t('admin.chKeyDisable') : t('admin.chKeyEnable') }}
+                  </button>
+                  <button type="button" class="table-link text-danger" @click="deleteKey(k)">{{ t('common.delete') }}</button>
+                </li>
+                <li v-if="editKeys.length === 0" class="text-xs text-muted">{{ t('admin.chKeysEmpty') }}</li>
+              </ul>
+              <div class="flex gap-2">
+                <input v-model="newKey" class="input !h-8 flex-1 font-mono text-xs" :placeholder="t('admin.chKeyAddPlaceholder')" />
+                <button type="button" class="btn-ghost !h-8 !py-1 !px-3" :disabled="keyBusy || !newKey.trim()" @click="addKey">{{ t('admin.chKeyAdd') }}</button>
+              </div>
+              <p class="text-xs text-muted">{{ t('admin.chKeysHint') }}</p>
+            </div>
+
             <p v-if="editError" class="inline-alert" role="alert">{{ editError }}</p>
             <div class="flex justify-end gap-2">
               <button type="button" class="btn-ghost" @click="editing = null">{{ t('common.cancel') }}</button>

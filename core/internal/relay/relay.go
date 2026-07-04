@@ -52,6 +52,11 @@ type Relay struct {
 	failMu     sync.Mutex
 	failCounts map[uint64]int
 
+	// key 级失败计数（0034 Multi-key，内存态）：与 channel 失败计数同哲学，但键为 credential id。
+	// 达阈值禁该 key（禁后无 active key 才禁 channel），该 key 成功即清零。
+	keyFailMu     sync.Mutex
+	keyFailCounts map[uint64]int
+
 	// 渠道健康分（内存态 EWMA，M2 收尾）：每次 attempt 终态喂 1.0/0.0，α=0.3。
 	// 作层内选路权重乘子（见 types.weightedPick），不影响 auto-disable 与计费。
 	// 重启乐观置满分（未知=1.0），与 failCounts 同保守哲学。
@@ -125,9 +130,10 @@ func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Lo
 		Log:         log,
 		Rec:         rec,
 		Now:         now,
-		failCounts:  map[uint64]int{},
-		health:      map[uint64]float64{},
-		rateWindows: map[string]*rateWindow{},
+		failCounts:    map[uint64]int{},
+		keyFailCounts: map[uint64]int{},
+		health:        map[uint64]float64{},
+		rateWindows:   map[string]*rateWindow{},
 		// 热读缓存 TTL：渠道快照短(8s，禁用/重启用要较快跟随)；价目/倍率长(45s，纯运营低频改)。
 		channels: newSnapCache[[]Channel](8*time.Second, now),
 		prices:   newTTLCache[string, *ModelPrice](45*time.Second, now),
@@ -503,6 +509,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	var resp *http.Response
 	var ch *Channel
 	var attemptStart time.Time
+	var credID uint64 // 本次终选的 credential id（0034 Multi-key）：成功清其失败计数，失败按 key 禁用
 	exclude := map[uint64]bool{}
 	var lastStatus int
 	var lastBody []byte
@@ -520,9 +527,18 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		inv.Attempts = attempt + 1
 		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
 		attemptStart = r.Now()
-		credential, err := r.Keyring.Decrypt(ch.CredentialEnc)
+		// 选 key（0034 Multi-key）：按渠道模式从启用 key 挑一个；无 key → 换渠道。
+		credEnc, credOK := "", false
+		credID, credEnc, credOK = r.selectCredential(ch)
+		if !credOK {
+			r.Log.Error("channel has no usable credential", "channel", ch.ID)
+			exclude[ch.ID] = true
+			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
+			continue
+		}
+		credential, err := r.Keyring.Decrypt(credEnc)
 		if err != nil {
-			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "err", err)
+			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "cred", credID, "err", err)
 			exclude[ch.ID] = true
 			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
 			continue // 我方配置错误（知识库 channel: 前缀类）→ 换渠道
@@ -568,8 +584,9 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		r.Log.Warn("upstream error", "channel", ch.ID, "attempt", attempt, "status", resp.StatusCode,
 			"disable", disp.DisableChannel, "retryable", disp.Retryable, "reason", disp.Reason)
 		if disp.DisableChannel {
-			// 连续失败累加，达运营阈值才异步禁用（不阻塞响应；不能用请求 context）
-			r.noteFailure(ch.ID, disp.Reason)
+			// 多 key（0034）：鉴权/配额硬故障是 key 级问题，禁当前 key 而非整个渠道；
+			// 禁到渠道无 active key 才连带禁渠道。legacy 单 key（credID=0）退化为 channel 级（旧行为）。
+			r.noteKeyFailure(credID, ch.ID, disp.Reason)
 		}
 		lastStatus, lastBody = resp.StatusCode, errBody
 		resp = nil
@@ -617,6 +634,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 
 	// 成功响应：若渠道曾被 auto-disabled，自动重启用（知识库 §2.2）
 	r.enableChannelIfDisabled(ch)
+	r.resetKeyFailures(credID) // 该 key 一次成功 → 清其失败计数（0034 Multi-key）
 
 	// 7. 响应回传（adapter 转换）+ usage 抽取 + capture
 	var u usage
@@ -718,11 +736,24 @@ func (r *Relay) enableChannelIfDisabled(ch *Channel) {
 // 断连时取消别人正复用的加载查询。代价：填充那一次查询不随客户端断连取消（极快小表，净收益正）。
 
 // cachedChannels 返回 status=1 活跃渠道快照（8s TTL）。返回只读 slice，调用方绝不可原地改元素。
+// 一并填充每渠道的启用 key（0034 Multi-key）：一次批量查全部 active credential 按 channel 分组，
+// 挂到 ch.Credentials——热路径选 key 零查询；key 禁用/新增触发快照失效重载。
 func (r *Relay) cachedChannels() ([]Channel, error) {
 	return r.channels.getOrLoad(func() ([]Channel, error) {
 		var chs []Channel
 		if err := r.DB.Where("status = 1").Order("priority DESC, id").Find(&chs).Error; err != nil {
 			return nil, err
+		}
+		var creds []ChannelCredential
+		if err := r.DB.Where("status = ?", CredentialActive).Order("channel_id, id").Find(&creds).Error; err != nil {
+			return nil, err
+		}
+		byChannel := make(map[uint64][]ChannelCredential, len(chs))
+		for _, c := range creds {
+			byChannel[c.ChannelID] = append(byChannel[c.ChannelID], c)
+		}
+		for i := range chs {
+			chs[i].Credentials = byChannel[chs[i].ID]
 		}
 		return chs, nil
 	})
