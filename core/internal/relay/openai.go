@@ -18,7 +18,7 @@ type openaiAdapter struct{}
 
 func (openaiAdapter) buildRequest(ctx context.Context, ch *Channel, credential string, req map[string]any, stream bool) (*http.Request, error) {
 	if stream {
-		req["stream_options"] = map[string]any{"include_usage": true}
+		ensureIncludeUsage(req) // 保留 override/客户端兄弟字段，强制 include_usage（对抗 review）
 	}
 	body, err := json.Marshal(req)
 	if err != nil {

@@ -459,7 +459,7 @@ export default {
     chProxy: 'プロキシ（任意）',
     chProxyHint: 'このチャネルの上流呼び出しをプロキシ経由にします。空＝直接。例 http://host:port または socks5://host:port',
     chParamOverride: 'パラメータ上書き（JSON）',
-    chParamOverrideHint: 'アダプター前にリクエストボディへディープマージ。null はフィールド削除（ネストも可）。保護キー（model/stream/max_tokens/n など）は拒否されます。',
+    chParamOverrideHint: 'アダプター前にリクエストボディへディープマージ。null はフィールド削除（ネストも可）。保護キー（model/stream/max_tokens/n など）は拒否されます。 OpenAI 互換系アダプターで全体に有効。変換型アダプター（anthropic/gemini）はマッピング済みフィールドのみ転送します。認証系ヘッダーはプレースホルダー必須。',
     chHeaderOverride: 'ヘッダー上書き（JSON）',
     chHeaderOverrideHint: 'アダプターの既定ヘッダーの後に適用（最優先）。null はヘッダー削除。{\'{{credential}}\'} は復号済みチャネル認証情報を注入します。',
     chAdd: 'チャネルを追加',

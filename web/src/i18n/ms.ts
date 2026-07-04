@@ -460,7 +460,7 @@ export default {
     chProxy: 'Proksi (pilihan)',
     chProxyHint: 'Halakan panggilan huluan saluran ini melalui proksi. Kosong = terus. cth http://host:port atau socks5://host:port',
     chParamOverride: 'Penindihan parameter (JSON)',
-    chParamOverrideHint: 'Digabung mendalam ke badan permintaan sebelum penyesuai. null memadam medan (termasuk bersarang). Kunci dilindungi (model/stream/max_tokens/n/...) ditolak.',
+    chParamOverrideHint: 'Digabung mendalam ke badan permintaan sebelum penyesuai. null memadam medan (termasuk bersarang). Kunci dilindungi (model/stream/max_tokens/n/...) ditolak. Berkesan untuk keluarga penyesuai serasi OpenAI; penyesuai transformasi (anthropic/gemini) hanya memajukan medan terpeta. Pengepala pengesahan mesti guna pemegang tempat.',
     chHeaderOverride: 'Penindihan pengepala (JSON)',
     chHeaderOverrideHint: 'Diterapkan selepas pengepala lalai penyesuai (keutamaan tertinggi). null memadam pengepala; {\'{{credential}}\'} menyuntik kelayakan saluran yang dinyahsulit.',
     chAdd: 'Tambah saluran',

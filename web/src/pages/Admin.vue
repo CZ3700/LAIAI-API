@@ -927,9 +927,11 @@ function linesToMapping(lines: string): Record<string, string> {
 const editing = ref<Channel | null>(null)
 const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '', proxy: '', param_override: '', header_override: '' })
 const editBusy = ref(false)
+const editError = ref('') // 弹窗内错误（页面顶部横幅会被弹窗遮罩盖住，校验 400 必须在弹窗里可见）
 
 function openEdit(ch: Channel) {
   editing.value = ch
+  editError.value = ''
   editForm.value = {
     base_url: ch.base_url,
     models: ch.models,
@@ -961,10 +963,13 @@ async function saveEdit() {
     if (editForm.value.api_key) body.api_key = editForm.value.api_key
     await adminApi('PUT', `/api/admin/channels/${editing.value.id}`, body)
     editing.value = null
+    editError.value = ''
     await loadChannels()
     error.value = ''
   } catch (e) {
-    showError(e)
+    // 校验 400（如 override 受保护键）显示在弹窗内——页面顶部横幅被弹窗遮罩盖住，用户根本看不见
+    editError.value = errorMessage(e, t('common.error'))
+    if (e instanceof ApiError && e.status === 401) unlocked.value = false
   } finally {
     editBusy.value = false
   }
@@ -1731,6 +1736,7 @@ onMounted(async () => {
               {{ t('admin.chStrict') }}
             </label>
             <p class="text-xs text-muted">{{ t('admin.chStrictHint') }}</p>
+            <p v-if="editError" class="inline-alert" role="alert">{{ editError }}</p>
             <div class="flex justify-end gap-2">
               <button type="button" class="btn-ghost" @click="editing = null">{{ t('common.cancel') }}</button>
               <button class="btn-primary" :disabled="editBusy">{{ t('common.confirm') }}</button>

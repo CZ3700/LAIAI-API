@@ -460,7 +460,7 @@ export default {
     chProxy: 'Proxy (optionnel)',
     chProxyHint: 'Acheminer les appels amont de ce canal via un proxy. Vide = direct. ex. http://host:port ou socks5://host:port',
     chParamOverride: 'Substitution de paramètres (JSON)',
-    chParamOverrideHint: 'Fusion profonde dans le corps de la requête avant l\'adaptateur. null supprime un champ (imbriqué inclus). Les clés protégées (model/stream/max_tokens/n...) sont refusées.',
+    chParamOverrideHint: 'Fusion profonde dans le corps de la requête avant l\'adaptateur. null supprime un champ (imbriqué inclus). Les clés protégées (model/stream/max_tokens/n...) sont refusées. Effectif pour les adaptateurs compatibles OpenAI ; les adaptateurs de transformation (anthropic/gemini) ne transmettent que les champs mappés. Les en-têtes d\'authentification doivent utiliser le placeholder.',
     chHeaderOverride: 'Substitution d\'en-têtes (JSON)',
     chHeaderOverrideHint: 'Appliquée après les en-têtes par défaut de l\'adaptateur (priorité maximale). null supprime un en-tête ; {\'{{credential}}\'} injecte les identifiants déchiffrés du canal.',
     chAdd: 'Ajouter un canal',

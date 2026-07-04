@@ -130,12 +130,16 @@ func TestChannelOverrideValidation(t *testing.T) {
 		"api_key": "sk-upstream-secret", "models": []string{"test-model"},
 	}
 	for name, patch := range map[string]map[string]any{
-		"protected max_tokens": {"param_override": `{"max_tokens":999999}`},
-		"protected model":      {"param_override": `{"model":"evil"}`},
-		"protected stream":     {"param_override": `{"stream":false}`},
-		"param not json":       {"param_override": `oops`},
-		"forbidden host":       {"header_override": `{"Host":"evil"}`},
-		"header non-string":    {"header_override": `{"X-N":1}`},
+		"protected max_tokens":     {"param_override": `{"max_tokens":999999}`},
+		"protected model":          {"param_override": `{"model":"evil"}`},
+		"protected stream":         {"param_override": `{"stream":false}`},
+		"protected dialect alias":  {"param_override": `{"max_new_tokens":999999}`},
+		"protected best_of":        {"param_override": `{"best_of":64}`},
+		"param not json":           {"param_override": `oops`},
+		"forbidden host":           {"header_override": `{"Host":"evil"}`},
+		"header non-string":        {"header_override": `{"X-N":1}`},
+		"plaintext auth header":    {"header_override": `{"X-Api-Key":"sk-live-plaintext"}`},
+		"header control character": {"header_override": `{"X-C":"a\r\nb"}`},
 	} {
 		body := map[string]any{}
 		for k, v := range base {
@@ -159,6 +163,56 @@ func TestChannelOverrideValidation(t *testing.T) {
 		"param_override": `{"n":9}`,
 	}); w.Code != 400 {
 		t.Fatalf("update protected n = %d %v, want 400", w.Code, out)
+	}
+}
+
+// 流式：override 给 stream_options 增设的兄弟字段必须到达上游，且 include_usage 仍被强制
+// （对抗 review：此前 openai 系 adapter 整体替换 stream_options，运营增设字段被静默丢弃）。
+func TestChannelParamOverrideStreamOptions(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	var lastBody atomic.Value
+	lastBody.Store(map[string]any{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		lastBody.Store(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		f.Flush()
+	}))
+	t.Cleanup(up.Close)
+	w, out := srv.doAdmin(t, "POST", "/api/admin/channels", map[string]any{
+		"name": "so-dialect", "provider": "openai", "base_url": up.URL,
+		"api_key": "sk-upstream-secret", "models": []string{"test-model"},
+		"param_override": `{"stream_options":{"include_obfuscation":false}}`,
+	})
+	if w.Code != 201 {
+		t.Fatalf("create = %d %v", w.Code, out)
+	}
+	w, out = srv.doAdmin(t, "POST", "/api/admin/model-prices", map[string]any{
+		"model": "test-model", "input_usd_per_1m": "2", "output_usd_per_1m": "6",
+	})
+	if w.Code != 200 {
+		t.Fatalf("price = %d %v", w.Code, out)
+	}
+	apiKey, _ := seedUserWithCredit(t, srv, "ovr-so@example.com", "10")
+
+	w, _ = srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "stream": true, "max_tokens": 50,
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if w.Code != 200 {
+		t.Fatalf("stream = %d %s", w.Code, w.Body.String())
+	}
+	so := lastBody.Load().(map[string]any)["stream_options"].(map[string]any)
+	if so["include_obfuscation"] != false {
+		t.Fatalf("override sibling key lost in stream mode: %v", so)
+	}
+	if so["include_usage"] != true {
+		t.Fatalf("include_usage must stay forced (billing): %v", so)
 	}
 }
 

@@ -460,7 +460,7 @@ export default {
     chProxy: 'Proxy (tùy chọn)',
     chProxyHint: 'Định tuyến lệnh gọi upstream của kênh qua proxy. Trống = trực tiếp. vd http://host:port hoặc socks5://host:port',
     chParamOverride: 'Ghi đè tham số (JSON)',
-    chParamOverrideHint: 'Hợp nhất sâu vào thân yêu cầu trước adapter. null xóa trường (kể cả lồng nhau). Các khóa được bảo vệ (model/stream/max_tokens/n/...) sẽ bị từ chối.',
+    chParamOverrideHint: 'Hợp nhất sâu vào thân yêu cầu trước adapter. null xóa trường (kể cả lồng nhau). Các khóa được bảo vệ (model/stream/max_tokens/n/...) sẽ bị từ chối. Có hiệu lực với các adapter tương thích OpenAI; adapter chuyển đổi (anthropic/gemini) chỉ chuyển tiếp các trường đã ánh xạ. Header xác thực bắt buộc dùng placeholder.',
     chHeaderOverride: 'Ghi đè header (JSON)',
     chHeaderOverrideHint: 'Áp dụng sau header mặc định của adapter (ưu tiên cao nhất). null xóa header; {\'{{credential}}\'} chèn thông tin xác thực kênh đã giải mã.',
     chAdd: 'Thêm kênh',

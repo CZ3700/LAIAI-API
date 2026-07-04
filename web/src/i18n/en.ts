@@ -515,7 +515,7 @@ const messages = {
     chProxy: 'Proxy (optional)',
     chProxyHint: 'Route this channel’s upstream calls through a proxy. Empty = direct. e.g. http://host:port or socks5://host:port',
     chParamOverride: 'Param override (JSON)',
-    chParamOverrideHint: 'Deep-merged into the request body before the adapter. null deletes a field (nested too). Protected keys (model/stream/max_tokens/n/...) are rejected.',
+    chParamOverrideHint: 'Deep-merged into the request body before the adapter. null deletes a field (nested too). Protected keys (model/stream/max_tokens/n/...) are rejected. Effective for OpenAI-compatible adapter families; transform adapters (anthropic/gemini) only forward mapped fields. Auth-class headers must use the placeholder.',
     chHeaderOverride: 'Header override (JSON)',
     chHeaderOverrideHint: 'Applied after adapter default headers (highest priority). null deletes a header; {\'{{credential}}\'} injects the decrypted channel credential.',
     chAdd: 'Add channel',

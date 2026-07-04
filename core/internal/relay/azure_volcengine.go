@@ -18,7 +18,7 @@ const AzureAPIVersion = "2024-08-01-preview"
 
 func (azureAdapter) buildRequest(ctx context.Context, ch *Channel, credential string, req map[string]any, stream bool) (*http.Request, error) {
 	if stream {
-		req["stream_options"] = map[string]any{"include_usage": true}
+		ensureIncludeUsage(req) // 保留 override/客户端兄弟字段，强制 include_usage（对抗 review）
 	}
 	model, _ := req["model"].(string)
 	body, err := json.Marshal(req)
@@ -43,7 +43,7 @@ type volcengineChatAdapter struct{ openaiAdapter }
 
 func (volcengineChatAdapter) buildRequest(ctx context.Context, ch *Channel, credential string, req map[string]any, stream bool) (*http.Request, error) {
 	if stream {
-		req["stream_options"] = map[string]any{"include_usage": true}
+		ensureIncludeUsage(req) // 保留 override/客户端兄弟字段，强制 include_usage（对抗 review）
 	}
 	model, _ := req["model"].(string)
 	path := "/chat/completions"

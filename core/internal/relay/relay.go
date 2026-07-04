@@ -246,13 +246,22 @@ func (r *Relay) AllowModelRate(orgID uint64, model string) (ok bool, rpm int) {
 	return r.allowModelRate(orgID, model)
 }
 
-// requestedMaxOutput：取请求声明的输出 token 上限，用于 hold 估算与上游 max_tokens 映射。
-// 同时识别 max_tokens（经典 / Anthropic 必填）与 max_completion_tokens（OpenAI 新推理模型字段）；
-// 两者都给取较大者，确保 hold 不低于上游可能产出——堵住「只传 max_completion_tokens 绕过输出冻结
-// 上限、借 overage 把余额刷成负数」的 P0-2 漏洞。都没声明返回 0（调用方回退默认）。
+// outputCapAliases：所有能声明"输出 token 上限"的字段（标准 + 方言别名）。
+// hold 估算、转发体 ceiling 钳制、param_override 受保护键三处共用同一清单——
+// openai 系 adapter 整 map 透传，TGI（max_new_tokens）/ Ollama（num_predict）/
+// Anthropic legacy（max_tokens_to_sample）/ Responses（max_output_tokens）方言上游
+// 会认这些别名，漏掉任何一个都等于绕过输出冻结上限（P0-2 同类负余额漏洞，对抗 review）。
+var outputCapAliases = [...]string{
+	"max_tokens", "max_completion_tokens",
+	"max_output_tokens", "max_new_tokens", "num_predict", "max_tokens_to_sample",
+}
+
+// requestedMaxOutput：取请求声明的输出 token 上限（全部别名取较大者），用于 hold 估算。
+// 确保 hold 不低于上游可能产出——堵住「只传别名字段绕过输出冻结上限、借 overage 把余额
+// 刷成负数」的 P0-2 漏洞。都没声明返回 0（调用方回退默认）。
 func requestedMaxOutput(req map[string]any) int64 {
 	var m int64
-	for _, k := range [...]string{"max_tokens", "max_completion_tokens"} {
+	for _, k := range outputCapAliases {
 		if v, ok := req[k].(float64); ok && v > 0 && int64(v) > m {
 			m = int64(v)
 		}
@@ -394,8 +403,8 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	// 把**转发体**的输出上限也钳到 ceiling：上面只钳了 hold 估算用的局部变量 maxTokens，转发体里客户端
 	// 原始的超大 max_tokens 仍会被各 adapter 原样转发；若上游真按其产出 >hold 口径，capture 的 actual 会
 	// 超 hold、走 overage 把 org 余额刷负（与下方 n 倍同类资金红线）。只钳「已存在且确超 ceiling」的字段——
-	// 不给未带该字段的请求平添字段，也不误抬小字段（如仅 max_completion_tokens 超限时不动 max_tokens）。
-	for _, f := range []string{"max_tokens", "max_completion_tokens"} {
+	// 不给未带该字段的请求平添字段，也不误抬小字段。方言别名同钳（outputCapAliases，对抗 review）。
+	for _, f := range outputCapAliases {
 		if v, ok := req[f].(float64); ok && v > float64(maxOutputTokensCeiling) {
 			req[f] = float64(maxOutputTokensCeiling)
 		}
@@ -415,16 +424,25 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	}
 	// 多候选 n（OpenAI 上限 128）：输出 token 随 n 倍增、usage 计入全部候选，故 hold 也须按 n 倍冻结，
 	// 否则 n 大 + max_completion_tokens 大可绕过余额闸、借 overage 把余额刷成负（P0-2 同类）。
+	// best_of（vLLM 系方言）：服务端生成 best_of 个候选、usage 计全部——与 n 同口径纳入倍增与夹紧
+	// （对抗 review：openai 系 adapter 整 map 透传，漏掉 best_of 即同类洞）。
 	holdOutput := maxTokens
-	if nv, ok := req["n"].(float64); ok && nv > 1 {
-		n := int64(nv)
-		if n > maxCompletionChoices {
-			n = maxCompletionChoices
-			req["n"] = float64(n) // 同步夹紧**转发体**：否则上游按原始 n>128 产出全部候选，
-			// capture 按真实 ×n 结算 > ×128 hold，超出走 AllowNegative overage 把 org 余额刷负（资金红线）。
-			// 与 images.go 对转发张数 N 的夹紧同款防护。
+	candidates := int64(1)
+	for _, f := range [...]string{"n", "best_of"} {
+		if nv, ok := req[f].(float64); ok && nv > 1 {
+			cand := int64(nv)
+			if cand > maxCompletionChoices {
+				cand = maxCompletionChoices
+				req[f] = float64(cand) // 同步夹紧**转发体**：否则上游按原始值产出全部候选，
+				// capture 按真实倍数结算 > 夹紧后 hold，超出走 AllowNegative overage 刷负余额（资金红线）。
+			}
+			if cand > candidates {
+				candidates = cand
+			}
 		}
-		holdOutput = maxTokens * n
+	}
+	if candidates > 1 {
+		holdOutput = maxTokens * candidates
 	}
 	inv.Model, inv.IsStream = model, stream
 

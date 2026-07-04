@@ -515,7 +515,7 @@ export default {
     chProxy: '代理（可選）',
     chProxyHint: '該渠道的上游呼叫經此代理出網。留空=直連。如 http://host:port 或 socks5://host:port',
     chParamOverride: '參數覆寫（JSON）',
-    chParamOverrideHint: '進適配器前深合併進請求體；null 刪除欄位（巢狀亦然）。受保護鍵（model/stream/max_tokens/n 等）會被拒絕。',
+    chParamOverrideHint: '進適配器前深合併進請求體；null 刪除欄位（巢狀亦然）。受保護鍵（model/stream/max_tokens/n 等）會被拒絕。 僅對 OpenAI 相容系適配器整體生效；轉換型適配器（anthropic/gemini）只透傳其映射欄位。認證類頭必須使用佔位符。',
     chHeaderOverride: '請求頭覆寫（JSON）',
     chHeaderOverrideHint: '在適配器預設頭之後套用（優先級最高）；null 刪除頭；{\'{{credential}}\'} 注入渠道解密憑證。',
     chAdd: '新增渠道',
