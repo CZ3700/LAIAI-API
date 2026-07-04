@@ -447,26 +447,40 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "nothing to update")
 		return
 	}
-	res := s.db.Model(&relay.Channel{}).Where("id = ?", id).Updates(updates)
-	if res.Error != nil {
+	// 渠道行更新 + api_key 子表同步同事务（对抗 review：否则一方失败会让 legacy mirror 与子表分裂）。
+	notFound := false
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&relay.Channel{}).Where("id = ?", id).Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			notFound = true
+			return nil
+		}
+		if syncCredEnc != "" {
+			// api_key 编辑同步到子表：有子表行则更新唯一 active 行，无则插入（迁移未覆盖/首次）。
+			upd := tx.Model(&relay.ChannelCredential{}).
+				Where("channel_id = ? AND status = ?", id, relay.CredentialActive).
+				Updates(map[string]any{"credential_enc": syncCredEnc, "fingerprint": syncFingerprint})
+			if upd.Error != nil {
+				return upd.Error
+			}
+			if upd.RowsAffected == 0 {
+				return tx.Create(&relay.ChannelCredential{
+					ChannelID: id, CredentialEnc: syncCredEnc, Fingerprint: syncFingerprint,
+					Status: relay.CredentialActive, ModeWeight: 1,
+				}).Error
+			}
+		}
+		return nil
+	}); err != nil {
 		fail(c, http.StatusInternalServerError, "channel update failed")
 		return
 	}
-	if res.RowsAffected == 0 {
+	if notFound {
 		fail(c, http.StatusNotFound, "channel not found")
 		return
-	}
-	// api_key 编辑同步到子表：有子表行则更新唯一 active 行，无则插入（迁移未覆盖/首次）。
-	if syncCredEnc != "" {
-		upd := s.db.Model(&relay.ChannelCredential{}).
-			Where("channel_id = ? AND status = ?", id, relay.CredentialActive).
-			Updates(map[string]any{"credential_enc": syncCredEnc, "fingerprint": syncFingerprint})
-		if upd.RowsAffected == 0 {
-			s.db.Create(&relay.ChannelCredential{
-				ChannelID: id, CredentialEnc: syncCredEnc, Fingerprint: syncFingerprint,
-				Status: relay.CredentialActive, ModeWeight: 1,
-			})
-		}
 	}
 	s.writeAudit(c, "channel_update", strconv.FormatUint(id, 10), auditDetail)
 	s.invalidateCache(relay.KindChannel, "")
@@ -548,6 +562,17 @@ func (s *Server) adminEnableChannel(c *gin.Context) {
 	if err != nil {
 		fail(c, http.StatusBadRequest, "invalid channel id")
 		return
+	}
+	// 拒绝重启用一个无 active key 的渠道（对抗 review）：否则选 key 会回退 legacy credential_enc
+	// 镜像，把运营已禁用的 key 复活。存在子表行但全禁用时先启用某把 key。
+	var total, active int64
+	s.db.Model(&relay.ChannelCredential{}).Where("channel_id = ?", id).Count(&total)
+	if total > 0 {
+		s.db.Model(&relay.ChannelCredential{}).Where("channel_id = ? AND status = ?", id, relay.CredentialActive).Count(&active)
+		if active == 0 {
+			fail(c, http.StatusBadRequest, "channel has no active key — enable a key first")
+			return
+		}
 	}
 	res := s.db.Model(&relay.Channel{}).Where("id = ?", id).Update("status", 1)
 	if res.Error != nil || res.RowsAffected == 0 {

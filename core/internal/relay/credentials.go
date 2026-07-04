@@ -111,21 +111,43 @@ func weightedPickCredential(creds []ChannelCredential) *ChannelCredential {
 	return &creds[len(creds)-1]
 }
 
-// selectCredentialFrom：给定启用 key 列表 + 渠道，选一个 → (credID, 密文, ok)。
-// 空列表回退渠道单 key（credID=0 = legacy fallback，key 级禁用不适用）。
+// selectCredentialFrom：给定启用 key 列表选一个 → (credID, 密文, ok)。空列表返回 ok=false
+// （不 fallback——legacy 回退由 legacyCredential 单独判定，避免"全禁用"被误当"无子表行"）。
 func selectCredentialFrom(ch *Channel, creds []ChannelCredential) (uint64, string, bool) {
 	if c := pickCredential(ch.CredentialMode, creds); c != nil {
 		return c.ID, c.CredentialEnc, true
 	}
-	if ch.CredentialEnc != "" {
-		return 0, ch.CredentialEnc, true // legacy 单 key 兜底（迁移未覆盖/手工插入）
+	return 0, "", false
+}
+
+// legacyCredential：仅当渠道**从无子表行**（真 legacy，迁移前/未覆盖）才回退 channels.credential_enc。
+// 有子表行但全禁用 → 绝不复活被禁 key（对抗 review：否则 key 级禁用这个安全控制被 credential_enc
+// 镜像绕过）。credID=0 标记 legacy（key 级禁用不适用）。
+func legacyCredential(db *gorm.DB, ch *Channel) (uint64, string, bool) {
+	var total int64
+	db.Model(&ChannelCredential{}).Where("channel_id = ?", ch.ID).Count(&total)
+	if total == 0 && ch.CredentialEnc != "" {
+		return 0, ch.CredentialEnc, true
 	}
 	return 0, "", false
 }
 
 // SelectCredential：导出的选 key（供 task/probe 等非 relay-cache 路径）。每次查 DB（低 QPS）。
 func SelectCredential(db *gorm.DB, ch *Channel) (uint64, string, bool) {
-	return selectCredentialFrom(ch, loadActiveCredentials(db, ch.ID))
+	if id, enc, ok := selectCredentialFrom(ch, loadActiveCredentials(db, ch.ID)); ok {
+		return id, enc, ok
+	}
+	return legacyCredential(db, ch)
+}
+
+// CredentialByID：按 id 取某 key 的密文（任务轮询用——固定用提交时那把 key，不受后续禁用影响）。
+// 返回该 key 密文；不存在返回 ok=false。
+func CredentialByID(db *gorm.DB, id uint64) (string, bool) {
+	var cred ChannelCredential
+	if err := db.Select("credential_enc").First(&cred, id).Error; err != nil {
+		return "", false
+	}
+	return cred.CredentialEnc, true
 }
 
 // selectCredential：relay 热路径选 key。快照已填 ch.Credentials 则零查询；否则回退查库。
@@ -134,7 +156,10 @@ func (r *Relay) selectCredential(ch *Channel) (uint64, string, bool) {
 	if creds == nil {
 		creds = loadActiveCredentials(r.DB, ch.ID)
 	}
-	return selectCredentialFrom(ch, creds)
+	if id, enc, ok := selectCredentialFrom(ch, creds); ok {
+		return id, enc, ok
+	}
+	return legacyCredential(r.DB, ch)
 }
 
 // ---- key 级失败计数与自动禁用（对齐 channel auto-disable 的开关+阈值）----

@@ -191,18 +191,19 @@ func TestMultiKeyAllKeysDownDisablesChannel(t *testing.T) {
 	up.markBad("sk-x")
 	up.markBad("sk-y")
 
-	for i := 0; i < 20 && activeKeyCount(t, db, chID) > 0; i++ {
+	chDisabled := func() bool {
+		var s int8
+		db.Raw("SELECT status FROM channels WHERE id = ?", chID).Scan(&s)
+		return s == 2
+	}
+	for i := 0; i < 20 && !chDisabled(); i++ {
 		srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
 			"model": "test-model", "max_tokens": 10,
 			"messages": []map[string]any{{"role": "user", "content": "hi"}},
 		})
 	}
-	waitFor(t, func() bool { return activeKeyCount(t, db, chID) == 0 }, true)
-	var chStatus int8
-	db.Raw("SELECT status FROM channels WHERE id = ?", chID).Scan(&chStatus)
-	if chStatus == 1 {
-		t.Fatal("channel must be disabled once all keys are down")
-	}
+	// 直接等渠道状态（渠道禁用是双重异步：先禁 key 再禁 channel，等 key 计数=0 早于 channel 状态落库）。
+	waitFor(t, chDisabled, true)
 }
 
 // 向后兼容：老渠道只有 channels.credential_enc（无子表行）仍正常服务（legacy fallback）。
@@ -223,6 +224,43 @@ func TestMultiKeyLegacyFallback(t *testing.T) {
 	}
 	if up.hitsFor("sk-legacy") == 0 {
 		t.Fatal("legacy credential_enc not used")
+	}
+}
+
+// 对抗 review：被禁用的 key 绝不被 legacy credential_enc 镜像复活。
+// 场景：单 key 渠道禁掉唯一 key → 渠道级联禁用；管理员企图重启用渠道应被拒（无 active key）。
+func TestMultiKeyDisabledKeyNotResurrected(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := newMultiKeyUpstream(t)
+	chID := seedMultiKeyChannel(t, srv, up.srv.URL, "random", []string{"sk-only"})
+	// 取该 key id
+	var creds []relay.ChannelCredential
+	db.Where("channel_id = ?", chID).Find(&creds)
+	cid := creds[0].ID
+
+	// 禁用唯一 key → 渠道级联禁用（adminSetChannelKeyStatus）
+	if w, _ := srv.doAdmin(t, "POST", fmt.Sprintf("/api/admin/channels/%d/credentials/%d/disable", chID, cid), nil); w.Code != 200 {
+		t.Fatalf("disable key = %d", w.Code)
+	}
+	var chStatus int8
+	db.Raw("SELECT status FROM channels WHERE id = ?", chID).Scan(&chStatus)
+	if chStatus != 2 {
+		t.Fatalf("channel status = %d, want 2 (cascade-disabled)", chStatus)
+	}
+	// 企图重启用渠道 → 被拒（无 active key，否则会回退 credential_enc 复活被禁 key）
+	if w, out := srv.doAdmin(t, "POST", fmt.Sprintf("/api/admin/channels/%d/enable", chID), nil); w.Code != 400 {
+		t.Fatalf("re-enable with no active key = %d %v, want 400", w.Code, out)
+	}
+	// 即便强改渠道 status=1（模拟旁路），选 key 也不回退到被禁 key（有子表行但全禁用）
+	db.Exec("UPDATE channels SET status = 1 WHERE id = ?", chID)
+	apiKey, _ := seedUserWithCredit(t, srv, "mk-resurrect@example.com", "10")
+	before := up.hitsFor("sk-only")
+	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "max_tokens": 10,
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if w.Code == 200 || up.hitsFor("sk-only") != before {
+		t.Fatalf("disabled key resurrected via legacy fallback (code=%d, hits changed)", w.Code)
 	}
 }
 

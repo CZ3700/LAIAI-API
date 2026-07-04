@@ -50,6 +50,7 @@ type Task struct {
 	UpstreamTaskID   string          `gorm:"column:upstream_task_id" json:"-"`
 	ResultURL        string          `gorm:"column:result_url" json:"result_url,omitempty"`
 	HoldID           uint64          `gorm:"column:hold_id" json:"-"`
+	CredentialID     uint64          `gorm:"column:credential_id" json:"-"` // 提交时选定的 key（0035）；轮询固定用它
 	EstTokens        int64           `gorm:"column:est_tokens" json:"-"`
 	ActualTokens     int64           `gorm:"column:actual_tokens" json:"completion_tokens,omitempty"`
 	CostUSD          decimal.Decimal `gorm:"column:cost_usd" json:"cost_usd"`
@@ -126,7 +127,9 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 
 	// 选 key（0034 Multi-key）：任务渠道同样支持多 key（低 QPS，直查 DB）。task 不做 key 级
 	// 自动禁用（异步轮询与提交分离，禁用语义留给 relay 主链路的健康信号）。
-	_, credEnc, credOK := relay.SelectCredential(s.DB, ch)
+	// 提交选定的 credID 钉在任务行（0035）：轮询固定用同一把 key，绝不与提交用不同 key
+	// 导致上游查不到任务（对抗 review 修复）。
+	credID, credEnc, credOK := relay.SelectCredential(s.DB, ch)
 	if !credOK {
 		return nil, fmt.Errorf("task: channel has no usable credential")
 	}
@@ -155,6 +158,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		Status: StatusQueued, EstTokens: estTokens,
 		PriceOutUSDPer1M: price.OutputUSDPer1M,
 		HoldAmountUSD:    holdAmount, GroupRatio: ratio,
+		CredentialID:     credID, // 钉住提交用的 key（0035），轮询固定用它
 	}
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
 		// 锁渠道行（MySQL FOR UPDATE；SQLite 测试靠单连接串行）
@@ -275,7 +279,13 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 		s.Log.Error("task adaptor missing", "task", t.TaskID, "provider", t.Provider)
 		return
 	}
-	_, credEnc, credOK := relay.SelectCredential(s.DB, ch) // 选 key（0034，查询用任一启用 key）
+	// 轮询固定用提交时选定的 key（0035，对抗 review）：多 key 渠道下提交/轮询 key 不一致会
+	// 让上游查不到任务。按 credential_id 取那把 key（即使后来被禁也用它查在途任务，不孤儿化）；
+	// credID=0（legacy 单 key）回退 channels.credential_enc。
+	credEnc, credOK := ch.CredentialEnc, ch.CredentialEnc != ""
+	if t.CredentialID != 0 {
+		credEnc, credOK = relay.CredentialByID(s.DB, t.CredentialID)
+	}
 	if !credOK {
 		s.Log.Error("task channel has no usable credential", "task", t.TaskID)
 		return

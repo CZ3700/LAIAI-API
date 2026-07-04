@@ -7,10 +7,13 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/laiai/laiai-next/core/internal/invocation"
@@ -366,4 +369,81 @@ func TestTaskLegacyRowSettleNoQuotaAdjust(t *testing.T) {
 
 func trimFloat(f float64) string {
 	return strings.TrimSuffix(strings.TrimSuffix(decimal.NewFromFloat(f).String(), ".0"), ".00")
+}
+
+// 对抗 review：多 key 任务渠道，提交选定的 key 必须钉在任务行，轮询固定用同一把 key
+// （否则提交/轮询 key 不一致，上游查不到任务 → 超时全退 + 上游已计费）。
+// 上游 mock：submit 记住每个 task→提交 key；query 校验 Authorization 与提交 key 一致，
+// 不一致返回 failed（模拟"任务 scope 到创建它的 key/账号"的真实上游）。
+func TestTaskCredentialPinnedAcrossPoll(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	var mu sync.Mutex
+	submitKeyByTask := map[string]string{}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			id := "cgt-" + key // 任务 id 编码提交 key
+			mu.Lock()
+			submitKeyByTask[id] = key
+			mu.Unlock()
+			fmt.Fprintf(w, `{"id":%q}`, id)
+			return
+		}
+		// query：路径尾是 upstream task id
+		parts := strings.Split(strings.TrimRight(r.URL.Path, "/"), "/")
+		id := parts[len(parts)-1]
+		mu.Lock()
+		want := submitKeyByTask[id]
+		mu.Unlock()
+		if key != want { // 轮询用了与提交不同的 key → 上游查不到（scope 到提交 key）
+			fmt.Fprintf(w, `{"id":%q,"status":"failed","error":{"message":"task not found for this key"}}`, id)
+			return
+		}
+		fmt.Fprintf(w, `{"id":%q,"status":"succeeded","content":{"video_url":"https://x/v.mp4"},"usage":{"completion_tokens":100000}}`, id)
+	}))
+	t.Cleanup(up.Close)
+
+	// volcengine 渠道 + seedance 定价 + 两把有效 key（polling）
+	w, out := srv.doAdmin(t, "POST", "/api/admin/channels", map[string]any{
+		"name": "ark-mk", "provider": "volcengine", "base_url": up.URL,
+		"api_key": "sk-k1", "models": []string{"seedance-test"}, "credential_mode": "polling",
+		"max_concurrent_tasks": 10, // 提交多个任务不撞并发闸
+	})
+	if w.Code != 201 {
+		t.Fatalf("create channel = %d %v", w.Code, out)
+	}
+	chID := uint64(out["id"].(float64))
+	if w, out := srv.doAdmin(t, "POST", fmt.Sprintf("/api/admin/channels/%d/credentials", chID), map[string]any{"api_key": "sk-k2"}); w.Code != 201 {
+		t.Fatalf("add key = %d %v", w.Code, out)
+	}
+	if w, out := srv.doAdmin(t, "POST", "/api/admin/model-prices", map[string]any{
+		"model": "seedance-test", "input_usd_per_1m": "0", "output_usd_per_1m": "10",
+	}); w.Code != 200 {
+		t.Fatalf("price = %d %v", w.Code, out)
+	}
+	svc := task.NewService(db, testKeyring(t), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	apiKey, _ := seedUserWithCredit(t, srv, "task-pin@example.com", "50")
+
+	// 提交 4 个任务（polling 会在两把 key 间交替）；每个 credential_id 落库非 0；
+	// 轮询固定用钉住的 key → 全部成功（若 pollOne re-select，polling 漂移会命中错 key → failed）。
+	var taskIDs []string
+	for i := 0; i < 4; i++ {
+		taskIDs = append(taskIDs, submitVideoTask(t, srv, apiKey))
+	}
+	for _, tid := range taskIDs {
+		var credID uint64
+		db.Raw("SELECT credential_id FROM tasks WHERE task_id = ?", tid).Scan(&credID)
+		if credID == 0 {
+			t.Fatalf("task %s credential_id not pinned", tid)
+		}
+	}
+	svc.PollOnce(context.Background())
+	for _, tid := range taskIDs {
+		var status string
+		db.Raw("SELECT status FROM tasks WHERE task_id = ?", tid).Scan(&status)
+		if status != task.StatusSucceeded {
+			t.Fatalf("task %s status = %s, want succeeded (poll must use pinned submit key)", tid, status)
+		}
+	}
 }

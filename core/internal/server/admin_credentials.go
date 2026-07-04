@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // adminListChannelKeys：GET /api/admin/channels/:id/credentials —— 列该渠道全部 key（含禁用）。
@@ -141,6 +142,16 @@ func (s *Server) adminDeleteChannelKey(c *gin.Context) {
 		return
 	}
 	if e := s.db.Transaction(func(tx *gorm.DB) error {
+		// 锁渠道行串行化同渠道的并发 key 变更（对抗 review：非锁读的 count-then-delete 可让
+		// 两个并发删除都通过"至少剩 1 把"检查、把最后两把都删空）。SQLite 单连接天然串行。
+		lockTx := tx
+		if tx.Dialector.Name() == "mysql" {
+			lockTx = tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		var ch relay.Channel
+		if err := lockTx.First(&ch, channelID).Error; err != nil {
+			return errNotFound
+		}
 		var cred relay.ChannelCredential
 		if err := tx.Where("id = ? AND channel_id = ?", cid, channelID).First(&cred).Error; err != nil {
 			return errNotFound

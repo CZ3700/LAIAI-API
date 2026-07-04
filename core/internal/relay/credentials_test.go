@@ -8,17 +8,13 @@ func cred(id, chID uint64, weight int) ChannelCredential {
 	return ChannelCredential{ID: id, ChannelID: chID, CredentialEnc: "enc", Status: CredentialActive, ModeWeight: weight}
 }
 
-// 选 key 三模式 + lone key + legacy 回退。
+// 选 key 三模式 + lone key。空 active 列表不 fallback（legacy 回退由 legacyCredential 单独判）。
 func TestSelectCredentialFrom(t *testing.T) {
 	ch := &Channel{ID: 7, CredentialMode: CredentialModeRandom, CredentialEnc: "legacy"}
 
-	// 空列表 → legacy 回退（credID=0）
-	if credID, enc, ok := selectCredentialFrom(ch, nil); !ok || credID != 0 || enc != "legacy" {
-		t.Fatalf("empty → legacy = %d %q %v", credID, enc, ok)
-	}
-	// 无 legacy 也无列表 → 不可用
-	if _, _, ok := selectCredentialFrom(&Channel{}, nil); ok {
-		t.Fatal("no cred → ok must be false")
+	// 空 active 列表 → 不可用（不再直接回退 credential_enc——防"全禁用"复活被禁 key）
+	if _, _, ok := selectCredentialFrom(ch, nil); ok {
+		t.Fatal("empty active list must not fall back here (legacyCredential decides)")
 	}
 	// lone key → 直返该 key（credID 非 0）
 	single := []ChannelCredential{cred(11, 7, 1)}
