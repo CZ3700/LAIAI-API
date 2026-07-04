@@ -14,7 +14,7 @@ func TestProviderRegistryCoverage(t *testing.T) {
 	if len(providers) < 15 {
 		t.Fatalf("registered providers = %d, want >= 15", len(providers))
 	}
-	implemented := map[string]bool{"openai": true, "anthropic": true, "gemini": true, "azure": true, "volcengine": true}
+	implemented := map[string]bool{"openai": true, "anthropic": true, "gemini": true, "azure": true, "volcengine": true, "openai-responses": true}
 	for _, name := range providers {
 		p, _ := ProfileFor(name)
 		if !implemented[p.Adapter] {

@@ -58,6 +58,8 @@ func adapterFor(provider string) adapter {
 		return azureAdapter{}
 	case "volcengine":
 		return volcengineChatAdapter{}
+	case "openai-responses":
+		return openaiResponsesAdapter{}
 	default:
 		return openaiAdapter{}
 	}
