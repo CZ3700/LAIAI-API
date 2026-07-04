@@ -24,8 +24,9 @@ func (openaiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 	if err != nil {
 		return nil, err
 	}
+	// 自定义端点路径（0036 advanced_custom）：upstream_path 非空则覆盖默认 /chat/completions。
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(ch.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
+		ch.upstreamURL("/chat/completions"), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

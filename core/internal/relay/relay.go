@@ -66,6 +66,8 @@ type Relay struct {
 	// 渠道级代理客户端缓存（按 proxy URL 复用，避免每请求新建 Transport）。
 	proxyMu      sync.Mutex
 	proxyClients map[string]*http.Client
+	// advanced_custom 的 SSRF 守卫客户端（0036，按 allow-private 策略缓存两份；proxyMu 共用保护）。
+	ssrfClients map[bool]*http.Client
 
 	// 模型级限流（gap #2）：每 (org, model) 固定 60s 窗口计数。策略(开关+RPM)从 ext_settings
 	// 读，带 5s 缓存避免每请求打库。rate 非 nil（生产接入 Redis）→ 跨实例原子计数；
@@ -99,6 +101,11 @@ type ratioKey struct {
 // clientFor：渠道无代理 → 共享 Client；有代理 → 按 proxy URL 复用一个带代理 Transport 的 Client。
 // 代理串无法解析时安全降级为直连（不阻断请求）。
 func (r *Relay) clientFor(ch *Channel) *http.Client {
+	// advanced_custom（0036）：SSRF 拨号守卫——对解析后真实 IP 复检（防 DNS rebinding）。
+	// 独立于 proxy 缓存（其目标是上游而非代理；advanced_custom 一般不配 proxy）。
+	if ch != nil && ch.isAdvancedCustom() {
+		return r.ssrfClientFor(ch)
+	}
 	if ch == nil || ch.Proxy == "" {
 		return r.Client
 	}
@@ -119,6 +126,29 @@ func (r *Relay) clientFor(ch *Channel) *http.Client {
 	cl := &http.Client{Timeout: upstreamTimeout, Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
 	r.proxyClients[ch.Proxy] = cl
 	return cl
+}
+
+// ssrfClientFor：advanced_custom 渠道的 SSRF 守卫客户端（按 allow-private 策略缓存两份）。
+func (r *Relay) ssrfClientFor(ch *Channel) *http.Client {
+	allowPrivate := r.advancedAllowPrivate()
+	r.proxyMu.Lock()
+	defer r.proxyMu.Unlock()
+	if r.ssrfClients == nil {
+		r.ssrfClients = map[bool]*http.Client{}
+	}
+	if cl, ok := r.ssrfClients[allowPrivate]; ok {
+		return cl
+	}
+	cl := &http.Client{Timeout: upstreamTimeout, Transport: &http.Transport{DialContext: ssrfDialContext(allowPrivate)}}
+	r.ssrfClients[allowPrivate] = cl
+	return cl
+}
+
+// advancedAllowPrivate：ext_settings 读 advanced_custom_allow_private（默认 false）。
+func (r *Relay) advancedAllowPrivate() bool {
+	var row struct{ Value string }
+	r.DB.Table("ext_settings").Where("name = ?", "advanced_custom_allow_private").Take(&row)
+	return row.Value == "true"
 }
 
 func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Logger) *Relay {
@@ -543,7 +573,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
 			continue // 我方配置错误（知识库 channel: 前缀类）→ 换渠道
 		}
-		ad := adapterFor(ch.Provider)
+		ad := adapterForChannel(ch)
 		// 模型映射（0009）：每次 attempt 按当前渠道覆盖写，无跨渠道残留；
 		// 计费/记录/对外响应仍用对外名（inv.Model / price 已定）。
 		req["model"] = ch.UpstreamModel(model)
@@ -609,7 +639,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		return
 	}
 	defer resp.Body.Close()
-	ad := adapterFor(ch.Provider)
+	ad := adapterForChannel(ch)
 
 	// 上游响应校验（部署冒烟暴露）：200 但 content-type 非 JSON/SSE（如中转站返回 HTML 首页）
 	// 判为上游异常——不透传垃圾、不误计费成 success。渠道级开关可放宽。

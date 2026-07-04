@@ -33,11 +33,27 @@ type Channel struct {
 	ParamOverride      string `gorm:"column:param_override"`       // JSON 请求体深合并，null 删字段（0033，空=无）
 	HeaderOverride     string `gorm:"column:header_override"`      // JSON 请求头覆盖，{{credential}} 占位（0033，空=无）
 	CredentialMode     string `gorm:"column:credential_mode"`      // random|polling|weighted 选 key（0034）
+	Converter          string `gorm:"column:converter"`            // 格式转换器（0036 advanced_custom，空=按 provider）
+	UpstreamPath       string `gorm:"column:upstream_path"`        // 自定义端点路径，覆盖 adapter 默认（0036，空=默认）
 	Status             int8   `gorm:"column:status"`
 
 	// Credentials：该渠道的启用 key 列表（非持久列；快照/选择器按需填充，0034 Multi-key）。
 	// 空 = 回退 CredentialEnc 单 key（legacy）。调用方只读，绝不原地改。
 	Credentials []ChannelCredential `gorm:"-"`
+}
+
+// upstreamURL：base_url + 端点路径。upstream_path 非空（0036 advanced_custom）覆盖 adapter
+// 默认路径（defaultPath 以 / 开头）；否则用默认。自定义路径按原样拼（含 query 也保留）。
+func (c *Channel) upstreamURL(defaultPath string) string {
+	base := strings.TrimRight(c.BaseURL, "/")
+	p := strings.TrimSpace(c.UpstreamPath)
+	if p == "" {
+		return base + defaultPath
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return base + p
 }
 
 // UpstreamModel 返回该渠道上游实际使用的模型名（无映射/解析失败 → 原名）。

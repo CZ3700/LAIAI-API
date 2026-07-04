@@ -34,6 +34,8 @@ interface Channel {
   header_override: string
   credential_mode: string
   key_count: number
+  converter: string
+  upstream_path: string
 }
 interface Overview {
   window_days: number
@@ -927,7 +929,7 @@ function linesToMapping(lines: string): Record<string, string> {
 
 // —— 编辑渠道 ——
 const editing = ref<Channel | null>(null)
-const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '', proxy: '', param_override: '', header_override: '', credential_mode: 'random' })
+const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '', proxy: '', param_override: '', header_override: '', credential_mode: 'random', converter: '', upstream_path: '' })
 const editBusy = ref(false)
 const editError = ref('') // 弹窗内错误（页面顶部横幅会被弹窗遮罩盖住，校验 400 必须在弹窗里可见）
 
@@ -984,6 +986,8 @@ function openEdit(ch: Channel) {
     param_override: ch.param_override || '',
     header_override: ch.header_override || '',
     credential_mode: ch.credential_mode || 'random',
+    converter: ch.converter || '',
+    upstream_path: ch.upstream_path || '',
   }
   void loadKeys(ch.id)
 }
@@ -1002,6 +1006,8 @@ async function saveEdit() {
       param_override: editForm.value.param_override.trim(), // 空串 = 清空 override
       header_override: editForm.value.header_override.trim(),
       credential_mode: editForm.value.credential_mode,
+      converter: editForm.value.converter,
+      upstream_path: editForm.value.upstream_path.trim(),
     }
     if (editForm.value.api_key) body.api_key = editForm.value.api_key
     await adminApi('PUT', `/api/admin/channels/${editing.value.id}`, body)
@@ -1779,6 +1785,25 @@ onMounted(async () => {
               {{ t('admin.chStrict') }}
             </label>
             <p class="text-xs text-muted">{{ t('admin.chStrictHint') }}</p>
+
+            <!-- Advanced Custom（0036）：格式转换器 + 自定义端点 -->
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="label" for="edit-converter">{{ t('admin.chConverter') }}</label>
+                <select id="edit-converter" v-model="editForm.converter" class="input">
+                  <option value="">{{ t('admin.chConverterDefault') }}</option>
+                  <option value="none">none (OpenAI)</option>
+                  <option value="openai_chat_to_anthropic_messages">→ Anthropic</option>
+                  <option value="openai_chat_to_gemini_generate_content">→ Gemini</option>
+                  <option value="openai_chat_to_openai_responses">→ OpenAI Responses</option>
+                </select>
+              </div>
+              <div>
+                <label class="label" for="edit-upath">{{ t('admin.chUpstreamPath') }}</label>
+                <input id="edit-upath" v-model="editForm.upstream_path" class="input font-mono text-xs" placeholder="/chat/completions" />
+              </div>
+            </div>
+            <p class="text-xs text-muted">{{ t('admin.chAdvancedHint') }}</p>
 
             <!-- 多 key 管理（0034 Multi-key）-->
             <div class="rounded border border-line p-3 space-y-2">

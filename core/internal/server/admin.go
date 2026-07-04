@@ -212,7 +212,29 @@ type channelReq struct {
 	ParamOverride      string            `json:"param_override"`       // JSON 请求体深合并（0033，可选）
 	HeaderOverride     string            `json:"header_override"`      // JSON 请求头覆盖（0033，可选）
 	CredentialMode     string            `json:"credential_mode"`      // random|polling|weighted（0034，可选）
+	Converter          string            `json:"converter"`            // 格式转换器（0036 advanced_custom，可选）
+	UpstreamPath       string            `json:"upstream_path"`        // 自定义端点路径（0036，可选）
 }
+
+// validateAdvancedFields：converter 枚举 + advanced_custom 的 SSRF base_url 校验。
+// provider=advanced_custom 或 converter 非空视为 advanced，需过 SSRF。
+func (s *Server) validateAdvancedFields(provider, converter, baseURL string) error {
+	if !relay.ValidConverter(converter) {
+		return errBadRequest("converter must be none|openai_chat_to_anthropic_messages|openai_chat_to_gemini_generate_content|openai_chat_to_openai_responses")
+	}
+	if provider == relay.ProviderAdvancedCustom || converter != "" {
+		allowPrivate := s.getSetting("advanced_custom_allow_private") == "true"
+		if err := relay.ValidateAdvancedUpstreamURL(baseURL, allowPrivate); err != nil {
+			return errBadRequest(err.Error())
+		}
+	}
+	return nil
+}
+
+// errBadRequest：轻量 400 错误载体（供 validateAdvancedFields 返回，handler 转 fail）。
+type errBadRequest string
+
+func (e errBadRequest) Error() string { return string(e) }
 
 // validCredentialMode：空/合法返回规范值，非法返回空+false。
 func validCredentialMode(m string) (string, bool) {
@@ -302,6 +324,10 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "credential_mode must be random|polling|weighted")
 		return
 	}
+	if err := s.validateAdvancedFields(req.Provider, req.Converter, req.BaseURL); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	ch := &relay.Channel{
 		Name: req.Name, Provider: req.Provider,
 		BaseURL:       strings.TrimRight(req.BaseURL, "/"),
@@ -310,7 +336,9 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		MaxConcurrentTasks: maxTasks, StrictResponse: 1,
 		ModelMapping: mapping, Proxy: strings.TrimSpace(req.Proxy),
 		ParamOverride: strings.TrimSpace(req.ParamOverride), HeaderOverride: strings.TrimSpace(req.HeaderOverride),
-		CredentialMode: credMode, Status: 1,
+		CredentialMode: credMode,
+		Converter:      strings.TrimSpace(req.Converter), UpstreamPath: strings.TrimSpace(req.UpstreamPath),
+		Status: 1,
 	}
 	// 渠道行 + 首个 key 子表行同事务落库（0034 Multi-key）：channels.credential_enc 保留作
 	// legacy mirror，子表行为选 key 的实际来源，与 0034 迁移回填的形态一致。
@@ -334,6 +362,9 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 	if ch.HeaderOverride != "" {
 		detail += "; " + auditOverrideKeys("header_override", ch.HeaderOverride)
 	}
+	if ch.Converter != "" || ch.UpstreamPath != "" {
+		detail += "; advanced converter=" + ch.Converter + " path=" + ch.UpstreamPath
+	}
 	s.writeAudit(c, "channel_create", strconv.FormatUint(ch.ID, 10), detail)
 	s.invalidateCache(relay.KindChannel, "")
 	c.JSON(http.StatusCreated, gin.H{"id": ch.ID, "name": ch.Name})
@@ -351,6 +382,8 @@ type updateChannelReq struct {
 	ParamOverride  *string            `json:"param_override"`  // 指针区分"不改"与"清空"（0033）
 	HeaderOverride *string            `json:"header_override"` // 同上
 	CredentialMode *string            `json:"credential_mode"` // random|polling|weighted（0034）
+	Converter      *string            `json:"converter"`       // 格式转换器（0036）
+	UpstreamPath   *string            `json:"upstream_path"`   // 自定义端点路径（0036）
 }
 
 // adminUpdateChannel：PUT /api/admin/channels/:id —— 编辑渠道（部署冒烟暴露的高频缺口）。
@@ -400,6 +433,31 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 	}
 	if req.Proxy != nil {
 		updates["proxy"] = strings.TrimSpace(*req.Proxy)
+	}
+	// advanced_custom（0036）：converter/upstream_path 变更 + SSRF 复核。converter 或 base_url
+	// 任一改动即按（现有 provider + 生效 converter + 生效 base_url）重跑校验，防改配置绕过 SSRF。
+	if req.Converter != nil || req.UpstreamPath != nil || (req.BaseURL != nil && req.Converter == nil) {
+		var cur relay.Channel
+		if e := s.db.Select("provider", "base_url", "converter").First(&cur, id).Error; e != nil {
+			fail(c, http.StatusNotFound, "channel not found")
+			return
+		}
+		effConverter := cur.Converter
+		if req.Converter != nil {
+			effConverter = strings.TrimSpace(*req.Converter)
+			updates["converter"] = effConverter
+		}
+		if req.UpstreamPath != nil {
+			updates["upstream_path"] = strings.TrimSpace(*req.UpstreamPath)
+		}
+		effBaseURL := cur.BaseURL
+		if req.BaseURL != nil {
+			effBaseURL = strings.TrimRight(*req.BaseURL, "/")
+		}
+		if err := s.validateAdvancedFields(cur.Provider, effConverter, effBaseURL); err != nil {
+			fail(c, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	auditDetail := "channel config updated"
 	if req.ParamOverride != nil {
@@ -533,6 +591,7 @@ func (s *Server) adminListChannels(c *gin.Context) {
 			// override 配置回显给编辑表单（值本身非凭证——凭证只经 {{credential}} 占位符注入）
 			"param_override": ch.ParamOverride, "header_override": ch.HeaderOverride,
 			"credential_mode": ch.CredentialMode, "key_count": keyCounts[ch.ID],
+			"converter": ch.Converter, "upstream_path": ch.UpstreamPath,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": out})

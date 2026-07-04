@@ -1,0 +1,115 @@
+package relay
+
+// SSRF 防护（商用迭代指令 §3.3；设计 §4.4）：仅作用于 advanced_custom 渠道——运营配置的
+// 上游可能是不可信/易配错的目标，必须防它被指向内网/云 metadata 做服务端请求伪造。
+//   - 配置期（ValidateAdvancedUpstreamURL）：scheme/凭证/字面 IP 校验，admin 写入即拦。
+//   - 拨号期（ssrfControlFor 经 net.Dialer.Control）：对**解析后的真实 IP**复检——域名解析
+//     到内网 IP（DNS rebinding）在建连前拦截，配置期校验无法覆盖。
+// metadata IP（169.254.169.254 等）恒拦，不受 allow-private 开关影响。
+// 自建 provider（ollama/vllm 用专属档案、走 localhost/内网）不经此守卫，不受影响。
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/url"
+	"strings"
+	"syscall"
+)
+
+// cloudMetadataIPs：云厂商 metadata 端点，任何配置下恒拦（永不是合法上游）。
+var cloudMetadataIPs = map[string]bool{
+	"169.254.169.254": true, // AWS/GCP/Azure/OpenStack IMDS
+	"100.100.100.200": true, // 阿里云 metadata
+	"fd00:ec2::254":   true, // AWS IMDSv2 IPv6
+}
+
+// isMetadataIP：是否云 metadata（恒拦）。
+func isMetadataIP(ip net.IP) bool {
+	return cloudMetadataIPs[ip.String()]
+}
+
+// isPrivateOrLocal：是否内网/本地/保留地址（allow-private 关闭时拦）。
+// 覆盖：环回、私网(RFC1918+ULA)、link-local(含 169.254 metadata 网段)、unspecified(0.0.0.0/::)、
+// multicast、CGNAT(100.64/10)、IPv4-mapped IPv6 一并按其 v4 语义判定。
+func isPrivateOrLocal(ip net.IP) bool {
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4 // IPv4-mapped IPv6（::ffff:127.0.0.1）归一到 v4 判定
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+		return true
+	}
+	// CGNAT 100.64.0.0/10（常见内网 NAT 段，RFC6598）
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return true
+	}
+	return false
+}
+
+// blockUpstreamIP：给定拨号目标 IP + 是否放行私网，返回拦截原因（空=放行）。
+func blockUpstreamIP(ip net.IP, allowPrivate bool) string {
+	if ip == nil {
+		return "unresolvable host"
+	}
+	if isMetadataIP(ip) {
+		return "cloud metadata endpoint is never allowed"
+	}
+	if !allowPrivate && isPrivateOrLocal(ip) {
+		return "private/loopback/link-local address blocked (set advanced_custom_allow_private to permit)"
+	}
+	return ""
+}
+
+// ValidateAdvancedUpstreamURL：advanced_custom 渠道 base_url 的配置期校验（admin 写入前）。
+// 拒非 http(s)、URL 内嵌凭证、字面 IP 命中拦截集。域名不在此解析（留给拨号期复检，避免
+// 配置期 DNS 与拨号期不一致的 TOCTOU 空窗）。
+func ValidateAdvancedUpstreamURL(rawURL string, allowPrivate bool) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("invalid base_url")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("base_url scheme must be http or https")
+	}
+	if u.User != nil {
+		return fmt.Errorf("base_url must not contain embedded credentials")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("base_url must have a host")
+	}
+	if ip := net.ParseIP(host); ip != nil { // 字面 IP：配置期即拦
+		if reason := blockUpstreamIP(ip, allowPrivate); reason != "" {
+			return fmt.Errorf("base_url host blocked: %s", reason)
+		}
+	}
+	return nil
+}
+
+// ssrfControlFor：返回一个 net.Dialer.Control，对每次实际拨号的解析后 IP 复检（DNS-rebinding-safe）。
+// Go 在此 hook 时 address 已是解析出的 ip:port，返回非 nil 即阻断该次连接。
+func ssrfControlFor(allowPrivate bool) func(network, address string, c syscall.RawConn) error {
+	return func(network, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return fmt.Errorf("ssrf: bad dial address")
+		}
+		ip := net.ParseIP(host)
+		if reason := blockUpstreamIP(ip, allowPrivate); reason != "" {
+			return fmt.Errorf("ssrf blocked upstream dial to %s: %s", host, reason)
+		}
+		return nil
+	}
+}
+
+// isAdvancedCustom：渠道是否走 advanced_custom（provider 或 converter 命中）——决定是否套 SSRF 守卫。
+func (c *Channel) isAdvancedCustom() bool {
+	return c.Provider == ProviderAdvancedCustom || c.Converter != ""
+}
+
+// ssrfDialContext：advanced_custom 渠道用的带 SSRF 复检的 DialContext（默认拨号器 + Control）。
+func ssrfDialContext(allowPrivate bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	d := &net.Dialer{Control: ssrfControlFor(allowPrivate)}
+	return d.DialContext
+}

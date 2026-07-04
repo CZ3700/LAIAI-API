@@ -70,6 +70,7 @@ CREATE TABLE channels (
     proxy TEXT NOT NULL DEFAULT '',
     param_override TEXT NOT NULL DEFAULT '', header_override TEXT NOT NULL DEFAULT '',
     credential_mode TEXT NOT NULL DEFAULT 'random',
+    converter TEXT NOT NULL DEFAULT '', upstream_path TEXT NOT NULL DEFAULT '',
     status INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

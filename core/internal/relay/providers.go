@@ -29,6 +29,8 @@ var providerProfiles = map[string]providerProfile{
 	"modelark": {DisplayName: "BytePlus ModelArk", DefaultBaseURL: "https://ark.ap-southeast.bytepluses.com/api/v3", Adapter: "volcengine"},
 	"openai-responses": {DisplayName: "OpenAI Responses 上游", DefaultBaseURL: "", Adapter: "openai-responses",
 		Notes: "上游只支持 /v1/responses（Codex 系/只暴露 Responses 的网关）；对内 chat 契约,adapter 双向转换。base_url 必填"},
+	"advanced_custom": {DisplayName: "Advanced Custom（自定义路由）", DefaultBaseURL: "", Adapter: "openai",
+		Notes: "不写代码接自定义上游：converter 选格式转换器 + upstream_path 自定义端点 + header_override 自定义认证；SSRF 拦内网/metadata。base_url 必填"},
 
 	// —— OpenAI 兼容（西方系）——
 	"deepseek":   {DisplayName: "DeepSeek", DefaultBaseURL: "https://api.deepseek.com/v1", Adapter: "openai"},

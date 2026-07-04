@@ -45,6 +45,44 @@ func emitStreamError(w gin.ResponseWriter, msg string) {
 	w.Flush()
 }
 
+// converter 枚举（advanced_custom，0036）：出站 openai chat → 上游格式，复用既有 adapter 家族。
+const (
+	ConverterNone          = "none"
+	ConverterToAnthropic   = "openai_chat_to_anthropic_messages"
+	ConverterToGemini      = "openai_chat_to_gemini_generate_content"
+	ConverterToOpenAIResp  = "openai_chat_to_openai_responses"
+	ProviderAdvancedCustom = "advanced_custom"
+)
+
+// ValidConverter：converter 是否合法（空 = 不用 converter，按 provider）。
+func ValidConverter(c string) bool {
+	switch c {
+	case "", ConverterNone, ConverterToAnthropic, ConverterToGemini, ConverterToOpenAIResp:
+		return true
+	}
+	return false
+}
+
+// adapterForChannel：渠道级适配器选择。converter 非空（advanced_custom）→ 按 converter 分发；
+// 否则回退按 provider（adapterFor）。
+func adapterForChannel(ch *Channel) adapter {
+	switch ch.Converter {
+	case "", ConverterNone:
+		if ch.Converter == ConverterNone { // 显式 none：openai 透传（advanced_custom 常用）
+			return openaiAdapter{}
+		}
+		return adapterFor(ch.Provider)
+	case ConverterToAnthropic:
+		return anthropicAdapter{}
+	case ConverterToGemini:
+		return geminiAdapter{}
+	case ConverterToOpenAIResp:
+		return openaiResponsesAdapter{}
+	default:
+		return adapterFor(ch.Provider) // 未知 converter：保守回退 provider（admin 写入已校验）
+	}
+}
+
 // adapterFor 按渠道 provider 选择适配器：先查档案注册表（providers.go）的 Adapter 字段，
 // 未登记的 provider 按 OpenAI 兼容处理（自建/聚合上游大多说 OpenAI 方言）。
 func adapterFor(provider string) adapter {
