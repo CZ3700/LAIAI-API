@@ -366,6 +366,15 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 		usageSource = invocation.UsageSourceEstimated
 		s.Log.Warn("task usage missing from upstream, charged by estimate", "task", t.TaskID)
 	}
+	// capture 永不超过 hold（预授权语义 + 资金红线①防护，对抗 review CONFIRMED）：
+	// A 类任务（kling/vidu）上游用量单位量纲无法先验封顶，若 EstimateOutputTokens 低估、真实
+	// usage 超出预冻结，结算超出部分由平台吸收（记 warn 供标定），绝不 overage 把用户余额打成负。
+	// 对已标定的 seedance（估算是宽上界）此 cap 恒不触发，纯防御。旧行（hold_amount_usd=0）跳过。
+	if t.HoldAmountUSD.IsPositive() && actual.GreaterThan(t.HoldAmountUSD) {
+		s.Log.Warn("task actual exceeds hold — capping at hold (platform absorbs excess, estimate needs calibration)",
+			"task", t.TaskID, "model", t.Model, "actual", actual.String(), "hold", t.HoldAmountUSD.String())
+		actual = t.HoldAmountUSD
+	}
 	won := false
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		now := s.Now()
@@ -459,6 +468,48 @@ func (s *Service) recordInvocation(t *Task, status string, code int, tokens int6
 		DurationMs: int(s.Now().Sub(t.SubmittedAt).Milliseconds()),
 		ErrorBrief: brief,
 	})
+}
+
+// taskContentParts：把 OpenAI 风格 content 数组拆成 prompt 文本 + 图片 URL 列表，供不吃 content
+// 数组、要平铺 prompt/image 字段的厂商 adaptor（kling/vidu 等）用。ModelArk 系（doubao）原生吃
+// content 数组，走 payload["content"]=in.Content 透传，不用本函数。
+// content 项形如 {type:"text",text:...} / {type:"image_url",image_url:{url:...}}（大小写变体键容忍）。
+func taskContentParts(content []any) (prompt string, images []string) {
+	var texts []string
+	for _, item := range content {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t := mapStringFold(m, "text"); t != "" {
+			texts = append(texts, t)
+		}
+		// image_url.url（嵌套）或直接 image 字段
+		if iu, ok := mapAnyFold(m, "image_url").(map[string]any); ok {
+			if u := mapStringFold(iu, "url"); u != "" {
+				images = append(images, u)
+			}
+		} else if u := mapStringFold(m, "image"); u != "" {
+			images = append(images, u)
+		}
+	}
+	return strings.Join(texts, "\n"), images
+}
+
+func mapAnyFold(m map[string]any, key string) any {
+	for k, v := range m {
+		if strings.EqualFold(k, key) {
+			return v
+		}
+	}
+	return nil
+}
+
+func mapStringFold(m map[string]any, key string) string {
+	if s, ok := mapAnyFold(m, key).(string); ok {
+		return s
+	}
+	return ""
 }
 
 // clipReason：按字节截断并去除尾部半个 rune（utf8mb4 列防非法 UTF-8，与 relay.clipMeta 同款）。

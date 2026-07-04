@@ -14,8 +14,11 @@ import "sort"
 type providerProfile struct {
 	DisplayName    string
 	DefaultBaseURL string // OpenAI 兼容 base（含版本路径，适配器再拼 /chat/completions）
-	Adapter        string // openai | anthropic | gemini | azure | volcengine
+	Adapter        string // chat 家族：openai|anthropic|gemini|azure|volcengine|openai-responses；或 task 家族名（TaskOnly=true）
 	Notes          string
+	// TaskOnly：纯异步任务厂商（kling/vidu 等，只服务 /v1/video/generations，无 chat 端点）——
+	// Adapter 是 task.Adaptor 家族名而非 chat adapter；不参与 chat 选路（picker 只按渠道 models 命中）。
+	TaskOnly bool
 }
 
 var providerProfiles = map[string]providerProfile{
@@ -29,6 +32,11 @@ var providerProfiles = map[string]providerProfile{
 	"modelark": {DisplayName: "BytePlus ModelArk", DefaultBaseURL: "https://ark.ap-southeast.bytepluses.com/api/v3", Adapter: "volcengine"},
 	"doubao": {DisplayName: "字节豆包（国内方舟）", DefaultBaseURL: "https://ark.cn-beijing.volces.com/api/v3", Adapter: "volcengine",
 		Notes: "火山方舟国内端点（Seedance 2.0 视频任务 + chat）；真机验证 2026-07-05"},
+	// —— 视频任务厂商（§3.8 批次 2，知识移植自 New API；仅 task 路由，非 chat）——
+	"kling": {DisplayName: "快手可灵 Kling（视频任务）", DefaultBaseURL: "https://api-beijing.klingai.com", Adapter: "kling", TaskOnly: true,
+		Notes: "视频生成任务；凭证格式 access_key|secret_key（JWT-HS256 现签）。真机验证待补"},
+	"vidu": {DisplayName: "生数 Vidu（视频任务）", DefaultBaseURL: "https://api.vidu.cn", Adapter: "vidu", TaskOnly: true,
+		Notes: "视频生成任务；鉴权 Authorization: Token <key>（非 Bearer）。真机验证待补"},
 	"openai-responses": {DisplayName: "OpenAI Responses 上游", DefaultBaseURL: "", Adapter: "openai-responses",
 		Notes: "上游只支持 /v1/responses（Codex 系/只暴露 Responses 的网关）；对内 chat 契约,adapter 双向转换。base_url 必填"},
 	"advanced_custom": {DisplayName: "Advanced Custom（自定义路由）", DefaultBaseURL: "", Adapter: "openai",

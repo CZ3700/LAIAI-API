@@ -48,6 +48,10 @@ type QueryResult struct {
 var taskAdaptors = map[string]Adaptor{
 	"volcengine": volcengineTask{},
 	"modelark":   volcengineTask{},
+	// §3.8 批次 2（2026-07-05，知识移植自 New API 参考库）：字段/协议按其生产解析结构体移植，
+	// 真机验证走各自 env 门控 smoke。kling=JWT-HS256/A 类；vidu=Token 头/A 类。
+	"kling": klingTask{},
+	"vidu":  viduTask{},
 }
 
 // adaptorFor：先按 provider code 精确查注册表；未命中再按 provider 档案的 Adapter 家族回退一次
