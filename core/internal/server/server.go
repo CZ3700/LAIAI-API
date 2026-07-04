@@ -275,6 +275,9 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		// Anthropic 原生入站（Claude Code / Anthropic SDK 把 base 指到 /anthropic 即用）：
 		// ingress 转 OpenAI canonical → 复用未改动的 HandleChatCompletions 全套计费/路由 → egress 转回 Anthropic。
 		rg.POST("/anthropic/v1/messages", rl.HandleAnthropicMessages)
+		// OpenAI Responses 原生入站（Responses SDK / Codex 把 base 指到本网关即用任意 chat 上游）：
+		// ingress 转 OpenAI canonical → 复用未改动 HandleChatCompletions → egress 转回 Responses 形态（§3.2）。
+		rg.POST("/v1/responses", rl.HandleResponses)
 		rg.POST("/v1/embeddings", rl.HandleEmbeddings)
 		rg.POST("/v1/rerank", rl.HandleRerank) // 重排序（WS-1，RAG；Jina/SiliconFlow/Cohere/Qwen）
 		rg.POST("/v1/images/generations", rl.HandleImages)
