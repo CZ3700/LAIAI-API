@@ -28,23 +28,23 @@ import (
 
 var errAudioUnsupported = fmt.Errorf("relay: provider does not serve openai-compatible audio")
 
-// audioUpstreamURL：拼接渠道的音频端点 URL（azure 用 deployments 形态）。
+// audioUpstreamURL：音频端点查 (format×mode) 矩阵（contract v2，mode.go）。
+// 返回 (url, authHeader, authValuePrefix, err)——保持既有调用方签名。
 func audioUpstreamURL(ch *Channel, model, suffix string) (string, string, string, error) {
-	adapterName := ch.Provider
-	if p, ok := ProfileFor(ch.Provider); ok {
-		adapterName = p.Adapter
+	var mode RelayMode
+	switch suffix {
+	case "speech":
+		mode = ModeAudioSpeech
+	case "transcriptions":
+		mode = ModeAudioTranscriptions
+	default: // translations
+		mode = ModeAudioTranslations
 	}
-	authHeader, authValue := "Authorization", "Bearer "
-	switch adapterName {
-	case "azure":
-		// /openai/deployments/{model}/audio/{speech|transcriptions}?api-version=...
-		return strings.TrimRight(ch.BaseURL, "/") + "/openai/deployments/" + model + "/audio/" + suffix +
-			"?api-version=" + AzureAPIVersion, "api-key", "", nil
-	case "anthropic", "gemini":
-		return "", "", "", errAudioUnsupported
-	default:
-		return strings.TrimRight(ch.BaseURL, "/") + "/audio/" + suffix, authHeader, authValue, nil
+	spec, err := modeUpstreamSpec(ch, mode, model)
+	if err != nil {
+		return "", "", "", err
 	}
+	return spec.URL, spec.AuthHeader, spec.AuthPrefix, nil
 }
 
 // HandleAudioSpeech：POST /v1/audio/speech —— TTS。按输入字符数计价，响应为二进制音频透传。
@@ -122,6 +122,8 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 		}
 		hr.Header.Set("Content-Type", "application/json")
 		hr.Header.Set(ah, av+cred)
+		// 渠道级 header override（contract v2 作用域扩展）
+		applyHeaderOverrideForMode(hr, ch.HeaderOverride, cred, ModeAudioSpeech)
 		return hr, nil
 	}
 	resp, ferr := r.audioForward(c, inv, req.Model, hold, build, finish)
@@ -235,6 +237,12 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 		}
 		hr.Header.Set("Content-Type", upCT) // 映射后用新 boundary；无映射则原 boundary
 		hr.Header.Set(ah, av+cred)
+		// 渠道级 header override（contract v2 作用域扩展）：multipart 模态 Content-Type 防御性跳过
+		hoMode := ModeAudioTranscriptions
+		if suffix == "translations" {
+			hoMode = ModeAudioTranslations
+		}
+		applyHeaderOverrideForMode(hr, ch.HeaderOverride, cred, hoMode)
 		return hr, nil
 	}
 	resp, ferr := r.audioForward(c, inv, model, hold, build, finish)

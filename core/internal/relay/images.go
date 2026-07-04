@@ -25,29 +25,18 @@ import (
 
 var errImagesUnsupported = fmt.Errorf("relay: provider does not serve openai-compatible image generation")
 
+// buildImagesRequest：images/generations 上游请求。端点/鉴权查 (format×mode) 矩阵（contract v2）。
 func buildImagesRequest(ctx context.Context, ch *Channel, credential string, rawBody []byte, model string) (*http.Request, error) {
-	adapterName := ch.Provider
-	if p, ok := ProfileFor(ch.Provider); ok {
-		adapterName = p.Adapter
+	spec, err := modeUpstreamSpec(ch, ModeImagesGenerations, model)
+	if err != nil {
+		return nil, err
 	}
-	var url string
-	authHeader, authValue := "Authorization", "Bearer "+credential
-	switch adapterName {
-	case "azure":
-		url = strings.TrimRight(ch.BaseURL, "/") +
-			"/openai/deployments/" + model + "/images/generations?api-version=" + AzureAPIVersion
-		authHeader, authValue = "api-key", credential
-	case "anthropic", "gemini":
-		return nil, errImagesUnsupported
-	default: // openai 兼容（含方舟 /api/v3/images/generations）
-		url = strings.TrimRight(ch.BaseURL, "/") + "/images/generations"
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, spec.URL, bytes.NewReader(rawBody))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(authHeader, authValue)
+	spec.applyAuth(req, credential)
 	return req, nil
 }
 
@@ -216,6 +205,8 @@ func (r *Relay) HandleImages(c *gin.Context) {
 			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
 			return
 		}
+		// 渠道级 header override（contract v2 作用域扩展）
+		applyHeaderOverrideForMode(upReq, ch.HeaderOverride, credential, ModeImagesGenerations)
 		resp, err = r.clientFor(ch).Do(upReq)
 		if err != nil {
 			r.Log.Warn("images upstream unreachable", "channel", ch.ID, "err", err)

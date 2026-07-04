@@ -24,27 +24,15 @@ import (
 
 var errRerankUnsupported = fmt.Errorf("relay: provider does not serve a rerank endpoint")
 
-// rerankUpstreamURL：base + /rerank（渠道 base_url 须指向供应商的 rerank 基址，如 Jina/SiliconFlow 的
-// /v1、Cohere 的 /v2）。anthropic/gemini 不支持。
+// rerankUpstreamURL：rerank 端点查 (format×mode) 矩阵（contract v2，mode.go——cohere 剥
+// /compatibility/v1 归一原生 /v1/rerank 的方言也在表里）。anthropic/gemini 不支持。
+// 返回 (url, authHeader, 完整 authValue, err)——保持既有调用方签名。
 func rerankUpstreamURL(ch *Channel, credential string) (string, string, string, error) {
-	adapterName := ch.Provider
-	if p, ok := ProfileFor(ch.Provider); ok {
-		adapterName = p.Adapter
+	spec, err := modeUpstreamSpec(ch, ModeRerank, "")
+	if err != nil {
+		return "", "", "", err
 	}
-	if adapterName == "anthropic" || adapterName == "gemini" {
-		return "", "", "", errRerankUnsupported
-	}
-	base := strings.TrimRight(ch.BaseURL, "/")
-	// Cohere 的 rerank 是原生端点，不在 /compatibility（后者只镜像 OpenAI 形态的 chat/embeddings）。
-	// 默认 base 是 .../compatibility/v1（供 chat 兼容用），rerank 必须归一回主机根再拼 /v1/rerank
-	// （对标 NewAPI cohere/adaptor.go），否则会命中 /compatibility/v1/rerank → 404。
-	// 这样单个 cohere 渠道用同一 base 即可同时支撑 chat（compat）与 rerank（native）。
-	if ch.Provider == "cohere" {
-		base = strings.TrimSuffix(base, "/compatibility/v1")
-		return base + "/v1/rerank", "Authorization", "Bearer " + credential, nil
-	}
-	// 其余 OpenAI 兼容厂商（jina/siliconflow/qwen…）base 已含 /v1 → base + /rerank = /v1/rerank。
-	return base + "/rerank", "Authorization", "Bearer " + credential, nil
+	return spec.URL, spec.AuthHeader, spec.AuthPrefix + credential, nil
 }
 
 // countRerankTokens：query + 各 document 的 token 估算（无 tiktoken 时按原始字节估）。
@@ -211,6 +199,8 @@ func (r *Relay) HandleRerank(c *gin.Context) {
 		}
 		upReq.Header.Set("Content-Type", "application/json")
 		upReq.Header.Set(ah, av)
+		// 渠道级 header override（contract v2 作用域扩展）
+		applyHeaderOverrideForMode(upReq, ch.HeaderOverride, credential, ModeRerank)
 		resp, err = r.clientFor(ch).Do(upReq)
 		if err != nil {
 			r.Log.Warn("rerank upstream unreachable", "channel", ch.ID, "err", err)

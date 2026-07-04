@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
@@ -21,21 +20,18 @@ import (
 // D1-b：图生图（/v1/images/edits）与变体（/v1/images/variations）。multipart(image[+mask]+prompt+n+model)，
 // 与 /images/generations 同款 ImageUSD 按张计价/hold/对账/换渠道重试；仅上游端点后缀与请求体（multipart）不同。
 
-// imageUpstreamURL：拼接 images 端点（generations/edits/variations）。返回 (url, authHeader, authValuePrefix, err)。
+// imageUpstreamURL：images 编辑/变体端点查 (format×mode) 矩阵（contract v2，mode.go）。
+// 返回 (url, authHeader, authValuePrefix, err)——保持既有调用方签名。
 func imageUpstreamURL(ch *Channel, model, suffix string) (string, string, string, error) {
-	adapterName := ch.Provider
-	if p, ok := ProfileFor(ch.Provider); ok {
-		adapterName = p.Adapter
+	mode := ModeImagesEdits
+	if suffix == "variations" {
+		mode = ModeImagesVariations
 	}
-	switch adapterName {
-	case "azure":
-		return strings.TrimRight(ch.BaseURL, "/") + "/openai/deployments/" + model + "/images/" + suffix +
-			"?api-version=" + AzureAPIVersion, "api-key", "", nil
-	case "anthropic", "gemini":
-		return "", "", "", errImagesUnsupported
-	default: // openai 兼容
-		return strings.TrimRight(ch.BaseURL, "/") + "/images/" + suffix, "Authorization", "Bearer ", nil
+	spec, err := modeUpstreamSpec(ch, mode, model)
+	if err != nil {
+		return "", "", "", err
 	}
+	return spec.URL, spec.AuthHeader, spec.AuthPrefix, nil
 }
 
 // HandleImageEdits：POST /v1/images/edits —— 图生图编辑（multipart）。
@@ -204,6 +200,12 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 		}
 		upReq.Header.Set("Content-Type", upCT)
 		upReq.Header.Set(ah, av+cred)
+		// 渠道级 header override（contract v2 作用域扩展）：multipart 模态 Content-Type 防御性跳过
+		hoMode := ModeImagesEdits
+		if suffix == "variations" {
+			hoMode = ModeImagesVariations
+		}
+		applyHeaderOverrideForMode(upReq, ch.HeaderOverride, cred, hoMode)
 		resp, err = r.clientFor(ch).Do(upReq)
 		if err != nil {
 			r.Log.Warn("image-edit upstream unreachable", "channel", ch.ID, "err", err)

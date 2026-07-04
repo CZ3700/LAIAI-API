@@ -209,6 +209,21 @@ func ensureIncludeUsage(req map[string]any) {
 // applyHeaderOverride：adapter 默认头之后应用（运营配置优先级最高）。
 // 值 null → 删头；string → 设置（{{credential}} 占位符注入解密凭证）。禁改头防御性跳过。
 func applyHeaderOverride(upReq *http.Request, overrideJSON, credential string) {
+	applyHeaderOverrideGuarded(upReq, overrideJSON, credential, nil)
+}
+
+// applyHeaderOverrideForMode：contract v2 非 chat 入口——multipart 模态（images_edit/audio_stt）
+// 的 Content-Type 携带运行时生成的 boundary，覆盖或删除即打碎编码 → 防御性跳过；
+// 其余模态与 chat 同语义。
+func applyHeaderOverrideForMode(upReq *http.Request, overrideJSON, credential string, mode RelayMode) {
+	var extra map[string]bool
+	if mode.multipartMode() {
+		extra = map[string]bool{"Content-Type": true}
+	}
+	applyHeaderOverrideGuarded(upReq, overrideJSON, credential, extra)
+}
+
+func applyHeaderOverrideGuarded(upReq *http.Request, overrideJSON, credential string, extraForbidden map[string]bool) {
 	if strings.TrimSpace(overrideJSON) == "" {
 		return
 	}
@@ -217,7 +232,8 @@ func applyHeaderOverride(upReq *http.Request, overrideJSON, credential string) {
 		return
 	}
 	for k, v := range override {
-		if forbiddenHeaderKeys[http.CanonicalHeaderKey(k)] {
+		canon := http.CanonicalHeaderKey(k)
+		if forbiddenHeaderKeys[canon] || extraForbidden[canon] {
 			continue
 		}
 		switch sv := v.(type) {

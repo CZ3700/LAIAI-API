@@ -24,14 +24,18 @@ func (openaiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 	if err != nil {
 		return nil, err
 	}
+	// 端点/鉴权查 (format×mode) 矩阵（contract v2）。openai 家族 chat 走 ch.upstreamURL——
 	// 自定义端点路径（0036 advanced_custom）：upstream_path 非空则覆盖默认 /chat/completions。
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		ch.upstreamURL("/chat/completions"), bytes.NewReader(body))
+	spec, err := formatModeSpec("openai", ch, ModeChat, "")
+	if err != nil {
+		return nil, err
+	}
+	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, spec.URL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("Authorization", "Bearer "+credential)
+	spec.applyAuth(upReq, credential)
 	return upReq, nil
 }
 

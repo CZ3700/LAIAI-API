@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 )
 
 // azureAdapter：Azure OpenAI 方言（知识库 §5/§7）。
@@ -25,14 +24,17 @@ func (azureAdapter) buildRequest(ctx context.Context, ch *Channel, credential st
 	if err != nil {
 		return nil, err
 	}
-	url := strings.TrimRight(ch.BaseURL, "/") +
-		"/openai/deployments/" + model + "/chat/completions?api-version=" + AzureAPIVersion
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	// deployments 路径 + api-key 头（知识库 §6 头部速查）——方言进 (format×mode) 矩阵（contract v2）。
+	spec, err := formatModeSpec("azure", ch, ModeChat, model)
+	if err != nil {
+		return nil, err
+	}
+	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, spec.URL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("api-key", credential) // Azure：api-key 头，不是 Authorization（知识库 §6 头部速查）
+	spec.applyAuth(upReq, credential)
 	return upReq, nil
 }
 
@@ -46,20 +48,20 @@ func (volcengineChatAdapter) buildRequest(ctx context.Context, ch *Channel, cred
 		ensureIncludeUsage(req) // 保留 override/客户端兄弟字段，强制 include_usage（对抗 review）
 	}
 	model, _ := req["model"].(string)
-	path := "/chat/completions"
-	if strings.HasPrefix(model, "bot-") {
-		path = "/bots/chat/completions"
-	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(ch.BaseURL, "/")+path, bytes.NewReader(body))
+	// bot- 前缀路由 /bots/chat/completions 的方言进 (format×mode) 矩阵（contract v2）。
+	spec, err := formatModeSpec("volcengine", ch, ModeChat, model)
+	if err != nil {
+		return nil, err
+	}
+	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, spec.URL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("Authorization", "Bearer "+credential)
+	spec.applyAuth(upReq, credential)
 	return upReq, nil
 }
