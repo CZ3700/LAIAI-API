@@ -124,3 +124,53 @@ func TestRealViduTaskSmoke(t *testing.T) {
 	}
 	runRealTaskSmoke(t, "vidu", url, key, model, map[string]any{"duration": float64(5), "resolution": "1080p"})
 }
+
+// §3.8 批次 3 真机 smoke（env 门控）：
+//	LAIAI_SMOKE_HAILUO_KEY / LAIAI_SMOKE_WAN_KEY / LAIAI_SMOKE_SUNO_KEY (+ _URL/_MODEL)
+func TestRealHailuoTaskSmoke(t *testing.T) {
+	key := os.Getenv("LAIAI_SMOKE_HAILUO_KEY")
+	if key == "" {
+		t.Skip("LAIAI_SMOKE_HAILUO_KEY not set — skipping")
+	}
+	url := os.Getenv("LAIAI_SMOKE_HAILUO_URL")
+	if url == "" {
+		url = "https://api.minimax.chat"
+	}
+	model := os.Getenv("LAIAI_SMOKE_HAILUO_MODEL")
+	if model == "" {
+		model = "MiniMax-Hailuo-02"
+	}
+	runRealTaskSmoke(t, "hailuo", url, key, model, map[string]any{"resolution": "768P", "duration": float64(6)})
+}
+
+func TestRealWanTaskSmoke(t *testing.T) {
+	key := os.Getenv("LAIAI_SMOKE_WAN_KEY")
+	if key == "" {
+		t.Skip("LAIAI_SMOKE_WAN_KEY not set — skipping")
+	}
+	url := os.Getenv("LAIAI_SMOKE_WAN_URL")
+	if url == "" {
+		url = "https://dashscope.aliyuncs.com"
+	}
+	model := os.Getenv("LAIAI_SMOKE_WAN_MODEL")
+	if model == "" {
+		model = "wan2.2-t2v-plus"
+	}
+	runRealTaskSmoke(t, "wan", url, key, model, map[string]any{"size": "1280*720"})
+}
+
+func TestRealSunoTaskSmoke(t *testing.T) {
+	key := os.Getenv("LAIAI_SMOKE_SUNO_KEY")
+	if key == "" {
+		t.Skip("LAIAI_SMOKE_SUNO_KEY not set — skipping")
+	}
+	url := os.Getenv("LAIAI_SMOKE_SUNO_URL") // 网关方言，base_url 必填
+	if url == "" {
+		t.Skip("LAIAI_SMOKE_SUNO_URL not set (suno 网关地址必填) — skipping")
+	}
+	model := os.Getenv("LAIAI_SMOKE_SUNO_MODEL")
+	if model == "" {
+		model = "suno_music"
+	}
+	runRealTaskSmoke(t, "suno", url, key, model, map[string]any{"tags": "lofi", "title": "smoke test"})
+}

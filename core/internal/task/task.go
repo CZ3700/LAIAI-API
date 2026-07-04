@@ -343,6 +343,26 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 				Updates(map[string]any{"status": StatusRunning, "started_at": now})
 		}
 	case StatusSucceeded:
+		// 产物二跳取件（接口缺口②）：succeeded 但只给了中间引用（hailuo file_id）时，用同一 key
+		// 发第二请求换真实产物 URL。取件失败=本轮未就绪，return 下轮重试（绝不误判任务失败——
+		// 视频已生成，只是取件抖动；sweepTimedOut 兜底防永久卡住）。
+		if result.ResultURL == "" && result.ResultRef != "" {
+			if fetcher, ok := ad.(ResultFetcher); ok {
+				url, ferr := fetcher.FetchResultURL(ctx, s.Client, ch, credential, result.ResultRef)
+				if ferr != nil || url == "" {
+					s.Log.Warn("task result fetch not ready, will retry", "task", t.TaskID, "err", ferr)
+					return
+				}
+				result.ResultURL = url
+			}
+		}
+		// succeeded 但产物 URL 仍空（对抗 review CONFIRMED）：视频/音乐类任务 succeeded 必有可下载产物，
+		// 空 URL = 上游"状态先到产物后到"窗口 / 缺 ResultFetcher / 二跳未就绪——本轮重试，绝不为取不回的
+		// 产物按次全额结算（B 类会收满 est）。sweepTimedOut 30min 兜底：真·无产物则超时失败退款。
+		if result.ResultURL == "" {
+			s.Log.Warn("task reported succeeded but result URL empty, will retry", "task", t.TaskID)
+			return
+		}
 		s.settleSuccess(t, result)
 	case StatusFailed:
 		s.settleFailure(t, result.FailReason, true) // FailReason 是上游原文（可能回显 prompt 片段）

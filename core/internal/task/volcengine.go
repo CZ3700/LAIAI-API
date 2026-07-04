@@ -30,6 +30,16 @@ type QueryResult struct {
 	ResultURL        string
 	CompletionTokens int64
 	FailReason       string
+	// ResultRef：产物二跳取件的中间引用（如 hailuo 的 file_id）——succeeded 时若 ResultURL 为空
+	// 而 ResultRef 非空且 adaptor 实现 ResultFetcher，pollOne 会二跳换取真实 ResultURL（接口缺口②）。
+	ResultRef string
+}
+
+// ResultFetcher：可选扩展——产物 URL 需二跳取回的厂商（hailuo file_id→download_url 等）实现它。
+// ParseQuery 返回 succeeded + ResultRef 后，pollOne 用同一 key + 框架配置的 client（带超时）发第二
+// 请求换真实产物 URL。二跳失败视为"本轮未就绪"（下轮重试，绝不据此判任务失败——视频已生成，只是取件抖动）。
+type ResultFetcher interface {
+	FetchResultURL(ctx context.Context, client *http.Client, ch *relay.Channel, credential, resultRef string) (string, error)
 }
 
 // taskAdaptors：任务型（异步：提交→轮询→取产物）厂商注册表。
@@ -52,6 +62,13 @@ var taskAdaptors = map[string]Adaptor{
 	// 真机验证走各自 env 门控 smoke。kling=JWT-HS256/A 类；vidu=Token 头/A 类。
 	"kling": klingTask{},
 	"vidu":  viduTask{},
+	// §3.8 批次 3（2026-07-05，同移植纪律）：三家 trivial 鉴权、B 类计费。用专属 TaskOnly provider code
+	// （不复用 minimax/qwen 等 chat provider 名，避免 chat/task 分发歧义）。
+	// hailuo=bearer + file_id 二跳（ResultFetcher）；wan/ali=bearer+async 头/直链；suno=bearer/音乐/批量查询退化单元。
+	"hailuo": hailuoTask{},
+	"wan":    aliTask{}, // 通义万相视频
+	"ali":    aliTask{}, // 别名（ali 非 chat provider 名，无冲突）
+	"suno":   sunoTask{},
 }
 
 // adaptorFor：先按 provider code 精确查注册表；未命中再按 provider 档案的 Adapter 家族回退一次

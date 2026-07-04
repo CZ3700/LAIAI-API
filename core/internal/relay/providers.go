@@ -37,6 +37,13 @@ var providerProfiles = map[string]providerProfile{
 		Notes: "视频生成任务；凭证格式 access_key|secret_key（JWT-HS256 现签）。真机验证待补"},
 	"vidu": {DisplayName: "生数 Vidu（视频任务）", DefaultBaseURL: "https://api.vidu.cn", Adapter: "vidu", TaskOnly: true,
 		Notes: "视频生成任务；鉴权 Authorization: Token <key>（非 Bearer）。真机验证待补"},
+	// —— 视频/音乐任务厂商（§3.8 批次 3，知识移植自 New API）——
+	"hailuo": {DisplayName: "MiniMax 海螺（视频任务）", DefaultBaseURL: "https://api.minimax.chat", Adapter: "hailuo", TaskOnly: true,
+		Notes: "MiniMax 视频；bearer；产物 file_id 二跳取 download_url。真机验证待补"},
+	"wan": {DisplayName: "阿里通义万相（视频任务）", DefaultBaseURL: "https://dashscope.aliyuncs.com", Adapter: "wan", TaskOnly: true,
+		Notes: "DashScope wan/wanx 视频；bearer + X-DashScope-Async；video_url 直链。真机验证待补"},
+	"suno": {DisplayName: "Suno（音乐任务）", DefaultBaseURL: "", Adapter: "suno", TaskOnly: true,
+		Notes: "音乐/歌词；bearer；网关方言 /suno/submit/{MUSIC|LYRICS}；base_url 必填。真机验证待补"},
 	"openai-responses": {DisplayName: "OpenAI Responses 上游", DefaultBaseURL: "", Adapter: "openai-responses",
 		Notes: "上游只支持 /v1/responses（Codex 系/只暴露 Responses 的网关）；对内 chat 契约,adapter 双向转换。base_url 必填"},
 	"advanced_custom": {DisplayName: "Advanced Custom（自定义路由）", DefaultBaseURL: "", Adapter: "openai",
