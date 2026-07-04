@@ -15,7 +15,12 @@ func TestBlockUpstreamIP(t *testing.T) {
 		"0.0.0.0", "::", // unspecified
 		"100.64.0.1", "100.127.255.255", // CGNAT
 		"::ffff:127.0.0.1", "::ffff:10.0.0.1", // IPv4-mapped IPv6 绕过尝试
-		"224.0.0.1", // multicast
+		"224.0.0.1",                         // multicast
+		"192.0.0.192",                       // Oracle Cloud metadata（对抗 review）
+		"::ffff:169.254.169.254",            // IPv4-mapped metadata
+		"64:ff9b::a00:1", "64:ff9b::7f00:1", // NAT64 内嵌 10.0.0.1 / 127.0.0.1（对抗 review）
+		"255.255.255.255",        // 广播
+		"240.0.0.1", "250.1.2.3", // 240/4 保留（Class E）
 	}
 	for _, s := range blocked {
 		ip := net.ParseIP(s)
@@ -57,13 +62,13 @@ func TestValidateAdvancedUpstreamURL(t *testing.T) {
 		}
 	}
 	bad := map[string]string{
-		"ftp://x/y":                       "scheme",
+		"ftp://x/y":                         "scheme",
 		"https://user:pass@api.example.com": "credentials",
-		"https://127.0.0.1/v1":             "loopback literal",
-		"https://169.254.169.254/latest":   "metadata literal",
-		"https://10.1.2.3:9000/v1":         "private literal",
-		"not a url ::::":                   "malformed",
-		"https://":                         "no host",
+		"https://127.0.0.1/v1":              "loopback literal",
+		"https://169.254.169.254/latest":    "metadata literal",
+		"https://10.1.2.3:9000/v1":          "private literal",
+		"not a url ::::":                    "malformed",
+		"https://":                          "no host",
 	}
 	for u, why := range bad {
 		if err := ValidateAdvancedUpstreamURL(u, false); err == nil {

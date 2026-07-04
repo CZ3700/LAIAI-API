@@ -41,7 +41,7 @@ func (r *Relay) TestChannel(ctx context.Context, ch *Channel, model string) *Cha
 	defer cancel()
 	// override 与生产路径同款应用（对抗 review）：依赖自定义认证头/方言字段的渠道，
 	// 探针必须走同一改写，否则测试恒假阴性（生产通、探针 401）。
-	upReq, err := adapterFor(ch.Provider).buildRequest(ctx, ch, credential,
+	upReq, err := adapterForChannel(ch).buildRequest(ctx, ch, credential, // converter 感知（对抗 review）
 		applyParamOverride(req, ch.ParamOverride), false)
 	if err != nil {
 		res.Message = "request build failed: " + err.Error()

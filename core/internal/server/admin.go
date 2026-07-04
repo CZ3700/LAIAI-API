@@ -216,11 +216,16 @@ type channelReq struct {
 	UpstreamPath       string            `json:"upstream_path"`        // 自定义端点路径（0036，可选）
 }
 
-// validateAdvancedFields：converter 枚举 + advanced_custom 的 SSRF base_url 校验。
+// validateAdvancedFields：converter 枚举 + upstream_path 组合 + advanced_custom 的 SSRF base_url 校验。
 // provider=advanced_custom 或 converter 非空视为 advanced，需过 SSRF。
-func (s *Server) validateAdvancedFields(provider, converter, baseURL string) error {
+func (s *Server) validateAdvancedFields(provider, converter, upstreamPath, baseURL string) error {
 	if !relay.ValidConverter(converter) {
 		return errBadRequest("converter must be none|openai_chat_to_anthropic_messages|openai_chat_to_gemini_generate_content|openai_chat_to_openai_responses")
+	}
+	// upstream_path 仅 openai 系 adapter（converter 空/none）生效；配非 openai converter 会被静默丢弃
+	// → fail-loud 拒绝（对抗 review）。
+	if strings.TrimSpace(upstreamPath) != "" && converter != "" && converter != relay.ConverterNone {
+		return errBadRequest("upstream_path only applies to the OpenAI-compatible converter (none); it is ignored by anthropic/gemini/responses converters")
 	}
 	if provider == relay.ProviderAdvancedCustom || converter != "" {
 		allowPrivate := s.getSetting("advanced_custom_allow_private") == "true"
@@ -324,7 +329,7 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "credential_mode must be random|polling|weighted")
 		return
 	}
-	if err := s.validateAdvancedFields(req.Provider, req.Converter, req.BaseURL); err != nil {
+	if err := s.validateAdvancedFields(req.Provider, req.Converter, req.UpstreamPath, req.BaseURL); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -438,7 +443,7 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 	// 任一改动即按（现有 provider + 生效 converter + 生效 base_url）重跑校验，防改配置绕过 SSRF。
 	if req.Converter != nil || req.UpstreamPath != nil || (req.BaseURL != nil && req.Converter == nil) {
 		var cur relay.Channel
-		if e := s.db.Select("provider", "base_url", "converter").First(&cur, id).Error; e != nil {
+		if e := s.db.Select("provider", "base_url", "converter", "upstream_path").First(&cur, id).Error; e != nil {
 			fail(c, http.StatusNotFound, "channel not found")
 			return
 		}
@@ -447,14 +452,16 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 			effConverter = strings.TrimSpace(*req.Converter)
 			updates["converter"] = effConverter
 		}
+		effUpstreamPath := cur.UpstreamPath
 		if req.UpstreamPath != nil {
-			updates["upstream_path"] = strings.TrimSpace(*req.UpstreamPath)
+			effUpstreamPath = strings.TrimSpace(*req.UpstreamPath)
+			updates["upstream_path"] = effUpstreamPath
 		}
 		effBaseURL := cur.BaseURL
 		if req.BaseURL != nil {
 			effBaseURL = strings.TrimRight(*req.BaseURL, "/")
 		}
-		if err := s.validateAdvancedFields(cur.Provider, effConverter, effBaseURL); err != nil {
+		if err := s.validateAdvancedFields(cur.Provider, effConverter, effUpstreamPath, effBaseURL); err != nil {
 			fail(c, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1079,7 +1086,20 @@ func (s *Server) adminProbeChannel(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "api_key and base_url required")
 		return
 	}
-	c.JSON(http.StatusOK, s.relay.ProbeChannel(c.Request.Context(), req.APIKey, req.BaseURL, req.Provider))
+	// SSRF（对抗 review）：probe 曾用裸客户端可打内网/metadata 并回显响应。
+	//   - advanced_custom：配置期校验 + 拨号守卫（与 create/update 同策略）。
+	//   - 任何 provider：字面 metadata IP 恒拦（IMDS 反射 oracle，永不合法探测目标）。
+	guarded := req.Provider == relay.ProviderAdvancedCustom
+	if guarded {
+		if err := relay.ValidateAdvancedUpstreamURL(req.BaseURL, s.relay.AdvancedAllowPrivate()); err != nil {
+			fail(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else if relay.IsMetadataURL(req.BaseURL) {
+		fail(c, http.StatusBadRequest, "base_url host blocked: cloud metadata endpoint")
+		return
+	}
+	c.JSON(http.StatusOK, s.relay.ProbeChannel(c.Request.Context(), req.APIKey, req.BaseURL, req.Provider, guarded))
 }
 
 // —— 分组倍率（0011，差异化定价） ——

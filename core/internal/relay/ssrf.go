@@ -21,18 +21,29 @@ import (
 var cloudMetadataIPs = map[string]bool{
 	"169.254.169.254": true, // AWS/GCP/Azure/OpenStack IMDS
 	"100.100.100.200": true, // 阿里云 metadata
+	"192.0.0.192":     true, // Oracle Cloud metadata（对抗 review）
 	"fd00:ec2::254":   true, // AWS IMDSv2 IPv6
 }
 
-// isMetadataIP：是否云 metadata（恒拦）。
+// isMetadataIP：是否云 metadata（恒拦）。IPv4-mapped 归一后比较。
 func isMetadataIP(ip net.IP) bool {
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
 	return cloudMetadataIPs[ip.String()]
 }
+
+// nat64Prefix：NAT64 well-known 前缀 64:ff9b::/96——可内嵌任意 IPv4（含内网），恒拦（对抗 review）。
+var _, nat64Prefix, _ = net.ParseCIDR("64:ff9b::/96")
 
 // isPrivateOrLocal：是否内网/本地/保留地址（allow-private 关闭时拦）。
 // 覆盖：环回、私网(RFC1918+ULA)、link-local(含 169.254 metadata 网段)、unspecified(0.0.0.0/::)、
 // multicast、CGNAT(100.64/10)、IPv4-mapped IPv6 一并按其 v4 语义判定。
 func isPrivateOrLocal(ip net.IP) bool {
+	// NAT64（64:ff9b::/96 内嵌 IPv4，可指内网）——在 v4 归一前用原始 IPv6 形态判（对抗 review）
+	if nat64Prefix != nil && nat64Prefix.Contains(ip) {
+		return true
+	}
 	if v4 := ip.To4(); v4 != nil {
 		ip = v4 // IPv4-mapped IPv6（::ffff:127.0.0.1）归一到 v4 判定
 	}
@@ -40,9 +51,13 @@ func isPrivateOrLocal(ip net.IP) bool {
 		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
 		return true
 	}
-	// CGNAT 100.64.0.0/10（常见内网 NAT 段，RFC6598）
-	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
-		return true
+	if v4 := ip.To4(); v4 != nil {
+		switch {
+		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127: // CGNAT 100.64.0.0/10（RFC6598）
+			return true
+		case v4[0] >= 240: // 240.0.0.0/4 保留（Class E）+ 255.255.255.255 广播（对抗 review）
+			return true
+		}
 	}
 	return false
 }
@@ -85,6 +100,17 @@ func ValidateAdvancedUpstreamURL(rawURL string, allowPrivate bool) error {
 		}
 	}
 	return nil
+}
+
+// IsMetadataURL：base_url 的字面 host 是否云 metadata IP（恒拦，任何 provider——probe/test
+// 打云 metadata 永不合法且会回显响应，是数据外泄 oracle）。域名形态返回 false（留给拨号守卫）。
+func IsMetadataURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && isMetadataIP(ip)
 }
 
 // ssrfControlFor：返回一个 net.Dialer.Control，对每次实际拨号的解析后 IP 复检（DNS-rebinding-safe）。

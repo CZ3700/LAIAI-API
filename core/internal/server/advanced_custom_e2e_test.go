@@ -139,7 +139,7 @@ func TestAdvancedCustomSSRFBlocked(t *testing.T) {
 		"http://10.1.2.3:9000/v1",
 		"http://192.168.1.1/v1",
 		"http://[::1]/v1",
-		"http://100.64.0.1/v1", // CGNAT
+		"http://100.64.0.1/v1",                 // CGNAT
 		"https://user:pass@api.example.com/v1", // 嵌凭证
 		"ftp://api.example.com/v1",             // 非 http
 	} {
@@ -158,6 +158,61 @@ func TestAdvancedCustomSSRFBlocked(t *testing.T) {
 	})
 	if w.Code != 201 {
 		t.Fatalf("self-hosted provider must not be SSRF-blocked: %d", w.Code)
+	}
+}
+
+// 对抗 review：channel probe 端点的 SSRF——advanced_custom probe 到内网被拦；
+// 任何 provider 打字面 metadata IP 被拦（IMDS 反射 oracle）。
+func TestAdvancedCustomProbeSSRF(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	// advanced_custom probe 到内网 → 400（配置期校验）
+	for _, badURL := range []string{"http://127.0.0.1:8080", "http://169.254.169.254", "http://10.1.2.3:9000"} {
+		w, out := srv.doAdmin(t, "POST", "/api/admin/channels/probe", map[string]any{
+			"api_key": "x", "base_url": badURL, "provider": "advanced_custom",
+		})
+		if w.Code != 400 {
+			t.Fatalf("advanced probe %q = %d %v, want 400", badURL, w.Code, out)
+		}
+	}
+	// 任何 provider 打字面 metadata IP → 400（恒拦 IMDS 反射 oracle）
+	for _, prov := range []string{"openai", "ollama", ""} {
+		w, out := srv.doAdmin(t, "POST", "/api/admin/channels/probe", map[string]any{
+			"api_key": "x", "base_url": "http://169.254.169.254/latest", "provider": prov,
+		})
+		if w.Code != 400 {
+			t.Fatalf("metadata probe provider=%q = %d %v, want 400", prov, w.Code, out)
+		}
+	}
+	// 阿里云/Oracle metadata 变体
+	for _, u := range []string{"http://100.100.100.200/x", "http://192.0.0.192/x"} {
+		if w, _ := srv.doAdmin(t, "POST", "/api/admin/channels/probe", map[string]any{
+			"api_key": "x", "base_url": u, "provider": "openai",
+		}); w.Code != 400 {
+			t.Fatalf("metadata variant %q not blocked: %d", u, w.Code)
+		}
+	}
+}
+
+// 对抗 review：upstream_path 配非 openai converter（会被静默丢弃）→ fail-loud 400。
+func TestAdvancedCustomUpstreamPathConverterConflict(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	db.Exec("INSERT INTO ext_settings (name, value) VALUES ('advanced_custom_allow_private', 'true')")
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer up.Close()
+	w, out := srv.doAdmin(t, "POST", "/api/admin/channels", map[string]any{
+		"name": "conflict", "provider": "advanced_custom", "base_url": up.URL,
+		"api_key": "x", "models": []string{"m"},
+		"converter": "openai_chat_to_gemini_generate_content", "upstream_path": "/custom",
+	})
+	if w.Code != 400 {
+		t.Fatalf("upstream_path + gemini converter = %d %v, want 400", w.Code, out)
+	}
+	// converter=none + upstream_path 合法
+	if w, out := srv.doAdmin(t, "POST", "/api/admin/channels", map[string]any{
+		"name": "ok", "provider": "advanced_custom", "base_url": up.URL,
+		"api_key": "x", "models": []string{"m"}, "converter": "none", "upstream_path": "/custom",
+	}); w.Code != 201 {
+		t.Fatalf("none + upstream_path = %d %v, want 201", w.Code, out)
 	}
 }
 

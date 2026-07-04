@@ -61,17 +61,23 @@ func probeFamily(provider string) string {
 
 // ProbeChannel：用 key + 地址 + provider 试探正确 base_url（按候选顺序 GET /models，
 // 按协议族选鉴权/解析），返回首个合法模型列表 + 可调模型名。纯探测，不落库不计费。
-func (r *Relay) ProbeChannel(ctx context.Context, apiKey, rawURL, provider string) *ProbeResult {
+// guarded=true（advanced_custom）时经 SSRF 拨号守卫（对抗 review：probe 曾用裸 r.Client，
+// 绕过 SSRF 边界可打内网/metadata 并回显响应）。
+func (r *Relay) ProbeChannel(ctx context.Context, apiKey, rawURL, provider string, guarded bool) *ProbeResult {
 	res := &ProbeResult{}
 	candidates := candidateBaseURLs(rawURL)
 	if len(candidates) == 0 {
 		res.Message = "base_url is required"
 		return res
 	}
+	cl := r.Client
+	if guarded {
+		cl = r.guardedClient(r.advancedAllowPrivate())
+	}
 	family := probeFamily(provider)
 	for _, base := range candidates {
 		attempt := ProbeAttempt{BaseURL: base}
-		models, gw, status, err := r.fetchModels(ctx, base, apiKey, family)
+		models, gw, status, err := r.fetchModels(ctx, cl, base, apiKey, family)
 		attempt.Status = status
 		if err != nil {
 			attempt.Note = err.Error()
@@ -102,7 +108,7 @@ func (r *Relay) ProbeExistingChannel(ctx context.Context, ch *Channel) *ProbeRes
 	if err != nil {
 		return &ProbeResult{Message: "credential decrypt failed"}
 	}
-	return r.ProbeChannel(ctx, cred, ch.BaseURL, ch.Provider)
+	return r.ProbeChannel(ctx, cred, ch.BaseURL, ch.Provider, ch.isAdvancedCustom())
 }
 
 // fetchModels：GET {base}/models 拉模型列表，按协议族选鉴权头与响应解析（P2-10）：
@@ -110,7 +116,7 @@ func (r *Relay) ProbeExistingChannel(ctx context.Context, ch *Channel) *ProbeRes
 //	openai    Authorization: Bearer；解析 {data:[{id}]}
 //	anthropic x-api-key + anthropic-version；解析 {data:[{id}]}
 //	gemini    ?key= 查询参数；解析 {models:[{name:"models/x"}]}（去 models/ 前缀）
-func (r *Relay) fetchModels(ctx context.Context, base, apiKey, family string) (models []string, gateway string, status int, err error) {
+func (r *Relay) fetchModels(ctx context.Context, cl *http.Client, base, apiKey, family string) (models []string, gateway string, status int, err error) {
 	ctx, cancel := context.WithTimeout(ctx, probePerCandidateTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
@@ -128,7 +134,7 @@ func (r *Relay) fetchModels(ctx context.Context, base, apiKey, family string) (m
 	default:
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	resp, err := r.Client.Do(req)
+	resp, err := cl.Do(req)
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("unreachable")
 	}

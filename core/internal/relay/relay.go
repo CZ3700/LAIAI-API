@@ -128,9 +128,13 @@ func (r *Relay) clientFor(ch *Channel) *http.Client {
 	return cl
 }
 
-// ssrfClientFor：advanced_custom 渠道的 SSRF 守卫客户端（按 allow-private 策略缓存两份）。
+// ssrfClientFor：advanced_custom 渠道的 SSRF 守卫客户端。
 func (r *Relay) ssrfClientFor(ch *Channel) *http.Client {
-	allowPrivate := r.advancedAllowPrivate()
+	return r.guardedClient(r.advancedAllowPrivate())
+}
+
+// guardedClient：带 SSRF 拨号守卫的客户端（按 allow-private 策略缓存两份）。probe 路径复用。
+func (r *Relay) guardedClient(allowPrivate bool) *http.Client {
 	r.proxyMu.Lock()
 	defer r.proxyMu.Unlock()
 	if r.ssrfClients == nil {
@@ -143,6 +147,9 @@ func (r *Relay) ssrfClientFor(ch *Channel) *http.Client {
 	r.ssrfClients[allowPrivate] = cl
 	return cl
 }
+
+// AdvancedAllowPrivate：导出 allow-private 策略（admin 层 probe 校验用）。
+func (r *Relay) AdvancedAllowPrivate() bool { return r.advancedAllowPrivate() }
 
 // advancedAllowPrivate：ext_settings 读 advanced_custom_allow_private（默认 false）。
 func (r *Relay) advancedAllowPrivate() bool {

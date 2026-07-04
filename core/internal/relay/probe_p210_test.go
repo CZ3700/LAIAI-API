@@ -64,10 +64,10 @@ func TestFetchModelsProviderAuth(t *testing.T) {
 	defer ant.Close()
 
 	r := &Relay{Client: http.DefaultClient}
-	if m, _, _, err := r.fetchModels(context.Background(), gem.URL, "gk", "gemini"); err != nil || len(m) != 1 || m[0] != "gemini-x" {
+	if m, _, _, err := r.fetchModels(context.Background(), r.Client, gem.URL, "gk", "gemini"); err != nil || len(m) != 1 || m[0] != "gemini-x" {
 		t.Fatalf("gemini fetch = %v err=%v", m, err)
 	}
-	if m, _, _, err := r.fetchModels(context.Background(), ant.URL, "ak", "anthropic"); err != nil || len(m) != 1 || m[0] != "claude-x" {
+	if m, _, _, err := r.fetchModels(context.Background(), r.Client, ant.URL, "ak", "anthropic"); err != nil || len(m) != 1 || m[0] != "claude-x" {
 		t.Fatalf("anthropic fetch = %v err=%v", m, err)
 	}
 }
