@@ -27,6 +27,8 @@ var providerProfiles = map[string]providerProfile{
 	"volcengine": {DisplayName: "字节豆包/火山方舟", DefaultBaseURL: "https://ark.ap-southeast.bytepluses.com/api/v3", Adapter: "volcengine",
 		Notes: "默认 BytePlus ModelArk 国际端点；bot- 前缀模型走 /bots/ 路由"},
 	"modelark": {DisplayName: "BytePlus ModelArk", DefaultBaseURL: "https://ark.ap-southeast.bytepluses.com/api/v3", Adapter: "volcengine"},
+	"doubao": {DisplayName: "字节豆包（国内方舟）", DefaultBaseURL: "https://ark.cn-beijing.volces.com/api/v3", Adapter: "volcengine",
+		Notes: "火山方舟国内端点（Seedance 2.0 视频任务 + chat）；真机验证 2026-07-05"},
 	"openai-responses": {DisplayName: "OpenAI Responses 上游", DefaultBaseURL: "", Adapter: "openai-responses",
 		Notes: "上游只支持 /v1/responses（Codex 系/只暴露 Responses 的网关）；对内 chat 契约,adapter 双向转换。base_url 必填"},
 	"advanced_custom": {DisplayName: "Advanced Custom（自定义路由）", DefaultBaseURL: "", Adapter: "openai",

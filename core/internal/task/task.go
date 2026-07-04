@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -100,6 +101,10 @@ type SubmitInput struct {
 	APIKeyID uint64
 	Model    string
 	Content  []any // 透传上游的 content 数组（薄透传，不做参数二次发明）
+	// Params：model/content 之外的顶层任务参数（Seedance 2.0：generate_audio/ratio/duration/
+	// watermark/resolution 等），原样透传上游。同时喂给 EstimateOutputTokens 做
+	// duration/resolution 感知的 hold 上界（§3.8 "按 duration、resolution 预扣"）。
+	Params map[string]any
 }
 
 var (
@@ -107,6 +112,17 @@ var (
 	ErrNoTaskAdaptor    = fmt.Errorf("task: provider has no task adaptor")
 	ErrKeyQuotaExceeded = fmt.Errorf("task: api key quota exceeded")
 )
+
+// UpstreamRejectedError：上游同步拒绝提交（400 参数类错误——参数透传后客户端自己的问题）。
+// handler 转 400 + 上游解释文本给客户端（与向客户端透传上游错误体同性质，非日志面）。
+type UpstreamRejectedError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *UpstreamRejectedError) Error() string {
+	return fmt.Sprintf("task: upstream rejected submit (%d): %s", e.StatusCode, e.Message)
+}
 
 // Submit：计费快照 → 并发闸 → hold → 上游提交 → 落任务行。
 // 上游提交失败 → release，不留任务行。
@@ -141,7 +157,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 	// 原子预占（审查 M-2）：渠道行 FOR UPDATE 串行化同渠道的所有 Submit →
 	// 同事务内重新计数 → hold + 插入 queued 任务行（即"占住槽位"，下一个 Submit 数得到它）。
 	// 消灭 count-then-act 竞态：N 个并发不会全部过闸。
-	estTokens := ad.EstimateOutputTokens(in.Model, in.Content)
+	estTokens := ad.EstimateOutputTokens(in.Model, in.Content, in.Params)
 	// 计费倍率快照（0011 一层 × 0027 二层）：hold 与结算取同一次值（chat 同款纪律）。
 	// 提交 QPS 低，直读 DB 不走 relay 热读缓存。
 	ratio := relay.EffectiveRatio(s.DB, in.OrgID, in.Model)
@@ -215,7 +231,14 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 	defer resp.Body.Close()
 	upstreamID, err := ad.ParseSubmit(resp)
 	if err != nil {
-		s.abortSubmit(t, "upstream rejected submit")
+		var rej *UpstreamRejectedError
+		if errors.As(err, &rej) {
+			// 上游 400 参数拒绝：上游原文按 upstreamOrigin 纪律只进 fail_reason（org 隔离 API 数据），
+			// 日志/invocation 用合成摘要（红线 7）。
+			s.settleFailure(t, "submit rejected: "+rej.Message, true)
+		} else {
+			s.abortSubmit(t, "upstream rejected submit")
+		}
 		return nil, err
 	}
 	// 提交成功：回填上游 id

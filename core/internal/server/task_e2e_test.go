@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -89,11 +90,12 @@ func TestTaskLifecycleSuccess(t *testing.T) {
 
 	taskID := submitVideoTask(t, srv, apiKey)
 
-	// 提交后：hold = 500k est × $10/1M = $5；余额可用 = 5
+	// 提交后：hold = 315,900 est（默认 5s×1080p 保守基准×24fps/1024×1.3，真机标定+对抗 review
+	// 封堵后的口径——无显式 resolution 按 1080p 覆盖家族默认差异与 prompt 指令）× $10/1M = $3.159
 	acc := &ledger.Account{}
 	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
-	if !acc.HeldAmount.Equal(decimal.RequireFromString("5")) {
-		t.Fatalf("held after submit = %s, want 5", acc.HeldAmount)
+	if !acc.HeldAmount.Equal(decimal.RequireFromString("3.159")) {
+		t.Fatalf("held after submit = %s, want 3.159", acc.HeldAmount)
 	}
 
 	// 上游进入 running → PollOnce → 状态转移 + started_at
@@ -182,18 +184,18 @@ func TestTaskConcurrencyGate(t *testing.T) {
 	if w.Header().Get("Retry-After") == "" {
 		t.Fatal("429 missing Retry-After")
 	}
-	// 第 4 个被拒后资金无残渣：3 个 hold × $5 = $15 冻结，仅此而已
+	// 第 4 个被拒后资金无残渣：3 个 hold × $3.159 = $9.477 冻结，仅此而已
 	acc := &ledger.Account{}
 	_ = db.Raw("SELECT * FROM ledger_accounts LIMIT 1").Scan(acc)
-	if !acc.HeldAmount.Equal(decimal.RequireFromString("15")) {
-		t.Fatalf("held = %s, want 15 (3 holds only)", acc.HeldAmount)
+	if !acc.HeldAmount.Equal(decimal.RequireFromString("9.477")) {
+		t.Fatalf("held = %s, want 9.477 (3 holds only)", acc.HeldAmount)
 	}
 	// key quota 同样无残渣（变异实测守卫）：被并发闸拒绝的第 4 笔必须退还预留，
 	// 否则每次 429 永久泄漏 used_amount → 带 quota_limit 的 key 被虚耗额度收假 402
 	var used decimal.Decimal
 	_ = db.Raw("SELECT used_amount FROM api_keys ORDER BY id DESC LIMIT 1").Scan(&used)
-	if !used.Equal(decimal.RequireFromString("15")) {
-		t.Fatalf("used_amount = %s, want 15 (rejected 4th submit must refund key quota reserve)", used)
+	if !used.Equal(decimal.RequireFromString("9.477")) {
+		t.Fatalf("used_amount = %s, want 9.477 (rejected 4th submit must refund key quota reserve)", used)
 	}
 }
 
@@ -231,6 +233,57 @@ func TestTaskOrgIsolation(t *testing.T) {
 	w, _ := srv.do(t, "GET", "/v1/video/generations/"+taskID, apiKeyB, nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("cross-org task read = %d, want 404", w.Code)
+	}
+}
+
+// Seedance 2.0 顶层参数透传（§3.8，真机验证 2026-07-05）：generate_audio/ratio/duration/
+// watermark 直达上游提交体；hold 按 duration/resolution 感知缩放（1080p 11s > 默认档）。
+func TestTaskParamPassthroughAndScaledHold(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	var gotBody atomic.Value
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			raw, _ := io.ReadAll(r.Body)
+			var m map[string]any
+			_ = json.Unmarshal(raw, &m)
+			gotBody.Store(m)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"id":"cgt-p1"}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"cgt-p1","status":"running"}`)
+	}))
+	defer up.Close()
+	_ = setupTaskEnv(t, srv, db, up.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "video-params@example.com", "20")
+
+	w, out := srv.do(t, "POST", "/v1/video/generations", apiKey, map[string]any{
+		"model":   "seedance-test",
+		"content": []map[string]any{{"type": "text", "text": "apple ad"}},
+		"generate_audio": true, "ratio": "16:9", "duration": 11,
+		"resolution": "1080p", "watermark": false,
+	})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("submit with params = %d %v", w.Code, out)
+	}
+	body, _ := gotBody.Load().(map[string]any)
+	if body == nil {
+		t.Fatal("upstream did not receive submit")
+	}
+	// 参数原样到达上游（此前会被静默丢弃——createReq 只绑 model/content）
+	if body["generate_audio"] != true || body["ratio"] != "16:9" ||
+		body["duration"] != float64(11) || body["watermark"] != false || body["resolution"] != "1080p" {
+		t.Fatalf("params not passed through to upstream: %v", body)
+	}
+	if body["model"] != "seedance-test" {
+		t.Fatalf("model = %v", body["model"])
+	}
+	// hold 按参数缩放：1080p 11s → 694,980 tokens × $10/1M = $6.9498（旧固定 500k 只会冻 $5，
+	// 真实 usage ~534k 会 capture>hold）
+	acc := &ledger.Account{}
+	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.HeldAmount.Equal(decimal.RequireFromString("6.9498")) {
+		t.Fatalf("held for 1080p 11s = %s, want 6.9498 (duration/resolution-aware)", acc.HeldAmount)
 	}
 }
 

@@ -18,7 +18,49 @@ import (
 type createReq struct {
 	Model   string `json:"model" binding:"required"`
 	Content []any  `json:"content" binding:"required"`
+	// Params：model/content 之外的全部顶层参数，原样透传上游（薄透传纪律——Seedance 2.0 的
+	// generate_audio/ratio/duration/watermark/resolution 等任务参数不做二次发明，真机验证 2026-07-05）。
+	// 计费安全：任务按上游 usage 结算且 hold 上界按 duration/resolution 感知估算（EstimateOutputTokens），
+	// 参数抬高成本会同步抬高预冻结，不会绕过资金闸。
+	Params map[string]any `json:"-"`
 }
+
+// bindCreateReq：绑定 model/content 必填 + 收集其余顶层参数。gin 的 struct 绑定吃不到未知字段，
+// 手动二次解析（body 已被 MaxBytesReader 限制）。
+// 大小写语义（对抗 review CONFIRMED）：旧结构体绑定走 encoding/json 大小写不敏感匹配
+// （{"Model":...} 曾被受理）——这里保持兼容：精确键优先，变体键回退；且**所有**大小写变体
+// 从 Params 剔除（否则 "Model" 变体键随透传进上游体，first-wins 解析器会用它顶掉平台权威值）。
+func bindCreateReq(c *gin.Context) (*createReq, error) {
+	var all map[string]any
+	if err := c.ShouldBindJSON(&all); err != nil {
+		return nil, err
+	}
+	req := &createReq{}
+	req.Model, _ = all["model"].(string)
+	req.Content, _ = all["content"].([]any)
+	for k, v := range all {
+		if strings.EqualFold(k, "model") {
+			if req.Model == "" {
+				req.Model, _ = v.(string)
+			}
+			delete(all, k)
+		} else if strings.EqualFold(k, "content") {
+			if req.Content == nil {
+				req.Content, _ = v.([]any)
+			}
+			delete(all, k)
+		}
+	}
+	if req.Model == "" || len(req.Content) == 0 {
+		return nil, errMissingModelContent
+	}
+	if len(all) > 0 {
+		req.Params = all
+	}
+	return req, nil
+}
+
+var errMissingModelContent = errors.New("task: model and content are required")
 
 func (s *Service) HandleCreate(c *gin.Context) {
 	key, ok := s.authKey(c)
@@ -30,8 +72,8 @@ func (s *Service) HandleCreate(c *gin.Context) {
 		taskErr(c, http.StatusForbidden, "video generation is not enabled for this organization")
 		return
 	}
-	var req createReq
-	if err := c.ShouldBindJSON(&req); err != nil {
+	req, err := bindCreateReq(c)
+	if err != nil {
 		// 路由挂 MaxBytesReader（指令 P0-2）：超限读中断 → 413 诚实错误，不做大内存分配
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
@@ -59,9 +101,14 @@ func (s *Service) HandleCreate(c *gin.Context) {
 	}
 	t, err := s.Submit(c.Request.Context(), SubmitInput{
 		OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID,
-		Model: req.Model, Content: req.Content,
+		Model: req.Model, Content: req.Content, Params: req.Params,
 	})
+	var rejected *UpstreamRejectedError
 	switch {
+	case errors.As(err, &rejected):
+		// 上游 400 = 客户端任务参数问题（透传后常态错误面）：带上游解释转 400——
+		// 只进客户端响应（与透传上游错误体同性质），不进日志（红线 7）。
+		taskErr(c, http.StatusBadRequest, clipReason("upstream rejected task parameters: "+rejected.Message, 300))
 	case errors.Is(err, relay.ErrModelNotPriced) || errors.Is(err, relay.ErrNoChannel):
 		taskErr(c, http.StatusBadRequest, "model not available")
 	case errors.Is(err, ErrConcurrencyLimit):

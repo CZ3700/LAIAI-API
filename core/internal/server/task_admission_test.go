@@ -112,8 +112,8 @@ func TestTaskKeyQuotaReserveAndRefund(t *testing.T) {
 	svc := setupTaskEnv(t, srv, db, ark.srv.URL)
 	token, orgID := seedUserSession(t, srv, "video-quota@example.com")
 	grantCredit(t, srv, orgID, "100", "seed-video-quota")
-	// quota=$3 < 单次 hold $5（500k est × $10/1M）：软上限——used<quota 即放行首笔，之后拦截
-	apiKey := issueControlledKey(t, srv, token, map[string]any{"quota_limit": "3"})
+	// quota=$1 < 单次 hold $3.159（315,900 est × $10/1M，真机标定+保守基准）：软上限——used<quota 即放行首笔，之后拦截
+	apiKey := issueControlledKey(t, srv, token, map[string]any{"quota_limit": "1"})
 
 	w, out := srv.do(t, "POST", "/v1/video/generations", apiKey, map[string]any{
 		"model": "seedance-test", "content": []map[string]any{{"type": "text", "text": "first"}},
@@ -121,11 +121,11 @@ func TestTaskKeyQuotaReserveAndRefund(t *testing.T) {
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("first submit = %d %v", w.Code, out)
 	}
-	if used := keyUsedAmount(t, db, orgID); !used.Equal(decimal.RequireFromString("5")) {
-		t.Fatalf("used after reserve = %s, want 5", used)
+	if used := keyUsedAmount(t, db, orgID); !used.Equal(decimal.RequireFromString("3.159")) {
+		t.Fatalf("used after reserve = %s, want 3.159", used)
 	}
 
-	// 第二笔：used(5) ≥ quota(3) → 402，不触上游
+	// 第二笔：used(3.159) ≥ quota(1) → 402，不触上游
 	before := ark.submits.Load()
 	w, out = srv.do(t, "POST", "/v1/video/generations", apiKey, map[string]any{
 		"model": "seedance-test", "content": []map[string]any{{"type": "text", "text": "second"}},
@@ -172,14 +172,14 @@ func TestTaskGroupRatioBillingAndSettleAdjust(t *testing.T) {
 
 	taskID := submitVideoTask(t, srv, apiKey)
 
-	// hold = 500k × $10/1M × 2 = $10；key 预留同额
+	// hold = 315,900 × $10/1M × 2 = $6.318；key 预留同额
 	acc := &ledger.Account{}
 	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
-	if !acc.HeldAmount.Equal(decimal.RequireFromString("10")) {
-		t.Fatalf("held with ratio = %s, want 10", acc.HeldAmount)
+	if !acc.HeldAmount.Equal(decimal.RequireFromString("6.318")) {
+		t.Fatalf("held with ratio = %s, want 6.318", acc.HeldAmount)
 	}
-	if used := keyUsedAmount(t, db, orgID); !used.Equal(decimal.RequireFromString("10")) {
-		t.Fatalf("reserved with ratio = %s, want 10", used)
+	if used := keyUsedAmount(t, db, orgID); !used.Equal(decimal.RequireFromString("6.318")) {
+		t.Fatalf("reserved with ratio = %s, want 6.318", used)
 	}
 
 	// 成功 100k tokens → 实收 $1×2=$2；余额 18；used 对账到 2
@@ -192,8 +192,10 @@ func TestTaskGroupRatioBillingAndSettleAdjust(t *testing.T) {
 	if !acc.PostedBalance.Equal(decimal.RequireFromString("18")) || !acc.HeldAmount.IsZero() {
 		t.Fatalf("after ratio settle: posted=%s held=%s, want 18/0", acc.PostedBalance, acc.HeldAmount)
 	}
-	if used := keyUsedAmount(t, db, orgID); !used.Equal(decimal.RequireFromString("2")) {
-		t.Fatalf("used after settle adjust = %s, want 2", used)
+	// 容差断言：SQLite 测试库 used_amount 是 REAL，2.808-0.808 有二进制浮点尾差；
+	// 生产 MySQL DECIMAL(20,8) 精确（AddKeyUsageSigned 以 decimal 字符串参数运算）。
+	if used := keyUsedAmount(t, db, orgID); used.Sub(decimal.RequireFromString("2")).Abs().GreaterThan(decimal.RequireFromString("0.000001")) {
+		t.Fatalf("used after settle adjust = %s, want ≈2", used)
 	}
 
 	// Invocation Store：request_id=task_id，费用/模型/归属齐全
@@ -223,22 +225,22 @@ func TestTaskEstimateBranchAppliesRatio(t *testing.T) {
 	}
 
 	taskID := submitVideoTask(t, srv, apiKey)
-	// succeeded 但不带 usage：按 est 500k × $10/1M × ratio 2 = $10 全额收
+	// succeeded 但不带 usage：按 est 315,900 × $10/1M × ratio 2 = $6.318 全额收
 	ark.queryState.Store(`{"id":"cgt-1","status":"succeeded",
 		"content":{"video_url":"https://cdn.example.com/v.mp4"}}`)
 	svc.PollOnce(context.Background())
 
 	acc := &ledger.Account{}
 	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
-	if !acc.PostedBalance.Equal(decimal.RequireFromString("10")) || !acc.HeldAmount.IsZero() {
-		t.Fatalf("estimate settle with ratio: posted=%s held=%s, want 10/0", acc.PostedBalance, acc.HeldAmount)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("13.682")) || !acc.HeldAmount.IsZero() {
+		t.Fatalf("estimate settle with ratio: posted=%s held=%s, want 13.682/0", acc.PostedBalance, acc.HeldAmount)
 	}
-	if used := keyUsedAmount(t, db, orgID); !used.Equal(decimal.RequireFromString("10")) {
-		t.Fatalf("used after estimate settle = %s, want 10", used)
+	if used := keyUsedAmount(t, db, orgID); !used.Equal(decimal.RequireFromString("6.318")) {
+		t.Fatalf("used after estimate settle = %s, want 6.318", used)
 	}
 	inv := waitInvocation(t, db, "request_id = ?", taskID)
-	if inv.UsageSource != invocation.UsageSourceEstimated || !inv.CostUSD.Equal(decimal.RequireFromString("10")) {
-		t.Fatalf("estimate invocation = source %q cost %s, want estimated/10", inv.UsageSource, inv.CostUSD)
+	if inv.UsageSource != invocation.UsageSourceEstimated || !inv.CostUSD.Equal(decimal.RequireFromString("6.318")) {
+		t.Fatalf("estimate invocation = source %q cost %s, want estimated/6.318", inv.UsageSource, inv.CostUSD)
 	}
 }
 
