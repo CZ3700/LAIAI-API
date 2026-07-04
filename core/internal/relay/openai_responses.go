@@ -251,11 +251,14 @@ func (openaiResponsesAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, i
 		return usage{}, 0, fmt.Errorf("%w: %v", errStreamReadFail, err)
 	}
 	var resp struct {
-		ID      string          `json:"id"`
-		Created int64           `json:"created_at"`
-		Model   string          `json:"model"`
-		Output  []responsesItem `json:"output"`
-		Usage   *struct {
+		ID                string          `json:"id"`
+		Created           int64           `json:"created_at"`
+		Model             string          `json:"model"`
+		Output            []responsesItem `json:"output"`
+		IncompleteDetails *struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+		Usage *struct {
 			InputTokens        int64 `json:"input_tokens"`
 			OutputTokens       int64 `json:"output_tokens"`
 			InputTokensDetails struct {
@@ -306,6 +309,13 @@ func (openaiResponsesAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, i
 		finish = "tool_calls"
 		if text.Len() == 0 {
 			message["content"] = nil
+		}
+	} else if resp.IncompleteDetails != nil { // 截断（工具调用优先，故在 else 分支）
+		switch resp.IncompleteDetails.Reason {
+		case "max_output_tokens":
+			finish = "length"
+		case "content_filter":
+			finish = "content_filter"
 		}
 	}
 
@@ -364,6 +374,7 @@ func (openaiResponsesAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, in
 	nextToolIdx := 0
 	streamModel := ""
 	streamID := ""
+	failMsg := "" // 非空 = 上游发过 response.failed（记 upstream_error，不合成正常收尾）
 
 	err := pumpLines(c.Request.Context(), body, func(line string) {
 		data, ok := strings.CutPrefix(line, "data: ")
@@ -385,6 +396,9 @@ func (openaiResponsesAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, in
 						CachedTokens int64 `json:"cached_tokens"`
 					} `json:"input_tokens_details"`
 				} `json:"usage"`
+				IncompleteDetails *struct {
+					Reason string `json:"reason"`
+				} `json:"incomplete_details"`
 				Error *struct {
 					Message string `json:"message"`
 				} `json:"error"`
@@ -451,23 +465,38 @@ func (openaiResponsesAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, in
 						"index": idx, "function": gin.H{"arguments": ev.Delta},
 					}}}}}})
 			}
-		case "response.completed":
+		case "response.completed", "response.incomplete":
+			// 两者都是终态且都携带上游权威 usage——incomplete（命中 max_output_tokens/内容过滤）
+			// 的 usage 同样必须采信，否则推理模型截断响应会漏读 reasoning tokens 按估算少收（收入泄漏）。
 			if ev.Response != nil && ev.Response.Usage != nil {
 				u.PromptTokens = ev.Response.Usage.InputTokens
 				u.CompletionTokens = ev.Response.Usage.OutputTokens
 				u.PromptTokensDetails.CachedTokens = ev.Response.Usage.InputTokensDetails.CachedTokens
+			}
+			// incomplete → chat finish_reason 映射（工具调用优先，不覆盖）
+			if ev.Type == "response.incomplete" && finishReason != "tool_calls" && ev.Response != nil && ev.Response.IncompleteDetails != nil {
+				switch ev.Response.IncompleteDetails.Reason {
+				case "max_output_tokens":
+					finishReason = "length"
+				case "content_filter":
+					finishReason = "content_filter"
+				}
 			}
 		case "response.failed":
 			msg := "upstream reported failure"
 			if ev.Response != nil && ev.Response.Error != nil && ev.Response.Error.Message != "" {
 				msg = ev.Response.Error.Message
 			}
-			emitStreamError(w, msg)
+			emitStreamError(w, msg) // 写 error 帧 + [DONE]
+			failMsg = msg
 		}
 	})
 	if err != nil { // 截断流：发 error 帧，不可计 success
 		emitStreamError(w, "upstream stream ended abnormally")
 		return u, outBytes, err
+	}
+	if failMsg != "" { // 上游显式失败：error 帧+[DONE] 已发，绝不再合成正常收尾；记 upstream_error
+		return u, outBytes, fmt.Errorf("%w: %s", errUpstreamReported, failMsg)
 	}
 
 	// Responses 流无 [DONE]（靠 EOF）；chat 客户端依赖收尾帧 + [DONE]，由我们合成。

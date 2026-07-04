@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/shopspring/decimal"
@@ -241,25 +242,105 @@ func TestResponsesOutboundStreamTool(t *testing.T) {
 	}
 }
 
-// 流式截断：Responses 上游中途断（无 completed）→ chat error 帧，不可计 success。
+// 流式截断：Responses 上游发部分 delta 后 stall（per-chunk 超时）→ chat error 帧，不可计 success。
 func TestResponsesOutboundStreamTruncated(t *testing.T) {
-	srv, _ := setupRelayServer(t)
+	old := relaypkgTimeout(50 * time.Millisecond)
+	defer relaypkgTimeout(old)
+	srv, db := setupRelayServer(t)
+	block := make(chan struct{})
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		f := w.(http.Flusher)
 		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
 		f.Flush()
+		<-block // per-chunk 超时触发截断
 	}))
+	defer up.Close()
+	defer close(block)
 	setupResponsesChannel(t, srv, up.URL)
-	apiKey, _ := seedUserWithCredit(t, srv, "rout-trunc@example.com", "10")
-	up.Close() // 立即关闭模拟截断
+	apiKey, orgID := seedUserWithCredit(t, srv, "rout-trunc@example.com", "10")
 
 	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
 		"model": "test-model", "stream": true, "max_tokens": 50,
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
 	})
-	// 上游截断/不可达：不得出现正常 [DONE] 收尾（应是 error 帧或换渠道后失败）
-	if strings.Contains(w.Body.String(), `"finish_reason":"stop"`) {
-		t.Fatalf("truncated stream must not emit normal finish:\n%s", w.Body.String())
+	body := w.Body.String()
+	if strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("truncated stream must not emit normal finish:\n%s", body)
+	}
+	if !strings.Contains(body, "upstream_error") {
+		t.Fatalf("truncated stream must emit error frame:\n%s", body)
+	}
+	// 截断记 upstream_error（P1-5：不可计 success）
+	inv := waitInvocation(t, db, "org_id = ?", uint64(orgID))
+	if inv.Status != "upstream_error" {
+		t.Fatalf("truncated stream invocation status = %s, want upstream_error", inv.Status)
+	}
+}
+
+// 出站 response.failed：上游流内显式失败 → error 帧 + 记 upstream_error（不合成正常 stop 收尾）。
+func TestResponsesOutboundStreamFailed(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"part\"}\n\n")
+		f.Flush()
+		fmt.Fprint(w, "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_x\",\"status\":\"failed\",\"error\":{\"message\":\"content policy\"}}}\n\n")
+		f.Flush()
+		// 正常关闭连接（clean EOF）——失败靠 response.failed 事件而非截断
+	}))
+	defer up.Close()
+	setupResponsesChannel(t, srv, up.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "rout-failed@example.com", "10")
+
+	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "stream": true, "max_tokens": 50,
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	body := w.Body.String()
+	// error 帧存在，且不得再合成正常 stop 收尾（显式失败不能被掩盖成成功）
+	if !strings.Contains(body, "upstream_error") {
+		t.Fatalf("response.failed must emit error frame:\n%s", body)
+	}
+	if strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("response.failed must NOT synthesize normal finish:\n%s", body)
+	}
+	inv := waitInvocation(t, db, "org_id = ?", uint64(orgID))
+	if inv.Status != "upstream_error" {
+		t.Fatalf("failed stream invocation status = %s, want upstream_error", inv.Status)
+	}
+}
+
+// 出站 response.incomplete：max_output_tokens 截断的 usage 必须采信（含 reasoning tokens），
+// 不因缺 completed 而走估算少收（收入泄漏回归）。
+func TestResponsesOutboundStreamIncompleteUsage(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		// 可见文本极少，但上游 output_tokens 含大量 reasoning tokens
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
+		f.Flush()
+		fmt.Fprint(w, "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_x\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":2000,\"output_tokens\":1000,\"input_tokens_details\":{\"cached_tokens\":0}}}}\n\n")
+		f.Flush()
+	}))
+	defer up.Close()
+	setupResponsesChannel(t, srv, up.URL)
+	apiKey, orgID := seedUserWithCredit(t, srv, "rout-incpl@example.com", "10")
+
+	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
+		"model": "test-model", "stream": true, "max_tokens": 1000,
+		"messages": []map[string]any{{"role": "user", "content": "think hard"}},
+	})
+	body := w.Body.String()
+	if !strings.Contains(body, `"finish_reason":"length"`) {
+		t.Fatalf("incomplete must map to finish_reason length:\n%s", body)
+	}
+	// 计费按真实 usage：2000/1M*2 + 1000/1M*6 = 0.01 → 9.99（绝非按 2 可见字符估算）
+	acc := &ledger.Account{}
+	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
+	if !acc.PostedBalance.Equal(decimal.RequireFromString("9.99")) {
+		t.Fatalf("balance = %s, want 9.99 (real usage, not estimated)", acc.PostedBalance)
 	}
 }

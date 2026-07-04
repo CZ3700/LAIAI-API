@@ -31,6 +31,9 @@ type adapter interface {
 var (
 	errStreamStalled  = errors.New("relay: upstream stream stalled (per-chunk timeout)")
 	errStreamReadFail = errors.New("relay: upstream stream read failed")
+	// errUpstreamReported：上游在流内显式上报失败（如 Responses 的 response.failed 事件）。
+	// 与截断同类——不可计为 success，交由 relay 记 StatusUpstreamError。
+	errUpstreamReported = errors.New("relay: upstream reported failure mid-stream")
 )
 
 // emitStreamError 在流中途异常时给客户端补一个 OpenAI 形态的 error 帧 + [DONE]，

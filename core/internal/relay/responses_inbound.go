@@ -86,12 +86,16 @@ func responsesToOpenAIRequest(raw []byte) ([]byte, bool, error) {
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, false, fmt.Errorf("invalid json")
 	}
-	// 无状态边界：无法续接已存储会话，诚实拒绝（不静默丢上下文）。
+	// 无状态边界：无法续接已存储会话/模板，诚实拒绝（不静默丢上下文）。
 	if s, _ := in["previous_response_id"].(string); s != "" {
 		return nil, false, fmt.Errorf("previous_response_id is not supported: this gateway is stateless, resend full input")
 	}
 	if in["conversation"] != nil {
 		return nil, false, fmt.Errorf("conversation is not supported: this gateway is stateless")
+	}
+	// prompt 模板（服务端存储的 prompt.id）同样是服务端状态 → 拒绝（裸字符串 prompt 不带 id 不拦）。
+	if p, ok := in["prompt"].(map[string]any); ok && p["id"] != nil {
+		return nil, false, fmt.Errorf("prompt templates are not supported: this gateway is stateless")
 	}
 
 	out := map[string]any{}
@@ -200,33 +204,53 @@ func responsesInputToMessages(input any) ([]map[string]any, error) {
 		return []map[string]any{{"role": "user", "content": v}}, nil
 	case []any:
 		var out []map[string]any
+		// 并行工具调用：Responses 把一个助手回合的多个 function_call 作为相邻 item 回传。
+		// 必须合并进**同一条** assistant 消息的 tool_calls 数组——逐个拆成独立 assistant 消息
+		// 会让紧随的 tool 结果消息找不到完整的 tool_calls 归属，上游 chat 400。
+		var pendingTools []map[string]any
+		flushTools := func() {
+			if len(pendingTools) == 0 {
+				return
+			}
+			// 若上一条已是无 tool_calls 的 assistant 消息（其文本回合），挂到它上（chat 允许 content+tool_calls）
+			if n := len(out); n > 0 && out[n-1]["role"] == "assistant" {
+				if _, has := out[n-1]["tool_calls"]; !has {
+					out[n-1]["tool_calls"] = pendingTools
+					pendingTools = nil
+					return
+				}
+			}
+			out = append(out, map[string]any{"role": "assistant", "content": nil, "tool_calls": pendingTools})
+			pendingTools = nil
+		}
 		for _, raw := range v {
 			item, ok := raw.(map[string]any)
 			if !ok {
 				continue
 			}
 			switch item["type"] {
-			case "function_call": // 助手侧工具调用 → assistant.tool_calls
+			case "function_call": // 助手侧工具调用 → 累积进当前 assistant.tool_calls
 				callID, _ := item["call_id"].(string)
 				name, _ := item["name"].(string)
 				args, _ := item["arguments"].(string)
 				if args == "" {
 					args = "{}"
 				}
-				out = append(out, map[string]any{
-					"role": "assistant", "content": nil,
-					"tool_calls": []map[string]any{{
-						"id": callID, "type": "function",
-						"function": map[string]any{"name": name, "arguments": args},
-					}},
+				pendingTools = append(pendingTools, map[string]any{
+					"id": callID, "type": "function",
+					"function": map[string]any{"name": name, "arguments": args},
 				})
-			case "function_call_output": // 工具结果 → role:tool
+			case "function_call_output": // 工具结果 → role:tool（先刷出累积的工具调用）
+				flushTools()
 				callID, _ := item["call_id"].(string)
 				out = append(out, map[string]any{
 					"role": "tool", "tool_call_id": callID,
 					"content": stringifyResponsesOutput(item["output"]),
 				})
+			case "item_reference": // 引用已存储的历史 item = 服务端状态 → 拒绝（无状态边界）
+				return nil, fmt.Errorf("input item_reference is not supported: this gateway is stateless, resend full input")
 			default: // message（含无 type 但有 role 的项）
+				flushTools()
 				role, _ := item["role"].(string)
 				if role == "" {
 					role = "user"
@@ -238,6 +262,7 @@ func responsesInputToMessages(input any) ([]map[string]any, error) {
 				out = append(out, map[string]any{"role": role, "content": content})
 			}
 		}
+		flushTools()
 		return out, nil
 	default:
 		return nil, fmt.Errorf("input must be a string or an array")
@@ -516,16 +541,30 @@ func openaiRespToResponses(raw []byte) ([]byte, bool) {
 			"call_id": tc.ID, "name": tc.Function.Name, "arguments": args,
 		})
 	}
+	status, incompleteDetails := responsesStatusFor(ch.FinishReason)
 	out := map[string]any{
 		"id": respID, "object": "response", "created_at": resp.Created,
-		"status": "completed", "model": resp.Model,
+		"status": status, "model": resp.Model,
 		"output": output, "usage": responsesUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens,
 			resp.Usage.PromptTokensDetails.CachedTokens),
 		"parallel_tool_calls": true, "tool_choice": "auto", "tools": []any{},
-		"error": nil, "incomplete_details": nil, "metadata": map[string]any{},
+		"error": nil, "incomplete_details": incompleteDetails, "metadata": map[string]any{},
 	}
 	b, err := json.Marshal(out)
 	return b, err == nil
+}
+
+// responsesStatusFor：chat finish_reason → Responses (status, incomplete_details)。
+// length/content_filter 是"未跑完"终态 → status=incomplete + 具体 reason；其余 → completed。
+func responsesStatusFor(finishReason string) (string, any) {
+	switch finishReason {
+	case "length":
+		return "incomplete", map[string]any{"reason": "max_output_tokens"}
+	case "content_filter":
+		return "incomplete", map[string]any{"reason": "content_filter"}
+	default:
+		return "completed", nil
+	}
 }
 
 // responsesUsage：内部 usage → Responses usage（input_tokens/output_tokens/details）。
@@ -776,14 +815,20 @@ func (s *responsesSSE) finishStream(w sseFlusher) {
 		output = append(output, fcItem)
 	}
 	inputTokens := s.inTok
-	writeResponsesEvent(w, "response.completed", map[string]any{
-		"type": "response.completed", "sequence_number": s.nextSeq(),
+	// length/content_filter 终态 → 发 response.incomplete（而非 completed）+ incomplete_details（协议正确性）。
+	status, incompleteDetails := responsesStatusFor(s.finish)
+	eventType := "response.completed"
+	if status == "incomplete" {
+		eventType = "response.incomplete"
+	}
+	writeResponsesEvent(w, eventType, map[string]any{
+		"type": eventType, "sequence_number": s.nextSeq(),
 		"response": map[string]any{
 			"id": s.respID(), "object": "response", "created_at": s.created0,
-			"status": "completed", "model": s.model, "output": output,
+			"status": status, "model": s.model, "output": output,
 			"usage":               responsesUsage(inputTokens, s.outTok, s.cachedTok),
 			"parallel_tool_calls": true, "tool_choice": "auto", "tools": []any{},
-			"error": nil, "incomplete_details": nil, "metadata": map[string]any{},
+			"error": nil, "incomplete_details": incompleteDetails, "metadata": map[string]any{},
 		},
 	})
 	s.stopped = true

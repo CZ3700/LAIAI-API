@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/shopspring/decimal"
@@ -334,28 +335,115 @@ func TestResponsesInboundErrorEnvelope(t *testing.T) {
 	}
 }
 
-// 截断流：上游中途断（无 [DONE]）→ response.failed 事件，绝不伪造 completed。
+// 截断流：上游发出部分 delta 后 stall（per-chunk 超时）→ response.failed 事件，绝不伪造 completed。
+// 用 chunk 超时模拟真实中途截断（对比"连接被拒"——那测的是别的路径）。
 func TestResponsesInboundStreamTruncated(t *testing.T) {
+	old := relaypkgTimeout(50 * time.Millisecond)
+	defer relaypkgTimeout(old)
 	srv, _ := setupRelayServer(t)
+	block := make(chan struct{})
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		f := w.(http.Flusher)
-		fmt.Fprint(w, "data: {\"id\":\"cmpl-x\",\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"id\":\"cmpl-x\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n")
 		f.Flush()
-		// 连接直接断，无 finish/无 [DONE]（httptest 关闭时截断）
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+		f.Flush()
+		<-block // 挂住 → per-chunk 超时触发 errStreamStalled（真实中途截断）
 	}))
+	defer up.Close()
+	defer close(block) // LIFO：先 close(block) 解开 handler，再 up.Close()
 	setupChannelAndPrice(t, srv, up.URL)
 	apiKey, _ := seedUserWithCredit(t, srv, "resp-trunc@example.com", "10")
-	// 关键：请求返回后关闭上游模拟截断——用同步 handler 已 flush 部分后 handler 返回即 EOF
-	up.Close()
 
 	w, _ := srv.do(t, "POST", "/v1/responses", apiKey, map[string]any{
 		"model": "test-model", "stream": true, "input": "hi",
 	})
 	body := w.Body.String()
-	// 上游不可达/截断都必须落 response.failed（或 error），绝不出现 completed
+	// 中途截断：已发的部分文本在 body 里，但绝不出现 completed；必须补 response.failed
 	if strings.Contains(body, "event: response.completed") {
 		t.Fatalf("truncated stream must NOT emit completed:\n%s", body)
+	}
+	if !strings.Contains(body, "event: response.failed") {
+		t.Fatalf("truncated stream must emit response.failed:\n%s", body)
+	}
+}
+
+// 入站 length 截断：chat 上游 finish_reason=length → Responses status=incomplete +
+// incomplete_details.reason=max_output_tokens（协议正确性，SDK 据此判断截断）。
+func TestResponsesInboundLengthStatus(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	up, _ := captureUpstream(t, `{"id":"cmpl-x","choices":[{"message":{"role":"assistant","content":"trun"},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}`)
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKey, _ := seedUserWithCredit(t, srv, "resp-len@example.com", "10")
+
+	w, out := srv.do(t, "POST", "/v1/responses", apiKey, map[string]any{
+		"model": "test-model", "input": "hi", "max_output_tokens": 2,
+	})
+	if w.Code != 200 {
+		t.Fatalf("length = %d %v", w.Code, out)
+	}
+	if out["status"] != "incomplete" {
+		t.Fatalf("status = %v, want incomplete", out["status"])
+	}
+	id := out["incomplete_details"].(map[string]any)
+	if id["reason"] != "max_output_tokens" {
+		t.Fatalf("incomplete_details = %v", id)
+	}
+}
+
+// 入站并行工具调用：多个相邻 function_call item → 合并进同一条 assistant.tool_calls（不拆成多条）。
+func TestResponsesInboundParallelToolCalls(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	up, last := captureUpstream(t, `{"id":"c","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":2}}`)
+	setupChannelAndPrice(t, srv, up.URL)
+	apiKey, _ := seedUserWithCredit(t, srv, "resp-par@example.com", "10")
+
+	w, _ := srv.do(t, "POST", "/v1/responses", apiKey, map[string]any{
+		"model": "test-model",
+		"input": []map[string]any{
+			{"role": "user", "content": "do two things"},
+			{"type": "function_call", "call_id": "call_a", "name": "f1", "arguments": "{}"},
+			{"type": "function_call", "call_id": "call_b", "name": "f2", "arguments": "{}"},
+			{"type": "function_call_output", "call_id": "call_a", "output": "ra"},
+			{"type": "function_call_output", "call_id": "call_b", "output": "rb"},
+		},
+	})
+	if w.Code != 200 {
+		t.Fatalf("parallel tools = %d", w.Code)
+	}
+	msgs := last.Load().(map[string]any)["messages"].([]any)
+	// user + 一条 assistant(2 tool_calls) + 两条 tool；绝不是 user + 两条 assistant + 两条 tool
+	var assistantWithTools int
+	for _, rm := range msgs {
+		m := rm.(map[string]any)
+		if m["role"] == "assistant" {
+			if tc, ok := m["tool_calls"].([]any); ok {
+				assistantWithTools++
+				if len(tc) != 2 {
+					t.Fatalf("assistant tool_calls = %d, want 2 (parallel merged)", len(tc))
+				}
+			}
+		}
+	}
+	if assistantWithTools != 1 {
+		t.Fatalf("assistant-with-tools messages = %d, want exactly 1 (not split per call)", assistantWithTools)
+	}
+}
+
+// 无状态边界：item_reference 输入项 → 400（引用服务端存储的历史 item）。
+func TestResponsesInboundItemReferenceRejected(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	apiKey, _ := seedUserWithCredit(t, srv, "resp-ref@example.com", "10")
+	w, out := srv.do(t, "POST", "/v1/responses", apiKey, map[string]any{
+		"model": "test-model",
+		"input": []map[string]any{{"type": "item_reference", "id": "msg_stored_1"}},
+	})
+	if w.Code != 400 {
+		t.Fatalf("item_reference = %d, want 400", w.Code)
+	}
+	if !strings.Contains(out["error"].(map[string]any)["message"].(string), "stateless") {
+		t.Fatalf("error = %v", out["error"])
 	}
 }
 
