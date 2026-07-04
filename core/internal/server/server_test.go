@@ -136,6 +136,18 @@ func (g *gin999) do(t *testing.T, method, path, token string, body any) (*httpte
 	return w, out
 }
 
+// doRaw：GET 一个非 JSON（二进制/流）响应，返回原始 recorder（body 不解析）。产物代理端点测试用。
+func (g *gin999) doRaw(t *testing.T, method, path, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	g.engine.ServeHTTP(w, req)
+	return w
+}
+
 func TestHealthz(t *testing.T) {
 	srv, _ := setupServer(t)
 	w, out := srv.do(t, "GET", "/healthz", "", nil)

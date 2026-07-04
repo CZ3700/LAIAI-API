@@ -12,9 +12,13 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"syscall"
+	"time"
+
+	"gorm.io/gorm"
 )
 
 // cloudMetadataIPs：云厂商 metadata 端点，任何配置下恒拦（永不是合法上游）。
@@ -138,4 +142,39 @@ func (c *Channel) isAdvancedCustom() bool {
 func ssrfDialContext(allowPrivate bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	d := &net.Dialer{Control: ssrfControlFor(allowPrivate)}
 	return d.DialContext
+}
+
+// NewGuardedClient：给 relay 包外（task 产物代理等）复用 SSRF 拨号守卫的 HTTP 客户端。
+// 对**上游返回的不可信 URI**（如 veo LRO 的产物 URI，可能被恶意/被攻陷渠道指向内网/metadata）
+// 发服务端请求时必须用它：① 每跳拨号复检解析后 IP（DNS-rebinding-safe，metadata 恒拦）；
+// ② 跨主机重定向剥离敏感头（绝不把渠道 key 带去攻击者主机）。
+// 边界（可接受）：首跳仍把渠道凭证发给 URI 直接命名的主机——不是提权，因为产生该 URI 的渠道
+// 本就在每次 submit/query 持有该凭证，拿不到它本无权访问的东西；且合法 veo files 端点需带 key。
+// 内网/metadata 首跳由拨号守卫拦（凭证发不出去）；跨主机重定向到公网攻击者主机由 CheckRedirect 剥头。
+func NewGuardedClient(timeout time.Duration, allowPrivate bool) *http.Client {
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{DialContext: ssrfDialContext(allowPrivate)},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("ssrf: stopped after 5 redirects")
+			}
+			// 跨主机重定向：剥离认证头（防把渠道凭证送去攻击者可控的公网主机；内网/metadata 由拨号守卫拦）
+			if len(via) > 0 && req.URL.Host != via[len(via)-1].URL.Host {
+				req.Header.Del("Authorization")
+				req.Header.Del("x-goog-api-key")
+				req.Header.Del("api-key")
+				req.Header.Del("x-api-key")
+			}
+			return nil
+		},
+	}
+}
+
+// AllowPrivateFromDB：读 ext_settings.advanced_custom_allow_private（默认 false）——供 task 产物代理
+// 决定守卫客户端是否放行私网（可信内网上游/测试 httptest 用；metadata 恒拦不受影响）。
+func AllowPrivateFromDB(db *gorm.DB) bool {
+	var row struct{ Value string }
+	db.Table("ext_settings").Where("name = ?", "advanced_custom_allow_private").Take(&row)
+	return row.Value == "true"
 }

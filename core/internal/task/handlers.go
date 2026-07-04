@@ -2,8 +2,10 @@ package task
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
@@ -147,6 +149,79 @@ func (s *Service) HandleGet(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, t)
+}
+
+// HandleContent：GET /v1/video/generations/:id/content —— 产物代理下发（§3.8 批次 4）。
+// sora 的产物是上游二进制流、veo 的产物 URI 带渠道 key（直接吐给用户=泄露凭证），
+// 平台用任务钉住的渠道凭证实时取流转发。鉴权/org 隔离与 HandleGet 同款；产物下发不额外计费。
+func (s *Service) HandleContent(c *gin.Context) {
+	key, ok := s.authKey(c)
+	if !ok {
+		return
+	}
+	if !key.AllowsIP(c.ClientIP()) {
+		taskErr(c, http.StatusForbidden, "this api key is not allowed from your ip address")
+		return
+	}
+	t, err := s.Get(key.OrgID, c.Param("id")) // org 隔离谓词（红线 6）
+	if err != nil {
+		taskErr(c, http.StatusNotFound, "task not found")
+		return
+	}
+	if t.Status != StatusSucceeded || t.ResultRef == "" {
+		taskErr(c, http.StatusNotFound, "no proxied content for this task")
+		return
+	}
+	ch := &relay.Channel{}
+	if err := s.DB.First(ch, t.ChannelID).Error; err != nil {
+		taskErr(c, http.StatusBadGateway, "channel unavailable")
+		return
+	}
+	ad, err := adaptorFor(t.Provider)
+	if err != nil {
+		taskErr(c, http.StatusBadGateway, "provider unavailable")
+		return
+	}
+	streamer, ok := ad.(ContentStreamer)
+	if !ok {
+		taskErr(c, http.StatusNotFound, "no proxied content for this task")
+		return
+	}
+	// 凭证：任务钉住的 key（与轮询同口径，0035）
+	credEnc, credOK := ch.CredentialEnc, ch.CredentialEnc != ""
+	if t.CredentialID != 0 {
+		credEnc, credOK = relay.CredentialByID(s.DB, t.CredentialID)
+	}
+	if !credOK {
+		taskErr(c, http.StatusBadGateway, "channel credential unavailable")
+		return
+	}
+	credential, err := s.Keyring.Decrypt(credEnc)
+	if err != nil {
+		taskErr(c, http.StatusBadGateway, "channel credential unavailable")
+		return
+	}
+	// SSRF 守卫（对抗 review CONFIRMED HIGH）：产物 URI 可能是上游返回的不可信绝对 URL
+	// （被攻陷/转售网关渠道可指向内网/metadata）——用带拨号复检 + 跨主机剥凭证的守卫客户端，
+	// 绝不用裸 s.Client。allowPrivate 随 ext_settings（测试/可信内网上游放行；metadata 恒拦）。
+	guarded := relay.NewGuardedClient(2*time.Minute, relay.AllowPrivateFromDB(s.DB))
+	rc, contentType, err := streamer.StreamResult(c.Request.Context(), guarded, ch, credential, t.ResultRef)
+	if err != nil {
+		// err 不进日志（veo URI 带渠道 key，*url.Error 会回显完整 URL——红线 7，对抗 review CONFIRMED）
+		s.Log.Warn("task content stream failed", "task", t.TaskID)
+		taskErr(c, http.StatusBadGateway, "content fetch failed, retry later")
+		return
+	}
+	defer rc.Close()
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Cache-Control", "private, max-age=3600") // 产物含租户数据：private（对标 New API 的 public 有意收紧）
+	c.Status(http.StatusOK)
+	if _, err := io.Copy(c.Writer, rc); err != nil {
+		s.Log.Warn("task content stream interrupted", "task", t.TaskID, "err", err)
+	}
 }
 
 func (s *Service) authKey(c *gin.Context) (*identity.APIKey, bool) {

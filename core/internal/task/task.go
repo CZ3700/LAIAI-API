@@ -50,6 +50,7 @@ type Task struct {
 	FailReason       string          `gorm:"column:fail_reason" json:"fail_reason,omitempty"`
 	UpstreamTaskID   string          `gorm:"column:upstream_task_id" json:"-"`
 	ResultURL        string          `gorm:"column:result_url" json:"result_url,omitempty"`
+	ResultRef        string          `gorm:"column:result_ref" json:"-"` // 产物内部引用（0038）：平台 content 代理取流用，绝不外泄（veo URI 带渠道 key）
 	HoldID           uint64          `gorm:"column:hold_id" json:"-"`
 	CredentialID     uint64          `gorm:"column:credential_id" json:"-"` // 提交时选定的 key（0035）；轮询固定用它
 	EstTokens        int64           `gorm:"column:est_tokens" json:"-"`
@@ -347,7 +348,13 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 		// 发第二请求换真实产物 URL。取件失败=本轮未就绪，return 下轮重试（绝不误判任务失败——
 		// 视频已生成，只是取件抖动；sweepTimedOut 兜底防永久卡住）。
 		if result.ResultURL == "" && result.ResultRef != "" {
-			if fetcher, ok := ad.(ResultFetcher); ok {
+			switch fetcher := ad.(type) {
+			case ContentStreamer:
+				// 产物经平台代理下发（sora 二进制/veo 带 key URI）：对外 URL=代理路径，ResultRef 落库
+				// 供 HandleContent 用渠道凭证实时取流。绝不把上游引用直接暴露给用户。
+				_ = fetcher
+				result.ResultURL = "/v1/video/generations/" + t.TaskID + "/content"
+			case ResultFetcher:
 				url, ferr := fetcher.FetchResultURL(ctx, s.Client, ch, credential, result.ResultRef)
 				if ferr != nil || url == "" {
 					s.Log.Warn("task result fetch not ready, will retry", "task", t.TaskID, "err", ferr)
@@ -402,6 +409,7 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 			Where("id = ? AND status IN ?", t.ID, []string{StatusQueued, StatusRunning}).
 			Updates(map[string]any{
 				"status": StatusSucceeded, "result_url": result.ResultURL,
+				"result_ref":    result.ResultRef, // 代理下发厂商的内部引用（0038；其余厂商为空/审计留痕）
 				"actual_tokens": result.CompletionTokens, "cost_usd": actual,
 				"finished_at": now,
 			})

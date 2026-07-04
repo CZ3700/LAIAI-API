@@ -2,8 +2,51 @@ package relay
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+// NewGuardedClient 跨主机重定向剥离凭证头（对抗 review 残留补锁）：302 到别的主机时，
+// 渠道 key（Authorization / x-goog-api-key 等）绝不带到第二主机。
+func TestGuardedClientRedirectStripsCredential(t *testing.T) {
+	var bAuth, bGoog atomic.Value
+	bAuth.Store("(none)")
+	bGoog.Store("(none)")
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bAuth.Store(r.Header.Get("Authorization"))
+		bGoog.Store(r.Header.Get("x-goog-api-key"))
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srvB.Close()
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, srvB.URL+"/hop2", http.StatusFound) // 302 到不同 host:port
+	}))
+	defer srvA.Close()
+
+	cl := NewGuardedClient(5*time.Second, true) // allowPrivate=true（httptest 127.0.0.1）
+	req, _ := http.NewRequest(http.MethodGet, srvA.URL, nil)
+	req.Header.Set("Authorization", "Bearer channel-secret")
+	req.Header.Set("x-goog-api-key", "goog-secret")
+	resp, err := cl.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if bAuth.Load() != "" || bGoog.Load() != "" {
+		t.Fatalf("credential leaked to redirect host: Authorization=%q x-goog-api-key=%q", bAuth.Load(), bGoog.Load())
+	}
+}
+
+// NewGuardedClient 拨号守卫：metadata IP 即便 allowPrivate=true 也拦（供 task 产物代理复用）。
+func TestGuardedClientBlocksMetadata(t *testing.T) {
+	cl := NewGuardedClient(2*time.Second, true)
+	if _, err := cl.Get("http://169.254.169.254/latest/meta-data/"); err == nil {
+		t.Fatal("metadata dial must be blocked even with allowPrivate=true")
+	}
+}
 
 // blockUpstreamIP 分类：内网/环回/link-local/metadata/unspecified/CGNAT/IPv4-mapped 全拦；公网放行。
 func TestBlockUpstreamIP(t *testing.T) {

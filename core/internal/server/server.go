@@ -312,6 +312,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		vg := r.Group("", bodyLimit(relay.MaxRequestBodySize))
 		vg.POST("/v1/video/generations", ts.HandleCreate)
 		vg.GET("/v1/video/generations/:id", ts.HandleGet)
+		vg.GET("/v1/video/generations/:id/content", ts.HandleContent) // 产物代理下发（sora 二进制/veo 带 key URI，0038）
 	}
 
 	return r, s

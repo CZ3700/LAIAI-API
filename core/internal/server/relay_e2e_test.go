@@ -90,6 +90,7 @@ CREATE TABLE tasks (
     model TEXT NOT NULL, channel_id INTEGER NOT NULL, provider TEXT NOT NULL,
     status TEXT NOT NULL, fail_reason TEXT NOT NULL DEFAULT '',
     upstream_task_id TEXT NOT NULL DEFAULT '', result_url TEXT NOT NULL DEFAULT '',
+    result_ref TEXT NOT NULL DEFAULT '',
     hold_id INTEGER NOT NULL, credential_id INTEGER NOT NULL DEFAULT 0,
     est_tokens INTEGER NOT NULL DEFAULT 0,
     actual_tokens INTEGER NOT NULL DEFAULT 0, cost_usd NUMERIC NOT NULL DEFAULT 0,

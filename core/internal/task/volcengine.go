@@ -42,6 +42,15 @@ type ResultFetcher interface {
 	FetchResultURL(ctx context.Context, client *http.Client, ch *relay.Channel, credential, resultRef string) (string, error)
 }
 
+// ContentStreamer：可选扩展——产物是二进制流或带渠道凭证的过期 URI 的厂商（sora content 端点、
+// veo files URI）实现它。这类产物**不能给用户直链**（veo URI 带渠道 key=泄露凭证；sora 根本无 URL），
+// 框架把对外 result_url 写成平台代理路径（/v1/video/generations/{id}/content），ResultRef 落库；
+// 用户请求代理端点时 HandleContent 用渠道凭证经 StreamResult 实时取流下发。
+type ContentStreamer interface {
+	// StreamResult 返回产物流 + Content-Type。调用方负责 Close。
+	StreamResult(ctx context.Context, client *http.Client, ch *relay.Channel, credential, resultRef string) (io.ReadCloser, string, error)
+}
+
 // taskAdaptors：任务型（异步：提交→轮询→取产物）厂商注册表。
 //
 // 新增一个视频/任务厂商 = 三步（与 chat 适配器同纪律）：
@@ -69,6 +78,10 @@ var taskAdaptors = map[string]Adaptor{
 	"wan":    aliTask{}, // 通义万相视频
 	"ali":    aliTask{}, // 别名（ali 非 chat provider 名，无冲突）
 	"suno":   sunoTask{},
+	// §3.8 批次 4（2026-07-05，同移植纪律）：产物经平台代理下发（ContentStreamer + 0038 result_ref）。
+	// sora=bearer/A 类 seconds×size 回显结算/content 二进制；veo=x-goog-api-key/LRO 推导/B 类/带 key URI。
+	"sora": soraTask{},
+	"veo":  veoTask{},
 }
 
 // adaptorFor：先按 provider code 精确查注册表；未命中再按 provider 档案的 Adapter 家族回退一次
