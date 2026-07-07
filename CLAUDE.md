@@ -17,9 +17,19 @@
 7. 操作日志（stdout/Loki）禁止出现 API Key/PII/payload 明文；调用数据的唯一合法落库点是 **Invocation Store**（设计 §6.1：信封加密 + 30 天滚动过期 + org 隔离 + 解密读取必审计）；API Key 明文/密码/支付凭证任何层都永不落库（Key 只存 SHA-256 指纹）；被测 Key 信封加密（密文头带 key_id）
 8. 构建产物禁止嵌时间戳；部署只认镜像 digest
 
+## 文档地图（docs/）
+- `整体架构设计.md` —— 唯一架构事实源（见第一原则）
+- `生产runbook.md` —— 部署/运维操作手册，任何生产动作前先查
+- `COMMERCIAL_ROADMAP.md` —— 商用路线图
+- `视频任务厂商接入指南.md` —— 接新视频厂商 adapter 时的规范
+- `加密货币充值网关.md` —— 加密支付渠道设计
+- `newapi-kernel-knowledge.md` / `newapi-gap-*.md` —— New API 知识移植参考与差距分析（**gap 两份已过时，见下条**）
+- `商用层现状-2026-07.md` —— 商用/运营层实际落地盘点（三层贯通交叉验证），**替代过时的 newapi-gap-*.md**
+- 现状注记（2026-07）：relay/ 为占位壳（网关代码实际在 core/internal/relay），site/ 未启动
+
 ## 工程约定
 - Go workspace：core/（控制面）+ relay/（数据面）两个 module；模块间只走接口，禁止跨 bounded context 碰表
 - 金额一律 `shopspring/decimal` + MySQL DECIMAL(20,8)，禁止 float
 - 测试：glebarez/sqlite 纯 Go 内存库（无 CGO）；断言 DB 状态而非内部变量
 - `GOPROXY=https://goproxy.cn,direct`（本机 proxy.golang.org 不可达）
-- 提交前 `make ci` 必须全绿
+- 快门禁（每次提交前）：`make vet`；全门禁（push 前）：`make ci` 必须全绿，动了 web/ 则 `make ci-all`
