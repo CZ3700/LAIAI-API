@@ -187,7 +187,8 @@ func (r *Relay) HandleRealtime(c *gin.Context) {
 	if r.Rec != nil {
 		r.Rec.Record(&invocation.Invocation{
 			OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID,
-			RequestID: sess.reqID, Model: model, ChannelID: ch.ID, Provider: ch.Provider,
+			RequestID: sess.reqID, Model: model, Modality: invocation.ModalityRealtime,
+			ChannelID: ch.ID, Provider: ch.Provider,
 			Status: invocation.StatusSuccess, StatusCode: http.StatusOK,
 			PromptTokens:     sess.total.TextInput + sess.total.AudioInput,
 			CompletionTokens: sess.total.TextOutput + sess.total.AudioOutput,

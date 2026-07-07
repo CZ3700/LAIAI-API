@@ -54,6 +54,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 	if !ok {
 		return
 	}
+	inv.Modality = invocation.ModalityAudioSpeech
 
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxRequestBodySize))
 	if err != nil {
@@ -173,6 +174,7 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 	if !ok {
 		return
 	}
+	inv.Modality = invocation.ModalityAudioSTT
 
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxRequestBodySize))
 	if err != nil {

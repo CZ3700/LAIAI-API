@@ -57,7 +57,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 
 	inv := &invocation.Invocation{
 		OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID,
-		RequestID: newRequestID(),
+		RequestID: newRequestID(), Modality: invocation.ModalityImage,
 	}
 	setClientMeta(inv, c)
 	c.Header("X-Request-Id", inv.RequestID)

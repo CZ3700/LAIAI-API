@@ -487,9 +487,13 @@ func (s *Service) recordInvocation(t *Task, status string, code int, tokens int6
 	if s.Rec == nil {
 		return
 	}
+	modality := invocation.ModalityVideo
+	if t.Provider == "suno" { // 音乐是当前唯一非视频 task 厂商；再添时改从 adaptor 档案取
+		modality = invocation.ModalityMusic
+	}
 	s.Rec.Record(&invocation.Invocation{
 		OrgID: t.OrgID, UserID: t.UserID, APIKeyID: t.APIKeyID,
-		RequestID: t.TaskID, Model: t.Model,
+		RequestID: t.TaskID, Model: t.Model, Modality: modality,
 		ChannelID: t.ChannelID, Provider: t.Provider,
 		Status: status, StatusCode: code,
 		CompletionTokens: tokens, CostUSD: cost, UsageSource: usageSource,

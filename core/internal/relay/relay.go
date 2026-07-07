@@ -398,6 +398,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		UserID:    key.UserID,
 		APIKeyID:  key.ID,
 		RequestID: newRequestID(),
+		Modality:  invocation.ModalityChat, // anthropic/responses 入站方言同走本链路，同标 chat
 	}
 	setClientMeta(inv, c)
 	c.Header("X-Request-Id", inv.RequestID)

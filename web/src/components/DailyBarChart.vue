@@ -13,8 +13,9 @@ export interface SummaryDay {
 
 export type ChartMetric = 'calls' | 'tokens' | 'cost' | 'success'
 
-const props = withDefaults(defineProps<{ items: SummaryDay[]; days: number; metric?: ChartMetric }>(), {
+const props = withDefaults(defineProps<{ items: SummaryDay[]; days: number; metric?: ChartMetric; granularity?: 'day' | 'hour' }>(), {
   metric: 'calls',
+  granularity: 'day',
 })
 const { t } = useI18n()
 
@@ -35,22 +36,26 @@ interface Bar {
   value: number // 当前指标取值
 }
 
-// 补齐无调用的日期为 0，柱高按当期所选指标最大值归一
+// 补齐无调用的桶为 0，柱高按当期所选指标最大值归一
 const chart = computed(() => {
   const byDay = new Map(props.items.map((s) => [s.day, s]))
   const out: Bar[] = []
-  // UTC 自然日键，与后端 summary 的 DATE(created_at) UTC 桶对齐（纯 UTC 毫秒整日位移，
-  // 避免本地时区 setDate + toISOString 切片在日界附近把某天的柱错位成 0）。
+  // UTC 桶键与后端 summary 对齐：day = DATE(created_at)（纯 UTC 毫秒整日位移，避免本地时区
+  // setDate + toISOString 切片在日界附近把某天的柱错位成 0）；hour = 'YYYY-MM-DD HH:00'（近 24h）。
   const todayMs = Date.now()
-  for (let i = props.days - 1; i >= 0; i--) {
-    const key = new Date(todayMs - i * 86400_000).toISOString().slice(0, 10)
+  const hourly = props.granularity === 'hour'
+  const buckets = hourly ? 24 : props.days
+  for (let i = buckets - 1; i >= 0; i--) {
+    const key = hourly
+      ? new Date(todayMs - i * 3600_000).toISOString().slice(0, 13).replace('T', ' ') + ':00'
+      : new Date(todayMs - i * 86400_000).toISOString().slice(0, 10)
     const s = byDay.get(key)
     const calls = s?.calls ?? 0
     const tokens = (s?.prompt_tokens ?? 0) + (s?.completion_tokens ?? 0)
     const cost = Number(s?.cost_usd ?? '0')
     const success = calls > 0 ? (s?.succeeded ?? 0) / calls : 0
     const value = props.metric === 'tokens' ? tokens : props.metric === 'cost' ? cost : props.metric === 'success' ? success : calls
-    out.push({ label: key.slice(5), calls, tokens, cost, success, value })
+    out.push({ label: hourly ? key.slice(11) : key.slice(5), calls, tokens, cost, success, value })
   }
   const max = Math.max(props.metric === 'success' ? 1 : Number.EPSILON, ...out.map((x) => x.value))
   return { days: out, max }

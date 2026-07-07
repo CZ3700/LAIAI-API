@@ -18,18 +18,28 @@ interface KeyRow {
   prefix: string
   status: number
 }
+interface KeyStat {
+  api_key_id: number
+  name: string
+  calls: number
+  prompt_tokens: number
+  completion_tokens: number
+  cost_usd: string
+}
 
 const { t, n } = useI18n()
 const range = ref<7 | 30 | 31 | 60>(30)
 const rangeLabel = ref('30d')
-const granularity = ref<'hour' | 'day' | 'month'>('day')
+const granularity = ref<'hour' | 'day'>('day')
 const metric = ref<ChartMetric>('tokens')
 const modelFilter = ref('')
 const modelSearch = ref('')
+const keyFilter = ref('') // api_key_id 服务端过滤（summary/by-model 下推）
 const loading = ref(true)
 const error = ref('')
 const summary = ref<SummaryDay[]>([])
 const byModel = ref<ModelStat[]>([])
+const byKey = ref<KeyStat[]>([])
 const keys = ref<KeyRow[]>([])
 const sortKey = ref<'model' | 'calls' | 'input' | 'output' | 'tokens' | 'cost'>('tokens')
 const sortDir = ref<'asc' | 'desc'>('desc')
@@ -93,27 +103,44 @@ const totals = computed(() => {
   return { calls, input, output, tokens: input + output, cost }
 })
 const maxModelTokens = computed(() => Math.max(1, ...filteredModels.value.map((m) => m.prompt_tokens + m.completion_tokens)))
-const keyRows = computed(() => {
-  return [{ name: t('usagex.allKeys'), calls: totals.value.calls, input: totals.value.input, output: totals.value.output, cost: totals.value.cost }]
-})
+// 已吊销/清除的 key 不在 /api/keys 列表里，退化显示 #id（与 RequestLogs 同规）
+function keyName(row: KeyStat): string {
+  if (row.name) return row.name
+  const k = keys.value.find((x) => x.id === row.api_key_id)
+  return k ? k.name || k.prefix : `#${row.api_key_id}`
+}
 
 async function load() {
   loading.value = true
   error.value = ''
-  const [sum, models, keyRowsResult] = await Promise.allSettled([
-    api<{ items: SummaryDay[] }>('GET', `/api/usage/summary?days=${range.value}`),
-    api<{ items: ModelStat[] }>('GET', `/api/usage/by-model?days=${range.value}`),
+  const sumQ = new URLSearchParams({ days: String(range.value) })
+  if (granularity.value === 'hour') sumQ.set('granularity', 'hour') // 近 24h 小时分桶（UTC）
+  const bmQ = new URLSearchParams({ days: String(range.value) })
+  if (keyFilter.value) {
+    sumQ.set('api_key_id', keyFilter.value)
+    bmQ.set('api_key_id', keyFilter.value)
+  }
+  const [sum, models, byKeyResult, keyRowsResult] = await Promise.allSettled([
+    api<{ items: SummaryDay[] }>('GET', `/api/usage/summary?${sumQ}`),
+    api<{ items: ModelStat[] }>('GET', `/api/usage/by-model?${bmQ}`),
+    api<{ items: KeyStat[] }>('GET', `/api/usage/by-key?days=${range.value}`),
     api<{ keys: KeyRow[] }>('GET', '/api/keys'),
   ])
-  if (sum.status === 'fulfilled') summary.value = sum.value.items.map((s) => ({ ...s, day: s.day.slice(0, 10) }))
+  // hour 桶键是 'YYYY-MM-DD HH:00'，不能截日期；day 桶保持既有 slice(0,10) 口径
+  if (sum.status === 'fulfilled') {
+    summary.value = granularity.value === 'hour'
+      ? sum.value.items
+      : sum.value.items.map((s) => ({ ...s, day: s.day.slice(0, 10) }))
+  }
   if (models.status === 'fulfilled') byModel.value = models.value.items
+  if (byKeyResult.status === 'fulfilled') byKey.value = byKeyResult.value.items
   if (keyRowsResult.status === 'fulfilled') keys.value = keyRowsResult.value.keys
   const failed = [sum, models].find((r) => r.status === 'rejected')
   if (failed?.status === 'rejected') error.value = errorMessage(failed.reason, t('usagex.loadFailed'))
   loading.value = false
 }
 
-watch(range, () => void load())
+watch([range, granularity, keyFilter], () => void load())
 onMounted(load)
 </script>
 
@@ -135,9 +162,8 @@ onMounted(load)
       <div class="filter-group">
         <label>{{ t('usagex.filterGranularity') }}</label>
         <div class="segmented-control">
-          <button type="button" disabled :class="{ active: granularity === 'hour' }" @click="granularity = 'hour'">{{ t('usagex.granHour') }}</button>
+          <button type="button" :class="{ active: granularity === 'hour' }" @click="granularity = 'hour'">{{ t('usagex.granHour') }}</button>
           <button type="button" :class="{ active: granularity === 'day' }" @click="granularity = 'day'">{{ t('usagex.granDay') }}</button>
-          <button type="button" disabled :class="{ active: granularity === 'month' }" @click="granularity = 'month'">{{ t('usagex.granMonth') }}</button>
         </div>
       </div>
       <div class="filter-group min-w-[180px]">
@@ -149,7 +175,7 @@ onMounted(load)
       </div>
       <div class="filter-group min-w-[180px]">
         <label>{{ t('usagex.filterKey') }}</label>
-        <select class="input" disabled>
+        <select v-model="keyFilter" class="input">
           <option value="">{{ t('usagex.allKeys') }}</option>
           <option v-for="k in keys" :key="k.id" :value="String(k.id)">{{ k.name || k.prefix }}</option>
         </select>
@@ -207,12 +233,12 @@ onMounted(load)
     <div class="grid gap-4 xl:grid-cols-[1fr_0.72fr]">
       <div class="app-panel p-5">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 class="font-semibold">{{ t('usagex.trendTitle', { period: granularity === 'hour' ? t('usagex.granHour') : granularity === 'month' ? t('usagex.granMonth') : t('usagex.granDay'), metric: metric === 'tokens' ? 'Tokens' : metric === 'cost' ? t('usagex.colCost') : t('usagex.metricCalls') }) }}</h2>
+          <h2 class="font-semibold">{{ t('usagex.trendTitle', { period: granularity === 'hour' ? t('usagex.granHour') : t('usagex.granDay'), metric: metric === 'tokens' ? 'Tokens' : metric === 'cost' ? t('usagex.colCost') : t('usagex.metricCalls') }) }}</h2>
           <div class="segmented-control">
             <button v-for="m in metricOptions" :key="m.key" type="button" :class="{ active: metric === m.key }" @click="metric = m.key">{{ m.label }}</button>
           </div>
         </div>
-        <DailyBarChart :items="summary" :days="range" :metric="metric" />
+        <DailyBarChart :items="summary" :days="range" :metric="metric" :granularity="granularity" />
       </div>
 
       <div class="app-panel p-5">
@@ -285,15 +311,18 @@ onMounted(load)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in keyRows" :key="row.name">
-              <td class="px-4 py-2.5 font-mono text-xs">{{ row.name }}</td>
+            <tr v-if="byKey.length === 0">
+              <td colspan="8" class="px-4 py-8 text-center text-muted">{{ t('usagex.emptyData') }}</td>
+            </tr>
+            <tr v-for="row in byKey" :key="row.api_key_id">
+              <td class="px-4 py-2.5 font-mono text-xs">{{ keyName(row) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(row.calls) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono">{{ n(row.input) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono">{{ n(row.output) }}</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ n(row.prompt_tokens) }}</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ n(row.completion_tokens) }}</td>
               <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
               <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
-              <td class="px-4 py-2.5 text-right font-mono">{{ n(row.input + row.output) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(row.cost) }}</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ n(row.prompt_tokens + row.completion_tokens) }}</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(num(row.cost_usd)) }}</td>
             </tr>
           </tbody>
         </table>

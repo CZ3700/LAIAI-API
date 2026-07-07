@@ -35,6 +35,19 @@ const (
 	UsageSourceEstimated = "estimated"
 )
 
+// 调用模态（0040）：请求日志按模态过滤用。值是对外 API 契约（/api/usage?modality=），只增不改。
+const (
+	ModalityChat          = "chat" // 含 anthropic/responses 入站方言（同一 chat 主链路）
+	ModalityEmbeddings    = "embeddings"
+	ModalityRerank        = "rerank"
+	ModalityImage         = "image" // generations + edits + variations
+	ModalityAudioSpeech   = "audio_speech"
+	ModalityAudioSTT      = "audio_transcription" // transcriptions + translations
+	ModalityRealtime      = "realtime"
+	ModalityVideo         = "video"
+	ModalityMusic         = "music"
+)
+
 type Invocation struct {
 	ID                uint64          `gorm:"primaryKey" json:"id"`
 	OrgID             uint64          `gorm:"column:org_id" json:"-"`
@@ -42,7 +55,8 @@ type Invocation struct {
 	APIKeyID          uint64          `gorm:"column:api_key_id" json:"api_key_id"`
 	RequestID         string          `gorm:"column:request_id" json:"request_id"`
 	Model             string          `gorm:"column:model" json:"model"`
-	ChannelID         uint64          `gorm:"column:channel_id" json:"-"` // 渠道归属是平台内部信息
+	Modality          string          `gorm:"column:modality" json:"modality,omitempty"` // 调用模态（0040）：chat|embeddings|rerank|image|audio_speech|audio_transcription|realtime|video|music；空=历史行
+	ChannelID         uint64          `gorm:"column:channel_id" json:"-"`                // 渠道归属是平台内部信息
 	Provider          string          `gorm:"column:provider" json:"-"`
 	Status            string          `gorm:"column:status" json:"status"`
 	StatusCode        int             `gorm:"column:status_code" json:"status_code"`

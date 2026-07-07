@@ -31,7 +31,6 @@ export const router = createRouter({
         { path: '', component: () => import('@/pages/Dashboard.vue') },
         { path: 'models', component: () => import('@/pages/ConsoleModels.vue') },
         { path: 'playground', component: () => import('@/pages/Playground.vue') },
-        { path: 'wallet', component: () => import('@/pages/Wallet.vue') },
         { path: 'billing', component: () => import('@/pages/Billing.vue') },
         { path: 'recharges', component: () => import('@/pages/Recharges.vue') },
         { path: 'keys', component: () => import('@/pages/Keys.vue') },

@@ -73,7 +73,7 @@ func (r *Relay) HandleRerank(c *gin.Context) {
 		relayErr(c, http.StatusUnauthorized, "invalid api key")
 		return
 	}
-	inv := &invocation.Invocation{OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID, RequestID: newRequestID()}
+	inv := &invocation.Invocation{OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID, RequestID: newRequestID(), Modality: invocation.ModalityRerank}
 	setClientMeta(inv, c)
 	c.Header("X-Request-Id", inv.RequestID)
 	finish := func(status string, code int, brief string) {

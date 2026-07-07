@@ -39,6 +39,15 @@ func (s *Server) getUsage(c *gin.Context) {
 	if model := c.Query("model"); model != "" {
 		q = q.Where("model = ?", model)
 	}
+	// modality：按调用模态筛（0040，图像日志页等）。值即列值精确匹配；历史行 modality='' 不会命中任何
+	// 非空筛选——已知且可接受（迁移注记：不回填）。
+	if modality := c.Query("modality"); modality != "" {
+		q = q.Where("modality = ?", modality)
+	}
+	// request_id：精确匹配（uk_inv_request 唯一索引，工单锚点直查）。
+	if reqID := c.Query("request_id"); reqID != "" {
+		q = q.Where("request_id = ?", reqID)
+	}
 	// api_key_id：按 Key 维度筛调用（指令 0-14 天「Request Logs 补 API key filter」）。
 	// org_id 谓词已在链上，跨 org 的 key id 只会得到空集，无越权面。
 	if keyID := c.Query("api_key_id"); keyID != "" {
@@ -124,8 +133,9 @@ func (s *Server) getUsageExport(c *gin.Context) {
 	w.Flush()
 }
 
-// getUsageByModel：GET /api/usage/by-model?days=N —— 当前 org 近 N 天按模型聚合。
+// getUsageByModel：GET /api/usage/by-model?days=N&api_key_id= —— 当前 org 近 N 天按模型聚合。
 // 调用数/成功数/输入输出 token/费用，按调用量降序。仪表盘"模型分布"用。
+// api_key_id：可选按 Key 过滤（Usage 页 Key 维度；org 谓词已强制，跨 org key id 只得空集）。
 func (s *Server) getUsageByModel(c *gin.Context) {
 	claims := mustClaims(c)
 	days, _ := strconv.Atoi(c.DefaultQuery("days", "14"))
@@ -133,6 +143,17 @@ func (s *Server) getUsageByModel(c *gin.Context) {
 		days = 14
 	}
 	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
+	args := []any{claims.OrgID, since}
+	keyPred := ""
+	if keyID := c.Query("api_key_id"); keyID != "" {
+		id, err := strconv.ParseUint(keyID, 10, 64)
+		if err != nil {
+			fail(c, http.StatusBadRequest, "api_key_id must be an integer")
+			return
+		}
+		keyPred = " AND api_key_id = ?"
+		args = append(args, id)
+	}
 	var rows []struct {
 		Model            string          `json:"model"`
 		Calls            int64           `json:"calls"`
@@ -149,9 +170,9 @@ func (s *Server) getUsageByModel(c *gin.Context) {
 		       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
 		       COALESCE(SUM(cost_usd), 0) AS cost_usd
 		FROM invocations
-		WHERE org_id = ? AND created_at >= ?
+		WHERE org_id = ? AND created_at >= ?`+keyPred+`
 		GROUP BY model
-		ORDER BY calls DESC`, claims.OrgID, since).Scan(&rows).Error
+		ORDER BY calls DESC`, args...).Scan(&rows).Error
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "by-model query failed")
 		return
@@ -196,15 +217,41 @@ func (s *Server) getUsageByKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"days": days, "items": rows})
 }
 
-// getUsageSummary：GET /api/usage/summary?days=N —— 当前 org 近 N 天按日聚合
-// （调用数/成功数/token/费用），供 Console 仪表盘图表。DATE() 在 MySQL 与 SQLite 同义。
+// getUsageSummary：GET /api/usage/summary?days=N&granularity=day|hour&api_key_id= —— 当前 org 聚合序列。
+// day（默认）：近 N 天按日分桶，DATE() 在 MySQL 与 SQLite 同义，与既有行为逐字一致。
+// hour：近 24 小时按小时分桶（days 参数忽略）——小时格式化两库无共同函数，按方言分支（服务端常量拼接，无注入面）。
+// api_key_id：可选按 Key 过滤（org 谓词已强制，跨 org key id 只得空集）。
 func (s *Server) getUsageSummary(c *gin.Context) {
 	claims := mustClaims(c)
 	days, _ := strconv.Atoi(c.DefaultQuery("days", "14"))
 	if days < 1 || days > 90 {
 		days = 14
 	}
-	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
+	gran := c.DefaultQuery("granularity", "day")
+	bucket := "DATE(created_at)"
+	var since string
+	if gran == "hour" {
+		if s.readOnly().Dialector.Name() == "mysql" {
+			bucket = "DATE_FORMAT(created_at, '%Y-%m-%d %H:00')"
+		} else { // sqlite（测试内存库）
+			bucket = "strftime('%Y-%m-%d %H:00', created_at)"
+		}
+		since = s.now().UTC().Add(-24 * time.Hour).Format("2006-01-02 15:04:05")
+	} else {
+		gran = "day" // 未知值静默回落（与 days 越界钳制同风格）
+		since = s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
+	}
+	args := []any{claims.OrgID, since}
+	keyPred := ""
+	if keyID := c.Query("api_key_id"); keyID != "" {
+		id, err := strconv.ParseUint(keyID, 10, 64)
+		if err != nil {
+			fail(c, http.StatusBadRequest, "api_key_id must be an integer")
+			return
+		}
+		keyPred = " AND api_key_id = ?"
+		args = append(args, id)
+	}
 	var rows []struct {
 		Day              string          `json:"day"`
 		Calls            int64           `json:"calls"`
@@ -214,21 +261,21 @@ func (s *Server) getUsageSummary(c *gin.Context) {
 		CostUSD          decimal.Decimal `json:"cost_usd"`
 	}
 	err := s.readOnly().Raw(`
-		SELECT DATE(created_at) AS day,
+		SELECT `+bucket+` AS day,
 		       COUNT(*) AS calls,
 		       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS succeeded,
 		       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 		       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
 		       COALESCE(SUM(cost_usd), 0) AS cost_usd
 		FROM invocations
-		WHERE org_id = ? AND created_at >= ?
-		GROUP BY DATE(created_at)
-		ORDER BY day`, claims.OrgID, since).Scan(&rows).Error
+		WHERE org_id = ? AND created_at >= ?`+keyPred+`
+		GROUP BY `+bucket+`
+		ORDER BY day`, args...).Scan(&rows).Error
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "summary query failed")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"days": days, "items": rows})
+	c.JSON(http.StatusOK, gin.H{"days": days, "granularity": gran, "items": rows})
 }
 
 // getUsageByModelDaily：GET /api/usage/by-model-daily?days=N —— 当前 org 近 N 天

@@ -95,7 +95,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 
 	inv := &invocation.Invocation{
 		OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID,
-		RequestID: newRequestID(),
+		RequestID: newRequestID(), Modality: invocation.ModalityEmbeddings,
 	}
 	setClientMeta(inv, c)
 	c.Header("X-Request-Id", inv.RequestID)
