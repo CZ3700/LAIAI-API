@@ -677,6 +677,8 @@ export default {
     prPerCall: '$ mỗi lượt (cố định)',
     prTTS: 'TTS $/1k ký tự',
     prTranscription: 'Phiên âm $/lượt',
+    prAudioInput: 'Âm thanh vào $/1M',
+    prAudioOutput: 'Âm thanh ra $/1M',
     prAdvancedHint: 'Giá mỗi lượt > 0 tính chat/embeddings theo phí cố định (bỏ qua token). TTS tính /v1/audio/speech theo ký tự; phiên âm cố định mỗi lượt.',
     mgrTitle: 'Hệ số theo (nhóm, mô hình)',
     mgrHint: 'Lớp thứ hai chồng lên hệ số nhóm: cuối = hệ số nhóm × giá trị này. Vd hệ số 0.5 cho nhóm vip chỉ trên một mô hình.',

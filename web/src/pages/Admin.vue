@@ -1042,7 +1042,7 @@ function grantTo(o: OrgRow) {
 
 // —— 定价 ——
 const prices = ref<Price[]>([])
-const pr = ref({ model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '', per_call_usd: '', tts_usd_per_1k_chars: '', transcription_usd_per_call: '' })
+const pr = ref({ model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '', per_call_usd: '', tts_usd_per_1k_chars: '', transcription_usd_per_call: '', audio_input_usd_per_1m: '', audio_output_usd_per_1m: '' })
 const prBusy = ref(false)
 
 // 模型目录：上游已上货模型 → 承载渠道 + 是否已定价（定价管理一眼看缺口）
@@ -1076,6 +1076,8 @@ function pickModelForPricing(m: CatalogModel) {
     per_call_usd: '',
     tts_usd_per_1k_chars: '',
     transcription_usd_per_call: '',
+    audio_input_usd_per_1m: '',
+    audio_output_usd_per_1m: '',
   }
 }
 
@@ -1096,8 +1098,10 @@ async function upsertPrice() {
     if (pr.value.per_call_usd) body.per_call_usd = pr.value.per_call_usd
     if (pr.value.tts_usd_per_1k_chars) body.tts_usd_per_1k_chars = pr.value.tts_usd_per_1k_chars
     if (pr.value.transcription_usd_per_call) body.transcription_usd_per_call = pr.value.transcription_usd_per_call
+    if (pr.value.audio_input_usd_per_1m) body.audio_input_usd_per_1m = pr.value.audio_input_usd_per_1m
+    if (pr.value.audio_output_usd_per_1m) body.audio_output_usd_per_1m = pr.value.audio_output_usd_per_1m
     await adminApi('POST', '/api/admin/model-prices', body)
-    pr.value = { model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '', per_call_usd: '', tts_usd_per_1k_chars: '', transcription_usd_per_call: '' }
+    pr.value = { model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '', per_call_usd: '', tts_usd_per_1k_chars: '', transcription_usd_per_call: '', audio_input_usd_per_1m: '', audio_output_usd_per_1m: '' }
     await loadPrices()
     error.value = ''
   } catch (e) {
@@ -2166,6 +2170,14 @@ onMounted(async () => {
           <div>
             <label class="label" for="pr-stt">{{ t('admin.prTranscription') }}</label>
             <input id="pr-stt" v-model="pr.transcription_usd_per_call" class="input" placeholder="0" />
+          </div>
+          <div>
+            <label class="label" for="pr-audio-in">{{ t('admin.prAudioInput') }}</label>
+            <input id="pr-audio-in" v-model="pr.audio_input_usd_per_1m" class="input" placeholder="0" />
+          </div>
+          <div>
+            <label class="label" for="pr-audio-out">{{ t('admin.prAudioOutput') }}</label>
+            <input id="pr-audio-out" v-model="pr.audio_output_usd_per_1m" class="input" placeholder="0" />
           </div>
           <div class="flex flex-col gap-3 sm:col-span-2 sm:flex-row sm:items-center xl:col-span-5">
             <button class="btn-primary" :disabled="prBusy">{{ t('admin.prUpsert') }}</button>

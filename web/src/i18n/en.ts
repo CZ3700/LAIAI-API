@@ -732,6 +732,8 @@ const messages = {
     prPerCall: 'Per-call $ (flat)',
     prTTS: 'TTS $/1k chars',
     prTranscription: 'Transcription $/call',
+    prAudioInput: 'Audio input $/1M',
+    prAudioOutput: 'Audio output $/1M',
     prAdvancedHint: 'Per-call > 0 bills chat/embeddings a flat fee (ignores tokens). TTS bills /v1/audio/speech by characters; transcription is flat per call.',
     mgrTitle: 'Per-(group, model) ratio',
     mgrHint: 'A second layer stacked on the group ratio: final = group ratio × this. E.g. give group "vip" a 0.5 ratio on one model only.',

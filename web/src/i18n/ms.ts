@@ -677,6 +677,8 @@ export default {
     prPerCall: '$ sepanggilan (tetap)',
     prTTS: 'TTS $/1k aksara',
     prTranscription: 'Transkripsi $/panggilan',
+    prAudioInput: 'Input audio $/1M',
+    prAudioOutput: 'Output audio $/1M',
     prAdvancedHint: 'Harga sepanggilan > 0 mengecaj chat/embeddings secara tetap (abai token). TTS mengira /v1/audio/speech mengikut aksara; transkripsi tetap sepanggilan.',
     mgrTitle: 'Nisbah (kumpulan, model)',
     mgrHint: 'Lapisan kedua atas nisbah kumpulan: akhir = nisbah kumpulan × ini. Cth nisbah 0.5 untuk kumpulan vip pada satu model sahaja.',

@@ -127,6 +127,8 @@ CREATE TABLE model_prices (
     per_call_usd NUMERIC NOT NULL DEFAULT 0,
     tts_usd_per_1k_chars NUMERIC NOT NULL DEFAULT 0,
     transcription_usd_per_call NUMERIC NOT NULL DEFAULT 0,
+    audio_input_usd_per_1m NUMERIC NOT NULL DEFAULT 0,
+    audio_output_usd_per_1m NUMERIC NOT NULL DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE model_group_ratios (

@@ -140,6 +140,8 @@ type ModelPrice struct {
 	PerCallUSD           decimal.Decimal `gorm:"column:per_call_usd"`               // 按次固定价（0027，>0 时 chat/embeddings 忽略 token 按次收）
 	TTSPer1KChars        decimal.Decimal `gorm:"column:tts_usd_per_1k_chars"`       // TTS 每千字符 USD（0027）
 	TranscriptionPerCall decimal.Decimal `gorm:"column:transcription_usd_per_call"` // 转录每次固定价 USD（0027）
+	AudioInputUSDPer1M   decimal.Decimal `gorm:"column:audio_input_usd_per_1m"`     // Realtime 音频输入 token 价（0039，0=未配）
+	AudioOutputUSDPer1M  decimal.Decimal `gorm:"column:audio_output_usd_per_1m"`    // Realtime 音频输出 token 价（0039，0=未配）
 }
 
 func (ModelPrice) TableName() string { return "model_prices" }
@@ -178,6 +180,39 @@ func (p *ModelPrice) ChatCost(inputTokens, cachedTokens, outputTokens int64) dec
 		return p.PerCallUSD
 	}
 	return p.Cost(inputTokens, cachedTokens, outputTokens)
+}
+
+// RealtimeUsage：一轮 response.done 的 token 明细（text/audio 分列，来自上游 usage 事件）。
+type RealtimeUsage struct {
+	TextInput   int64
+	TextOutput  int64
+	AudioInput  int64
+	AudioOutput int64
+	CachedInput int64 // input 中命中缓存的子集（按 cached_input 价折扣）
+}
+
+// RealtimeAudioPriced：realtime 模型是否已显式配音频价（in+out 均正）。建连预检 fail-closed 用——
+// realtime 音频是 dominant 成本项（占比 ~99%），未配则**绝不放行**（不能按文本价近似，会漏收 10-20×）。
+func (p *ModelPrice) RealtimeAudioPriced() bool {
+	return p.AudioInputUSDPer1M.IsPositive() && p.AudioOutputUSDPer1M.IsPositive()
+}
+
+// RealtimeCost：Realtime 会话按 token 计价（§3.9）。文本走 input/output 价（缓存子集走 cached 价），
+// 音频走 audio_input/audio_output 价——**不回退文本价**（对抗 review CONFIRMED：音频比文本贵 10-20×，
+// 回退文本价=系统性漏收）。音频价必须由建连预检 RealtimeAudioPriced 保证已配；未配（0）则音频计 0
+// （防御性，pre-check 使其不可达），绝不用更便宜的文本价冒充。
+func (p *ModelPrice) RealtimeCost(u RealtimeUsage) decimal.Decimal {
+	cached := u.CachedInput
+	if cached > u.TextInput {
+		cached = u.TextInput // 缓存子集不超过文本输入（音频不计缓存）
+	}
+	nonCachedText := u.TextInput - cached
+	textIn := p.InputUSDPer1M.Mul(decimal.NewFromInt(nonCachedText)).Div(oneMillion)
+	cachedCost := p.cachedInputPrice().Mul(decimal.NewFromInt(cached)).Div(oneMillion)
+	textOut := p.OutputUSDPer1M.Mul(decimal.NewFromInt(u.TextOutput)).Div(oneMillion)
+	aIn := p.AudioInputUSDPer1M.Mul(decimal.NewFromInt(u.AudioInput)).Div(oneMillion)
+	aOut := p.AudioOutputUSDPer1M.Mul(decimal.NewFromInt(u.AudioOutput)).Div(oneMillion)
+	return textIn.Add(cachedCost).Add(textOut).Add(aIn).Add(aOut)
 }
 
 // SpeechCost：TTS 按输入字符数计价（tts_usd_per_1k_chars × chars / 1000，gap P2-F）。

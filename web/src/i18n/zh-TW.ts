@@ -732,6 +732,8 @@ export default {
     prPerCall: '按次 $（固定）',
     prTTS: 'TTS $/千字元',
     prTranscription: '轉錄 $/次',
+    prAudioInput: '音訊輸入 $/1M',
+    prAudioOutput: '音訊輸出 $/1M',
     prAdvancedHint: '按次價 > 0 時 chat/embeddings 按次固定收費（忽略 token）。TTS 按 /v1/audio/speech 字元計；轉錄按次固定。',
     mgrTitle: '二層 (分組, 模型) 倍率',
     mgrHint: '疊加在分組倍率之上的第二層：最終 = 分組倍率 × 此值。如只給「vip」組的某個模型 0.5 倍。',

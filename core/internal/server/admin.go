@@ -691,6 +691,8 @@ type priceReq struct {
 	PerCallUSD           string `json:"per_call_usd"`               // 按次固定价（0027，gap P2-F）
 	TTSPer1KChars        string `json:"tts_usd_per_1k_chars"`       // TTS 每千字符 USD（0027）
 	TranscriptionPerCall string `json:"transcription_usd_per_call"` // 转录每次固定价 USD（0027）
+	AudioInputUSDPer1M   string `json:"audio_input_usd_per_1m"`     // Realtime 音频输入价（0039）
+	AudioOutputUSDPer1M  string `json:"audio_output_usd_per_1m"`    // Realtime 音频输出价（0039）
 }
 
 // firstErr：返回首个非 nil 错误。
@@ -747,19 +749,23 @@ func (s *Server) adminUpsertPrice(c *gin.Context) {
 	perCall, e1 := parseOptNonNegDecimal(req.PerCallUSD, "per_call_usd")
 	tts, e2 := parseOptNonNegDecimal(req.TTSPer1KChars, "tts_usd_per_1k_chars")
 	transcribe, e3 := parseOptNonNegDecimal(req.TranscriptionPerCall, "transcription_usd_per_call")
-	if e1 != nil || e2 != nil || e3 != nil {
-		fail(c, http.StatusBadRequest, firstErr(e1, e2, e3).Error())
+	audioIn, e4 := parseOptNonNegDecimal(req.AudioInputUSDPer1M, "audio_input_usd_per_1m")
+	audioOut, e5 := parseOptNonNegDecimal(req.AudioOutputUSDPer1M, "audio_output_usd_per_1m")
+	if e1 != nil || e2 != nil || e3 != nil || e4 != nil || e5 != nil {
+		fail(c, http.StatusBadRequest, firstErr(e1, e2, e3, e4, e5).Error())
 		return
 	}
 	p := &relay.ModelPrice{
 		Model: req.Model, InputUSDPer1M: in, OutputUSDPer1M: out, ImageUSD: img, CachedInputUSDPer1M: cachedIn,
 		PerCallUSD: perCall, TTSPer1KChars: tts, TranscriptionPerCall: transcribe,
+		AudioInputUSDPer1M: audioIn, AudioOutputUSDPer1M: audioOut,
 	}
 	err := s.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "model"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"input_usd_per_1m", "output_usd_per_1m", "image_usd", "cached_input_usd_per_1m",
 			"per_call_usd", "tts_usd_per_1k_chars", "transcription_usd_per_call",
+			"audio_input_usd_per_1m", "audio_output_usd_per_1m",
 		}),
 	}).Create(p).Error
 	if err != nil {

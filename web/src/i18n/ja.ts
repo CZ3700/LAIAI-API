@@ -676,6 +676,8 @@ export default {
     prPerCall: '従量外 $/回（固定）',
     prTTS: 'TTS $/千文字',
     prTranscription: '文字起こし $/回',
+    prAudioInput: '音声入力 $/1M',
+    prAudioOutput: '音声出力 $/1M',
     prAdvancedHint: '回単価 > 0 で chat/embeddings は回単位の固定課金（token 無視）。TTS は /v1/audio/speech を文字数で、文字起こしは回固定。',
     mgrTitle: '(グループ, モデル) 二層倍率',
     mgrHint: 'グループ倍率に重ねる第二層：最終 = グループ倍率 × この値。例：vip グループの特定モデルだけ 0.5 倍。',

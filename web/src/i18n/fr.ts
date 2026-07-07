@@ -677,6 +677,8 @@ export default {
     prPerCall: '$ par appel (fixe)',
     prTTS: 'TTS $/1k caractères',
     prTranscription: 'Transcription $/appel',
+    prAudioInput: 'Entrée audio $/1M',
+    prAudioOutput: 'Sortie audio $/1M',
     prAdvancedHint: 'Prix par appel > 0 facture chat/embeddings au forfait (ignore les tokens). TTS facture /v1/audio/speech au caractère ; transcription au forfait par appel.',
     mgrTitle: 'Ratio par (groupe, modèle)',
     mgrHint: 'Une deuxième couche au-dessus du ratio de groupe : final = ratio de groupe × ceci. Ex. ratio 0.5 pour le groupe vip sur un seul modèle.',
