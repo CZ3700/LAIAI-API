@@ -161,12 +161,12 @@ func (r *Relay) advancedAllowPrivate() bool {
 func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Logger) *Relay {
 	now := time.Now
 	return &Relay{
-		DB:          db,
-		Keyring:     kr,
-		Client:      &http.Client{Timeout: upstreamTimeout},
-		Log:         log,
-		Rec:         rec,
-		Now:         now,
+		DB:            db,
+		Keyring:       kr,
+		Client:        &http.Client{Timeout: upstreamTimeout},
+		Log:           log,
+		Rec:           rec,
+		Now:           now,
 		failCounts:    map[uint64]int{},
 		keyFailCounts: map[uint64]int{},
 		health:        map[uint64]float64{},

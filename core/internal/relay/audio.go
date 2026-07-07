@@ -126,7 +126,9 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 		applyHeaderOverrideForMode(hr, ch.HeaderOverride, cred, ModeAudioSpeech)
 		return hr, nil
 	}
-	resp, ferr := r.audioForward(c, inv, req.Model, hold, build, finish)
+	resp, _, ferr := r.forwardWithFailover(c, inv, finish, forwardOpts{
+		model: req.Model, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", build: build,
+	})
 	if ferr {
 		return
 	}
@@ -245,7 +247,9 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 		applyHeaderOverrideForMode(hr, ch.HeaderOverride, cred, hoMode)
 		return hr, nil
 	}
-	resp, ferr := r.audioForward(c, inv, model, hold, build, finish)
+	resp, _, ferr := r.forwardWithFailover(c, inv, finish, forwardOpts{
+		model: model, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", build: build,
+	})
 	if ferr {
 		return
 	}
@@ -325,93 +329,6 @@ func (r *Relay) audioHold(c *gin.Context, key *identity.APIKey, model string, am
 		return nil, false
 	}
 	return hold, true
-}
-
-// audioForward：换渠道重试转发（与 images 同款分类驱动）。返回成功的 *http.Response；
-// 第二返回值 true 表示已结束（已 release hold + 写响应），调用方应直接 return。
-func (r *Relay) audioForward(c *gin.Context, inv *invocation.Invocation, model string, hold *ledger.Hold,
-	build func(context.Context, *Channel, string) (*http.Request, error), finish func(string, int, string)) (*http.Response, bool) {
-	var resp *http.Response
-	exclude := map[uint64]bool{}
-	var lastStatus int
-	var lastBody []byte
-	channelSnap, snapErr := r.cachedChannels() // 取一次快照，3 次重试复用（WS-2）
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if snapErr != nil {
-			break
-		}
-		ch, pickErr := pickFromSnapshot(channelSnap, model, attempt, exclude, r.healthFactor)
-		if pickErr != nil {
-			break
-		}
-		inv.Attempts = attempt + 1
-		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
-		credID, credEnc, credOK := r.selectCredential(ch) // 选 key（0034 Multi-key）
-		if !credOK {
-			r.Log.Error("channel has no usable credential", "channel", ch.ID)
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
-			continue
-		}
-		cred, e := r.Keyring.Decrypt(credEnc)
-		if e != nil {
-			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "cred", credID, "err", e)
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
-			continue
-		}
-		upReq, e := build(c.Request.Context(), ch, cred)
-		if e != nil {
-			r.release(hold.ID)
-			if e == errAudioUnsupported {
-				finish(invocation.StatusUpstreamError, http.StatusBadRequest, "provider lacks audio")
-				relayErr(c, http.StatusBadRequest, fmt.Sprintf("provider %q does not support audio", ch.Provider))
-				return nil, true
-			}
-			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
-			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
-			return nil, true
-		}
-		resp, e = r.clientFor(ch).Do(upReq)
-		if e != nil {
-			r.Log.Warn("audio upstream unreachable", "channel", ch.ID, "err", e)
-			r.observe(ch.ID, false)
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
-			resp = nil
-			continue
-		}
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			r.enableChannelIfDisabled(ch)
-			r.resetKeyFailures(credID)
-			return resp, false
-		}
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-		resp.Body.Close()
-		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
-		if disp.Retryable || disp.DisableChannel {
-			r.observe(ch.ID, false)
-		}
-		if disp.DisableChannel {
-			r.noteKeyFailure(credID, ch.ID, disp.Reason) // 多 key：禁 key 而非渠道（0034）
-		}
-		lastStatus, lastBody = resp.StatusCode, errBody
-		resp = nil
-		if !disp.Retryable {
-			break
-		}
-		exclude[ch.ID] = true
-	}
-	// 全失败：释放 hold 并转译响应
-	r.release(hold.ID)
-	if lastStatus == 0 {
-		finish(invocation.StatusNoChannel, http.StatusServiceUnavailable, "no upstream available")
-		relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
-		return nil, true
-	}
-	finish(invocation.StatusUpstreamError, lastStatus, fmt.Sprintf("upstream status %d after %d attempts", lastStatus, inv.Attempts))
-	c.Data(lastStatus, "application/json", lastBody)
-	return nil, true
 }
 
 // audioSettle：确定性计价结算（cost 即 hold，正常无 overage）。

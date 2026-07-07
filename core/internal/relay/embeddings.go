@@ -177,95 +177,21 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 		}
 	}()
 
-	// 换渠道重试循环（与 chat 同款分类驱动）
-	var resp *http.Response
-	var ch *Channel
-	exclude := map[uint64]bool{}
-	var lastStatus int
-	var lastBody []byte
-	channelSnap, snapErr := r.cachedChannels() // 取一次快照，重试复用（WS-2）
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if snapErr != nil {
-			break
-		}
-		var pickErr error
-		ch, pickErr = pickFromSnapshot(channelSnap, req.Model, attempt, exclude, r.healthFactor)
-		if pickErr != nil {
-			break
-		}
-		inv.Attempts = attempt + 1
-		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
-		credID, credEnc, credOK := r.selectCredential(ch) // 选 key（0034 Multi-key）
-		if !credOK {
-			r.Log.Error("channel has no usable credential", "channel", ch.ID)
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
-			continue
-		}
-		credential, err := r.Keyring.Decrypt(credEnc)
-		if err != nil {
-			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "cred", credID, "err", err)
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
-			continue
-		}
+	// 换渠道重试（Adapter contract v2 第二期：统一 forwardWithFailover）
+	build := func(ctx context.Context, ch *Channel, credential string) (*http.Request, error) {
 		upBody, upModel := mappedRawBody(ch, body, req.Model) // 模型映射（0009）
-		upReq, err := buildEmbeddingsRequest(c.Request.Context(), ch, credential, upBody, upModel)
+		upReq, err := buildEmbeddingsRequest(ctx, ch, credential, upBody, upModel)
 		if err != nil {
-			r.release(hold.ID)
-			if err == errEmbeddingsUnsupported {
-				finish(invocation.StatusUpstreamError, http.StatusBadRequest, "provider lacks embeddings")
-				relayErr(c, http.StatusBadRequest,
-					fmt.Sprintf("provider %q does not support embeddings", ch.Provider))
-				return
-			}
-			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
-			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
-			return
+			return nil, err
 		}
 		// 渠道级 header override（contract v2 作用域扩展）：自定义认证渠道可服务 embeddings
 		applyHeaderOverrideForMode(upReq, ch.HeaderOverride, credential, ModeEmbeddings)
-		resp, err = r.clientFor(ch).Do(upReq)
-		if err != nil {
-			r.Log.Warn("embeddings upstream unreachable", "channel", ch.ID, "err", err)
-			r.observe(ch.ID, false) // 健康分：网络不可达
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
-			resp = nil
-			continue
-		}
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			r.enableChannelIfDisabled(ch)
-			r.resetKeyFailures(credID)
-			break
-		}
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-		resp.Body.Close()
-		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
-		if disp.Retryable || disp.DisableChannel {
-			r.observe(ch.ID, false) // 健康分：渠道自身可靠性失败
-		}
-		r.Log.Warn("embeddings upstream error", "channel", ch.ID, "status", resp.StatusCode,
-			"disable", disp.DisableChannel, "retryable", disp.Retryable)
-		if disp.DisableChannel {
-			r.noteKeyFailure(credID, ch.ID, disp.Reason) // 多 key：禁 key 而非渠道（0034）
-		}
-		lastStatus, lastBody = resp.StatusCode, errBody
-		resp = nil
-		if !disp.Retryable {
-			break
-		}
-		exclude[ch.ID] = true
+		return upReq, nil
 	}
-	if resp == nil {
-		r.release(hold.ID)
-		if lastStatus == 0 {
-			finish(invocation.StatusNoChannel, http.StatusServiceUnavailable, "no upstream available")
-			relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
-			return
-		}
-		finish(invocation.StatusUpstreamError, lastStatus, fmt.Sprintf("upstream status %d after %d attempts", lastStatus, inv.Attempts))
-		c.Data(lastStatus, "application/json", lastBody)
+	resp, ch, aborted := r.forwardWithFailover(c, inv, finish, forwardOpts{
+		model: req.Model, hold: hold, unsupported: errEmbeddingsUnsupported, modality: "embeddings", logLabel: "embeddings", build: build,
+	})
+	if aborted {
 		return
 	}
 	defer resp.Body.Close()

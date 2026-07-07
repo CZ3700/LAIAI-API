@@ -382,9 +382,9 @@ func (openaiResponsesAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, in
 			return // event: 行/空行忽略（事件类型靠 JSON type 字段判定）
 		}
 		var ev struct {
-			Type     string `json:"type"`
-			Delta    string `json:"delta"`
-			ItemID   string `json:"item_id"`
+			Type     string         `json:"type"`
+			Delta    string         `json:"delta"`
+			ItemID   string         `json:"item_id"`
 			Item     *responsesItem `json:"item"`
 			Response *struct {
 				ID    string `json:"id"`

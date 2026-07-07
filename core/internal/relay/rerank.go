@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -151,95 +152,29 @@ func (r *Relay) HandleRerank(c *gin.Context) {
 		}
 	}()
 
-	var resp *http.Response
-	var ch *Channel
-	exclude := map[uint64]bool{}
-	var lastStatus int
-	var lastBody []byte
-	channelSnap, snapErr := r.cachedChannels()
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if snapErr != nil {
-			break
-		}
-		var pickErr error
-		ch, pickErr = pickFromSnapshot(channelSnap, req.Model, attempt, exclude, r.healthFactor)
-		if pickErr != nil {
-			break
-		}
-		inv.Attempts = attempt + 1
-		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
-		credID, credEnc, credOK := r.selectCredential(ch) // 选 key（0034 Multi-key）
-		if !credOK {
-			r.Log.Error("channel has no usable credential", "channel", ch.ID)
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
-			continue
-		}
-		credential, derr := r.Keyring.Decrypt(credEnc)
-		if derr != nil {
-			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "cred", credID, "err", derr)
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
-			continue
-		}
+	// 换渠道重试（Adapter contract v2 第二期：统一 forwardWithFailover）
+	build := func(ctx context.Context, ch *Channel, credential string) (*http.Request, error) {
 		url, ah, av, uerr := rerankUpstreamURL(ch, credential)
 		if uerr != nil {
-			r.release(hold.ID)
-			finish(invocation.StatusUpstreamError, http.StatusBadRequest, "provider lacks rerank")
-			relayErr(c, http.StatusBadRequest, fmt.Sprintf("provider %q does not support rerank", ch.Provider))
-			return
+			// 任意 URL 构造失败=该 provider 不支持 rerank→400（保真旧"uerr!=nil→400"语义，
+			// 不依赖 mode.go"只返哨兵或 nil"不变量；对抗 review 记档的隐性耦合封堵）。
+			return nil, errRerankUnsupported
 		}
 		upBody, _ := mappedRawBody(ch, body, req.Model) // 模型映射（0009）
-		upReq, berr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, url, bytes.NewReader(upBody))
+		upReq, berr := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(upBody))
 		if berr != nil {
-			r.release(hold.ID) // 此分支原既不 release 也不 finish：hold 泄漏 + 漏记调用
-			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
-			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
-			return
+			return nil, berr
 		}
 		upReq.Header.Set("Content-Type", "application/json")
 		upReq.Header.Set(ah, av)
 		// 渠道级 header override（contract v2 作用域扩展）
 		applyHeaderOverrideForMode(upReq, ch.HeaderOverride, credential, ModeRerank)
-		resp, err = r.clientFor(ch).Do(upReq)
-		if err != nil {
-			r.Log.Warn("rerank upstream unreachable", "channel", ch.ID, "err", err)
-			r.observe(ch.ID, false)
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
-			resp = nil
-			continue
-		}
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			r.enableChannelIfDisabled(ch)
-			r.resetKeyFailures(credID)
-			break
-		}
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-		resp.Body.Close()
-		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
-		if disp.Retryable || disp.DisableChannel {
-			r.observe(ch.ID, false)
-		}
-		if disp.DisableChannel {
-			r.noteKeyFailure(credID, ch.ID, disp.Reason) // 多 key：禁 key 而非渠道（0034）
-		}
-		lastStatus, lastBody = resp.StatusCode, errBody
-		resp = nil
-		if !disp.Retryable {
-			break
-		}
-		exclude[ch.ID] = true
+		return upReq, nil
 	}
-	if resp == nil {
-		r.release(hold.ID)
-		if lastStatus == 0 {
-			finish(invocation.StatusNoChannel, http.StatusServiceUnavailable, "no upstream available")
-			relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
-			return
-		}
-		finish(invocation.StatusUpstreamError, lastStatus, fmt.Sprintf("upstream status %d after %d attempts", lastStatus, inv.Attempts))
-		c.Data(lastStatus, "application/json", lastBody)
+	resp, ch, aborted := r.forwardWithFailover(c, inv, finish, forwardOpts{
+		model: req.Model, hold: hold, unsupported: errRerankUnsupported, modality: "rerank", logLabel: "rerank", build: build,
+	})
+	if aborted {
 		return
 	}
 	defer resp.Body.Close()

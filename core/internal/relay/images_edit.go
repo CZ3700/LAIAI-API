@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -151,100 +152,32 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 		}
 	}()
 
-	// 换渠道重试循环（同生成款分类驱动）
-	var resp *http.Response
-	var ch *Channel
-	exclude := map[uint64]bool{}
-	var lastStatus int
-	var lastBody []byte
-	channelSnap, snapErr := r.cachedChannels() // 取一次快照，重试复用（WS-2）
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if snapErr != nil {
-			break
-		}
-		var pickErr error
-		ch, pickErr = pickFromSnapshot(channelSnap, model, attempt, exclude, r.healthFactor)
-		if pickErr != nil {
-			break
-		}
-		inv.Attempts = attempt + 1
-		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
-		credID, credEnc, credOK := r.selectCredential(ch) // 选 key（0034 Multi-key）
-		if !credOK {
-			r.Log.Error("channel has no usable credential", "channel", ch.ID)
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
-			continue
-		}
-		cred, derr := r.Keyring.Decrypt(credEnc)
-		if derr != nil {
-			r.Log.Error("channel credential decrypt failed", "channel", ch.ID, "cred", credID, "err", derr)
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
-			continue
-		}
+	// 换渠道重试（Adapter contract v2 第二期：统一 forwardWithFailover）
+	hoMode := ModeImagesEdits
+	if suffix == "variations" {
+		hoMode = ModeImagesVariations
+	}
+	build := func(ctx context.Context, ch *Channel, cred string) (*http.Request, error) {
 		url, ah, av, uerr := imageUpstreamURL(ch, ch.UpstreamModel(model), suffix)
 		if uerr != nil {
-			r.release(hold.ID)
-			finish(invocation.StatusUpstreamError, http.StatusBadRequest, "provider lacks image editing")
-			relayErr(c, http.StatusBadRequest, fmt.Sprintf("provider %q does not support image editing", ch.Provider))
-			return
+			// 任意 URL 构造失败=该 provider 不支持图像编辑→400（保真旧语义，不依赖 mode.go 不变量）。
+			return nil, errImagesUnsupported
 		}
 		upBody, upCT := mappedMultipartBody(ch, body, ctHeader, model) // 重写 multipart 的 model 字段
-		upReq, berr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, url, bytes.NewReader(upBody))
+		upReq, berr := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(upBody))
 		if berr != nil {
-			r.release(hold.ID) // 此分支原既不 release 也不 finish：hold 泄漏 + 漏记调用
-			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
-			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
-			return
+			return nil, berr
 		}
 		upReq.Header.Set("Content-Type", upCT)
 		upReq.Header.Set(ah, av+cred)
 		// 渠道级 header override（contract v2 作用域扩展）：multipart 模态 Content-Type 防御性跳过
-		hoMode := ModeImagesEdits
-		if suffix == "variations" {
-			hoMode = ModeImagesVariations
-		}
 		applyHeaderOverrideForMode(upReq, ch.HeaderOverride, cred, hoMode)
-		resp, err = r.clientFor(ch).Do(upReq)
-		if err != nil {
-			r.Log.Warn("image-edit upstream unreachable", "channel", ch.ID, "err", err)
-			r.observe(ch.ID, false)
-			exclude[ch.ID] = true
-			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
-			resp = nil
-			continue
-		}
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			r.enableChannelIfDisabled(ch)
-			r.resetKeyFailures(credID)
-			break
-		}
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-		resp.Body.Close()
-		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
-		if disp.Retryable || disp.DisableChannel {
-			r.observe(ch.ID, false)
-		}
-		if disp.DisableChannel {
-			r.noteKeyFailure(credID, ch.ID, disp.Reason) // 多 key：禁 key 而非渠道（0034）
-		}
-		lastStatus, lastBody = resp.StatusCode, errBody
-		resp = nil
-		if !disp.Retryable {
-			break
-		}
-		exclude[ch.ID] = true
+		return upReq, nil
 	}
-	if resp == nil {
-		r.release(hold.ID)
-		if lastStatus == 0 {
-			finish(invocation.StatusNoChannel, http.StatusServiceUnavailable, "no upstream available")
-			relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
-			return
-		}
-		finish(invocation.StatusUpstreamError, lastStatus, fmt.Sprintf("upstream status %d after %d attempts", lastStatus, inv.Attempts))
-		c.Data(lastStatus, "application/json", lastBody)
+	resp, ch, aborted := r.forwardWithFailover(c, inv, finish, forwardOpts{
+		model: model, hold: hold, unsupported: errImagesUnsupported, modality: "image editing", logLabel: "image-edit", build: build,
+	})
+	if aborted {
 		return
 	}
 	defer resp.Body.Close()
