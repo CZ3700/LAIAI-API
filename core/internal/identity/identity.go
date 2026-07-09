@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/laiai/laiai-next/core/internal/dberr"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -146,6 +148,9 @@ type Organization struct {
 	AffCode      *string `gorm:"column:aff_code"`       // 邀请码（0016，NULL=未生成）
 	InviterOrgID uint64  `gorm:"column:inviter_org_id"` // 邀请来源组织（0016）
 	Status       int8    `gorm:"column:status"`
+	// 余额低预警（0042）：阈值 0=关闭；alerted_at 用于 24h 防重发
+	LowBalanceAlertUSD  decimal.Decimal `gorm:"column:low_balance_alert_usd"`
+	LowBalanceAlertedAt *time.Time      `gorm:"column:low_balance_alerted_at"`
 }
 
 func (Organization) TableName() string { return "organizations" }

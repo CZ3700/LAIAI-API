@@ -96,7 +96,7 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 		relayErr(c, http.StatusBadRequest, "n must be between 1 and 10")
 		return
 	}
-	if code, msg, ok := keyGate(key, c.ClientIP(), model); !ok {
+	if code, msg, ok := r.gateKey(key, c.ClientIP(), model); !ok {
 		relayErr(c, code, msg)
 		return
 	}

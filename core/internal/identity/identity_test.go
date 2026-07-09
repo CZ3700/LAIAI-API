@@ -20,6 +20,7 @@ CREATE TABLE organizations (
     white_label INTEGER NOT NULL DEFAULT 0,
     group_name TEXT NOT NULL DEFAULT 'default', aff_code TEXT, inviter_org_id INTEGER NOT NULL DEFAULT 0,
     status INTEGER NOT NULL DEFAULT 1,
+    low_balance_alert_usd NUMERIC NOT NULL DEFAULT 0, low_balance_alerted_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -56,6 +57,7 @@ CREATE TABLE api_keys (
     expires_at DATETIME,
     quota_limit NUMERIC NOT NULL DEFAULT 0, used_amount NUMERIC NOT NULL DEFAULT 0,
     model_limits TEXT NOT NULL DEFAULT '', allow_ips TEXT NOT NULL DEFAULT '',
+    rpm_limit INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE org_entitlements (

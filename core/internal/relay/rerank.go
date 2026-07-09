@@ -99,7 +99,7 @@ func (r *Relay) HandleRerank(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model, query and documents are required")
 		return
 	}
-	if code, msg, ok := keyGate(key, c.ClientIP(), req.Model); !ok {
+	if code, msg, ok := r.gateKey(key, c.ClientIP(), req.Model); !ok {
 		relayErr(c, code, msg)
 		return
 	}

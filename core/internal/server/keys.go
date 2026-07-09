@@ -20,6 +20,7 @@ type createKeyReq struct {
 	QuotaLimit    string   `json:"quota_limit"`     // 累计消费上限 USD，空/0=无限
 	ModelLimits   []string `json:"model_limits"`    // 模型白名单，空=不限
 	AllowIPs      string   `json:"allow_ips"`       // IP 白名单（逗号/换行），空=不限
+	RPMLimit      int      `json:"rpm_limit"`       // key 级每分钟请求上限，0=不限（0041）
 }
 
 func (s *Server) createKey(c *gin.Context) {
@@ -42,6 +43,10 @@ func (s *Server) createKey(c *gin.Context) {
 			return
 		}
 	}
+	if req.RPMLimit < 0 {
+		fail(c, http.StatusBadRequest, "rpm_limit must be non-negative")
+		return
+	}
 	var plaintext string
 	var key *identity.APIKey
 	err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -56,6 +61,7 @@ func (s *Server) createKey(c *gin.Context) {
 			QuotaLimit:  quota,
 			ModelLimits: joinTrim(req.ModelLimits),
 			AllowIPs:    req.AllowIPs,
+			RPMLimit:    req.RPMLimit,
 			MaxKeys:     ent.MaxAPIKeys, // entitlements 上限（红线：原子在 IssueKey 内强制）
 		})
 		return err
@@ -88,7 +94,7 @@ func (s *Server) listKeys(c *gin.Context) {
 			"id": k.ID, "prefix": k.Prefix, "name": k.Name,
 			"scopes": k.Scopes, "status": k.Status, "expires_at": k.ExpiresAt,
 			"quota_limit": k.QuotaLimit, "used_amount": k.UsedAmount,
-			"model_limits": k.ModelLimits, "allow_ips": k.AllowIPs,
+			"model_limits": k.ModelLimits, "allow_ips": k.AllowIPs, "rpm_limit": k.RPMLimit,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"keys": out})

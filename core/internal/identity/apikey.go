@@ -38,6 +38,7 @@ type APIKey struct {
 	UsedAmount  decimal.Decimal `gorm:"column:used_amount"`  // 已消费 USD
 	ModelLimits string          `gorm:"column:model_limits"` // 模型白名单，逗号分隔，空=不限
 	AllowIPs    string          `gorm:"column:allow_ips"`    // IP 白名单，逗号/换行分隔，支持 CIDR，空=不限
+	RPMLimit    int             `gorm:"column:rpm_limit"`    // key 级每分钟请求上限，0=不限（0041）
 }
 
 func (APIKey) TableName() string { return "api_keys" }
@@ -88,6 +89,7 @@ type IssueKeyInput struct {
 	QuotaLimit  decimal.Decimal // 累计消费上限 USD，0=无限
 	ModelLimits string          // 模型白名单
 	AllowIPs    string          // IP 白名单
+	RPMLimit    int             // key 级每分钟请求上限，0=不限（0041）
 	MaxKeys     int             // org 活跃 Key 上限（entitlements），0=不限
 }
 
@@ -126,6 +128,7 @@ func IssueKey(tx *gorm.DB, in IssueKeyInput) (string, *APIKey, error) {
 		QuotaLimit:  in.QuotaLimit,
 		ModelLimits: in.ModelLimits,
 		AllowIPs:    in.AllowIPs,
+		RPMLimit:    in.RPMLimit,
 	}
 	if err := tx.Create(k).Error; err != nil {
 		return "", nil, err

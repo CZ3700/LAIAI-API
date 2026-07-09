@@ -265,6 +265,7 @@ func (r *Relay) resetFailures(channelID uint64) {
 
 // keyGate：API Key 精细管控校验（0012）。返回 (HTTP 码, 文案, 是否放行)。
 // IP 白名单 / 累计额度 / 模型白名单，任一不过即拒（被拒请求不计费不入上游）。
+// 数据面入口请调 r.gateKey（含 key 级 RPM）；本函数保留为纯校验单元。
 func keyGate(key *identity.APIKey, clientIP, model string) (int, string, bool) {
 	if !key.AllowsIP(clientIP) {
 		return http.StatusForbidden, "this api key is not allowed from your ip address", false
@@ -278,11 +279,25 @@ func keyGate(key *identity.APIKey, clientIP, model string) (int, string, bool) {
 	return 0, "", true
 }
 
+// gateKey：数据面 key 级准入唯一入口 = keyGate 三项 + key 级 RPM（0041）。
+// 全部数据面模态（chat/embeddings/images/edits/rerank/audio/realtime）与 task（经 GateKey）
+// 共用本入口——未来新增 key 级门（如 key 级并发）也加在这里，不散落 handler。
+// 429 的 Retry-After 头由 relayErr 统一设置。
+func (r *Relay) gateKey(key *identity.APIKey, clientIP, model string) (int, string, bool) {
+	if code, msg, ok := keyGate(key, clientIP, model); !ok {
+		return code, msg, false
+	}
+	if !r.allowKeyRate(key.ID, key.RPMLimit) {
+		return http.StatusTooManyRequests, "this api key has exceeded its rpm limit, slow down", false
+	}
+	return 0, "", true
+}
+
 // GateKey / AllowModelRate：准入原语的导出封装（指令 P0-1 统一 admission）。
-// task/video 等非本包数据面入口复用同一实例——同一 keyGate 语义、同一 (org,model)
+// task/video 等非本包数据面入口复用同一实例——同一 gateKey 语义、同一 (org,model)
 // 限流窗口（Redis 或进程内），不另建第二套状态。
 func (r *Relay) GateKey(key *identity.APIKey, clientIP, model string) (code int, msg string, ok bool) {
-	return keyGate(key, clientIP, model)
+	return r.gateKey(key, clientIP, model)
 }
 
 func (r *Relay) AllowModelRate(orgID uint64, model string) (ok bool, rpm int) {
@@ -427,7 +442,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model is required")
 		return
 	}
-	if code, msg, ok := keyGate(key, c.ClientIP(), model); !ok { // Key 精细管控（0012）
+	if code, msg, ok := r.gateKey(key, c.ClientIP(), model); !ok { // Key 精细管控（0012）
 		relayErr(c, code, msg)
 		return
 	}
@@ -817,5 +832,8 @@ func (r *Relay) cachedRatio(org uint64, model string) decimal.Decimal {
 }
 
 func relayErr(c *gin.Context, code int, msg string) {
+	if code == http.StatusTooManyRequests {
+		c.Header("Retry-After", "60") // 限流窗口 60s 固定，统一出口设置（文档承诺 429 带 Retry-After）
+	}
 	c.AbortWithStatusJSON(code, gin.H{"error": gin.H{"message": msg, "type": "laiai_relay_error"}})
 }

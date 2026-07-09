@@ -82,25 +82,38 @@ func (r *Relay) allowModelRate(orgID uint64, model string) (ok bool, rpm int) {
 	if !enabled || limit <= 0 {
 		return true, 0
 	}
+	return r.allowWindowed(fmt.Sprintf("m:%d:%s", orgID, model), limit), limit
+}
+
+// allowKeyRate：key 级 RPM（0041，api_keys.rpm_limit）。0=不限。窗口/计数器与模型级共用。
+func (r *Relay) allowKeyRate(keyID uint64, limit int) bool {
+	if limit <= 0 {
+		return true
+	}
+	return r.allowWindowed(fmt.Sprintf("k:%d", keyID), limit)
+}
+
+// allowWindowed：固定 60s 窗口计数（bucket 为限流维度标识）。Redis 跨实例，未配则进程内；
+// fail-open（限流是保护、不是收费闸）。
+func (r *Relay) allowWindowed(bucket string, limit int) bool {
 	now := r.Now()
 
 	// 跨实例路径：Redis 固定窗口（key 含窗口纪元，天然每分钟重置）。
 	if r.rate != nil {
 		window := now.Unix() / 60
-		key := fmt.Sprintf("rl:m:%d:%s:%d", orgID, model, window)
+		key := fmt.Sprintf("rl:%s:%d", bucket, window)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		n, err := r.rate.incr(ctx, key, 2*time.Minute) // 2m 过期 > 窗口，安全清理
 		if err != nil {
 			// fail-open：Redis 抖动绝不挡流量（P2-2 用户体验红线），放行并告警
-			r.Log.Warn("rate limiter redis error, failing open", "org", orgID, "model", model, "err", err)
-			return true, limit
+			r.Log.Warn("rate limiter redis error, failing open", "bucket", bucket, "err", err)
+			return true
 		}
-		return n <= int64(limit), limit
+		return n <= int64(limit)
 	}
 
 	// 单实例退化路径：进程内固定窗口
-	key := fmt.Sprintf("%d:%s", orgID, model)
 	r.rateMu.Lock()
 	defer r.rateMu.Unlock()
 	// 惰性驱逐：每 5 分钟清掉 2 分钟前的旧窗口，防 map 无界增长
@@ -112,14 +125,14 @@ func (r *Relay) allowModelRate(orgID uint64, model string) (ok bool, rpm int) {
 		}
 		r.rateLastEvic = now
 	}
-	w := r.rateWindows[key]
+	w := r.rateWindows[bucket]
 	if w == nil || now.Sub(w.start) >= time.Minute {
-		r.rateWindows[key] = &rateWindow{start: now, count: 1}
-		return true, limit
+		r.rateWindows[bucket] = &rateWindow{start: now, count: 1}
+		return true
 	}
 	if w.count >= limit {
-		return false, limit
+		return false
 	}
 	w.count++
-	return true, limit
+	return true
 }

@@ -103,6 +103,27 @@ async function regenBackup() {
   }
 }
 
+// 余额低预警（0042）：org 级阈值，可用余额低于阈值给 owner 发邮件（24h 至多一封）。
+// 成员可见；仅 owner/admin 可保存（后端 403 兜底）。
+const alertThreshold = ref('')
+const alertBusy = ref(false)
+const alertMsg = ref('')
+const alertErr = ref('')
+
+async function saveBalanceAlert() {
+  alertBusy.value = true
+  alertMsg.value = ''
+  alertErr.value = ''
+  try {
+    await api('PUT', '/api/org/balance-alert', { low_balance_alert_usd: alertThreshold.value.trim() || '0' })
+    alertMsg.value = t('settings.saved')
+  } catch (e) {
+    alertErr.value = errorMessage(e, t('common.error'))
+  } finally {
+    alertBusy.value = false
+  }
+}
+
 onMounted(async () => {
   try {
     const r = await api<Me & { totp_enabled?: boolean }>('GET', '/api/me')
@@ -111,6 +132,12 @@ onMounted(async () => {
     totpEnabled.value = !!r.totp_enabled
   } catch (e) {
     profileErr.value = errorMessage(e, t('common.error'))
+  }
+  try {
+    const a = await api<{ low_balance_alert_usd: string }>('GET', '/api/org/balance-alert')
+    if (Number(a.low_balance_alert_usd) > 0) alertThreshold.value = a.low_balance_alert_usd
+  } catch {
+    // 预警读取失败不阻塞设置页其余部分
   }
 })
 
@@ -191,6 +218,20 @@ async function changePassword() {
       <button class="btn-primary" :disabled="profileBusy">{{ t('settings.save') }}</button>
     </form>
     </section>
+
+    <!-- 余额低预警（org 级通知，0042） -->
+    <form class="app-panel p-6 space-y-4" @submit.prevent="saveBalanceAlert">
+      <h2 class="font-semibold">{{ t('settings.alertTitle') }}</h2>
+      <p class="text-sm text-muted">{{ t('settings.alertDesc') }}</p>
+      <div>
+        <label class="label" for="alert-th">{{ t('settings.alertLabel') }}</label>
+        <input id="alert-th" v-model="alertThreshold" class="input max-w-sm" inputmode="decimal" placeholder="0" />
+        <p class="mt-1 text-xs text-muted">{{ t('settings.alertHint') }}</p>
+      </div>
+      <p v-if="alertMsg" class="text-sm text-ok" role="status">{{ alertMsg }}</p>
+      <p v-if="alertErr" class="text-sm text-danger" role="alert">{{ alertErr }}</p>
+      <button class="btn-primary" :disabled="alertBusy">{{ t('common.confirm') }}</button>
+    </form>
 
     <section class="grid gap-4 lg:grid-cols-2">
     <!-- 改密码 -->

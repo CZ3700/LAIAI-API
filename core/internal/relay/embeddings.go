@@ -121,7 +121,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model and input are required")
 		return
 	}
-	if code, msg, ok := keyGate(key, c.ClientIP(), req.Model); !ok { // Key 精细管控（0012）
+	if code, msg, ok := r.gateKey(key, c.ClientIP(), req.Model); !ok { // Key 精细管控（0012）
 		relayErr(c, code, msg)
 		return
 	}

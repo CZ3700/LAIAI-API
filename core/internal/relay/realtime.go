@@ -109,7 +109,7 @@ func (r *Relay) HandleRealtime(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model query param is required")
 		return
 	}
-	if code, msg, ok := keyGate(key, c.ClientIP(), model); !ok {
+	if code, msg, ok := r.gateKey(key, c.ClientIP(), model); !ok {
 		relayErr(c, code, msg)
 		return
 	}

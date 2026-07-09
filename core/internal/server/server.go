@@ -200,6 +200,8 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/payment/orders", s.listTopups)
 				org.GET("/payment/recharge-stats", s.getRechargeStats) // 仪表盘本月/近7日充值聚合
 				org.GET("/affiliate", s.getAffiliate)
+				org.GET("/org/balance-alert", s.getBalanceAlert)  // 余额低预警阈值（0042）
+				org.PUT("/org/balance-alert", s.putBalanceAlert)  // 仅 owner/admin
 				org.GET("/org/members", s.listMembers)
 				org.POST("/org/members", s.inviteMember) // 发邀请（pending），对方确认后才入队
 				org.DELETE("/org/members/:user_id", s.removeMember)

@@ -187,6 +187,11 @@ func main() {
 				if checked, withNew := apiSrv.SyncChannelModels(maintCtx, 200); withNew > 0 {
 					log.Info("model sync detected new upstream models", "channels_checked", checked, "channels_with_new", withNew)
 				}
+				// 余额低预警（0042 批次 3）：已设阈值的 org 可用余额低于阈值 → owner 邮件（24h 防重发）。
+				// best-effort 通知，mailer 未配即整段跳过；绝不影响资金语义。
+				if checked, sentN := apiSrv.SweepLowBalanceAlerts(maintCtx, 200); sentN > 0 {
+					log.Info("low balance alerts sent", "orgs_checked", checked, "sent", sentN)
+				}
 				// 账户分片摊平（规模化）：把充值默认入的主片余额周期摊到各片，防非主片饿死 → 分片退化为入金单点。
 				// 未配置分片（今日全部 org，shard_count=1）时 ListShardedOrgs 为空 → 直接 no-op，零开销零回归。
 				runID := "rebal-" + time.Now().UTC().Format("20060102T150405.000")

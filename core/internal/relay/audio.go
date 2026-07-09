@@ -69,7 +69,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model and input are required")
 		return
 	}
-	if code, msg, gok := keyGate(key, c.ClientIP(), req.Model); !gok {
+	if code, msg, gok := r.gateKey(key, c.ClientIP(), req.Model); !gok {
 		relayErr(c, code, msg)
 		return
 	}
@@ -187,7 +187,7 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 		relayErr(c, http.StatusBadRequest, "multipart form with a model field is required")
 		return
 	}
-	if code, msg, gok := keyGate(key, c.ClientIP(), model); !gok {
+	if code, msg, gok := r.gateKey(key, c.ClientIP(), model); !gok {
 		relayErr(c, code, msg)
 		return
 	}
