@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { api } from '@/lib/api'
+import { fmtUsd } from '@/lib/money'
 
 interface PricedModel {
   model: string
@@ -10,15 +11,19 @@ interface PricedModel {
   category?: string // 后端模型元数据的模态/分类（chat/image/audio/embedding…）
 }
 
-// 体验场支持的两种模态：chat → /v1/chat/completions；image → /v1/images/generations。
-// 其余模态（audio/embedding/rerank/video）仍引导走 API（FE-4）。
+// 体验场支持的三种模态：chat → /v1/chat/completions；image → /v1/images/generations；
+// video → /v1/video/generations（异步任务：提交→轮询→产物播放/下载）。
+// 其余模态（audio/embedding/rerank）仍引导走 API（FE-4）。
 const IMAGE_CATEGORIES = new Set(['image', 'images'])
+const VIDEO_CATEGORIES = new Set(['video'])
 const NON_CHAT_CATEGORIES = new Set([
   'image', 'images', 'audio', 'tts', 'stt', 'speech', 'transcription',
   'embedding', 'embeddings', 'rerank', 'moderation', 'video',
 ])
 // 无元数据分类时按模型名兜底识别常见生图族（避免漏判把生图模型当对话）
 const IMAGE_NAME_RE = /(^|[-_/])(dall-?e|gpt-image|flux|stable-?diffusion|sdxl|sd[0-9]|cogview|kolors|seedream|hunyuan-image|wanx?|imagen|ideogram|recraft)/i
+// 视频族名兜底（wan 不进兜底——与生图 wanx 歧义，靠元数据 category 判定）
+const VIDEO_NAME_RE = /(^|[-_/])(seedance|sora|veo|kling|hailuo|vidu|pika|runway)|video/i
 
 interface Msg {
   role: 'user' | 'assistant'
@@ -64,6 +69,36 @@ const images = ref<GenImage[]>([])
 const generating = ref(false)
 const genError = ref('')
 
+// —— video 模态（异步任务）——
+interface VideoTask {
+  id: string
+  model?: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | string
+  fail_reason?: string
+  result_url?: string
+  cost_usd?: string
+  completion_tokens?: number
+}
+const VIDEO_TASK_STORE = 'laiai_pg_video_task' // 刷新后恢复跟踪（sessionStorage，同 Key 纪律）
+const videoPrompt = ref('')
+const videoImage = ref('') // 可选参考图 URL（图生视频）
+const videoDuration = ref('default')
+const videoResolution = ref('default')
+const videoRatio = ref('default')
+const videoTask = ref<VideoTask | null>(null)
+const videoSubmitting = ref(false)
+const videoError = ref('')
+const videoSrc = ref('') // <video> 播放源（直链或 blob objectURL）
+let videoBlobUrl = '' // 待 revoke 的 objectURL
+let videoPollTimer: number | null = null
+let videoTickTimer: number | null = null
+const videoStartMs = ref(0)
+const videoElapsedSec = ref(0)
+const videoActive = computed(() => {
+  const s = videoTask.value?.status
+  return s === 'queued' || s === 'running'
+})
+
 // 选中模型分类（后端 /api/pricing 元数据），用于模态路由（FE-4）
 const selectedCategory = computed(
   () => models.value.find((m) => m.model === model.value)?.category?.toLowerCase() ?? '',
@@ -72,17 +107,26 @@ const isImageModel = computed(() => {
   if (selectedCategory.value) return IMAGE_CATEGORIES.has(selectedCategory.value)
   return IMAGE_NAME_RE.test(model.value) // 无元数据时按名兜底
 })
+const isVideoModel = computed(() => {
+  if (selectedCategory.value) return VIDEO_CATEGORIES.has(selectedCategory.value)
+  return VIDEO_NAME_RE.test(model.value)
+})
 const isChatModel = computed(() => !selectedCategory.value || !NON_CHAT_CATEGORIES.has(selectedCategory.value))
-const mode = computed<'chat' | 'image' | 'other'>(() =>
-  isImageModel.value ? 'image' : isChatModel.value ? 'chat' : 'other',
+const mode = computed<'chat' | 'image' | 'video' | 'other'>(() =>
+  isVideoModel.value ? 'video' : isImageModel.value ? 'image' : isChatModel.value ? 'chat' : 'other',
 )
-const endpoint = computed(() => (mode.value === 'image' ? '/v1/images/generations' : '/v1/chat/completions'))
+const endpoint = computed(() =>
+  mode.value === 'video' ? '/v1/video/generations' : mode.value === 'image' ? '/v1/images/generations' : '/v1/chat/completions',
+)
 
 const canSend = computed(
   () => !!apiKey.value && !!model.value && !!input.value.trim() && !sending.value && mode.value === 'chat',
 )
 const canGenerate = computed(
   () => !!apiKey.value && !!model.value && !!imagePrompt.value.trim() && !generating.value && mode.value === 'image',
+)
+const canSubmitVideo = computed(
+  () => !!apiKey.value && !!model.value && !!videoPrompt.value.trim() && !videoSubmitting.value && !videoActive.value && mode.value === 'video',
 )
 
 async function toBottom() {
@@ -91,6 +135,13 @@ async function toBottom() {
 }
 
 onMounted(async () => {
+  // 恢复未完成的视频任务跟踪（刷新/误关后回到页面继续轮询）
+  const savedTask = sessionStorage.getItem(VIDEO_TASK_STORE)
+  if (savedTask && apiKey.value) {
+    videoTask.value = { id: savedTask, status: 'running' }
+    videoStartMs.value = Date.now() // 刷新后计时从回页起算（提交时刻已不可知）
+    startVideoPolling()
+  }
   try {
     const r = await api<{ models: PricedModel[] }>('GET', '/api/pricing')
     models.value = r.models
@@ -103,12 +154,18 @@ onMounted(async () => {
   }
 })
 
+onUnmounted(() => {
+  stopVideoPolling()
+  if (videoBlobUrl) URL.revokeObjectURL(videoBlobUrl)
+})
+
 function clearAll() {
   messages.value = []
   error.value = ''
   lastUsage.value = null
   images.value = []
   genError.value = ''
+  if (!videoActive.value) resetVideoResult() // 进行中的任务不清（余额已可能被冻结，保留跟踪）
 }
 
 function stop() {
@@ -254,6 +311,151 @@ function imgSrc(img: GenImage): string {
   return img.b64_json ? `data:image/png;base64,${img.b64_json}` : (img.url ?? '')
 }
 
+// —— 视频任务：提交 → 轮询 → 播放/下载 ——
+
+function resetVideoResult() {
+  videoTask.value = null
+  videoError.value = ''
+  videoSrc.value = ''
+  if (videoBlobUrl) {
+    URL.revokeObjectURL(videoBlobUrl)
+    videoBlobUrl = ''
+  }
+  sessionStorage.removeItem(VIDEO_TASK_STORE)
+}
+
+function stopVideoPolling() {
+  if (videoPollTimer !== null) window.clearInterval(videoPollTimer)
+  if (videoTickTimer !== null) window.clearInterval(videoTickTimer)
+  videoPollTimer = null
+  videoTickTimer = null
+}
+
+function startVideoPolling() {
+  stopVideoPolling()
+  videoElapsedSec.value = Math.max(0, Math.round((Date.now() - videoStartMs.value) / 1000))
+  videoTickTimer = window.setInterval(() => {
+    videoElapsedSec.value = Math.round((Date.now() - videoStartMs.value) / 1000)
+  }, 1000)
+  videoPollTimer = window.setInterval(() => void pollVideoOnce(), 5000)
+  void pollVideoOnce()
+}
+
+async function pollVideoOnce() {
+  const id = videoTask.value?.id
+  if (!id) return stopVideoPolling()
+  try {
+    const resp = await fetch(`/v1/video/generations/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${apiKey.value}` },
+    })
+    if (!resp.ok) {
+      // 401/403/404 = 不可恢复（key 失效/越权/任务不存在）；5xx/网络抖动留给下一轮
+      if ([401, 403, 404].includes(resp.status)) {
+        videoError.value = `poll failed (${resp.status})`
+        stopVideoPolling()
+        sessionStorage.removeItem(VIDEO_TASK_STORE)
+      }
+      return
+    }
+    const task = (await resp.json()) as VideoTask
+    videoTask.value = task
+    if (task.status === 'succeeded') {
+      stopVideoPolling()
+      sessionStorage.removeItem(VIDEO_TASK_STORE)
+      await loadVideoResult(task)
+    } else if (task.status === 'failed') {
+      stopVideoPolling()
+      sessionStorage.removeItem(VIDEO_TASK_STORE)
+      videoError.value = task.fail_reason || t('play.videoFailed')
+    }
+  } catch {
+    // 网络抖动：下一轮重试（任务在服务端继续跑，不因前端失败而丢）
+  }
+}
+
+// 产物加载：直链（seedance 等厂商 URL）→ <video> 原生播放，无需凭证；
+// 平台代理路径（sora/veo 的 /v1/video/generations/{id}/content）→ <video> 加不了
+// Authorization 头，fetch+Bearer 转 blob objectURL（playground 短片体量可接受）。
+async function loadVideoResult(task: VideoTask) {
+  const url = task.result_url
+  if (!url) {
+    videoError.value = t('play.videoNoResult')
+    return
+  }
+  if (url.startsWith('/')) {
+    try {
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${apiKey.value}` } })
+      if (!r.ok) throw new Error(`content fetch failed (${r.status})`)
+      videoBlobUrl = URL.createObjectURL(await r.blob())
+      videoSrc.value = videoBlobUrl
+    } catch (e) {
+      videoError.value = (e as Error).message
+    }
+  } else {
+    videoSrc.value = url
+  }
+}
+
+async function submitVideo() {
+  if (!canSubmitVideo.value) return
+  resetVideoResult()
+  videoSubmitting.value = true
+  const content: unknown[] = [{ type: 'text', text: videoPrompt.value.trim() }]
+  if (videoImage.value.trim()) content.push({ type: 'image_url', image_url: { url: videoImage.value.trim() } })
+  const body: Record<string, unknown> = { model: model.value, content }
+  // 可选参数按厂商方言透传（后端 bindCreateReq 吸收任意顶层参数）；default = 不发，走厂商默认
+  if (videoDuration.value !== 'default') body.duration = Number(videoDuration.value)
+  if (videoResolution.value !== 'default') body.resolution = videoResolution.value
+  if (videoRatio.value !== 'default') body.ratio = videoRatio.value
+  try {
+    const resp = await fetch('/v1/video/generations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey.value}` },
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok) {
+      const data = (await resp.json().catch(() => ({}))) as { error?: { message?: string } | string }
+      const msg =
+        typeof data.error === 'object' ? data.error?.message : typeof data.error === 'string' ? data.error : ''
+      throw new Error(msg || `request failed (${resp.status})`)
+    }
+    const task = (await resp.json()) as VideoTask
+    videoTask.value = task
+    sessionStorage.setItem(VIDEO_TASK_STORE, task.id)
+    videoStartMs.value = Date.now()
+    startVideoPolling()
+  } catch (e) {
+    videoError.value = (e as Error).message
+  } finally {
+    videoSubmitting.value = false
+  }
+}
+
+// 下载：blob 源直接触发下载；跨域直链 fetch-blob 失败时回退新标签页（右键另存）。
+async function saveVideo() {
+  const name = `laiai-${model.value}-video.mp4`.replace(/[^\w.-]+/g, '_')
+  const src = videoSrc.value
+  if (!src) return
+  try {
+    let href = src
+    let revoke = ''
+    if (!src.startsWith('blob:')) {
+      const r = await fetch(src)
+      href = URL.createObjectURL(await r.blob())
+      revoke = href
+    }
+    const a = document.createElement('a')
+    a.href = href
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    if (revoke) URL.revokeObjectURL(revoke)
+  } catch {
+    window.open(src, '_blank')
+  }
+}
+
 // 保存：base64 直接下载；URL 先取 blob 再下载，跨域取失败则回退新标签页打开（让用户右键另存）。
 async function saveImage(img: GenImage, idx: number) {
   const name = `laiai-${model.value}-${idx + 1}.png`.replace(/[^\w.-]+/g, '_')
@@ -304,7 +506,7 @@ async function saveImage(img: GenImage, idx: number) {
           <p class="text-sm font-semibold">{{ t('surface.playEndpoint') }}</p>
           <p class="mt-1 font-mono text-xs text-muted">{{ endpoint }}</p>
         </div>
-        <button class="btn-ghost !min-h-0 !px-2.5 !py-1.5 text-xs" :disabled="messages.length === 0 && images.length === 0" @click="clearAll">{{ t('play.clear') }}</button>
+        <button class="btn-ghost !min-h-0 !px-2.5 !py-1.5 text-xs" :disabled="messages.length === 0 && images.length === 0 && !videoSrc && !videoError" @click="clearAll">{{ t('play.clear') }}</button>
       </div>
 
       <div class="space-y-4">
@@ -372,6 +574,38 @@ async function saveImage(img: GenImage, idx: number) {
             <input v-model="useB64" type="checkbox" class="accent-accent" />
           </label>
         </template>
+
+        <!-- video 模态设置（可选参数按厂商方言透传） -->
+        <template v-else-if="mode === 'video'">
+          <div class="grid grid-cols-3 gap-3">
+            <div>
+              <label class="label" for="pg-vdur">{{ t('play.videoDuration') }}</label>
+              <select id="pg-vdur" v-model="videoDuration" class="input">
+                <option value="default">default</option>
+                <option v-for="d in [4, 5, 6, 8, 10]" :key="d" :value="String(d)">{{ d }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="label" for="pg-vres">{{ t('play.videoResolution') }}</label>
+              <select id="pg-vres" v-model="videoResolution" class="input">
+                <option value="default">default</option>
+                <option v-for="r in ['480p', '720p', '1080p']" :key="r" :value="r">{{ r }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="label" for="pg-vratio">{{ t('play.videoRatio') }}</label>
+              <select id="pg-vratio" v-model="videoRatio" class="input">
+                <option value="default">default</option>
+                <option v-for="r in ['16:9', '9:16', '1:1', '4:3']" :key="r" :value="r">{{ r }}</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="label" for="pg-vimg">{{ t('play.videoRefImage') }}</label>
+            <input id="pg-vimg" v-model="videoImage" class="input font-mono text-xs" placeholder="https://…" />
+          </div>
+          <p class="text-xs text-muted">{{ t('play.videoBillingHint') }}</p>
+        </template>
       </div>
       </div>
     </aside>
@@ -380,7 +614,7 @@ async function saveImage(img: GenImage, idx: number) {
       <div class="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
         <div class="min-w-0">
           <p class="truncate font-mono text-sm">{{ model || t('play.modelManual') }}</p>
-          <p class="text-xs text-muted">{{ (sending || generating) ? t('surface.playStreaming') : t('surface.playReady') }}</p>
+          <p class="text-xs text-muted">{{ (sending || generating || videoSubmitting || videoActive) ? t('surface.playStreaming') : t('surface.playReady') }}</p>
         </div>
         <p v-if="lastUsage && mode === 'chat'" class="shrink-0 text-xs text-muted">
           {{ t('play.usage', { input: lastUsage.prompt_tokens, output: lastUsage.completion_tokens }) }}
@@ -452,7 +686,55 @@ async function saveImage(img: GenImage, idx: number) {
         </div>
       </template>
 
-      <!-- 其余模态（audio/embedding/rerank/video）：引导走 API -->
+      <!-- video 模态：提交 + 轮询进度 + 成片播放/下载 -->
+      <template v-else-if="mode === 'video'">
+        <div class="flex-1 overflow-y-auto bg-elev/18 p-4 sm:p-5">
+          <!-- 进行中：进度态 -->
+          <div v-if="videoActive || videoSubmitting" class="grid h-full place-items-center text-center text-muted">
+            <div class="max-w-md space-y-3">
+              <span class="inline-flex gap-1 py-1">
+                <span class="h-2 w-2 animate-bounce rounded-full bg-muted" style="animation-delay: 0ms"></span>
+                <span class="h-2 w-2 animate-bounce rounded-full bg-muted" style="animation-delay: 150ms"></span>
+                <span class="h-2 w-2 animate-bounce rounded-full bg-muted" style="animation-delay: 300ms"></span>
+              </span>
+              <p class="text-sm">
+                {{ t('play.videoGenerating') }}
+                <span class="font-mono">{{ videoTask?.status ?? '…' }}</span>
+                · {{ t('play.videoElapsed', { s: videoElapsedSec }) }}
+              </p>
+              <p class="text-xs">{{ t('play.videoRunningHint') }}</p>
+              <p v-if="videoTask?.id" class="select-all font-mono text-[10px] opacity-60">{{ videoTask.id }}</p>
+            </div>
+          </div>
+          <!-- 成片：播放 + 下载 + 实际费用 -->
+          <div v-else-if="videoSrc" class="mx-auto max-w-3xl space-y-3">
+            <video :src="videoSrc" controls playsinline class="w-full rounded-lg border border-line bg-black shadow-card"></video>
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <p class="text-xs text-muted">
+                <template v-if="videoTask?.cost_usd">{{ t('play.videoCost', { cost: fmtUsd(videoTask.cost_usd) }) }}</template>
+              </p>
+              <button type="button" class="btn-primary !min-h-0 !px-3 !py-2 text-sm" @click="saveVideo">
+                {{ t('play.videoDownload') }}
+              </button>
+            </div>
+          </div>
+          <!-- 空态 -->
+          <div v-else class="grid h-full place-items-center text-center text-muted">
+            <p class="max-w-sm text-sm">{{ t('play.videoEmptyHint') }}</p>
+          </div>
+        </div>
+        <div class="border-t border-line p-3">
+          <p v-if="videoError" class="mb-2 text-sm text-danger" role="alert">{{ videoError }}</p>
+          <form class="flex gap-2" @submit.prevent="submitVideo">
+            <input v-model="videoPrompt" class="input" :placeholder="t('play.videoPromptPlaceholder')" :disabled="videoSubmitting || videoActive" />
+            <button type="submit" class="btn-primary shrink-0" :disabled="!canSubmitVideo">
+              {{ videoSubmitting || videoActive ? t('play.videoGenerating') : t('play.videoGenerate') }}
+            </button>
+          </form>
+        </div>
+      </template>
+
+      <!-- 其余模态（audio/embedding/rerank）：引导走 API -->
       <template v-else>
         <div class="grid flex-1 place-items-center bg-elev/18 p-6 text-center">
           <p class="max-w-sm text-sm text-amber-500" role="alert">
