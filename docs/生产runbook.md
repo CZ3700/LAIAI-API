@@ -98,5 +98,58 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
 **部署**
 - [ ] 叠加 docker-compose.prod.yml 且 MYSQL_IMAGE/REDIS_IMAGE 为 digest 形式
 - [ ] `release-manifest.sh generate` 留档；对上一基线 `diff` 只有预期变化
-- [ ] 备份任务在跑 + 至少一次恢复演练记录
+- [ ] 备份任务在跑（§5 cron 已装）+ 至少一次恢复演练记录（§5.3）
 - [ ] /status 状态页返回 operational；/healthz 200
+
+## 5. 备份与恢复（2026-07 起用，上线冲刺批次 0.2）
+
+脚本：`infra/backup.sh`（每日备份）+ `infra/backup-verify.sh`（恢复演练）。
+纪律：口令走容器内 `$MYSQL_ROOT_PASSWORD` 环境变量绝不上命令行（红线 7）；
+完整性双检（gzip -t + "Dump completed" 哨兵）；半截文件不落地；保留 14 份。
+
+### 5.1 安装（每台生产/调试机一次）
+
+```bash
+chmod +x /opt/laiai-next/infra/backup.sh /opt/laiai-next/infra/backup-verify.sh
+# 手动跑一次确认通过：
+/opt/laiai-next/infra/backup.sh
+# 装 cron（每日 04:10 UTC）：
+( crontab -l 2>/dev/null; echo '10 4 * * * /opt/laiai-next/infra/backup.sh >> /var/log/laiai-backup.log 2>&1' ) | crontab -
+crontab -l   # 确认
+```
+
+生产必开加密：把 `LAIAI_BACKUP_PASSPHRASE=<强口令>` 写入 root 只读文件（如
+`/root/.laiai-backup-env`，0600），cron 行改为
+`10 4 * * * . /root/.laiai-backup-env && /opt/laiai-next/infra/backup.sh >> /var/log/laiai-backup.log 2>&1`。
+**口令丢失 = 备份不可解，务必另处保管**（与 .env 同级纪律）。
+
+### 5.2 监控口径
+
+- 备份日志：`tail /var/log/laiai-backup.log`——每日应有 `backup ok` 行
+- 目录体检：`ls -lh /var/backups/laiai/`——文件数 ≤14、最新文件日期为今日
+- 磁盘：备份目录与 MySQL 同盘时注意容量（本项目 dump 很小，但 build cache 会挤占——见 memory 部署坑）
+
+### 5.3 恢复演练（季度一次；输出留档在本节下方）
+
+```bash
+/opt/laiai-next/infra/backup-verify.sh   # 恢复进一次性临时容器并断言，绝不碰生产
+```
+
+通过标准：输出 `PASS：恢复演练通过（N 张表）` 且 `max_migration` 与当前部署一致。
+
+**演练记录**：
+- （待首次演练后粘贴输出与日期）
+
+### 5.4 真恢复（事故时）——先想清楚再动手
+
+1. 停 core（`docker compose stop core`）防新写入；**绝不**直接删 mysql 数据卷
+2. 先把当前坏库也 dump 一份留档（哪怕损坏——事后取证用）
+3. 新起临时容器按 §5.3 方式验证目标备份可恢复、迁移号正确
+4. 确认后再恢复进生产 mysql（`zcat 备份 | docker exec -i laiai-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot'`）
+5. 起 core，跑 §1.3 冒烟 + 账本漂移自检无告警后才恢复对外
+6. 事故与恢复过程记进本节
+
+### 5.5 异地副本（第二层，上线后接入）
+
+当前仅本地层。正式上线后按设计 §7 加 R2/rclone 异地推送（跨云容灾：宿主机全损时仍可恢复）。
+
