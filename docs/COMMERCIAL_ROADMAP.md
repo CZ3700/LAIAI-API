@@ -12,11 +12,11 @@
 | 多厂商中继内核（25+ provider，chat/embeddings/images/video） | ✅ | `core/internal/relay` |
 | 渠道优先级分层 + 权重轮询 + 失败换渠道重试 | ✅ | `relay/picker.go` |
 | 渠道自动禁用（阈值+开关，热更新）/ 成功自动重启用 | ✅ | `relay.noteFailure` (#11) |
-| 双запись记账（hold→capture→release，USD-first，幂等） | ✅ | `core/internal/ledger` |
+| 复式记账（hold→capture→release，USD-first，幂等） | ✅ | `core/internal/ledger` |
 | 充值（Stripe/EPay）+ 灵活支付渠道表 + 路由预览 | ✅ | `payment_channels` (#5) |
 | 分组差异化定价（group_ratio）+ 缓存命中价 | ✅ | `relay/types.go` |
 | API Key 精细管控（IP/额度/模型白名单） | ✅ | `identity/apikey.go` |
-| 邀请返佣 / 注册赠送 / 统一资金流水 | ✅ | (#4/#9) |
+| 邀请码注册赠额（**返佣已拍板移除**，2026-07 对齐）/ 注册赠送 / 统一资金流水 | ✅ | (#4/#9) |
 | 2FA / OAuth(GitHub,Google) / 邮箱验证 | ✅ | `server/{twofa,oauth,verification}.go` |
 | 运营分析（资金/用户/质量）+ 审计轨迹 | ✅ | `analytics.go` (#10/#14) |
 | 9 语言 i18n + 玻璃质感 UI | ✅ | `web/src/i18n`, `style.css` (#13) |
@@ -76,7 +76,7 @@ b.ai 等新一代平台把 **x402** 与 **ERC-8004** 作为「机器对机器、
 | 步骤 | 内容 | 价值 |
 |---|---|---|
 | C1 | **用量计费 webhook / 发票**：按月出账、企业发票、用量导出 API | 企业签约前提 |
-| C2 | **订阅 / 套餐**：月费包含额度 + 超额按量（当前仅一次性充值） | 可预测收入 (MRR) |
+| C2 | ~~**订阅 / 套餐**~~ **2026-07 拍板不做**：全站预付费余额 + 按量计费单一模式（无订阅表、无套餐页） | — |
 | C3 | **团队/组织计费**：成员席位、共享额度、子预算（Organization 模型已具备，需计费维度） | B2B 扩张 |
 | C4 | **兑换码 / 礼品卡**：批量发码、营销分发（本轮按要求暂缓，已留接口位） | 拉新 |
 | C5 | **模型市场页 SEO**：公开价格/排行/延迟（已有 /models /rankings，需补 provider 对比与延迟） | 自然流量 |
@@ -122,7 +122,7 @@ b.ai 等新一代平台把 **x402** 与 **ERC-8004** 作为「机器对机器、
 
 1. **A2+A3+A4 路由智能 + 健康看板** — 最核心护城河，数据已在 invocations 里，改造集中在 relay。
 2. **A5 BYOK** — 企业刚需，Keyring 已就绪，工作量小。
-3. **C2 订阅 / C1 发票** — 把一次性充值升级为 MRR，直接变现。
+3. ~~C2 订阅~~（拍板不做）；**C1 发票** — 企业客户出现时排期。
 4. **B1 x402** — agent 经济入口，差异化；先做同步小额 + facilitator 兜底。
 5. **A6 缓存套利 + C5 市场 SEO** — 毛利 + 自然流量。
 6. **B2 ERC-8004（身份+履历导出最小集）** — 趋势卡位，先只读。
