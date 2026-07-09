@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make ci*)",
+      "Bash(make test*)",
+      "Bash(make vet*)",
+      "Bash(make migrate-lint*)",
+      "Bash(make build*)",
+      "Bash(make web*)",
+      "Bash(go test*)",
+      "Bash(go vet*)",
+      "Bash(go build*)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git show*)",
+      "Bash(git branch*)"
+    ]
+  }
+}

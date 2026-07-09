@@ -1,0 +1,69 @@
+# laiai-next CI —— 与本地 make ci 完全一致的远端门禁
+# 资金/支付核心仓库：push 到 main 必须全绿；红线机检见 redline job
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache: true
+      - name: make ci (vet + migrate-lint + test + build)
+        run: make ci
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Console 类型检查 + 构建
+        run: make web
+
+  redline:
+    # CLAUDE.md 平台红线中可机检项
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 禁止 GORM AutoMigrate（红线 5）
+        run: |
+          if grep -rn "AutoMigrate" core/ relay/ --include="*.go"; then
+            echo "::error::检测到 AutoMigrate —— 违反红线 5，schema 只走 migrations/NNNN_*.sql"
+            exit 1
+          fi
+      - name: 金额禁止 float（工程约定）
+        run: |
+          if grep -rnE "(amount|balance|price|fee)[A-Za-z]*\s+(float32|float64)" core/ relay/ --include="*.go" | grep -v _test.go; then
+            echo "::error::金额字段疑似使用 float —— 一律 shopspring/decimal"
+            exit 1
+          fi
+      - name: 迁移文件命名顺序递增
+        run: |
+          ls migrations/ | grep -E '^[0-9]{4}_.*\.sql$' | sort -c || {
+            echo "::error::migrations/ 命名不符合 NNNN_*.sql 顺序"; exit 1; }
+      - name: 禁止 ledger 包外写 ledger_accounts（红线 1）
+        run: |
+          if grep -rnE 'UPDATE\s+ledger_accounts|Table\("ledger_accounts"\)' core/ relay/ --include="*.go" | grep -v "core/internal/ledger/" | grep -v "_test.go"; then
+            echo "::error::检测到 ledger 包外写 ledger_accounts —— 全库唯一写余额位置是 ledger.applyBalanceDelta（红线 1）"
+            exit 1
+          fi
+      - name: 数据面禁止裸 http.DefaultClient（超时/SSRF 纪律）
+        run: |
+          if grep -rn 'http\.DefaultClient' core/internal/relay/ core/internal/task/ --include="*.go" | grep -v "_test.go" | grep -v '//.*http\.DefaultClient'; then
+            echo "::error::数据面出现裸 http.DefaultClient —— 上游请求必须走带超时的框架 client / GuardedClient"
+            exit 1
+          fi
