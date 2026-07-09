@@ -34,12 +34,37 @@ resp = client.chat.completions.create(
 )
 print(resp.choices[0].message.content)`
 
+// 视频任务三步全流程（异步：提交 → 轮询 → 取产物）
+const curlVideo = `# 1) submit a video task
+curl -X POST https://your-domain/v1/video/generations \\
+  -H "Authorization: Bearer $LAIAI_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "doubao-seedance-2-0",
+    "content": [{"type": "text", "text": "A corgi surfing at sunset"}],
+    "duration": 5, "resolution": "720p"
+  }'
+# -> {"id": "task_...", "status": "queued", ...}
+
+# 2) poll until succeeded / failed
+curl -H "Authorization: Bearer $LAIAI_KEY" \\
+  https://your-domain/v1/video/generations/task_...
+# -> {"status": "succeeded", "result_url": "...", "cost_usd": "0.1746", ...}
+
+# 3) download (keep the Bearer header when result_url is a platform path)
+curl -L -H "Authorization: Bearer $LAIAI_KEY" -o out.mp4 "<result_url>"`
+
 const sections = [
   { id: 'chat', path: '/v1/chat/completions', method: 'POST' },
   { id: 'embeddings', path: '/v1/embeddings', method: 'POST' },
   { id: 'images', path: '/v1/images/generations', method: 'POST' },
+  { id: 'video', path: '/v1/video/generations', method: 'POST' },
+  { id: 'videoQuery', path: '/v1/video/generations/{id}', method: 'GET' },
   { id: 'models', path: '/v1/models', method: 'GET' },
 ]
+
+// 错误码速查（描述走 i18n docs.err*）
+const errorCodes = ['400', '401', '402', '403', '404', '413', '429', '5xx'] as const
 
 const steps = ['step1', 'step2', 'step3']
 </script>
@@ -130,6 +155,17 @@ const steps = ['step1', 'step2', 'step3']
           </div>
           <pre class="overflow-x-auto p-4 text-xs leading-relaxed"><code>{{ pySdk }}</code></pre>
         </section>
+
+        <section v-reveal="240" class="docs-code-block">
+          <div class="flex items-center justify-between border-b border-line px-4 py-3 text-xs text-muted">
+            <span>curl · {{ t('docs.videoFlowTitle') }}</span>
+            <button class="font-medium hover:text-accent" @click="copy('video', curlVideo)">
+              {{ copied === 'video' ? t('common.copied') : t('common.copy') }}
+            </button>
+          </div>
+          <pre class="overflow-x-auto p-4 text-xs leading-relaxed"><code>{{ curlVideo }}</code></pre>
+          <p class="border-t border-line px-4 py-3 text-xs text-muted">{{ t('docs.videoFlowNote') }}</p>
+        </section>
       </div>
     </section>
 
@@ -152,6 +188,27 @@ const steps = ['step1', 'step2', 'step3']
               <span class="font-mono text-xs text-muted">{{ s.path }}</span>
             </div>
             <p class="mt-6 text-sm leading-6 text-muted">{{ t(`docs.ep_${s.id}`) }}</p>
+          </div>
+        </div>
+
+        <!-- 错误码速查 + 限流说明 -->
+        <div class="mt-12 grid gap-8 lg:grid-cols-[1fr_0.6fr]">
+          <div v-reveal>
+            <h3 class="text-xl font-semibold">{{ t('docs.errorsTitle') }}</h3>
+            <div class="mt-5 overflow-hidden rounded-lg border border-line">
+              <table class="w-full text-sm">
+                <tbody>
+                  <tr v-for="code in errorCodes" :key="code" class="border-b border-line last:border-b-0">
+                    <td class="w-20 bg-panel px-4 py-2.5 font-mono text-xs font-semibold">{{ code }}</td>
+                    <td class="bg-panel px-4 py-2.5 text-xs leading-5 text-muted">{{ t(`docs.err${code}`) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div v-reveal="80">
+            <h3 class="text-xl font-semibold">{{ t('docs.rateTitle') }}</h3>
+            <p class="mt-5 text-sm leading-6 text-muted">{{ t('docs.rateBody') }}</p>
           </div>
         </div>
       </div>

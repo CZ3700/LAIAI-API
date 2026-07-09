@@ -99,6 +99,23 @@ const videoActive = computed(() => {
   return s === 'queued' || s === 'running'
 })
 
+// —— 请求详情面板（指令 §5：原始 request/response + 耗时）——
+const showDetail = ref(false)
+const lastDetail = ref<{ endpoint: string; status: number; durationMs: number; request: string; response: string } | null>(null)
+function recordDetail(ep: string, status: number, t0: number, requestBody: unknown, response: string) {
+  lastDetail.value = {
+    endpoint: ep,
+    status,
+    durationMs: Math.round(performance.now() - t0),
+    request: JSON.stringify(requestBody, null, 2),
+    response: response.length > 20000 ? response.slice(0, 20000) + '\n…(truncated)' : response,
+  }
+}
+// 图像响应里 b64_json 动辄几 MB，入详情前收敛为占位（面板是给人看请求形状的，不是存图的）
+function redactB64(j: unknown): string {
+  return JSON.stringify(j, (_k, v) => (typeof v === 'string' && v.length > 2048 ? `<${v.length} chars omitted>` : v), 2)
+}
+
 // 选中模型分类（后端 /api/pricing 元数据），用于模态路由（FE-4）
 const selectedCategory = computed(
   () => models.value.find((m) => m.model === model.value)?.category?.toLowerCase() ?? '',
@@ -197,6 +214,7 @@ async function send() {
   }
 
   abort = new AbortController()
+  const t0 = performance.now()
   try {
     const resp = await fetch('/v1/chat/completions', {
       method: 'POST',
@@ -206,6 +224,7 @@ async function send() {
     })
     if (!resp.ok) {
       const data = (await resp.json().catch(() => ({}))) as { error?: { message?: string } | string }
+      recordDetail('/v1/chat/completions', resp.status, t0, body, JSON.stringify(data, null, 2))
       const msg =
         typeof data.error === 'object' ? data.error?.message : typeof data.error === 'string' ? data.error : ''
       throw new Error(msg || `request failed (${resp.status})`)
@@ -244,6 +263,9 @@ async function send() {
           }
         }
       }
+      // 流式详情：SSE 帧不留原文（体量），记录汇总形状 + usage + 耗时
+      recordDetail('/v1/chat/completions', resp.status, t0, body,
+        JSON.stringify({ streamed: true, content: assistant.value.content, usage: lastUsage.value, error: streamErr || undefined }, null, 2))
       // 流已开始(200)但全程无内容：把静默"转圈"变成可见原因（上游错误帧 / 空回复 / 非 SSE 响应）
       if (!assistant.value.content) throw new Error(streamErr || t('play.noReply'))
     } else {
@@ -252,6 +274,7 @@ async function send() {
         usage?: { prompt_tokens: number; completion_tokens: number }
         error?: { message?: string } | string
       }
+      recordDetail('/v1/chat/completions', resp.status, t0, body, JSON.stringify(j, null, 2))
       if (j.error) throw new Error(typeof j.error === 'object' ? (j.error.message ?? JSON.stringify(j.error)) : String(j.error))
       assistant.value.content = j.choices?.[0]?.message?.content ?? ''
       if (j.usage) lastUsage.value = j.usage
@@ -285,6 +308,7 @@ async function generate() {
   }
   if (imageSize.value && imageSize.value !== 'default') body.size = imageSize.value
   if (useB64.value) body.response_format = 'b64_json'
+  const t0 = performance.now()
   try {
     const resp = await fetch('/v1/images/generations', {
       method: 'POST',
@@ -293,11 +317,13 @@ async function generate() {
     })
     if (!resp.ok) {
       const data = (await resp.json().catch(() => ({}))) as { error?: { message?: string } | string }
+      recordDetail('/v1/images/generations', resp.status, t0, body, JSON.stringify(data, null, 2))
       const msg =
         typeof data.error === 'object' ? data.error?.message : typeof data.error === 'string' ? data.error : ''
       throw new Error(msg || `request failed (${resp.status})`)
     }
     const j = (await resp.json()) as { data?: GenImage[] }
+    recordDetail('/v1/images/generations', resp.status, t0, body, redactB64(j))
     images.value = (j.data ?? []).filter((d) => d.url || d.b64_json)
     if (!images.value.length) throw new Error(t('play.noReply'))
   } catch (e) {
@@ -362,6 +388,8 @@ async function pollVideoOnce() {
     if (task.status === 'succeeded') {
       stopVideoPolling()
       sessionStorage.removeItem(VIDEO_TASK_STORE)
+      // 终态详情：轮询响应含 result_url 与实际结算费用
+      recordDetail(`/v1/video/generations/${id}`, resp.status, performance.now(), { poll: true }, JSON.stringify(task, null, 2))
       await loadVideoResult(task)
     } else if (task.status === 'failed') {
       stopVideoPolling()
@@ -407,6 +435,7 @@ async function submitVideo() {
   if (videoDuration.value !== 'default') body.duration = Number(videoDuration.value)
   if (videoResolution.value !== 'default') body.resolution = videoResolution.value
   if (videoRatio.value !== 'default') body.ratio = videoRatio.value
+  const t0 = performance.now()
   try {
     const resp = await fetch('/v1/video/generations', {
       method: 'POST',
@@ -415,11 +444,13 @@ async function submitVideo() {
     })
     if (!resp.ok) {
       const data = (await resp.json().catch(() => ({}))) as { error?: { message?: string } | string }
+      recordDetail('/v1/video/generations', resp.status, t0, body, JSON.stringify(data, null, 2))
       const msg =
         typeof data.error === 'object' ? data.error?.message : typeof data.error === 'string' ? data.error : ''
       throw new Error(msg || `request failed (${resp.status})`)
     }
     const task = (await resp.json()) as VideoTask
+    recordDetail('/v1/video/generations', resp.status, t0, body, JSON.stringify(task, null, 2))
     videoTask.value = task
     sessionStorage.setItem(VIDEO_TASK_STORE, task.id)
     videoStartMs.value = Date.now()
@@ -616,9 +647,26 @@ async function saveImage(img: GenImage, idx: number) {
           <p class="truncate font-mono text-sm">{{ model || t('play.modelManual') }}</p>
           <p class="text-xs text-muted">{{ (sending || generating || videoSubmitting || videoActive) ? t('surface.playStreaming') : t('surface.playReady') }}</p>
         </div>
-        <p v-if="lastUsage && mode === 'chat'" class="shrink-0 text-xs text-muted">
-          {{ t('play.usage', { input: lastUsage.prompt_tokens, output: lastUsage.completion_tokens }) }}
+        <div class="flex shrink-0 items-center gap-3">
+          <p v-if="lastUsage && mode === 'chat'" class="text-xs text-muted">
+            {{ t('play.usage', { input: lastUsage.prompt_tokens, output: lastUsage.completion_tokens }) }}
+          </p>
+          <button
+            v-if="lastDetail" type="button" class="btn-ghost !min-h-0 !px-2.5 !py-1.5 text-xs"
+            :class="{ '!text-accent': showDetail }" @click="showDetail = !showDetail"
+          >{{ t('play.detailBtn') }}</button>
+        </div>
+      </div>
+
+      <!-- 请求详情抽屉：endpoint/status/耗时 + 原始 request/response（图像 b64 已收敛占位） -->
+      <div v-if="showDetail && lastDetail" class="max-h-72 overflow-y-auto border-b border-line bg-elev/30 p-4 text-xs">
+        <p class="font-mono text-muted">
+          {{ lastDetail.endpoint }} · <span :class="lastDetail.status < 400 ? 'text-ok' : 'text-danger'">{{ lastDetail.status }}</span> · {{ lastDetail.durationMs }}ms
         </p>
+        <p class="mt-3 font-medium">{{ t('play.detailRequest') }}</p>
+        <pre class="mt-1 overflow-x-auto rounded border border-line bg-panel p-3 font-mono leading-relaxed">{{ lastDetail.request }}</pre>
+        <p class="mt-3 font-medium">{{ t('play.detailResponse') }}</p>
+        <pre class="mt-1 overflow-x-auto rounded border border-line bg-panel p-3 font-mono leading-relaxed">{{ lastDetail.response }}</pre>
       </div>
 
       <!-- chat 模态：消息流 + 输入 -->

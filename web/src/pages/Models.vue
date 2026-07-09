@@ -7,6 +7,7 @@ import { filterModels, modelModality, type ModelModality, type PricedModel } fro
 const { t, n } = useI18n()
 const models = ref<PricedModel[]>([])
 const search = ref('')
+const modality = ref<'all' | ModelModality>('all') // 模态筛选（chip 点击切换，再点还原 all）
 const loading = ref(true)
 const error = ref('')
 const copiedModel = ref('')
@@ -23,8 +24,13 @@ function modalityLabel(m: PricedModel): string {
 }
 
 const filtered = computed(() => {
-  return filterModels(models.value, search.value)
+  const base = filterModels(models.value, search.value)
+  if (modality.value === 'all') return base
+  return base.filter((m) => modelModality(m) === modality.value)
 })
+function toggleModality(kind: ModelModality) {
+  modality.value = modality.value === kind ? 'all' : kind
+}
 const providerCount = computed(() => new Set(models.value.map((m) => m.vendor || m.provider)).size)
 const modalityCounts = computed(() => {
   let chat = 0
@@ -88,11 +94,12 @@ onMounted(async () => {
               <p class="mt-1 text-xs uppercase text-muted">{{ t('surface.statShown') }}</p>
             </div>
           </div>
-          <div class="mt-4 flex flex-wrap gap-2 text-xs">
-            <span class="badge-muted">{{ t('models.modChat') }} {{ modalityCounts.chat }}</span>
-            <span class="badge-muted">{{ t('models.modImage') }} {{ modalityCounts.image }}</span>
-            <span class="badge-muted">{{ t('models.modVideo') }} {{ modalityCounts.video }}</span>
-            <span class="badge-muted">{{ t('models.modEmbed') }} {{ modalityCounts.embed }}</span>
+          <div class="mt-4 flex flex-wrap gap-2 text-xs" role="group" :aria-label="t('models.filterByModality')">
+            <button type="button" class="badge-muted transition-colors" :class="{ '!border-accent !text-accent': modality === 'all' }" @click="modality = 'all'">{{ t('models.filterAll') }} {{ models.length }}</button>
+            <button type="button" class="badge-muted transition-colors" :class="{ '!border-accent !text-accent': modality === 'chat' }" @click="toggleModality('chat')">{{ t('models.modChat') }} {{ modalityCounts.chat }}</button>
+            <button type="button" class="badge-muted transition-colors" :class="{ '!border-accent !text-accent': modality === 'image' }" @click="toggleModality('image')">{{ t('models.modImage') }} {{ modalityCounts.image }}</button>
+            <button type="button" class="badge-muted transition-colors" :class="{ '!border-accent !text-accent': modality === 'video' }" @click="toggleModality('video')">{{ t('models.modVideo') }} {{ modalityCounts.video }}</button>
+            <button type="button" class="badge-muted transition-colors" :class="{ '!border-accent !text-accent': modality === 'embedding' }" @click="toggleModality('embedding')">{{ t('models.modEmbed') }} {{ modalityCounts.embed }}</button>
           </div>
         </div>
       </div>
@@ -142,6 +149,8 @@ onMounted(async () => {
               <p class="mt-1 font-mono font-semibold">{{ m.image_usd !== '0' ? `$${m.image_usd}` : '—' }}</p>
             </div>
           </div>
+
+          <p v-if="modelModality(m) === 'video'" class="mt-3 text-xs text-muted">{{ t('models.videoBillingNote') }}</p>
 
           <div class="mt-5 flex items-center justify-between gap-3">
             <p class="truncate text-xs text-muted">

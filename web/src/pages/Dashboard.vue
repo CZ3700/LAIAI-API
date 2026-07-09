@@ -197,6 +197,25 @@ onMounted(async () => {
       <router-link to="/app/keys" class="btn-primary">{{ t('dash.btnCreateKey') }}</router-link>
     </div>
 
+    <!-- 新手引导：还没有任何调用时显示三步上手链（完成的步骤打勾） -->
+    <div v-if="!loading && recent.length === 0" class="app-panel p-5">
+      <p class="font-semibold">{{ t('dash.onboardTitle') }}</p>
+      <ol class="mt-3 grid gap-3 text-sm sm:grid-cols-3">
+        <li class="soft-panel flex items-center gap-3 px-4 py-3">
+          <span class="font-mono text-lg" :class="keys.length > 0 ? 'text-ok' : 'text-muted'">{{ keys.length > 0 ? '✓' : '1' }}</span>
+          <router-link to="/app/keys" class="hover:text-accent hover:underline">{{ t('dash.onboardStep1') }}</router-link>
+        </li>
+        <li class="soft-panel flex items-center gap-3 px-4 py-3">
+          <span class="font-mono text-lg" :class="num(balance) > 0 ? 'text-ok' : 'text-muted'">{{ num(balance) > 0 ? '✓' : '2' }}</span>
+          <router-link to="/app/recharges" class="hover:text-accent hover:underline">{{ t('dash.onboardStep2') }}</router-link>
+        </li>
+        <li class="soft-panel flex items-center gap-3 px-4 py-3">
+          <span class="font-mono text-lg text-muted">3</span>
+          <router-link to="/app/playground" class="hover:text-accent hover:underline">{{ t('dash.onboardStep3') }}</router-link>
+        </li>
+      </ol>
+    </div>
+
     <!-- 指标卡 -->
     <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <div class="metric-card">
