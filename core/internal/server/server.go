@@ -50,6 +50,7 @@ type Server struct {
 	adminToken          []byte
 	keyring             *crypto.Keyring
 	authLimiter         *ipLimiter
+	diagLimiter         *ipLimiter // per-user Key 检测配额（§4.8）——以 userID 为键，抗 IP 轮换
 	twofaLimiter        *ipLimiter    // 2FA 二阶段 per-account 限流（防中间票窗口内暴力猜 TOTP）
 	relay               *relay.Relay  // 渠道一键测试用；nil = 测试端点 503
 	mailer              mailer.Mailer // 邮件发送；nil = 邮件功能禁用
@@ -98,6 +99,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		adminToken: opts.AdminToken, keyring: opts.Keyring,
 		authLimiter:         newIPLimiter(rate.Every(time.Second), authBurst),
 		twofaLimiter:        newIPLimiter(rate.Every(time.Second), authBurst), // 与 auth 同档（生产默认 5）；测试设大值绕开
+		diagLimiter:         newIPLimiter(rate.Every(30*time.Second), 20), // per-user 诊断配额（§4.8 对抗 review）：突发 20 后 2/min，抗 IP 轮换的账号侧封顶
 		log:                 log,
 		now:                 time.Now,
 		invRetentionDefault: opts.InvocationRetentionDays,
@@ -106,6 +108,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 	s.mailer = &settingsMailer{s: s, env: opts.Mailer}
 	s.authLimiter.useRedis(opts.RedisRateLimiter)  // 多实例：auth 限流跨副本聚合（nil 退化进程内）
 	s.twofaLimiter.useRedis(opts.RedisRateLimiter) // 同上：2FA per-account 限流跨副本聚合
+	s.diagLimiter.useRedis(opts.RedisRateLimiter)  // 同上：诊断 per-user 配额跨副本聚合
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -173,6 +176,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			authed.GET("/orgs", s.listOrgs)
 			authed.POST("/orgs", s.createOrg)
 			authed.POST("/auth/switch", s.switchOrg)
+				authed.POST("/diagnostics/check", s.authRateLimit(), s.checkKey) // Key 检测工具站（§4.8）；限流防拿平台当扫描器/SSRF 跳板
 			// 团队邀请（被邀请人侧，0029）：未入队前不能 org-scoped，故挂 authed。
 			authed.GET("/invitations", s.listMyInvitations)              // 我收到的待确认邀请
 			authed.POST("/invitations/:id/accept", s.acceptInvitation)   // 接受 → 入队
