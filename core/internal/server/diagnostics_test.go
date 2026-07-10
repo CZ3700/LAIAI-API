@@ -67,6 +67,33 @@ func TestDiagnosticsPerUserQuota(t *testing.T) {
 	}
 }
 
+// admin 丰富指纹端点（§4.8 v1.1）：门控（非 admin 401）+ 输入校验 + 红线 7（key 不回显）。
+func TestAdminDiagnosticsGating(t *testing.T) {
+	srv, _ := setupRelayServer(t)
+	token, _ := seedUserSession(t, srv, "diagadmin@example.com")
+
+	// 普通用户（会话令牌，非 admin）→ 401/403（admin 门）
+	if w, _ := srv.do(t, "POST", "/api/admin/diagnostics/check", token, map[string]any{"provider": "openai", "api_key": "sk-x"}); w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
+		t.Fatalf("non-admin = %d, want 401/403", w.Code)
+	}
+	// admin：非白名单 provider → 200 status error（不拨号）；响应绝不含 key（红线 7）
+	w, out := srv.doAdmin(t, "POST", "/api/admin/diagnostics/check", map[string]any{"provider": "advanced_custom", "api_key": "sk-secret-xyz"})
+	if w.Code != http.StatusOK || out["status"] != "error" {
+		t.Fatalf("admin non-whitelist = %d %v, want 200 error", w.Code, out)
+	}
+	if contains(w.Body.String(), "sk-secret-xyz") {
+		t.Fatalf("RED LINE 7: key echoed in admin diagnostics response")
+	}
+	// admin：metadata base_url → 400（IMDS 反射 oracle 恒拦）
+	if w, _ := srv.doAdmin(t, "POST", "/api/admin/diagnostics/check", map[string]any{"provider": "openai", "api_key": "sk-x", "base_url": "https://169.254.169.254/v1"}); w.Code != http.StatusBadRequest {
+		t.Fatalf("metadata base_url = %d, want 400", w.Code)
+	}
+	// admin：缺 provider/key → 400
+	if w, _ := srv.doAdmin(t, "POST", "/api/admin/diagnostics/check", map[string]any{"provider": "openai"}); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing key = %d, want 400", w.Code)
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

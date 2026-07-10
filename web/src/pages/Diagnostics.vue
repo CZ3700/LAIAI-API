@@ -5,6 +5,7 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
+import { useAuth } from '@/stores/auth'
 
 // 与后端 relay.byokProviders 白名单对齐
 const PROVIDERS = ['openai', 'anthropic', 'gemini', 'azure', 'groq', 'mistral', 'xai', 'deepseek', 'moonshot', 'zhipu', 'dashscope-intl', 'minimax', 'siliconflow', 'volcengine']
@@ -18,9 +19,22 @@ interface DiagResult {
   models_sample: string[]
   gateway: string
   message: string
+  // admin 丰富指纹（§4.8 v1.1，仅 admin 端点返回）
+  peer_ip?: string
+  reverse_dns?: string
+  auth_field?: string
+  key_platform?: string
+  key_prefix_pattern?: string
+  headers?: Record<string, string>
+  authenticity?: string
+  authenticity_reason?: string
+  relay_verdict?: string
+  relay_hops?: number
+  relay_reason?: string
 }
 
 const { t } = useI18n()
+const auth = useAuth()
 const provider = ref('openai')
 const apiKey = ref('')
 const baseUrl = ref('')
@@ -42,7 +56,9 @@ async function run() {
   error.value = ''
   result.value = null
   try {
-    result.value = await api<DiagResult>('POST', '/api/diagnostics/check', {
+    // admin → 丰富指纹端点（端点 IP/PTR/签名头/验真/中转）；普通用户 → 硬化极简档
+    const path = auth.isAdmin ? '/api/admin/diagnostics/check' : '/api/diagnostics/check'
+    result.value = await api<DiagResult>('POST', path, {
       provider: provider.value,
       api_key: apiKey.value.trim(),
       base_url: baseUrl.value.trim() || undefined,
@@ -132,6 +148,50 @@ async function run() {
             <p class="mb-2 text-xs text-muted">{{ t('diag.modelsSample') }}</p>
             <div class="flex flex-wrap gap-1.5">
               <span v-for="m in result.models_sample" :key="m" class="badge-muted font-mono text-xs">{{ m }}</span>
+            </div>
+          </div>
+
+          <!-- admin 丰富指纹（§4.8 v1.1）：验真/中转/端点/头 -->
+          <div v-if="result.key_platform !== undefined" class="space-y-4 border-t border-line pt-4">
+            <!-- 验真 + 中转判定（大卡） -->
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div class="soft-panel p-4">
+                <p class="text-xs text-muted">{{ t('diag.authenticity') }}</p>
+                <p class="mt-1 text-sm font-medium" :class="result.authenticity === 'official_direct' || result.authenticity === 'official_via_cdn' ? 'text-ok' : result.authenticity === 'relay_suspected' ? 'text-amber-500' : 'text-muted'">
+                  {{ t(`diag.auth_${result.authenticity}`) }}
+                </p>
+                <p class="mt-1 text-xs text-muted">{{ result.authenticity_reason }}</p>
+              </div>
+              <div class="soft-panel p-4">
+                <p class="text-xs text-muted">{{ t('diag.relay') }}</p>
+                <p class="mt-1 text-sm font-medium" :class="result.relay_verdict === 'direct' ? 'text-ok' : result.relay_verdict === 'relayed' || result.relay_verdict === 'likely_relayed' ? 'text-amber-500' : 'text-muted'">
+                  {{ t(`diag.relay_${result.relay_verdict}`) }}<template v-if="result.relay_hops && result.relay_hops > 0"> · {{ t('diag.relayHops', { n: result.relay_hops }) }}</template>
+                </p>
+                <p class="mt-1 text-xs text-muted">{{ result.relay_reason }}</p>
+              </div>
+            </div>
+
+            <!-- 指纹字段行 -->
+            <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+              <div><dt class="text-xs text-muted">{{ t('diag.keyPlatform') }}</dt><dd class="font-mono">{{ result.key_platform }}<span v-if="result.key_prefix_pattern" class="ml-1 text-muted">({{ result.key_prefix_pattern }})</span></dd></div>
+              <div><dt class="text-xs text-muted">{{ t('diag.authField') }}</dt><dd class="font-mono text-xs">{{ result.auth_field }}</dd></div>
+              <div><dt class="text-xs text-muted">{{ t('diag.peerIp') }}</dt><dd class="font-mono text-xs select-all">{{ result.peer_ip || '—' }}</dd></div>
+              <div class="col-span-2 sm:col-span-3"><dt class="text-xs text-muted">{{ t('diag.reverseDns') }}</dt><dd class="font-mono text-xs break-all select-all">{{ result.reverse_dns || '—' }}</dd></div>
+            </dl>
+
+            <!-- 签名响应头 -->
+            <div v-if="result.headers && Object.keys(result.headers).length">
+              <p class="mb-2 text-xs text-muted">{{ t('diag.signatureHeaders') }}</p>
+              <div class="data-table-wrap">
+                <table class="table w-full text-xs">
+                  <tbody>
+                    <tr v-for="(v, k) in result.headers" :key="k" class="border-b border-line last:border-0">
+                      <td class="w-1/3 px-3 py-1.5 font-mono text-muted">{{ k }}</td>
+                      <td class="px-3 py-1.5 font-mono break-all">{{ v }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>

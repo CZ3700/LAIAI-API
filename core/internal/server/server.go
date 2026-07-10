@@ -229,6 +229,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.DELETE("/channels/:id", s.adminDeleteChannel)        // 真正删除渠道行
 			admin.POST("/channels/:id/test", s.adminTestChannel)
 			admin.POST("/channels/probe", s.adminProbeChannel)
+			admin.POST("/diagnostics/check", s.adminCheckKey) // Key 检测丰富指纹（§4.8 v1.1，运维检测上游质量）
 			// 渠道多 key 管理（0034 Multi-key）
 			admin.GET("/channels/:id/credentials", s.adminListChannelKeys)
 			admin.POST("/channels/:id/credentials", s.adminAddChannelKey)

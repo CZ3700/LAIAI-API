@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/csv"
 	"encoding/json"
@@ -1083,6 +1084,45 @@ func (s *Server) adminListInvocations(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"total": total, "page": page, "page_size": pageSize, "items": out})
+}
+
+// adminCheckKey：POST /api/admin/diagnostics/check {provider, api_key, base_url?}
+// Diagnostics admin 丰富指纹（§4.8 v1.1，批次 8）——运维检测上游渠道质量：端点真实 IP/PTR、
+// 全套签名响应头、key 平台指纹、官方验真（启发式）、中转判断+手数。
+// 红线 7：被测 key 只在内存用于本次探测，绝不落库/日志/回显（handler 不 log 请求体）。
+// 门控 adminRequired（可信运营者）→ 上一轮对抗 review 的"公网侦察 oracle"顾虑对本档不成立，
+// 故拨号守卫随运营 allow-private 开关（operator 合法内网上游可探，与 adminProbeChannel 同口径）。
+func (s *Server) adminCheckKey(c *gin.Context) {
+	if s.relay == nil {
+		fail(c, http.StatusServiceUnavailable, "relay not configured")
+		return
+	}
+	var req struct {
+		Provider string `json:"provider"`
+		APIKey   string `json:"api_key"`
+		BaseURL  string `json:"base_url"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil { // 绑定失败不 log 请求体（含 key）
+		fail(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.Provider = strings.TrimSpace(req.Provider)
+	req.APIKey = strings.TrimSpace(req.APIKey)
+	req.BaseURL = strings.TrimSpace(req.BaseURL)
+	if req.Provider == "" || req.APIKey == "" {
+		fail(c, http.StatusBadRequest, "provider and api_key are required")
+		return
+	}
+	// custom base_url：字面 metadata IP 恒拦（IMDS 反射 oracle）；advanced 内网放行随运营开关。
+	if req.BaseURL != "" && relay.IsMetadataURL(req.BaseURL) {
+		fail(c, http.StatusBadRequest, "base_url host blocked: cloud metadata endpoint")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	res := s.relay.CheckKeyDetailed(ctx, req.APIKey, req.BaseURL, req.Provider, s.relay.AdvancedAllowPrivate())
+	// req.APIKey 此后不再被引用；不落库/日志/回显（DetailedDiagResult 无 key 字段）。
+	c.JSON(http.StatusOK, res)
 }
 
 // adminProbeChannel：POST /api/admin/channels/probe {api_key, base_url}
