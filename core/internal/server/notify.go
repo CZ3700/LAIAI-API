@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
@@ -22,6 +24,17 @@ func (s *Server) ProcessNotifyOutbox(ctx context.Context, batch int) (sent, fail
 		return 0, 0
 	}
 	return s.notify.ProcessOnce(ctx, batch)
+}
+
+// PurgeNotifyOutbox：终态 outbox 行滚动保留清理（leader-only 每小时维护循环调用，对抗 review：
+// 防终态行永久堆积）。保留天数走 ext_settings.notify_outbox_retention_days（默认 30，与调用日志同档）。
+func (s *Server) PurgeNotifyOutbox(ctx context.Context) (int64, error) {
+	d := s.retentionDaysSetting("notify_outbox_retention_days", 30)
+	if d <= 0 {
+		return 0, nil
+	}
+	cutoff := s.now().UTC().AddDate(0, 0, -d)
+	return notify.PurgeOldOutbox(s.db.WithContext(ctx), cutoff, 1000)
 }
 
 func (s *Server) getNotifySettings(c *gin.Context) {
@@ -79,17 +92,23 @@ func (s *Server) putNotifySettings(c *gin.Context) {
 	}
 	eventsJSON, _ := json.Marshal(events)
 
-	// webhook URL：非空则强制 https + SSRF 校验（绝不放行私网，与 BYOK 同纪律）
+	// 载入原行（保留未变更的加密密钥）
+	st := &notify.Settings{OrgID: claims.OrgID}
+	_ = s.db.Where("org_id = ?", claims.OrgID).First(st).Error
+
+	// webhook URL：非空则**强制 https**（对抗 review：复用的 advanced_custom 校验器放行 http，
+	// 但出站 webhook 红线要求 https——事件信封+签名绝不明文 HTTP 传）+ SSRF 校验（绝不放行私网）。
 	if req.WebhookURL != "" {
+		u, err := url.Parse(req.WebhookURL)
+		if err != nil || !strings.EqualFold(u.Scheme, "https") {
+			fail(c, http.StatusBadRequest, "webhook_url must be a public https URL")
+			return
+		}
 		if err := relay.ValidateAdvancedUpstreamURL(req.WebhookURL, false); err != nil {
 			fail(c, http.StatusBadRequest, "webhook_url must be a public https URL")
 			return
 		}
 	}
-
-	// 载入原行（保留未变更的加密密钥）
-	st := &notify.Settings{OrgID: claims.OrgID}
-	_ = s.db.Where("org_id = ?", claims.OrgID).First(st).Error
 
 	secretEnc := st.WebhookSecretEnc
 	if req.WebhookSecret != "" {
@@ -106,6 +125,11 @@ func (s *Server) putNotifySettings(c *gin.Context) {
 	}
 	if req.WebhookURL == "" {
 		secretEnc = "" // 清空 URL 同时清密钥（避免孤儿密钥）
+	} else if secretEnc == "" {
+		// 配 webhook 但无签名密钥（新旧都空）→ 拒绝（对抗 review：否则每条 webhook 静默 dead-letter，
+		// 用户以为已订阅却一条收不到）。webhook 必须签名（HMAC），无 secret 结构性不可用。
+		fail(c, http.StatusBadRequest, "webhook_secret is required when a webhook_url is set")
+		return
 	}
 
 	row := &notify.Settings{

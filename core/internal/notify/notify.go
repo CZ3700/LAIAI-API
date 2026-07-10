@@ -175,6 +175,16 @@ func (d *Dispatcher) ProcessOnce(ctx context.Context, batch int) (sent, failed i
 	}
 	for i := range rows {
 		row := &rows[i]
+		// 抢占式认领（对抗 review：防多 leader/租约切换瞬间两实例并发投递同一行）：原子把本行
+		// attempts+1 + 预退避 WHERE id=? AND status='pending'——只有抢到（RowsAffected==1）的实例
+		// 才投递。崩溃安全：抢占后崩溃 → 行仍 pending + 已退避 → 下轮重试（at-least-once 保证不丢，
+		// 最多丢一次尝试预算）。取代此前"发送后无条件 UPDATE status='sent'"（无并发防护）。
+		row.Attempts++
+		claim := map[string]any{"attempts": row.Attempts, "next_attempt_at": d.Now().Add(backoffSteps[min(row.Attempts-1, len(backoffSteps)-1)])}
+		res := d.DB.Model(&Outbox{}).Where("id = ? AND status = ?", row.ID, StatusPending).Updates(claim)
+		if res.Error != nil || res.RowsAffected != 1 {
+			continue // 被另一实例抢走 / DB 错误 → 跳过（不重复投递）
+		}
 		var err error
 		switch row.Channel {
 		case ChannelEmail:
@@ -185,26 +195,48 @@ func (d *Dispatcher) ProcessOnce(ctx context.Context, batch int) (sent, failed i
 			err = fmt.Errorf("unknown channel %q", row.Channel)
 		}
 		if err == nil {
-			t := d.Now()
-			d.DB.Model(row).Updates(map[string]any{"status": StatusSent, "sent_at": t})
+			d.DB.Model(&Outbox{}).Where("id = ?", row.ID).Updates(map[string]any{"status": StatusSent, "sent_at": d.Now()})
 			sent++
 			continue
 		}
 		failed++
-		row.Attempts++
-		upd := map[string]any{"attempts": row.Attempts}
 		if row.Attempts >= maxAttempts {
-			upd["status"] = StatusDead
+			d.DB.Model(&Outbox{}).Where("id = ?", row.ID).Update("status", StatusDead)
 			d.Log.Warn("notify delivery dead-lettered", "outbox", row.ID, "event", row.Event, "channel", row.Channel)
-		} else {
-			step := backoffSteps[min(row.Attempts-1, len(backoffSteps)-1)]
-			upd["next_attempt_at"] = d.Now().Add(step)
 		}
-		d.DB.Model(row).Updates(upd)
+		// 失败但未 dead：claim 已写 attempts+退避，无需再 UPDATE，下轮自然重试。
 		// err 不整段落日志：webhook 传输错误可能回显目标 URL 细节，只记摘要（红线 7 纪律）
 		d.Log.Warn("notify delivery failed", "outbox", row.ID, "event", row.Event, "channel", row.Channel, "attempts", row.Attempts)
 	}
 	return sent, failed
+}
+
+// PurgeOldOutbox：删除 cutoff 之前的终态（sent/dead）outbox 行，分批避免锁表（对抗 review：
+// 否则终态行永久堆积、表无界膨胀）。与 invocation/audit 日志同款滚动保留。返回删除数。
+func PurgeOldOutbox(db *gorm.DB, cutoff time.Time, batch int) (int64, error) {
+	if batch <= 0 {
+		batch = 1000
+	}
+	var total int64
+	for {
+		var ids []uint64
+		if err := db.Model(&Outbox{}).
+			Where("status IN ? AND created_at < ?", []string{StatusSent, StatusDead}, cutoff).
+			Order("id").Limit(batch).Pluck("id", &ids).Error; err != nil {
+			return total, err
+		}
+		if len(ids) == 0 {
+			return total, nil
+		}
+		res := db.Where("id IN ?", ids).Delete(&Outbox{})
+		if res.Error != nil {
+			return total, res.Error
+		}
+		total += res.RowsAffected
+		if len(ids) < batch {
+			return total, nil
+		}
+	}
 }
 
 // sendEmail：事件模板极简（英文，与既有系统邮件一致）。
@@ -254,6 +286,11 @@ func emailTemplate(row *Outbox) (subject, body string) {
 	default:
 		subject = fmt.Sprintf("[LAIAI] Notification: %s", row.Event)
 		body = row.Payload + "\n"
+	}
+	// 带 outbox id 让人工识别可能的重复投递（对抗 review：email 通道无程序化 id 去重，
+	// 多 leader/崩溃重扫的 at-least-once 对邮件是"尽力一次、可能重复"——抢占式认领已大幅收窄该窗口）。
+	if row.ID != 0 {
+		body += fmt.Sprintf("\n— notification #%d\n", row.ID)
 	}
 	return subject, body
 }

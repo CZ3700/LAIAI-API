@@ -337,6 +337,7 @@ func submitErrorIsClientFault(msg string) bool {
 	// （"invalid api key" 含 invalid 但属渠道凭证问题）。
 	for _, kw := range []string{
 		"api key", "api_key", "apikey", "token", "credential", "unauthor", "authenticat",
+		"authoriz", "signature", "sign is", "sign check", "sign error", "invalid sign", "验签", "签名",
 		"permission denied", "access denied", "balance", "insufficient", "arrears", "欠费", "余额",
 		"quota", "throttl", "rate limit", "ratelimit", "too many", "frequency", "限流", "频繁",
 		"internal error", "internal server", "server error", "service unavailable", "unavailable",

@@ -176,6 +176,12 @@ func main() {
 				} else if inv > 0 || aud > 0 {
 					log.Info("log retention purged", "invocations", inv, "audit_logs", aud)
 				}
+				// Notify outbox 终态行滚动保留清理（§4.9，防无界膨胀）
+				if n, err := apiSrv.PurgeNotifyOutbox(maintCtx); err != nil {
+					log.Error("notify outbox purge failed", "err", err)
+				} else if n > 0 {
+					log.Info("notify outbox purged", "count", n)
+				}
 				// 兜底同步结算失败留下的孤儿 usage hold（远早于任何正常请求时长）
 				stuckCutoff := time.Now().UTC().Add(-15 * time.Minute)
 				if n, err := ledger.SweepStuckHolds(db, "usage", stuckCutoff, 500); err != nil {

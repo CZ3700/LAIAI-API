@@ -57,18 +57,40 @@ func TestNotifySettingsAPI(t *testing.T) {
 
 	// SSRF：私网/非 https webhook 被拒
 	w, _ = srv.do(t, "PUT", "/api/org/notify-settings", token, map[string]any{
-		"webhook_url": "http://169.254.169.254/latest/meta-data",
-		"events":      []string{"task.completed"},
+		"webhook_url": "http://169.254.169.254/latest/meta-data", "webhook_secret": "s",
+		"events": []string{"task.completed"},
 	})
 	if w.Code != 400 {
 		t.Fatalf("metadata URL = %d, want 400 (SSRF block)", w.Code)
 	}
 	w, _ = srv.do(t, "PUT", "/api/org/notify-settings", token, map[string]any{
-		"webhook_url": "https://192.168.1.1/hook",
-		"events":      []string{"task.completed"},
+		"webhook_url": "https://192.168.1.1/hook", "webhook_secret": "s",
+		"events": []string{"task.completed"},
 	})
 	if w.Code != 400 {
 		t.Fatalf("private IP URL = %d, want 400 (SSRF block)", w.Code)
+	}
+	// http（公网）被拒——出站 webhook 强制 https（对抗 review 修）
+	w, _ = srv.do(t, "PUT", "/api/org/notify-settings", token, map[string]any{
+		"webhook_url": "http://collector.example.com/hook", "webhook_secret": "s",
+		"events": []string{"task.completed"},
+	})
+	if w.Code != 400 {
+		t.Fatalf("public http URL = %d, want 400 (https-only)", w.Code)
+	}
+	// 配 webhook 但无 secret 被拒（对抗 review 修：防静默 dead-letter）——先清掉已配的 secret
+	w, _ = srv.do(t, "PUT", "/api/org/notify-settings", token, map[string]any{
+		"webhook_url": "", "events": []string{"task.completed"}, // 清 url 会连带清 secret
+	})
+	if w.Code != 200 {
+		t.Fatalf("clear webhook = %d", w.Code)
+	}
+	w, _ = srv.do(t, "PUT", "/api/org/notify-settings", token, map[string]any{
+		"webhook_url": "https://hooks.example.com/x", // 无 secret
+		"events":      []string{"task.completed"},
+	})
+	if w.Code != 400 {
+		t.Fatalf("webhook without secret = %d, want 400", w.Code)
 	}
 }
 

@@ -653,6 +653,10 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 		holdOutput = maxTokens * candidates
 	}
 	inv.Model, inv.IsStream = model, stream
+	// fallback 链重入（设计 §4.4）：inv 是跨模型共享的同一指针。重置上一模型可能写下的诊断字段，
+	// 否则本模型若在进入换渠道循环体前就终态失败（无渠道/余额不足/quota 不足），记录会残留上一模型的
+	// channel_id/provider/attempts/错误码（对抗 review：观测数据失真，误把 no_channel 归因到无关渠道）。
+	inv.ChannelID, inv.Provider, inv.Attempts, inv.UpstreamErrorCode = 0, "", 0, ""
 
 	// 3. 定价（热读缓存：命中即免 DB 查；hold/capture 仍取同一个 *price 局部变量）
 	price, err := r.cachedPrice(model)

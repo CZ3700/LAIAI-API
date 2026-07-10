@@ -79,6 +79,10 @@ func TestModelFallbackChainDegrades(t *testing.T) {
 	if inv.Model != "model-b" {
 		t.Fatalf("invocation model = %q, want model-b", inv.Model)
 	}
+	// 降级成功记录：provider 反映实际所用渠道（model-b 的 openai 渠道），不残留主模型值
+	if inv.Provider != "openai" {
+		t.Fatalf("inv provider = %q, want openai（实际所用渠道，不残留主模型）", inv.Provider)
+	}
 	// hold 无泄漏：模型 A 的 hold（若曾建）已释放，成功结算只留 model-b 的 capture
 	acc := &ledger.Account{}
 	_ = db.Where("org_id = ? AND type = ?", uint64(orgID), ledger.AccountUserCredit).First(acc)
