@@ -41,8 +41,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: 禁止 GORM AutoMigrate（红线 5）
         run: |
-          if grep -rn "AutoMigrate" core/ relay/ --include="*.go"; then
-            echo "::error::检测到 AutoMigrate —— 违反红线 5，schema 只走 migrations/NNNN_*.sql"
+          # 只匹配实际调用 .AutoMigrate(，不误伤注释里"禁用 AutoMigrate"的字面提及（如 migrate.go 的红线说明）
+          if grep -rnE '\.AutoMigrate\(' core/ relay/ --include="*.go"; then
+            echo "::error::检测到 AutoMigrate 调用 —— 违反红线 5，schema 只走 migrations/NNNN_*.sql"
             exit 1
           fi
       - name: 金额禁止 float（工程约定）
