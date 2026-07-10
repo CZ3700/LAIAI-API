@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -73,6 +74,18 @@ type Gate interface {
 	AllowModelRate(orgID uint64, model string) (ok bool, rpm int)
 }
 
+// Notifier：任务终态通知（§4.9 Notify）。task 包不依赖 notify 包（避免跨 bounded context），
+// 由 server 装配时注入 *notify.Dispatcher.Emit 的适配。nil = 不通知（best-effort，绝不影响结算）。
+type Notifier interface {
+	Emit(orgID uint64, event string, payload map[string]any)
+}
+
+// 通知事件名（与 notify 包常量对齐；此处独立声明避免包依赖倒置）。
+const (
+	eventTaskCompleted = "task.completed"
+	eventTaskFailed    = "task.failed"
+)
+
 // Service：任务编排服务。M1 驻 core 进程，与 relay 同享 DB/Keyring。
 type Service struct {
 	DB          *gorm.DB
@@ -83,6 +96,18 @@ type Service struct {
 	TaskTimeout time.Duration        // 超过此时长未终态 → failed + 全退（陷阱 8：可配置，不硬编码）
 	Gate        Gate                 // 准入（P0-1）：server 装配时注入 relay 实例；HandleCreate 缺装配即拒绝
 	Rec         *invocation.Recorder // 任务终态落 Invocation Store（请求日志可见视频消费）；nil=不记录
+	Notify      Notifier             // 终态通知（§4.9）；nil=不通知（best-effort，绝不影响结算）
+}
+
+// emitNotify：best-effort 终态通知（payload 元数据-only，红线 7）。nil-safe。
+func (s *Service) emitNotify(t *Task, event string) {
+	if s.Notify == nil {
+		return
+	}
+	s.Notify.Emit(t.OrgID, event, map[string]any{
+		"task_id": t.TaskID, "model": t.Model, "status": t.Status,
+		"cost_usd": t.CostUSD.StringFixed(8),
+	})
 }
 
 func NewService(db *gorm.DB, kr *crypto.Keyring, log *slog.Logger) *Service {
@@ -281,11 +306,57 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 const maxSubmitAttempts = 3
 
 // summarizeSubmitErr：abortSubmit 的合成摘要（进日志/invocation，红线 7：不带上游原文/URL）。
+// 只对 *url.Error 类（会回显带凭证的上游 URL）折叠为语义摘要；DB/keyring 等我方内部错误
+// 原样保留（对抗 review：内部错误诊断信息不应被无差别伪标为 upstream rejected）。
 func summarizeSubmitErr(err error) string {
+	if err == nil {
+		return "upstream error"
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if strings.Contains(err.Error(), "unreachable") || urlErr.Timeout() {
+			return "upstream unreachable"
+		}
+		return "upstream request failed"
+	}
 	if strings.Contains(err.Error(), "unreachable") {
 		return "upstream unreachable"
 	}
-	return "upstream rejected submit"
+	return err.Error() // 我方内部错误（DB/凭证/构建）：保留原文供运维诊断
+}
+
+// submitErrorIsClientFault：200-信封 provider 的业务失败是否属**客户端**问题（参数非法/内容审查）——
+// 命中才短路故障转移（UpstreamRejectedError）；否则视为**渠道侧**故障（欠费/限流/鉴权/内部错误）走换渠道
+// （对抗 review CONFIRMED：此前四家把任何业务失败码都判客户端错误，导致渠道欠费/限流误短路 failover）。
+// 双向判定：渠道侧特征词**优先**排除（凭证/额度/限流/内部/容量）→ 走 failover；再看客户端特征
+// （invalid/参数/内容）。都不含 → 默认 failover（保守方向：误判渠道侧为客户端会短路故障转移=有害，
+// 误判客户端为渠道侧只是多试渠道后仍失败=无害）。关键词跨家统一，比硬编码各家码表鲁棒。
+func submitErrorIsClientFault(msg string) bool {
+	m := strings.ToLower(msg)
+	// 渠道侧特征：命中即**非**客户端错误（走换渠道），优先级高于下方客户端词
+	// （"invalid api key" 含 invalid 但属渠道凭证问题）。
+	for _, kw := range []string{
+		"api key", "api_key", "apikey", "token", "credential", "unauthor", "authenticat",
+		"permission denied", "access denied", "balance", "insufficient", "arrears", "欠费", "余额",
+		"quota", "throttl", "rate limit", "ratelimit", "too many", "frequency", "限流", "频繁",
+		"internal error", "internal server", "server error", "service unavailable", "unavailable",
+		"timeout", "timed out", "overload", "try again", "busy", "504", "503", "502", "500",
+	} {
+		if strings.Contains(m, kw) {
+			return false
+		}
+	}
+	// 客户端特征：参数/内容/动作非法。
+	for _, kw := range []string{
+		"invalid", "sensitive", "violat", "policy", "prohibit", "illegal", "risk", "moderation",
+		"unsafe", "blocked", "content", "bad request", "unsupported", "not support", "malformed",
+		"not allowed", "missing", "required", "参数", "违规", "敏感", "非法", "不支持",
+	} {
+		if strings.Contains(m, kw) {
+			return true
+		}
+	}
+	return false // 无法判定 → 保守走 failover（渠道侧）
 }
 
 // nextSubmitCandidate：故障转移候选——排除已试渠道重新选路，解出凭证，并把任务行改钉到
@@ -562,7 +633,9 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 	if t.HoldAmountUSD.IsPositive() {
 		_ = identity.AddKeyUsageSigned(s.DB, t.APIKeyID, actual.Sub(t.HoldAmountUSD))
 	}
+	t.Status, t.CostUSD = StatusSucceeded, actual
 	s.recordInvocation(t, invocation.StatusSuccess, http.StatusOK, result.CompletionTokens, actual, usageSource, "")
+	s.emitNotify(t, eventTaskCompleted) // 终态通知（§4.9）：CAS 赢者唯一 emit 点，天然不重
 	s.Log.Info("task succeeded", "task", t.TaskID, "cost", actual)
 }
 
@@ -604,7 +677,9 @@ func (s *Service) settleFailure(t *Task, reason string, upstreamOrigin bool) {
 	if t.HoldAmountUSD.IsPositive() {
 		_ = identity.AddKeyUsageSigned(s.DB, t.APIKeyID, t.HoldAmountUSD.Neg()) // 预留全退（与 ledger Release 同向）
 	}
+	t.Status = StatusFailed
 	s.recordInvocation(t, invocation.StatusUpstreamError, http.StatusBadGateway, 0, decimal.Zero, "", brief)
+	s.emitNotify(t, eventTaskFailed) // 终态通知（§4.9）：CAS 赢者唯一 emit 点
 	s.Log.Warn("task failed", "task", t.TaskID, "reason", brief)
 }
 

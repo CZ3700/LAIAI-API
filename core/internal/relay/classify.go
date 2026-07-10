@@ -84,9 +84,31 @@ func upstreamErrorCode(dispReason string, body []byte) string {
 		code = sanitizeErrCode(parsed.Error.Type)
 	}
 	if code == "" {
-		code = clipStr(dispReason, 64)
+		// dispReason 是分类器合成串，可能含 provider 名（如 "gemini 403 forbidden"）——该字段对
+		// 请求所有者可见（invocations.upstream_error_code），不得泄露渠道 provider（设计上 json:"-"）。
+		// 映射为**不含 provider 的通用状态类**（对抗 review），绝不回退原始 dispReason。
+		code = genericErrClass(dispReason)
 	}
 	return code
+}
+
+// genericErrClass：把分类器 reason 折叠为不含 provider 名的通用状态类（HTTP 语义粒度）。
+func genericErrClass(reason string) string {
+	r := strings.ToLower(reason)
+	switch {
+	case strings.Contains(r, "401") || strings.Contains(r, "unauthorized") || strings.Contains(r, "invalid_api_key") || strings.Contains(r, "authentication"):
+		return "upstream_auth_error"
+	case strings.Contains(r, "403") || strings.Contains(r, "forbidden") || strings.Contains(r, "permission"):
+		return "upstream_forbidden"
+	case strings.Contains(r, "quota") || strings.Contains(r, "429") || strings.Contains(r, "rate"):
+		return "upstream_quota_or_rate"
+	case strings.Contains(r, "timeout") || strings.Contains(r, "504") || strings.Contains(r, "524"):
+		return "upstream_timeout"
+	case reason == "":
+		return ""
+	default:
+		return "upstream_error"
+	}
 }
 
 // sanitizeErrCode：仅放行枚举样式字符（字母/数字/_/-/.），含其他字符（空格/引号等自由文本征兆）
@@ -99,13 +121,6 @@ func sanitizeErrCode(s string) string {
 		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.') {
 			return ""
 		}
-	}
-	return s
-}
-
-func clipStr(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
 	}
 	return s
 }

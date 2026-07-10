@@ -111,9 +111,13 @@ func (aliTask) ParseSubmit(resp *http.Response) (string, error) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return "", fmt.Errorf("ali: submit parse: %w", err)
 	}
-	// 成功判别：顶层 code 为空串（非空即请求级错误）。
+	// 成功判别：顶层 code 为空串（非空即请求级错误）。仅参数/内容类判客户端短路 failover；
+	// Throttling/InvalidApiKey/Quota 等渠道侧故障走换渠道（对抗 review 修）。
 	if parsed.Code != "" {
-		return "", &UpstreamRejectedError{StatusCode: http.StatusBadRequest, Message: parsed.Message}
+		if submitErrorIsClientFault(parsed.Code + " " + parsed.Message) {
+			return "", &UpstreamRejectedError{StatusCode: http.StatusBadRequest, Message: parsed.Message}
+		}
+		return "", fmt.Errorf("ali: submit failed upstream (code=%s)", parsed.Code)
 	}
 	if parsed.Output.TaskID == "" {
 		return "", fmt.Errorf("ali: submit response missing task id")

@@ -124,6 +124,45 @@ async function saveBalanceAlert() {
   }
 }
 
+// 统一通知订阅（§4.9 Notify）：任务完成/失败/余额低 三事件 × 邮件/webhook 两通道。
+const NOTIFY_EVENTS = ['task.completed', 'task.failed', 'balance.low'] as const
+const notifyEmail = ref(false)
+const notifyWebhookUrl = ref('')
+const notifyWebhookSecret = ref('')
+const notifyWebhookConfigured = ref(false)
+const notifyEvents = ref<Set<string>>(new Set())
+const notifyBusy = ref(false)
+const notifyMsg = ref('')
+const notifyErr = ref('')
+
+function toggleNotifyEvent(ev: string) {
+  if (notifyEvents.value.has(ev)) notifyEvents.value.delete(ev)
+  else notifyEvents.value.add(ev)
+  notifyEvents.value = new Set(notifyEvents.value) // 触发响应式
+}
+
+async function saveNotify() {
+  notifyBusy.value = true
+  notifyMsg.value = ''
+  notifyErr.value = ''
+  try {
+    const body: Record<string, unknown> = {
+      email_enabled: notifyEmail.value,
+      webhook_url: notifyWebhookUrl.value.trim(),
+      events: [...notifyEvents.value],
+    }
+    if (notifyWebhookSecret.value.trim()) body.webhook_secret = notifyWebhookSecret.value.trim()
+    const r = await api<{ webhook_configured: boolean }>('PUT', '/api/org/notify-settings', body)
+    notifyWebhookConfigured.value = r.webhook_configured
+    notifyWebhookSecret.value = '' // 明文只在提交时用，绝不回显
+    notifyMsg.value = t('settings.saved')
+  } catch (e) {
+    notifyErr.value = errorMessage(e, t('common.error'))
+  } finally {
+    notifyBusy.value = false
+  }
+}
+
 onMounted(async () => {
   try {
     const r = await api<Me & { totp_enabled?: boolean }>('GET', '/api/me')
@@ -138,6 +177,15 @@ onMounted(async () => {
     if (Number(a.low_balance_alert_usd) > 0) alertThreshold.value = a.low_balance_alert_usd
   } catch {
     // 预警读取失败不阻塞设置页其余部分
+  }
+  try {
+    const nz = await api<{ email_enabled: boolean; webhook_url: string; webhook_configured: boolean; events: string[] }>('GET', '/api/org/notify-settings')
+    notifyEmail.value = nz.email_enabled
+    notifyWebhookUrl.value = nz.webhook_url || ''
+    notifyWebhookConfigured.value = nz.webhook_configured
+    notifyEvents.value = new Set(nz.events || [])
+  } catch {
+    // 通知设置读取失败不阻塞设置页
   }
 })
 
@@ -231,6 +279,41 @@ async function changePassword() {
       <p v-if="alertMsg" class="text-sm text-ok" role="status">{{ alertMsg }}</p>
       <p v-if="alertErr" class="text-sm text-danger" role="alert">{{ alertErr }}</p>
       <button class="btn-primary" :disabled="alertBusy">{{ t('common.confirm') }}</button>
+    </form>
+
+    <!-- 统一通知订阅（§4.9 Notify）：事件 × 通道 -->
+    <form class="app-panel p-6 space-y-4" @submit.prevent="saveNotify">
+      <h2 class="font-semibold">{{ t('settings.notifyTitle') }}</h2>
+      <p class="text-sm text-muted">{{ t('settings.notifyDesc') }}</p>
+
+      <div class="space-y-2">
+        <label class="label">{{ t('settings.notifyEvents') }}</label>
+        <label v-for="ev in NOTIFY_EVENTS" :key="ev" class="flex items-center gap-2 text-sm">
+          <input type="checkbox" :checked="notifyEvents.has(ev)" @change="toggleNotifyEvent(ev)" />
+          <span>{{ t(`settings.notifyEvent_${ev.replace('.', '_')}`) }}</span>
+        </label>
+      </div>
+
+      <label class="flex items-center gap-2 text-sm">
+        <input v-model="notifyEmail" type="checkbox" />
+        <span>{{ t('settings.notifyEmailChannel') }}</span>
+      </label>
+
+      <div>
+        <label class="label" for="notify-wh">{{ t('settings.notifyWebhookUrl') }}</label>
+        <input id="notify-wh" v-model="notifyWebhookUrl" class="input max-w-xl font-mono" placeholder="https://your-app.example.com/webhooks/laiai" />
+        <p class="mt-1 text-xs text-muted">{{ t('settings.notifyWebhookHint') }}</p>
+      </div>
+      <div v-if="notifyWebhookUrl.trim()">
+        <label class="label" for="notify-secret">{{ t('settings.notifyWebhookSecret') }}</label>
+        <input id="notify-secret" v-model="notifyWebhookSecret" class="input max-w-xl font-mono" type="password"
+               :placeholder="notifyWebhookConfigured ? t('settings.notifyWebhookSecretSet') : t('settings.notifyWebhookSecretPlaceholder')" />
+        <p class="mt-1 text-xs text-muted">{{ t('settings.notifyWebhookSecretHint') }}</p>
+      </div>
+
+      <p v-if="notifyMsg" class="text-sm text-ok" role="status">{{ notifyMsg }}</p>
+      <p v-if="notifyErr" class="text-sm text-danger" role="alert">{{ notifyErr }}</p>
+      <button class="btn-primary" :disabled="notifyBusy">{{ t('common.confirm') }}</button>
     </form>
 
     <section class="grid gap-4 lg:grid-cols-2">

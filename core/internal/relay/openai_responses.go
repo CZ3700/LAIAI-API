@@ -320,6 +320,7 @@ func (openaiResponsesAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, i
 	}
 
 	var u usage
+	u.FinishReason = finish // 排障闭环（0045）：此前该 adapter 漏填，responses 家族 finish_reason 恒空
 	if resp.Usage != nil {
 		u.PromptTokens = resp.Usage.InputTokens
 		u.CompletionTokens = resp.Usage.OutputTokens
@@ -506,5 +507,6 @@ func (openaiResponsesAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, in
 			"total_tokens": u.PromptTokens + u.CompletionTokens}})
 	_, _ = w.WriteString("data: [DONE]\n\n")
 	w.Flush()
+	u.FinishReason = finishReason // 排障闭环（0045）：此前该 adapter 漏填
 	return u, outBytes, nil
 }

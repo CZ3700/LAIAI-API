@@ -89,8 +89,12 @@ func (sunoTask) ParseSubmit(resp *http.Response) (string, error) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return "", fmt.Errorf("suno: submit parse: %w", err)
 	}
+	// 仅参数/内容类判客户端短路 failover；聚合上游侧故障走换渠道（对抗 review 修）。
 	if parsed.Code != "success" {
-		return "", &UpstreamRejectedError{StatusCode: http.StatusBadRequest, Message: parsed.Message}
+		if submitErrorIsClientFault(parsed.Code + " " + parsed.Message) {
+			return "", &UpstreamRejectedError{StatusCode: http.StatusBadRequest, Message: parsed.Message}
+		}
+		return "", fmt.Errorf("suno: submit failed upstream (code=%s)", parsed.Code)
 	}
 	if parsed.Data == "" {
 		return "", fmt.Errorf("suno: submit response missing task id")

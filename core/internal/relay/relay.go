@@ -514,6 +514,76 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		return
 	}
 	stream, _ := req["stream"].(bool)
+	pref := parseProviderPref(req) // provider preference（设计 §4.4）：解析并从转发体剥除
+	// 模型级 fallback 链（设计 §4.4，2026-07-11；顶级审计修排名 7，对标 OpenRouter models:[a,b,c]）：
+	// 主模型"此路不通"类失败（无渠道/上游耗尽/余额或额度不足）自动降级下一模型；
+	// 客户端 400 类与已开始写响应的失败绝不换模型。每个模型独立 hold（serveChatModel 自建自释）。
+	chain := parseModelChain(req, model)
+	for i, m := range chain {
+		if i > 0 {
+			// 降级模型重新过模型白名单 + 模型级限流（IP/quota/key RPM 已在入口过、与模型无关）
+			if !key.AllowsModel(m) {
+				continue
+			}
+			if ok, _ := r.allowModelRate(key.OrgID, m); !ok {
+				continue
+			}
+			req["model"] = m
+			r.Log.Warn("model fallback: trying next model", "model", m, "chain_pos", i)
+		}
+		if r.serveChatModel(c, key, inv, finish, req, body, m, stream, routePolicy, pref, i, i == len(chain)-1) == chatDone {
+			return
+		}
+	}
+	// 角落：链尾模型全被白名单/限流跳过 → 此前的 chatNextModel 都没写响应，统一失败收尾
+	finish(invocation.StatusNoChannel, http.StatusServiceUnavailable, "model fallback chain exhausted")
+	relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
+}
+
+// maxModelChain：fallback 链长上限（与重试预算同哲学，防长链放大尾延迟）。
+const maxModelChain = 3
+
+// parseModelChain：解析 OpenRouter 兼容的 models:[a,b,c] 并从转发体剥除。
+// 返回 [主模型, 备选...]（去空/去重/钳 maxModelChain）；无 models 字段 → [主模型]。
+func parseModelChain(req map[string]any, model string) []string {
+	raw, has := req["models"]
+	chain := []string{model}
+	if !has {
+		return chain
+	}
+	delete(req, "models") // 上游不认识该字段
+	arr, ok := raw.([]any)
+	if !ok {
+		return chain
+	}
+	seen := map[string]bool{model: true}
+	for _, v := range arr {
+		s, _ := v.(string)
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		chain = append(chain, s)
+		if len(chain) >= maxModelChain {
+			break
+		}
+	}
+	return chain
+}
+
+// chatOutcome：serveChatModel 的收尾语义。
+type chatOutcome int
+
+const (
+	chatDone      chatOutcome = iota // 已写响应并收尾（成功或终态失败）
+	chatNextModel                    // fallback：本模型此路不通且**未写任何响应**——调用方切下一模型
+)
+
+// serveChatModel：单模型的完整服务周期（估算→hold→quota 预留→换渠道重试→回传→结算），
+// 由 HandleChatCompletions 提取（模型级 fallback 链按模型重入）。last=false 时"此路不通"
+// 类失败不写响应、返回 chatNextModel——返回前 hold 已释放、quota 预留由 defer 退还。
+func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invocation.Invocation, finish func(string, int, string), req map[string]any, body []byte, model string, stream bool, routePolicy string, pref *providerPref, chainIdx int, last bool) chatOutcome {
 	maxTokens := int64(defaultMaxTokens)
 	if v := requestedMaxOutput(req); v > 0 { // 同时识别 max_tokens 与 max_completion_tokens（P0-2）
 		maxTokens = v
@@ -587,8 +657,11 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	// 3. 定价（热读缓存：命中即免 DB 查；hold/capture 仍取同一个 *price 局部变量）
 	price, err := r.cachedPrice(model)
 	if err != nil {
+		if !last {
+			return chatNextModel // 该模型未定价/不存在 → 降级下一模型
+		}
 		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", model))
-		return
+		return chatDone
 	}
 
 	// 4. Hold：按 tiktoken 估算输入 + max_tokens 上限 冻结（整个重试周期只 hold 一次）
@@ -604,12 +677,18 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	// 计费倍率（0011 一层 + 0027 二层 (分组,模型)）：hold/capture 取同一次值，避免中途改配置导致 release 算错
 	groupRatio := r.cachedRatio(key.OrgID, model)
 	holdAmount := price.ChatCost(holdIn, 0, holdOutput).Mul(groupRatio) // holdOutput 含 n 倍；按次固定价时忽略 token（gap P2-F）
+	// fallback 链：每模型独立幂等键（绝不共用 hold 跨模型结算错价，设计 §4.4）；
+	// chainIdx=0 保持历史键形（零回归）。
+	idem := "relay:" + inv.RequestID
+	if chainIdx > 0 {
+		idem = fmt.Sprintf("relay:%s#%d", inv.RequestID, chainIdx)
+	}
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
 		// 分片感知 hold（CreateHoldSharded）：org 未分片(n≤1)时与 CreateHold 逐字一致（零回归），
 		// 巨客户配 shardCount>1 后按 RequestID 散列打散写热点、不足跨片回退——届时只升级配置即可。
 		h, _, err := ledger.CreateHoldSharded(tx, key.OrgID, ledger.AccountUserCredit, inv.RequestID, ledger.HoldInput{
-			IdempotencyKey: "relay:" + inv.RequestID, // 每请求唯一 16-hex（非时间戳，杜绝纳秒碰撞共用 hold）
+			IdempotencyKey: idem, // 每请求唯一 16-hex（非时间戳，杜绝纳秒碰撞共用 hold）
 			Amount:         holdAmount,
 			RefType:        "usage",
 			RefID:          model,
@@ -619,22 +698,28 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	})
 	if err != nil {
 		if errors.Is(err, ledger.ErrInsufficientBalance) {
+			if !last {
+				return chatNextModel // 备选模型可能更便宜 → 降级（设计 §4.4）
+			}
 			finish(invocation.StatusInsufficientBalance, http.StatusPaymentRequired, "insufficient balance")
 			relayErr(c, http.StatusPaymentRequired, "insufficient balance")
-			return
+			return chatDone
 		}
 		r.Log.Error("hold failed", "err", err)
 		relayErr(c, http.StatusInternalServerError, "billing error")
-		return
+		return chatDone
 	}
 
 	// 4b. API Key 额度原子预留（P0-3：消解并发超 quota）。按 hold 估算预留；capture 对账到 actual，
 	// 失败由下方 defer 退还（统一覆盖所有 release 路径）。预留失败＝会超 quota → 释放 hold + 402。
 	if !identity.ReserveKeyQuota(r.DB, key.ID, holdAmount) {
 		r.release(hold.ID)
+		if !last {
+			return chatNextModel // quota 预留是金额维度，备选模型可能更便宜 → 降级
+		}
 		finish(invocation.StatusInsufficientBalance, http.StatusPaymentRequired, "api key quota exceeded")
 		relayErr(c, http.StatusPaymentRequired, "this api key has reached its quota limit")
-		return
+		return chatDone
 	}
 	quotaSettled := false
 	defer func() {
@@ -661,12 +746,12 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			break // 快照加载失败：当作无渠道，落循环后失败处理
 		}
 		var pickErr error
-		ch, pickErr = r.pickSnapshotPolicy(channelSnap, model, attempt, exclude, routePolicy, key.OrgID)
+		ch, pickErr = r.pickSnapshotPolicy(channelSnap, model, attempt, exclude, routePolicy, key.OrgID, pref)
 		if pickErr != nil {
 			if !breaker.reopen(exclude) {
 				break // 无渠道可用：落到循环后的失败处理
 			}
-			ch, pickErr = r.pickSnapshotPolicy(channelSnap, model, attempt, exclude, routePolicy, key.OrgID)
+			ch, pickErr = r.pickSnapshotPolicy(channelSnap, model, attempt, exclude, routePolicy, key.OrgID, pref)
 			if pickErr != nil {
 				break
 			}
@@ -706,13 +791,20 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			r.release(hold.ID)
 			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
 			relayErr(c, http.StatusInternalServerError, "upstream request build failed")
-			return // 请求本身不合法，换渠道无意义
+			return chatDone // 请求本身不合法，换渠道/换模型都无意义
 		}
 		// 渠道级 header override（0033）：adapter 默认头之后应用（运营优先级最高），
 		// {{credential}} 占位符注入解密凭证——自定义认证头不需要明文 key 进配置。
 		applyHeaderOverride(upReq, ch.HeaderOverride, credential)
 		resp, err = r.clientFor(ch).Do(upReq)
 		if err != nil {
+			// 下游客户端断连/超时（ctx 取消）不是渠道故障——绝不喂健康分/熔断（对抗 review CONFIRMED：
+			// 否则客户端批量中止可硬熔断健康渠道），且换渠道重试也是继续对已死 ctx 打水漂，直接终止。
+			if c.Request.Context().Err() != nil {
+				r.release(hold.ID)
+				finish(invocation.StatusUpstreamError, 499, "client disconnected")
+				return chatDone
+			}
 			r.Log.Warn("upstream unreachable", "channel", ch.ID, "attempt", attempt, "err", err)
 			r.observe(ch.ID, false)      // 健康分：网络不可达 = 渠道可靠性失败
 			r.breakerNote(ch.ID, false)  // 熔断：不可达计一次
@@ -753,14 +845,22 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		// 所有尝试失败：release 全额解冻，透传最后一个上游错误（或无渠道）
 		r.release(hold.ID)
 		if lastStatus == 0 {
+			if !last {
+				return chatNextModel // 该模型无可用渠道 → 降级下一模型
+			}
 			finish(invocation.StatusNoChannel, http.StatusServiceUnavailable, "no upstream available")
 			relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
-			return
+			return chatDone
+		}
+		// 上游耗尽：仅"上游自身不行"类（5xx/429）降级下一模型；客户端 400 类绝不换模型
+		// （换了也一样错，且掩盖真错误——设计 §4.4）。
+		if !last && (lastStatus >= 500 || lastStatus == http.StatusTooManyRequests) {
+			return chatNextModel
 		}
 		// error_brief 只存状态摘要，不存上游错误体（红线 8：禁 payload 回流元数据）
 		finish(invocation.StatusUpstreamError, lastStatus, fmt.Sprintf("upstream status %d after %d attempts", lastStatus, inv.Attempts))
 		c.Data(lastStatus, "application/json", lastBody)
-		return
+		return chatDone
 	}
 	defer resp.Body.Close()
 	ad := adapterForChannel(ch)
@@ -771,9 +871,12 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		r.release(hold.ID)
 		r.Log.Warn("upstream returned non-LLM content-type, rejecting",
 			"channel", ch.ID, "content_type", resp.Header.Get("Content-Type"))
+		if !last {
+			return chatNextModel // 上游返回垃圾 = 渠道/上游问题，未写响应 → 降级
+		}
 		finish(invocation.StatusUpstreamError, http.StatusBadGateway, "upstream returned invalid response type")
 		relayErr(c, http.StatusBadGateway, "upstream returned an invalid response (check channel base_url)")
-		return
+		return chatDone
 	}
 
 	// 上游 request-id（找厂商开工单的唯一凭证，rc.6）；frt = 最后一次尝试开始 → 首字节
@@ -843,20 +946,27 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	}
 
 	inv.PromptTokens, inv.CompletionTokens, inv.CostUSD = u.PromptTokens, u.CompletionTokens, actual
-	// 排障闭环（0045）：真实 finish_reason + 缓存/思考 token 拆分进观测层
-	inv.FinishReason, inv.CachedTokens, inv.ReasoningTokens = u.FinishReason, u.Cached(), u.CompletionTokensDetails.ReasoningTokens
+	// 排障闭环（0045）：真实 finish_reason + 缓存/思考 token 拆分进观测层。
+	// finish_reason 截断到列宽内（对抗 review：中转渠道可回传任意超长值，否则整批 invocation
+	// 插入在 MySQL 严格模式下失败、丢计费审计元数据）。成功路径清 UpstreamErrorCode——
+	// 换渠道重试成功后不该携带前次失败尝试的错误码（对抗 review：与胜出渠道 request_id 错配）。
+	inv.FinishReason = clipMeta(u.FinishReason, 31)
+	inv.CachedTokens, inv.ReasoningTokens = u.Cached(), u.CompletionTokensDetails.ReasoningTokens
+	inv.UpstreamErrorCode = ""
 	// 预留→实际对账（P0-3）：used_amount 已 +holdAmount，这里 +(actual-hold) 使其落到真实 actual；
 	// 标记 settled 让上面的退还 defer 不再触发。已交付的部分 token 照实计费（actual），不退。
 	_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(holdAmount))
 	quotaSettled = true
 	// P1-5：流中途 stall/读错误 → 已发 200 头的截断流，照实计费但**不可记为 success**。
+	// 已开始写响应，绝不换模型（设计 §4.4）。
 	if streamErr != nil {
 		r.Log.Warn("upstream stream ended abnormally — recording as upstream_error",
 			"channel", ch.ID, "model", model, "err", streamErr)
 		finish(invocation.StatusUpstreamError, http.StatusBadGateway, "upstream stream ended abnormally")
-		return
+		return chatDone
 	}
 	finish(invocation.StatusSuccess, http.StatusOK, "")
+	return chatDone
 }
 
 func (r *Relay) release(holdID uint64) {

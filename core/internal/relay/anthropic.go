@@ -185,7 +185,9 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 					"description":  "Record the final answer as structured JSON matching the required schema.",
 					"input_schema": schema,
 				}}
-				out["tool_choice"] = map[string]any{"type": "tool", "name": anthropicJSONEmuTool}
+				// disable_parallel_tool_use：强制单次哨兵调用——否则 Claude 可并行多次调用同一工具，
+				// 各自的 input 增量拼接成非法 JSON（对抗 review CONFIRMED，官方推荐单实例结构化提取禁用并行）。
+				out["tool_choice"] = map[string]any{"type": "tool", "name": anthropicJSONEmuTool, "disable_parallel_tool_use": true}
 			}
 		}
 	}
@@ -400,8 +402,11 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 		}
 	}
 	finishReason := mapStopReason(resp.StopReason)
-	if jsonEmu && len(toolCalls) == 0 {
-		finishReason = "stop" // 哨兵是我们注入的，对客户端而言这是正常文本收尾
+	// 哨兵是我们注入的工具：对客户端而言应显示为文本收尾。但只把**本应是 tool_use** 的
+	// 收尾改写为 stop——绝不掩盖 max_tokens(length) 等真实截断（对抗 review：pipeJSON 此前无条件
+	// 覆盖，与 pipeSSE 的条件守卫不一致）。
+	if jsonEmu && len(toolCalls) == 0 && finishReason == "tool_calls" {
+		finishReason = "stop"
 	}
 	cw5m, cw1h := resp.Usage.cacheWrites() // 写缓存（对账后口径）：计费与回显同源
 	converted := gin.H{
@@ -546,9 +551,12 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 			w.Flush()
 		}
 	})
-	if err != nil { // 截断流（无 message_stop）：补 error 帧，不可计 success
+	// 排障闭环（0045）：只在真收到过上游 stop_reason 时记 finish_reason；截断/断连（err!=nil，
+	// 从未走到 message_delta）留空，不把默认 "stop" 伪造成真实收尾（对抗 review，对齐 openai/gemini 口径）。
+	if err == nil {
+		u.FinishReason = finishReason
+	} else { // 截断流（无 message_stop）：补 error 帧，不可计 success
 		emitStreamError(w, "upstream stream ended abnormally")
 	}
-	u.FinishReason = finishReason // 排障闭环（0045）
 	return u, outBytes, err
 }

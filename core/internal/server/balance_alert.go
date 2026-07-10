@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/laiai/laiai-next/core/internal/notify"
 	"github.com/shopspring/decimal"
 )
 
@@ -81,6 +82,19 @@ func (s *Server) SweepLowBalanceAlerts(ctx context.Context, batch int) (checked,
 		checked++
 		avail, err := ledger.OrgAvailable(s.db, org.ID, ledger.AccountUserCredit)
 		if err != nil || avail.GreaterThanOrEqual(org.LowBalanceAlertUSD) {
+			continue
+		}
+		// 有 Notify 订阅（balance.low 事件）的 org 走统一层（含 webhook）；此处 legacy 直发邮件
+		// 只服务未接 Notify 的 org——互斥不双发（设计 §4.9）。盖章仍走本函数（冷却口径统一）。
+		if s.notify != nil && s.notify.HandlesEvent(org.ID, notify.EventBalanceLow) {
+			s.notify.Emit(org.ID, notify.EventBalanceLow, map[string]any{
+				"available_usd": avail.StringFixed(2), "threshold_usd": org.LowBalanceAlertUSD.StringFixed(2),
+			})
+			sent++
+			if err := s.db.Model(&identity.Organization{}).Where("id = ?", org.ID).
+				Update("low_balance_alerted_at", now).Error; err != nil {
+				s.log.Warn("low-balance alerted_at stamp failed", "org", org.ID, "err", err)
+			}
 			continue
 		}
 		// 收件人 = 全部 owner 的邮箱（org 自己的管理者，无跨界 PII）

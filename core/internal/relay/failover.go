@@ -49,12 +49,12 @@ func (r *Relay) forwardWithFailover(c *gin.Context, inv *invocation.Invocation, 
 		if snapErr != nil {
 			break
 		}
-		ch, pickErr := r.pickSnapshotPolicy(channelSnap, o.model, attempt, exclude, o.policy, inv.OrgID)
+		ch, pickErr := r.pickSnapshotPolicy(channelSnap, o.model, attempt, exclude, o.policy, inv.OrgID, nil)
 		if pickErr != nil {
 			if !breaker.reopen(exclude) {
 				break
 			}
-			ch, pickErr = r.pickSnapshotPolicy(channelSnap, o.model, attempt, exclude, o.policy, inv.OrgID)
+			ch, pickErr = r.pickSnapshotPolicy(channelSnap, o.model, attempt, exclude, o.policy, inv.OrgID, nil)
 			if pickErr != nil {
 				break
 			}
@@ -94,6 +94,12 @@ func (r *Relay) forwardWithFailover(c *gin.Context, inv *invocation.Invocation, 
 		}
 		resp, e = r.clientFor(ch).Do(upReq)
 		if e != nil {
+			// 下游 ctx 取消（客户端断连）不是渠道故障，不喂健康分/熔断并终止（对抗 review 修，同 chat 主循环）
+			if c.Request.Context().Err() != nil {
+				r.release(o.hold.ID)
+				finish(invocation.StatusUpstreamError, 499, "client disconnected")
+				return nil, nil, true
+			}
 			r.Log.Warn(o.logLabel+" upstream unreachable", "channel", ch.ID, "err", e)
 			r.observe(ch.ID, false)     // 健康分：网络不可达
 			r.breakerNote(ch.ID, false) // 熔断：不可达计一次
@@ -106,6 +112,7 @@ func (r *Relay) forwardWithFailover(c *gin.Context, inv *invocation.Invocation, 
 			r.enableChannelIfDisabled(ch)
 			r.resetKeyFailures(credID)
 			r.breakerNote(ch.ID, true) // 熔断：成功即闭合
+			inv.UpstreamErrorCode = "" // 成功清前次失败尝试的错误码（对抗 review，同 chat 主循环）
 			return resp, ch, false // 成功：winCh=ch，hold 留给调用方 settle
 		}
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))

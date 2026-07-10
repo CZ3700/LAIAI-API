@@ -13,6 +13,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/mailer"
+	"github.com/laiai/laiai-next/core/internal/notify"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/redis/go-redis/v9"
@@ -54,6 +55,7 @@ type Server struct {
 	twofaLimiter        *ipLimiter    // 2FA 二阶段 per-account 限流（防中间票窗口内暴力猜 TOTP）
 	relay               *relay.Relay  // 渠道一键测试用；nil = 测试端点 503
 	mailer              mailer.Mailer // 邮件发送；nil = 邮件功能禁用
+	notify              *notify.Dispatcher // 统一通知层（§4.9）；nil = 通知禁用
 	log                 *slog.Logger
 	now                 func() time.Time // 可注入时钟，测试用
 	invRetentionDefault int              // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
@@ -139,6 +141,16 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		s.relay = rl
 	}
 
+	// 统一通知层（§4.9）：邮件复用 settingsMailer；出站 webhook 走 guarded client（SSRF 纪律，
+	// 恒不放行私网，与 BYOK 同档）。Emit 是 best-effort，keyring 缺失时 webhook 通道不可用（邮件仍可）。
+	s.notify = &notify.Dispatcher{
+		DB: db, Keyring: opts.Keyring, Log: log.With("component", "notify"),
+		Mail:       s.mailer.Send,
+		MailActive: s.mailer.Active,
+		HTTP:       relay.NewGuardedClient(10*time.Second, false),
+		Now:        s.now,
+	}
+
 	r.GET("/healthz", s.healthz)
 
 	api := r.Group("/api")
@@ -206,6 +218,8 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/affiliate", s.getAffiliate)
 				org.GET("/org/balance-alert", s.getBalanceAlert)  // 余额低预警阈值（0042）
 				org.PUT("/org/balance-alert", s.putBalanceAlert)  // 仅 owner/admin
+				org.GET("/org/notify-settings", s.getNotifySettings) // 统一通知订阅（§4.9 Notify）
+				org.PUT("/org/notify-settings", s.putNotifySettings) // 仅 owner/admin
 				org.GET("/org/byok-channels", s.listByokChannels) // BYOK 自带上游 Key（0044）
 				org.POST("/org/byok-channels", s.createByokChannel)
 				org.PATCH("/org/byok-channels/:id", s.patchByokChannel)
@@ -320,6 +334,9 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		}
 		if ts.Rec == nil {
 			ts.Rec = opts.Recorder // 任务终态进 Invocation Store（请求日志可见视频消费）
+		}
+		if ts.Notify == nil {
+			ts.Notify = s.notify // 任务完成/失败回调（§4.9 Notify）；best-effort，绝不影响结算
 		}
 		// 数据面体上限（P0-2）：与 relay 各端点 io.LimitReader 同一上限，超限 413
 		vg := r.Group("", bodyLimit(relay.MaxRequestBodySize))

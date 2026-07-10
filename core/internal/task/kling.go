@@ -212,9 +212,13 @@ func (klingTask) ParseSubmit(resp *http.Response) (string, error) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return "", fmt.Errorf("kling: submit parse: %w", err)
 	}
-	// HTTP 200 但 code!=0 是业务失败（参数问题）→ 类型化拒绝，带上游 message
+	// HTTP 200 但 code!=0 是业务失败。仅参数/内容类判客户端短路 failover；
+	// 余额/限流/鉴权/资源包等渠道侧故障走换渠道（对抗 review 修）。
 	if parsed.Code != 0 {
-		return "", &UpstreamRejectedError{StatusCode: http.StatusBadRequest, Message: parsed.Message}
+		if submitErrorIsClientFault(parsed.Message) {
+			return "", &UpstreamRejectedError{StatusCode: http.StatusBadRequest, Message: parsed.Message}
+		}
+		return "", fmt.Errorf("kling: submit failed upstream (code=%d)", parsed.Code)
 	}
 	if parsed.Data.TaskID == "" {
 		return "", fmt.Errorf("kling: submit response missing task id")

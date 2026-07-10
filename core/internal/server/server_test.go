@@ -28,6 +28,20 @@ CREATE TABLE email_verifications (
     email_canonical TEXT PRIMARY KEY, code TEXT NOT NULL,
     expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE TABLE notify_settings (
+    org_id INTEGER PRIMARY KEY,
+    email_enabled INTEGER NOT NULL DEFAULT 0,
+    webhook_url TEXT NOT NULL DEFAULT '', webhook_secret_enc TEXT NOT NULL DEFAULT '',
+    events TEXT NOT NULL DEFAULT '', updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE notify_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL, event TEXT NOT NULL, payload TEXT NOT NULL,
+    channel TEXT NOT NULL, target TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME NOT NULL, sent_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE ext_settings (
     name TEXT PRIMARY KEY, value TEXT NOT NULL
 );

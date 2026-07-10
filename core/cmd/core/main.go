@@ -137,6 +137,26 @@ func main() {
 		TrustedProxies:          cfg.TrustedProxies, // 可信反代（P1-2）：空=私网默认；"none"=不信任代理头
 	})
 
+	// Notify outbox 投递循环（§4.9 统一层，leader-only 30s）：扫 pending 到期行发送，指数退避 + DLQ。
+	// 独立于每小时维护循环——任务完成回调是产品刚需，需及时投递（首次 emit 后 30s 内送出）。
+	// 复用 pollerCtx（与任务轮询同生命周期，shutdown 时一并取消）。
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if leaderLease.IsLeader() {
+					if sentN, failedN := apiSrv.ProcessNotifyOutbox(pollerCtx, 200); sentN > 0 || failedN > 0 {
+						log.Info("notify outbox processed", "sent", sentN, "failed", failedN)
+					}
+				}
+			case <-pollerCtx.Done():
+				return
+			}
+		}
+	}()
+
 	// 后台维护循环（每小时）：旧日志保留期清理（调用日志 + 审计日志，运营可热配，gap P2-C）
 	//   + relay 卡死 hold 清扫（审查 H-1）。放在 apiSrv 构建后以复用 RunLogRetention（读 ext_settings）。
 	// maintCtx：可取消，shutdown 时 maintCancel 让在途长任务（SyncChannelModels 单趟最坏 ~小时级）能中断。
