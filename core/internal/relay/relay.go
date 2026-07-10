@@ -160,7 +160,9 @@ func (r *Relay) guardedClient(allowPrivate bool) *http.Client {
 	if cl, ok := r.ssrfClients[allowPrivate]; ok {
 		return cl
 	}
-	cl := &http.Client{Timeout: upstreamTimeout, Transport: &http.Transport{DialContext: ssrfDialContext(allowPrivate)}}
+	// 拨号守卫拦内网/metadata 首跳；CheckRedirect 剥跨主机重定向的认证头（对抗 review 硬化：
+	// advanced_custom/BYOK 上游返回恶意跨主机 302 时不把凭证送去攻击者主机，与 NewGuardedClient 对齐）。
+	cl := &http.Client{Timeout: upstreamTimeout, Transport: &http.Transport{DialContext: ssrfDialContext(allowPrivate)}, CheckRedirect: ssrfCheckRedirect}
 	r.ssrfClients[allowPrivate] = cl
 	return cl
 }

@@ -153,22 +153,26 @@ func ssrfDialContext(allowPrivate bool) func(ctx context.Context, network, addr 
 // 内网/metadata 首跳由拨号守卫拦（凭证发不出去）；跨主机重定向到公网攻击者主机由 CheckRedirect 剥头。
 func NewGuardedClient(timeout time.Duration, allowPrivate bool) *http.Client {
 	return &http.Client{
-		Timeout:   timeout,
-		Transport: &http.Transport{DialContext: ssrfDialContext(allowPrivate)},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fmt.Errorf("ssrf: stopped after 5 redirects")
-			}
-			// 跨主机重定向：剥离认证头（防把渠道凭证送去攻击者可控的公网主机；内网/metadata 由拨号守卫拦）
-			if len(via) > 0 && req.URL.Host != via[len(via)-1].URL.Host {
-				req.Header.Del("Authorization")
-				req.Header.Del("x-goog-api-key")
-				req.Header.Del("api-key")
-				req.Header.Del("x-api-key")
-			}
-			return nil
-		},
+		Timeout:       timeout,
+		Transport:     &http.Transport{DialContext: ssrfDialContext(allowPrivate)},
+		CheckRedirect: ssrfCheckRedirect,
 	}
+}
+
+// ssrfCheckRedirect：跨主机重定向剥离认证头（防把渠道/BYOK 凭证送去攻击者可控的公网主机；
+// 内网/metadata 首跳由拨号守卫拦）。guardedClient（advanced_custom + BYOK）与 NewGuardedClient
+// （task 产物代理）共用。
+func ssrfCheckRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return fmt.Errorf("ssrf: stopped after 5 redirects")
+	}
+	if len(via) > 0 && req.URL.Host != via[len(via)-1].URL.Host {
+		req.Header.Del("Authorization")
+		req.Header.Del("x-goog-api-key")
+		req.Header.Del("api-key")
+		req.Header.Del("x-api-key")
+	}
+	return nil
 }
 
 // AllowPrivateFromDB：读 ext_settings.advanced_custom_allow_private（默认 false）——供 task 产物代理
