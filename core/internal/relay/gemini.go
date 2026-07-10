@@ -288,6 +288,22 @@ type geminiUsage struct {
 	PromptTokenCount        int64 `json:"promptTokenCount"` // 含缓存部分（Gemini 口径，总输入）
 	CandidatesTokenCount    int64 `json:"candidatesTokenCount"`
 	CachedContentTokenCount int64 `json:"cachedContentTokenCount"` // promptTokenCount 的缓存子集（折扣价）
+	ThoughtsTokenCount      int64 `json:"thoughtsTokenCount"`      // 思考 token：Google 按 output 计费且**不含**在 candidates 内
+}
+
+// completionTotal：计费口径的输出 token = candidates + thoughts。
+// Gemini 思考模型（thinkingConfig）的思考 token 由 Google 按 output 价实扣但与
+// candidatesTokenCount 分列——只取 candidates 会系统性少收（思考密集时漏 ~95% 输出成本）。
+// 负值各自钳 0（对抗 review：异常上游不得拉低计费或把 actual 算成负）。
+func (g geminiUsage) completionTotal() int64 {
+	c, t := g.CandidatesTokenCount, g.ThoughtsTokenCount
+	if c < 0 {
+		c = 0
+	}
+	if t < 0 {
+		t = 0
+	}
+	return c + t
 }
 
 type geminiCandidate struct {
@@ -355,14 +371,16 @@ func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error
 			"finish_reason": mapGeminiFinishReason(cand.FinishReason, len(toolCalls) > 0),
 		}},
 		"usage": gin.H{
-			"prompt_tokens":         resp.UsageMetadata.PromptTokenCount,
-			"completion_tokens":     resp.UsageMetadata.CandidatesTokenCount,
-			"total_tokens":          resp.UsageMetadata.PromptTokenCount + resp.UsageMetadata.CandidatesTokenCount,
-			"prompt_tokens_details": gin.H{"cached_tokens": resp.UsageMetadata.CachedContentTokenCount},
+			"prompt_tokens":             resp.UsageMetadata.PromptTokenCount,
+			"completion_tokens":         resp.UsageMetadata.completionTotal(),
+			"total_tokens":              resp.UsageMetadata.PromptTokenCount + resp.UsageMetadata.completionTotal(),
+			"prompt_tokens_details":     gin.H{"cached_tokens": resp.UsageMetadata.CachedContentTokenCount},
+			"completion_tokens_details": gin.H{"reasoning_tokens": resp.UsageMetadata.ThoughtsTokenCount},
 		},
 	})
-	u := usage{PromptTokens: resp.UsageMetadata.PromptTokenCount, CompletionTokens: resp.UsageMetadata.CandidatesTokenCount}
+	u := usage{PromptTokens: resp.UsageMetadata.PromptTokenCount, CompletionTokens: resp.UsageMetadata.completionTotal()}
 	u.PromptTokensDetails.CachedTokens = resp.UsageMetadata.CachedContentTokenCount // 缓存折扣计费（P2-9）
+	u.CompletionTokensDetails.ReasoningTokens = resp.UsageMetadata.ThoughtsTokenCount
 	return u, len(raw), nil
 }
 
@@ -399,8 +417,9 @@ func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error)
 		}
 		if chunk.UsageMetadata != nil {
 			u.PromptTokens = chunk.UsageMetadata.PromptTokenCount
-			u.CompletionTokens = chunk.UsageMetadata.CandidatesTokenCount                    // 累计值，取最后一次
+			u.CompletionTokens = chunk.UsageMetadata.completionTotal()                       // 累计值，取最后一次；含 thoughts（思考 token 计费）
 			u.PromptTokensDetails.CachedTokens = chunk.UsageMetadata.CachedContentTokenCount // 缓存折扣（P2-9）
+			u.CompletionTokensDetails.ReasoningTokens = chunk.UsageMetadata.ThoughtsTokenCount
 		}
 		if len(chunk.Candidates) == 0 {
 			return
@@ -443,7 +462,9 @@ func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error)
 	emit(gin.H{"object": "chat.completion.chunk",
 		"choices": []gin.H{{"index": 0, "delta": gin.H{}, "finish_reason": finishReason}},
 		"usage": gin.H{"prompt_tokens": u.PromptTokens, "completion_tokens": u.CompletionTokens,
-			"total_tokens": u.PromptTokens + u.CompletionTokens}})
+			"total_tokens":              u.PromptTokens + u.CompletionTokens,
+			"prompt_tokens_details":     gin.H{"cached_tokens": u.PromptTokensDetails.CachedTokens},
+			"completion_tokens_details": gin.H{"reasoning_tokens": u.CompletionTokensDetails.ReasoningTokens}}})
 	_, _ = w.WriteString("data: [DONE]\n\n")
 	w.Flush()
 	return u, outBytes, nil

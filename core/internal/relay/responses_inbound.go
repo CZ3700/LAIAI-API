@@ -517,6 +517,9 @@ func openaiRespToResponses(raw []byte) ([]byte, bool) {
 			PromptTokensDetails struct {
 				CachedTokens int64 `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
+			CompletionTokensDetails struct {
+				ReasoningTokens int64 `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
 		} `json:"usage"`
 	}
 	if json.Unmarshal(raw, &resp) != nil || len(resp.Choices) == 0 {
@@ -546,7 +549,7 @@ func openaiRespToResponses(raw []byte) ([]byte, bool) {
 		"id": respID, "object": "response", "created_at": resp.Created,
 		"status": status, "model": resp.Model,
 		"output": output, "usage": responsesUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens,
-			resp.Usage.PromptTokensDetails.CachedTokens),
+			resp.Usage.PromptTokensDetails.CachedTokens, resp.Usage.CompletionTokensDetails.ReasoningTokens),
 		"parallel_tool_calls": true, "tool_choice": "auto", "tools": []any{},
 		"error": nil, "incomplete_details": incompleteDetails, "metadata": map[string]any{},
 	}
@@ -568,11 +571,12 @@ func responsesStatusFor(finishReason string) (string, any) {
 }
 
 // responsesUsage：内部 usage → Responses usage（input_tokens/output_tokens/details）。
-func responsesUsage(prompt, completion, cached int64) map[string]any {
+// reasoning：思考 token 子集（Gemini thoughts / OpenAI o 系），对抗 review——此前恒 0 与 chat 面回显不一致。
+func responsesUsage(prompt, completion, cached, reasoning int64) map[string]any {
 	return map[string]any{
 		"input_tokens": prompt, "output_tokens": completion, "total_tokens": prompt + completion,
 		"input_tokens_details":  map[string]any{"cached_tokens": cached},
-		"output_tokens_details": map[string]any{"reasoning_tokens": 0},
+		"output_tokens_details": map[string]any{"reasoning_tokens": reasoning},
 	}
 }
 
@@ -595,12 +599,13 @@ type responsesSSE struct {
 	toolItems map[int]*respToolItem
 	toolOrder []int
 
-	nextIndex int
-	inTok     int64
-	cachedTok int64
-	outTok    int64
-	finish    string
-	stopped   bool
+	nextIndex    int
+	inTok        int64
+	cachedTok    int64
+	reasoningTok int64 // 思考 token 子集（末帧 usage 带出，回显进 output_tokens_details）
+	outTok       int64
+	finish       string
+	stopped      bool
 }
 
 type respToolItem struct {
@@ -653,6 +658,9 @@ func (s *responsesSSE) handleChunk(w sseFlusher, data string) {
 			PromptTokensDetails struct {
 				CachedTokens int64 `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
+			CompletionTokensDetails struct {
+				ReasoningTokens int64 `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
 		} `json:"usage"`
 	}
 	if json.Unmarshal([]byte(data), &ck) != nil {
@@ -679,6 +687,9 @@ func (s *responsesSSE) handleChunk(w sseFlusher, data string) {
 		}
 		if ck.Usage.PromptTokensDetails.CachedTokens > 0 {
 			s.cachedTok = ck.Usage.PromptTokensDetails.CachedTokens
+		}
+		if ck.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+			s.reasoningTok = ck.Usage.CompletionTokensDetails.ReasoningTokens
 		}
 	}
 	for _, choice := range ck.Choices {
@@ -826,7 +837,7 @@ func (s *responsesSSE) finishStream(w sseFlusher) {
 		"response": map[string]any{
 			"id": s.respID(), "object": "response", "created_at": s.created0,
 			"status": status, "model": s.model, "output": output,
-			"usage":               responsesUsage(inputTokens, s.outTok, s.cachedTok),
+			"usage":               responsesUsage(inputTokens, s.outTok, s.cachedTok, s.reasoningTok),
 			"parallel_tool_calls": true, "tool_choice": "auto", "tools": []any{},
 			"error": nil, "incomplete_details": incompleteDetails, "metadata": map[string]any{},
 		},

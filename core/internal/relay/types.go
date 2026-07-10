@@ -172,6 +172,23 @@ func (p *ModelPrice) Cost(inputTokens, cachedTokens, outputTokens int64) decimal
 	return in.Add(cached).Add(out)
 }
 
+// cacheWrite5mExtra/cacheWrite1hExtra：Anthropic 写缓存溢价系数。上游实收 1.25x(5min)/2x(1h)
+// 输入价，promptTotal 已按 1.0x 计入 input，这里只补差额（0.25x / 1.0x）。
+var (
+	cacheWrite5mExtra = decimal.RequireFromString("0.25")
+	cacheWrite1hExtra = decimal.NewFromInt(1)
+)
+
+// CacheWriteSurcharge：写缓存 token 的溢价补收（USD）。按次固定价模型（PerCallUSD>0）
+// 与 ChatCost 同语义忽略 token，不补。无写缓存时恒 0（非 Anthropic 路径零开销）。
+func (p *ModelPrice) CacheWriteSurcharge(w5m, w1h int64) decimal.Decimal {
+	if (w5m <= 0 && w1h <= 0) || p.PerCallUSD.IsPositive() {
+		return decimal.Zero
+	}
+	extra := cacheWrite5mExtra.Mul(decimal.NewFromInt(w5m)).Add(cacheWrite1hExtra.Mul(decimal.NewFromInt(w1h)))
+	return p.InputUSDPer1M.Mul(extra).Div(oneMillion)
+}
+
 var oneThousand = decimal.NewFromInt(1000)
 
 // ChatCost：每请求计费。PerCallUSD>0 → 按次固定价（忽略 token，gap P2-F「按次固定价」）；

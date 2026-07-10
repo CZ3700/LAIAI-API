@@ -583,6 +583,7 @@ func openaiRespToAnthropic(raw []byte) ([]byte, bool) {
 			PromptTokensDetails struct {
 				CachedTokens int64 `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"` // adapter 扩展键（写缓存拆回）
 		} `json:"usage"`
 	}
 	if json.Unmarshal(raw, &resp) != nil || len(resp.Choices) == 0 {
@@ -605,8 +606,8 @@ func openaiRespToAnthropic(raw []byte) ([]byte, bool) {
 	if content == nil {
 		content = []any{}
 	}
-	cached := resp.Usage.PromptTokensDetails.CachedTokens
-	inputTokens := resp.Usage.PromptTokens - cached // Anthropic input_tokens=非缓存部分（逆 promptTotal）
+	cached, cacheWrite := resp.Usage.PromptTokensDetails.CachedTokens, resp.Usage.CacheCreationInputTokens
+	inputTokens := resp.Usage.PromptTokens - cached - cacheWrite // Anthropic input_tokens=非缓存部分（逆 promptTotal）
 	if inputTokens < 0 {
 		inputTokens = 0
 	}
@@ -615,7 +616,7 @@ func openaiRespToAnthropic(raw []byte) ([]byte, bool) {
 		"content": content, "stop_reason": invStopReason(ch.FinishReason), "stop_sequence": nil,
 		"usage": map[string]any{
 			"input_tokens": inputTokens, "output_tokens": resp.Usage.CompletionTokens,
-			"cache_read_input_tokens": cached, "cache_creation_input_tokens": 0,
+			"cache_read_input_tokens": cached, "cache_creation_input_tokens": cacheWrite,
 		},
 	}
 	b, err := json.Marshal(out)
@@ -644,13 +645,14 @@ type anthropicSSE struct {
 	model     string
 	textOpen  bool
 	textIndex int
-	toolBlock map[int]int // OpenAI tool index → Anthropic content-block index
-	nextIndex int
-	inTok     int64
-	cachedTok int64
-	outTok    int64
-	finish    string
-	stopped   bool
+	toolBlock  map[int]int // OpenAI tool index → Anthropic content-block index
+	nextIndex  int
+	inTok      int64
+	cachedTok  int64
+	cacheWrTok int64 // 写缓存（adapter 扩展键 cache_creation_input_tokens 拆回）
+	outTok     int64
+	finish     string
+	stopped    bool
 }
 
 type sseFlusher interface {
@@ -686,6 +688,7 @@ func (s *anthropicSSE) handleChunk(w sseFlusher, data string) {
 			PromptTokensDetails struct {
 				CachedTokens int64 `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"` // adapter 扩展键
 		} `json:"usage"`
 	}
 	if json.Unmarshal([]byte(data), &ck) != nil {
@@ -709,6 +712,9 @@ func (s *anthropicSSE) handleChunk(w sseFlusher, data string) {
 		}
 		if ck.Usage.PromptTokensDetails.CachedTokens > 0 {
 			s.cachedTok = ck.Usage.PromptTokensDetails.CachedTokens
+		}
+		if ck.Usage.CacheCreationInputTokens > 0 {
+			s.cacheWrTok = ck.Usage.CacheCreationInputTokens
 		}
 	}
 	for _, choice := range ck.Choices {
@@ -799,7 +805,7 @@ func (s *anthropicSSE) finishStream(w sseFlusher) {
 		s.closeBlock(w, bi)
 	}
 	s.toolBlock = map[int]int{}
-	inputTokens := s.inTok - s.cachedTok
+	inputTokens := s.inTok - s.cachedTok - s.cacheWrTok
 	if inputTokens < 0 {
 		inputTokens = 0
 	}
@@ -807,7 +813,7 @@ func (s *anthropicSSE) finishStream(w sseFlusher) {
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": invStopReason(s.finish), "stop_sequence": nil},
 		"usage": map[string]any{"input_tokens": inputTokens, "output_tokens": s.outTok,
-			"cache_read_input_tokens": s.cachedTok, "cache_creation_input_tokens": 0},
+			"cache_read_input_tokens": s.cachedTok, "cache_creation_input_tokens": s.cacheWrTok},
 	})
 	writeSSE(w, "message_stop", map[string]any{"type": "message_stop"})
 	w.Flush()

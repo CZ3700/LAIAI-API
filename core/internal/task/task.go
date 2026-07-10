@@ -218,38 +218,165 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		return nil, err
 	}
 
-	// 上游提交（槽位已占；失败 → release hold + 标记任务 failed，槽位随终态退出闸门）
-	upReq, err := ad.SubmitRequest(ctx, ch, credential, in)
-	if err != nil {
-		s.abortSubmit(t, "request build failed")
-		return nil, err
-	}
-	resp, err := s.Client.Do(upReq)
-	if err != nil {
-		s.abortSubmit(t, "upstream unreachable")
-		return nil, fmt.Errorf("task: upstream unreachable: %w", err)
-	}
-	defer resp.Body.Close()
-	upstreamID, err := ad.ParseSubmit(resp)
-	if err != nil {
-		var rej *UpstreamRejectedError
-		if errors.As(err, &rej) {
-			// 上游 400 参数拒绝：上游原文按 upstreamOrigin 纪律只进 fail_reason（org 隔离 API 数据），
-			// 日志/invocation 用合成摘要（红线 7）。
-			s.settleFailure(t, "submit rejected: "+rej.Message, true)
-		} else {
-			s.abortSubmit(t, "upstream rejected submit")
+	// 上游提交（槽位已占）+ 换渠道故障转移（顶级审计修 2026-07 排名 1）：
+	// 可重试失败（构建失败/不可达/5xx 解析失败）→ 换下一渠道重试（hold/任务行不动，只改钉渠道）；
+	// 上游 400 参数拒绝 → 终止不换渠道（换渠道也 400，客户端自己的问题）；
+	// 候选耗尽 → release hold + 任务 failed（与旧单渠道行为一致的收尾语义）。
+	tried := map[uint64]bool{}
+	var lastErr error
+	for attempt := 0; attempt < maxSubmitAttempts; attempt++ {
+		if attempt > 0 {
+			next, nextAd, nextCred, ok := s.nextSubmitCandidate(in.Model, attempt, tried, t)
+			if !ok {
+				break // 无更多可用候选（或任务已被并发结算）
+			}
+			ch, ad, credential = next, nextAd, nextCred
+			// prev_err 只落合成摘要：*url.Error 会回显完整上游 URL，未来 adapter 若在
+			// query 携凭证即泄漏（红线 7，与 handlers 的 StreamResult 同款纪律）。
+			s.Log.Warn("task submit failover to another channel",
+				"task", t.TaskID, "channel", ch.ID, "attempt", attempt, "prev_err", summarizeSubmitErr(lastErr))
 		}
-		return nil, err
+		tried[ch.ID] = true
+
+		upReq, err := ad.SubmitRequest(ctx, ch, credential, in)
+		if err != nil {
+			lastErr = err
+			continue // 构建失败：换渠道（不同 provider 构建路径不同）
+		}
+		resp, err := s.Client.Do(upReq)
+		if err != nil {
+			lastErr = fmt.Errorf("task: upstream unreachable: %w", err)
+			continue // 网络不可达：换渠道
+		}
+		upstreamID, err := ad.ParseSubmit(resp)
+		resp.Body.Close()
+		if err != nil {
+			var rej *UpstreamRejectedError
+			if errors.As(err, &rej) {
+				// 上游 400 参数拒绝：上游原文按 upstreamOrigin 纪律只进 fail_reason（org 隔离 API 数据），
+				// 日志/invocation 用合成摘要（红线 7）。确定性客户端错误，换渠道无意义。
+				s.settleFailure(t, "submit rejected: "+rej.Message, true)
+				return nil, err
+			}
+			lastErr = err
+			continue // 5xx/意外响应体：换渠道
+		}
+		// 提交成功：回填上游 id
+		if err := s.DB.Model(&Task{}).Where("id = ?", t.ID).
+			Update("upstream_task_id", upstreamID).Error; err != nil {
+			s.Log.Error("task upstream_task_id backfill failed (poller will not find it)",
+				"task", t.TaskID, "upstream_id", upstreamID, "err", err)
+		}
+		t.UpstreamTaskID = upstreamID
+		return t, nil
 	}
-	// 提交成功：回填上游 id
-	if err := s.DB.Model(&Task{}).Where("id = ?", t.ID).
-		Update("upstream_task_id", upstreamID).Error; err != nil {
-		s.Log.Error("task upstream_task_id backfill failed (poller will not find it)",
-			"task", t.TaskID, "upstream_id", upstreamID, "err", err)
+	if lastErr == nil {
+		lastErr = relay.ErrNoChannel
 	}
-	t.UpstreamTaskID = upstreamID
-	return t, nil
+	s.abortSubmit(t, fmt.Sprintf("submit failed after %d channel(s): %s", len(tried), summarizeSubmitErr(lastErr)))
+	return nil, lastErr
+}
+
+// maxSubmitAttempts：提交阶段最多尝试的渠道数（与 relay 主链路 1+2 重试预算对齐）。
+const maxSubmitAttempts = 3
+
+// summarizeSubmitErr：abortSubmit 的合成摘要（进日志/invocation，红线 7：不带上游原文/URL）。
+func summarizeSubmitErr(err error) string {
+	if strings.Contains(err.Error(), "unreachable") {
+		return "upstream unreachable"
+	}
+	return "upstream rejected submit"
+}
+
+// nextSubmitCandidate：故障转移候选——排除已试渠道重新选路，解出凭证，并把任务行改钉到
+// 新渠道（新渠道并发闸内重新过闸；满则跳过该候选继续找）。返回 ok=false 表示候选耗尽。
+func (s *Service) nextSubmitCandidate(model string, attempt int, tried map[uint64]bool, t *Task) (*relay.Channel, Adaptor, string, bool) {
+	for {
+		ch, err := relay.PickChannelForAttempt(s.DB, model, attempt, tried, nil)
+		if err != nil {
+			return nil, nil, "", false // 无更多渠道
+		}
+		ad, err := adaptorFor(ch.Provider)
+		if err != nil {
+			tried[ch.ID] = true
+			continue
+		}
+		credID, credEnc, credOK := relay.SelectCredential(s.DB, ch)
+		if !credOK {
+			tried[ch.ID] = true
+			continue
+		}
+		credential, err := s.Keyring.Decrypt(credEnc)
+		if err != nil {
+			tried[ch.ID] = true
+			continue
+		}
+		switch s.repinTask(t, ch, credID) {
+		case repinOK:
+			return ch, ad, credential, true
+		case repinChannelFull:
+			tried[ch.ID] = true
+			continue
+		default: // repinTaskGone：任务已被并发结算（如超时清扫）——停止重试
+			return nil, nil, "", false
+		}
+	}
+}
+
+type repinResult int
+
+const (
+	repinOK repinResult = iota
+	repinChannelFull
+	repinTaskGone
+)
+
+// repinTask：换渠道重试前把任务行改钉到新渠道。并发闸在**新渠道**上重新过闸（锁渠道行 +
+// 事务内重数，与 Submit 首次过闸同款纪律）；hold/额度预留不动（同模型同价，估算快照沿用）。
+// CAS 守卫 status=queued：任务若已被清扫器/并发轮询结算，绝不复活。
+func (s *Service) repinTask(t *Task, next *relay.Channel, credID uint64) repinResult {
+	res := repinTaskGone
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		lockTx := tx
+		if tx.Dialector.Name() == "mysql" {
+			lockTx = tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		lockCh := &relay.Channel{}
+		if err := lockTx.First(lockCh, next.ID).Error; err != nil {
+			return err
+		}
+		limit := lockCh.MaxConcurrentTasks
+		if limit <= 0 {
+			limit = 3
+		}
+		var active int64
+		if err := tx.Model(&Task{}).
+			Where("channel_id = ? AND status IN ?", next.ID, []string{StatusQueued, StatusRunning}).
+			Count(&active).Error; err != nil {
+			return err
+		}
+		if int(active) >= limit {
+			res = repinChannelFull
+			return nil
+		}
+		upd := tx.Model(&Task{}).Where("id = ? AND status = ?", t.ID, StatusQueued).
+			Updates(map[string]any{"channel_id": next.ID, "provider": next.Provider, "credential_id": credID})
+		if upd.Error != nil {
+			return upd.Error
+		}
+		if upd.RowsAffected == 1 {
+			res = repinOK
+		}
+		return nil
+	})
+	if err != nil {
+		s.Log.Error("task repin failed", "task", t.TaskID, "channel", next.ID, "err", err)
+		return repinChannelFull // 数据库错误：跳过该候选（不终止整个故障转移）
+	}
+	if res == repinOK {
+		t.ChannelID, t.Provider, t.CredentialID = next.ID, next.Provider, credID
+	}
+	return res
 }
 
 // abortSubmit：预占后上游提交失败——CAS 把任务转 failed 并释放 hold（与轮询失败同款语义，

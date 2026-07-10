@@ -193,7 +193,34 @@ type anthropicUsage struct {
 	InputTokens              int64 `json:"input_tokens"`
 	OutputTokens             int64 `json:"output_tokens"`
 	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`     // 命中缓存的输入（折扣价）
-	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"` // 写缓存的输入（按输入价计，宁少不多）
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"` // 写缓存的输入（1.0x 计入 promptTotal，溢价另补——见 cacheWrites）
+	CacheCreation            *struct {
+		Ephemeral5m int64 `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1h int64 `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"` // TTL 分列明细（新版 API 才有）
+}
+
+// cacheWrites：写缓存 token 按 TTL 分列。Anthropic 对 cache_creation 实收 1.25x(5min)/2x(1h)
+// 输入价，promptTotal 只计了 1.0x，差额由 ModelPrice.CacheWriteSurcharge 补收。
+// 上游无分列明细时全按 5m（1.25x 较低档）——绝不因猜测按 2x 多收客户。
+// 明细必须与 legacy 总数对账（对抗 review CONFIRMED）：promptTotal 的 1.0x 基价只计
+// cache_creation_input_tokens，坏中转渠道回传"明细和 > 总数"时若全信明细，等于对从未计入
+// 基价的幽灵 token 收溢价=多收客户。取计费更低的解释：回退 (总数, 0) 全按 5m 低档。
+func (u anthropicUsage) cacheWrites() (w5m, w1h int64) {
+	w5m, w1h = u.CacheCreationInputTokens, 0
+	if u.CacheCreation != nil && (u.CacheCreation.Ephemeral5m > 0 || u.CacheCreation.Ephemeral1h > 0) {
+		w5m, w1h = u.CacheCreation.Ephemeral5m, u.CacheCreation.Ephemeral1h
+		if total := u.CacheCreationInputTokens; total > 0 && w5m+w1h > total {
+			w5m, w1h = total, 0
+		}
+	}
+	if w5m < 0 {
+		w5m = 0
+	}
+	if w1h < 0 {
+		w1h = 0
+	}
+	return
 }
 
 // promptTotal：Anthropic 的 input_tokens 不含缓存读/写部分，总输入需相加（否则少计 prompt）。
@@ -318,6 +345,7 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 			message["content"] = nil // OpenAI 惯例：纯工具调用时 content 为 null
 		}
 	}
+	cw5m, cw1h := resp.Usage.cacheWrites() // 写缓存（对账后口径）：计费与回显同源
 	converted := gin.H{
 		"id":     resp.ID,
 		"object": "chat.completion",
@@ -332,11 +360,15 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 			"completion_tokens":     resp.Usage.OutputTokens,
 			"total_tokens":          resp.Usage.promptTotal() + resp.Usage.OutputTokens,
 			"prompt_tokens_details": gin.H{"cached_tokens": resp.Usage.CacheReadInputTokens},
+			// 扩展键（非 OpenAI 标准，标准客户端忽略）：anthropic_inbound 靠它把写缓存拆回
+			// 原生 usage（否则 native 客户端看到 cache_creation 恒 0、被并进 input——回显失真）。
+			"cache_creation_input_tokens": cw5m + cw1h,
 		},
 	}
 	c.JSON(http.StatusOK, converted)
 	u := usage{PromptTokens: resp.Usage.promptTotal(), CompletionTokens: resp.Usage.OutputTokens}
 	u.PromptTokensDetails.CachedTokens = resp.Usage.CacheReadInputTokens // 缓存读按折扣价计费（P2-9）
+	u.CacheWrite5m, u.CacheWrite1h = cw5m, cw1h                         // 写缓存溢价补收
 	return u, len(raw), nil
 }
 
@@ -393,6 +425,7 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 		case "message_start":
 			u.PromptTokens = ev.Message.Usage.promptTotal()
 			u.PromptTokensDetails.CachedTokens = ev.Message.Usage.CacheReadInputTokens // 缓存读折扣计费（P2-9）
+			u.CacheWrite5m, u.CacheWrite1h = ev.Message.Usage.cacheWrites()            // 写缓存溢价补收
 			emit(gin.H{"object": "chat.completion.chunk",
 				"choices": []gin.H{{"index": 0, "delta": gin.H{"role": "assistant"}}}})
 		case "content_block_start":
@@ -432,7 +465,10 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 			emit(gin.H{"object": "chat.completion.chunk",
 				"choices": []gin.H{{"index": 0, "delta": gin.H{}, "finish_reason": finishReason}},
 				"usage": gin.H{"prompt_tokens": u.PromptTokens, "completion_tokens": u.CompletionTokens,
-					"total_tokens": u.PromptTokens + u.CompletionTokens}})
+					"total_tokens": u.PromptTokens + u.CompletionTokens,
+					// 缓存读/写随末帧带出（对抗 review：此前流式丢 cached_tokens，inbound 回显失真）
+					"prompt_tokens_details":       gin.H{"cached_tokens": u.PromptTokensDetails.CachedTokens},
+					"cache_creation_input_tokens": u.CacheWrite5m + u.CacheWrite1h}})
 			_, _ = w.WriteString("data: [DONE]\n\n")
 			w.Flush()
 		}

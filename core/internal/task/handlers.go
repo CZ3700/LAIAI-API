@@ -121,7 +121,8 @@ func (s *Service) HandleCreate(c *gin.Context) {
 	case errors.Is(err, ledger.ErrInsufficientBalance):
 		taskErr(c, http.StatusPaymentRequired, "insufficient balance")
 	case err != nil:
-		s.Log.Error("task submit failed", "err", err)
+		// err 只落合成摘要：*url.Error 回显完整上游 URL（红线 7，与 failover 日志同款纪律）
+		s.Log.Error("task submit failed", "err", summarizeSubmitErr(err))
 		taskErr(c, http.StatusBadGateway, "task submit failed")
 	default:
 		c.JSON(http.StatusAccepted, t)

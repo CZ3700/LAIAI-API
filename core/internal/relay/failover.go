@@ -44,13 +44,24 @@ func (r *Relay) forwardWithFailover(c *gin.Context, inv *invocation.Invocation, 
 	var lastStatus int
 	var lastBody []byte
 	channelSnap, snapErr := r.cachedChannels() // 取一次快照，maxAttempts 次重试复用（WS-2）
+	breaker := r.newBreakerPicker()            // 熔断闸（breaker.go）：与 chat 主循环同款
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if snapErr != nil {
 			break
 		}
 		ch, pickErr := r.pickSnapshotPolicy(channelSnap, o.model, attempt, exclude, o.policy, inv.OrgID)
 		if pickErr != nil {
-			break
+			if !breaker.reopen(exclude) {
+				break
+			}
+			ch, pickErr = r.pickSnapshotPolicy(channelSnap, o.model, attempt, exclude, o.policy, inv.OrgID)
+			if pickErr != nil {
+				break
+			}
+		}
+		if !breaker.admit(ch.ID, exclude) {
+			attempt-- // 熔断摘除不烧重试预算
+			continue
 		}
 		inv.Attempts = attempt + 1
 		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
@@ -84,7 +95,8 @@ func (r *Relay) forwardWithFailover(c *gin.Context, inv *invocation.Invocation, 
 		resp, e = r.clientFor(ch).Do(upReq)
 		if e != nil {
 			r.Log.Warn(o.logLabel+" upstream unreachable", "channel", ch.ID, "err", e)
-			r.observe(ch.ID, false) // 健康分：网络不可达
+			r.observe(ch.ID, false)     // 健康分：网络不可达
+			r.breakerNote(ch.ID, false) // 熔断：不可达计一次
 			exclude[ch.ID] = true
 			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
 			resp = nil
@@ -93,10 +105,12 @@ func (r *Relay) forwardWithFailover(c *gin.Context, inv *invocation.Invocation, 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			r.enableChannelIfDisabled(ch)
 			r.resetKeyFailures(credID)
+			r.breakerNote(ch.ID, true) // 熔断：成功即闭合
 			return resp, ch, false // 成功：winCh=ch，hold 留给调用方 settle
 		}
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		resp.Body.Close()
+		r.breakerNote(ch.ID, resp.StatusCode < 500) // 熔断口径：仅 5xx 计失败
 		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
 		if disp.Retryable || disp.DisableChannel {
 			r.observe(ch.ID, false) // 健康分：渠道自身可靠性失败

@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -34,6 +35,11 @@ const (
 	maxRequestBodySize     = 10 << 20
 	maxAttempts            = 3 // 1 次 + 2 次换渠道重试（知识库 §1）
 
+	// geminiImplicitThinkingHoldTokens：gemini 系模型未显式给 thinkingBudget 时 hold 的隐式思考
+	// 预算上浮（2.5 系默认开思考、dynamic budget 上限 24576，thoughts 不受 maxOutputTokens 约束）。
+	// 只影响冻结额度不影响实收（settle 按真实 usage 退差）。
+	geminiImplicitThinkingHoldTokens = 24576
+
 	// MaxRequestBodySize：数据面统一请求体上限的导出别名。relay 各端点自身用 io.LimitReader，
 	// task/video 等非本包数据面路由挂 MaxBytesReader 时复用同一上限（指令 P0-2）。
 	MaxRequestBodySize = maxRequestBodySize
@@ -62,6 +68,11 @@ type Relay struct {
 	// 重启乐观置满分（未知=1.0），与 failCounts 同保守哲学。
 	healthMu sync.Mutex
 	health   map[uint64]float64
+
+	// 渠道熔断器（内存态，breaker.go）：连续 5xx/不可达 → 选路硬摘除 + 半开探活自愈。
+	// 重启清零（乐观），与健康分同哲学；语义见 breaker.go 文件头。
+	breakerMu     sync.Mutex
+	breakerStates map[uint64]*breakerState
 
 	// 渠道级代理客户端缓存（按 proxy URL 复用，避免每请求新建 Transport）。
 	proxyMu      sync.Mutex
@@ -189,6 +200,7 @@ func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Lo
 		failCounts:    map[uint64]int{},
 		keyFailCounts: map[uint64]int{},
 		health:        map[uint64]float64{},
+		breakerStates: map[uint64]*breakerState{},
 		rateWindows:   map[string]*rateWindow{},
 		// 热读缓存 TTL：渠道快照短(8s，禁用/重启用要较快跟随)；价目/倍率长(45s，纯运营低频改)。
 		channels: newSnapCache[[]Channel](8*time.Second, now),
@@ -377,6 +389,15 @@ type usage struct {
 	PromptTokensDetails struct {
 		CachedTokens int64 `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
+	// 推理/思考 token（completion_tokens 的子集，OpenAI o 系列口径）。仅观测用：
+	// 各家的思考 token 都已折入 CompletionTokens 按 output 价计费，这里不再参与计价。
+	CompletionTokensDetails struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+	// Anthropic 写缓存 token（prompt_tokens 的子集，上游实收 1.25x/2x 输入价）。
+	// 内部计费字段，由 anthropic adapter 填充，不来自 OpenAI JSON（见 CacheWriteSurcharge）。
+	CacheWrite5m int64 `json:"-"`
+	CacheWrite1h int64 `json:"-"`
 }
 
 // Cached 返回命中提示缓存的输入 token 数（钳到 PromptTokens 内）。
@@ -386,6 +407,24 @@ func (u usage) Cached() int64 {
 		return u.PromptTokens
 	}
 	return c
+}
+
+// CacheWrites 返回写缓存 token（5m, 1h），总量钳到 PromptTokens 内（防上游异常数据把溢价算飞）。
+func (u usage) CacheWrites() (int64, int64) {
+	w5m, w1h := u.CacheWrite5m, u.CacheWrite1h
+	if w5m < 0 {
+		w5m = 0
+	}
+	if w1h < 0 {
+		w1h = 0
+	}
+	if w5m+w1h > u.PromptTokens {
+		if w5m > u.PromptTokens {
+			w5m = u.PromptTokens
+		}
+		w1h = u.PromptTokens - w5m
+	}
+	return w5m, w1h
 }
 
 // HandleChatCompletions：POST /v1/chat/completions
@@ -501,6 +540,23 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			}
 		}
 	}
+	// Gemini 思考（thinkingConfig 方言）：thoughts 计入 output 计费（顶级审计修排名 3），且 Gemini 的
+	// thoughts **不受 maxOutputTokens 约束**（与 Anthropic 含在 max_tokens 内不同）→ hold 须在输出上限
+	// 之外**加上**思考预算，否则默认开思考的 2.5 系借 overage 刷负余额（对抗 review CONFIRMED，
+	// 与上方 Anthropic thinking 同类红线）。显式 thinkingBudget≥0 精确取值（0=关思考）；未显式/动态(-1)
+	// 按隐式上限保守上浮。按模型名前缀识别（hold 在选渠道前，无 provider 可用）；多冻结由 settle 退差。
+	if strings.HasPrefix(strings.ToLower(model), "gemini") {
+		thinkBudget := int64(geminiImplicitThinkingHoldTokens)
+		if tc, ok := req["thinkingConfig"].(map[string]any); ok {
+			if bt, ok := tc["thinkingBudget"].(float64); ok && bt >= 0 {
+				thinkBudget = int64(bt)
+			}
+		}
+		maxTokens += thinkBudget
+		if maxTokens > maxOutputTokensCeiling {
+			maxTokens = maxOutputTokensCeiling
+		}
+	}
 	// 多候选 n（OpenAI 上限 128）：输出 token 随 n 倍增、usage 计入全部候选，故 hold 也须按 n 倍冻结，
 	// 否则 n 大 + max_completion_tokens 大可绕过余额闸、借 overage 把余额刷成负（P0-2 同类）。
 	// best_of（vLLM 系方言）：服务端生成 best_of 个候选、usage 计全部——与 n 同口径纳入倍增与夹紧
@@ -534,9 +590,17 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 
 	// 4. Hold：按 tiktoken 估算输入 + max_tokens 上限 冻结（整个重试周期只 hold 一次）
 	estIn := CountChatTokens(req, len(body))
+	// Anthropic 写缓存溢价（1h=2x 输入价，结算点 CacheWriteSurcharge 补收）必须进 hold，否则带
+	// cache_control 的大 prompt 结算必超 hold、借 AllowNegative overage 刷负余额（对抗 review
+	// CONFIRMED，与 thinking budget 同类红线）。检测走原始 body 字节（覆盖块/工具/system 任何形态；
+	// 正文里恰好出现该字符串只是多冻结——保守方向，settle 退差）。
+	holdIn := estIn
+	if bytes.Contains(body, []byte(`"cache_control"`)) {
+		holdIn = estIn * 2 // 最坏情形：全部输入按 1h 写缓存 2x
+	}
 	// 计费倍率（0011 一层 + 0027 二层 (分组,模型)）：hold/capture 取同一次值，避免中途改配置导致 release 算错
 	groupRatio := r.cachedRatio(key.OrgID, model)
-	holdAmount := price.ChatCost(estIn, 0, holdOutput).Mul(groupRatio) // holdOutput 含 n 倍；按次固定价时忽略 token（gap P2-F）
+	holdAmount := price.ChatCost(holdIn, 0, holdOutput).Mul(groupRatio) // holdOutput 含 n 倍；按次固定价时忽略 token（gap P2-F）
 	var hold *ledger.Hold
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
 		// 分片感知 hold（CreateHoldSharded）：org 未分片(n≤1)时与 CreateHold 逐字一致（零回归），
@@ -588,6 +652,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	var lastBody []byte
 	// 渠道快照取一次（8s 缓存），3 次重试复用同一份；exclude 走内存（WS-2 #1 读瓶颈消除）。
 	channelSnap, snapErr := r.cachedChannels()
+	breaker := r.newBreakerPicker() // 熔断闸（breaker.go）：open 渠道硬摘除；全被挡则降级放行
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if snapErr != nil {
 			break // 快照加载失败：当作无渠道，落循环后失败处理
@@ -595,7 +660,17 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		var pickErr error
 		ch, pickErr = r.pickSnapshotPolicy(channelSnap, model, attempt, exclude, routePolicy, key.OrgID)
 		if pickErr != nil {
-			break // 无渠道可用：落到循环后的失败处理
+			if !breaker.reopen(exclude) {
+				break // 无渠道可用：落到循环后的失败处理
+			}
+			ch, pickErr = r.pickSnapshotPolicy(channelSnap, model, attempt, exclude, routePolicy, key.OrgID)
+			if pickErr != nil {
+				break
+			}
+		}
+		if !breaker.admit(ch.ID, exclude) {
+			attempt-- // 熔断摘除不烧重试预算（exclude 增长保证循环有界）
+			continue
 		}
 		inv.Attempts = attempt + 1
 		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
@@ -636,7 +711,8 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		resp, err = r.clientFor(ch).Do(upReq)
 		if err != nil {
 			r.Log.Warn("upstream unreachable", "channel", ch.ID, "attempt", attempt, "err", err)
-			r.observe(ch.ID, false) // 健康分：网络不可达 = 渠道可靠性失败
+			r.observe(ch.ID, false)      // 健康分：网络不可达 = 渠道可靠性失败
+			r.breakerNote(ch.ID, false)  // 熔断：不可达计一次
 			exclude[ch.ID] = true
 			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
 			resp = nil
@@ -648,6 +724,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		// 非 2xx：分类 → 禁用/重试决策
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		resp.Body.Close()
+		r.breakerNote(ch.ID, resp.StatusCode < 500) // 熔断口径：仅 5xx 计失败（<500=渠道活着）
 		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
 		if disp.Retryable || disp.DisableChannel {
 			r.observe(ch.ID, false) // 健康分：渠道自身可靠性失败（客户端 400 类不计）
@@ -707,7 +784,8 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 
 	// 成功响应：若渠道曾被 auto-disabled，自动重启用（知识库 §2.2）
 	r.enableChannelIfDisabled(ch)
-	r.resetKeyFailures(credID) // 该 key 一次成功 → 清其失败计数（0034 Multi-key）
+	r.resetKeyFailures(credID)  // 该 key 一次成功 → 清其失败计数（0034 Multi-key）
+	r.breakerNote(ch.ID, true)  // 熔断：成功即闭合（半开探活成功走这里恢复全量）
 
 	// 7. 响应回传（adapter 转换）+ usage 抽取 + capture
 	var u usage
@@ -737,8 +815,13 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 
 	// BYOK（0044）：命中自有渠道按费率结算（非 BYOK 因子恒为 1）
 	byok := r.byokFactor(ch, key.OrgID)
-	actual := price.ChatCost(u.PromptTokens, u.Cached(), u.CompletionTokens).Mul(groupRatio).Mul(byok).Round(8)
+	cw5m, cw1h := u.CacheWrites() // Anthropic 写缓存溢价（1.25x/2x 输入价，差额补收）
+	actual := price.ChatCost(u.PromptTokens, u.Cached(), u.CompletionTokens).
+		Add(price.CacheWriteSurcharge(cw5m, cw1h)).Mul(groupRatio).Mul(byok).Round(8)
 	reason := fmt.Sprintf("model=%s in=%d cached=%d out=%d ×%s", model, u.PromptTokens, u.Cached(), u.CompletionTokens, groupRatio)
+	if cw5m > 0 || cw1h > 0 {
+		reason += fmt.Sprintf(" cw5m=%d cw1h=%d", cw5m, cw1h)
+	}
 	if !byok.Equal(decimalOne) {
 		reason += " byok×" + byok.String()
 	}
