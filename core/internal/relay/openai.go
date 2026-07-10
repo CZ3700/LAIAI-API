@@ -45,9 +45,15 @@ func (openaiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error
 		return usage{}, 0, fmt.Errorf("%w: %v", errStreamReadFail, err)
 	}
 	var parsed struct {
-		Usage usage `json:"usage"`
+		Usage   usage `json:"usage"`
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
 	}
 	_ = json.Unmarshal(raw, &parsed)
+	if len(parsed.Choices) > 0 {
+		parsed.Usage.FinishReason = parsed.Choices[0].FinishReason // 排障闭环（0045）
+	}
 	c.Data(http.StatusOK, "application/json", raw)
 	return parsed.Usage, len(raw), nil
 }
@@ -57,21 +63,30 @@ func (openaiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error)
 	w := c.Writer
 
 	var u usage
+	var finishReason string
 	outBytes := 0
 	err := pumpLines(c.Request.Context(), body, func(line string) {
 		outBytes += len(line)
 		if data, ok := strings.CutPrefix(line, "data: "); ok && data != "[DONE]" {
 			var chunk struct {
-				Usage *usage `json:"usage"`
+				Usage   *usage `json:"usage"`
+				Choices []struct {
+					FinishReason string `json:"finish_reason"`
+				} `json:"choices"`
 			}
-			if json.Unmarshal([]byte(data), &chunk) == nil && chunk.Usage != nil &&
-				(chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
-				u = *chunk.Usage
+			if json.Unmarshal([]byte(data), &chunk) == nil {
+				if chunk.Usage != nil && (chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
+					u = *chunk.Usage
+				}
+				if len(chunk.Choices) > 0 && chunk.Choices[0].FinishReason != "" {
+					finishReason = chunk.Choices[0].FinishReason // 末个非空为准（排障闭环 0045）
+				}
 			}
 		}
 		_, _ = w.WriteString(line + "\n")
 		w.Flush()
 	})
+	u.FinishReason = finishReason
 	if err != nil { // 截断流：补 error 帧，避免客户端把残缺流当完整响应
 		emitStreamError(w, "upstream stream ended abnormally")
 	}

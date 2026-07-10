@@ -398,6 +398,8 @@ type usage struct {
 	// 内部计费字段，由 anthropic adapter 填充，不来自 OpenAI JSON（见 CacheWriteSurcharge）。
 	CacheWrite5m int64 `json:"-"`
 	CacheWrite1h int64 `json:"-"`
+	// 真实 finish_reason（排障闭环 0045，观测用）：各 adapter pipe 显式赋值，不来自 usage JSON。
+	FinishReason string `json:"-"`
 }
 
 // Cached 返回命中提示缓存的输入 token 数（钳到 PromptTokens 内）。
@@ -471,7 +473,8 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		UserID:    key.UserID,
 		APIKeyID:  key.ID,
 		RequestID: newRequestID(),
-		Modality:  invocation.ModalityChat, // anthropic/responses 入站方言同走本链路，同标 chat
+		Modality:  invocation.ModalityChat,   // anthropic/responses 入站方言同走本链路，同标 chat
+		Protocol:  ingressProtocol(c),        // 入站方言真实记录（排障闭环 0045）：openai|anthropic|responses
 	}
 	setClientMeta(inv, c)
 	c.Header("X-Request-Id", inv.RequestID)
@@ -726,6 +729,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		resp.Body.Close()
 		r.breakerNote(ch.ID, resp.StatusCode < 500) // 熔断口径：仅 5xx 计失败（<500=渠道活着）
 		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
+		inv.UpstreamErrorCode = upstreamErrorCode(disp.Reason, errBody) // 排障闭环（0045）：白名单枚举，末次为准
 		if disp.Retryable || disp.DisableChannel {
 			r.observe(ch.ID, false) // 健康分：渠道自身可靠性失败（客户端 400 类不计）
 		}
@@ -839,6 +843,8 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	}
 
 	inv.PromptTokens, inv.CompletionTokens, inv.CostUSD = u.PromptTokens, u.CompletionTokens, actual
+	// 排障闭环（0045）：真实 finish_reason + 缓存/思考 token 拆分进观测层
+	inv.FinishReason, inv.CachedTokens, inv.ReasoningTokens = u.FinishReason, u.Cached(), u.CompletionTokensDetails.ReasoningTokens
 	// 预留→实际对账（P0-3）：used_amount 已 +holdAmount，这里 +(actual-hold) 使其落到真实 actual；
 	// 标记 settled 让上面的退还 defer 不再触发。已交付的部分 token 照实计费（actual），不退。
 	_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(holdAmount))

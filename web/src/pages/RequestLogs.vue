@@ -23,6 +23,13 @@ interface UsageRow {
   user_agent?: string
   referer?: string
   created_at: string
+  // 排障闭环（0045）：真实详情字段。空/0 = 历史行或该模态无此值。
+  finish_reason?: string
+  protocol?: string
+  cached_tokens?: number
+  reasoning_tokens?: number
+  upstream_request_id?: string
+  upstream_error_code?: string
 }
 interface ModelStat { model: string }
 interface KeyRow { id: number; name: string; prefix: string }
@@ -86,9 +93,16 @@ function windowParams(): { since?: string; until?: string } {
   return {}
 }
 
-// 模型/状态(success|failed)/时间窗均已服务端过滤并计入分页与 total；request_id 为当前页本地子串筛（见说明）。
-const visibleRows = computed(() => rows.value
-  .filter((r) => !requestId.value || r.request_id.toLowerCase().includes(requestId.value.toLowerCase())))
+// 全部过滤（含 request_id 精确查）均服务端下推——修复：此前 request_id 只在当前页本地子串筛，
+// 从响应头复制 X-Request-Id 粘进来、目标行不在当前页就查不到（排障闭环断裂，顶级审计修排名 5）。
+const visibleRows = computed(() => rows.value)
+// 入站方言标签（0045 真实落库；空=历史行，显示 —）
+function protocolLabel(p?: string): string {
+  if (p === 'anthropic') return 'Anthropic'
+  if (p === 'responses') return 'Responses'
+  if (p === 'openai') return 'OpenAI'
+  return '—'
+}
 
 async function loadMeta() {
   const [bm, k] = await Promise.allSettled([
@@ -106,6 +120,7 @@ async function load() {
     const q = new URLSearchParams({ page: String(page.value), page_size: String(pageSize) })
     if (model.value) q.set('model', model.value)
     if (apiKeyId.value) q.set('api_key_id', apiKeyId.value)
+    if (requestId.value.trim()) q.set('request_id', requestId.value.trim()) // 服务端精确查（uk_inv_request，跨页可命中）
     if (result.value !== 'all') q.set('status', result.value) // 'success' 精确；'failed' 后端识别为非 success
     const w = windowParams()
     if (w.since) q.set('since', w.since)
@@ -120,7 +135,7 @@ async function load() {
   }
 }
 
-watch([model, apiKeyId, result, range, customStart, customEnd], () => {
+watch([model, apiKeyId, requestId, result, range, customStart, customEnd], () => {
   page.value = 1
   void load()
 })
@@ -214,7 +229,7 @@ onMounted(() => {
             <td class="max-w-[17rem] truncate px-4 py-2.5 font-mono text-xs" :title="r.request_id">{{ r.request_id }}</td>
             <td class="px-4 py-2.5 text-muted">{{ d(new Date(r.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
             <td class="px-4 py-2.5 font-mono text-xs">{{ r.model }}</td>
-            <td class="px-4 py-2.5"><span class="badge-muted">OpenAI</span></td>
+            <td class="px-4 py-2.5"><span class="badge-muted">{{ protocolLabel(r.protocol) }}</span></td>
             <td class="px-4 py-2.5 text-right font-mono">{{ n(r.prompt_tokens + r.completion_tokens) }}</td>
             <td class="px-4 py-2.5 text-right font-mono">{{ fmtUsd(r.cost_usd) }}</td>
             <td class="px-4 py-2.5 text-right font-mono">{{ r.duration_ms }}ms</td>
@@ -263,7 +278,7 @@ onMounted(() => {
               <div><dt>{{ t('reqlog.dtTime') }}</dt><dd>{{ d(new Date(selected.created_at), { dateStyle: 'medium', timeStyle: 'medium' }) }}</dd></div>
               <div class="sm:col-span-2"><dt>{{ t('reqlog.dtRequestId') }}</dt><dd class="select-all break-all">{{ selected.request_id }}</dd></div>
               <div><dt>{{ t('reqlog.dtModel') }}</dt><dd>{{ selected.model }}</dd></div>
-              <div><dt>{{ t('reqlog.dtSourceProtocol') }}</dt><dd><span class="badge-muted">OpenAI</span></dd></div>
+              <div><dt>{{ t('reqlog.dtSourceProtocol') }}</dt><dd><span class="badge-muted">{{ protocolLabel(selected.protocol) }}</span></dd></div>
               <div><dt>{{ t('reqlog.dtRequestModelRaw') }}</dt><dd>{{ selected.model }}</dd></div>
               <div><dt>{{ t('reqlog.dtApiKey') }}</dt><dd>{{ keyLabel(selected.api_key_id) }}</dd></div>
             </dl>
@@ -275,11 +290,8 @@ onMounted(() => {
               <div><dt>{{ t('reqlog.dtInputTokens') }}</dt><dd>{{ n(selected.prompt_tokens) }}</dd></div>
               <div><dt>{{ t('reqlog.dtOutputTokens') }}</dt><dd>{{ n(selected.completion_tokens) }}</dd></div>
               <div><dt>{{ t('reqlog.dtTokensTotal') }}</dt><dd>{{ n(selected.prompt_tokens + selected.completion_tokens) }}</dd></div>
-              <div><dt>{{ t('reqlog.dtReasoningTokens') }}</dt><dd>—</dd></div>
-              <div><dt>{{ t('reqlog.dtCacheInputTokens') }}</dt><dd>—</dd></div>
-              <div><dt>{{ t('reqlog.dtCacheReadTokens') }}</dt><dd>—</dd></div>
-              <div><dt>{{ t('reqlog.dtGiftCost') }}</dt><dd>—</dd></div>
-              <div><dt>{{ t('reqlog.dtPaidCost') }}</dt><dd>—</dd></div>
+              <div><dt>{{ t('reqlog.dtReasoningTokens') }}</dt><dd>{{ selected.reasoning_tokens ? n(selected.reasoning_tokens) : '—' }}</dd></div>
+              <div><dt>{{ t('reqlog.dtCacheReadTokens') }}</dt><dd>{{ selected.cached_tokens ? n(selected.cached_tokens) : '—' }}</dd></div>
               <div><dt>{{ t('reqlog.dtCostUSD') }}</dt><dd>{{ fmtUsd(selected.cost_usd) }}</dd></div>
             </dl>
           </section>
@@ -288,11 +300,13 @@ onMounted(() => {
             <h3>{{ t('reqlog.sectionResult') }}</h3>
             <dl class="detail-grid">
               <div><dt>{{ t('reqlog.dtStatus') }}</dt><dd><span :class="selected.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ statusText(selected) }}</span></dd></div>
-              <div><dt>{{ t('reqlog.dtFinishReason') }}</dt><dd>{{ selected.status === 'success' ? 'stop' : '—' }}</dd></div>
+              <div><dt>{{ t('reqlog.dtFinishReason') }}</dt><dd>{{ selected.finish_reason || '—' }}</dd></div>
               <div><dt>{{ t('reqlog.dtStream') }}</dt><dd>{{ selected.is_stream ? t('reqlog.yes') : t('reqlog.no') }}</dd></div>
               <div><dt>{{ t('reqlog.dtLatency') }}</dt><dd>{{ fmtMs(selected.duration_ms) }}</dd></div>
               <div><dt>{{ t('reqlog.dtFirstToken') }}</dt><dd>{{ fmtMs(selected.frt_ms) }}</dd></div>
               <div><dt>{{ t('reqlog.dtErrorBrief') }}</dt><dd>{{ selected.error_brief || '—' }}</dd></div>
+              <div><dt>{{ t('reqlog.dtUpstreamErrorCode') }}</dt><dd class="font-mono">{{ selected.upstream_error_code || '—' }}</dd></div>
+              <div class="sm:col-span-2"><dt>{{ t('reqlog.dtUpstreamRequestId') }}</dt><dd class="select-all break-all font-mono">{{ selected.upstream_request_id || '—' }}</dd></div>
             </dl>
           </section>
 

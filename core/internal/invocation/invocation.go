@@ -66,11 +66,20 @@ type Invocation struct {
 	CompletionTokens  int64           `gorm:"column:completion_tokens" json:"completion_tokens"`
 	CostUSD           decimal.Decimal `gorm:"column:cost_usd" json:"cost_usd"`
 	UsageSource       string          `gorm:"column:usage_source" json:"usage_source,omitempty"`
-	FRTMs             int             `gorm:"column:frt_ms" json:"frt_ms"`
-	DurationMs        int             `gorm:"column:duration_ms" json:"duration_ms"`
-	UpstreamRequestID string          `gorm:"column:upstream_request_id" json:"-"`
-	ErrorBrief        string          `gorm:"column:error_brief" json:"error_brief,omitempty"`
-	PayloadObjectKey  string          `gorm:"column:payload_object_key" json:"-"`
+	FRTMs            int             `gorm:"column:frt_ms" json:"frt_ms"`
+	DurationMs       int             `gorm:"column:duration_ms" json:"duration_ms"`
+	// upstream_request_id 对请求所有者可见（排障闭环，顶级审计修排名 5）：这是开发者（尤其 BYOK）
+	// 找厂商开工单的唯一凭证。id 本身是不透明串，不泄露渠道归属（ChannelID/Provider 仍 json:"-"）。
+	UpstreamRequestID string `gorm:"column:upstream_request_id" json:"upstream_request_id,omitempty"`
+	ErrorBrief        string `gorm:"column:error_brief" json:"error_brief,omitempty"`
+	PayloadObjectKey  string `gorm:"column:payload_object_key" json:"-"`
+	// 排障闭环增列（0045）：详情字段真实化。FinishReason/Protocol 空=历史行或非 chat。
+	// UpstreamErrorCode 仅存分类 reason 或上游错误体白名单 code/type 枚举（红线 7/8：无自由文本）。
+	FinishReason      string `gorm:"column:finish_reason" json:"finish_reason,omitempty"`
+	Protocol          string `gorm:"column:protocol" json:"protocol,omitempty"`
+	CachedTokens      int64  `gorm:"column:cached_tokens" json:"cached_tokens"`
+	ReasoningTokens   int64  `gorm:"column:reasoning_tokens" json:"reasoning_tokens"`
+	UpstreamErrorCode string `gorm:"column:upstream_error_code" json:"upstream_error_code,omitempty"`
 	// 访客侧元数据（请求日志详情 CLIENT 栏）：真实 IP 经 Caddy XFF；UA/Referer 截断。属请求元数据非 payload。
 	ClientIP   string    `gorm:"column:client_ip" json:"client_ip,omitempty"`
 	UserAgent  string    `gorm:"column:user_agent" json:"user_agent,omitempty"`

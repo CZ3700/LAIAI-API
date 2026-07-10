@@ -3,6 +3,8 @@ package relay
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
 
 // 上游错误分类（知识库 §2.1，提炼自 NewAPI service/channel.go:47-102 的生产规则）。
@@ -64,6 +66,59 @@ func classifyUpstreamError(provider string, statusCode int, body []byte) upstrea
 		d.Retryable = true // 渠道坏了（含 400+认证类禁用）/限流/5xx：换一个健康渠道重试
 	}
 	return d
+}
+
+// upstreamErrorCode：排障闭环（0045）的上游错误码提取——**只**取上游错误体的 code/type 枚举
+// 字段（context_length_exceeded / rate_limit_error 等），字符白名单过滤 + 截断，绝不落自由文本
+// message（红线 7/8：message 可能回显 prompt 碎片/org 标识）。两者皆空回退分类 reason（合成串，安全）。
+func upstreamErrorCode(dispReason string, body []byte) string {
+	var parsed struct {
+		Error struct {
+			Type string `json:"type"`
+			Code any    `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	code := sanitizeErrCode(toStr(parsed.Error.Code))
+	if code == "" {
+		code = sanitizeErrCode(parsed.Error.Type)
+	}
+	if code == "" {
+		code = clipStr(dispReason, 64)
+	}
+	return code
+}
+
+// sanitizeErrCode：仅放行枚举样式字符（字母/数字/_/-/.），含其他字符（空格/引号等自由文本征兆）
+// 即整体丢弃；截断 64。
+func sanitizeErrCode(s string) string {
+	if s == "" || len(s) > 64 {
+		return ""
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.') {
+			return ""
+		}
+	}
+	return s
+}
+
+func clipStr(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+// ingressProtocolKey / ingressProtocol：入站方言标记（排障闭环 0045）。anthropic/responses
+// 入站包装层在调 HandleChatCompletions 前 c.Set；未标记 = 原生 OpenAI 端点。
+const ingressProtocolKey = "laiai_ingress_protocol"
+
+func ingressProtocol(c *gin.Context) string {
+	if p := c.GetString(ingressProtocolKey); p != "" {
+		return p
+	}
+	return "openai"
 }
 
 func toStr(v any) string {

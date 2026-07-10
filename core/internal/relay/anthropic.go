@@ -21,6 +21,11 @@ type anthropicAdapter struct{}
 
 const anthropicVersion = "2023-06-01"
 
+// anthropicJSONEmuTool：response_format json_schema 模拟的哨兵工具名。buildRequest 注入、
+// pipeJSON/pipeSSE 识别后把工具 input 重写回 content——adapter 无状态，哨兵名是唯一的
+// 请求↔响应信道。与客户端工具重名概率可忽略（重名时客户端本就带 tools，走降级分支不注入）。
+const anthropicJSONEmuTool = "laiai_json_output"
+
 func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credential string, req map[string]any, stream bool) (*http.Request, error) {
 	out := map[string]any{"model": req["model"]}
 
@@ -141,6 +146,47 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 	case map[string]any:
 		if fn, ok := tc["function"].(map[string]any); ok {
 			out["tool_choice"] = map[string]any{"type": "tool", "name": fn["name"]}
+		}
+	}
+
+	// response_format 保真（顶级审计修排名 4）：OpenAI 结构化输出此前对 Claude 后端被静默丢弃
+	// ——同一参数在 OpenAI/Gemini 后端生效、Anthropic 后端失效，客户端拿回自由文本（静默=最坏）。
+	//   - json_schema：注入哨兵工具 + 强制 tool_choice（OpenRouter 同款模拟），响应侧把该工具的
+	//     input 重写回 content（pipeJSON/pipeSSE 的哨兵分支，adapter 无状态——哨兵名即请求↔响应信道）。
+	//     客户端自带 tools（强制哨兵会饿死客户端工具）或开 thinking（Claude 禁止 thinking+强制
+	//     tool_choice）时降级为 system 指令约束。
+	//   - json_object：system 指令（OpenAI 该模式本身即弱约束，无 schema 可强制）。
+	if rf, ok := req["response_format"].(map[string]any); ok {
+		appendSystem := func(s string) {
+			if cur, _ := out["system"].(string); cur != "" {
+				out["system"] = cur + "\n\n" + s
+			} else {
+				out["system"] = s
+			}
+		}
+		switch rf["type"] {
+		case "json_object":
+			appendSystem("Respond with a single valid JSON object only — no prose, no markdown code fences.")
+		case "json_schema":
+			var schema any = map[string]any{"type": "object"}
+			if js, ok := rf["json_schema"].(map[string]any); ok {
+				if s, ok := js["schema"].(map[string]any); ok {
+					schema = s
+				}
+			}
+			_, hasTools := out["tools"]
+			_, hasThinking := req["thinking"]
+			if hasTools || hasThinking {
+				b, _ := json.Marshal(schema)
+				appendSystem("Your final answer MUST be a single JSON object that validates against this JSON Schema (no prose, no code fences): " + string(b))
+			} else {
+				out["tools"] = []map[string]any{{
+					"name":         anthropicJSONEmuTool,
+					"description":  "Record the final answer as structured JSON matching the required schema.",
+					"input_schema": schema,
+				}}
+				out["tool_choice"] = map[string]any{"type": "tool", "name": anthropicJSONEmuTool}
+			}
 		}
 	}
 
@@ -319,6 +365,7 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 	}
 	var text strings.Builder
 	var toolCalls []gin.H
+	jsonEmu := false
 	for _, block := range resp.Content {
 		switch block.Type {
 		case "text":
@@ -327,6 +374,13 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 			args := string(block.Input)
 			if args == "" {
 				args = "{}"
+			}
+			if block.Name == anthropicJSONEmuTool {
+				// response_format json_schema 模拟：哨兵工具的 input 就是结构化输出本体，
+				// 重写回 content（客户端并没有要工具，它要的是 JSON 内容）。
+				text.WriteString(args)
+				jsonEmu = true
+				continue
 			}
 			toolCalls = append(toolCalls, gin.H{
 				"id":   block.ID,
@@ -345,6 +399,10 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 			message["content"] = nil // OpenAI 惯例：纯工具调用时 content 为 null
 		}
 	}
+	finishReason := mapStopReason(resp.StopReason)
+	if jsonEmu && len(toolCalls) == 0 {
+		finishReason = "stop" // 哨兵是我们注入的，对客户端而言这是正常文本收尾
+	}
 	cw5m, cw1h := resp.Usage.cacheWrites() // 写缓存（对账后口径）：计费与回显同源
 	converted := gin.H{
 		"id":     resp.ID,
@@ -353,7 +411,7 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 		"choices": []gin.H{{
 			"index":         0,
 			"message":       message,
-			"finish_reason": mapStopReason(resp.StopReason),
+			"finish_reason": finishReason,
 		}},
 		"usage": gin.H{
 			"prompt_tokens":         resp.Usage.promptTotal(),
@@ -366,7 +424,7 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 		},
 	}
 	c.JSON(http.StatusOK, converted)
-	u := usage{PromptTokens: resp.Usage.promptTotal(), CompletionTokens: resp.Usage.OutputTokens}
+	u := usage{PromptTokens: resp.Usage.promptTotal(), CompletionTokens: resp.Usage.OutputTokens, FinishReason: finishReason}
 	u.PromptTokensDetails.CachedTokens = resp.Usage.CacheReadInputTokens // 缓存读按折扣价计费（P2-9）
 	u.CacheWrite5m, u.CacheWrite1h = cw5m, cw1h                         // 写缓存溢价补收
 	return u, len(raw), nil
@@ -394,6 +452,7 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 	// 必须维护 block index → tool index 映射，多工具并行时各自累积 arguments。
 	toolIdxByBlock := map[int]int{}
 	toolCount := 0
+	jsonEmuBlocks := map[int]bool{} // response_format json_schema 模拟：哨兵工具块 → 重写为 content 流
 	err := pumpLines(c.Request.Context(), body, func(line string) {
 		data, ok := strings.CutPrefix(line, "data: ")
 		if !ok {
@@ -430,6 +489,10 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 				"choices": []gin.H{{"index": 0, "delta": gin.H{"role": "assistant"}}}})
 		case "content_block_start":
 			if ev.ContentBlock.Type == "tool_use" {
+				if ev.ContentBlock.Name == anthropicJSONEmuTool {
+					jsonEmuBlocks[ev.Index] = true // 哨兵：不发 tool_call 起始帧，input 将作为 content 流出
+					break
+				}
 				toolIdx := toolCount
 				toolCount++
 				toolIdxByBlock[ev.Index] = toolIdx
@@ -447,6 +510,13 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 						"choices": []gin.H{{"index": 0, "delta": gin.H{"content": ev.Delta.Text}}}})
 				}
 			case "input_json_delta":
+				if jsonEmuBlocks[ev.Index] {
+					if ev.Delta.PartialJSON != "" { // 哨兵 input 增量 = 客户端要的 JSON 内容流
+						emit(gin.H{"object": "chat.completion.chunk",
+							"choices": []gin.H{{"index": 0, "delta": gin.H{"content": ev.Delta.PartialJSON}}}})
+					}
+					break
+				}
 				if toolIdx, ok := toolIdxByBlock[ev.Index]; ok && ev.Delta.PartialJSON != "" {
 					emit(gin.H{"object": "chat.completion.chunk",
 						"choices": []gin.H{{"index": 0, "delta": gin.H{"tool_calls": []gin.H{{
@@ -460,6 +530,9 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 			}
 			if ev.Delta.StopReason != "" {
 				finishReason = mapStopReason(ev.Delta.StopReason)
+				if finishReason == "tool_calls" && len(jsonEmuBlocks) > 0 && toolCount == 0 {
+					finishReason = "stop" // 只有哨兵工具在跑：对客户端是正常文本收尾
+				}
 			}
 		case "message_stop":
 			emit(gin.H{"object": "chat.completion.chunk",
@@ -476,5 +549,6 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 	if err != nil { // 截断流（无 message_stop）：补 error 帧，不可计 success
 		emitStreamError(w, "upstream stream ended abnormally")
 	}
+	u.FinishReason = finishReason // 排障闭环（0045）
 	return u, outBytes, err
 }

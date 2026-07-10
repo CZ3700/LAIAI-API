@@ -22,7 +22,9 @@ const (
 
 // getUsage：GET /api/usage?page=&page_size=&model=
 // 调用历史（Invocation Store 元数据）。org_id 谓词强制（红线 5）；
-// 响应字段由 Invocation 的 json tag 控制——渠道归属/上游 id 等平台内部信息不外露。
+// 响应字段由 Invocation 的 json tag 控制——渠道归属（ChannelID/Provider）不外露；
+// upstream_request_id 对请求所有者可见（排障闭环 0045：开发者找厂商开工单的唯一凭证，
+// id 本身是不透明串，不泄露渠道归属）。
 func (s *Server) getUsage(c *gin.Context) {
 	claims := mustClaims(c)
 

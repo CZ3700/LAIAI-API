@@ -155,6 +155,9 @@ CREATE TABLE invocations (
     upstream_request_id TEXT NOT NULL DEFAULT '', error_brief TEXT NOT NULL DEFAULT '',
     payload_object_key TEXT NOT NULL DEFAULT '',
     client_ip TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', referer TEXT NOT NULL DEFAULT '',
+    finish_reason TEXT NOT NULL DEFAULT '', protocol TEXT NOT NULL DEFAULT '',
+    cached_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    upstream_error_code TEXT NOT NULL DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `

@@ -378,7 +378,8 @@ func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error
 			"completion_tokens_details": gin.H{"reasoning_tokens": resp.UsageMetadata.ThoughtsTokenCount},
 		},
 	})
-	u := usage{PromptTokens: resp.UsageMetadata.PromptTokenCount, CompletionTokens: resp.UsageMetadata.completionTotal()}
+	u := usage{PromptTokens: resp.UsageMetadata.PromptTokenCount, CompletionTokens: resp.UsageMetadata.completionTotal(),
+		FinishReason: mapGeminiFinishReason(cand.FinishReason, len(toolCalls) > 0)}
 	u.PromptTokensDetails.CachedTokens = resp.UsageMetadata.CachedContentTokenCount // 缓存折扣计费（P2-9）
 	u.CompletionTokensDetails.ReasoningTokens = resp.UsageMetadata.ThoughtsTokenCount
 	return u, len(raw), nil
@@ -467,5 +468,6 @@ func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error)
 			"completion_tokens_details": gin.H{"reasoning_tokens": u.CompletionTokensDetails.ReasoningTokens}}})
 	_, _ = w.WriteString("data: [DONE]\n\n")
 	w.Flush()
+	u.FinishReason = finishReason // 排障闭环（0045）
 	return u, outBytes, nil
 }

@@ -53,6 +53,7 @@ func (r *Relay) HandleAnthropicMessages(c *gin.Context) {
 	orig := c.Writer
 	aw := &anthropicWriter{ResponseWriter: orig, stream: stream}
 	c.Writer = aw
+	c.Set(ingressProtocolKey, "anthropic") // 请求日志真实入站方言（排障闭环 0045）
 	r.HandleChatCompletions(c)
 	c.Writer = orig
 	aw.finalize()

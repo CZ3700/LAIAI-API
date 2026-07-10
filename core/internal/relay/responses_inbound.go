@@ -48,6 +48,7 @@ func (r *Relay) HandleResponses(c *gin.Context) {
 	orig := c.Writer
 	rw := &responsesWriter{ResponseWriter: orig, stream: stream}
 	c.Writer = rw
+	c.Set(ingressProtocolKey, "responses") // 请求日志真实入站方言（排障闭环 0045）
 	r.HandleChatCompletions(c)
 	c.Writer = orig
 	rw.finalize()
