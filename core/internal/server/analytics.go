@@ -1,7 +1,9 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -280,4 +282,118 @@ func (s *Server) adminChannelHealth(c *gin.Context) {
 		rows = []chRow{}
 	}
 	c.JSON(http.StatusOK, gin.H{"window_days": days, "channels": rows})
+}
+
+// adminModelChannelStats：GET /api/admin/model-channel-stats?hours=N ——
+// (model×channel) 交叉维度看板（指令 §5 health dashboard；设计 §4.4 策略化选路 A3 的运营侧）。
+// 每 (model, channel) 的 calls/成功率/p50/p95/avg_frt——admin 低频现算不缓存；
+// 采样上限 5 万行（sampled 标记），行数上限 300（按 calls 降序截断）。
+// 与 relay 进程内 chanStats（1h 窗口、喂路由策略）同口径不同窗口——这里是运营回看。
+func (s *Server) adminModelChannelStats(c *gin.Context) {
+	rdb := s.db.WithContext(c.Request.Context())
+	hours, _ := strconv.Atoi(c.DefaultQuery("hours", "24"))
+	if hours < 1 || hours > 168 {
+		hours = 24
+	}
+	const maxRows, maxOut = 50000, 300
+	since := s.now().UTC().Add(-time.Duration(hours) * time.Hour).Format("2006-01-02 15:04:05")
+
+	var raw []struct {
+		Model      string `gorm:"column:model"`
+		ChannelID  uint64 `gorm:"column:channel_id"`
+		Status     string `gorm:"column:status"`
+		DurationMs int    `gorm:"column:duration_ms"`
+		FRTMs      int    `gorm:"column:frt_ms"`
+	}
+	if err := rdb.Table("invocations").
+		Select("model, channel_id, status, duration_ms, frt_ms").
+		Where("created_at >= ? AND channel_id > 0", since).
+		Order("id DESC").Limit(maxRows).Find(&raw).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "stats query failed")
+		return
+	}
+
+	type key struct {
+		model string
+		ch    uint64
+	}
+	type acc struct {
+		calls, succeeded int
+		durs             []int
+		frtSum           int64
+	}
+	accs := map[key]*acc{}
+	for i := range raw {
+		k := key{raw[i].Model, raw[i].ChannelID}
+		a := accs[k]
+		if a == nil {
+			a = &acc{}
+			accs[k] = a
+		}
+		a.calls++
+		if raw[i].Status == "success" {
+			a.succeeded++
+			if raw[i].DurationMs > 0 {
+				a.durs = append(a.durs, raw[i].DurationMs)
+			}
+			a.frtSum += int64(raw[i].FRTMs)
+		}
+	}
+
+	// 渠道名映射（含已删渠道回退 #id）
+	var chs []struct {
+		ID   uint64 `gorm:"column:id"`
+		Name string `gorm:"column:name"`
+	}
+	rdb.Table("channels").Select("id, name").Find(&chs)
+	names := make(map[uint64]string, len(chs))
+	for _, ch := range chs {
+		names[ch.ID] = ch.Name
+	}
+
+	type outRow struct {
+		Model       string  `json:"model"`
+		ChannelID   uint64  `json:"channel_id"`
+		ChannelName string  `json:"channel_name"`
+		Calls       int     `json:"calls"`
+		SuccessRate float64 `json:"success_rate"`
+		P50         int     `json:"p50"`
+		P95         int     `json:"p95"`
+		AvgFrtMs    int     `json:"avg_frt_ms"`
+	}
+	out := make([]outRow, 0, len(accs))
+	for k, a := range accs {
+		p50, p95, _ := percentiles(a.durs)
+		row := outRow{
+			Model: k.model, ChannelID: k.ch, ChannelName: names[k.ch],
+			Calls: a.calls, P50: p50, P95: p95,
+		}
+		if row.ChannelName == "" {
+			row.ChannelName = fmt.Sprintf("#%d", k.ch)
+		}
+		if a.calls > 0 {
+			row.SuccessRate = float64(a.succeeded) / float64(a.calls)
+		}
+		if a.succeeded > 0 {
+			row.AvgFrtMs = int(a.frtSum / int64(a.succeeded))
+		}
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Calls != out[j].Calls {
+			return out[i].Calls > out[j].Calls
+		}
+		if out[i].Model != out[j].Model {
+			return out[i].Model < out[j].Model
+		}
+		return out[i].ChannelID < out[j].ChannelID
+	})
+	truncated := false
+	if len(out) > maxOut {
+		out, truncated = out[:maxOut], true
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"window_hours": hours, "rows": out,
+		"sampled": len(raw) == maxRows, "truncated": truncated,
+	})
 }

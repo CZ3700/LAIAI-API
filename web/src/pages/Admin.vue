@@ -627,7 +627,21 @@ interface HealthRow {
 const health = ref<HealthRow[]>([])
 async function loadHealth() {
   health.value = (await adminApi<{ channels: HealthRow[] }>('GET', '/api/admin/channel-health')).channels
+  mcStats.value = (await adminApi<{ rows: MCStatRow[] }>('GET', '/api/admin/model-channel-stats?hours=24')).rows
 }
+
+// (model×channel) 交叉看板（§5 health dashboard；数据源 = 24h invocations 现算）
+interface MCStatRow {
+  model: string
+  channel_id: number
+  channel_name: string
+  calls: number
+  success_rate: number
+  p50: number
+  p95: number
+  avg_frt_ms: number
+}
+const mcStats = ref<MCStatRow[]>([])
 
 // —— 分组倍率 ——
 const groupRatios = ref<GroupRatio[]>([])
@@ -2477,6 +2491,44 @@ onMounted(async () => {
                 <td class="px-4 py-2.5 text-right font-mono text-muted">{{ h.calls === 0 ? '—' : `${Math.round(h.avg_latency_ms)}ms` }}</td>
                 <td class="px-4 py-2.5 text-right font-mono text-muted">{{ h.calls === 0 ? '—' : `${Math.round(h.avg_frt_ms)}ms` }}</td>
                 <td class="px-4 py-2.5 text-xs text-muted">{{ h.last_active ? h.last_active.slice(0, 16).replace('T', ' ') : '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- (model×channel) 交叉维度（近 24h；路由策略 latency/throughput 的数据底座同口径） -->
+        <div class="mt-6">
+          <p class="text-sm font-medium">{{ t('admin.mcTitle') }}</p>
+          <p class="mt-1 text-xs text-muted">{{ t('admin.mcHint') }}</p>
+        </div>
+        <div class="data-table-wrap">
+          <table class="table w-full text-sm whitespace-nowrap">
+            <thead>
+              <tr class="border-b border-line text-left text-muted">
+                <th class="px-4 py-3 font-medium">{{ t('admin.mcModel') }}</th>
+                <th class="px-4 py-3 font-medium">{{ t('admin.hChannel') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.hCalls') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.hSuccess') }}</th>
+                <th class="px-4 py-3 font-medium text-right">p50</th>
+                <th class="px-4 py-3 font-medium text-right">p95</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('admin.hFrt') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="mcStats.length === 0">
+                <td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+              </tr>
+              <tr v-for="row in mcStats" :key="`${row.model}:${row.channel_id}`" class="border-b border-line last:border-0">
+                <td class="px-4 py-2.5 font-mono text-xs">{{ row.model }}</td>
+                <td class="px-4 py-2.5">{{ row.channel_name }}</td>
+                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ row.calls }}</td>
+                <td
+                  class="px-4 py-2.5 text-right font-mono"
+                  :class="row.success_rate >= 0.99 ? 'text-ok' : row.success_rate >= 0.9 ? 'text-ink' : 'text-danger'"
+                >{{ (row.success_rate * 100).toFixed(1) }}%</td>
+                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ row.p50 }}ms</td>
+                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ row.p95 }}ms</td>
+                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ row.avg_frt_ms }}ms</td>
               </tr>
             </tbody>
           </table>

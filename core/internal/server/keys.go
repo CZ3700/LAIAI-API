@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
+	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -21,6 +22,7 @@ type createKeyReq struct {
 	ModelLimits   []string `json:"model_limits"`    // 模型白名单，空=不限
 	AllowIPs      string   `json:"allow_ips"`       // IP 白名单（逗号/换行），空=不限
 	RPMLimit      int      `json:"rpm_limit"`       // key 级每分钟请求上限，0=不限（0041）
+	RoutePolicy   string   `json:"route_policy"`    // key 级路由策略（0043）：''|order|latency|throughput|price
 }
 
 func (s *Server) createKey(c *gin.Context) {
@@ -47,6 +49,10 @@ func (s *Server) createKey(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "rpm_limit must be non-negative")
 		return
 	}
+	if !relay.ValidRoutePolicy(req.RoutePolicy) {
+		fail(c, http.StatusBadRequest, "route_policy must be one of: order, latency, throughput, price")
+		return
+	}
 	var plaintext string
 	var key *identity.APIKey
 	err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -62,6 +68,7 @@ func (s *Server) createKey(c *gin.Context) {
 			ModelLimits: joinTrim(req.ModelLimits),
 			AllowIPs:    req.AllowIPs,
 			RPMLimit:    req.RPMLimit,
+			RoutePolicy: req.RoutePolicy,
 			MaxKeys:     ent.MaxAPIKeys, // entitlements 上限（红线：原子在 IssueKey 内强制）
 		})
 		return err
@@ -95,6 +102,7 @@ func (s *Server) listKeys(c *gin.Context) {
 			"scopes": k.Scopes, "status": k.Status, "expires_at": k.ExpiresAt,
 			"quota_limit": k.QuotaLimit, "used_amount": k.UsedAmount,
 			"model_limits": k.ModelLimits, "allow_ips": k.AllowIPs, "rpm_limit": k.RPMLimit,
+			"route_policy": k.RoutePolicy,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"keys": out})

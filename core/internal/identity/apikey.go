@@ -39,6 +39,7 @@ type APIKey struct {
 	ModelLimits string          `gorm:"column:model_limits"` // 模型白名单，逗号分隔，空=不限
 	AllowIPs    string          `gorm:"column:allow_ips"`    // IP 白名单，逗号/换行分隔，支持 CIDR，空=不限
 	RPMLimit    int             `gorm:"column:rpm_limit"`    // key 级每分钟请求上限，0=不限（0041）
+	RoutePolicy string          `gorm:"column:route_policy"` // key 级路由策略，空=order 默认（0043）
 }
 
 func (APIKey) TableName() string { return "api_keys" }
@@ -90,6 +91,7 @@ type IssueKeyInput struct {
 	ModelLimits string          // 模型白名单
 	AllowIPs    string          // IP 白名单
 	RPMLimit    int             // key 级每分钟请求上限，0=不限（0041）
+	RoutePolicy string          // key 级路由策略（0043），调用方先过白名单校验
 	MaxKeys     int             // org 活跃 Key 上限（entitlements），0=不限
 }
 
@@ -129,6 +131,7 @@ func IssueKey(tx *gorm.DB, in IssueKeyInput) (string, *APIKey, error) {
 		ModelLimits: in.ModelLimits,
 		AllowIPs:    in.AllowIPs,
 		RPMLimit:    in.RPMLimit,
+		RoutePolicy: in.RoutePolicy,
 	}
 	if err := tx.Create(k).Error; err != nil {
 		return "", nil, err

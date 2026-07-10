@@ -189,7 +189,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 		return upReq, nil
 	}
 	resp, ch, aborted := r.forwardWithFailover(c, inv, finish, forwardOpts{
-		model: req.Model, hold: hold, unsupported: errEmbeddingsUnsupported, modality: "embeddings", logLabel: "embeddings", build: build,
+		model: req.Model, hold: hold, unsupported: errEmbeddingsUnsupported, modality: "embeddings", logLabel: "embeddings", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if aborted {
 		return

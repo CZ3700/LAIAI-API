@@ -128,7 +128,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 		return hr, nil
 	}
 	resp, _, ferr := r.forwardWithFailover(c, inv, finish, forwardOpts{
-		model: req.Model, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", build: build,
+		model: req.Model, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if ferr {
 		return
@@ -250,7 +250,7 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 		return hr, nil
 	}
 	resp, _, ferr := r.forwardWithFailover(c, inv, finish, forwardOpts{
-		model: model, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", build: build,
+		model: model, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if ferr {
 		return

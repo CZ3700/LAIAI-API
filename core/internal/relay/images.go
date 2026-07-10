@@ -171,7 +171,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		return upReq, nil
 	}
 	resp, ch, aborted := r.forwardWithFailover(c, inv, finish, forwardOpts{
-		model: req.Model, hold: hold, unsupported: errImagesUnsupported, modality: "image generation", logLabel: "images", build: build,
+		model: req.Model, hold: hold, unsupported: errImagesUnsupported, modality: "image generation", logLabel: "images", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if aborted {
 		return

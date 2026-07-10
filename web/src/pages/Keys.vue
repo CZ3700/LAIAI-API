@@ -14,6 +14,7 @@ interface KeyRow {
   model_limits: string
   allow_ips: string
   rpm_limit: number
+  route_policy: string
 }
 
 const { t } = useI18n()
@@ -28,6 +29,7 @@ const newModels = ref('')
 const newIps = ref('')
 const newExpiry = ref(0)
 const newRPM = ref(0) // key 级每分钟请求上限，0=不限（0041）
+const newRoute = ref('') // key 级路由策略，''=order 默认（0043）
 const creating = ref(false)
 // 明文只显示一次（红线 8 的 UI 面）：弹窗关闭即不可再取
 const createdKey = ref('')
@@ -119,6 +121,7 @@ function buildKeyBody(): Record<string, unknown> {
   if (newIps.value.trim()) body.allow_ips = newIps.value.trim()
   if (newExpiry.value > 0) body.expires_in_days = newExpiry.value
   if (newRPM.value > 0) body.rpm_limit = newRPM.value
+  if (newRoute.value) body.route_policy = newRoute.value
   return body
 }
 
@@ -129,6 +132,7 @@ async function doCreate(body: Record<string, unknown>, stepUpToken?: string) {
   newName.value = newQuota.value = newModels.value = newIps.value = ''
   newExpiry.value = 0
   newRPM.value = 0
+  newRoute.value = ''
   await load()
 }
 
@@ -267,7 +271,8 @@ onMounted(load)
               <span v-if="k.model_limits" class="badge-muted" :title="k.model_limits">{{ t('keys.modelLimited') }}</span>
               <span v-if="k.allow_ips" class="badge-muted ml-1" :title="k.allow_ips">IP</span>
               <span v-if="k.rpm_limit > 0" class="badge-muted ml-1">{{ k.rpm_limit }} RPM</span>
-              <span v-if="!k.model_limits && !k.allow_ips && !(k.rpm_limit > 0)" class="text-muted">—</span>
+              <span v-if="k.route_policy && k.route_policy !== 'order'" class="badge-muted ml-1">{{ k.route_policy }}</span>
+              <span v-if="!k.model_limits && !k.allow_ips && !(k.rpm_limit > 0) && (!k.route_policy || k.route_policy === 'order')" class="text-muted">—</span>
             </td>
             <td class="px-4 py-3 text-right font-mono text-xs">
               ${{ Number(k.used_amount).toFixed(4) }}<span v-if="k.quota_limit !== '0'" class="text-muted"> / ${{ Number(k.quota_limit).toFixed(2) }}</span>
@@ -336,6 +341,15 @@ onMounted(load)
         <div>
           <label class="label" for="keyips">{{ t('keys.allowIps') }}</label>
           <input id="keyips" v-model="newIps" class="input font-mono text-xs" placeholder="1.2.3.4, 10.0.0.0/8" />
+        </div>
+        <div>
+          <label class="label" for="keyroute">{{ t('keys.routePolicy') }}</label>
+          <select id="keyroute" v-model="newRoute" class="input">
+            <option value="">{{ t('keys.routeOrder') }}</option>
+            <option value="latency">{{ t('keys.routeLatency') }}</option>
+            <option value="throughput">{{ t('keys.routeThroughput') }}</option>
+          </select>
+          <p class="mt-1 text-xs text-muted">{{ t('keys.routeHint') }}</p>
         </div>
         <p class="text-xs text-muted">{{ t('keys.controlsHint') }}</p>
         <div class="flex justify-end gap-2">

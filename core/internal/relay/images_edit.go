@@ -175,7 +175,7 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 		return upReq, nil
 	}
 	resp, ch, aborted := r.forwardWithFailover(c, inv, finish, forwardOpts{
-		model: model, hold: hold, unsupported: errImagesUnsupported, modality: "image editing", logLabel: "image-edit", build: build,
+		model: model, hold: hold, unsupported: errImagesUnsupported, modality: "image editing", logLabel: "image-edit", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if aborted {
 		return

@@ -240,7 +240,8 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.GET("/orgs", s.adminListOrgs)
 			admin.GET("/overview", s.adminOverview)
 			admin.GET("/analytics", s.adminAnalytics)
-			admin.GET("/channel-health", s.adminChannelHealth) // M2 渠道健康看板
+			admin.GET("/channel-health", s.adminChannelHealth)             // M2 渠道健康看板
+			admin.GET("/model-channel-stats", s.adminModelChannelStats)    // (model×channel) 交叉看板（§5）
 			admin.GET("/audit-logs", s.adminListAuditLogs)
 			admin.GET("/users", s.adminListUsers)
 			admin.POST("/users/:id/manage", s.adminManageUser)           // 含 targetRole 守卫（不能动同级/更高）

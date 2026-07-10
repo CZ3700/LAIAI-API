@@ -276,7 +276,16 @@ func PickChannelForAttempt(db *gorm.DB, model string, attempt int, exclude map[u
 // 重试循环外取一次快照、循环内复用——把每请求 1~3 次全表扫降为命中时 0 次。
 // 调用方只读 channels（exclude/健康分都走外部），绝不原地改快照元素。
 func pickFromSnapshot(channels []Channel, model string, attempt int, exclude map[uint64]bool, health func(uint64) float64) (*Channel, error) {
-	// 过滤：服务该模型且未被排除，按 priority 分层（保持降序）
+	tier, err := tierForAttempt(channels, model, attempt, exclude)
+	if err != nil {
+		return nil, err
+	}
+	return weightedPick(tier, health), nil
+}
+
+// tierForAttempt：过滤（服务该模型且未被排除）→ priority 分层（降序）→ 取 attempt 对应层
+// （超出钳到最低层）。pickFromSnapshot 与策略化选路（policy.go）共用的分层骨架。
+func tierForAttempt(channels []Channel, model string, attempt int, exclude map[uint64]bool) ([]*Channel, error) {
 	var tiers [][]*Channel
 	var curPriority int
 	for i := range channels {
@@ -297,7 +306,7 @@ func pickFromSnapshot(channels []Channel, model string, attempt int, exclude map
 	if tier >= len(tiers) {
 		tier = len(tiers) - 1 // 钳到最低层
 	}
-	return weightedPick(tiers[tier], health), nil
+	return tiers[tier], nil
 }
 
 // weightedPick 层内加权随机：基础权重（零权重均分 + 低均值平滑，知识库 §3 烧出来的语义）

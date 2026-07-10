@@ -80,6 +80,12 @@ type Relay struct {
 	ratePolMu    sync.Mutex
 	ratePolAt    time.Time
 	rateEnabled  bool
+
+	// (model×channel) 统计底座（设计 §4.4 策略化选路 A3）：60s TTL 惰性刷新的近 1h 聚合，
+	// 服务 latency/throughput 路由策略。进程内视角（多副本各自聚合，与健康分同哲学）。
+	chanStatsMu  sync.Mutex
+	chanStatsAt  time.Time
+	chanStatsMap map[string]map[uint64]*ChanStat
 	rateRPM      int
 
 	// 热读缓存（WS-2）：极少变、读极热的运营配置。命中即把每请求 DB 读从 ~5 降到 0。
@@ -442,6 +448,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model is required")
 		return
 	}
+	routePolicy := resolveRoutePolicy(c, key) // 路由策略（0043）：X-LAIAI-Route 头 > key 默认 > order
 	if code, msg, ok := r.gateKey(key, c.ClientIP(), model); !ok { // Key 精细管控（0012）
 		relayErr(c, code, msg)
 		return
@@ -573,7 +580,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			break // 快照加载失败：当作无渠道，落循环后失败处理
 		}
 		var pickErr error
-		ch, pickErr = pickFromSnapshot(channelSnap, model, attempt, exclude, r.healthFactor)
+		ch, pickErr = r.pickSnapshotPolicy(channelSnap, model, attempt, exclude, routePolicy)
 		if pickErr != nil {
 			break // 无渠道可用：落到循环后的失败处理
 		}

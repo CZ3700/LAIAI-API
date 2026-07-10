@@ -29,6 +29,7 @@ type forwardOpts struct {
 	unsupported error        // build 返回它（==）→ 该 provider 不支持本模态，400 终止不换渠道
 	modality    string       // 400 消息/finish brief 用："embeddings"/"rerank"/"audio"/"image generation"/"image editing"
 	logLabel    string       // 日志前缀："embeddings"/"rerank"/"audio"/"images"/"image-edit"
+	policy      string       // 路由策略（0043，resolveRoutePolicy 求解；空=order 默认加权随机）
 	// build：为选定渠道 + 解密凭证构造上游请求（含 URL/鉴权/模型映射/header override）。
 	// 返回 opts.unsupported → 400；其他错误 → 500 upstream request build failed。
 	build func(ctx context.Context, ch *Channel, credential string) (*http.Request, error)
@@ -47,7 +48,7 @@ func (r *Relay) forwardWithFailover(c *gin.Context, inv *invocation.Invocation, 
 		if snapErr != nil {
 			break
 		}
-		ch, pickErr := pickFromSnapshot(channelSnap, o.model, attempt, exclude, r.healthFactor)
+		ch, pickErr := r.pickSnapshotPolicy(channelSnap, o.model, attempt, exclude, o.policy)
 		if pickErr != nil {
 			break
 		}
