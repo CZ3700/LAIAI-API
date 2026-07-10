@@ -53,6 +53,38 @@ const maxTokens = ref(1024)
 const stream = ref(true)
 const messages = ref<Msg[]>([])
 const input = ref('')
+
+// 对话保留 3 天（localStorage，跨导航/标签页持久；过期自动丢弃）——切走再切回不再清空。
+const CHAT_STORE = 'laiai_pg_chat'
+const CHAT_TTL = 3 * 24 * 60 * 60 * 1000
+function persistChat() {
+  try {
+    // 只留完成的消息（不含流式中的空占位气泡）；system 一并存
+    const done = messages.value.filter((m) => m.content)
+    if (done.length === 0) {
+      localStorage.removeItem(CHAT_STORE)
+      return
+    }
+    localStorage.setItem(CHAT_STORE, JSON.stringify({ at: Date.now(), system: system.value, messages: done }))
+  } catch {
+    // localStorage 满/禁用：忽略（保留只是便利，非核心）
+  }
+}
+function restoreChat() {
+  try {
+    const raw = localStorage.getItem(CHAT_STORE)
+    if (!raw) return
+    const saved = JSON.parse(raw) as { at: number; system?: string; messages: Msg[] }
+    if (!saved.at || Date.now() - saved.at > CHAT_TTL) {
+      localStorage.removeItem(CHAT_STORE)
+      return
+    }
+    if (Array.isArray(saved.messages)) messages.value = saved.messages
+    if (saved.system) system.value = saved.system
+  } catch {
+    localStorage.removeItem(CHAT_STORE)
+  }
+}
 const sending = ref(false)
 const error = ref('')
 const lastUsage = ref<{ prompt_tokens: number; completion_tokens: number } | null>(null)
@@ -152,6 +184,7 @@ async function toBottom() {
 }
 
 onMounted(async () => {
+  restoreChat() // 对话保留 3 天：切走再切回/刷新后恢复
   // 恢复未完成的视频任务跟踪（刷新/误关后回到页面继续轮询）
   const savedTask = sessionStorage.getItem(VIDEO_TASK_STORE)
   if (savedTask && apiKey.value) {
@@ -182,6 +215,7 @@ function clearAll() {
   lastUsage.value = null
   images.value = []
   genError.value = ''
+  localStorage.removeItem(CHAT_STORE) // 显式清空对话 → 同时清持久化
   if (!videoActive.value) resetVideoResult() // 进行中的任务不清（余额已可能被冻结，保留跟踪）
 }
 
@@ -291,6 +325,7 @@ async function send() {
   } finally {
     sending.value = false
     abort = null
+    persistChat() // 每轮对话完落盘（保留 3 天）
     void toBottom()
   }
 }
@@ -401,26 +436,27 @@ async function pollVideoOnce() {
   }
 }
 
-// 产物加载：直链（seedance 等厂商 URL）→ <video> 原生播放，无需凭证；
-// 平台代理路径（sora/veo 的 /v1/video/generations/{id}/content）→ <video> 加不了
-// Authorization 头，fetch+Bearer 转 blob objectURL（playground 短片体量可接受）。
+// 产物加载：**统一走平台同源代理** /v1/video/generations/{id}/content（后端对直链也代理并
+// 修正 Content-Type）。此前对直链用 <video src=arkurl> 直连会黑屏——对象存储签名 URL 常返
+// application/octet-stream 令 <video> 拒播，跨域又 fetch 不到（CORS）。同源代理 fetch+Bearer
+// 转 blob，一举绕开 混合内容/CORS/Content-Type 三坑（playground 短片体量可接受）。
 async function loadVideoResult(task: VideoTask) {
-  const url = task.result_url
-  if (!url) {
+  if (!task.result_url) {
     videoError.value = t('play.videoNoResult')
     return
   }
-  if (url.startsWith('/')) {
-    try {
-      const r = await fetch(url, { headers: { Authorization: `Bearer ${apiKey.value}` } })
-      if (!r.ok) throw new Error(`content fetch failed (${r.status})`)
-      videoBlobUrl = URL.createObjectURL(await r.blob())
-      videoSrc.value = videoBlobUrl
-    } catch (e) {
-      videoError.value = (e as Error).message
-    }
-  } else {
-    videoSrc.value = url
+  try {
+    const r = await fetch(`/v1/video/generations/${encodeURIComponent(task.id)}/content`, {
+      headers: { Authorization: `Bearer ${apiKey.value}` },
+    })
+    if (!r.ok) throw new Error(`content fetch failed (${r.status})`)
+    const blob = await r.blob()
+    // 兜底：若代理未修正类型，本地按 video/mp4 重贴（<video> 需可识别的视频 MIME）
+    const typed = blob.type && blob.type.startsWith('video/') ? blob : new Blob([blob], { type: 'video/mp4' })
+    videoBlobUrl = URL.createObjectURL(typed)
+    videoSrc.value = videoBlobUrl
+  } catch (e) {
+    videoError.value = (e as Error).message
   }
 }
 

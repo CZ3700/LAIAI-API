@@ -168,10 +168,27 @@ func (s *Service) HandleContent(c *gin.Context) {
 		taskErr(c, http.StatusNotFound, "task not found")
 		return
 	}
-	if t.Status != StatusSucceeded || t.ResultRef == "" {
-		taskErr(c, http.StatusNotFound, "no proxied content for this task")
+	if t.Status != StatusSucceeded {
+		taskErr(c, http.StatusNotFound, "no content for this task")
 		return
 	}
+	// SSRF 守卫（对抗 review CONFIRMED HIGH）：产物 URI 可能是上游返回的不可信绝对 URL——
+	// 用带拨号复检 + 跨主机剥凭证的守卫客户端，绝不用裸 s.Client。metadata 恒拦。
+	guarded := relay.NewGuardedClient(2*time.Minute, relay.AllowPrivateFromDB(s.DB))
+
+	// 直链产物（seedance/hailuo/wan 等：ResultRef 空、ResultURL 是上游签名直链）——
+	// 服务端代理取流 + 修正 Content-Type。修复 Playground 黑屏：TOS/对象存储签名 URL 常返
+	// application/octet-stream，浏览器 <video> 认不出拒播；跨域直链前端又 fetch 不到（CORS）。
+	// 同源代理统一绕开混合内容/CORS/Content-Type 三坑。
+	if t.ResultRef == "" {
+		if !strings.HasPrefix(t.ResultURL, "http://") && !strings.HasPrefix(t.ResultURL, "https://") {
+			taskErr(c, http.StatusNotFound, "no content for this task")
+			return
+		}
+		s.proxyDirectContent(c, t, guarded)
+		return
+	}
+
 	ch := &relay.Channel{}
 	if err := s.DB.First(ch, t.ChannelID).Error; err != nil {
 		taskErr(c, http.StatusBadGateway, "channel unavailable")
@@ -201,10 +218,6 @@ func (s *Service) HandleContent(c *gin.Context) {
 		taskErr(c, http.StatusBadGateway, "channel credential unavailable")
 		return
 	}
-	// SSRF 守卫（对抗 review CONFIRMED HIGH）：产物 URI 可能是上游返回的不可信绝对 URL
-	// （被攻陷/转售网关渠道可指向内网/metadata）——用带拨号复检 + 跨主机剥凭证的守卫客户端，
-	// 绝不用裸 s.Client。allowPrivate 随 ext_settings（测试/可信内网上游放行；metadata 恒拦）。
-	guarded := relay.NewGuardedClient(2*time.Minute, relay.AllowPrivateFromDB(s.DB))
 	rc, contentType, err := streamer.StreamResult(c.Request.Context(), guarded, ch, credential, t.ResultRef)
 	if err != nil {
 		// err 不进日志（veo URI 带渠道 key，*url.Error 会回显完整 URL——红线 7，对抗 review CONFIRMED）
@@ -221,6 +234,39 @@ func (s *Service) HandleContent(c *gin.Context) {
 	c.Status(http.StatusOK)
 	if _, err := io.Copy(c.Writer, rc); err != nil {
 		s.Log.Warn("task content stream interrupted", "task", t.TaskID, "err", err)
+	}
+}
+
+// proxyDirectContent：直链产物（ResultRef 空、ResultURL 是上游签名直链）的同源代理下发。
+// 服务端 GET 直链（守卫客户端，SSRF-safe）→ 转发字节，Content-Type 修正为 video/mp4（对象存储
+// 常返 octet-stream，浏览器 <video> 拒播的根因）。err 不回显（直链带签名，红线 7）。
+func (s *Service) proxyDirectContent(c *gin.Context, t *Task, guarded *http.Client) {
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, t.ResultURL, nil)
+	if err != nil {
+		taskErr(c, http.StatusBadGateway, "content fetch failed")
+		return
+	}
+	resp, err := guarded.Do(req)
+	if err != nil {
+		s.Log.Warn("task direct content fetch failed", "task", t.TaskID) // 不带 err（直链含签名，红线 7）
+		taskErr(c, http.StatusBadGateway, "content fetch failed, retry later")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		taskErr(c, http.StatusBadGateway, "content unavailable (upstream may have expired)")
+		return
+	}
+	ct := resp.Header.Get("Content-Type")
+	// 对象存储签名 URL 常返 application/octet-stream/空 → 浏览器 <video> 认不出；强制为可播视频类型。
+	if ct == "" || strings.HasPrefix(ct, "application/octet-stream") || strings.HasPrefix(ct, "binary/") {
+		ct = "video/mp4"
+	}
+	c.Header("Content-Type", ct)
+	c.Header("Cache-Control", "private, max-age=3600")
+	c.Status(http.StatusOK)
+	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+		s.Log.Warn("task direct content stream interrupted", "task", t.TaskID, "err", err)
 	}
 }
 
