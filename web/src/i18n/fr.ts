@@ -116,6 +116,7 @@ export default {
     createdWarning:
       "La clé complète n'est affichée qu'une seule fois. Conservez-la en lieu sûr — elle ne pourra pas être récupérée.",
   },
+  byok: {"title":"Utilisez votre propre clé (BYOK)","desc":"Routez via vos propres clés de fournisseur — la plateforme ne facture que des frais de routage. Vos canaux sont utilisés en premier, avec repli sur les canaux de la plateforme en cas d’échec.","add":"Ajouter un canal","empty":"Aucun canal BYOK.","colName":"Nom","colProvider":"Fournisseur","colModels":"Modèles","colStatus":"Statut","colActions":"Actions","active":"actif","disabled":"désactivé","enable":"Activer","disable":"Désactiver","apiKey":"Clé API amont","baseUrl":"URL de base","feeHint":"En cas de succès, facturation = prix plateforme × taux BYOK (défini par la plateforme). Une marge de solde plein tarif reste requise (bloquée au plein tarif, différence libérée au règlement).","confirmDelete":"Supprimer le canal BYOK « {name} » ?"},
   dashboard: {
     greeting: 'Bon retour',
     histSpend: 'Depense totale',

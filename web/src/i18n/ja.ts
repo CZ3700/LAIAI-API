@@ -115,6 +115,7 @@ export default {
     createdTitle: '今すぐキーを保存してください',
     createdWarning: '完全なキーが表示されるのはこの一度だけです。安全に保管してください——後から再表示はできません。',
   },
+  byok: {"title":"自分の鍵を使う（BYOK）","desc":"自分の上流プロバイダー鍵でプラットフォーム経由ルーティング——プラットフォームはルーティング料のみ。自分のチャネルを優先し、失敗時はプラットフォームへフォールバック。","add":"チャネル追加","empty":"BYOK チャネルはまだありません。","colName":"名前","colProvider":"プロバイダー","colModels":"モデル","colStatus":"状態","colActions":"操作","active":"有効","disabled":"無効","enable":"有効化","disable":"無効化","apiKey":"上流 API キー","baseUrl":"Base URL","feeHint":"ヒット時の課金 = プラットフォーム価格 × BYOK 料率（プラットフォーム設定）。全額の残高枠が必要です（全額でホールドし、精算時に差額を解放）。","confirmDelete":"BYOK チャネル「{name}」を削除しますか？"},
   dashboard: {
     greeting: 'おかえりなさい',
     histSpend: '累計消費',

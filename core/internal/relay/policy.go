@@ -49,14 +49,15 @@ func resolveRoutePolicy(c *gin.Context, key *identity.APIKey) string {
 	return "" // order/price/未知 → 默认加权随机路径
 }
 
-// pickSnapshotPolicy：策略感知的快照选路。policy 为空走 pickFromSnapshot 原路径（逐字不变）。
-func (r *Relay) pickSnapshotPolicy(channels []Channel, model string, attempt int, exclude map[uint64]bool, policy string) (*Channel, error) {
-	if policy == "" {
-		return pickFromSnapshot(channels, model, attempt, exclude, r.healthFactor)
-	}
-	tier, err := tierForAttempt(channels, model, attempt, exclude)
+// pickSnapshotPolicy：策略感知的快照选路。policy 为空走默认加权随机路径（行为不变）。
+// orgID（0044 BYOK）：隔离谓词与虚拟顶层在 tierForAttempt 内强制；0=只平台渠道。
+func (r *Relay) pickSnapshotPolicy(channels []Channel, model string, attempt int, exclude map[uint64]bool, policy string, orgID uint64) (*Channel, error) {
+	tier, err := tierForAttempt(channels, model, attempt, exclude, orgID)
 	if err != nil {
 		return nil, err
+	}
+	if policy == "" {
+		return weightedPick(tier, r.healthFactor), nil
 	}
 	if len(tier) == 1 {
 		return tier[0], nil

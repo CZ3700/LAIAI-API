@@ -169,6 +169,7 @@ export default {
     createdTitle: '立即保存你的金鑰',
     createdWarning: '完整金鑰只顯示這一次，請妥善保存——之後無法再次查看。',
   },
+  byok: {"title":"自帶上游 Key（BYOK）","desc":"用你自己的上游廠商 Key 走平台路由——平台只收路由費。優先使用你的渠道，失敗時回落平台渠道。","add":"新增渠道","empty":"還沒有 BYOK 渠道。","colName":"名稱","colProvider":"廠商","colModels":"模型","colStatus":"狀態","colActions":"操作","active":"啟用","disabled":"停用","enable":"啟用","disable":"停用","apiKey":"上游 API Key","baseUrl":"Base URL","feeHint":"命中時計費 = 平台價 × BYOK 費率（由平台設定）。仍需全價餘額頭寸（按全價凍結，結算後釋放差額）。","confirmDelete":"刪除 BYOK 渠道「{name}」？"},
   dashboard: {
     greeting: '歡迎回來',
     histSpend: '歷史消耗',

@@ -202,6 +202,10 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/affiliate", s.getAffiliate)
 				org.GET("/org/balance-alert", s.getBalanceAlert)  // 余额低预警阈值（0042）
 				org.PUT("/org/balance-alert", s.putBalanceAlert)  // 仅 owner/admin
+				org.GET("/org/byok-channels", s.listByokChannels) // BYOK 自带上游 Key（0044）
+				org.POST("/org/byok-channels", s.createByokChannel)
+				org.PATCH("/org/byok-channels/:id", s.patchByokChannel)
+				org.DELETE("/org/byok-channels/:id", s.deleteByokChannel)
 				org.GET("/org/members", s.listMembers)
 				org.POST("/org/members", s.inviteMember) // 发邀请（pending），对方确认后才入队
 				org.DELETE("/org/members/:user_id", s.removeMember)

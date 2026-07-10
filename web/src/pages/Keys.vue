@@ -2,6 +2,7 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError, copyText, errorMessage } from '@/lib/api'
+import ByokPanel from '@/components/ByokPanel.vue'
 
 interface KeyRow {
   id: number
@@ -304,6 +305,9 @@ onMounted(load)
         </tbody>
       </table>
     </div>
+
+    <!-- BYOK 自带上游 Key（0044） -->
+    <ByokPanel />
 
     <!-- 创建弹窗 -->
     <div v-if="showCreate" class="modal-backdrop" @click.self="showCreate = false">

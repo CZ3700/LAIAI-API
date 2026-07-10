@@ -171,6 +171,7 @@ const messages = {
     createdWarning:
       'This is the only time the full key is shown. Store it securely — it cannot be retrieved again.',
   },
+  byok: {"title":"Bring your own key (BYOK)","desc":"Route through your own upstream provider keys — the platform charges only a routing fee. Your channels are used first, falling back to platform channels on failure.","add":"Add channel","empty":"No BYOK channels yet.","colName":"Name","colProvider":"Provider","colModels":"Models","colStatus":"Status","colActions":"Actions","active":"active","disabled":"disabled","enable":"Enable","disable":"Disable","apiKey":"Upstream API key","baseUrl":"Base URL","feeHint":"On a hit, billing = platform price × the BYOK fee rate (set by the platform). You still need full-price balance headroom (charged on hold, difference released on settle).","confirmDelete":"Delete BYOK channel \"{name}\"?"},
   dashboard: {
     greeting: 'Welcome back',
     histSpend: 'All-time spend',

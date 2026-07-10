@@ -214,7 +214,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 
 	c.Data(http.StatusOK, "application/json", raw)
 
-	actual := price.ImageUSD.Mul(decimal.NewFromInt(int64(actualN))).Mul(groupRatio)
+	actual := price.ImageUSD.Mul(decimal.NewFromInt(int64(actualN))).Mul(groupRatio).Mul(r.byokFactor(ch, key.OrgID)).Round(8) // BYOK 费率（0044）
 	// 预留→实际对账（P0-3）：+(actual-hold) 落到真实 actual 并标记 settled
 	defer func() {
 		_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(holdAmount))

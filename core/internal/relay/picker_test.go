@@ -21,6 +21,7 @@ CREATE TABLE channels (
     converter TEXT NOT NULL DEFAULT '', upstream_path TEXT NOT NULL DEFAULT '',
     model_sync_enabled INTEGER NOT NULL DEFAULT 0, last_sync_at DATETIME,
     detected_models TEXT NOT NULL DEFAULT '', ignored_models TEXT NOT NULL DEFAULT '',
+    owner_org_id INTEGER NOT NULL DEFAULT 0,
     status INTEGER NOT NULL DEFAULT 1
 );
 `

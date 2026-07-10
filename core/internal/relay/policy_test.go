@@ -69,12 +69,46 @@ func TestPolicyExcludeHandsOver(t *testing.T) {
 	stats := map[string]map[uint64]*ChanStat{
 		"m": {1: {Calls: 20, Succeeded: 20, P50Ms: 100}, 2: {Calls: 20, Succeeded: 20, P50Ms: 500}},
 	}
-	tier, err := tierForAttempt(all, "m", 0, map[uint64]bool{1: true}) // 最快的 ch1 已失败被排除
+	tier, err := tierForAttempt(all, "m", 0, map[uint64]bool{1: true}, 0) // 最快的 ch1 已失败被排除
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := pickByPolicy(tier, stats, "m", RoutePolicyLatency); got == nil || got.ID != 2 {
 		t.Fatalf("exclude handover = %v, want ch2", got)
+	}
+}
+
+// BYOK 隔离红线（0044）：他人 BYOK 结构性不可见；自有 BYOK 构成虚拟顶层；orgID=0 只平台。
+func TestTierForAttemptByokIsolation(t *testing.T) {
+	chs := []Channel{
+		{ID: 1, Models: "m", Priority: 5, Weight: 10},    // 平台渠道
+		{ID: 2, Models: "m", OwnerOrgID: 42, Weight: 10}, // org42 自有
+		{ID: 3, Models: "m", OwnerOrgID: 99, Weight: 10}, // 他人自有
+	}
+	// org42：attempt0 = 自有虚拟顶层（只含 ch2）
+	tier, err := tierForAttempt(chs, "m", 0, nil, 42)
+	if err != nil || len(tier) != 1 || tier[0].ID != 2 {
+		t.Fatalf("org42 attempt0 = %v, want [ch2]", tier)
+	}
+	// org42：attempt1 降级到平台层（绝不含任何 BYOK）
+	tier, _ = tierForAttempt(chs, "m", 1, nil, 42)
+	if len(tier) != 1 || tier[0].ID != 1 {
+		t.Fatalf("org42 attempt1 = %v, want [ch1 platform]", tier)
+	}
+	// 无 BYOK 的 org7：只见平台，ch2/ch3 结构性不存在
+	tier, _ = tierForAttempt(chs, "m", 0, nil, 7)
+	if len(tier) != 1 || tier[0].ID != 1 {
+		t.Fatalf("org7 = %v, want [ch1]", tier)
+	}
+	// orgID=0（task/realtime）：只平台
+	tier, _ = tierForAttempt(chs, "m", 0, nil, 0)
+	if len(tier) != 1 || tier[0].ID != 1 {
+		t.Fatalf("orgID=0 = %v, want [ch1]", tier)
+	}
+	// 自有渠道被 exclude 后 attempt0 直接是平台层（own 层为空不占位）
+	tier, _ = tierForAttempt(chs, "m", 0, map[uint64]bool{2: true}, 42)
+	if len(tier) != 1 || tier[0].ID != 1 {
+		t.Fatalf("org42 excluded-own = %v, want [ch1]", tier)
 	}
 }
 

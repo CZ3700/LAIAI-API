@@ -218,7 +218,7 @@ func (r *Relay) HandleRerank(c *gin.Context) {
 
 	c.Data(http.StatusOK, "application/json", raw)
 
-	actual := price.ChatCost(inTokens, 0, 0).Mul(groupRatio)
+	actual := price.ChatCost(inTokens, 0, 0).Mul(groupRatio).Mul(r.byokFactor(ch, key.OrgID)).Round(8) // BYOK 费率（0044，非 BYOK=1）
 	defer func() {
 		_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(holdAmount))
 		quotaSettled = true

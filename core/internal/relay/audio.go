@@ -127,7 +127,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 		applyHeaderOverrideForMode(hr, ch.HeaderOverride, cred, ModeAudioSpeech)
 		return hr, nil
 	}
-	resp, _, ferr := r.forwardWithFailover(c, inv, finish, forwardOpts{
+	resp, winCh, ferr := r.forwardWithFailover(c, inv, finish, forwardOpts{
 		model: req.Model, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if ferr {
@@ -153,10 +153,13 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 	}
 	c.Data(http.StatusOK, ct, raw)
 
-	r.audioSettle(c, key, req.Model, hold, cost, fmt.Sprintf("tts model=%s chars=%d ×%s", req.Model, chars, groupRatio))
-	quotaSettled = true      // 预留即等于 cost（确定性计价），成功无需对账
+	// BYOK 费率（0044）：命中自有渠道按费率结算（非 BYOK=1，actual==cost 原语义不变）
+	actual := cost.Mul(r.byokFactor(winCh, key.OrgID)).Round(8)
+	r.audioSettle(c, key, req.Model, hold, actual, fmt.Sprintf("tts model=%s chars=%d ×%s", req.Model, chars, groupRatio))
+	_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(cost)) // quota 预留按 cost，差额退还
+	quotaSettled = true
 	inv.PromptTokens = chars // 字符数记入 prompt 槽（语义：计价单位量）
-	inv.CostUSD = cost
+	inv.CostUSD = actual
 	finish(invocation.StatusSuccess, http.StatusOK, "")
 }
 
@@ -249,7 +252,7 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 		applyHeaderOverrideForMode(hr, ch.HeaderOverride, cred, hoMode)
 		return hr, nil
 	}
-	resp, _, ferr := r.forwardWithFailover(c, inv, finish, forwardOpts{
+	resp, winCh, ferr := r.forwardWithFailover(c, inv, finish, forwardOpts{
 		model: model, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if ferr {
@@ -273,9 +276,12 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 	}
 	c.Data(http.StatusOK, ct, raw)
 
-	r.audioSettle(c, key, model, hold, cost, fmt.Sprintf("%s model=%s ×%s", suffix, model, groupRatio))
-	quotaSettled = true // 预留即等于 cost（确定性计价），成功无需对账
-	inv.CostUSD = cost
+	// BYOK 费率（0044）：命中自有渠道按费率结算（非 BYOK=1，actual==cost 原语义不变）
+	actual := cost.Mul(r.byokFactor(winCh, key.OrgID)).Round(8)
+	r.audioSettle(c, key, model, hold, actual, fmt.Sprintf("%s model=%s ×%s", suffix, model, groupRatio))
+	_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(cost)) // quota 预留按 cost，差额退还
+	quotaSettled = true
+	inv.CostUSD = actual
 	finish(invocation.StatusSuccess, http.StatusOK, "")
 }
 

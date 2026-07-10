@@ -217,7 +217,7 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 
 	c.Data(http.StatusOK, "application/json", raw)
 
-	actual := price.ImageUSD.Mul(decimal.NewFromInt(int64(actualN))).Mul(groupRatio)
+	actual := price.ImageUSD.Mul(decimal.NewFromInt(int64(actualN))).Mul(groupRatio).Mul(r.byokFactor(ch, key.OrgID)).Round(8) // BYOK 费率（0044）
 	defer func() {
 		_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(holdAmount))
 		quotaSettled = true

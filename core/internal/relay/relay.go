@@ -86,6 +86,12 @@ type Relay struct {
 	chanStatsMu  sync.Mutex
 	chanStatsAt  time.Time
 	chanStatsMap map[string]map[uint64]*ChanStat
+
+	// BYOK 费率缓存（0044，byok.go）
+	byokMu     sync.Mutex
+	byokAt     time.Time
+	byokRatio  decimal.Decimal
+	byokLoaded bool
 	rateRPM      int
 
 	// 热读缓存（WS-2）：极少变、读极热的运营配置。命中即把每请求 DB 读从 ~5 降到 0。
@@ -107,6 +113,11 @@ type ratioKey struct {
 // clientFor：渠道无代理 → 共享 Client；有代理 → 按 proxy URL 复用一个带代理 Transport 的 Client。
 // 代理串无法解析时安全降级为直连（不阻断请求）。
 func (r *Relay) clientFor(ch *Channel) *http.Client {
+	// BYOK（0044）：base_url 用户可控 = SSRF 面——恒走拨号守卫且**绝不放行私网**
+	// （不受 advanced_custom_allow_private 开关影响，严于 advanced_custom）。
+	if ch != nil && ch.OwnerOrgID != 0 {
+		return r.guardedClient(ByokAllowPrivateForTest) // 生产恒 false（变量仅测试可设）
+	}
 	// advanced_custom（0036）：SSRF 拨号守卫——对解析后真实 IP 复检（防 DNS rebinding）。
 	// 独立于 proxy 缓存（其目标是上游而非代理；advanced_custom 一般不配 proxy）。
 	if ch != nil && ch.isAdvancedCustom() {
@@ -580,7 +591,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			break // 快照加载失败：当作无渠道，落循环后失败处理
 		}
 		var pickErr error
-		ch, pickErr = r.pickSnapshotPolicy(channelSnap, model, attempt, exclude, routePolicy)
+		ch, pickErr = r.pickSnapshotPolicy(channelSnap, model, attempt, exclude, routePolicy, key.OrgID)
 		if pickErr != nil {
 			break // 无渠道可用：落到循环后的失败处理
 		}
@@ -722,8 +733,13 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		r.Log.Warn("usage missing/partial from upstream, estimated", "channel", ch.ID, "model", model)
 	}
 
-	actual := price.ChatCost(u.PromptTokens, u.Cached(), u.CompletionTokens).Mul(groupRatio)
+	// BYOK（0044）：命中自有渠道按费率结算（非 BYOK 因子恒为 1）
+	byok := r.byokFactor(ch, key.OrgID)
+	actual := price.ChatCost(u.PromptTokens, u.Cached(), u.CompletionTokens).Mul(groupRatio).Mul(byok).Round(8)
 	reason := fmt.Sprintf("model=%s in=%d cached=%d out=%d ×%s", model, u.PromptTokens, u.Cached(), u.CompletionTokens, groupRatio)
+	if !byok.Equal(decimalOne) {
+		reason += " byok×" + byok.String()
+	}
 	var overage = decimal.Zero
 	if err := r.DB.Transaction(func(tx *gorm.DB) error {
 		var err error

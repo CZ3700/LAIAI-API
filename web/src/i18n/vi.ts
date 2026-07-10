@@ -116,6 +116,7 @@ export default {
     createdWarning:
       'Khóa đầy đủ chỉ hiển thị một lần này. Hãy lưu trữ an toàn — không thể xem lại sau.',
   },
+  byok: {"title":"Dùng khóa của bạn (BYOK)","desc":"Định tuyến qua khóa nhà cung cấp của riêng bạn — nền tảng chỉ thu phí định tuyến. Ưu tiên kênh của bạn, khi lỗi sẽ quay về kênh nền tảng.","add":"Thêm kênh","empty":"Chưa có kênh BYOK.","colName":"Tên","colProvider":"Nhà cung cấp","colModels":"Mô hình","colStatus":"Trạng thái","colActions":"Thao tác","active":"hoạt động","disabled":"đã tắt","enable":"Bật","disable":"Tắt","apiKey":"API key nguồn","baseUrl":"Base URL","feeHint":"Khi trúng: tính phí = giá nền tảng × tỷ lệ BYOK (do nền tảng đặt). Vẫn cần dư số dư theo giá đầy đủ (giữ theo giá đầy đủ, chênh lệch được giải phóng khi quyết toán).","confirmDelete":"Xóa kênh BYOK \"{name}\"?"},
   dashboard: {
     greeting: 'Chào mừng trở lại',
     histSpend: 'Tổng chi tiêu',

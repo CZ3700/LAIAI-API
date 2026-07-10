@@ -229,7 +229,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 
 	c.Data(http.StatusOK, "application/json", raw)
 
-	actual := price.ChatCost(inTokens, 0, 0).Mul(groupRatio)
+	actual := price.ChatCost(inTokens, 0, 0).Mul(groupRatio).Mul(r.byokFactor(ch, key.OrgID)).Round(8) // BYOK 费率（0044，非 BYOK=1）
 	// 预留→实际对账（P0-3）：+(actual-hold) 落到真实 actual 并标记 settled（LIFO 先于退还 defer）
 	defer func() {
 		_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(holdAmount))

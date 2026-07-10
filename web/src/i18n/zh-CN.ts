@@ -170,6 +170,7 @@ export default {
     createdTitle: '立即保存你的密钥',
     createdWarning: '完整密钥只显示这一次，请妥善保存——之后无法再次查看。',
   },
+  byok: {"title":"自带上游 Key（BYOK）","desc":"用你自己的上游厂商 Key 走平台路由——平台只收路由费。优先使用你的渠道，失败时回落平台渠道。","add":"添加渠道","empty":"还没有 BYOK 渠道。","colName":"名称","colProvider":"厂商","colModels":"模型","colStatus":"状态","colActions":"操作","active":"启用","disabled":"停用","enable":"启用","disable":"停用","apiKey":"上游 API Key","baseUrl":"Base URL","feeHint":"命中时计费 = 平台价 × BYOK 费率（由平台设定）。仍需全价余额头寸（按全价冻结，结算后释放差额）。","confirmDelete":"删除 BYOK 渠道「{name}」？"},
   dashboard: {
     greeting: '欢迎回来',
     histSpend: '历史消耗',

@@ -116,6 +116,7 @@ export default {
     createdWarning:
       'Inilah satu-satunya kali kunci penuh dipaparkan. Simpan dengan selamat — ia tidak boleh diperoleh semula.',
   },
+  byok: {"title":"Guna kunci sendiri (BYOK)","desc":"Halakan melalui kunci pembekal anda sendiri — platform hanya mengenakan yuran penghalaan. Saluran anda digunakan dahulu, berundur ke saluran platform jika gagal.","add":"Tambah saluran","empty":"Belum ada saluran BYOK.","colName":"Nama","colProvider":"Pembekal","colModels":"Model","colStatus":"Status","colActions":"Tindakan","active":"aktif","disabled":"dimatikan","enable":"Aktifkan","disable":"Matikan","apiKey":"Kunci API huluan","baseUrl":"Base URL","feeHint":"Apabila kena: caj = harga platform × kadar BYOK (ditetapkan platform). Anda masih perlukan baki harga penuh (ditahan pada harga penuh, beza dilepaskan semasa selesai).","confirmDelete":"Padam saluran BYOK \"{name}\"?"},
   dashboard: {
     greeting: 'Selamat kembali',
     histSpend: 'Jumlah belanja',

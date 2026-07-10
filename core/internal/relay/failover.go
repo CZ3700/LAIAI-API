@@ -48,7 +48,7 @@ func (r *Relay) forwardWithFailover(c *gin.Context, inv *invocation.Invocation, 
 		if snapErr != nil {
 			break
 		}
-		ch, pickErr := r.pickSnapshotPolicy(channelSnap, o.model, attempt, exclude, o.policy)
+		ch, pickErr := r.pickSnapshotPolicy(channelSnap, o.model, attempt, exclude, o.policy, inv.OrgID)
 		if pickErr != nil {
 			break
 		}

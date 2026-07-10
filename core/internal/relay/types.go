@@ -40,6 +40,7 @@ type Channel struct {
 	LastSyncAt         *time.Time `gorm:"column:last_sync_at"`         // 上次自动检测时刻（0037）
 	DetectedModels     string     `gorm:"column:detected_models"`      // 上次检测出的上游新增模型 CSV（0037）
 	IgnoredModels      string     `gorm:"column:ignored_models"`       // 忽略清单 CSV，detect 不再提示（0037）
+	OwnerOrgID         uint64     `gorm:"column:owner_org_id"`         // BYOK 归属 org，0=平台渠道（0044）
 	Status             int8       `gorm:"column:status"`
 
 	// Credentials：该渠道的启用 key 列表（非持久列；快照/选择器按需填充，0034 Multi-key）。
@@ -276,7 +277,7 @@ func PickChannelForAttempt(db *gorm.DB, model string, attempt int, exclude map[u
 // 重试循环外取一次快照、循环内复用——把每请求 1~3 次全表扫降为命中时 0 次。
 // 调用方只读 channels（exclude/健康分都走外部），绝不原地改快照元素。
 func pickFromSnapshot(channels []Channel, model string, attempt int, exclude map[uint64]bool, health func(uint64) float64) (*Channel, error) {
-	tier, err := tierForAttempt(channels, model, attempt, exclude)
+	tier, err := tierForAttempt(channels, model, attempt, exclude, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -285,11 +286,23 @@ func pickFromSnapshot(channels []Channel, model string, attempt int, exclude map
 
 // tierForAttempt：过滤（服务该模型且未被排除）→ priority 分层（降序）→ 取 attempt 对应层
 // （超出钳到最低层）。pickFromSnapshot 与策略化选路（policy.go）共用的分层骨架。
-func tierForAttempt(channels []Channel, model string, attempt int, exclude map[uint64]bool) ([]*Channel, error) {
+//
+// orgID（0044 BYOK）：**隔离红线**——BYOK 渠道（owner_org_id>0）只对归属 org 可见，对其他
+// org 结构性不存在（谓词在此强制，不依赖调用方）。请求方自有渠道构成**虚拟最高优先层**
+// （先用自己的 key），失败经 exclude/attempt 自然回落平台层。orgID=0（task/realtime/测试）
+// = 只平台渠道，BYOK 完全不参与。
+func tierForAttempt(channels []Channel, model string, attempt int, exclude map[uint64]bool, orgID uint64) ([]*Channel, error) {
+	var own []*Channel // 请求方 BYOK 层（虚拟最高优先）
 	var tiers [][]*Channel
 	var curPriority int
 	for i := range channels {
 		ch := &channels[i]
+		if ch.OwnerOrgID != 0 {
+			if orgID != 0 && ch.OwnerOrgID == orgID && !exclude[ch.ID] && ch.ServesModel(model) {
+				own = append(own, ch)
+			}
+			continue // 他人 BYOK：对本请求不存在（红线）
+		}
 		if exclude[ch.ID] || !ch.ServesModel(model) {
 			continue
 		}
@@ -298,6 +311,9 @@ func tierForAttempt(channels []Channel, model string, attempt int, exclude map[u
 			curPriority = ch.Priority
 		}
 		tiers[len(tiers)-1] = append(tiers[len(tiers)-1], ch)
+	}
+	if len(own) > 0 {
+		tiers = append([][]*Channel{own}, tiers...)
 	}
 	if len(tiers) == 0 {
 		return nil, ErrNoChannel
