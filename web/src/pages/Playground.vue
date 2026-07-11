@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { api } from '@/lib/api'
 import { fmtUsd } from '@/lib/money'
+
+// keep-alive（Shell.vue include="Playground"）：切页不销毁——生图/视频结果与各模态输入
+// 全在组件内存态，此前导航即丢（用户实测反馈）。name 必须与 include 精确匹配。
+defineOptions({ name: 'Playground' })
 
 interface PricedModel {
   model: string
@@ -205,6 +209,16 @@ onMounted(async () => {
   }
 })
 
+// keep-alive 下切回页面：Models 页"试一试"深链 ?model= 仍要生效（onMounted 只跑一次）
+onActivated(() => {
+  const requested = typeof route.query.model === 'string' ? route.query.model : ''
+  if (requested && requested !== model.value && models.value.some((m) => m.model === requested)) {
+    model.value = requested
+  }
+})
+
+// keep-alive 下导航离开不触发 onUnmounted（视频轮询后台继续，切回即见结果）；
+// 只在组件真正销毁（登出/布局卸载）时清理。
 onUnmounted(() => {
   stopVideoPolling()
   if (videoBlobUrl) URL.revokeObjectURL(videoBlobUrl)

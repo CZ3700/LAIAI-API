@@ -163,7 +163,12 @@ onMounted(() => { void auth.fetchMe() })
         </nav>
         <router-view v-slot="{ Component }">
           <transition name="page" mode="out-in">
-            <component :is="Component" :key="$route.path" />
+            <!-- Playground keep-alive：切页不销毁组件——生图结果/视频结果/模型选择/各模态输入
+                 全是组件内存态，销毁重建=全丢（用户实测反馈）。聊天已有 localStorage 兜底，
+                 保活后其余状态同样跨导航存活；视频轮询在后台继续，切回即见结果。 -->
+            <keep-alive include="Playground">
+              <component :is="Component" :key="$route.path" />
+            </keep-alive>
           </transition>
         </router-view>
       </div>
