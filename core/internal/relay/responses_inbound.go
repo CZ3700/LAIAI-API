@@ -501,8 +501,9 @@ func openaiRespToResponses(raw []byte) ([]byte, bool) {
 		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"` // 思考内容（批 A 保真闭环）
+				ToolCalls        []struct {
 					ID       string `json:"id"`
 					Function struct {
 						Name      string `json:"name"`
@@ -529,6 +530,14 @@ func openaiRespToResponses(raw []byte) ([]byte, bool) {
 	ch := resp.Choices[0]
 	respID := "resp_" + strings.TrimPrefix(resp.ID, "chatcmpl-")
 	output := make([]any, 0, 2)
+	// 思考内容还原（批 A 保真闭环）：Responses 原生 reasoning 输出项（summary_text），Codex 等预期它，
+	// 无 signature 往返问题。放在 message 前（reasoning 先于答案，符合 Responses 语义）。
+	if ch.Message.ReasoningContent != "" {
+		output = append(output, map[string]any{
+			"type": "reasoning", "id": "rs_" + newRequestID(),
+			"summary": []any{map[string]any{"type": "summary_text", "text": ch.Message.ReasoningContent}},
+		})
+	}
 	if ch.Message.Content != "" {
 		output = append(output, map[string]any{
 			"type": "message", "id": "msg_" + newRequestID(), "status": "completed", "role": "assistant",
@@ -641,8 +650,9 @@ func (s *responsesSSE) handleChunk(w sseFlusher, data string) {
 		Model   string `json:"model"`
 		Choices []struct {
 			Delta struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"` // 思考增量（批 A 保真闭环）
+				ToolCalls        []struct {
 					Index    int    `json:"index"`
 					ID       string `json:"id"`
 					Function struct {
@@ -694,6 +704,11 @@ func (s *responsesSSE) handleChunk(w sseFlusher, data string) {
 		}
 	}
 	for _, choice := range ck.Choices {
+		// 思考增量还原（批 A 保真闭环）：拼进可见文本流（流式 reasoning summary item 序列复杂，
+		// 降级为可见文本保证不丢；非流路径用标准 reasoning item）。
+		if choice.Delta.ReasoningContent != "" {
+			s.appendText(w, choice.Delta.ReasoningContent)
+		}
 		if choice.Delta.Content != "" {
 			s.appendText(w, choice.Delta.Content)
 		}

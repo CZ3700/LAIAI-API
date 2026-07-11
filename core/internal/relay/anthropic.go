@@ -351,11 +351,12 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 		ID      string `json:"id"`
 		Model   string `json:"model"`
 		Content []struct {
-			Type  string          `json:"type"`
-			Text  string          `json:"text"`
-			ID    string          `json:"id"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
+			Type     string          `json:"type"`
+			Text     string          `json:"text"`
+			Thinking string          `json:"thinking"` // 扩展思考块（A-2 转换保真）
+			ID       string          `json:"id"`
+			Name     string          `json:"name"`
+			Input    json.RawMessage `json:"input"`
 		} `json:"content"`
 		StopReason string         `json:"stop_reason"`
 		Usage      anthropicUsage `json:"usage"`
@@ -366,12 +367,15 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 		return usage{}, len(raw), nil
 	}
 	var text strings.Builder
+	var reasoning strings.Builder // 扩展思考内容 → reasoning_content（A-2）
 	var toolCalls []gin.H
 	jsonEmu := false
 	for _, block := range resp.Content {
 		switch block.Type {
 		case "text":
 			text.WriteString(block.Text)
+		case "thinking":
+			reasoning.WriteString(block.Thinking) // redacted_thinking（加密）无明文，自然跳过
 		case "tool_use":
 			args := string(block.Input)
 			if args == "" {
@@ -395,6 +399,9 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 		}
 	}
 	message := gin.H{"role": "assistant", "content": text.String()}
+	if reasoning.Len() > 0 {
+		message["reasoning_content"] = reasoning.String() // OpenAI 兼容推理字段（DeepSeek/OpenRouter 同名）
+	}
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
 		if text.Len() == 0 {
@@ -477,6 +484,7 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 			Delta struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
+				Thinking    string `json:"thinking"` // thinking_delta 增量（A-2）
 				PartialJSON string `json:"partial_json"`
 				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
@@ -513,6 +521,11 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 				if ev.Delta.Text != "" {
 					emit(gin.H{"object": "chat.completion.chunk",
 						"choices": []gin.H{{"index": 0, "delta": gin.H{"content": ev.Delta.Text}}}})
+				}
+			case "thinking_delta": // 扩展思考增量 → reasoning_content 流（A-2）
+				if ev.Delta.Thinking != "" {
+					emit(gin.H{"object": "chat.completion.chunk",
+						"choices": []gin.H{{"index": 0, "delta": gin.H{"reasoning_content": ev.Delta.Thinking}}}})
 				}
 			case "input_json_delta":
 				if jsonEmuBlocks[ev.Index] {

@@ -50,6 +50,16 @@ func (r *Relay) HandleAnthropicMessages(c *gin.Context) {
 	c.Request.ContentLength = int64(len(openaiBody))
 	c.Request.Header.Set("Content-Type", "application/json")
 
+	// 鉴权头桥接（丝滑度批 A）：原生 Anthropic 客户端（Claude Code / Anthropic SDK 默认
+	// ANTHROPIC_API_KEY）走 x-api-key 头，而下游 HandleChatCompletions 只认 Authorization: Bearer。
+	// 无 Authorization 时用 x-api-key 补上——否则"把 Anthropic 客户端 base 指过来即用"对最常见
+	// 用法直接 401。ANTHROPIC_AUTH_TOKEN（Bearer）用户不受影响（Authorization 已在则不覆盖）。
+	if c.GetHeader("Authorization") == "" {
+		if k := strings.TrimSpace(c.GetHeader("x-api-key")); k != "" {
+			c.Request.Header.Set("Authorization", "Bearer "+k)
+		}
+	}
+
 	orig := c.Writer
 	aw := &anthropicWriter{ResponseWriter: orig, stream: stream}
 	c.Writer = aw
@@ -567,8 +577,9 @@ func openaiRespToAnthropic(raw []byte) ([]byte, bool) {
 		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"` // 思考内容（批 A 保真闭环）
+				ToolCalls        []struct {
 					ID       string `json:"id"`
 					Function struct {
 						Name      string `json:"name"`
@@ -592,6 +603,12 @@ func openaiRespToAnthropic(raw []byte) ([]byte, bool) {
 	}
 	ch := resp.Choices[0]
 	var content []any
+	// 思考内容还原（批 A 保真闭环）：reasoning_content 作为可见 text 块前置——原生 Anthropic 客户端
+	// 无标准 reasoning 字段，用 text 块保证思考不静默丢（恢复批 A 前可见性）。不用 thinking 块：
+	// 那需要有效 signature 才能多轮回传，往返 signature 保真是独立专项。
+	if ch.Message.ReasoningContent != "" {
+		content = append(content, map[string]any{"type": "text", "text": ch.Message.ReasoningContent})
+	}
 	if ch.Message.Content != "" {
 		content = append(content, map[string]any{"type": "text", "text": ch.Message.Content})
 	}
@@ -671,8 +688,9 @@ func (s *anthropicSSE) handleChunk(w sseFlusher, data string) {
 		Model   string `json:"model"`
 		Choices []struct {
 			Delta struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"` // 思考增量（批 A 保真闭环）
+				ToolCalls        []struct {
 					Index    int    `json:"index"`
 					ID       string `json:"id"`
 					Function struct {
@@ -719,6 +737,17 @@ func (s *anthropicSSE) handleChunk(w sseFlusher, data string) {
 		}
 	}
 	for _, choice := range ck.Choices {
+		// 思考增量还原（批 A 保真闭环）：作为可见 text_delta 流出（原生 Anthropic 无标准 reasoning
+		// 增量字段；用 text 避免 thinking 块的 signature 往返问题，恢复批 A 前可见性）。
+		if choice.Delta.ReasoningContent != "" {
+			if !s.textOpen {
+				s.openText(w)
+			}
+			writeSSE(w, "content_block_delta", map[string]any{
+				"type": "content_block_delta", "index": s.textIndex,
+				"delta": map[string]any{"type": "text_delta", "text": choice.Delta.ReasoningContent},
+			})
+		}
 		// 文本增量
 		if choice.Delta.Content != "" {
 			if !s.textOpen {

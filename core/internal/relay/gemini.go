@@ -308,15 +308,55 @@ func (g geminiUsage) completionTotal() int64 {
 
 type geminiCandidate struct {
 	Content struct {
-		Parts []struct {
-			Text         string `json:"text"`
-			FunctionCall *struct {
-				Name string          `json:"name"`
-				Args json.RawMessage `json:"args"`
-			} `json:"functionCall"`
-		} `json:"parts"`
+		Parts []geminiPart `json:"parts"`
 	} `json:"content"`
 	FinishReason string `json:"finishReason"`
+}
+
+// geminiPart：一个响应部件。除 text/functionCall 外，还转换保真处理（丝滑度批 A）：
+//   - thought=true 的 text → reasoning_content（A-4：思考摘要不混入正文）
+//   - inlineData（图像等二进制输出）→ markdown data URI 拼进 content（A-3：图像模型产物不丢）
+//   - executableCode / codeExecutionResult（代码执行工具）→ markdown 代码块/结果拼进 content（A-3）
+type geminiPart struct {
+	Text         string `json:"text"`
+	Thought      bool   `json:"thought"`
+	FunctionCall *struct {
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"args"`
+	} `json:"functionCall"`
+	InlineData *struct {
+		MimeType string `json:"mimeType"`
+		Data     string `json:"data"`
+	} `json:"inlineData"`
+	ExecutableCode *struct {
+		Language string `json:"language"`
+		Code     string `json:"code"`
+	} `json:"executableCode"`
+	CodeExecutionResult *struct {
+		Outcome string `json:"outcome"`
+		Output  string `json:"output"`
+	} `json:"codeExecutionResult"`
+}
+
+// renderGeminiPart：把非 functionCall 部件渲染到 text/reasoning 两个 builder（流/非流共用，
+// 保证口径一致）。functionCall 由调用方单独处理（tool_calls 语义）。
+func renderGeminiPart(p geminiPart, text, reasoning *strings.Builder) {
+	switch {
+	case p.Thought && p.Text != "":
+		reasoning.WriteString(p.Text) // 思考摘要 → reasoning_content（A-4）
+	case p.Text != "":
+		text.WriteString(p.Text)
+	case p.InlineData != nil && p.InlineData.Data != "":
+		mime := p.InlineData.MimeType
+		if mime == "" {
+			mime = "application/octet-stream"
+		}
+		fmt.Fprintf(text, "\n![](data:%s;base64,%s)\n", mime, p.InlineData.Data) // 图像输出（A-3）
+	case p.ExecutableCode != nil && p.ExecutableCode.Code != "":
+		fmt.Fprintf(text, "\n```%s\n%s\n```\n", strings.ToLower(p.ExecutableCode.Language), p.ExecutableCode.Code)
+	case p.CodeExecutionResult != nil && p.CodeExecutionResult.Output != "":
+		fmt.Fprintf(text, "\n```\n%s\n```\n", p.CodeExecutionResult.Output)
+	}
 }
 
 func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error) {
@@ -334,13 +374,11 @@ func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error
 		return usage{}, len(raw), nil
 	}
 	cand := resp.Candidates[0]
-	var text strings.Builder
+	var text, reasoning strings.Builder
 	var toolCalls []gin.H
 	toolIdx := 0 // 只数 tool_use（与 pipeSSE 的 toolCount 同口径），避免按 parts 下标编号致流/非流 id 不一致
 	for _, p := range cand.Content.Parts {
-		if p.Text != "" {
-			text.WriteString(p.Text)
-		}
+		renderGeminiPart(p, &text, &reasoning) // text/reasoning/图像/代码（A-3/A-4）
 		if p.FunctionCall != nil {
 			args := string(p.FunctionCall.Args)
 			if args == "" {
@@ -355,6 +393,9 @@ func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error
 		}
 	}
 	message := gin.H{"role": "assistant", "content": text.String()}
+	if reasoning.Len() > 0 {
+		message["reasoning_content"] = reasoning.String() // 思考摘要分离（A-4）
+	}
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
 		if text.Len() == 0 {
@@ -432,9 +473,16 @@ func (geminiAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, error)
 		}
 		cand := chunk.Candidates[0]
 		for _, p := range cand.Content.Parts {
-			if p.Text != "" {
+			// text/thought/图像/代码渲染到临时 builder 再逐项 emit（与非流 renderGeminiPart 同口径，A-3/A-4）
+			var t, r strings.Builder
+			renderGeminiPart(p, &t, &r)
+			if r.Len() > 0 {
 				emit(gin.H{"object": "chat.completion.chunk",
-					"choices": []gin.H{{"index": 0, "delta": gin.H{"content": p.Text}}}})
+					"choices": []gin.H{{"index": 0, "delta": gin.H{"reasoning_content": r.String()}}}})
+			}
+			if t.Len() > 0 {
+				emit(gin.H{"object": "chat.completion.chunk",
+					"choices": []gin.H{{"index": 0, "delta": gin.H{"content": t.String()}}}})
 			}
 			if p.FunctionCall != nil {
 				args := string(p.FunctionCall.Args)
