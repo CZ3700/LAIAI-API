@@ -14,15 +14,17 @@ func TestProviderRegistryCoverage(t *testing.T) {
 	if len(providers) < 15 {
 		t.Fatalf("registered providers = %d, want >= 15", len(providers))
 	}
-	implemented := map[string]bool{"openai": true, "anthropic": true, "gemini": true, "azure": true, "volcengine": true, "openai-responses": true}
+	implemented := map[string]bool{"openai": true, "anthropic": true, "gemini": true, "azure": true, "volcengine": true, "openai-responses": true, "bedrock": true}
 	for _, name := range providers {
 		p, _ := ProfileFor(name)
 		// TaskOnly 厂商（kling/vidu 等）的 Adapter 是 task.Adaptor 家族名，不参与 chat 选路——豁免 chat 适配器断言。
 		if !p.TaskOnly && !implemented[p.Adapter] {
 			t.Errorf("provider %q maps to unimplemented adapter %q", name, p.Adapter)
 		}
-		// 空 base 仅允许：azure，或档案显式注明「base_url 必填」的自建/级联厂商（用户手填）。
-		if p.DefaultBaseURL == "" && p.Adapter != "azure" && !strings.Contains(p.Notes, "必填") {
+		// 空 base 仅允许：azure、档案注明「base_url 必填」的自建/级联厂商（用户手填），
+		// 或端点按凭证「自动构造」的厂商（bedrock 按 region）。
+		if p.DefaultBaseURL == "" && p.Adapter != "azure" &&
+			!strings.Contains(p.Notes, "必填") && !strings.Contains(p.Notes, "自动构造") {
 			t.Errorf("provider %q has no default base url", name)
 		}
 		if p.DisplayName == "" {

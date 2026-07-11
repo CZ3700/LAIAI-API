@@ -969,6 +969,9 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	r.breakerNote(ch.ID, true)    // 熔断：成功即闭合（半开探活成功走这里恢复全量）
 
 	// 7. 响应回传（adapter 转换）+ usage 抽取 + capture
+	// 对外 model 名存 context：上游响应不含 model 名的 adapter（bedrock Converse）回显时读它，
+	// 避免回给客户端 {"model":""}（对抗 review）。其它 adapter 用上游 resp.Model，忽略此值。
+	c.Set(respModelKey, model)
 	var u usage
 	var outBytes int
 	var streamErr error

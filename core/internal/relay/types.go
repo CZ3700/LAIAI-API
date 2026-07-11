@@ -116,10 +116,13 @@ func mappedRawBody(ch *Channel, rawBody []byte, model string) ([]byte, string) {
 func (c *Channel) EnforcesStrictResponse() bool { return c.StrictResponse != 0 }
 
 // IsLLMContentType 判断上游响应 content-type 是否为合法的 LLM 响应类型
-// （JSON 或 SSE）。HTML/纯文本等被判为上游异常（中转站返回首页、网关错误页等）。
+// （JSON / SSE / AWS event stream）。HTML/纯文本等被判为上游异常（中转站返回首页、网关错误页等）。
+// "eventstream"（无连字符）覆盖 Bedrock 的 application/vnd.amazon.eventstream——否则 strict_response
+// 默认开时所有流式 Bedrock 请求在 pipeSSE 前被误拒 502（对抗 review high）。
 func IsLLMContentType(ct string) bool {
 	ct = strings.ToLower(ct)
-	return strings.Contains(ct, "json") || strings.Contains(ct, "event-stream")
+	return strings.Contains(ct, "json") || strings.Contains(ct, "event-stream") ||
+		strings.Contains(ct, "eventstream")
 }
 
 func (Channel) TableName() string { return "channels" }
