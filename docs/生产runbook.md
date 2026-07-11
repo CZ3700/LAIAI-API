@@ -139,6 +139,7 @@ crontab -l   # 确认
 
 **演练记录**：
 - **2026-07-10（首次，DMIT 调试机，部署 97e5311 后）**：`PASS：恢复演练通过（25 张表）` — tables=25 / journal_rows=45 / users_rows=3 / max_migration=0044_channel_owner_org。备份文件 laiai-20260710-015731.sql.gz（20K），恢复进一次性 mysql:8.4 容器断言通过，与生产迁移号一致。灾备链路（备份 → 恢复 → 断言）首次端到端验证可用。cron 已装（04:10 UTC 每日）。
+- **2026-07-10 UTC 23:58（部署 6fd7834 后，迁移 0045+0046）**：`PASS：恢复演练通过（27 张表）` — tables=27（+invocations 增列 +notify_settings/notify_outbox 两新表）/ journal_rows=48 / users_rows=4 / max_migration=0046_notify。备份文件 laiai-20260710-235818.sql.gz（20K）。release-manifest 已 generate 留档（git_commit=6fd7834、git_dirty=false）。**已知运维债**：mysql/redis 仍跑可变 tag（prod overlay 的 MYSQL_IMAGE/REDIS_IMAGE digest 未配 .env），下次维护窗口按 docker-compose.prod.yml 头注补齐。
 
 ### 5.4 真恢复（事故时）——先想清楚再动手
 
