@@ -101,6 +101,8 @@ func adapterFor(provider string) adapter {
 		return volcengineChatAdapter{}
 	case "bedrock":
 		return bedrockAdapter{}
+	case "vertex":
+		return vertexAdapter{}
 	case "openai-responses":
 		return openaiResponsesAdapter{}
 	default:

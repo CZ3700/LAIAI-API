@@ -14,7 +14,7 @@ func TestProviderRegistryCoverage(t *testing.T) {
 	if len(providers) < 15 {
 		t.Fatalf("registered providers = %d, want >= 15", len(providers))
 	}
-	implemented := map[string]bool{"openai": true, "anthropic": true, "gemini": true, "azure": true, "volcengine": true, "openai-responses": true, "bedrock": true}
+	implemented := map[string]bool{"openai": true, "anthropic": true, "gemini": true, "azure": true, "volcengine": true, "openai-responses": true, "bedrock": true, "vertex": true}
 	for _, name := range providers {
 		p, _ := ProfileFor(name)
 		// TaskOnly 厂商（kling/vidu 等）的 Adapter 是 task.Adaptor 家族名，不参与 chat 选路——豁免 chat 适配器断言。

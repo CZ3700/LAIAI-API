@@ -972,6 +972,9 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	// 对外 model 名存 context：上游响应不含 model 名的 adapter（bedrock Converse）回显时读它，
 	// 避免回给客户端 {"model":""}（对抗 review）。其它 adapter 用上游 resp.Model，忽略此值。
 	c.Set(respModelKey, model)
+	if um, ok := req["model"].(string); ok { // 上游名（映射后）：Vertex 响应侧据此选 anthropic/gemini 解析器
+		c.Set(respUpstreamModelKey, um)
+	}
 	var u usage
 	var outBytes int
 	var streamErr error

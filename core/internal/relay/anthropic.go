@@ -27,6 +27,28 @@ const anthropicVersion = "2023-06-01"
 const anthropicJSONEmuTool = "laiai_json_output"
 
 func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credential string, req map[string]any, stream bool) (*http.Request, error) {
+	out, err := anthropicRequestBody(req, stream)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(ch.BaseURL, "/")+"/messages", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	upReq.Header.Set("Content-Type", "application/json")
+	upReq.Header.Set("x-api-key", credential)
+	upReq.Header.Set("anthropic-version", anthropicVersion)
+	return upReq, nil
+}
+
+// anthropicRequestBody 把统一 OpenAI 格式请求转成 Anthropic Messages body（供原生 Anthropic
+// 后端与 Vertex Claude 复用——Vertex 调用后删 model/stream 字段、加 anthropic_version）。
+func anthropicRequestBody(req map[string]any, stream bool) (map[string]any, error) {
 	out := map[string]any{"model": req["model"]}
 
 	// Anthropic 强制 max_tokens；同时识别 max_completion_tokens（与 hold 口径一致，P0-2）
@@ -222,19 +244,7 @@ func (anthropicAdapter) buildRequest(ctx context.Context, ch *Channel, credentia
 		}
 	}
 
-	body, err := json.Marshal(out)
-	if err != nil {
-		return nil, err
-	}
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(ch.BaseURL, "/")+"/messages", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("x-api-key", credential)
-	upReq.Header.Set("anthropic-version", anthropicVersion)
-	return upReq, nil
+	return out, nil
 }
 
 type anthropicUsage struct {

@@ -34,6 +34,31 @@ func mapGeminiFinishReason(r string, hasToolCall bool) string {
 
 func (geminiAdapter) buildRequest(ctx context.Context, ch *Channel, credential string, req map[string]any, stream bool) (*http.Request, error) {
 	model, _ := req["model"].(string)
+	out, err := geminiRequestBody(req)
+	if err != nil {
+		return nil, err
+	}
+	action := "generateContent"
+	if stream {
+		action = "streamGenerateContent?alt=sse"
+	}
+	body, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(ch.BaseURL, "/")+"/models/"+model+":"+action, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	upReq.Header.Set("Content-Type", "application/json")
+	upReq.Header.Set("x-goog-api-key", credential)
+	return upReq, nil
+}
+
+// geminiRequestBody 把统一 OpenAI 格式请求转成 Gemini generateContent body（供原生 Gemini
+// 后端与 Vertex Gemini 复用；action/端点与鉴权由调用方定）。
+func geminiRequestBody(req map[string]any) (map[string]any, error) {
 	out := map[string]any{}
 
 	// generationConfig
@@ -181,22 +206,7 @@ func (geminiAdapter) buildRequest(ctx context.Context, ch *Channel, credential s
 		}
 	}
 
-	action := "generateContent"
-	if stream {
-		action = "streamGenerateContent?alt=sse"
-	}
-	body, err := json.Marshal(out)
-	if err != nil {
-		return nil, err
-	}
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(ch.BaseURL, "/")+"/models/"+model+":"+action, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("x-goog-api-key", credential)
-	return upReq, nil
+	return out, nil
 }
 
 // geminiContentParts 把 OpenAI 消息 content（string 或多模态数组）统一转成 Gemini parts，供
