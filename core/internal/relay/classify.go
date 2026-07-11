@@ -21,18 +21,25 @@ type upstreamDisposition struct {
 func classifyUpstreamError(provider string, statusCode int, body []byte) upstreamDisposition {
 	d := upstreamDisposition{}
 
-	// 解析上游错误体的 type/code（OpenAI/Claude 形态）
+	// 解析上游错误体的 type/code（OpenAI/Claude 形态）+ RFC-7807 顶层 title/detail 回退
+	// （Replicate 等方言 {"title":"Insufficient credit","detail":"...","status":402}——否则
+	// 关键词匹配对象恒为空串：402 欠费不建议禁用、不换渠道，对抗 review CONFIRMED）。
 	var parsed struct {
 		Error struct {
 			Type    string `json:"type"`
 			Code    any    `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
+		Title  string `json:"title"`
+		Detail string `json:"detail"`
 	}
 	_ = json.Unmarshal(body, &parsed)
 	errType := strings.ToLower(parsed.Error.Type)
 	errCode := strings.ToLower(toStr(parsed.Error.Code))
 	msg := strings.ToLower(parsed.Error.Message)
+	if msg == "" {
+		msg = strings.ToLower(strings.TrimSpace(parsed.Title + " " + parsed.Detail))
+	}
 
 	// —— 鉴权/配额硬故障（知识库 §2.1）——DisableChannel 语义 = "渠道整体坏了"，
 	// 现由 relay 记录为**禁用建议**（B-2：不自动禁用，运营手动决定）。关键词可宽：
@@ -49,7 +56,7 @@ func classifyUpstreamError(provider string, statusCode int, body []byte) upstrea
 	}
 	// 跨 provider 硬故障消息关键词（不论 HTTP 码；含 Anthropic/AWS/OpenAI/国产方言）
 	disableMsgKeywords := []string{
-		"credit balance", "insufficient balance", "余额不足", "欠费", "arrears",
+		"credit balance", "insufficient balance", "insufficient credit", "余额不足", "欠费", "arrears",
 		"exceeded your current quota", "quota exceed", "insufficient_quota", "billing",
 		"organization has been disabled", "organization disabled", "account is not authorized",
 		"not authorized", "security token", "invalid api key", "invalid_api_key",

@@ -42,6 +42,12 @@ func TestClassifyUpstreamError(t *testing.T) {
 		{"quota exceeded message match", "openai", 402,
 			`{"error":{"message":"Your quota has been exceeded for this month"}}`, true, true},
 		{"garbage body 500 still retryable", "openai", 500, `not json at all`, false, true},
+		// RFC-7807 方言（Replicate 等）：无 error 包裹，顶层 title/detail —— 402 欠费必须
+		// 给禁用建议 + 可换渠道（此前关键词匹配对象恒空串全不命中，对抗 review CONFIRMED）
+		{"replicate rfc7807 insufficient credit", "replicate", 402,
+			`{"title":"Insufficient credit","detail":"Please add credit at replicate.com/account/billing","status":402}`, true, true},
+		{"replicate rfc7807 401 disables", "replicate", 401,
+			`{"title":"Unauthenticated","detail":"You did not pass a valid authentication token"}`, true, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -83,9 +83,10 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Model  string `json:"model"`
-		Prompt string `json:"prompt"`
-		N      int    `json:"n"`
+		Model          string `json:"model"`
+		Prompt         string `json:"prompt"`
+		N              int    `json:"n"`
+		ResponseFormat string `json:"response_format"` // replicate 方言 b64_json 保真用
 	}
 	if err := json.Unmarshal(body, &req); err != nil || req.Model == "" || req.Prompt == "" {
 		relayErr(c, http.StatusBadRequest, "model and prompt are required")
@@ -160,9 +161,17 @@ func (r *Relay) HandleImages(c *gin.Context) {
 	}()
 
 	// 换渠道重试（Adapter contract v2 第二期：统一 forwardWithFailover）
+	var upCred string // 胜出渠道的凭证（replicate 轮询/下载兜底用；build 按 attempt 顺序调用，最后一次即胜出）
 	build := func(ctx context.Context, ch *Channel, credential string) (*http.Request, error) {
+		upCred = credential
 		upBody, upModel := mappedRawBody(ch, body, req.Model) // 模型映射（0009）
-		upReq, err := buildImagesRequest(ctx, ch, credential, upBody, upModel)
+		var upReq *http.Request
+		var err error
+		if channelAdapterFamily(ch) == "replicate" { // Replicate 方言：prediction 协议（replicate.go）
+			upReq, err = buildReplicateImagesRequest(ctx, ch, credential, upBody, upModel)
+		} else {
+			upReq, err = buildImagesRequest(ctx, ch, credential, upBody, upModel)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -194,6 +203,21 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		return
 	}
 	inv.FRTMs = int(r.Now().Sub(t0).Milliseconds())
+
+	// Replicate 方言收尾：prediction → OpenAI images 形态（超窗轮询兜底 + b64 保真下载）。
+	// 失败 = 上游错误：释放 hold 不收费（图像按张计费，失败 = 0 张，绝不按请求张数收）。
+	if channelAdapterFamily(ch) == "replicate" {
+		fixed, ferr := replicateFinalizeImages(c.Request.Context(), r.clientFor(ch), r.guardedClient(false),
+			strings.TrimRight(ch.BaseURL, "/"), upCred, raw, req.ResponseFormat == "b64_json", n, r.Now)
+		if ferr != nil {
+			r.release(hold.ID)
+			r.Log.Warn("replicate prediction failed", "model", req.Model, "err", ferr)
+			finish(invocation.StatusUpstreamError, http.StatusBadGateway, "replicate prediction failed")
+			relayErr(c, http.StatusBadGateway, "image generation failed at upstream")
+			return
+		}
+		raw = fixed
+	}
 
 	// 按实际返回张数结算（data 数组长度）；解析失败按请求张数收（保守且有日志）
 	var parsed struct {

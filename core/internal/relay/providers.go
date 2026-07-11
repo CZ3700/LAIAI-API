@@ -54,6 +54,8 @@ var providerProfiles = map[string]providerProfile{
 		Notes: "不写代码接自定义上游：converter 选格式转换器 + upstream_path 自定义端点 + header_override 自定义认证；SSRF 拦内网/metadata。base_url 必填"},
 	"bedrock": {DisplayName: "AWS Bedrock", DefaultBaseURL: "", Adapter: "bedrock",
 		Notes: "Converse API（统一 Claude/Llama/Titan/Mistral/Nova）+ 手写 SigV4；凭证 ak|sk|region[|token]；model=Bedrock modelId；端点按 region 自动构造，base_url 留空即可（不填）。真机验证待补"},
+	"replicate": {DisplayName: "Replicate（生图）", DefaultBaseURL: "https://api.replicate.com", Adapter: "replicate",
+		Notes: "images/generations 专用（flux/sdxl 等；model=官方模型路径如 black-forest-labs/flux-1.1-pro）；Prefer:wait 同步 + 平台轮询兜底；response_format=b64_json 保真下载；chat 不支持。真机验证待补"},
 	"vertex": {DisplayName: "Google Vertex AI", DefaultBaseURL: "", Adapter: "vertex",
 		Notes: "统一托管 Gemini（generateContent）+ Claude（rawPredict，anthropic_version=vertex-2023-10-16）；鉴权 GCP service account → OAuth2 Bearer；凭证 region|<service-account-json>（project 从 SA JSON 读）；端点按 region 自动构造，base_url 留空即可（不填）。真机验证待补"},
 
