@@ -58,6 +58,7 @@ type Task struct {
 	ActualTokens     int64           `gorm:"column:actual_tokens" json:"completion_tokens,omitempty"`
 	CostUSD          decimal.Decimal `gorm:"column:cost_usd" json:"cost_usd"`
 	PriceOutUSDPer1M decimal.Decimal `gorm:"column:price_out_usd_per_1m" json:"-"` // 计费快照（陷阱 2）
+	PricePerCallUSD  decimal.Decimal `gorm:"column:price_per_call_usd" json:"-"`   // 按次计价快照（0048）：MJ 等 PerCallUSD 模型结算依据
 	HoldAmountUSD    decimal.Decimal `gorm:"column:hold_amount_usd" json:"-"`      // 冻结额快照 = key quota 预留额（0032）；0=旧行无预留
 	GroupRatio       decimal.Decimal `gorm:"column:group_ratio" json:"-"`          // 计费倍率快照（0032）：hold 与结算同值纪律
 	SubmittedAt      time.Time       `gorm:"column:submitted_at;autoCreateTime:milli" json:"submitted_at"`
@@ -133,6 +134,10 @@ type SubmitInput struct {
 	// watermark/resolution 等），原样透传上游。同时喂给 EstimateOutputTokens 做
 	// duration/resolution 感知的 hold 上界（§3.8 "按 duration、resolution 预扣"）。
 	Params map[string]any
+	// PinChannelID：引用类动作（MJ change/modal）钉回原任务渠道。上游任务 id 是单个 mjproxy
+	// 网关本地的——按权重独立选路/换渠道故障转移都会把续操作投给不持有该任务的网关（对抗
+	// review CONFIRMED）。非 0 时跳过选路与 failover。
+	PinChannelID uint64
 }
 
 var (
@@ -160,9 +165,19 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		return nil, err
 	}
 	// 健康分传 nil：异步任务（视频）独立于 relay 的内存健康态，沿用纯权重选路。
-	ch, err := relay.PickChannelForAttempt(s.DB, in.Model, 0, nil, nil)
-	if err != nil {
-		return nil, err
+	var ch *relay.Channel
+	if in.PinChannelID != 0 {
+		// 渠道亲和（MJ change/modal）：引用任务的上游 id 只在原网关存在，强制钉回。
+		ch = &relay.Channel{}
+		if err := s.DB.First(ch, in.PinChannelID).Error; err != nil || ch.Status != 1 {
+			return nil, relay.ErrNoChannel
+		}
+	} else {
+		var err error
+		ch, err = relay.PickChannelForAttempt(s.DB, in.Model, 0, nil, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	ad, err := adaptorFor(ch.Provider)
 	if err != nil {
@@ -189,7 +204,8 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 	// 计费倍率快照（0011 一层 × 0027 二层）：hold 与结算取同一次值（chat 同款纪律）。
 	// 提交 QPS 低，直读 DB 不走 relay 热读缓存。
 	ratio := relay.EffectiveRatio(s.DB, in.OrgID, in.Model)
-	holdAmount := price.Cost(0, 0, estTokens).Mul(ratio)
+	// ChatCost = 按次计价感知（PerCallUSD>0 直接按次，MJ 等；否则回退 token 口径——视频模型不变）
+	holdAmount := price.ChatCost(0, 0, estTokens).Mul(ratio)
 	// API Key 额度原子预留（P0-1，chat 的 P0-3 同款）：防并发提交超 key quota。
 	// 退还全覆盖：下方事务失败立即退；任务行落地后由 settle 终态按 hold_amount_usd 快照对账/退还。
 	if !identity.ReserveKeyQuota(s.DB, in.APIKeyID, holdAmount) {
@@ -201,6 +217,8 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		Model: in.Model, ChannelID: ch.ID, Provider: ch.Provider,
 		Status: StatusQueued, EstTokens: estTokens,
 		PriceOutUSDPer1M: price.OutputUSDPer1M,
+		PricePerCallUSD:  price.PerCallUSD, // 0048：按次计价快照（MJ 等），settle 与 hold 同口径
+
 		HoldAmountUSD:    holdAmount, GroupRatio: ratio,
 		CredentialID:     credID, // 钉住提交用的 key（0035），轮询固定用它
 	}
@@ -253,6 +271,9 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxSubmitAttempts; attempt++ {
 		if attempt > 0 {
+			if in.PinChannelID != 0 {
+				break // 钉渠道（MJ 引用类动作）：换渠道无意义——目标网关不持有该任务
+			}
 			next, nextAd, nextCred, ok := s.nextSubmitCandidate(in.Model, attempt, tried, t)
 			if !ok {
 				break // 无更多可用候选（或任务已被并发结算）
@@ -287,6 +308,28 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 			}
 			lastErr = err
 			continue // 5xx/意外响应体：换渠道
+		}
+		// 去重（对抗 review CONFIRMED：mjproxy code 21"任务已存在"返回旧任务 id，上游没起新生成）：
+		// 同 org+渠道+上游 id 已有非 failed 任务 → 本次是重复提交（客户端重试/重复点击），
+		// 释放本次 hold + 删本占位行 + 退 key quota，把已有任务返回给客户端——绝不对同一次生成收两次。
+		// 视频类厂商每次提交必发新 id，此查询恒空，零行为变化。
+		var dup Task
+		if err := s.DB.Where("org_id = ? AND channel_id = ? AND upstream_task_id = ? AND status <> ? AND id <> ?",
+			t.OrgID, ch.ID, upstreamID, StatusFailed, t.ID).First(&dup).Error; err == nil {
+			if derr := s.DB.Transaction(func(tx *gorm.DB) error {
+				if err := ledger.Release(tx, t.HoldID); err != nil {
+					return err
+				}
+				return tx.Delete(&Task{}, t.ID).Error
+			}); derr != nil {
+				s.Log.Error("task dedup release failed — manual reconcile needed", "task", t.TaskID, "err", derr)
+				// release 失败时保留原任务行走正常轮询（宁可重复计费告警人工对账，不丢资金记录）
+			} else {
+				_ = identity.AddKeyUsageSigned(s.DB, in.APIKeyID, holdAmount.Neg())
+				s.Log.Info("task dedup: upstream returned existing task, reusing",
+					"task", dup.TaskID, "upstream_id", upstreamID)
+				return &dup, nil
+			}
 		}
 		// 提交成功：回填上游 id
 		if err := s.DB.Model(&Task{}).Where("id = ?", t.ID).
@@ -575,7 +618,10 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 		// succeeded 但产物 URL 仍空（对抗 review CONFIRMED）：视频/音乐类任务 succeeded 必有可下载产物，
 		// 空 URL = 上游"状态先到产物后到"窗口 / 缺 ResultFetcher / 二跳未就绪——本轮重试，绝不为取不回的
 		// 产物按次全额结算（B 类会收满 est）。sweepTimedOut 30min 兜底：真·无产物则超时失败退款。
-		if result.ResultURL == "" {
+		// 豁免按次计价任务（PerCallUSD>0，MJ 等）：费用固定与产物 URL 无关，且 describe/shorten 类
+		// 动作产出本就是文本（imageUrl 恒空）——不豁免会永卡至超时全退，而客户端已经过 /mj fetch
+		// 透传拿走产物 = 成功却分文未收（对抗 review CONFIRMED HIGH，资金红线）。
+		if result.ResultURL == "" && !t.PricePerCallUSD.IsPositive() {
 			s.Log.Warn("task reported succeeded but result URL empty, will retry", "task", t.TaskID)
 			return
 		}
@@ -587,16 +633,22 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 
 // settleSuccess：CAS 终态转移 + 资金结算在同一事务（赢者结算，输者无操作）。
 func (s *Service) settleSuccess(t *Task, result QueryResult) {
-	price := &relay.ModelPrice{OutputUSDPer1M: t.PriceOutUSDPer1M} // 计费快照，不读实时价
+	// 计费快照，不读实时价。0048：快照含 PerCallUSD——按次模型（MJ）此前重建价缺该字段，
+	// Cost 走 token 路径算出 0（成功却收 0，资金 bug）。
+	price := &relay.ModelPrice{OutputUSDPer1M: t.PriceOutUSDPer1M, PerCallUSD: t.PricePerCallUSD}
 	ratio := t.GroupRatio
 	if !ratio.IsPositive() {
 		ratio = decimal.NewFromInt(1) // 0032 前旧行/异常快照：按 1 兜底（与历史行为一致）
 	}
 	actual := decimal.Zero
 	usageSource := invocation.UsageSourceUpstream
-	if result.CompletionTokens > 0 {
+	switch {
+	case price.PerCallUSD.IsPositive():
+		// 按次固定价：usage 与金额无关（MJ 等不报 token），无需"缺 usage"告警
+		actual = price.PerCallUSD.Mul(ratio)
+	case result.CompletionTokens > 0:
 		actual = price.Cost(0, 0, result.CompletionTokens).Mul(ratio)
-	} else {
+	default:
 		// 上游没给 usage：按预估收（保守；上游 usage 缺失会在日志可见）
 		actual = price.Cost(0, 0, t.EstTokens).Mul(ratio)
 		usageSource = invocation.UsageSourceEstimated
@@ -701,8 +753,11 @@ func (s *Service) recordInvocation(t *Task, status string, code int, tokens int6
 		return
 	}
 	modality := invocation.ModalityVideo
-	if t.Provider == "suno" { // 音乐是当前唯一非视频 task 厂商；再添时改从 adaptor 档案取
+	switch t.Provider { // 非视频 task 厂商的模态归类（usage/控制台按模态分账依赖）
+	case "suno":
 		modality = invocation.ModalityMusic
+	case "midjourney":
+		modality = invocation.ModalityImage
 	}
 	s.Rec.Record(&invocation.Invocation{
 		OrgID: t.OrgID, UserID: t.UserID, APIKeyID: t.APIKeyID,

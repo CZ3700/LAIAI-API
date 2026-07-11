@@ -343,6 +343,11 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		vg.POST("/v1/video/generations", ts.HandleCreate)
 		vg.GET("/v1/video/generations/:id", ts.HandleGet)
 		vg.GET("/v1/video/generations/:id/content", ts.HandleContent) // 产物代理下发（sora 二进制/veo 带 key URI，0038）
+		// Midjourney（mjproxy 网关方言，丝滑度批 C-4）：MJ 客户端生态标准协议；task 骨架复用
+		vg.POST("/mj/submit/:action", ts.HandleMJSubmit)
+		vg.GET("/mj/task/:id/fetch", ts.HandleMJFetch)
+		vg.POST("/mj/task/list-by-condition", ts.HandleMJList)
+		vg.GET("/mj/image/:id", ts.HandleMJImage)
 	}
 
 	return r, s

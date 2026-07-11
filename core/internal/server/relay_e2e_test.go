@@ -97,6 +97,7 @@ CREATE TABLE tasks (
     est_tokens INTEGER NOT NULL DEFAULT 0,
     actual_tokens INTEGER NOT NULL DEFAULT 0, cost_usd NUMERIC NOT NULL DEFAULT 0,
     price_out_usd_per_1m NUMERIC NOT NULL,
+    price_per_call_usd NUMERIC NOT NULL DEFAULT 0,
     hold_amount_usd NUMERIC NOT NULL DEFAULT 0, group_ratio NUMERIC NOT NULL DEFAULT 1,
     submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     started_at DATETIME, finished_at DATETIME,

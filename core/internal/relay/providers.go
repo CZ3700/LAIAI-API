@@ -48,6 +48,8 @@ var providerProfiles = map[string]providerProfile{
 		Notes: "OpenAI /v1/videos；bearer；产物二进制经平台 content 端点代理下发。真机验证待补"},
 	"veo": {DisplayName: "Google Veo（视频任务）", DefaultBaseURL: "https://generativelanguage.googleapis.com/v1beta", Adapter: "veo", TaskOnly: true,
 		Notes: "Gemini API predictLongRunning；x-goog-api-key；产物 URI 带 key 经平台代理下发。真机验证待补"},
+	"midjourney": {DisplayName: "Midjourney（mjproxy 网关）", DefaultBaseURL: "", Adapter: "midjourney", TaskOnly: true,
+		Notes: "midjourney-proxy 方言（/mj/submit/*+fetch）；base_url=mjproxy 网关地址（必填）；凭证=mj-api-secret；渠道 models 填 mj_imagine/mj_change/mj_blend/mj_describe/mj_shorten/mj_modal 并各配 PerCallUSD 按次价。真机验证待补"},
 	"openai-responses": {DisplayName: "OpenAI Responses 上游", DefaultBaseURL: "", Adapter: "openai-responses",
 		Notes: "上游只支持 /v1/responses（Codex 系/只暴露 Responses 的网关）；对内 chat 契约,adapter 双向转换。base_url 必填"},
 	"advanced_custom": {DisplayName: "Advanced Custom（自定义路由）", DefaultBaseURL: "", Adapter: "openai",

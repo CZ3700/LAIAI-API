@@ -82,6 +82,9 @@ var taskAdaptors = map[string]Adaptor{
 	// sora=bearer/A 类 seconds×size 回显结算/content 二进制；veo=x-goog-api-key/LRO 推导/B 类/带 key URI。
 	"sora": soraTask{},
 	"veo":  veoTask{},
+	// 丝滑度批 C-4（2026-07-11，知识移植自 midjourney-proxy 方言 + NewAPI 生产解析）：
+	// MJ 按 action 建模（mj_imagine 等）PerCallUSD 按次计价（0048 快照）；对外 /mj/* 方言路由。
+	"midjourney": midjourneyTask{},
 }
 
 // adaptorFor：先按 provider code 精确查注册表；未命中再按 provider 档案的 Adapter 家族回退一次
