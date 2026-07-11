@@ -245,6 +245,7 @@ export default {
     videoRunningHint: "影片生成通常需 1-3 分鐘；保持頁面開啟，重新整理後可恢復追蹤。",
     videoElapsed: "已用 {s} 秒",
     videoDownload: "下載",
+    videoPlayFallback: '若影片無法在此播放，點「下載」查看（部分廠商的影片瀏覽器無法內嵌播放）。',
     videoFailed: "影片生成失敗",
     videoNoResult: "任務成功但未回傳產物位址——請查看請求日誌。",
     videoEmptyHint: "選擇影片模型，輸入提示詞後生成。",

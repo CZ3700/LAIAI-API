@@ -191,6 +191,7 @@ export default {
     videoRunningHint: "Penjanaan video biasanya mengambil 1–3 minit. Biarkan halaman terbuka; penjejakan pulih selepas muat semula.",
     videoElapsed: "berlalu {s}s",
     videoDownload: "Muat turun",
+    videoPlayFallback: 'Jika video tidak dapat dimainkan di sini, klik Muat turun untuk menontonnya (sesetengah pembekal menyajikan video yang pelayar tidak dapat main secara sebaris).',
     videoFailed: "Penjanaan video gagal",
     videoNoResult: "Tugasan berjaya tetapi tiada URL hasil — semak log permintaan.",
     videoEmptyHint: "Pilih model video, masukkan prompt, kemudian jana.",

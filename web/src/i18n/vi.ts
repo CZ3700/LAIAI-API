@@ -191,6 +191,7 @@ export default {
     videoRunningHint: "Tạo video thường mất 1–3 phút. Giữ trang mở; việc theo dõi sẽ khôi phục sau khi tải lại.",
     videoElapsed: "đã qua {s}s",
     videoDownload: "Tải xuống",
+    videoPlayFallback: 'Nếu video không phát được ở đây, hãy nhấn Tải xuống để xem (một số nhà cung cấp trả về video mà trình duyệt không thể phát nội tuyến).',
     videoFailed: "Tạo video thất bại",
     videoNoResult: "Tác vụ thành công nhưng không có URL kết quả — kiểm tra nhật ký yêu cầu.",
     videoEmptyHint: "Chọn mô hình video, nhập prompt rồi tạo.",

@@ -121,6 +121,7 @@ const videoTask = ref<VideoTask | null>(null)
 const videoSubmitting = ref(false)
 const videoError = ref('')
 const videoSrc = ref('') // <video> 播放源（直链或 blob objectURL）
+const videoPlayFallback = ref(false) // 直连产物 <video> 拒播（octet-stream 等）→ 提示下载查看
 let videoBlobUrl = '' // 待 revoke 的 objectURL
 let videoPollTimer: number | null = null
 let videoTickTimer: number | null = null
@@ -378,6 +379,7 @@ function resetVideoResult() {
   videoTask.value = null
   videoError.value = ''
   videoSrc.value = ''
+  videoPlayFallback.value = false
   if (videoBlobUrl) {
     URL.revokeObjectURL(videoBlobUrl)
     videoBlobUrl = ''
@@ -445,6 +447,17 @@ async function loadVideoResult(task: VideoTask) {
     videoError.value = t('play.videoNoResult')
     return
   }
+  // 直链产物（国内厂商 seedance/hailuo/wan——result_url 是绝对 http URL）：浏览器直连播放。
+  // 关键：服务端代理端点 /content 在「海外部署 + 国内对象存储」下会被跨境网络 RST（Connection
+  // reset by peer，实测火山 tos-cn-beijing 从海外 VPS 拉取即被重置）——服务器根本代理不到。
+  // 客户端浏览器（国内）能直连火山 TOS：<video src> 直连绕开 CORS（媒体元素跨域 src 允许），
+  // 下载走 saveVideo（fetch 失败自动回退新标签右键另存）。若 octet-stream 令 <video> 拒播，
+  // 用户仍可下载。海外厂商产物（sora/veo）走的是相对代理路径，服务器可达，保持代理下方逻辑。
+  if (/^https?:\/\//i.test(task.result_url)) {
+    videoSrc.value = task.result_url
+    return
+  }
+  // 相对路径 = 平台代理端点（sora/veo 等海外厂商产物，服务器可达）：fetch+Bearer→blob 绕 Content-Type。
   try {
     const r = await fetch(`/v1/video/generations/${encodeURIComponent(task.id)}/content`, {
       headers: { Authorization: `Bearer ${apiKey.value}` },
@@ -792,7 +805,8 @@ async function saveImage(img: GenImage, idx: number) {
           </div>
           <!-- 成片：播放 + 下载 + 实际费用 -->
           <div v-else-if="videoSrc" class="mx-auto max-w-3xl space-y-3">
-            <video :src="videoSrc" controls playsinline class="w-full rounded-lg border border-line bg-black shadow-card"></video>
+            <video :src="videoSrc" controls playsinline @error="videoPlayFallback = true" class="w-full rounded-lg border border-line bg-black shadow-card"></video>
+            <p v-if="videoPlayFallback" class="text-xs text-warn" role="alert">{{ t('play.videoPlayFallback') }}</p>
             <div class="flex flex-wrap items-center justify-between gap-3">
               <p class="text-xs text-muted">
                 <template v-if="videoTask?.cost_usd">{{ t('play.videoCost', { cost: fmtUsd(videoTask.cost_usd) }) }}</template>

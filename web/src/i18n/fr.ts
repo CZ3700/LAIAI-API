@@ -191,6 +191,7 @@ export default {
     videoRunningHint: "La génération prend généralement 1 à 3 minutes. Gardez la page ouverte ; le suivi reprend après actualisation.",
     videoElapsed: "écoulé {s}s",
     videoDownload: "Télécharger",
+    videoPlayFallback: 'Si la vidéo ne se lit pas ici, cliquez sur Télécharger pour la visionner (certains fournisseurs diffusent des vidéos que le navigateur ne peut pas lire en ligne).',
     videoFailed: "Échec de la génération vidéo",
     videoNoResult: "Tâche réussie mais aucune URL de résultat — consultez les journaux de requêtes.",
     videoEmptyHint: "Choisissez un modèle vidéo, saisissez un prompt, puis générez.",

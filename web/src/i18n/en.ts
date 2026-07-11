@@ -247,6 +247,7 @@ const messages = {
     videoRunningHint: "Video generation usually takes 1–3 minutes. Keep this page open; tracking resumes after a refresh.",
     videoElapsed: "elapsed {s}s",
     videoDownload: "Download",
+    videoPlayFallback: 'If the video does not play here, click Download to view it (some providers serve videos that browsers cannot play inline).',
     videoFailed: "Video generation failed",
     videoNoResult: "Task succeeded but returned no result URL — check the request logs.",
     videoEmptyHint: "Pick a video model, enter a prompt, then generate.",

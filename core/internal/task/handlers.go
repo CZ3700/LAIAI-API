@@ -1,9 +1,12 @@
 package task
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -249,13 +252,21 @@ func (s *Service) proxyDirectContent(c *gin.Context, t *Task, guarded *http.Clie
 	}
 	resp, err := guarded.Do(req)
 	if err != nil {
-		s.Log.Warn("task direct content fetch failed", "task", t.TaskID) // 不带 err（直链含签名，红线 7）
+		// 错误分类进日志（红线 7：绝不记 err 本身/URL——直链含签名；只记语义类别）。
+		// 常见根因：海外部署拉国内对象存储超时（timeout）、拨号守卫拒绝或 DNS 失败（unreachable）。
+		reason := "unreachable"
+		if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+			reason = "timeout"
+		}
+		s.Log.Warn("task direct content fetch failed", "task", t.TaskID, "reason", reason)
 		taskErr(c, http.StatusBadGateway, "content fetch failed, retry later")
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		taskErr(c, http.StatusBadGateway, "content unavailable (upstream may have expired)")
+		// 上游状态码进日志 + 提示（纯数字，红线 7 安全）：403/404 多为签名 URL 过期，5xx 为上游抖动。
+		s.Log.Warn("task direct content upstream non-2xx", "task", t.TaskID, "status", resp.StatusCode)
+		taskErr(c, http.StatusBadGateway, fmt.Sprintf("content unavailable (upstream returned %d; signed URL may have expired)", resp.StatusCode))
 		return
 	}
 	ct := resp.Header.Get("Content-Type")

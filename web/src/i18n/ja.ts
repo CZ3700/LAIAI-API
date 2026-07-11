@@ -190,6 +190,7 @@ export default {
     videoRunningHint: "動画生成には通常 1〜3 分かかります。ページを開いたままに；再読み込み後も追跡は復元されます。",
     videoElapsed: "経過 {s} 秒",
     videoDownload: "ダウンロード",
+    videoPlayFallback: 'ここで動画が再生されない場合は「ダウンロード」をクリックしてご覧ください（一部プロバイダの動画はブラウザでインライン再生できません）。',
     videoFailed: "動画生成に失敗しました",
     videoNoResult: "タスクは成功しましたが成果物 URL がありません——リクエストログを確認してください。",
     videoEmptyHint: "動画モデルを選び、プロンプトを入力して生成。",
