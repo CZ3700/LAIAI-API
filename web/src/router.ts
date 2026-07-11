@@ -31,6 +31,7 @@ export const router = createRouter({
         { path: '', component: () => import('@/pages/Dashboard.vue') },
         { path: 'models', component: () => import('@/pages/ConsoleModels.vue') },
         { path: 'playground', component: () => import('@/pages/Playground.vue') },
+        { path: 'compare', component: () => import('@/pages/Compare.vue') },
         { path: 'diagnostics', component: () => import('@/pages/Diagnostics.vue') },
         { path: 'billing', component: () => import('@/pages/Billing.vue') },
         { path: 'recharges', component: () => import('@/pages/Recharges.vue') },

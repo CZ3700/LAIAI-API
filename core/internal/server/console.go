@@ -101,6 +101,13 @@ func (s *Server) getPricing(c *gin.Context) {
 			"output_usd_per_1m": p.OutputUSDPer1M,
 			"image_usd":         p.ImageUSD,
 		}
+		// 非零才带（批 D-2 模型详情完整价目）：按次固定价（MJ/转写类）与缓存输入折扣价
+		if p.PerCallUSD.IsPositive() {
+			row["per_call_usd"] = p.PerCallUSD
+		}
+		if p.CachedInputUSDPer1M.IsPositive() {
+			row["cached_input_usd_per_1m"] = p.CachedInputUSDPer1M
+		}
 		if meta, ok := metaMap[p.Model]; ok { // 模型元数据（gap P2-D）：有则前端用真实厂商/分类，无则回退按名猜
 			row["vendor"] = meta.Vendor
 			row["category"] = meta.Category

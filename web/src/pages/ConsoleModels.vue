@@ -39,6 +39,45 @@ function openInPlayground() {
   if (selected.value) router.push({ path: '/app/playground', query: { model: selected.value.model } })
 }
 
+// —— 接入代码片段（批 D-2）：按模态预填 model + 网关地址，复制即用 ——
+type SnippetLang = 'curl' | 'python' | 'js'
+const snippetLang = ref<SnippetLang>('curl')
+const snippetCopied = ref(false)
+const snippet = computed(() => {
+  const m = selected.value
+  if (!m) return ''
+  const base = window.location.origin
+  const mod = modelModality(m)
+  if (snippetLang.value === 'curl') {
+    if (mod === 'image')
+      return `curl ${base}/v1/images/generations \\\n  -H "Authorization: Bearer $LAIAI_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "${m.model}", "prompt": "a cat", "n": 1}'`
+    if (mod === 'video')
+      return `curl ${base}/v1/video/generations \\\n  -H "Authorization: Bearer $LAIAI_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "${m.model}", "content": [{"type": "text", "text": "a cat running"}]}'`
+    if (mod === 'embedding')
+      return `curl ${base}/v1/embeddings \\\n  -H "Authorization: Bearer $LAIAI_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "${m.model}", "input": "hello"}'`
+    return `curl ${base}/v1/chat/completions \\\n  -H "Authorization: Bearer $LAIAI_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "${m.model}", "messages": [{"role": "user", "content": "Hello"}]}'`
+  }
+  if (snippetLang.value === 'python') {
+    if (mod === 'image')
+      return `from openai import OpenAI\n\nclient = OpenAI(base_url="${base}/v1", api_key="sk-laiai-...")\nimg = client.images.generate(model="${m.model}", prompt="a cat", n=1)\nprint(img.data[0].url)`
+    if (mod === 'embedding')
+      return `from openai import OpenAI\n\nclient = OpenAI(base_url="${base}/v1", api_key="sk-laiai-...")\nemb = client.embeddings.create(model="${m.model}", input="hello")\nprint(len(emb.data[0].embedding))`
+    return `from openai import OpenAI\n\nclient = OpenAI(base_url="${base}/v1", api_key="sk-laiai-...")\nresp = client.chat.completions.create(\n    model="${m.model}",\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(resp.choices[0].message.content)`
+  }
+  // js
+  if (mod === 'image')
+    return `import OpenAI from "openai";\n\nconst client = new OpenAI({ baseURL: "${base}/v1", apiKey: "sk-laiai-..." });\nconst img = await client.images.generate({ model: "${m.model}", prompt: "a cat", n: 1 });\nconsole.log(img.data[0].url);`
+  if (mod === 'embedding')
+    return `import OpenAI from "openai";\n\nconst client = new OpenAI({ baseURL: "${base}/v1", apiKey: "sk-laiai-..." });\nconst emb = await client.embeddings.create({ model: "${m.model}", input: "hello" });\nconsole.log(emb.data[0].embedding.length);`
+  return `import OpenAI from "openai";\n\nconst client = new OpenAI({ baseURL: "${base}/v1", apiKey: "sk-laiai-..." });\nconst resp = await client.chat.completions.create({\n  model: "${m.model}",\n  messages: [{ role: "user", content: "Hello" }],\n});\nconsole.log(resp.choices[0].message.content);`
+})
+async function copySnippet() {
+  if (await copyText(snippet.value)) {
+    snippetCopied.value = true
+    setTimeout(() => (snippetCopied.value = false), 1200)
+  }
+}
+
 onMounted(async () => {
   try {
     const r = await api<{ models: PricedModel[] }>('GET', '/api/pricing', undefined, { auth: false })
@@ -155,13 +194,42 @@ onMounted(async () => {
             <p class="text-[11px] text-muted">{{ t('models.image') }}</p>
             <p class="mt-0.5 font-mono font-semibold">${{ selected.image_usd }}</p>
           </div>
+          <div v-if="selected.per_call_usd" class="model-price-tile p-3">
+            <p class="text-[11px] text-muted">{{ t('models.perCall') }}</p>
+            <p class="mt-0.5 font-mono font-semibold">${{ selected.per_call_usd }}</p>
+          </div>
+          <div v-if="selected.cached_input_usd_per_1m" class="model-price-tile p-3">
+            <p class="text-[11px] text-muted">{{ t('models.cachedInput') }} /1M</p>
+            <p class="mt-0.5 font-mono font-semibold">${{ selected.cached_input_usd_per_1m }}</p>
+          </div>
           <div class="model-price-tile p-3">
             <p class="text-[11px] text-muted">{{ t('models.modality') }}</p>
             <p class="mt-0.5 font-semibold">{{ modalityLabel(selected) }}</p>
           </div>
+          <div v-if="selected.context_length" class="model-price-tile p-3">
+            <p class="text-[11px] text-muted">{{ t('models.context') }}</p>
+            <p class="mt-0.5 font-mono font-semibold">{{ selected.context_length.toLocaleString() }}</p>
+          </div>
         </div>
 
         <button class="btn-primary mt-5 w-full" @click="openInPlayground">{{ t('models.openPlayground') }}</button>
+
+        <!-- 接入片段（批 D-2）：模态感知，复制即用 -->
+        <div class="mt-5">
+          <div class="flex items-center gap-1.5">
+            <p class="mr-auto text-xs font-medium">{{ t('models.integrate') }}</p>
+            <button
+              v-for="l in (['curl', 'python', 'js'] as const)" :key="l"
+              class="rounded px-2 py-0.5 text-[11px]"
+              :class="snippetLang === l ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-line/40'"
+              @click="snippetLang = l"
+            >{{ l }}</button>
+            <button class="btn-ghost !min-h-0 !px-2 !py-0.5 text-[11px]" @click="copySnippet">
+              {{ snippetCopied ? t('common.copied') : t('common.copy') }}
+            </button>
+          </div>
+          <pre class="mt-2 overflow-x-auto rounded-lg border border-line bg-panel p-3 font-mono text-[11px] leading-relaxed">{{ snippet }}</pre>
+        </div>
         <p class="mt-3 text-xs text-muted">{{ t('models.unitHint') }}</p>
       </div>
     </div>

@@ -87,6 +87,8 @@ const steps = ['step1', 'step2', 'step3']
           <div class="enter mt-8 flex flex-wrap gap-3" style="animation-delay: 210ms">
             <router-link to="/register" class="btn-primary px-5 !py-2.5">{{ t('landing.ctaStart') }}</router-link>
             <router-link to="/models" class="btn-ghost px-5 !py-2.5">{{ t('nav.models') }}</router-link>
+            <!-- OpenAPI 规范（批 D-3）：静态下发，可导入 Postman/Insomnia/openapi-generator -->
+            <a href="/openapi.yaml" download class="btn-ghost px-5 !py-2.5">{{ t('docs.openapi') }}</a>
           </div>
         </div>
 

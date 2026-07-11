@@ -1,0 +1,449 @@
+# LAIAI 网关数据面 OpenAPI 规范（批 D-3，手工维护——新增端点时同步更新）。
+# 客户端可直接导入 Postman/Insomnia/openapi-generator。鉴权一律 Bearer 平台 API Key。
+openapi: 3.0.3
+info:
+  title: LAIAI Gateway API
+  description: |
+    OpenAI-compatible AI gateway. Point any OpenAI SDK at `{origin}/v1` with your
+    LAIAI API key. Extra dialects: Anthropic-native ingress (`/anthropic/v1/messages`),
+    OpenAI Responses (`/v1/responses`), async video tasks (`/v1/video/generations`),
+    Midjourney proxy dialect (`/mj/*`), and a Realtime WebSocket bridge (`/v1/realtime`).
+
+    Billing: hold at request time, capture by actual usage. All prices USD.
+  version: "1.0"
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: chat
+  - name: images
+  - name: audio
+  - name: embeddings
+  - name: video-tasks
+  - name: midjourney
+  - name: misc
+
+paths:
+  /v1/models:
+    get:
+      tags: [misc]
+      summary: List models available to your key
+      responses:
+        "200":
+          description: OpenAI-shaped model list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, example: list }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, example: gpt-5.1 }
+                        object: { type: string, example: model }
+
+  /v1/chat/completions:
+    post:
+      tags: [chat]
+      summary: Chat completion (OpenAI-compatible, streaming supported)
+      description: |
+        Full OpenAI dialect: `messages`, `tools`/`tool_choice`, `response_format`
+        (json_object / json_schema — emulated on non-OpenAI upstreams), vision content
+        parts, `stream`, `stop`, `temperature`, `top_p`, `max_tokens` / `max_completion_tokens`.
+        Extensions: `models: [a, b, c]` fallback chain; `provider: {order|only|ignore}`
+        routing preference; upstream-native `thinking` / `thinkingConfig` passthrough;
+        `reasoning_content` returned for reasoning models.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, messages]
+              properties:
+                model: { type: string, example: gpt-5.1 }
+                messages:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role: { type: string, enum: [system, user, assistant, tool] }
+                      content: {}
+                stream: { type: boolean, default: false }
+                max_tokens: { type: integer }
+                temperature: { type: number }
+                tools: { type: array, items: { type: object } }
+                response_format: { type: object }
+                models:
+                  type: array
+                  items: { type: string }
+                  description: Fallback chain — try each model in order on routable failures.
+                provider:
+                  type: object
+                  description: "Routing preference: {order: [p1, p2], only: [...], ignore: [...]}"
+              additionalProperties: true
+      responses:
+        "200":
+          description: Completion object, or `text/event-stream` when `stream=true`
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/responses:
+    post:
+      tags: [chat]
+      summary: OpenAI Responses API ingress
+      description: Responses-dialect requests are converted to canonical chat internally and answered in Responses shape (streaming supported).
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        "200": { description: Responses object / SSE stream }
+
+  /anthropic/v1/messages:
+    post:
+      tags: [chat]
+      summary: Anthropic Messages ingress
+      description: |
+        Anthropic SDK / Claude Code compatible — set base URL to `{origin}/anthropic`.
+        Accepts `x-api-key` or `Authorization: Bearer`. Thinking blocks and tool use
+        are converted bidirectionally; any upstream (not just Claude) can serve it.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        "200": { description: Anthropic message object / SSE stream }
+
+  /v1/embeddings:
+    post:
+      tags: [embeddings]
+      summary: Embeddings (OpenAI-compatible)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, input]
+              properties:
+                model: { type: string }
+                input: {}
+      responses:
+        "200": { description: Embedding list with usage }
+
+  /v1/rerank:
+    post:
+      tags: [embeddings]
+      summary: Rerank documents (Jina/Cohere-compatible)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, query, documents]
+              properties:
+                model: { type: string }
+                query: { type: string }
+                documents: { type: array, items: {} }
+                top_n: { type: integer }
+      responses:
+        "200": { description: Ranked results with relevance scores }
+
+  /v1/images/generations:
+    post:
+      tags: [images]
+      summary: Generate images
+      description: |
+        OpenAI-compatible. Works with dall-e / gpt-image / flux (Replicate) / CogView
+        and other configured upstreams. For Replicate channels, extra native params
+        (seed, guidance, aspect_ratio, output_format, …) pass through; `n` is the
+        billable image count; `response_format: b64_json` returns bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, prompt]
+              properties:
+                model: { type: string }
+                prompt: { type: string }
+                n: { type: integer, minimum: 1, maximum: 10, default: 1 }
+                size: { type: string, example: 1024x1024 }
+                response_format: { type: string, enum: [url, b64_json] }
+              additionalProperties: true
+      responses:
+        "200":
+          description: "`{created, data: [{url | b64_json}]}` — billed per returned image"
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+
+  /v1/images/edits:
+    post:
+      tags: [images]
+      summary: Edit images (multipart)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [model, image, prompt]
+              properties:
+                model: { type: string }
+                image: { type: string, format: binary }
+                mask: { type: string, format: binary }
+                prompt: { type: string }
+                n: { type: integer }
+      responses:
+        "200": { description: Same shape as generations }
+
+  /v1/images/variations:
+    post:
+      tags: [images]
+      summary: Image variations (multipart)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [model, image]
+              properties:
+                model: { type: string }
+                image: { type: string, format: binary }
+                n: { type: integer, minimum: 1, maximum: 10, default: 1 }
+      responses:
+        "200": { description: Same shape as generations }
+
+  /v1/audio/speech:
+    post:
+      tags: [audio]
+      summary: Text-to-speech
+      description: Billed per character. Returns audio bytes (mp3/wav per `response_format`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, input, voice]
+              properties:
+                model: { type: string }
+                input: { type: string }
+                voice: { type: string }
+                response_format: { type: string }
+      responses:
+        "200": { description: Audio binary stream }
+
+  /v1/audio/transcriptions:
+    post:
+      tags: [audio]
+      summary: Speech-to-text (multipart)
+      description: Billed per call (model price `per-call`).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [model, file]
+              properties:
+                model: { type: string }
+                file: { type: string, format: binary }
+      responses:
+        "200": { description: "`{text: ...}`" }
+
+  /v1/audio/translations:
+    post:
+      tags: [audio]
+      summary: Speech-to-English translation (multipart)
+      description: Billed per call (same pricing as transcriptions).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [model, file]
+              properties:
+                model: { type: string }
+                file: { type: string, format: binary }
+      responses:
+        "200": { description: "`{text: ...}`" }
+
+  /v1/realtime:
+    get:
+      tags: [misc]
+      summary: Realtime WebSocket bridge
+      description: |
+        WebSocket upgrade endpoint (OpenAI Realtime dialect). Authenticate via
+        `Authorization: Bearer` header or `Sec-WebSocket-Protocol` token. Usage is
+        billed per `response.done` server event. Text and (if priced) audio tokens.
+      responses:
+        "101": { description: Switching Protocols }
+
+  /v1/video/generations:
+    post:
+      tags: [video-tasks]
+      summary: Submit async video generation task
+      description: |
+        Async task API (Seedance / Kling / Vidu / Hailuo / Wan / Sora / Veo / Suno …).
+        Funds are held at submit and settled on completion; failures refund in full.
+        Any extra top-level params (duration, resolution, ratio, generate_audio, …)
+        pass through to the vendor.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, content]
+              properties:
+                model: { type: string, example: doubao-seedance-pro }
+                content:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type: { type: string, example: text }
+                      text: { type: string }
+              additionalProperties: true
+      responses:
+        "202":
+          description: Task accepted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VideoTask" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+
+  /v1/video/generations/{id}:
+    get:
+      tags: [video-tasks]
+      summary: Poll task status
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Task state (poll until succeeded/failed)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VideoTask" }
+
+  /v1/video/generations/{id}/content:
+    get:
+      tags: [video-tasks]
+      summary: Download/stream the task artifact via the platform proxy
+      description: Same-origin proxy for artifacts (fixes CORS / expiring vendor URLs / content-type quirks).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Video/audio binary stream }
+
+  /mj/submit/{action}:
+    post:
+      tags: [midjourney]
+      summary: Submit a Midjourney action (mjproxy dialect)
+      description: |
+        Actions: imagine | change | blend | describe | shorten | modal. Auth via
+        `mj-api-secret` header (standard MJ client convention) or Bearer — both take
+        your LAIAI API key. Billed per call (price of catalog model `mj_{action}`).
+        For change/modal pass the platform task id in `taskId`.
+      security:
+        - bearerAuth: []
+        - mjSecret: []
+      parameters:
+        - { name: action, in: path, required: true, schema: { type: string, enum: [imagine, change, blend, describe, shorten, modal] } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt: { type: string }
+                taskId: { type: string, description: Platform task id of the referenced task (change/modal) }
+                index: { type: integer }
+              additionalProperties: true
+      responses:
+        "200":
+          description: "`{code: 1, description, result: <platform task id>}`; non-1 codes = failure with description"
+
+  /mj/task/{id}/fetch:
+    get:
+      tags: [midjourney]
+      summary: Fetch MJ task state (mjproxy task object)
+      security:
+        - bearerAuth: []
+        - mjSecret: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "MJ task object (status/progress/imageUrl/buttons…), id = platform task id" }
+
+  /mj/task/list-by-condition:
+    post:
+      tags: [midjourney]
+      summary: Batch fetch MJ task states
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: string }, maxItems: 30 }
+      responses:
+        "200": { description: Array of MJ task objects }
+
+  /mj/image/{id}:
+    get:
+      tags: [midjourney]
+      summary: Proxy the generated image via the platform (CDN-blocked regions)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Image binary }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: LAIAI API key (sk-laiai-…)
+    mjSecret:
+      type: apiKey
+      in: header
+      name: mj-api-secret
+      description: Same LAIAI API key, MJ-client convention
+  schemas:
+    VideoTask:
+      type: object
+      properties:
+        id: { type: string, example: task_a1b2c3d4e5f6 }
+        model: { type: string }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        fail_reason: { type: string }
+        result_url: { type: string, description: Artifact URL (may be a platform proxy path) }
+        cost_usd: { type: string }
+        completion_tokens: { type: integer }
+        submitted_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message: { type: string }
+            type: { type: string }
+  responses:
+    PaymentRequired:
+      description: Insufficient balance or key quota exhausted
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Rate limit exceeded (see Retry-After header)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }

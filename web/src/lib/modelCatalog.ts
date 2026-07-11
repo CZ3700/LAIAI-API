@@ -6,6 +6,8 @@ export interface PricedModel {
   input_usd_per_1m: string
   output_usd_per_1m: string
   image_usd: string
+  per_call_usd?: string // 按次固定价（MJ action/转写类；非零才下发）
+  cached_input_usd_per_1m?: string // 缓存命中输入折扣价（非零才下发）
   vendor?: string
   category?: string
   tags?: string

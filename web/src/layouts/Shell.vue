@@ -39,6 +39,7 @@ const sections: { title: string; items: NavItem[] }[] = [
     { to: '/app', label: 'shell.navOverview', icon: 'dashboard' },
     { to: '/app/models', label: 'shell.navModels', icon: 'model' },
     { to: '/app/playground', label: 'nav.playground', icon: 'chat' },
+    { to: '/app/compare', label: 'nav.compare', icon: 'node' },
     { to: '/app/diagnostics', label: 'shell.navDiagnostics', icon: 'diag' },
   ] },
   { title: 'shell.groupAccess', items: [
@@ -166,7 +167,7 @@ onMounted(() => { void auth.fetchMe() })
             <!-- Playground keep-alive：切页不销毁组件——生图结果/视频结果/模型选择/各模态输入
                  全是组件内存态，销毁重建=全丢（用户实测反馈）。聊天已有 localStorage 兜底，
                  保活后其余状态同样跨导航存活；视频轮询在后台继续，切回即见结果。 -->
-            <keep-alive include="Playground">
+            <keep-alive :include="['Playground', 'Compare']">
               <component :is="Component" :key="$route.path" />
             </keep-alive>
           </transition>
