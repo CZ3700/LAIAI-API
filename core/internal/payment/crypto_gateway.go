@@ -136,8 +136,12 @@ func (c *CryptoGateway) CreatePayment(ctx context.Context, req *CreateRequest) (
 	// 处理商常把结果包在 data/result 里；先试顶层再试 data 包裹。
 	ch := parseCryptoCharge(b)
 	payTarget := ch.PayURL
-	if payTarget == "" {
-		payTarget = ch.Address // 无托管页则返回链上地址（前端展示收款地址 + 金额）
+	if payTarget != "" { // 托管页 URL 交前端跳转前必校验（G4，与 custom/webhook 同口径）
+		if err := validatePayURL(payTarget); err != nil {
+			return nil, fmt.Errorf("%s create: %w", c.Name(), err)
+		}
+	} else {
+		payTarget = ch.Address // 无托管页则返回链上地址（前端展示收款地址 + 金额，非跳转 URL 不做 URL 校验）
 	}
 	if payTarget == "" {
 		return nil, fmt.Errorf("%s create: no payment_url/pay_address in response (schema mismatch — verify fixture)", c.Name())

@@ -201,6 +201,9 @@ func (w *Webhook) CreatePayment(ctx context.Context, req *CreateRequest) (*Creat
 	if payURL == "" {
 		return nil, fmt.Errorf("no pay URL found in response (tried %s): %s", payURLPath, excerpt(respBody))
 	}
+	if err := validatePayURL(payURL); err != nil { // 上游可控 URL 交前端跳转前必校验（G4）
+		return nil, err
+	}
 
 	providerRef := extractDotPath(respData, nonEmpty(w.RefExtract, "id"))
 	return &CreateResult{PayURL: payURL, ProviderRef: providerRef}, nil

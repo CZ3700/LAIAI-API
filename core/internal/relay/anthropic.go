@@ -62,6 +62,8 @@ func anthropicRequestBody(req map[string]any, stream bool) (map[string]any, erro
 	// role=tool → tool_result 块，且必须附在 user 消息上（知识库 §5 边角 6：
 	// 连续 tool 结果合并进同一条 user 消息，孤立 tool_result 会被 Claude 拒绝）。
 	var systemParts []string
+	var systemBlocks []any // 结构化 system（带 cache_control）——非空即用块形，保留缓存断点
+	systemHasCache := false
 	var messages []map[string]any
 	if rawMsgs, ok := req["messages"].([]any); ok {
 		for _, rm := range rawMsgs {
@@ -72,8 +74,32 @@ func anthropicRequestBody(req map[string]any, stream bool) (map[string]any, erro
 			role, _ := m["role"].(string)
 			switch role {
 			case "system":
-				if s, ok := m["content"].(string); ok {
-					systemParts = append(systemParts, s)
+				// string content：快路径（零回归）。content-parts 数组（OpenAI 原生带 cache_control，
+				// 或经 /anthropic 入站保留的 system 缓存断点）：转 Anthropic system 块并保留 cache_control。
+				switch c := m["content"].(type) {
+				case string:
+					if c != "" {
+						systemParts = append(systemParts, c)
+						systemBlocks = append(systemBlocks, map[string]any{"type": "text", "text": c})
+					}
+				case []any:
+					for _, raw := range c {
+						p, ok := raw.(map[string]any)
+						if !ok {
+							continue
+						}
+						t, _ := p["text"].(string)
+						if t == "" {
+							continue
+						}
+						blk := map[string]any{"type": "text", "text": t}
+						if cc, ok := p["cache_control"]; ok {
+							blk["cache_control"] = cc
+							systemHasCache = true
+						}
+						systemParts = append(systemParts, t)
+						systemBlocks = append(systemBlocks, blk)
+					}
 				}
 			case "tool":
 				block := map[string]any{
@@ -129,8 +155,10 @@ func anthropicRequestBody(req map[string]any, stream bool) (map[string]any, erro
 		return nil, fmt.Errorf("anthropic: no user/assistant messages")
 	}
 	out["messages"] = messages
-	if len(systemParts) > 0 {
-		out["system"] = strings.Join(systemParts, "\n\n")
+	if systemHasCache { // 带缓存断点：块形保留 cache_control（否则 Claude Code 大 system 每轮全价，漏缓存）
+		out["system"] = systemBlocks
+	} else if len(systemParts) > 0 {
+		out["system"] = strings.Join(systemParts, "\n\n") // 零回归：无缓存标记仍拍平字符串
 	}
 
 	// 工具定义与 tool_choice（OpenAI → Claude 形态）
@@ -180,9 +208,18 @@ func anthropicRequestBody(req map[string]any, stream bool) (map[string]any, erro
 	//   - json_object：system 指令（OpenAI 该模式本身即弱约束，无 schema 可强制）。
 	if rf, ok := req["response_format"].(map[string]any); ok {
 		appendSystem := func(s string) {
-			if cur, _ := out["system"].(string); cur != "" {
-				out["system"] = cur + "\n\n" + s
-			} else {
+			switch cur := out["system"].(type) {
+			case []any:
+				// 块形（G3 带 cache_control 断点）：追加指令块，绝不整体覆盖——此前 string 断言
+				// 失败得空串会把整个 system 连缓存断点一起冲掉（对抗 review CONFIRMED HIGH）
+				out["system"] = append(cur, map[string]any{"type": "text", "text": s})
+			case string:
+				if cur != "" {
+					out["system"] = cur + "\n\n" + s
+				} else {
+					out["system"] = s
+				}
+			default:
 				out["system"] = s
 			}
 		}

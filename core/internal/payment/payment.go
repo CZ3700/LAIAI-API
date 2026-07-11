@@ -4,9 +4,30 @@ package payment
 
 import (
 	"context"
+	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/shopspring/decimal"
 )
+
+// validatePayURL：跳转支付地址安全校验（对抗审计 CONFIRMED——custom/webhook 引擎从上游响应
+// 点路径提取 URL 直接交前端 window.location 跳转；渠道配置被攻破/写错即成钓鱼跳板）。
+// 只放行 http(s) 绝对 URL 且带 host——挡掉 javascript:/data:/相对路径等注入向量。
+func validatePayURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("pay url not parseable")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("pay url scheme %q not allowed (http/https only)", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("pay url missing host")
+	}
+	return nil
+}
 
 // CreateRequest：创建一笔支付。Amount 是实付金额（PayCurrency 单位）。
 type CreateRequest struct {

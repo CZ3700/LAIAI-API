@@ -134,9 +134,11 @@ func anthropicToOpenAIRequest(raw []byte) ([]byte, bool, error) {
 	}
 
 	var messages []map[string]any
-	// system：string 或 text-block 数组 → 顶层 system 消息（join \n\n，逆 anthropic.go:105-107）。
-	if sysText := flattenAnthropicSystem(in["system"]); sysText != "" {
-		messages = append(messages, map[string]any{"role": "system", "content": sysText})
+	// system：string 或 text-block 数组 → 顶层 system 消息。无 cache_control 时 join 成字符串
+	// （逆 anthropic.go；零回归）；带 cache_control（Claude Code 的大 system 缓存断点）则保留
+	// content-parts 形态，让 egress 重建 Anthropic system 块——否则每轮全价漏缓存（对抗审计 CONFIRMED）。
+	if sysContent := anthropicSystemToOpenAI(in["system"]); sysContent != nil {
+		messages = append(messages, map[string]any{"role": "system", "content": sysContent})
 	}
 	// messages：user/assistant，content 为 string 或块数组。
 	rawMsgs, _ := in["messages"].([]any)
@@ -204,23 +206,48 @@ func anthropicToOpenAIRequest(raw []byte) ([]byte, bool, error) {
 	return body, stream, err
 }
 
-// flattenAnthropicSystem：system 为 string 直接返回；为 text-block 数组则 join \n\n。
-func flattenAnthropicSystem(sys any) string {
+// anthropicSystemToOpenAI：Anthropic system → OpenAI canonical system content。
+//   - string → string（原样）
+//   - text-block 数组无 cache_control → join \n\n 成 string（零回归，逆 flatten）
+//   - text-block 数组带 cache_control → content-parts 数组，保留 cache_control（缓存断点必须活着往下传）
+// 返回 nil = 无 system（跳过，不加空消息）。
+func anthropicSystemToOpenAI(sys any) any {
 	switch s := sys.(type) {
 	case string:
+		if s == "" {
+			return nil
+		}
 		return s
 	case []any:
-		var parts []string
+		hasCache := false
+		var parts []any
+		var plain []string
 		for _, raw := range s {
-			if b, ok := raw.(map[string]any); ok {
-				if t, ok := b["text"].(string); ok && t != "" {
-					parts = append(parts, t)
-				}
+			b, ok := raw.(map[string]any)
+			if !ok {
+				continue
 			}
+			t, _ := b["text"].(string)
+			if t == "" {
+				continue
+			}
+			plain = append(plain, t)
+			tp := map[string]any{"type": "text", "text": t}
+			if cc, ok := b["cache_control"]; ok {
+				tp["cache_control"] = cc
+				hasCache = true
+			}
+			parts = append(parts, tp)
 		}
-		return strings.Join(parts, "\n\n")
+		if len(parts) == 0 {
+			return nil
+		}
+		if hasCache {
+			return parts
+		}
+		return strings.Join(plain, "\n\n")
 	}
-	return ""
+	return nil
 }
 
 // anthropicAssistantToOpenAI：assistant 块数组（text + tool_use）→ 一条 OpenAI assistant 消息。

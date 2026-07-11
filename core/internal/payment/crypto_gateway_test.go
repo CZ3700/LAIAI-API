@@ -101,4 +101,22 @@ func TestCryptoGatewayCreatePayment(t *testing.T) {
 	if _, err := g2.CreatePayment(context.Background(), &CreateRequest{OrderNo: "O", Amount: decimal.RequireFromString("1"), Currency: "USD"}); err == nil {
 		t.Fatal("missing pay target must error")
 	}
+	// G4：注入类 payment_url（javascript:）必须拒绝（与 custom/webhook 同口径）
+	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"payment_url":"javascript:alert(1)","payment_id":"EVIL"}`))
+	}))
+	defer srv3.Close()
+	g3 := &CryptoGateway{APIKey: "k", APIBase: srv3.URL}
+	if _, err := g3.CreatePayment(context.Background(), &CreateRequest{OrderNo: "O", Amount: decimal.RequireFromString("1"), Currency: "USD"}); err == nil {
+		t.Fatal("javascript: payment_url must be rejected")
+	}
+	// 链上地址回退（非 URL）不受 URL 校验误伤
+	srv4 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"pay_address":"TXk9qwerty123","payment_id":"ADDR"}`))
+	}))
+	defer srv4.Close()
+	g4 := &CryptoGateway{APIKey: "k", APIBase: srv4.URL}
+	if res, err := g4.CreatePayment(context.Background(), &CreateRequest{OrderNo: "O", Amount: decimal.RequireFromString("1"), Currency: "USD"}); err != nil || res.PayURL != "TXk9qwerty123" {
+		t.Fatalf("chain address fallback must survive: %+v err=%v", res, err)
+	}
 }

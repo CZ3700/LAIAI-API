@@ -453,14 +453,18 @@ func (f *firstByteReader) Read(p []byte) (int, error) {
 type usage struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
-	// 缓存命中输入（OpenAI 兼容：prompt_tokens 的子集，按缓存价折扣计费）
+	// 缓存命中输入（OpenAI 兼容：prompt_tokens 的子集，按缓存价折扣计费）+ 音频输入
+	// （prompt_tokens 的子集，gpt-4o-audio 等；≈16× 文本价，按 audio 价补收差额，见 AudioSurcharge）
 	PromptTokensDetails struct {
 		CachedTokens int64 `json:"cached_tokens"`
+		AudioTokens  int64 `json:"audio_tokens"`
 	} `json:"prompt_tokens_details"`
 	// 推理/思考 token（completion_tokens 的子集，OpenAI o 系列口径）。仅观测用：
 	// 各家的思考 token 都已折入 CompletionTokens 按 output 价计费，这里不再参与计价。
+	// 音频输出（completion_tokens 的子集）：同输入，按 audio 输出价补收差额。
 	CompletionTokensDetails struct {
 		ReasoningTokens int64 `json:"reasoning_tokens"`
+		AudioTokens     int64 `json:"audio_tokens"`
 	} `json:"completion_tokens_details"`
 	// Anthropic 写缓存 token（prompt_tokens 的子集，上游实收 1.25x/2x 输入价）。
 	// 内部计费字段，由 anthropic adapter 填充，不来自 OpenAI JSON（见 CacheWriteSurcharge）。
@@ -477,6 +481,29 @@ func (u usage) Cached() int64 {
 		return u.PromptTokens
 	}
 	return c
+}
+
+// AudioIn/AudioOut 返回音频输入/输出 token（各自钳到 prompt/completion 内，防上游异常数据算飞）。
+func (u usage) AudioIn() int64 {
+	a := u.PromptTokensDetails.AudioTokens
+	if a < 0 {
+		return 0
+	}
+	if a > u.PromptTokens {
+		return u.PromptTokens
+	}
+	return a
+}
+
+func (u usage) AudioOut() int64 {
+	a := u.CompletionTokensDetails.AudioTokens
+	if a < 0 {
+		return 0
+	}
+	if a > u.CompletionTokens {
+		return u.CompletionTokens
+	}
+	return a
 }
 
 // CacheWrites 返回写缓存 token（5m, 1h），总量钳到 PromptTokens 内（防上游异常数据把溢价算飞）。
@@ -1003,11 +1030,16 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	// BYOK（0044）：命中自有渠道按费率结算（非 BYOK 因子恒为 1）
 	byok := r.byokFactor(ch, key.OrgID)
 	cw5m, cw1h := u.CacheWrites() // Anthropic 写缓存溢价（1.25x/2x 输入价，差额补收）
+	aIn, aOut := u.AudioIn(), u.AudioOut() // 音频 token 价差补收（gpt-4o-audio 等，≈16× 文本价）
 	actual := price.ChatCost(u.PromptTokens, u.Cached(), u.CompletionTokens).
-		Add(price.CacheWriteSurcharge(cw5m, cw1h)).Mul(groupRatio).Mul(byok).Round(8)
+		Add(price.CacheWriteSurcharge(cw5m, cw1h)).
+		Add(price.AudioSurcharge(aIn, aOut)).Mul(groupRatio).Mul(byok).Round(8)
 	reason := fmt.Sprintf("model=%s in=%d cached=%d out=%d ×%s", model, u.PromptTokens, u.Cached(), u.CompletionTokens, groupRatio)
 	if cw5m > 0 || cw1h > 0 {
 		reason += fmt.Sprintf(" cw5m=%d cw1h=%d", cw5m, cw1h)
+	}
+	if aIn > 0 || aOut > 0 {
+		reason += fmt.Sprintf(" audioIn=%d audioOut=%d", aIn, aOut)
 	}
 	if !byok.Equal(decimalOne) {
 		reason += " byok×" + byok.String()

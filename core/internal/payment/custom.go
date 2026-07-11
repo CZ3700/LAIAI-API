@@ -156,6 +156,9 @@ func (c *Custom) CreatePayment(ctx context.Context, req *CreateRequest) (*Create
 	if payURL == "" {
 		return nil, fmt.Errorf("custom: no pay URL found (path=%s): %s", payURLPath, excerpt(respBody))
 	}
+	if err := validatePayURL(payURL); err != nil { // 上游可控 URL 交前端跳转前必校验（G4）
+		return nil, fmt.Errorf("custom: %w", err)
+	}
 
 	providerRef := customDotPath(respData, customDefault(c.RefPath, "id"))
 

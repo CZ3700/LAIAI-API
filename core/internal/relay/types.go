@@ -177,6 +177,27 @@ func (p *ModelPrice) Cost(inputTokens, cachedTokens, outputTokens int64) decimal
 	return in.Add(cached).Add(out)
 }
 
+// AudioSurcharge：音频 token 的价差补收（USD）。audio 输入/输出是 prompt/completion 的子集，
+// 基价 Cost 已把它们按文本 input/output 价计过——这里补齐到 audio 价的差额（audio_price - text_price）。
+// audio 比文本贵 ~16×，不补 = 系统性漏收（对抗审计 CONFIRMED，资金红线）。
+// 仅当运营配了 audio 价（>0）才补：未配则按文本价（运营定价选择，丝滑不拦截请求，不同于 realtime 的
+// fail-closed——chat 音频不是 dominant 成本项，且拦截会破坏"接任何模型即用"）。按次固定价忽略 token。
+func (p *ModelPrice) AudioSurcharge(audioIn, audioOut int64) decimal.Decimal {
+	if p.PerCallUSD.IsPositive() {
+		return decimal.Zero
+	}
+	s := decimal.Zero
+	if p.AudioInputUSDPer1M.IsPositive() && audioIn > 0 {
+		delta := p.AudioInputUSDPer1M.Sub(p.InputUSDPer1M)
+		s = s.Add(delta.Mul(decimal.NewFromInt(audioIn)).Div(oneMillion))
+	}
+	if p.AudioOutputUSDPer1M.IsPositive() && audioOut > 0 {
+		delta := p.AudioOutputUSDPer1M.Sub(p.OutputUSDPer1M)
+		s = s.Add(delta.Mul(decimal.NewFromInt(audioOut)).Div(oneMillion))
+	}
+	return s
+}
+
 // cacheWrite5mExtra/cacheWrite1hExtra：Anthropic 写缓存溢价系数。上游实收 1.25x(5min)/2x(1h)
 // 输入价，promptTotal 已按 1.0x 计入 input，这里只补差额（0.25x / 1.0x）。
 var (
