@@ -609,6 +609,8 @@ func (s *Server) adminListChannels(c *gin.Context) {
 			// 模型同步（0037）：徽标显示新检测到的可上货模型 + 忽略清单 + 开关
 			"model_sync_enabled": ch.ModelSyncEnabled == 1, "detected_models": ch.DetectedModels,
 			"ignored_models": ch.IgnoredModels, "last_sync_at": ch.LastSyncAt,
+			// 禁用建议（0047 B-2）：硬故障时给运营的手动禁用建议（不自动禁）
+			"suggest_disable_reason": ch.SuggestDisableReason, "suggest_disabled_at": ch.SuggestDisabledAt,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": out})

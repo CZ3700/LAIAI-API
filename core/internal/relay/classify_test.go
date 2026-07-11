@@ -18,7 +18,18 @@ func TestClassifyUpstreamError(t *testing.T) {
 		{"claude auth error", "anthropic", 401,
 			`{"error":{"type":"authentication_error","message":"x"}}`, true, true},
 		{"gemini 403 disables", "gemini", 403, `{"error":{"message":"forbidden"}}`, true, true},
-		{"non-gemini 403 no disable", "openai", 403, `{"error":{"message":"forbidden"}}`, false, false},
+		// B-1：渠道特有 4xx 换渠道（不禁用）——403/404/409/422 换服务该模型的同层兄弟
+		{"non-gemini 403 retries not disable", "openai", 403, `{"error":{"message":"forbidden"}}`, false, true},
+		{"404 model not on channel retries", "openai", 404, `{"error":{"message":"model not found"}}`, false, true},
+		{"409 conflict retries", "openai", 409, `{"error":{"message":"conflict"}}`, false, true},
+		{"422 unprocessable retries", "openai", 422, `{"error":{"message":"unprocessable"}}`, false, true},
+		// B-2：硬故障消息关键词 → 建议禁用（余额/token/组织）——不论 HTTP 码
+		{"anthropic credit balance 400 suggests disable", "anthropic", 400,
+			`{"error":{"type":"invalid_request_error","message":"Your credit balance is too low"}}`, true, true},
+		{"aws security token 403 suggests disable", "aws", 403,
+			`{"error":{"message":"The security token included in the request is invalid"}}`, true, true},
+		{"org disabled suggests disable", "openai", 403,
+			`{"error":{"message":"This organization has been disabled."}}`, true, true},
 		{"rate limit 429 retryable no disable", "openai", 429,
 			`{"error":{"type":"rate_limit_error","message":"slow down"}}`, false, true},
 		{"gateway timeout 504 no retry", "openai", 504, `upstream timeout`, false, false},
@@ -42,6 +53,32 @@ func TestClassifyUpstreamError(t *testing.T) {
 				t.Errorf("Retryable = %v, want %v", d.Retryable, c.wantRetry)
 			}
 		})
+	}
+}
+
+// healthPenalty（对抗 review 修）：只对渠道整体可靠性失败（5xx/429/硬故障）扣健康分；
+// 渠道特有 4xx（403/404/409/422）换渠道但不扣（否则跨模型误降权）。
+func TestHealthPenalty(t *testing.T) {
+	yes := []struct {
+		disp   upstreamDisposition
+		status int
+	}{
+		{upstreamDisposition{DisableChannel: true, Retryable: true}, 400}, // 硬故障
+		{upstreamDisposition{Retryable: true}, 429},                       // 限流
+		{upstreamDisposition{Retryable: true}, 500},                       // 5xx
+		{upstreamDisposition{Retryable: true}, 503},
+	}
+	for _, c := range yes {
+		if !healthPenalty(c.disp, c.status) {
+			t.Errorf("status %d should penalize health", c.status)
+		}
+	}
+	// 渠道特有 4xx：Retryable=true 但**不**扣健康分
+	no := []int{403, 404, 409, 422, 400}
+	for _, s := range no {
+		if healthPenalty(upstreamDisposition{Retryable: true}, s) {
+			t.Errorf("status %d (channel-specific 4xx) must NOT penalize health", s)
+		}
 	}
 }
 

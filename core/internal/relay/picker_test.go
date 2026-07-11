@@ -22,6 +22,7 @@ CREATE TABLE channels (
     model_sync_enabled INTEGER NOT NULL DEFAULT 0, last_sync_at DATETIME,
     detected_models TEXT NOT NULL DEFAULT '', ignored_models TEXT NOT NULL DEFAULT '',
     owner_org_id INTEGER NOT NULL DEFAULT 0,
+    suggest_disable_reason TEXT NOT NULL DEFAULT '', suggest_disabled_at DATETIME,
     status INTEGER NOT NULL DEFAULT 1
 );
 `

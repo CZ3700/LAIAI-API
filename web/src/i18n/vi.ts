@@ -704,6 +704,8 @@ export default {
     chModelSync: 'Tự động phát hiện mô hình thượng nguồn',
     chModelSyncHint: 'Định kỳ dò danh sách /models thượng nguồn; mô hình mới hiện dưới dạng huy hiệu để xử lý. Không bao giờ tự thêm hoặc tự định giá.',
     chDetectedHint: 'Phát hiện mô hình thượng nguồn mới: {models}',
+    chSuggestDisable: 'Đề xuất tắt',
+    chSuggestDisableHint: 'Phát hiện lỗi nghiêm trọng ở thượng nguồn — {reason}. Không tự động tắt; hãy kiểm tra và tắt thủ công nếu cần.',
     prCached: 'Cache $/1M',
     prCachedHint: 'Giá đầu vào cache (thường ~0,1x đầu vào). Để trống thì token cache tính giá đầu vào đầy đủ.',
     prInput: 'Đầu vào $/1M',

@@ -40,8 +40,10 @@ type Channel struct {
 	LastSyncAt         *time.Time `gorm:"column:last_sync_at"`         // 上次自动检测时刻（0037）
 	DetectedModels     string     `gorm:"column:detected_models"`      // 上次检测出的上游新增模型 CSV（0037）
 	IgnoredModels      string     `gorm:"column:ignored_models"`       // 忽略清单 CSV，detect 不再提示（0037）
-	OwnerOrgID         uint64     `gorm:"column:owner_org_id"`         // BYOK 归属 org，0=平台渠道（0044）
-	Status             int8       `gorm:"column:status"`
+	OwnerOrgID           uint64     `gorm:"column:owner_org_id"`           // BYOK 归属 org，0=平台渠道（0044）
+	SuggestDisableReason string     `gorm:"column:suggest_disable_reason"` // 禁用建议原因（0047 B-2，硬故障，空=无建议）
+	SuggestDisabledAt    *time.Time `gorm:"column:suggest_disabled_at"`    // 建议产生时间（成功请求即清）
+	Status               int8       `gorm:"column:status"`
 
 	// Credentials：该渠道的启用 key 列表（非持久列；快照/选择器按需填充，0034 Multi-key）。
 	// 空 = 回退 CredentialEnc 单 key（legacy）。调用方只读，绝不原地改。

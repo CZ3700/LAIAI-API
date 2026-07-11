@@ -703,6 +703,8 @@ export default {
     chModelSync: '上流モデルを自動検出',
     chModelSyncHint: '上流の /models を定期的に取得し、新しいモデルをバッジで通知します。自動追加や自動価格設定は行いません。',
     chDetectedHint: '新しい上流モデルを検出：{models}',
+    chSuggestDisable: '無効化推奨',
+    chSuggestDisableHint: '上流の重大障害を検出——{reason}。自動無効化はしません。確認のうえ手動で無効化してください。',
     prCached: 'キャッシュ $/1M',
     prCachedHint: 'キャッシュ入力価格（通常 入力の約0.1倍）。空欄ならキャッシュトークンを入力全額で課金。',
     prInput: '入力 $/1M',

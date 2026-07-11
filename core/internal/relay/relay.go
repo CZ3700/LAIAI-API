@@ -74,6 +74,11 @@ type Relay struct {
 	breakerMu     sync.Mutex
 	breakerStates map[uint64]*breakerState
 
+	// 渠道禁用建议（B-2，内存 set 追踪"当前有建议"的渠道，避免健康渠道每次成功都多余 UPDATE）。
+	// 硬故障→记建议（落库+入 set），成功→清建议（出 set+清库）。不自动禁用，运营手动决定。
+	suggestMu sync.Mutex
+	suggested map[uint64]bool
+
 	// 渠道级代理客户端缓存（按 proxy URL 复用，避免每请求新建 Transport）。
 	proxyMu      sync.Mutex
 	proxyClients map[string]*http.Client
@@ -190,7 +195,7 @@ func (r *Relay) advancedAllowPrivate() bool {
 
 func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Logger) *Relay {
 	now := time.Now
-	return &Relay{
+	r := &Relay{
 		DB:            db,
 		Keyring:       kr,
 		Client:        &http.Client{Timeout: upstreamTimeout},
@@ -201,12 +206,15 @@ func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Lo
 		keyFailCounts: map[uint64]int{},
 		health:        map[uint64]float64{},
 		breakerStates: map[uint64]*breakerState{},
+		suggested:     map[uint64]bool{},
 		rateWindows:   map[string]*rateWindow{},
 		// 热读缓存 TTL：渠道快照短(8s，禁用/重启用要较快跟随)；价目/倍率长(45s，纯运营低频改)。
 		channels: newSnapCache[[]Channel](8*time.Second, now),
 		prices:   newTTLCache[string, *ModelPrice](45*time.Second, now),
 		ratios:   newTTLCache[ratioKey, decimal.Decimal](45*time.Second, now),
 	}
+	r.rehydrateSuggested() // 启动回填禁用建议内存 set（对抗 review：重启后成功请求才能清陈旧建议）
+	return r
 }
 
 // 健康分 EWMA 参数（M2 收尾）：α 越大越灵敏；floor 保证不健康渠道不被硬排除。
@@ -292,6 +300,66 @@ func (r *Relay) resetFailures(channelID uint64) {
 	r.failMu.Lock()
 	delete(r.failCounts, channelID)
 	r.failMu.Unlock()
+}
+
+// noteSuggestDisable：渠道硬故障 → 记录**禁用建议**（B-2，不自动禁用）。落库覆盖式（最新原因+
+// 时间），admin 渠道列表显示，运营手动决定。内存 set 去重（同一渠道反复硬故障只在首次落库，
+// 避免每次失败都打 DB）。reason 是分类器合成串（无 provider/自由文本，红线 7 安全）。
+func (r *Relay) noteSuggestDisable(channelID uint64, reason string) {
+	r.suggestMu.Lock()
+	already := r.suggested[channelID]
+	r.suggestMu.Unlock()
+	if already {
+		return // 已记过建议（内存标记＝已落库），不重复打 DB
+	}
+	go func() {
+		// 落库**成功后**才置内存标记（对抗 review：mark-before-write 下首次 UPDATE 失败会永久压制
+		// 重试，坏渠道永不产生建议）。失败不置标记 → 下次硬故障重试落库。
+		if err := r.DB.Model(&Channel{}).Where("id = ?", channelID).
+			Updates(map[string]any{"suggest_disable_reason": clipMeta(reason, 255), "suggest_disabled_at": r.Now()}).Error; err != nil {
+			r.Log.Warn("note suggest-disable failed", "channel", channelID)
+			return
+		}
+		r.suggestMu.Lock()
+		r.suggested[channelID] = true
+		r.suggestMu.Unlock()
+	}()
+}
+
+// rehydrateSuggested：启动时从 DB 回填有禁用建议的渠道到内存 set（对抗 review：进程重启后
+// 内存 set 清空，已落库建议的渠道恢复后 clearSuggestDisable 因 had=false 空转、建议永不清除）。
+// 回填后成功请求能正确清除陈旧建议。异步、best-effort，失败不致命。
+func (r *Relay) rehydrateSuggested() {
+	go func() {
+		var ids []uint64
+		if err := r.DB.Model(&Channel{}).Where("suggest_disable_reason <> ''").Pluck("id", &ids).Error; err != nil {
+			r.Log.Warn("rehydrate suggested set failed", "err", err)
+			return
+		}
+		r.suggestMu.Lock()
+		for _, id := range ids {
+			r.suggested[id] = true
+		}
+		r.suggestMu.Unlock()
+	}()
+}
+
+// clearSuggestDisable：渠道一次成功 → 撤销禁用建议（渠道又好了）。仅对内存 set 里有建议的渠道
+// 打 DB（健康渠道零多余 UPDATE）。
+func (r *Relay) clearSuggestDisable(channelID uint64) {
+	r.suggestMu.Lock()
+	had := r.suggested[channelID]
+	delete(r.suggested, channelID)
+	r.suggestMu.Unlock()
+	if !had {
+		return
+	}
+	go func() {
+		if err := r.DB.Model(&Channel{}).Where("id = ? AND suggest_disable_reason <> ''", channelID).
+			Updates(map[string]any{"suggest_disable_reason": "", "suggest_disabled_at": nil}).Error; err != nil {
+			r.Log.Warn("clear suggest-disable failed", "channel", channelID)
+		}
+	}()
 }
 
 // keyGate：API Key 精细管控校验（0012）。返回 (HTTP 码, 文案, 是否放行)。
@@ -826,16 +894,18 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 		r.breakerNote(ch.ID, resp.StatusCode < 500) // 熔断口径：仅 5xx 计失败（<500=渠道活着）
 		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
 		inv.UpstreamErrorCode = upstreamErrorCode(disp.Reason, errBody) // 排障闭环（0045）：白名单枚举，末次为准
-		if disp.Retryable || disp.DisableChannel {
-			r.observe(ch.ID, false) // 健康分：渠道自身可靠性失败（客户端 400 类不计）
+		if healthPenalty(disp, resp.StatusCode) {
+			r.observe(ch.ID, false) // 健康分：仅渠道整体可靠性失败（5xx/429/硬故障）；渠道特有 4xx 不计
 		}
 		// 不记原始上游错误体（审查 M-5）：可能回显请求片段/org 标识/prompt 碎片，
 		// 违反"操作日志禁 payload/PII"红线。只记分类后的 reason。
 		r.Log.Warn("upstream error", "channel", ch.ID, "attempt", attempt, "status", resp.StatusCode,
 			"disable", disp.DisableChannel, "retryable", disp.Retryable, "reason", disp.Reason)
 		if disp.DisableChannel {
+			// 硬故障 → 记禁用建议（B-2，不自动禁用，运营手动决定）
+			r.noteSuggestDisable(ch.ID, disp.Reason)
 			// 多 key（0034）：鉴权/配额硬故障是 key 级问题，禁当前 key 而非整个渠道；
-			// 禁到渠道无 active key 才连带禁渠道。legacy 单 key（credID=0）退化为 channel 级（旧行为）。
+			// 禁到渠道无 active key 才连带禁渠道（受 channel_auto_disable 开关，默认关=不自动禁）。
 			r.noteKeyFailure(credID, ch.ID, disp.Reason)
 		}
 		lastStatus, lastBody = resp.StatusCode, errBody
@@ -894,9 +964,9 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	}}
 
 	// 成功响应：若渠道曾被 auto-disabled，自动重启用（知识库 §2.2）
-	r.enableChannelIfDisabled(ch)
-	r.resetKeyFailures(credID)  // 该 key 一次成功 → 清其失败计数（0034 Multi-key）
-	r.breakerNote(ch.ID, true)  // 熔断：成功即闭合（半开探活成功走这里恢复全量）
+	r.enableChannelIfDisabled(ch) // 内含 clearSuggestDisable（B-2 撤销建议）
+	r.resetKeyFailures(credID)    // 该 key 一次成功 → 清其失败计数（0034 Multi-key）
+	r.breakerNote(ch.ID, true)    // 熔断：成功即闭合（半开探活成功走这里恢复全量）
 
 	// 7. 响应回传（adapter 转换）+ usage 抽取 + capture
 	var u usage
@@ -998,7 +1068,8 @@ func (r *Relay) disableChannel(channelID uint64, reason string) {
 // enableChannelIfDisabled：成功请求后清零失败计数；若渠道处于 auto-disabled 则自动重启用（知识库 §2.2）。
 func (r *Relay) enableChannelIfDisabled(ch *Channel) {
 	r.resetFailures(ch.ID)
-	r.observe(ch.ID, true) // 健康分：一次成功（三类 relay 共用此成功钩子）
+	r.observe(ch.ID, true)       // 健康分：一次成功（三类 relay 共用此成功钩子）
+	r.clearSuggestDisable(ch.ID) // 渠道又好了 → 撤销禁用建议（B-2，共用钩子覆盖 chat/failover/realtime）
 	// 不预读 ch.Status——它来自 status=1 活跃快照恒为 1，预读判定(if ch.Status!=2)会让本函数永不重启用（旧 BUG）。
 	// 直接用条件 UPDATE 作原子闸：仅当当前确为 auto-disabled(status=2) 才翻回 1（对 status=1 是零行 no-op）。
 	// 这样在另一实例持陈旧快照、把刚被禁的渠道选中并成功时仍能自愈。广播只在真发生翻转(RowsAffected>0)时发，

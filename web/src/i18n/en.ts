@@ -760,6 +760,8 @@ const messages = {
     chModelSync: 'Auto-detect upstream models',
     chModelSyncHint: 'Periodically probe the upstream /models list; newly found models show as a badge to review. Never auto-adds or auto-prices.',
     chDetectedHint: 'New upstream models detected: {models}',
+    chSuggestDisable: 'Suggest disable',
+    chSuggestDisableHint: 'Hard upstream failure detected — {reason}. Not auto-disabled; review and disable manually if needed.',
     prCached: 'Cached $/1M',
     prCachedHint: 'Cached-input price (typically ~0.1x input). Leave blank to charge cached tokens at full input price.',
     prInput: 'Input $/1M',

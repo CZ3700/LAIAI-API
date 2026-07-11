@@ -704,6 +704,8 @@ export default {
     chModelSync: 'Auto-kesan model huluan',
     chModelSyncHint: 'Menduga senarai /models huluan secara berkala; model baharu dipaparkan sebagai lencana untuk disemak. Tidak pernah menambah atau menetapkan harga secara automatik.',
     chDetectedHint: 'Model huluan baharu dikesan: {models}',
+    chSuggestDisable: 'Cadang lumpuhkan',
+    chSuggestDisableHint: 'Kegagalan huluan serius dikesan — {reason}. Tidak dilumpuhkan automatik; semak dan lumpuhkan secara manual jika perlu.',
     prCached: 'Cache $/1M',
     prCachedHint: 'Harga input cache (biasanya ~0.1x input). Biar kosong untuk caj token cache pada harga input penuh.',
     prInput: 'Input $/1M',

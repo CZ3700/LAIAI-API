@@ -704,6 +704,8 @@ export default {
     chModelSync: 'Détecter automatiquement les modèles amont',
     chModelSyncHint: 'Sonde périodiquement la liste /models amont ; les nouveaux modèles apparaissent en badge à traiter. Jamais d\'ajout ni de tarification automatiques.',
     chDetectedHint: 'Nouveaux modèles amont détectés : {models}',
+    chSuggestDisable: 'Désactivation suggérée',
+    chSuggestDisableHint: 'Panne amont grave détectée — {reason}. Non désactivé automatiquement ; vérifiez et désactivez manuellement si nécessaire.',
     prCached: 'Cache $/1M',
     prCachedHint: "Prix d'entrée en cache (typiquement ~0,1x entrée). Laisser vide pour facturer au prix plein.",
     prInput: 'Entrée $/1M',

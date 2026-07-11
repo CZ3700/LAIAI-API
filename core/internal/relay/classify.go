@@ -34,13 +34,26 @@ func classifyUpstreamError(provider string, statusCode int, body []byte) upstrea
 	errCode := strings.ToLower(toStr(parsed.Error.Code))
 	msg := strings.ToLower(parsed.Error.Message)
 
-	// —— 鉴权/配额硬故障 → 禁用渠道（知识库 §2.1）——
+	// —— 鉴权/配额硬故障（知识库 §2.1）——DisableChannel 语义 = "渠道整体坏了"，
+	// 现由 relay 记录为**禁用建议**（B-2：不自动禁用，运营手动决定）。关键词可宽：
+	// 误判只是给运营一个待核实的建议（手动把关），不误摘好渠道。审计发现原关键词太窄——
+	// Anthropic 余额(400)/AWS token 失效(403)/组织禁用等硬故障漏检，此处补齐。
 	disableTypes := map[string]bool{
 		"insufficient_quota": true, "insufficient_user_quota": true,
 		"authentication_error": true, "permission_error": true, "forbidden": true,
+		"billing_error": true,
 	}
 	disableCodes := map[string]bool{
 		"invalid_api_key": true, "account_deactivated": true, "billing_not_active": true,
+		"insufficient_quota": true, "billing_hard_limit_reached": true,
+	}
+	// 跨 provider 硬故障消息关键词（不论 HTTP 码；含 Anthropic/AWS/OpenAI/国产方言）
+	disableMsgKeywords := []string{
+		"credit balance", "insufficient balance", "余额不足", "欠费", "arrears",
+		"exceeded your current quota", "quota exceed", "insufficient_quota", "billing",
+		"organization has been disabled", "organization disabled", "account is not authorized",
+		"not authorized", "security token", "invalid api key", "invalid_api_key",
+		"account deactivated", "deactivated", "suspended", "operation not allowed",
 	}
 	switch {
 	case disableTypes[errType]:
@@ -52,7 +65,14 @@ func classifyUpstreamError(provider string, statusCode int, body []byte) upstrea
 	case statusCode == 403 && provider == "gemini":
 		d.DisableChannel, d.Reason = true, "gemini 403 forbidden"
 	case strings.Contains(msg, "quota") && strings.Contains(msg, "exceed"):
-		d.DisableChannel, d.Reason = true, "quota exceeded (message match)"
+		d.DisableChannel, d.Reason = true, "quota exceeded (message match)" // quota/exceed 分离匹配
+	default:
+		for _, kw := range disableMsgKeywords {
+			if strings.Contains(msg, kw) {
+				d.DisableChannel, d.Reason = true, "upstream hard failure (message: "+kw+")"
+				break
+			}
+		}
 	}
 
 	// —— 可重试性（知识库 §2.1 ShouldRetry）——
@@ -64,6 +84,11 @@ func classifyUpstreamError(provider string, statusCode int, body []byte) upstrea
 		d.Retryable = false // 纯客户端 400/408：请求本身的问题，换渠道无意义
 	case d.DisableChannel || statusCode == 429 || (statusCode >= 500 && statusCode < 600):
 		d.Retryable = true // 渠道坏了（含 400+认证类禁用）/限流/5xx：换一个健康渠道重试
+	case statusCode == 403 || statusCode == 404 || statusCode == 409 || statusCode == 422:
+		// 渠道特有 4xx（B-1）：该渠道无此模型权限(403)/模型在该渠道不存在(404)/冲突(409)/
+		// 该渠道不受理(422)——换服务该模型的同层兄弟渠道可能成功。**不禁用渠道**（单请求特有，
+		// 非渠道整体坏了）；换渠道耗尽仍失败则透传最后错误（不掩盖真错误，只多试）。
+		d.Retryable = true
 	}
 	return d
 }
@@ -134,6 +159,15 @@ func ingressProtocol(c *gin.Context) string {
 		return p
 	}
 	return "openai"
+}
+
+// healthPenalty：本次上游 HTTP 错误是否应扣渠道健康分（喂 observe(false)）。
+// 只惩罚**渠道整体可靠性失败**：硬故障（DisableChannel）/ 429 限流 / 5xx。
+// 渠道特有 4xx（403/404/409/422，B-1 换渠道那批）**不扣**——它们是单请求/单模型问题
+// （模型映射漂移 404、客户端坏输入 422、单请求无权 403），扣了会让渠道对**其它完好模型**
+// 的全局健康分被误压到 floor，跨模型误降权（对抗 review CONFIRMED，与"客户端类不计"本意一致）。
+func healthPenalty(d upstreamDisposition, statusCode int) bool {
+	return d.DisableChannel || statusCode == 429 || (statusCode >= 500 && statusCode < 600)
 }
 
 func toStr(v any) string {

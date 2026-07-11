@@ -759,6 +759,8 @@ export default {
     chModelSync: '自动检测上游模型',
     chModelSyncHint: '周期探测上游 /models 列表，新发现的模型以徽标提示待处理。绝不自动上货或定价。',
     chDetectedHint: '检测到新上游模型：{models}',
+    chSuggestDisable: '建议禁用',
+    chSuggestDisableHint: '检测到上游硬故障——{reason}。未自动禁用；请核实后手动禁用。',
     prCached: '缓存 $/1M',
     prCachedHint: '缓存命中输入价（通常约 0.1× 输入价）。留空则缓存 token 按输入全价计费。',
     prInput: '输入 $/1M',

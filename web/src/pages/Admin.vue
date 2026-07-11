@@ -40,6 +40,8 @@ interface Channel {
   detected_models: string
   ignored_models: string
   last_sync_at: string | null
+  suggest_disable_reason: string
+  suggest_disabled_at: string | null
 }
 interface Overview {
   window_days: number
@@ -1717,6 +1719,8 @@ onMounted(async () => {
                   <button v-if="detectedCount(c)" class="ml-1 badge-accent cursor-pointer"
                     :title="t('admin.chDetectedHint', { models: c.detected_models })"
                     @click="fetchChannelModels(c)">+{{ detectedCount(c) }}</button>
+                  <span v-if="c.suggest_disable_reason" class="ml-1 badge-danger cursor-help"
+                    :title="t('admin.chSuggestDisableHint', { reason: c.suggest_disable_reason })">⚠ {{ t('admin.chSuggestDisable') }}</span>
                 </td>
                 <td class="px-4 py-2.5 font-mono text-xs">{{ c.provider }}</td>
                 <td class="px-4 py-2.5 font-mono text-xs max-w-48 truncate text-muted" :title="c.base_url">{{ c.base_url }}</td>

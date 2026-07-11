@@ -97,6 +97,8 @@ type Service struct {
 	Gate        Gate                 // 准入（P0-1）：server 装配时注入 relay 实例；HandleCreate 缺装配即拒绝
 	Rec         *invocation.Recorder // 任务终态落 Invocation Store（请求日志可见视频消费）；nil=不记录
 	Notify      Notifier             // 终态通知（§4.9）；nil=不通知（best-effort，绝不影响结算）
+	pollCursor  uint64               // 轮询游标（B-4 饥饿修复）：上次轮询到的最大 task id，回绕轮转。
+	// 单 leader 串行调用 PollOnce（main.go ticker），无并发，无需锁。
 }
 
 // emitNotify：best-effort 终态通知（payload 元数据-only，红线 7）。nil-safe。
@@ -471,11 +473,19 @@ func (s *Service) Get(orgID uint64, taskID string) (*Task, error) {
 func (s *Service) PollOnce(ctx context.Context) {
 	s.sweepTimedOut()
 
+	// 游标轮转（B-4 饥饿修复）：从上次轮询到的 id 之后取一批，到尾回绕（cursor→0）。
+	// 此前固定 `Order(id) LIMIT 50` 在总在途 >50 时让尾部较新任务永远轮不到、只能靠 30min
+	// 超时误判失败退款（用户拿不到已生成的产物）。游标保证每个在途任务轮流被处理。
 	var tasks []Task
-	if err := s.DB.Where("status IN ?", []string{StatusQueued, StatusRunning}).
+	if err := s.DB.Where("status IN ? AND id > ?", []string{StatusQueued, StatusRunning}, s.pollCursor).
 		Order("id").Limit(pollBatch).Find(&tasks).Error; err != nil {
 		s.Log.Error("task poll query failed", "err", err)
 		return
+	}
+	if len(tasks) < pollBatch {
+		s.pollCursor = 0 // 本轮不足一批＝已到在途尾部 → 下轮从头，完成回绕
+	} else {
+		s.pollCursor = tasks[len(tasks)-1].ID
 	}
 	for i := range tasks {
 		if ctx.Err() != nil {

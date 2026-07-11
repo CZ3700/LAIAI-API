@@ -760,6 +760,8 @@ export default {
     chModelSync: '自動偵測上游模型',
     chModelSyncHint: '週期探測上游 /models 清單，新發現的模型以徽章提示待處理。絕不自動上架或定價。',
     chDetectedHint: '偵測到新上游模型：{models}',
+    chSuggestDisable: '建議停用',
+    chSuggestDisableHint: '偵測到上游硬故障——{reason}。未自動停用；請核實後手動停用。',
     prCached: '快取 $/1M',
     prCachedHint: '快取命中輸入價（通常約 0.1× 輸入價）。留空則快取 token 按輸入全價計費。',
     prInput: '輸入 $/1M',

@@ -120,12 +120,13 @@ func (r *Relay) forwardWithFailover(c *gin.Context, inv *invocation.Invocation, 
 		r.breakerNote(ch.ID, resp.StatusCode < 500) // 熔断口径：仅 5xx 计失败
 		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
 		inv.UpstreamErrorCode = upstreamErrorCode(disp.Reason, errBody) // 排障闭环（0045）
-		if disp.Retryable || disp.DisableChannel {
-			r.observe(ch.ID, false) // 健康分：渠道自身可靠性失败
+		if healthPenalty(disp, resp.StatusCode) {
+			r.observe(ch.ID, false) // 健康分：仅渠道整体可靠性失败（5xx/429/硬故障）；渠道特有 4xx 不计
 		}
 		r.Log.Warn(o.logLabel+" upstream error", "channel", ch.ID, "status", resp.StatusCode,
 			"disable", disp.DisableChannel, "retryable", disp.Retryable)
 		if disp.DisableChannel {
+			r.noteSuggestDisable(ch.ID, disp.Reason)     // 硬故障 → 禁用建议（B-2，不自动禁）
 			r.noteKeyFailure(credID, ch.ID, disp.Reason) // 多 key：禁 key 而非渠道（0034）
 		}
 		lastStatus, lastBody = resp.StatusCode, errBody
