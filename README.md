@@ -32,26 +32,32 @@ make test      # 仅测试
 
 Windows 本机注意：`GOPROXY=https://goproxy.cn,direct`（proxy.golang.org 不可达）。
 
-## 部署（新服务器一键起栈）
+## 部署（新服务器一键建站）
 
-前置：Linux + Docker Engine + compose plugin。
+前置：Linux + Docker Engine + compose plugin + openssl。
 
 ```bash
 git clone <repo> laiai-next && cd laiai-next/infra
-cp .env.example .env
-vim .env                 # 三个密码 + LAIAI_AUTH_SECRET（openssl rand -base64 32）
-docker compose up -d --build
-curl -s http://localhost/healthz   # → {"status":"ok"}
+./deploy.sh                       # 全自动：生成密钥 → build → 起栈 → 等健康 → 打印访问地址+管理员令牌
 ```
 
-**生产部署（digest 锁定 + 快照，红线 7）**：第三方镜像必须按 digest 锁定，杜绝可变 tag 静默漂移。
+`deploy.sh` 一条命令从零到可用站点：首次自动生成全套密钥写 `.env`（chmod 600），编译起栈，
+等 core 健康，打印控制台地址与管理员令牌。**重复运行安全**——已有 `.env` 原样复用，绝不重生成密钥
+（`LAIAI_DATA_KEYS` 重生成 = 渠道凭证永远解不开）。常用参数：
 
 ```bash
-# 1. 取 digest 填入 .env（MYSQL_IMAGE/REDIS_IMAGE，无 fallback、未填即拒启）
-docker image inspect mysql:8.4 --format '{{index .RepoDigests 0}}'
-# 2. 叠加生产 overlay 起栈
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-# 3. 部署后留快照，下次部署前 diff 揪漂移（镜像被换 / 配置静默回滚）
+./deploy.sh --domain api.example.com   # 配域名，Caddy 自动 ACME 签 TLS
+./deploy.sh --prod                     # 生产：第三方镜像 digest 锁定（自动 pull+取），杜绝 tag 漂移
+./deploy.sh --cn                       # 国内机器：Go/npm 走国内镜像源加速构建
+./deploy.sh --domain x --prod --cn     # 组合
+```
+
+手动方式（等价，供理解或定制）：`cp .env.example .env` 填密钥 → `docker compose up -d --build`。
+`.env` 密钥用 `openssl rand -hex 32` 生成；`LAIAI_DATA_KEYS` 用 `k1:$(openssl rand -base64 32)`。
+
+**生产漂移快照（红线 8）**：`--prod` 已自动 digest 锁镜像。部署后留快照，下次部署前 diff 揪漂移：
+
+```bash
 ./release-manifest.sh generate > releases/$(git rev-parse --short HEAD).json
 ./release-manifest.sh diff releases/<上一版>.json   # 仅预期项变化才算正常
 ```
