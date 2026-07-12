@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { copyText } from '@/lib/api'
+import { api, copyText } from '@/lib/api'
+import { modelModality, type PricedModel } from '@/lib/modelCatalog'
 
 const { t } = useI18n()
 const copied = ref('')
@@ -12,16 +13,29 @@ async function copy(id: string, text: string) {
   }
 }
 
-const curlChat = `curl https://your-domain/v1/chat/completions \\
+// 示例模型取站点真实已上架的 chat 模型（与 Landing/TryIt 同规——绝不硬编码臆造名）；
+// 价目加载失败时用中性占位（不冒充真模型）。
+const models = ref<PricedModel[]>([])
+const demoModel = computed(() => models.value.find((m) => modelModality(m) === 'chat')?.model || 'your-model')
+onMounted(async () => {
+  try {
+    const r = await api<{ models: PricedModel[] }>('GET', '/api/pricing', undefined, { auth: false })
+    models.value = r.models
+  } catch {
+    // 文档页不因价目接口失败而崩
+  }
+})
+
+const curlChat = computed(() => `curl https://your-domain/v1/chat/completions \\
   -H "Authorization: Bearer $LAIAI_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "gpt-5.2",
+    "model": "${demoModel.value}",
     "messages": [{"role": "user", "content": "Hello"}],
     "stream": true
-  }'`
+  }'`)
 
-const pySdk = `from openai import OpenAI
+const pySdk = computed(() => `from openai import OpenAI
 
 client = OpenAI(
     base_url="https://your-domain/v1",
@@ -29,10 +43,10 @@ client = OpenAI(
 )
 
 resp = client.chat.completions.create(
-    model="gpt-5.2",
+    model="${demoModel.value}",
     messages=[{"role": "user", "content": "Hello"}],
 )
-print(resp.choices[0].message.content)`
+print(resp.choices[0].message.content)`)
 
 // 视频任务三步全流程（异步：提交 → 轮询 → 取产物）
 const curlVideo = `# 1) submit a video task
