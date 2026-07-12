@@ -215,7 +215,7 @@ func (s *Server) adminUpsertPaymentChannel(c *gin.Context) {
 	code := strings.TrimSpace(req.Code)
 	// 表渠道热接入协议白名单：stripe/epay/crypto/webhook/custom/paypal（与 buildPaymentEngine 一一对应）。
 	// 全部验签 fail-closed + 实付金额校验（server 层），即便误启用也不致误入金；新建渠道默认 disabled，
-	// admin 测试连通后再手动 enable。coinbase/x402 仍仅经 ext_settings 显式开（字段层级待真实 fixture 验真）。
+	// admin 测试连通后再手动 enable。coinbase 仍仅经 ext_settings 显式开（字段层级待真实 fixture 验真；x402 已 mothball，见减法分析）。
 	if code == "" || !allowedChannelProtocol(req.Protocol) {
 		fail(c, http.StatusBadRequest, "invalid code or protocol (stripe|epay|crypto|webhook|custom|paypal)")
 		return

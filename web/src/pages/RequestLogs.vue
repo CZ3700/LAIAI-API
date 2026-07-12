@@ -46,7 +46,7 @@ const model = ref('')
 const apiKeyId = ref('')
 const requestId = ref('')
 const result = ref<'all' | 'success' | 'failed'>('all')
-const modality = ref<'all' | 'chat' | 'image' | 'video' | 'audio'>('all') // 模态筛选（并入原图像日志页）
+const modality = ref<'all' | 'chat' | 'image' | 'video'>('all') // 模态筛选（并入原图像日志页；值须与后端 modality 列精确匹配）
 const customStart = ref('')
 const customEnd = ref('')
 const models = ref<ModelStat[]>([])
@@ -195,7 +195,6 @@ onMounted(() => {
           <option value="chat">{{ t('reqlog.modChat') }}</option>
           <option value="image">{{ t('reqlog.modImage') }}</option>
           <option value="video">{{ t('reqlog.modVideo') }}</option>
-          <option value="audio">{{ t('reqlog.modAudio') }}</option>
         </select>
       </div>
       <div class="filter-group min-w-[180px]">
