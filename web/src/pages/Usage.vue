@@ -3,6 +3,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
 import DailyBarChart, { type ChartMetric, type SummaryDay } from '@/components/DailyBarChart.vue'
+import PerformancePanel from '@/components/PerformancePanel.vue' // 原 Latency 页并入本页「性能」tab
+
+const tab = ref<'overview' | 'performance'>('overview')
 
 interface ModelStat {
   model: string
@@ -152,6 +155,15 @@ onMounted(load)
       </div>
     </div>
 
+    <div class="border-b border-line">
+      <div class="tabs-row">
+        <button type="button" :class="{ active: tab === 'overview' }" @click="tab = 'overview'">{{ t('usagex.tabOverview') }}</button>
+        <button type="button" :class="{ active: tab === 'performance' }" @click="tab = 'performance'">{{ t('usagex.tabPerformance') }}</button>
+      </div>
+    </div>
+
+    <PerformancePanel v-if="tab === 'performance'" />
+    <template v-else>
     <div class="toolbar-panel items-end">
       <div class="filter-group">
         <label>{{ t('usagex.filterRange') }}</label>
@@ -269,23 +281,19 @@ onMounted(load)
               <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('calls')">{{ t('usagex.colCalls') }} ↕</button></th>
               <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('input')">{{ t('usagex.colInputTokens') }} ↕</button></th>
               <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('output')">{{ t('usagex.colOutputTokens') }} ↕</button></th>
-              <th class="px-4 py-3 text-right">{{ t('usagex.colReasoningTokens') }}</th>
-              <th class="px-4 py-3 text-right">{{ t('usagex.colCacheTokens') }}</th>
               <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('tokens')">{{ t('usagex.colTotalTokens') }} {{ sortKey === 'tokens' ? (sortDir === 'desc' ? '↓' : '↑') : '↕' }}</button></th>
               <th class="px-4 py-3 text-right"><button class="table-sort" @click="setSort('cost')">{{ t('usagex.colCost') }} {{ sortKey === 'cost' ? (sortDir === 'desc' ? '↓' : '↑') : '↕' }}</button></th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="filteredModels.length === 0">
-              <td colspan="8" class="px-4 py-8 text-center text-muted">{{ t('usagex.emptyData') }}</td>
+              <td colspan="6" class="px-4 py-8 text-center text-muted">{{ t('usagex.emptyData') }}</td>
             </tr>
             <tr v-for="m in filteredModels" :key="m.model">
               <td class="px-4 py-2.5 font-mono text-xs">{{ m.model }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(m.calls) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(m.prompt_tokens) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(m.completion_tokens) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
-              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(m.prompt_tokens + m.completion_tokens) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(num(m.cost_usd)) }}</td>
             </tr>
@@ -304,23 +312,19 @@ onMounted(load)
               <th class="px-4 py-3 text-right">{{ t('usagex.colCalls') }} ↕</th>
               <th class="px-4 py-3 text-right">{{ t('usagex.colInputTokens') }} ↕</th>
               <th class="px-4 py-3 text-right">{{ t('usagex.colOutputTokens') }} ↕</th>
-              <th class="px-4 py-3 text-right">{{ t('usagex.colReasoningTokens') }} ↕</th>
-              <th class="px-4 py-3 text-right">{{ t('usagex.colCacheTokens') }} ↕</th>
               <th class="px-4 py-3 text-right">{{ t('usagex.colTotalTokens') }} ↓</th>
               <th class="px-4 py-3 text-right">{{ t('usagex.colCost') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="byKey.length === 0">
-              <td colspan="8" class="px-4 py-8 text-center text-muted">{{ t('usagex.emptyData') }}</td>
+              <td colspan="6" class="px-4 py-8 text-center text-muted">{{ t('usagex.emptyData') }}</td>
             </tr>
             <tr v-for="row in byKey" :key="row.api_key_id">
               <td class="px-4 py-2.5 font-mono text-xs">{{ keyName(row) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(row.calls) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(row.prompt_tokens) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(row.completion_tokens) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
-              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(row.prompt_tokens + row.completion_tokens) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(num(row.cost_usd)) }}</td>
             </tr>
@@ -329,5 +333,6 @@ onMounted(load)
       </div>
       <p class="mt-3 text-xs text-muted">{{ t('usagex.byKeyHint') }}</p>
     </div>
+    </template>
   </div>
 </template>

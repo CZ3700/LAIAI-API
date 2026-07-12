@@ -1,4 +1,6 @@
 <script setup lang="ts">
+// 性能面板（原 Latency 页并入 Usage 的「性能」tab）：延迟分位 / 成功率 / 时长分布 / 按模型 p50-p99。
+// 数据全由后端 /api/usage/perf-stats 在窗口全量上聚合（切窗口重拉），与用量的 token 聚合是不同粒度。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/lib/api'
@@ -29,14 +31,12 @@ interface ModelStat { model: string }
 
 const { t, n } = useI18n()
 const model = ref('')
-const window = ref<'24h' | '7d' | '30d'>('24h')
+const win = ref<'24h' | '7d' | '30d'>('24h')
 const search = ref('')
 const stats = ref<PerfStats | null>(null)
 const models = ref<ModelStat[]>([])
 const loading = ref(true)
 
-// 窗口 → 回看分钟数（与后端 perf-stats 的 mins 参数对齐）。分位/成功率/时长分布均由后端在窗口全量上聚合，
-// 切窗口即重新拉取——不再像旧实现那样对最近 100 行本地算（被分页截断、且 7d/30d 与 24h 拿同一批行）。
 const WINDOW_MINS: Record<'24h' | '7d' | '30d', number> = { '24h': 1440, '7d': 10080, '30d': 43200 }
 
 function fmtMs(v: number): string {
@@ -55,7 +55,7 @@ const modelRows = computed(() => (stats.value?.models ?? [])
 async function load() {
   loading.value = true
   const [st, bm] = await Promise.allSettled([
-    api<PerfStats>('GET', `/api/usage/perf-stats?mins=${WINDOW_MINS[window.value]}`),
+    api<PerfStats>('GET', `/api/usage/perf-stats?mins=${WINDOW_MINS[win.value]}`),
     api<{ items: ModelStat[] }>('GET', '/api/usage/by-model?days=30'),
   ])
   if (st.status === 'fulfilled') stats.value = st.value
@@ -75,18 +75,12 @@ function exportCsv() {
   URL.revokeObjectURL(url)
 }
 
-watch(window, () => void load())
+watch(win, () => void load())
 onMounted(load)
 </script>
 
 <template>
-  <div class="app-page">
-    <div class="app-page-header">
-      <div>
-        <h1 class="app-page-title">{{ t('lat.title') }}</h1>
-      </div>
-    </div>
-
+  <div class="space-y-5">
     <div class="toolbar-panel items-end">
       <div class="filter-group min-w-[180px]">
         <label>{{ t('lat.filterChart') }}</label>
@@ -97,7 +91,7 @@ onMounted(load)
       </div>
       <div class="filter-group min-w-[160px]">
         <label>{{ t('lat.timeWindow') }}</label>
-        <select v-model="window" class="input">
+        <select v-model="win" class="input">
           <option value="24h">{{ t('lat.window24h') }}</option>
           <option value="7d">{{ t('lat.window7d') }}</option>
           <option value="30d">{{ t('lat.window30d') }}</option>
@@ -115,23 +109,13 @@ onMounted(load)
 
     <p v-if="stats?.sampled" class="text-xs text-muted">{{ t('lat.sampledNote', { n: n(stats.sample_size) }) }}</p>
 
-    <div class="grid gap-4 xl:grid-cols-3">
-      <div class="app-panel p-5">
-        <h2 class="font-semibold">{{ t('lat.chartTotalDist') }}</h2>
-        <div class="mt-6 flex h-48 items-end gap-3">
-          <div v-for="b in buckets" :key="b.label" class="flex flex-1 flex-col items-center gap-2">
-            <div class="w-full rounded-t bg-accent/80" :style="{ height: `${(b.count / maxBucket) * 100}%`, minHeight: b.count ? '8px' : '0' }"></div>
-            <span class="text-xs text-muted">{{ b.label }}</span>
-          </div>
+    <div class="app-panel p-5">
+      <h2 class="font-semibold">{{ t('lat.chartTotalDist') }}</h2>
+      <div class="mt-6 flex h-48 items-end gap-3">
+        <div v-for="b in buckets" :key="b.label" class="flex flex-1 flex-col items-center gap-2">
+          <div class="w-full rounded-t bg-accent/80" :style="{ height: `${(b.count / maxBucket) * 100}%`, minHeight: b.count ? '8px' : '0' }"></div>
+          <span class="text-xs text-muted">{{ b.label }}</span>
         </div>
-      </div>
-      <div class="app-panel p-5">
-        <h2 class="font-semibold">{{ t('lat.chartSuccessTrend') }}</h2>
-        <div class="mt-16 text-center font-mono text-3xl font-semibold">{{ calls ? (successRate * 100).toFixed(1) + '%' : '—' }}</div>
-      </div>
-      <div class="app-panel p-5">
-        <h2 class="font-semibold">{{ t('lat.chartStreamFrt') }}</h2>
-        <div class="mt-16 text-center font-mono text-3xl font-semibold">{{ fmtMs(frt.p50) }}</div>
       </div>
     </div>
 

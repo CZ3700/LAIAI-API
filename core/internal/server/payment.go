@@ -98,21 +98,6 @@ func (s *Server) engineFor(provider string) payment.Engine {
 			return nil
 		}
 		return &payment.CoinbaseCommerce{APIKey: ak, WebhookSecret: s.getSetting("coinbase_webhook_secret")}
-	case "x402":
-		// P0-4：合约尚未对真实 facilitator 校验（见 x402.go 注记）→ 显式总开关默认关闭，
-		// 即便三项配置齐全也不进真金路径；完成合约校验清单后方可将 x402_enabled 置 "true"。
-		if s.getSetting("x402_enabled") != "true" {
-			return nil
-		}
-		// 三项配置齐全才构建
-		fac := s.getSetting("x402_facilitator_url")
-		if fac == "" || s.getSetting("x402_pay_to") == "" || s.getSetting("x402_asset") == "" {
-			return nil
-		}
-		return &payment.X402{
-			FacilitatorURL: fac, PayTo: s.getSetting("x402_pay_to"),
-			Asset: s.getSetting("x402_asset"), Network: s.getSetting("x402_network"),
-		}
 	}
 	return nil
 }
@@ -182,11 +167,8 @@ func (s *Server) createTopup(c *gin.Context) {
 		return
 	}
 
-	// 实付金额/币种：stripe 直接 USD；x402 用 USDC（1:1，链上稳定币）；epay 按汇率折 CNY
+	// 实付金额/币种：stripe 直接 USD；epay 按汇率折 CNY
 	payAmount, payCurrency := amountUSD, "USD"
-	if protocol == "x402" {
-		payCurrency = "USDC" // USDC ≈ USD，金额不变
-	}
 	if protocol == "epay" {
 		rate := decimal.RequireFromString("7.3")
 		if r := s.getSetting("cny_per_usd"); r != "" {
@@ -290,80 +272,6 @@ func (s *Server) paymentCallback(c *gin.Context) {
 	c.String(http.StatusOK, engine.AckBody())
 }
 
-// x402Settle：POST /api/payment/x402/settle/:order_no —— x402 链上结算 + 入账（§5.2 第一档）。
-// 公开端点（X-PAYMENT 头自证支付，订单号定位 org）；结算成功走**统一资金路径** creditPaidOrder。
-// x402 默认禁用（engineFor 返回 nil）→ 503；启用前须验证 facilitator 合约（见 x402.go）。
-func (s *Server) x402Settle(c *gin.Context) {
-	orderNo := c.Param("order_no")
-	var order TopupOrder
-	if e := s.db.Where("order_no = ?", orderNo).First(&order).Error; e != nil {
-		fail(c, http.StatusNotFound, "order not found")
-		return
-	}
-	if order.Provider != "x402" { // 防把别的单走 x402 结算
-		fail(c, http.StatusBadRequest, "order is not an x402 order")
-		return
-	}
-	x402, ok := s.engineFor(order.Provider).(*payment.X402)
-	if !ok || x402 == nil {
-		fail(c, http.StatusServiceUnavailable, "x402 not configured")
-		return
-	}
-
-	// P0-4 恢复语义：trade_no(=txHash) 是链上已结算的持久化证据。
-	// 已有证据 → settle 此前已成功（入账成功会连 trade_no 一并落库；入账失败也会单独落锚点，
-	// 见下）→ 跳过 facilitator.Settle（链上不可逆，重发会撞 nonce/双花），直接重放幂等入账。
-	// 无证据 → 正常 verify+settle 取 txHash 再入账。
-	txHash := order.TradeNo
-	if txHash == "" {
-		xPayment := c.GetHeader("X-PAYMENT")
-		if xPayment == "" {
-			fail(c, http.StatusBadRequest, "missing X-PAYMENT header")
-			return
-		}
-		res, err := x402.Settle(c.Request.Context(), xPayment, order.OrderNo, order.PayAmount,
-			s.getSetting("site_name")+" top-up")
-		if err != nil || res == nil || !res.Success {
-			s.Log().Warn("x402 settle failed", "order", orderNo, "err", err)
-			fail(c, http.StatusPaymentRequired, "x402 settlement failed")
-			return
-		}
-		// 不变量：绝不在无结算引用(txHash)的情况下入账——否则入账失败将无锚点可恢复。
-		if res.TxHash == "" {
-			s.Log().Error("x402 settle reported success without a transaction reference — refusing to credit", "order", orderNo)
-			fail(c, http.StatusBadGateway, "x402 settlement returned no transaction reference")
-			return
-		}
-		txHash = res.TxHash
-	}
-
-	// 统一资金路径入账（幂等：同订单永不重复入账）。成功路径 creditPaidOrder 同事务写 trade_no。
-	already, cerr := s.creditPaidOrder("x402", order.OrderNo, txHash, order.PayAmount, order.PayCurrency)
-	if cerr != nil {
-		// 链上已不可逆结算但本地入账失败：单独把 txHash 落库作恢复锚点（仅当尚未写入），
-		// 使 ReconcileTopups 的 x402 修复分支可据 trade_no 自动重放入账，绝不丢链上付款。
-		// 该锚点写入再失败＝两次独立 DB 故障：显式告警，运维可据日志 txHash 手工补。
-		// 同时把 status 拉回 pending（对抗 review #4）：极晚结算的单可能已被 ExpireStaleTopups
-		// 标成 expired，而 reconcile 只扫 pending——不拉回则锚点单永久脱离自动重放集。
-		// 谓词限定 pending|expired，绝不触碰 paid/failed 终态。
-		if pe := s.db.Model(&TopupOrder{}).
-			Where("order_no = ? AND (trade_no = '' OR trade_no IS NULL) AND status IN ?",
-				order.OrderNo, []int8{topupPending, topupExpired}).
-			Updates(map[string]any{"trade_no": txHash, "status": topupPending}).Error; pe != nil {
-			s.Log().Error("x402 SETTLED ON-CHAIN BUT BOTH CREDIT AND PROOF-PERSIST FAILED — manual credit needed",
-				"order", orderNo, "tx", txHash, "credit_err", cerr, "persist_err", pe)
-		} else {
-			s.Log().Error("x402 credit failed (recoverable: txHash persisted, retry endpoint or reconcile)",
-				"order", orderNo, "tx", txHash, "err", cerr)
-		}
-		fail(c, http.StatusInternalServerError, "credit failed")
-		return
-	}
-	if !already {
-		s.writeAudit(c, "topup_paid", order.OrderNo, "topup credited via x402 tx "+txHash)
-	}
-	c.JSON(http.StatusOK, gin.H{"order_no": orderNo, "tx_hash": txHash, "status": "paid"})
-}
 
 // creditPaidOrder：把一笔已确认支付的订单入账——**callback 与 reconcile 共用的唯一资金路径**。
 // 红线集中：行锁取订单 → provider 匹配（防跨网关）→ 幂等(已 paid→already=true) →
@@ -676,27 +584,3 @@ func init() {
 	}
 }
 
-// adminPaymentConfig：GET /api/admin/payment-config —— 支付渠道状态（脱敏，运营总览）。
-func (s *Server) adminPaymentConfig(c *gin.Context) {
-	// 红线4：支付密钥绝不回显任何明文片段（首尾4位也会确认/缩小密钥并暴露环境）。
-	// 与 settings.go 的 adminGetSettings 同口径——已配置回全掩码、未配置回空。
-	mask := func(v string) string {
-		if v == "" {
-			return ""
-		}
-		return secretMask
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"stripe": gin.H{
-			"configured": s.getSetting("stripe_secret_key") != "",
-			"secret":     mask(s.getSetting("stripe_secret_key")),
-			"webhook":    s.getSetting("stripe_webhook_secret") != "",
-		},
-		"epay": gin.H{
-			"configured": s.getSetting("epay_pid") != "",
-			"pid":        s.getSetting("epay_pid"),
-			"key":        mask(s.getSetting("epay_key")),
-			"api_url":    s.getSetting("epay_api_url"),
-		},
-	})
-}

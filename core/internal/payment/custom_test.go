@@ -94,9 +94,9 @@ func TestCustomAmountCanonicalization(t *testing.T) {
 		{"0.5", "BHD", "0.500"},  // 三位
 	}
 	for _, tc := range cases {
-		got := customCanonicalAmount(decimal.RequireFromString(tc.amount), tc.currency)
+		got := canonicalAmount(decimal.RequireFromString(tc.amount), tc.currency)
 		if got != tc.want {
-			t.Errorf("customCanonicalAmount(%s,%s) = %q, want %q", tc.amount, tc.currency, got, tc.want)
+			t.Errorf("canonicalAmount(%s,%s) = %q, want %q", tc.amount, tc.currency, got, tc.want)
 		}
 	}
 }

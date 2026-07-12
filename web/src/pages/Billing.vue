@@ -12,15 +12,6 @@ interface LedgerEntry {
   reason: string
   created_at: string
 }
-interface UsageRow {
-  id: number
-  model: string
-  status: string
-  prompt_tokens: number
-  completion_tokens: number
-  cost_usd: string
-  created_at: string
-}
 interface Order {
   id: number
   order_no: string
@@ -30,16 +21,14 @@ interface Order {
 }
 
 const { t, n, d } = useI18n()
-const activeTab = ref<'monthly' | 'ledger' | 'usage'>('monthly')
+const activeTab = ref<'monthly' | 'ledger'>('monthly') // usage 明细并入请求日志页，此处不再重复
 const balance = ref('0')
 const held = ref('0')
 const summary = ref<SummaryDay[]>([])
 const ledger = ref<LedgerEntry[]>([])
-const usage = ref<UsageRow[]>([])
 const orders = ref<Order[]>([])
 const monthRechargeUSD = ref(0)
 const ledgerTotal = ref(0)
-const usageTotal = ref(0)
 const loading = ref(true)
 
 function num(v: string | number): number {
@@ -63,11 +52,10 @@ onMounted(async () => {
   // 本月消耗按「本月至今」口径：summary 取当前 UTC 月已过天数（与 monthLabel 的 YYYY-MM 自然月一致），
   // 不再用滚动 31 天冒充自然月。本月充值用服务端 UTC 自然月聚合 month_usd。
   const mtdDays = new Date().getUTCDate()
-  const [bal, sum, lg, use, ord, rs] = await Promise.allSettled([
+  const [bal, sum, lg, ord, rs] = await Promise.allSettled([
     api<{ balance: string; held: string }>('GET', '/api/balance'),
     api<{ items: SummaryDay[] }>('GET', `/api/usage/summary?days=${mtdDays}`),
     api<{ total: number; items: LedgerEntry[] }>('GET', '/api/ledger'),
-    api<{ total: number; items: UsageRow[] }>('GET', '/api/usage?page=1&page_size=20'),
     api<{ orders: Order[] }>('GET', '/api/payment/orders'),
     api<{ month_usd: string }>('GET', '/api/payment/recharge-stats'),
   ])
@@ -79,10 +67,6 @@ onMounted(async () => {
   if (lg.status === 'fulfilled') {
     ledger.value = lg.value.items
     ledgerTotal.value = lg.value.total
-  }
-  if (use.status === 'fulfilled') {
-    usage.value = use.value.items
-    usageTotal.value = use.value.total
   }
   if (ord.status === 'fulfilled') orders.value = ord.value.orders
   if (rs.status === 'fulfilled') monthRechargeUSD.value = num(rs.value.month_usd)
@@ -136,7 +120,6 @@ onMounted(async () => {
       <div class="tabs-row">
         <button type="button" :class="{ active: activeTab === 'monthly' }" @click="activeTab = 'monthly'">{{ t('billx.tabMonthly') }}</button>
         <button type="button" :class="{ active: activeTab === 'ledger' }" @click="activeTab = 'ledger'">{{ t('billx.tabLedger') }}</button>
-        <button type="button" :class="{ active: activeTab === 'usage' }" @click="activeTab = 'usage'">{{ t('billx.tabUsage') }}</button>
       </div>
     </div>
 
@@ -148,8 +131,6 @@ onMounted(async () => {
             <tr class="border-b border-line text-left text-muted">
               <th class="px-4 py-3">{{ t('billx.colPeriod') }}</th>
               <th class="px-4 py-3 text-right">{{ t('billx.colTotalSpend') }}</th>
-              <th class="px-4 py-3 text-right">{{ t('billx.colGiftSpend') }}</th>
-              <th class="px-4 py-3 text-right">{{ t('billx.colPaidSpend') }}</th>
               <th class="px-4 py-3 text-right">{{ t('billx.colRequests') }}</th>
               <th class="px-4 py-3 text-right">{{ t('billx.colTokens') }}</th>
               <th class="px-4 py-3">{{ t('billx.colStatus') }}</th>
@@ -159,8 +140,6 @@ onMounted(async () => {
             <tr>
               <td class="px-4 py-2.5 font-mono">{{ monthLabel }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(monthSpend) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
-              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(monthCalls) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(monthTokens) }}</td>
               <td class="px-4 py-2.5"><span class="badge-ok">{{ t('billx.statusCounted') }}</span></td>
@@ -179,17 +158,15 @@ onMounted(async () => {
               <th class="px-4 py-3">{{ t('billx.colTime') }}</th>
               <th class="px-4 py-3">{{ t('billx.colKind') }}</th>
               <th class="px-4 py-3 text-right">{{ t('billx.colUSDDelta') }}</th>
-              <th class="px-4 py-3 text-right">{{ t('billx.colGiftDelta') }}</th>
               <th class="px-4 py-3 text-right">{{ t('billx.colBalanceAfter') }}</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="ledger.length === 0"><td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('billx.emptyData') }}</td></tr>
+            <tr v-if="ledger.length === 0"><td colspan="4" class="px-4 py-8 text-center text-muted">{{ t('billx.emptyData') }}</td></tr>
             <tr v-for="e in ledger" :key="e.id">
               <td class="px-4 py-2.5 text-muted">{{ d(new Date(e.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
               <td class="px-4 py-2.5"><span class="badge-muted">{{ e.kind }}</span></td>
               <td class="px-4 py-2.5 text-right font-mono" :class="num(e.delta) >= 0 ? 'text-ok' : 'text-danger'">{{ num(e.delta) >= 0 ? '+' : '-' }}{{ fmtMoney(Math.abs(num(e.delta))) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(num(e.balance_after)) }}</td>
             </tr>
           </tbody>
@@ -197,35 +174,5 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div v-else class="space-y-3">
-      <p class="text-sm text-muted">{{ t('billx.usageCount', { n: usageTotal }) }}</p>
-      <div class="data-table-wrap">
-        <table class="table w-full text-sm whitespace-nowrap">
-          <thead>
-            <tr class="border-b border-line text-left text-muted">
-              <th class="px-4 py-3">{{ t('billx.colTime') }}</th>
-              <th class="px-4 py-3">{{ t('billx.colModel') }}</th>
-              <th class="px-4 py-3 text-right">{{ t('billx.colTokens') }}</th>
-              <th class="px-4 py-3 text-right">{{ t('billx.colSpend') }}</th>
-              <th class="px-4 py-3 text-right">{{ t('billx.colGiftSpend') }}</th>
-              <th class="px-4 py-3 text-right">{{ t('billx.colPaidSpend') }}</th>
-              <th class="px-4 py-3">{{ t('billx.colStatus') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="usage.length === 0"><td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('billx.emptyData') }}</td></tr>
-            <tr v-for="r in usage" :key="r.id">
-              <td class="px-4 py-2.5 text-muted">{{ d(new Date(r.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
-              <td class="px-4 py-2.5 font-mono text-xs">{{ r.model }}</td>
-              <td class="px-4 py-2.5 text-right font-mono">{{ n(r.prompt_tokens + r.completion_tokens) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(num(r.cost_usd)) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
-              <td class="px-4 py-2.5 text-right font-mono text-muted">—</td>
-              <td class="px-4 py-2.5"><span :class="r.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ r.status }}</span></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
   </div>
 </template>

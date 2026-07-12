@@ -53,9 +53,6 @@ const sections: { title: string; items: NavItem[] }[] = [
   ] },
   { title: 'shell.groupObservability', items: [
     { to: '/app/request-logs', label: 'shell.navRequestLogs', icon: 'log' },
-    { to: '/app/image-logs', label: 'shell.navImageLogs', icon: 'image' },
-    { to: '/app/token-analysis', label: 'shell.navTokenAnalysis', icon: 'node' },
-    { to: '/app/latency', label: 'shell.navLatency', icon: 'clock' },
   ] },
   { title: 'shell.groupSystem', items: [
     { to: '/app/settings', label: 'shell.navSettings', icon: 'user' },

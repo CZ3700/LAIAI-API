@@ -46,6 +46,7 @@ const model = ref('')
 const apiKeyId = ref('')
 const requestId = ref('')
 const result = ref<'all' | 'success' | 'failed'>('all')
+const modality = ref<'all' | 'chat' | 'image' | 'video' | 'audio'>('all') // 模态筛选（并入原图像日志页）
 const customStart = ref('')
 const customEnd = ref('')
 const models = ref<ModelStat[]>([])
@@ -120,6 +121,7 @@ async function load() {
     const q = new URLSearchParams({ page: String(page.value), page_size: String(pageSize) })
     if (model.value) q.set('model', model.value)
     if (apiKeyId.value) q.set('api_key_id', apiKeyId.value)
+    if (modality.value !== 'all') q.set('modality', modality.value) // 服务端模态过滤（0040）
     if (requestId.value.trim()) q.set('request_id', requestId.value.trim()) // 服务端精确查（uk_inv_request，跨页可命中）
     if (result.value !== 'all') q.set('status', result.value) // 'success' 精确；'failed' 后端识别为非 success
     const w = windowParams()
@@ -135,7 +137,7 @@ async function load() {
   }
 }
 
-watch([model, apiKeyId, requestId, result, range, customStart, customEnd], () => {
+watch([model, apiKeyId, requestId, result, modality, range, customStart, customEnd], () => {
   page.value = 1
   void load()
 })
@@ -184,6 +186,16 @@ onMounted(() => {
         <select v-model="apiKeyId" class="input">
           <option value="">{{ t('reqlog.allKeys') }}</option>
           <option v-for="k in keys" :key="k.id" :value="String(k.id)">{{ k.name || k.prefix }}</option>
+        </select>
+      </div>
+      <div class="filter-group min-w-[160px]">
+        <label>{{ t('reqlog.filterModality') }}</label>
+        <select v-model="modality" class="input">
+          <option value="all">{{ t('reqlog.modAll') }}</option>
+          <option value="chat">{{ t('reqlog.modChat') }}</option>
+          <option value="image">{{ t('reqlog.modImage') }}</option>
+          <option value="video">{{ t('reqlog.modVideo') }}</option>
+          <option value="audio">{{ t('reqlog.modAudio') }}</option>
         </select>
       </div>
       <div class="filter-group min-w-[180px]">

@@ -154,15 +154,6 @@ func buildPaymentEngine(protocol string, cfg map[string]string) payment.Engine {
 			ClientID: cfg["client_id"], ClientSecret: cfg["client_secret"], WebhookID: cfg["webhook_id"],
 			Sandbox: cfg["sandbox"] == "true", Currency: cfg["currency"],
 		}
-	case "x402":
-		// 默认禁用：facilitator/收款地址/资产三者齐全才构建（见 x402.go 合约校验注记）
-		if cfg["facilitator_url"] == "" || cfg["pay_to"] == "" || cfg["asset"] == "" {
-			return nil
-		}
-		return &payment.X402{
-			FacilitatorURL: cfg["facilitator_url"], PayTo: cfg["pay_to"],
-			Asset: cfg["asset"], Network: cfg["network"],
-		}
 	}
 	return nil
 }

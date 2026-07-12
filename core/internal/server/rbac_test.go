@@ -31,7 +31,7 @@ func TestRBACTierSplit(t *testing.T) {
 		}
 	}
 	// superadmin 级：admin 一律 403（资金/系统/定价 + P2-3 跨租户调用明细）
-	for _, p := range []string{"/api/admin/settings", "/api/admin/group-ratios", "/api/admin/payment-channels", "/api/admin/payment-config", "/api/admin/invocations"} {
+	for _, p := range []string{"/api/admin/settings", "/api/admin/group-ratios", "/api/admin/payment-channels", "/api/admin/invocations"} {
 		if w, _ := srv.do(t, "GET", p, adminTok, nil); w.Code != 403 {
 			t.Fatalf("admin GET %s = %d, want 403 (superadmin-only)", p, w.Code)
 		}

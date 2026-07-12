@@ -205,24 +205,3 @@ func TestAdminListUsersBalance(t *testing.T) {
 	}
 }
 
-// TestUsagePerfWindow：验证 /api/usage/perf 只统计近 60 秒（修复 epoch-vs-datetime bug）。
-func TestUsagePerfWindow(t *testing.T) {
-	srv, db := setupRelayServer(t)
-
-	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "perf@gmail.com", "password": "longenough1"})
-	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "perf@gmail.com", "password": "longenough1"})
-	token := login["token"].(string)
-	orgID := login["org_id"].(float64)
-
-	now := time.Now()
-	insertInvocation(t, db, orgID, "recent", "success", "openai", 0.01, now.Add(-10*time.Second)) // 窗口内
-	insertInvocation(t, db, orgID, "old", "success", "openai", 0.01, now.Add(-5*time.Minute))     // 窗口外
-
-	w, out := srv.do(t, "GET", "/api/usage/perf", token, nil)
-	if w.Code != 200 {
-		t.Fatalf("perf = %d %v", w.Code, out)
-	}
-	if got := out["rpm"].(float64); got != 1 {
-		t.Errorf("rpm = %v, want 1 (only last-60s row, not the 5-min-old one)", got)
-	}
-}

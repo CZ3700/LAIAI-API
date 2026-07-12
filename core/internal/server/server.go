@@ -170,7 +170,6 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		api.GET("/rankings", s.getRankings)                                           // 公开模型/厂商调用量排行（营销/SEO）
 		api.GET("/status", s.publicStatus)                                            // 公开状态页（粗粒度组件健康，M3）
 		api.POST("/payment/callback/:provider", s.paymentCallback)                    // 支付 webhook（验签入金，无需登录）
-		api.POST("/payment/x402/settle/:order_no", s.x402Settle)                      // x402 链上结算入账（§5.2，默认禁用）
 
 		// authed：会话令牌 + 用户 active（P0-1：封禁用户旧令牌即时失效）。
 		authed := api.Group("", s.authRequired(), s.requireActiveUser())
@@ -206,8 +205,6 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/usage/summary", s.getUsageSummary)
 				org.GET("/usage/by-model", s.getUsageByModel)
 				org.GET("/usage/by-key", s.getUsageByKey) // 仪表盘密钥排行榜
-				org.GET("/usage/by-model-daily", s.getUsageByModelDaily)
-				org.GET("/usage/perf", s.getUsagePerf)
 				org.GET("/usage/perf-stats", s.getUsagePerfStats) // 延迟/成功率 服务端分位聚合（Latency 页）
 				org.GET("/balance", s.getBalance)
 				org.GET("/ledger", s.getLedger)
@@ -291,7 +288,6 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				su.PUT("/orgs/:id/entitlements", s.adminSetEntitlements) // P0-2 功能调配
 				su.PUT("/orgs/:id/shards", s.adminSetOrgShards)          // 规模化：账户分片数（巨客户写吞吐）
 				su.POST("/users/:id/role", s.adminSetUserRole)           // 授角色
-				su.GET("/payment-config", s.adminPaymentConfig)          // 支付配置（含密钥引用）
 				su.GET("/payment-channels", s.adminListPaymentChannels)
 				su.POST("/payment-channels", s.adminUpsertPaymentChannel)
 				su.DELETE("/payment-channels/:id", s.adminDeletePaymentChannel)

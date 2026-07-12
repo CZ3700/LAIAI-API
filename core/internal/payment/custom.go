@@ -3,10 +3,6 @@ package payment
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/md5"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,11 +28,11 @@ import (
 //   - 模板渲染与签名口径**复刻旧引擎**（占位符 {{order_no}} 等、payload = body 或 timestamp+body、
 //     HMAC-SHA256/HMAC-MD5），不臆造。具体处理商上线前仍需抓真实 raw 校正字段点路径与签名口径。
 //
-// 模板可用变量（customRenderTemplate 把 {{key}} 整串替换）：
+// 模板可用变量（renderTemplate 把 {{key}} 整串替换）：
 //
 //	{{order_no}} {{amount}} {{currency}} {{notify_url}} {{return_url}} {{desc}} {{client_ip}} {{api_key}}
 //
-// 其中 {{amount}} 经币种最小单位规整（customCanonicalAmount，沿用旧 AmountToMinor→AmountFromMinor 往返）：
+// 其中 {{amount}} 经币种最小单位规整（canonicalAmount，沿用旧 AmountToMinor→AmountFromMinor 往返）：
 // USD/CNY 等两位小数、JPY 等零位、BHD 等三位，输出与币种小数位一致。
 type Custom struct {
 	// ── 渠道标识与密钥 ──
@@ -86,7 +82,7 @@ func (c *Custom) httpClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
-// templateVars：构造模板变量表。{{amount}} 经币种最小单位规整（customCanonicalAmount）。
+// templateVars：构造模板变量表。{{amount}} 经币种最小单位规整（canonicalAmount）。
 func (c *Custom) templateVars(req *CreateRequest) map[string]string {
 	currency := strings.ToUpper(strings.TrimSpace(req.Currency))
 	if currency == "" {
@@ -97,7 +93,7 @@ func (c *Custom) templateVars(req *CreateRequest) map[string]string {
 	}
 	return map[string]string{
 		"order_no":   req.OrderNo,
-		"amount":     customCanonicalAmount(req.Amount, currency),
+		"amount":     canonicalAmount(req.Amount, currency),
 		"currency":   currency,
 		"notify_url": req.NotifyURL,
 		"return_url": req.ReturnURL,
@@ -114,12 +110,12 @@ func (c *Custom) CreatePayment(ctx context.Context, req *CreateRequest) (*Create
 	}
 	vars := c.templateVars(req)
 
-	createURL := customRenderTemplate(c.CreateURL, vars)
-	method := strings.ToUpper(customDefault(c.CreateMethod, "POST"))
+	createURL := renderTemplate(c.CreateURL, vars)
+	method := strings.ToUpper(nonEmpty(c.CreateMethod, "POST"))
 
 	var bodyReader io.Reader
 	if c.CreateBody != "" && method != "GET" {
-		bodyReader = bytes.NewReader([]byte(customRenderTemplate(c.CreateBody, vars)))
+		bodyReader = bytes.NewReader([]byte(renderTemplate(c.CreateBody, vars)))
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, method, createURL, bodyReader)
@@ -128,7 +124,7 @@ func (c *Custom) CreatePayment(ctx context.Context, req *CreateRequest) (*Create
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	for k, v := range c.CreateHeaders {
-		httpReq.Header.Set(k, customRenderTemplate(v, vars))
+		httpReq.Header.Set(k, renderTemplate(v, vars))
 	}
 
 	resp, err := c.httpClient().Do(httpReq)
@@ -145,8 +141,8 @@ func (c *Custom) CreatePayment(ctx context.Context, req *CreateRequest) (*Create
 	var respData map[string]interface{}
 	_ = json.Unmarshal(respBody, &respData)
 
-	payURLPath := customDefault(c.PayURLPath, "pay_url")
-	payURL := customDotPath(respData, payURLPath)
+	payURLPath := nonEmpty(c.PayURLPath, "pay_url")
+	payURL := extractDotPath(respData, payURLPath)
 	if payURL == "" {
 		// GET-redirect 风格：响应本身就是 3xx 重定向，取 Location（复刻旧引擎）。
 		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
@@ -160,7 +156,7 @@ func (c *Custom) CreatePayment(ctx context.Context, req *CreateRequest) (*Create
 		return nil, fmt.Errorf("custom: %w", err)
 	}
 
-	providerRef := customDotPath(respData, customDefault(c.RefPath, "id"))
+	providerRef := extractDotPath(respData, nonEmpty(c.RefPath, "id"))
 
 	return &CreateResult{
 		PayURL:      payURL,
@@ -173,25 +169,25 @@ func (c *Custom) CreatePayment(ctx context.Context, req *CreateRequest) (*Create
 func (c *Custom) VerifyCallback(rawBody []byte, headers, query map[string]string) (*CallbackResult, error) {
 	// ── 验签（复刻旧逻辑：仅当 WebhookSecret 非空且 SigAlgo != none 时校验）──
 	if c.WebhookSecret != "" {
-		algo := strings.ToLower(customDefault(c.SigAlgo, "none"))
+		algo := strings.ToLower(nonEmpty(c.SigAlgo, "none"))
 		if algo != "none" {
-			sigHeader := customDefault(c.SigHeader, "x-signature")
-			sig := customHeaderCI(headers, sigHeader)
+			sigHeader := nonEmpty(c.SigHeader, "x-signature")
+			sig := getHeaderCI(headers, sigHeader)
 			// fail-closed：缺签名头一律拒（红线——有签名方案就必须带有效签名）。
 			if sig == "" {
 				return nil, fmt.Errorf("custom: missing webhook signature header: %s", sigHeader)
 			}
 			var payload []byte
-			if customDefault(c.SigPayload, "body") == "timestamp+body" {
-				ts := customHeaderCI(headers, "x-timestamp")
+			if nonEmpty(c.SigPayload, "body") == "timestamp+body" {
+				ts := getHeaderCI(headers, "x-timestamp")
 				if ts == "" {
-					ts = customHeaderCI(headers, "t")
+					ts = getHeaderCI(headers, "t")
 				}
 				payload = []byte(ts + string(rawBody))
 			} else {
 				payload = rawBody
 			}
-			if !customVerifySig(payload, sig, c.WebhookSecret, algo) {
+			if !verifyWebhookSig(payload, sig, c.WebhookSecret, algo) {
 				return nil, fmt.Errorf("custom: invalid webhook signature")
 			}
 		}
@@ -203,16 +199,16 @@ func (c *Custom) VerifyCallback(rawBody []byte, headers, query map[string]string
 		data = customFormToMap(rawBody, query)
 	}
 
-	orderNo := customDotPath(data, customDefault(c.OrderPath, "order_no"))
-	amountStr := customDotPath(data, customDefault(c.AmountPath, "amount"))
-	tradeNo := customDotPath(data, customDefault(c.TradeNoPath, "trade_no"))
+	orderNo := extractDotPath(data, nonEmpty(c.OrderPath, "order_no"))
+	amountStr := extractDotPath(data, nonEmpty(c.AmountPath, "amount"))
+	tradeNo := extractDotPath(data, nonEmpty(c.TradeNoPath, "trade_no"))
 
 	// ── 成功判定（复刻旧引擎）──
 	success := false
 	if cond := strings.TrimSpace(c.SuccessCondition); cond != "" {
 		// 格式 "field_path=expected_value"
 		if parts := strings.SplitN(cond, "=", 2); len(parts) == 2 {
-			success = customDotPath(data, parts[0]) == parts[1]
+			success = extractDotPath(data, parts[0]) == parts[1]
 		}
 	} else {
 		// 默认：能取到 order_no 即视为成功
@@ -225,7 +221,7 @@ func (c *Custom) VerifyCallback(rawBody []byte, headers, query map[string]string
 		cbCurrency = "CNY"
 	}
 	if c.CurrencyPath != "" {
-		if v := customDotPath(data, c.CurrencyPath); v != "" {
+		if v := extractDotPath(data, c.CurrencyPath); v != "" {
 			cbCurrency = strings.ToUpper(v)
 		}
 	}
@@ -253,105 +249,6 @@ func (c *Custom) QueryOrder(_ context.Context, _ QueryRequest) (*QueryResult, er
 }
 
 // ── 私有工具（复刻旧 gateway 包 helpers.go/engine_webhook.go/engine_crypto.go，自带以独立编译）──
-
-// customDefault：空白则回落 fallback（复刻旧 protoStr 的「带默认值读取」语义）。
-func customDefault(v, fallback string) string {
-	if strings.TrimSpace(v) != "" {
-		return v
-	}
-	return fallback
-}
-
-// customCanonicalAmount：把金额规整到币种最小单位的小数位（复刻旧 AmountToMinor→AmountFromMinor）。
-// USD/CNY/EUR... 2 位；JPY/KRW... 0 位；BHD/KWD... 3 位。
-func customCanonicalAmount(amount decimal.Decimal, currency string) string {
-	p := customCurrencyDecimals(currency)
-	return amount.Round(p).StringFixed(p)
-}
-
-// customCurrencyDecimals：币种最小单位的有效小数位（对应旧 CurrencyMinorUnits：1→0、100→2、1000→3）。
-func customCurrencyDecimals(currency string) int32 {
-	switch strings.ToUpper(strings.TrimSpace(currency)) {
-	case "JPY", "KRW", "VND", "IDR", "CLP", "PYG", "RWF", "UGX",
-		"VUV", "XAF", "XOF", "XPF", "ISK":
-		return 0
-	case "BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND":
-		return 3
-	default:
-		return 2 // USD, EUR, GBP, CNY, AUD, CAD, HKD, SGD, ...
-	}
-}
-
-// customRenderTemplate：把模板里的 {{key}} 整串替换为 vars[key]（复刻旧 renderTemplate）。
-func customRenderTemplate(tmpl string, vars map[string]string) string {
-	result := tmpl
-	for k, v := range vars {
-		result = strings.ReplaceAll(result, "{{"+k+"}}", v)
-	}
-	return result
-}
-
-// customDotPath：按点路径从嵌套 map 取值（复刻旧 extractDotPath）。
-// 如 "data.object.order_no" → data["object"]["order_no"]；数字以最简字符串返回。
-func customDotPath(data map[string]interface{}, path string) string {
-	var current interface{} = data
-	for _, part := range strings.Split(path, ".") {
-		m, ok := current.(map[string]interface{})
-		if !ok {
-			return ""
-		}
-		current = m[part]
-	}
-	switch v := current.(type) {
-	case string:
-		return v
-	case float64:
-		if v == float64(int64(v)) {
-			return fmt.Sprintf("%d", int64(v))
-		}
-		return fmt.Sprintf("%g", v)
-	case json.Number:
-		return v.String()
-	case nil:
-		return ""
-	default:
-		return fmt.Sprintf("%v", v)
-	}
-}
-
-// customVerifySig：复刻旧 verifyWebhookSig 的签名口径。
-// hmac-sha256 → hex 严格比对（hmac.Equal）；hmac-md5/md5 → hex 大小写不敏感比对；
-// 其它（含 none/未知）→ 旧实现返回 true（跳过校验），此处保持一致。
-func customVerifySig(payload []byte, signature, secret, algo string) bool {
-	switch algo {
-	case "hmac-sha256":
-		mac := hmac.New(sha256.New, []byte(secret))
-		mac.Write(payload)
-		expected := hex.EncodeToString(mac.Sum(nil))
-		return hmac.Equal([]byte(expected), []byte(signature))
-	case "hmac-md5", "md5":
-		mac := hmac.New(md5.New, []byte(secret))
-		mac.Write(payload)
-		expected := hex.EncodeToString(mac.Sum(nil))
-		return strings.EqualFold(expected, signature)
-	default:
-		return true // "none" 或未知算法 = 跳过校验（与旧引擎一致）
-	}
-}
-
-// customHeaderCI：大小写不敏感取 header（复刻旧 getHeaderCI）。
-func customHeaderCI(headers map[string]string, key string) string {
-	if v, ok := headers[key]; ok {
-		return v
-	}
-	lk := strings.ToLower(key)
-	for k, v := range headers {
-		if strings.ToLower(k) == lk {
-			return v
-		}
-	}
-	return ""
-}
 
 // customFormToMap：URL-encoded 表单 + query 扁平化为 map（复刻旧 parseFormToMap）。
 // JSON 解析失败时的回调体兜底解析。
