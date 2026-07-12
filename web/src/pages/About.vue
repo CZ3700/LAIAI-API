@@ -9,8 +9,9 @@ const principles = [
   { n: '03', key: 'contactTitle', body: 'contactBody' },
 ]
 
+// 能力标签（恒真的事实陈述，非"实时状态"——避免像"healthy"那样暗示一个并不存在的实时探针）
 const signals = [
-  { label: 'Routing', value: 'healthy' },
+  { label: 'Routing', value: 'failover' },
   { label: 'Billing', value: 'ledgered' },
   { label: 'Models', value: 'global' },
 ]

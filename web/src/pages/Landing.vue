@@ -1,13 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/lib/api'
+import { modelModality, type PricedModel } from '@/lib/modelCatalog'
 import heroImage from '@/assets/ai-routing-hero.jpg'
-
-interface PricedModel {
-  model: string
-  provider: string
-}
 
 const { t } = useI18n()
 const models = ref<PricedModel[]>([])
@@ -30,13 +26,22 @@ const features = [
   { value: 'Global', key: 'global' },
 ]
 
-const lanes = [
-  { name: 'GPT-5.2', side: 'OpenAI', load: '91%', tone: 'bg-accent' },
-  { name: 'Claude', side: 'Anthropic', load: '84%', tone: 'bg-ok' },
-  { name: 'Gemini', side: 'Google', load: '76%', tone: 'bg-accent2' },
-  { name: 'Qwen / DeepSeek', side: 'CN models', load: '88%', tone: 'bg-accent' },
-  { name: 'GLM / MiniMax', side: 'CN models', load: '82%', tone: 'bg-ok' },
-]
+// curl 示例模型：取站点真实已上架的第一个 chat 模型（共享分类器过滤，避免拿到图像/视频/嵌入
+// 模型当 chat 示例）；无数据时留通用占位。
+const demoModel = computed(() => models.value.find((m) => modelModality(m) === 'chat')?.model || 'your-model')
+
+// 接入厂商展示：从真实 /api/pricing 数据聚合厂商→模型数，条宽按模型数占比。
+// 不再是硬编码的"实时负载百分比"（那是假数据，与实际不符）。
+const providerLanes = computed(() => {
+  const counts = new Map<string, number>()
+  for (const m of models.value) counts.set(m.provider, (counts.get(m.provider) || 0) + 1)
+  const tones = ['bg-accent', 'bg-ok', 'bg-accent2']
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)
+  const max = Math.max(1, ...sorted.map(([, c]) => c))
+  return sorted.map(([provider, count], i) => ({
+    provider, count, width: `${Math.round((count / max) * 100)}%`, tone: tones[i % tones.length],
+  }))
+})
 </script>
 
 <template>
@@ -70,11 +75,11 @@ const lanes = [
           </div>
           <div class="enter landing-stat-strip mt-10 grid max-w-xl grid-cols-3 divide-x py-4" style="animation-delay: 310ms">
             <div>
-              <p class="text-2xl font-semibold">{{ models.length || '120+' }}</p>
+              <p class="text-2xl font-semibold">{{ models.length || '—' }}</p>
               <p class="mt-1 text-xs uppercase">{{ t('surface.statModels') }}</p>
             </div>
             <div class="pl-5">
-              <p class="text-2xl font-semibold">{{ providerCount || '18+' }}</p>
+              <p class="text-2xl font-semibold">{{ providerCount || '—' }}</p>
               <p class="mt-1 text-xs uppercase">{{ t('surface.statProviders') }}</p>
             </div>
             <div class="pl-5">
@@ -118,7 +123,7 @@ const lanes = [
   -H "Authorization: Bearer sk-laiai-..." \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-5.2",
+    "model": "{{ demoModel }}",
     "messages": [{"role": "user", "content": "Hello"}],
     "stream": true
   }'</code></pre>
@@ -127,20 +132,21 @@ const lanes = [
       <div v-reveal class="space-y-5">
         <div class="landing-routing p-5">
           <div class="flex items-center justify-between">
-            <p class="text-sm font-medium">{{ t('surface.landingLiveRouting') }}</p>
-            <span class="rounded-full bg-ok/10 px-2 py-0.5 text-xs font-medium text-ok">{{ t('surface.statusHealthy') }}</span>
+            <p class="text-sm font-medium">{{ t('surface.landingProviders') }}</p>
+            <span v-if="providerCount" class="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">{{ t('surface.landingProvidersCount', { n: providerCount }) }}</span>
           </div>
-          <div class="mt-5 space-y-3">
-            <div v-for="lane in lanes" :key="lane.name" class="landing-lane">
+          <div v-if="providerLanes.length" class="mt-5 space-y-3">
+            <div v-for="lane in providerLanes" :key="lane.provider" class="landing-lane">
               <div class="flex items-center justify-between gap-4 text-sm">
-                <span class="font-medium">{{ lane.name }}</span>
-                <span class="text-muted">{{ lane.side }}</span>
+                <span class="font-mono font-medium">{{ lane.provider }}</span>
+                <span class="text-muted">{{ t('surface.landingModelCount', { n: lane.count }) }}</span>
               </div>
               <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-line">
-                <div class="landing-lane-bar h-full rounded-full" :class="lane.tone" :style="{ width: lane.load }"></div>
+                <div class="landing-lane-bar h-full rounded-full" :class="lane.tone" :style="{ width: lane.width }"></div>
               </div>
             </div>
           </div>
+          <p v-else class="mt-5 text-sm text-muted">{{ t('surface.landingProvidersEmpty') }}</p>
         </div>
         <div
           class="landing-ledger p-5"

@@ -34,7 +34,7 @@ onMounted(async () => {
 
 const links = [
   { to: '/models', label: () => t('nav.models') },
-  { to: '/rankings', label: () => t('nav.rankings') },
+  { to: '/playground', label: () => t('nav.tryit') },
   { to: '/docs', label: () => t('nav.docs') },
   { to: '/about', label: () => t('nav.about') },
 ]
@@ -93,7 +93,7 @@ const links = [
           </div>
           <div class="flex flex-wrap gap-x-4 gap-y-2">
             <router-link class="hover:text-ink" to="/models">{{ t('nav.models') }}</router-link>
-            <router-link class="hover:text-ink" to="/rankings">{{ t('nav.rankings') }}</router-link>
+            <router-link class="hover:text-ink" to="/playground">{{ t('nav.tryit') }}</router-link>
             <router-link class="hover:text-ink" to="/docs">{{ t('nav.docs') }}</router-link>
             <router-link class="hover:text-ink" to="/about">{{ t('nav.about') }}</router-link>
             <router-link class="hover:text-ink" to="/status">{{ t('status.short') }}</router-link>
