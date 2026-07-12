@@ -411,7 +411,7 @@ export default {
     revokeConfirm: 'Batalkan jemputan tertunda ini?',
     personal: 'Peribadi',
   },
-  admin: {
+  admin: {"grpSectionTitle":"Nisbah kumpulan","healthSectionTitle":"Kesihatan saluran",
     title: 'Pentadbir',
     token: 'Token pentadbir',
     tokenHint: 'Dihantar sebagai X-Admin-Token. Disimpan dalam tab pelayar ini sahaja.',

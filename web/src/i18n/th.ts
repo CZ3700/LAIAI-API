@@ -411,7 +411,7 @@ export default {
     revokeConfirm: 'ยกเลิกคำเชิญที่รอดำเนินการนี้?',
     personal: 'ส่วนตัว',
   },
-  admin: {
+  admin: {"grpSectionTitle":"อัตราส่วนกลุ่ม","healthSectionTitle":"สุขภาพช่องทาง",
     title: 'ผู้ดูแลระบบ',
     token: 'โทเคนผู้ดูแล',
     tokenHint: 'ส่งเป็น X-Admin-Token เก็บไว้ในแท็บเบราว์เซอร์นี้เท่านั้น',

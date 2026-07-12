@@ -467,7 +467,7 @@ export default {
     revokeConfirm: '撤銷這條待確認邀請？',
     personal: '個人',
   },
-  admin: {
+  admin: {"grpSectionTitle":"分組倍率","healthSectionTitle":"渠道健康",
     title: '管理',
     token: '管理權杖',
     tokenHint: '以 X-Admin-Token 發送，僅保存在目前瀏覽器分頁。',

@@ -467,7 +467,7 @@ const messages = {
     revokeConfirm: 'Cancel this pending invitation?',
     personal: 'Personal',
   },
-  admin: {
+  admin: {"grpSectionTitle":"Group ratios","healthSectionTitle":"Channel health",
     title: 'Admin',
     token: 'Admin token',
     tokenHint: 'Sent as X-Admin-Token. Kept in this browser tab only.',

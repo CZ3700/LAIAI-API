@@ -143,9 +143,11 @@ const { t, d } = useI18n()
 const tab = ref<'overview' | 'analytics' | 'health' | 'channels' | 'payments' | 'prices' | 'groups' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
 
 // 标签分级（对标后端 RBAC）：资金/系统/定价类仅 superadmin 可见，admin 看运营类。
-const ALL_TABS = ['overview', 'analytics', 'health', 'channels', 'payments', 'prices', 'groups', 'orgs', 'users', 'logs', 'settings', 'audit'] as const
+// 减法：analytics 并入 overview（同页展示运营分析）、health 并入 channels（渠道+健康同看）、
+// groups 并入 prices（都是定价配置，分组倍率区块用 isSuperadmin 守住原超管权限边界）。12→9。
+const ALL_TABS = ['overview', 'channels', 'payments', 'prices', 'orgs', 'users', 'logs', 'settings', 'audit'] as const
 // logs（全局调用明细）跨租户 → superadmin-only（配合后端 P2-3 把 /invocations 收归超管）
-const SUPER_ONLY_TABS = new Set(['payments', 'groups', 'settings', 'logs'])
+const SUPER_ONLY_TABS = new Set(['payments', 'settings', 'logs'])
 const visibleTabs = computed(() => ALL_TABS.filter((tb) => auth.isSuperadmin || !SUPER_ONLY_TABS.has(tb)))
 
 // —— 运营分析（资金 / 用户 / 质量 颗粒度） ——
@@ -603,12 +605,12 @@ function auditSensitive(a: string): boolean {
 watch(tab, (v) => {
   if (v === 'settings' && Object.keys(settings.value).length === 0) void loadSettings().catch(showError)
   if (v === 'settings' && !logStats.value) void loadLogStats()
-  if (v === 'analytics' && !analytics.value) void loadAnalytics().catch(showError)
+  if (v === 'overview' && !analytics.value) void loadAnalytics().catch(showError) // analytics 并入 overview
   if (v === 'payments' && !payLoaded.value) void loadPayChannels().catch(showError)
   if (v === 'users' && users.value.length === 0) void loadUsers().catch(showError)
   if (v === 'users' && usageByUser.value.length === 0) void loadUsageByUser().catch(showError)
   if (v === 'audit' && audit.value.length === 0) void loadAudit().catch(showError)
-  if (v === 'health') void loadHealth().catch(showError)
+  if (v === 'channels') void loadHealth().catch(showError) // health 并入 channels
 })
 
 // —— 渠道健康看板（M2，只读可观测；不反馈选路）——
@@ -1252,7 +1254,9 @@ async function submitGrant() {
 async function loadAll() {
   try {
     // group-ratios/model-group-ratios 是 superadmin-only 端点，非超管加载会 403 → 按角色分支（FE-1）
-    const tasks = [loadOverview(), loadChannels(), loadPrices(), loadCatalog(), loadOrgs()]
+    // analytics 随 overview（默认 tab）、health 随 channels 一并加载——减法合并后二者不再有独立 tab，
+    // watch(tab) 在初始 tab 上不触发，故在此预载（admin 侧多两查询可接受）。
+    const tasks = [loadOverview(), loadAnalytics(), loadChannels(), loadHealth(), loadPrices(), loadCatalog(), loadOrgs()]
     if (auth.isSuperadmin) {
       tasks.push(loadGroupRatios(), loadModelGroupRatios())
     }
@@ -1403,7 +1407,8 @@ onMounted(async () => {
       </template>
 
       <!-- 运营分析：资金 / 用户 / 质量 颗粒度 -->
-      <template v-if="tab === 'analytics'">
+      <!-- 运营分析（减法：并入概览 tab，同页展示资金/用户/质量颗粒度）-->
+      <template v-if="tab === 'overview'">
         <div v-if="analytics" class="space-y-6">
           <div class="flex items-center justify-between">
             <p class="text-sm text-muted">{{ t('admin.anIntro') }}</p>
@@ -2333,7 +2338,9 @@ onMounted(async () => {
       </template>
 
       <!-- 分组倍率 -->
-      <template v-if="tab === 'groups'">
+      <!-- 分组倍率（减法：并入定价 tab；用 isSuperadmin 守住原超管权限边界，非超管不可见/不可改）-->
+      <template v-if="tab === 'prices' && auth.isSuperadmin">
+        <h3 class="mt-2 font-semibold">{{ t('admin.grpSectionTitle') }}</h3>
         <form class="app-panel grid gap-4 p-5 sm:grid-cols-3 sm:items-end" @submit.prevent="upsertGroupRatio">
           <div>
             <label class="label" for="gr-name">{{ t('admin.grName') }}</label>
@@ -2455,8 +2462,9 @@ onMounted(async () => {
         </form>
       </div>
 
-      <!-- 渠道健康看板（M2，只读可观测；不反馈选路） -->
-      <template v-if="tab === 'health'">
+      <!-- 渠道健康看板（M2，只读可观测；减法：并入渠道 tab，渠道管理下方同页展示健康）-->
+      <template v-if="tab === 'channels'">
+        <h3 class="mt-4 font-semibold">{{ t('admin.healthSectionTitle') }}</h3>
         <p class="text-xs text-muted">{{ t('admin.healthHint') }}</p>
         <div class="data-table-wrap">
           <table class="table w-full text-sm whitespace-nowrap">

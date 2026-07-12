@@ -411,7 +411,7 @@ export default {
     revokeConfirm: 'Hủy lời mời đang chờ này?',
     personal: 'Cá nhân',
   },
-  admin: {
+  admin: {"grpSectionTitle":"Hệ số nhóm","healthSectionTitle":"Tình trạng kênh",
     title: 'Quản trị',
     token: 'Mã quản trị',
     tokenHint: 'Gửi dưới dạng X-Admin-Token. Chỉ lưu trong tab trình duyệt này.',

@@ -411,7 +411,7 @@ export default {
     revokeConfirm: 'Отменить это ожидающее приглашение?',
     personal: 'Личное',
   },
-  admin: {
+  admin: {"grpSectionTitle":"Групповые коэффициенты","healthSectionTitle":"Здоровье каналов",
     title: 'Администрирование',
     token: 'Админ-токен',
     tokenHint: 'Отправляется как X-Admin-Token. Хранится только в этой вкладке.',

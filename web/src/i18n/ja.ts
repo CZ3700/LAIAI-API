@@ -410,7 +410,7 @@ export default {
     revokeConfirm: 'この保留中の招待を取り消しますか？',
     personal: '個人',
   },
-  admin: {
+  admin: {"grpSectionTitle":"グループ倍率","healthSectionTitle":"チャネル健全性",
     title: '管理',
     token: '管理トークン',
     tokenHint: 'X-Admin-Token として送信。このブラウザタブにのみ保存されます。',

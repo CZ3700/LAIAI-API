@@ -466,7 +466,7 @@ export default {
     revokeConfirm: '撤销这条待确认邀请？',
     personal: '个人',
   },
-  admin: {
+  admin: {"grpSectionTitle":"分组倍率","healthSectionTitle":"渠道健康",
     title: '管理',
     token: '管理令牌',
     tokenHint: '以 X-Admin-Token 发送，仅保存在当前浏览器标签页。',

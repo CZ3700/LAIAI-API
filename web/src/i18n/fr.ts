@@ -411,7 +411,7 @@ export default {
     revokeConfirm: 'Annuler cette invitation en attente ?',
     personal: 'Personnel',
   },
-  admin: {
+  admin: {"grpSectionTitle":"Ratios de groupe","healthSectionTitle":"Santé des canaux",
     title: 'Administration',
     token: "Jeton d'administration",
     tokenHint: 'Envoyé comme X-Admin-Token. Conservé uniquement dans cet onglet.',
