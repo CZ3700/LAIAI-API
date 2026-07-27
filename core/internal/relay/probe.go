@@ -31,7 +31,13 @@ type ProbeAttempt struct {
 const probePerCandidateTimeout = 12 * time.Second
 
 // candidateBaseURLs：从用户给的原始地址（可能只是主域名）推导候选 base_url。
-// 已含 /v1 等版本段则只用原值；否则按常见格式补全。
+// 已含 /v1 等版本段则只用原值；否则按常见网关前缀约定逐个试探：
+//
+//	{host}/v1        OpenAI 官方与多数兼容网关
+//	{host}/api/v1    MaaS/自建聚合站把 OpenAI 兼容面挂在 /api 下（真实案例：仅给主域名时
+//	                 此前三个候选全 404，真实端点 /api/v1/models 从未被试到）
+//	{host}           用户给的已是完整 base（网关直接在根提供 /models）
+//	{host}/openai/v1 部分聚合器/Azure 风格前缀
 func candidateBaseURLs(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -44,7 +50,11 @@ func candidateBaseURLs(raw string) []string {
 	if strings.Contains(raw, "/v1") || strings.Contains(raw, "/v1beta") {
 		return []string{raw}
 	}
-	return []string{raw + "/v1", raw, raw + "/openai/v1"}
+	cands := []string{raw + "/v1"}
+	if !strings.HasSuffix(raw, "/api") { // 用户已给到 /api 时首个候选即 /api/v1，不再拼出 /api/api/v1
+		cands = append(cands, raw+"/api/v1")
+	}
+	return append(cands, raw, raw+"/openai/v1")
 }
 
 // probeFamily：把渠道 provider 归一到协议族（anthropic/gemini/openai），决定 /models 的
