@@ -452,38 +452,63 @@ async function pollVideoOnce() {
   }
 }
 
-// 产物加载：**统一走平台同源代理** /v1/video/generations/{id}/content（后端对直链也代理并
-// 修正 Content-Type）。此前对直链用 <video src=arkurl> 直连会黑屏——对象存储签名 URL 常返
-// application/octet-stream 令 <video> 拒播，跨域又 fetch 不到（CORS）。同源代理 fetch+Bearer
-// 转 blob，一举绕开 混合内容/CORS/Content-Type 三坑（playground 短片体量可接受）。
+// 产物加载三级阶梯（任一级成功即内联播放）。单一路径修不好这个问题——两类失败互斥：
+//   对象存储签名 URL 常返 application/octet-stream，<video src> 直连必拒播（黑屏）；
+//   而平台代理能修正 Content-Type，却在「海外部署 + 国内对象存储」被跨境 RST（火山
+//   tos-cn-beijing 实测 Connection reset），代理不到。故按成功率与失败速度排成阶梯：
+//   ① 浏览器直取直链 → blob 重贴 video/mp4：绕开 Content-Type（需上游允许 CORS；国内浏览器直连国内存储）
+//   ② 平台同源代理 /content → blob：后端取流并强制 video/mp4（海外厂商产物主路径；
+//      也覆盖「服务器可达但浏览器 CORS 被拦」的网关，如自建 MaaS CDN）
+//   ③ 直链交给 <video>：Content-Type 正常即可播；否则显示下载提示（下载路径始终独立可用）
+let lastVideoLoadErr = ''
+
 async function loadVideoResult(task: VideoTask) {
   if (!task.result_url) {
     videoError.value = t('play.videoNoResult')
     return
   }
-  // 直链产物（国内厂商 seedance/hailuo/wan——result_url 是绝对 http URL）：浏览器直连播放。
-  // 关键：服务端代理端点 /content 在「海外部署 + 国内对象存储」下会被跨境网络 RST（Connection
-  // reset by peer，实测火山 tos-cn-beijing 从海外 VPS 拉取即被重置）——服务器根本代理不到。
-  // 客户端浏览器（国内）能直连火山 TOS：<video src> 直连绕开 CORS（媒体元素跨域 src 允许），
-  // 下载走 saveVideo（fetch 失败自动回退新标签右键另存）。若 octet-stream 令 <video> 拒播，
-  // 用户仍可下载。海外厂商产物（sora/veo）走的是相对代理路径，服务器可达，保持代理下方逻辑。
-  if (/^https?:\/\//i.test(task.result_url)) {
-    videoSrc.value = task.result_url
+  lastVideoLoadErr = ''
+  const direct = /^https?:\/\//i.test(task.result_url)
+  if (direct && (await tryVideoBlob(task.result_url))) return
+  if (await tryVideoBlob(`/v1/video/generations/${encodeURIComponent(task.id)}/content`, true)) return
+  if (direct) {
+    videoSrc.value = task.result_url // 兜底：能播就播；拒播时 @error 触发下载提示
     return
   }
-  // 相对路径 = 平台代理端点（sora/veo 等海外厂商产物，服务器可达）：fetch+Bearer→blob 绕 Content-Type。
+  videoError.value = lastVideoLoadErr || t('play.videoNoResult')
+}
+
+// tryVideoBlob：取流 → blob 重贴可识别 MIME → 作为播放源。成功 true；失败（CORS/网络/非 2xx/空体）
+// 返回 false 交下一级，并记录原因供全部失败时展示。
+async function tryVideoBlob(url: string, withAuth = false): Promise<boolean> {
+  // 单级超时：跨境不可达时后端守卫客户端是 2 分钟超时，不能让用户干等到那时才降级
+  const ac = new AbortController()
+  const timer = window.setTimeout(() => ac.abort(), 25_000)
   try {
-    const r = await fetch(`/v1/video/generations/${encodeURIComponent(task.id)}/content`, {
-      headers: { Authorization: `Bearer ${apiKey.value}` },
+    const r = await fetch(url, {
+      signal: ac.signal,
+      ...(withAuth ? { headers: { Authorization: `Bearer ${apiKey.value}` } } : {}),
     })
-    if (!r.ok) throw new Error(`content fetch failed (${r.status})`)
+    if (!r.ok) {
+      lastVideoLoadErr = `content fetch failed (${r.status})`
+      return false
+    }
     const blob = await r.blob()
-    // 兜底：若代理未修正类型，本地按 video/mp4 重贴（<video> 需可识别的视频 MIME）
+    if (blob.size === 0) {
+      lastVideoLoadErr = 'empty content'
+      return false
+    }
     const typed = blob.type && blob.type.startsWith('video/') ? blob : new Blob([blob], { type: 'video/mp4' })
+    if (videoBlobUrl) URL.revokeObjectURL(videoBlobUrl)
     videoBlobUrl = URL.createObjectURL(typed)
     videoSrc.value = videoBlobUrl
+    videoPlayFallback.value = false // 换新源：清掉上一次的拒播提示
+    return true
   } catch (e) {
-    videoError.value = (e as Error).message
+    lastVideoLoadErr = (e as Error).message // 跨域被拦/网络失败/超时：交下一级
+    return false
+  } finally {
+    window.clearTimeout(timer)
   }
 }
 
