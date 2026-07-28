@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { api } from '@/lib/api'
@@ -59,34 +59,43 @@ const messages = ref<Msg[]>([])
 const input = ref('')
 
 // 对话保留 3 天（localStorage，跨导航/标签页持久；过期自动丢弃）——切走再切回不再清空。
+// **模型选择一并持久化**：聊天区只在 mode==='chat' 时渲染，而 mode 由所选模型推导。此前刷新后
+// 模型被重置为价目表第一个（字母序，很可能是生图/视频模型）→ 记录明明恢复了却整片不渲染，
+// 表现为"对话记录没了"（用户实测反馈的真因）。
 const CHAT_STORE = 'laiai_pg_chat'
 const CHAT_TTL = 3 * 24 * 60 * 60 * 1000
 function persistChat() {
   try {
-    // 只留完成的消息（不含流式中的空占位气泡）；system 一并存
+    // 只留完成的消息（不含流式中的空占位气泡）；system / 所选模型一并存
     const done = messages.value.filter((m) => m.content)
-    if (done.length === 0) {
+    if (done.length === 0 && !model.value && !system.value) {
       localStorage.removeItem(CHAT_STORE)
       return
     }
-    localStorage.setItem(CHAT_STORE, JSON.stringify({ at: Date.now(), system: system.value, messages: done }))
+    localStorage.setItem(
+      CHAT_STORE,
+      JSON.stringify({ at: Date.now(), system: system.value, model: model.value, messages: done }),
+    )
   } catch {
     // localStorage 满/禁用：忽略（保留只是便利，非核心）
   }
 }
-function restoreChat() {
+// restoreChat：恢复消息/system，并返回上次所选模型名（模型需等价目表加载完再套用，见 onMounted）。
+function restoreChat(): string {
   try {
     const raw = localStorage.getItem(CHAT_STORE)
-    if (!raw) return
-    const saved = JSON.parse(raw) as { at: number; system?: string; messages: Msg[] }
+    if (!raw) return ''
+    const saved = JSON.parse(raw) as { at: number; system?: string; model?: string; messages: Msg[] }
     if (!saved.at || Date.now() - saved.at > CHAT_TTL) {
       localStorage.removeItem(CHAT_STORE)
-      return
+      return ''
     }
     if (Array.isArray(saved.messages)) messages.value = saved.messages
     if (saved.system) system.value = saved.system
+    return typeof saved.model === 'string' ? saved.model : ''
   } catch {
     localStorage.removeItem(CHAT_STORE)
+    return ''
   }
 }
 const sending = ref(false)
@@ -189,7 +198,7 @@ async function toBottom() {
 }
 
 onMounted(async () => {
-  restoreChat() // 对话保留 3 天：切走再切回/刷新后恢复
+  const savedModel = restoreChat() // 对话保留 3 天：切走再切回/刷新后恢复
   // 恢复未完成的视频任务跟踪（刷新/误关后回到页面继续轮询）
   const savedTask = sessionStorage.getItem(VIDEO_TASK_STORE)
   if (savedTask && apiKey.value) {
@@ -200,14 +209,20 @@ onMounted(async () => {
   try {
     const r = await api<{ models: PricedModel[] }>('GET', '/api/pricing')
     models.value = r.models
+    // 优先级：?model= 深链（Models 页"试一试"）> 上次所选（须仍在售）> 价目表首项
     const requested = typeof route.query.model === 'string' ? route.query.model : ''
     const found = requested ? r.models.find((m) => m.model === requested) : null
     if (found) model.value = found.model
+    else if (savedModel && r.models.some((m) => m.model === savedModel)) model.value = savedModel
     else if (r.models.length) model.value = r.models[0].model
   } catch {
     // 无价目不阻塞：用户仍可手填模型名（input fallback 见模板）
   }
 })
+
+// 模型切换即落盘：刷新/重进后仍停在用户选的模型（进而 mode 不变、聊天区不被隐藏）。
+// 只在选择变化时写一次，不参与流式逐字写入（避免高频 localStorage 写）。
+watch(model, () => persistChat())
 
 // keep-alive 下切回页面：Models 页"试一试"深链 ?model= 仍要生效（onMounted 只跑一次）
 onActivated(() => {
@@ -230,7 +245,7 @@ function clearAll() {
   lastUsage.value = null
   images.value = []
   genError.value = ''
-  localStorage.removeItem(CHAT_STORE) // 显式清空对话 → 同时清持久化
+  persistChat() // 显式清空对话 → 落盘空记录（模型选择保留，否则下次进来又被重置回首项）
   if (!videoActive.value) resetVideoResult() // 进行中的任务不清（余额已可能被冻结，保留跟踪）
 }
 
