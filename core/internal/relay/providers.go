@@ -31,7 +31,7 @@ var providerProfiles = map[string]providerProfile{
 		Notes: "默认 BytePlus ModelArk 国际端点；bot- 前缀模型走 /bots/ 路由"},
 	"modelark": {DisplayName: "BytePlus ModelArk", DefaultBaseURL: "https://ark.ap-southeast.bytepluses.com/api/v3", Adapter: "volcengine"},
 	"doubao": {DisplayName: "字节豆包（国内方舟）", DefaultBaseURL: "https://ark.cn-beijing.volces.com/api/v3", Adapter: "volcengine",
-		Notes: "火山方舟国内端点（Seedance 2.0 视频任务 + chat）；真机验证 2026-07-05"},
+		Notes: "火山方舟国内端点（Seedance 2.0 视频任务 + chat）；真机验证 2026-07-05。ark 兼容聚合网关（MaaS 站）同用本 provider：base_url 填 https://<host>/api/v3（视频任务方言挂在 /api/v3 下，chat 面通常在 /api/v1 另建渠道）"},
 	// —— 视频任务厂商（§3.8 批次 2，知识移植自 New API；仅 task 路由，非 chat）——
 	"kling": {DisplayName: "快手可灵 Kling（视频任务）", DefaultBaseURL: "https://api-beijing.klingai.com", Adapter: "kling", TaskOnly: true,
 		Notes: "视频生成任务；凭证格式 access_key|secret_key（JWT-HS256 现签）。真机验证待补"},

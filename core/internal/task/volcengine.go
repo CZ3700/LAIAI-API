@@ -248,13 +248,7 @@ func (volcengineTask) ParseSubmit(resp *http.Response) (string, error) {
 		// 带上游解释返回类型化错误 → handler 转 400 给客户端（与 chat 透传上游错误同性质）。
 		// 401/403/404 等是渠道配置/key 问题，仍走通用 502（真机 fixture：400=InvalidParameter）。
 		if resp.StatusCode == http.StatusBadRequest {
-			var parsed struct {
-				Error struct {
-					Message string `json:"message"`
-				} `json:"error"`
-			}
-			_ = json.Unmarshal(raw, &parsed)
-			return "", &UpstreamRejectedError{StatusCode: resp.StatusCode, Message: parsed.Error.Message}
+			return "", &UpstreamRejectedError{StatusCode: resp.StatusCode, Message: arkErrMsg(raw)}
 		}
 		return "", fmt.Errorf("task: upstream submit status %d", resp.StatusCode)
 	}
@@ -265,6 +259,35 @@ func (volcengineTask) ParseSubmit(resp *http.Response) (string, error) {
 		return "", fmt.Errorf("task: upstream submit response missing task id")
 	}
 	return parsed.ID, nil
+}
+
+// arkErrMsg：提取上游错误解释，兼容两种信封（真实案例：MaaS 类 ark 兼容网关）——
+//
+//	ark 官方对象形:  {"error":{"code":"InvalidParameter","message":"..."}}
+//	MaaS 网关平铺形: {"error":"ValidationError","errorCode":10001,"message":"...","requestId":"..."}
+//
+// 平铺形的 error 是**字符串**（错误类名），按 ark 对象形解析会静默得空串——客户端只看到
+// "上游拒绝了参数:" 后面没内容。两形都试，取到什么给什么；都取不到返回空（handler 有兜底文案）。
+func arkErrMsg(raw []byte) string {
+	var obj struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &obj) == nil && obj.Error.Message != "" {
+		return obj.Error.Message
+	}
+	var flat struct {
+		Error   string `json:"error"` // 错误类名（如 ValidationError）
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &flat) == nil && flat.Message != "" {
+		if flat.Error != "" {
+			return flat.Error + ": " + flat.Message
+		}
+		return flat.Message
+	}
+	return ""
 }
 
 func (volcengineTask) QueryRequest(ctx context.Context, ch *relay.Channel, credential, upstreamTaskID string) (*http.Request, error) {
