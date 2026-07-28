@@ -34,6 +34,22 @@ core 侧取值：
   不配的后果：所有客户端 IP 显示为 CF 节点 IP → IP 白名单误拒、限流按 CF 节点聚合、审计失真。
 - CF 网段清单 https://www.cloudflare.com/ips/ 变更需跟进（建议季度检查）。
 
+### 1.2b 改 Caddyfile 后必做：先校验再重启（写错=整站下线）
+
+Caddy 配置有语法错误时容器起不来，**站点直接全挂**。改动 infra/Caddyfile 后先离线校验：
+
+```bash
+docker run --rm -v /opt/laiai-next/infra/Caddyfile:/etc/caddy/Caddyfile:ro   -e LAIAI_DOMAIN=":80"   caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+# 期望输出：Valid configuration
+```
+
+⚠️ **`LAIAI_DOMAIN` 必须给值**（无域名部署给 `:80`，有域名给该域名）。留空会让
+`{$LAIAI_DOMAIN} {` 塌成 ` {`，被 Caddy 当作**全局选项块**解析，报出与真实问题无关的
+`unrecognized global option: encode`——2026-07 实际踩过，误判成配置有错。compose 侧有
+`${LAIAI_DOMAIN:-:80}` 默认值兜底，故真实启动不受影响。
+
+注释语法只认 `#`（`//` 会被当配置指令导致解析失败）。
+
 ### 1.3 上线冒烟（每次改动边缘拓扑后必跑）
 
 ```bash
