@@ -53,8 +53,22 @@
 		# CSP（审查 L6）：token 存于 JS storage，CSP 是 XSS 的关键兜底。
 		# Vite 产物无内联脚本；style 'unsafe-inline' 因 Tailwind 运行时注入需要。
 		# img-src 含 https:：体验场生图结果可能是上游 CDN 的 https 图片 URL（非 base64），需允许内联显示；
-		# 图片是被动内容、不执行脚本，风险低。关键的 connect-src 仍锁死 'self'（XSS 数据外泄的主控制不放松）。
-		Content-Security-Policy "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+		# 图片是被动内容、不执行脚本，风险低。
+		#
+		# media-src（视频黑屏根因，实测控制台报错）：缺该指令时回落 default-src 'self'，于是
+		#   ① <video src="https://…厂商对象存储/x.mp4"> 被拒（Refused to load … media-src）
+		#   ② 代理取流生成的 blob: URL 同样被拒
+		# 两条把「直连」「同源代理」两条播放路径一起掐死，只剩下载（window.open 属导航，不受此限）。
+		# 故放行 blob:（本站自己生成的对象 URL）与 https:（厂商产物 CDN），与 img-src 同档——
+		# 媒体同为被动内容、不执行脚本。
+		#
+		# connect-src 增 https:：产物取流转 blob 是修 Content-Type 的唯一客户端手段（对象存储签名 URL
+		# 常返 application/octet-stream，浏览器拒播；海外部署又代理不到国内存储）。厂商产物域名由
+		# 运营配置、不可预先枚举，故按协议放行。**代价诚实说明**：XSS 下可外泄数据的面从 img 信标
+		# 扩到可读响应的 fetch——但本站 img-src 早已放行 https:（信标外泄本就存在），且 Vue 默认转义 +
+		# 无内联脚本，权衡后接受；若将来收紧，应改为「产物一律经平台代理 + connect-src 收回 'self'」，
+		# 前提是部署地与厂商存储网络可达（当前海外 VPS ↔ 国内 TOS 不可达，故做不到）。
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: https:; media-src 'self' blob: data: https:; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
 		-Server
 	}
 
