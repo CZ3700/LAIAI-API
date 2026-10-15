@@ -121,3 +121,40 @@ a public JSON DTO. Return only platform content URLs and safe content metadata.
 Tests use handwritten SQLite DDL, with concurrent CAS coverage and simulated
 transport/blob faults. MySQL locking, cloud object-store semantics, deployment
 ACLs/cleanup and approved official CDN host discovery remain integration gates.
+
+## FilesystemBlobStore deployment
+
+`NewFilesystemBlobStore(absoluteRoot)` implements Put/Open/Delete and Close with
+no additional dependency. Provision an existing absolute private directory;
+symlinks in the root or its ancestors are refused. POSIX group/other permission
+bits must be zero. On Windows, deployment must grant access only to the service
+identity and administrators through ACLs; Go mode bits do not validate ACLs.
+Keep this directory outside web roots and never expose it through static serving.
+
+Object keys must match this module's generated format and are SHA-256 mapped to
+single-level opaque filenames. `os.Root` enforces containment; reads refuse
+symlinks, directories and changed file identities. Put writes an exclusive
+random 0600 temporary file, bounds and verifies exact bytes/SHA-256, flushes it,
+then atomically publishes through a hard link that cannot overwrite a winner.
+Repeated Put of the same content succeeds; conflicting bytes return a safe 409.
+Failure before publication removes the temporary file and exposes no partial
+object. Cancellation after publication can leave a complete object; retry is
+idempotent. Context cancellation is checked between reads and closes active file
+handles. Supplied readers must cooperate with cancellation or return promptly;
+an arbitrary blocking io.Reader cannot safely be force-stopped. The worker uses
+a regular bounded temporary file, rather than an external blocking stream.
+
+Every HTTP and worker replica must mount the SAME private shared volume with
+coherent directory reads and atomic hard-link creation on one filesystem. Do not
+use separate pod-local disks, object-store FUSE, or an unverified SMB/NFS driver.
+Unsupported hard links fail closed; there is no unsafe overwrite fallback.
+File contents are fsynced before publication; POSIX also syncs the directory.
+Windows directory durability and shared-volume crash semantics require a real
+deployment acceptance test. Only the service identities may mutate this root;
+`os.Root` does not protect against hostile mount changes or privileged writers.
+
+Stop workers/readers before Close. Startup cleanup may remove abandoned `.tmp-*`
+files only after proving they belong to no live writer (maintenance window or
+conservative shared-volume lease policy). Reconciliation of orphan `.blob`
+objects must preserve currently referenced and potentially committed attempts.
+Never blindly clean a shared directory when another replica is writing.
