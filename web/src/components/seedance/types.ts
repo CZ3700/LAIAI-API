@@ -10,7 +10,7 @@ export interface Billing {
   currency: string; state: string; reserved_amount: string; settled_amount: string | null; released_amount: string; net_charged_amount: string | null
   pricing_version: string; billing_rule_version: string; actual_usage: { completion_tokens: number | null; total_tokens: number | null } | null
   entries: { entry_id: string; type: string; amount: string; created_at: string }[]
-  estimated_tokens?: number; unit_price_usd_per_1m?: string; metering?: Metering | null
+  billable_tokens?: number | null; estimated_tokens?: number; unit_price_usd_per_1m?: string; metering?: Metering | null
 }
 export interface Metering { source: string; has_input_video: boolean; input_video_count: number | null; input_duration_ms: number; input_duration_source: string; output_duration_ms: number; output_frames: number; width: number; height: number; fps_numerator: number; fps_denominator: number; resolution: string; ratio: string; mode: string; service_tier: string; draft: boolean; capability_version: string; minimum_rule_version: string; minimum_tokens: number | null }
 export interface LogDetail { request: LogRow; task: Record<string, unknown> | null; billing: Billing | null; bodies: Record<string, BodyInfo>; as_of: string }

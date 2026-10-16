@@ -226,7 +226,7 @@ func TestMySQLAssetTaskCreationBindingsAndRollback(t *testing.T) {
 	if count != 0 {
 		t.Fatal("estimate wrote task refs")
 	}
-	v, _, err := f.s.Create(context.Background(), f.key, "request_asset", "idempotent-asset-create", in)
+	v, _, err := f.s.Create(context.Background(), f.key, f.requestID("request_asset"), "idempotent-asset-create", in)
 	must(t, err)
 	var ref videoasset.TaskReference
 	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&ref).Error)
@@ -249,7 +249,7 @@ func TestMySQLAssetTaskCreationBindingsAndRollback(t *testing.T) {
 			tx.AddError(errors.New("event unavailable"))
 		}
 	}))
-	if _, _, err = f.s.Create(context.Background(), f.key, "request_asset_failed", "idempotent-asset-failed", in); err == nil {
+	if _, _, err = f.s.Create(context.Background(), f.key, f.requestID("request_asset_failed"), "idempotent-asset-failed", in); err == nil {
 		t.Fatal("create accepted failed event")
 	}
 	must(t, f.s.DB.Callback().Create().Remove("fail_video_event"))
@@ -284,7 +284,7 @@ func TestMySQLDraftMetadataAndLicenseRevalidation(t *testing.T) {
 	must(t, f.s.DB.Create(&portrait).Error)
 	must(t, f.s.DB.Model(&videoasset.Group{}).Where("group_id = ?", group.ID).Update("portrait_id", session).Error)
 	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "image_url", ImageURL: &ark.MediaReference{URL: "asset://" + asset.ID}}}}
-	parent, _, err := f.s.Create(context.Background(), f.key, "request_draft_parent", "idempotent-draft-parent", in)
+	parent, _, err := f.s.Create(context.Background(), f.key, f.requestID("request_draft_parent"), "idempotent-draft-parent", in)
 	must(t, err)
 	cap.PublicModel = ark.Model25
 	cap.UpstreamModel = "seedance25-fixture"
