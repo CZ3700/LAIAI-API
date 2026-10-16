@@ -1,0 +1,4 @@
+ALTER TABLE video_task_states
+ ADD COLUMN query_sequence BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ ADD COLUMN applied_query_sequence BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ ADD COLUMN query_lease_until DATETIME(3) NULL;

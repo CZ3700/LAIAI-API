@@ -50,6 +50,9 @@ type State struct {
 	IdempotencyRecordID      uint64
 	ParentDraftTaskID        string
 	RowVersion               uint64
+	QuerySequence            uint64
+	AppliedQuerySequence     uint64
+	QueryLeaseUntil          *time.Time
 	EventSequence            uint64
 	LastSyncedAt             *time.Time
 	NextPollAt               time.Time
@@ -212,6 +215,28 @@ type Policy struct {
 }
 
 func (Policy) TableName() string { return "video_org_policies" }
+
+// QueryReceipt preserves typed official observations independently of applying
+// billing. ObservationJSON is an explicit whitelist without result URLs.
+type QueryReceipt struct {
+	AttemptID         string `gorm:"primaryKey"`
+	OrgID             uint64
+	TaskID            string
+	Sequence          uint64
+	TaskRowVersion    uint64
+	HTTPStatus        int `gorm:"column:http_status"`
+	Outcome           string
+	ProviderRequestID string
+	ObservationJSON   string `gorm:"column:observation_json"`
+	HasVideo          bool
+	HasLastFrame      bool
+	PayloadRef        string
+	ReceivedAt        time.Time
+	AppliedAt         *time.Time
+	ApplyErrorCode    string
+}
+
+func (QueryReceipt) TableName() string { return "video_query_receipts" }
 
 type TaskView struct {
 	ID             string     `json:"id"`

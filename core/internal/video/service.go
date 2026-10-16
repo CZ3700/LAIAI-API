@@ -16,20 +16,25 @@ import (
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/task"
+	"github.com/laiai/laiai-next/core/internal/videoartifact"
+	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
 type Service struct {
-	DB       *gorm.DB
-	Keyring  *crypto.Keyring
-	Evidence *invocation.VideoStore
-	Secret   []byte
-	Client   *http.Client
-	Log      *slog.Logger
-	Now      func() time.Time
-	Gate     task.Gate
+	DB              *gorm.DB
+	Keyring         *crypto.Keyring
+	Evidence        *invocation.VideoStore
+	Secret          []byte
+	Client          *http.Client
+	Log             *slog.Logger
+	Now             func() time.Time
+	Gate            task.Gate
+	ArtifactWorker  *videoartifact.Worker
+	ArtifactService *videoartifact.Service
+	Assets          *videoasset.Service
 	// Endpoint overrides exist for injected httptest clients only. Production
 	// configuration uses the fixed mainland official endpoint.
 	AllowTestEndpoint bool
