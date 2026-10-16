@@ -60,7 +60,7 @@ func videoSamePayload(a, b VideoPayload) bool {
 		a.CorrelationKey == b.CorrelationKey && a.Direction == b.Direction && a.Purpose == b.Purpose && a.SchemaVersion == b.SchemaVersion &&
 		a.EncryptionKeyID == b.EncryptionKeyID && a.WrappedKey == b.WrappedKey && bytes.Equal(a.Nonce, b.Nonce) &&
 		a.CiphertextSHA256 == b.CiphertextSHA256 && a.PlaintextBytes == b.PlaintextBytes && a.RedactionVersion == b.RedactionVersion && a.BodyFormat == b.BodyFormat &&
-		a.CreatedAt.Equal(b.CreatedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
+		a.CaptureRepresentation == b.CaptureRepresentation && a.CreatedAt.Equal(b.CreatedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
 }
 
 func (s *VideoStore) ReadForExecution(ctx context.Context, orgID uint64, payloadID string, access VideoAccess) ([]byte, error) {

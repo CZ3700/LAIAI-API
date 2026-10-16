@@ -3,6 +3,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
 import { fmtUsd } from '@/lib/money'
+import { useRoute, useRouter } from 'vue-router'
+import SeedanceRequestLogs from '@/components/seedance/SeedanceRequestLogs.vue'
+import { useSeedanceI18n } from '@/components/seedance/messages'
 
 interface UsageRow {
   id: number
@@ -35,6 +38,11 @@ interface ModelStat { model: string }
 interface KeyRow { id: number; name: string; prefix: string }
 
 const { t, n, d } = useI18n()
+useSeedanceI18n()
+const route = useRoute()
+const router = useRouter()
+const seedanceTab = computed(() => route.query.tab === 'seedance')
+function switchTab(value: boolean) { selected.value = null; void router.replace({ query: value ? { tab: 'seedance' } : {} }) }
 const rows = ref<UsageRow[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -156,6 +164,9 @@ onMounted(() => {
       </div>
     </div>
 
+    <div class="segmented-control mb-4" role="tablist"><button type="button" role="tab" :aria-selected="!seedanceTab" :class="{ active: !seedanceTab }" @click="switchTab(false)">{{ t('seedance.general') }}</button><button type="button" role="tab" :aria-selected="seedanceTab" :class="{ active: seedanceTab }" @click="switchTab(true)">{{ t('seedance.tab') }}</button></div>
+    <SeedanceRequestLogs v-if="seedanceTab" />
+    <template v-else>
     <div class="toolbar-panel items-end">
       <div class="filter-group">
         <label>{{ t('reqlog.filterTimeRange') }}</label>
@@ -333,5 +344,6 @@ onMounted(() => {
         </div>
       </aside>
     </div>
+    </template>
   </div>
 </template>

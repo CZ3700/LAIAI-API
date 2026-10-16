@@ -42,13 +42,26 @@ func videoHash(body []byte) string {
 func videoAAD(meta VideoPayload) []byte {
 	// JSON tuple avoids ambiguous string concatenation. ObjectRef and state may
 	// change during upload/expiry; cryptographic identity never changes.
-	raw, _ := json.Marshal([]any{"laiai:video-payload:v1", meta.OrgID, meta.PayloadID,
+	fields := []any{"laiai:video-payload:v1", meta.OrgID, meta.PayloadID,
 		meta.RequestID, meta.AttemptID, meta.Direction, meta.Purpose, meta.SchemaVersion,
-		meta.RedactionVersion, meta.BodyFormat, meta.EncryptionKeyID, meta.ExpiresAt.UTC().UnixMilli()})
+		meta.RedactionVersion, meta.BodyFormat, meta.EncryptionKeyID, meta.ExpiresAt.UTC().UnixMilli()}
+	// Existing ciphertext keeps its original AAD; new representation claims are authenticated.
+	if meta.CaptureRepresentation != "" && meta.CaptureRepresentation != "legacy_unknown" {
+		fields = append(fields, meta.CaptureRepresentation)
+	}
+	raw, _ := json.Marshal(fields)
 	return raw
 }
 
 func (s *VideoStore) Prepare(input VideoPayloadInput) (*PreparedVideoPayload, error) {
+	if input.CaptureRepresentation == "" {
+		input.CaptureRepresentation = "legacy_unknown"
+	}
+	switch input.CaptureRepresentation {
+	case "legacy_unknown", "legacy_canonical_json", "received_json_redacted", "effective_json_redacted", "response_json_redacted":
+	default:
+		return nil, ErrVideoInvalid
+	}
 	now := s.now().UTC().Truncate(time.Millisecond)
 	expires := input.ExpiresAt.UTC().Truncate(time.Millisecond)
 	if input.OrgID == 0 || !videoValidID(input.RequestID, false) || !videoValidID(input.AttemptID, true) || input.SchemaVersion == 0 ||
@@ -76,7 +89,7 @@ func (s *VideoStore) Prepare(input VideoPayloadInput) (*PreparedVideoPayload, er
 	correlation, _ := json.Marshal([]any{input.OrgID, input.RequestID, input.AttemptID, input.Direction, input.Purpose, input.SchemaVersion})
 	p := &PreparedVideoPayload{metadata: VideoPayload{PayloadID: id, OrgID: input.OrgID,
 		RequestID: input.RequestID, AttemptID: input.AttemptID, CorrelationKey: videoHash(correlation),
-		Direction: input.Direction, Purpose: input.Purpose, SchemaVersion: input.SchemaVersion,
+		Direction: input.Direction, Purpose: input.Purpose, SchemaVersion: input.SchemaVersion, CaptureRepresentation: input.CaptureRepresentation,
 		RedactionVersion: "body-secrets-v1", BodyFormat: VideoFormatJSON, Nonce: []byte{}, CreatedAt: now, ExpiresAt: expires, CaptureStatus: VideoCaptureDisabled}}
 	if !input.CaptureEnabled {
 		return p, nil

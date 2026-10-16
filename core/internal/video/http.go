@@ -119,7 +119,7 @@ func hasScope(key *identity.APIKey, scope string) bool {
 }
 
 func requestResource(c *gin.Context) (string, string) {
-	for _, candidate := range []struct{ parameter, kind, prefix string }{{"id", "task", "task_"}, {"operation_id", "operation", "op_"}, {"asset_id", "asset", "asset_"}, {"group_id", "asset_group", "ag_"}, {"session_id", "portrait_authorization", "pas_"}} {
+	for _, candidate := range []struct{ parameter, kind, prefix string }{{"id", "task", "task_"}, {"id", "asset", "asset_"}, {"id", "asset_group", "ag_"}, {"id", "portrait_authorization", "pas_"}, {"operation_id", "operation", "op_"}, {"asset_id", "asset", "asset_"}, {"group_id", "asset_group", "ag_"}, {"session_id", "portrait_authorization", "pas_"}} {
 		id := c.Param(candidate.parameter)
 		if id == "" || len(id) > 128 || !strings.HasPrefix(id, candidate.prefix) {
 			continue
@@ -198,38 +198,15 @@ func (s *Service) Middleware() gin.HandlerFunc {
 				outcome, status = "incomplete", 0
 			}
 			finishErr := s.DB.Transaction(func(tx *gorm.DB) error {
+				if e := s.finishRequestContextTx(tx, c); e != nil {
+					return e
+				}
 				responseRef := ""
-				if !stream && key != nil && buffered.body.Len() > 0 {
-					var policy Policy
-					e := tx.Where("org_id=?", key.OrgID).First(&policy).Error
-					if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
+				if !stream && key != nil {
+					var e error
+					responseRef, e = s.captureResponseTx(tx, key.OrgID, requestID, buffered.body.Bytes())
+					if e != nil {
 						return e
-					}
-					if e == nil && policy.CaptureHistory {
-						if policy.RetentionDays < 1 || policy.RetentionDays > 30 {
-							return ErrCapability
-						}
-						body := buffered.body.Bytes()
-						// The one-use H5 secret belongs exclusively to its short-lived
-						// secret store, never the general response history.
-						var fields map[string]json.RawMessage
-						if json.Unmarshal(body, &fields) == nil {
-							if _, exists := fields["authorization_url"]; exists {
-								delete(fields, "authorization_url")
-								body, e = json.Marshal(fields)
-								if e != nil {
-									return e
-								}
-							}
-						}
-						payload, e := s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: key.OrgID, RequestID: requestID, Direction: invocation.VideoClientResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: body, ExpiresAt: s.Now().UTC().Add(time.Duration(policy.RetentionDays) * 24 * time.Hour), CaptureEnabled: true})
-						if e != nil {
-							return e
-						}
-						responseRef, e = s.Evidence.StageTx(tx, payload)
-						if e != nil {
-							return e
-						}
 					}
 				}
 				return s.Evidence.RequestFinishTx(tx, invocation.VideoRequestFinish{RequestID: requestID, OrgID: start.OrgID, HTTPStatus: status, ResponseBytes: int64(size), ResponsePayloadID: responseRef, SafeErrorCode: c.GetString("video_error"), Outcome: outcome, FinishedAt: s.Now().UTC()})
@@ -261,6 +238,10 @@ func (s *Service) Middleware() gin.HandlerFunc {
 		}
 		if !hasScope(key, scope) {
 			apiError(c, 403, "insufficient_scope")
+			return
+		}
+		if e := s.captureReceivedRequest(c); e != nil {
+			respondError(c, e)
 			return
 		}
 		if h, ok := c.Get("video_route_handler"); ok {
@@ -303,6 +284,16 @@ func (s *Service) HandleCreate(c *gin.Context) {
 		return
 	}
 	if replay {
+		if err := s.DB.Transaction(func(tx *gorm.DB) error {
+			t, st, e := loadTask(tx, key.OrgID, previous.ResourceID, false)
+			if e != nil {
+				return e
+			}
+			return s.linkCreateRequestTx(tx, key.OrgID, c.GetString("video_request_id"), t, st, previous.OperationID, true)
+		}); err != nil {
+			respondError(c, err)
+			return
+		}
 		result, err := s.Get(key.OrgID, previous.ResourceID)
 		if err != nil {
 			respondError(c, err)
@@ -364,6 +355,7 @@ func (s *Service) HandleCancel(c *gin.Context) {
 	if replay {
 		c.Header("Idempotency-Replayed", "true")
 	}
+	c.Set("video_operation_id", v.ID)
 	c.JSON(202, v)
 }
 func (s *Service) HandleDelete(c *gin.Context) {
@@ -376,6 +368,7 @@ func (s *Service) HandleDelete(c *gin.Context) {
 		c.Status(204)
 		return
 	}
+	c.Set("video_operation_id", v.ID)
 	c.JSON(202, v)
 }
 func (s *Service) HandleOperation(c *gin.Context) {

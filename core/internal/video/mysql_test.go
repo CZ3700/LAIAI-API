@@ -327,7 +327,7 @@ func TestMySQLVideoConcurrentIdempotencyAndRollback(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("task count %d", count)
 	}
-	_, _, e := f.s.Create(context.Background(), f.key, "changed-request", "concurrent-create-1", ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "text", Text: "different"}}})
+	_, _, e := f.s.Create(context.Background(), f.key, f.requestID("changed-request"), "concurrent-create-1", ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "text", Text: "different"}}})
 	if !errors.Is(e, ErrConflict) {
 		t.Fatal("changed body not rejected")
 	}
@@ -339,7 +339,7 @@ func TestMySQLVideoConcurrentIdempotencyAndRollback(t *testing.T) {
 		}
 	}))
 	defer f.s.DB.Callback().Create().Remove(name)
-	_, _, e = f.s.Create(context.Background(), f.key, "rollback-request", "rollback-create-1", ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "text", Text: "rollback"}}})
+	_, _, e = f.s.Create(context.Background(), f.key, f.requestID("rollback-request"), "rollback-create-1", ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "text", Text: "rollback"}}})
 	if e == nil {
 		t.Fatal("injected error ignored")
 	}
@@ -412,8 +412,21 @@ func TestMySQLVideoHTTPAuditAndRetention(t *testing.T) {
 	portraitResponse = portrait()
 	log = invocation.VideoRequestLog{}
 	must(t, f.s.DB.Where("request_id=?", portraitResponse.Header().Get("X-Request-Id")).First(&log).Error)
-	if log.ResponsePayloadID != "" {
-		t.Fatal("disabled response history captured body")
+	if log.ResponsePayloadID == "" {
+		t.Fatal("disabled response history lost its policy descriptor")
+	}
+	var disabled invocation.VideoPayload
+	must(t, f.s.DB.Where("org_id = ? AND payload_id = ?", f.key.OrgID, log.ResponsePayloadID).Take(&disabled).Error)
+	if disabled.CaptureStatus != invocation.VideoCaptureDisabled || disabled.PlaintextBytes != 0 || disabled.CiphertextSHA256 != "" || disabled.WrappedKey != "" || disabled.ObjectRef != "" || len(disabled.Nonce) != 0 {
+		t.Fatal("disabled response history retained body material")
+	}
+	var staged int64
+	must(t, f.s.DB.Model(&invocation.VideoPayloadStaging{}).Where("payload_id = ?", disabled.PayloadID).Count(&staged).Error)
+	if staged != 0 {
+		t.Fatal("disabled response history staged ciphertext")
+	}
+	if _, e = f.s.Evidence.ReadForHistory(context.Background(), f.key.OrgID, disabled.PayloadID, invocation.VideoAccess{ActorRole: invocation.VideoRoleOrgReader, ActorID: fmt.Sprint(f.key.ID), ReasonCode: "response_test"}); !errors.Is(e, invocation.ErrVideoRetentionDenied) {
+		t.Fatal("disabled response history became readable", e)
 	}
 	v := f.create(t, "zero-history-1")
 	f.dispatch(t, v.ID)

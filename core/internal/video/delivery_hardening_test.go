@@ -188,7 +188,7 @@ func TestMySQLRevokedAssetScopeIsRejectedBeforeProviderPOST(t *testing.T) {
 	scope, _ := assetTestSetup(t, f)
 	_, asset := assetTestSeed(t, f, scope, videoasset.KindVirtual)
 	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "image_url", ImageURL: &ark.MediaReference{URL: "asset://" + asset.ID}}}}
-	v, _, err := f.s.Create(context.Background(), f.key, "asset_request", "asset-revoke-before-post", in)
+	v, _, err := f.s.Create(context.Background(), f.key, f.requestID("asset_request"), "asset-revoke-before-post", in)
 	must(t, err)
 	must(t, f.s.SetAssetScopeEnabled(context.Background(), assetTestActor(), scope.ID, 1, false))
 	f.dispatch(t, v.ID)

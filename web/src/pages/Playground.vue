@@ -4,6 +4,8 @@ import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { api } from '@/lib/api'
 import { fmtUsd } from '@/lib/money'
+import ArkVideoPlayground from '@/components/seedance/ArkVideoPlayground.vue'
+import { isOfficialSeedance } from '@/components/seedance/workflow'
 
 // keep-alive（Shell.vue include="Playground"）：切页不销毁——生图/视频结果与各模态输入
 // 全在组件内存态，此前导航即丢（用户实测反馈）。name 必须与 include 精确匹配。
@@ -174,6 +176,8 @@ const isVideoModel = computed(() => {
   if (selectedCategory.value) return VIDEO_CATEGORIES.has(selectedCategory.value)
   return VIDEO_NAME_RE.test(model.value)
 })
+const officialSeedance = computed(() => isOfficialSeedance(model.value))
+const arkLocked = ref(false)
 const isChatModel = computed(() => !selectedCategory.value || !NON_CHAT_CATEGORIES.has(selectedCategory.value))
 const mode = computed<'chat' | 'image' | 'video' | 'other'>(() =>
   isVideoModel.value ? 'video' : isImageModel.value ? 'image' : isChatModel.value ? 'chat' : 'other',
@@ -227,7 +231,7 @@ watch(model, () => persistChat())
 // keep-alive 下切回页面：Models 页"试一试"深链 ?model= 仍要生效（onMounted 只跑一次）
 onActivated(() => {
   const requested = typeof route.query.model === 'string' ? route.query.model : ''
-  if (requested && requested !== model.value && models.value.some((m) => m.model === requested)) {
+  if (!arkLocked.value && requested && requested !== model.value && models.value.some((m) => m.model === requested)) {
     model.value = requested
   }
 })
@@ -646,17 +650,17 @@ async function saveImage(img: GenImage, idx: number) {
       <div class="space-y-4">
         <div>
           <label class="label" for="pg-model">{{ t('play.model') }}</label>
-          <select v-if="models.length" id="pg-model" v-model="model" class="input">
+          <select v-if="models.length" id="pg-model" v-model="model" class="input" :disabled="arkLocked">
             <option v-for="m in models" :key="m.model" :value="m.model">{{ m.model }} · {{ m.provider }}</option>
           </select>
-          <input v-else id="pg-model" v-model="model" class="input font-mono text-xs" :placeholder="t('play.modelManual')" />
+          <input v-else id="pg-model" v-model="model" class="input font-mono text-xs" :placeholder="t('play.modelManual')" :disabled="arkLocked" />
         </div>
 
         <div>
           <label class="label" for="pg-key">{{ t('play.apiKey') }}</label>
           <input
             id="pg-key" v-model="apiKey" class="input font-mono text-xs" type="password"
-            autocomplete="off" placeholder="sk-laiai-..." @change="rememberKey"
+            autocomplete="off" placeholder="sk-laiai-..." :disabled="arkLocked" @change="rememberKey"
           />
           <p v-if="!apiKey" class="mt-2 text-xs text-muted">
             {{ t('play.keyHint') }}
@@ -710,7 +714,7 @@ async function saveImage(img: GenImage, idx: number) {
         </template>
 
         <!-- video 模态设置（可选参数按厂商方言透传） -->
-        <template v-else-if="mode === 'video'">
+        <template v-else-if="mode === 'video' && !officialSeedance">
           <div class="grid grid-cols-3 gap-3">
             <div>
               <label class="label" for="pg-vdur">{{ t('play.videoDuration') }}</label>
@@ -755,14 +759,14 @@ async function saveImage(img: GenImage, idx: number) {
             {{ t('play.usage', { input: lastUsage.prompt_tokens, output: lastUsage.completion_tokens }) }}
           </p>
           <button
-            v-if="lastDetail" type="button" class="btn-ghost !min-h-0 !px-2.5 !py-1.5 text-xs"
+            v-if="lastDetail && !(mode === 'video' && officialSeedance)" type="button" class="btn-ghost !min-h-0 !px-2.5 !py-1.5 text-xs"
             :class="{ '!text-accent': showDetail }" @click="showDetail = !showDetail"
           >{{ t('play.detailBtn') }}</button>
         </div>
       </div>
 
       <!-- 请求详情抽屉：endpoint/status/耗时 + 原始 request/response（图像 b64 已收敛占位） -->
-      <div v-if="showDetail && lastDetail" class="max-h-72 overflow-y-auto border-b border-line bg-elev/30 p-4 text-xs">
+      <div v-if="showDetail && lastDetail && !(mode === 'video' && officialSeedance)" class="max-h-72 overflow-y-auto border-b border-line bg-elev/30 p-4 text-xs">
         <p class="font-mono text-muted">
           {{ lastDetail.endpoint }} · <span :class="lastDetail.status < 400 ? 'text-ok' : 'text-danger'">{{ lastDetail.status }}</span> · {{ lastDetail.durationMs }}ms
         </p>
@@ -838,6 +842,7 @@ async function saveImage(img: GenImage, idx: number) {
       </template>
 
       <!-- video 模态：提交 + 轮询进度 + 成片播放/下载 -->
+      <ArkVideoPlayground v-else-if="mode === 'video' && officialSeedance" :model="model" :api-key="apiKey" @locked="arkLocked = $event" />
       <template v-else-if="mode === 'video'">
         <div class="flex-1 overflow-y-auto bg-elev/18 p-4 sm:p-5">
           <!-- 进行中：进度态 -->
