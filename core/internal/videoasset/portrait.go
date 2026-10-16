@@ -18,13 +18,13 @@ type portraitSecret struct {
 }
 
 func (s *Service) CreatePortrait(ctx context.Context, c CreateContext, input PortraitCreate) (PortraitDTO, bool, error) {
-	if !validCreate(c) || !validHTTPS(input.CallbackURL, 2048) || s.options.ResolveCallback == nil || s.options.ResolveCallbackByID == nil || !validPlatformCallback(s.options.PlatformCallbackURL) {
+	if !validCreate(c) || !safeName(input.Name, 64, false) || !safeName(input.Description, 300, false) || !validHTTPS(input.CallbackURL, 2048) || s.options.ResolveCallback == nil || s.options.ResolveCallbackByID == nil || !validPlatformCallback(s.options.PlatformCallbackURL) {
 		return PortraitDTO{}, false, ErrInvalid
 	}
 	if old, found, err := s.replay(s.db.WithContext(ctx), c, "/v1/video/portrait-authorizations", bodyJSON(input)); err != nil {
 		return PortraitDTO{}, false, err
 	} else if found {
-		dto, err := s.GetPortrait(ctx, c.OrgID, old.ResourceID, c.KeyID, true)
+		dto, err := s.GetPortraitForCaller(ctx, c, old.ResourceID, true)
 		return dto, true, err
 	}
 	r, err := s.resolve(ctx, c.OrgID, Scope{})
@@ -52,12 +52,15 @@ func (s *Service) CreatePortrait(ctx context.Context, c CreateContext, input Por
 		if err := tx.Create(&p).Error; err != nil {
 			return ErrStorage
 		}
+		if err := tx.Create(&PortraitLabel{SessionID: id, OrgID: c.OrgID, Name: input.Name, Description: input.Description}).Error; err != nil {
+			return ErrStorage
+		}
 		return nil
 	})
 	if err != nil {
 		return PortraitDTO{}, false, err
 	}
-	dto, err := s.GetPortrait(ctx, c.OrgID, op.ResourceID, c.KeyID, true)
+	dto, err := s.GetPortraitForCaller(ctx, c, op.ResourceID, true)
 	return dto, replayed, err
 }
 

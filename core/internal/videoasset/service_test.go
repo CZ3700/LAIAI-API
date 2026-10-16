@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -61,21 +62,31 @@ func (f *fakeProvider) roundTrip(r *http.Request) (*http.Response, error) {
 	if f.unknown {
 		return nil, errors.New("connection lost after possible acceptance")
 	}
-	var body map[string]string
+	var wire map[string]any
+	var body = map[string]string{}
 	raw, _ := io.ReadAll(r.Body)
-	if json.Unmarshal(raw, &body) != nil {
+	if json.Unmarshal(raw, &wire) != nil {
 		return nil, errors.New("invalid fixture")
+	}
+	for k, v := range wire {
+		if text, ok := v.(string); ok {
+			body[k] = text
+		}
 	}
 	result := map[string]any{}
 	switch action {
+	case "ListAssets", "ListAssetGroups":
+		result["Items"] = []any{}
 	case "CreateAssetGroup":
-		result["Id"] = "upstream-" + body["Name"]
+		result["Id"] = "upstream-group-" + strconv.Itoa(f.calls[action])
 	case "CreateAsset":
-		id := "upstream-" + body["Name"]
+		id := "upstream-asset-" + strconv.Itoa(f.calls[action])
 		result["Id"] = id
 		f.groupByAsset[id] = body["GroupId"]
 	case "GetAsset":
 		result = map[string]any{"Id": body["Id"], "GroupId": f.groupByAsset[body["Id"]], "ProjectName": f.project, "AssetType": "Image", "Status": f.assetStatus, "URL": "https://private.example/signed?signature=private-media-signature", "Error": map[string]any{"Code": "ContentRestricted", "Message": "untrusted raw response secret"}}
+	case "UpdateAsset", "UpdateAssetGroup":
+		result["Id"] = body["Id"]
 	case "CreateVisualValidateSession":
 		f.callbackURL = body["CallbackURL"]
 		result = map[string]any{"BytedToken": "byted-fixture-secret", "H5Link": "https://verify.volcengine.com/session?ticket=h5-fixture-secret", "CallbackURL": body["CallbackURL"]}
@@ -100,7 +111,7 @@ func setup(t *testing.T) (*Service, *gorm.DB, *time.Time, *fakeProvider) {
 	sqlDB, _ := db.DB()
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := db.Exec(testSchema).Error; err != nil {
+	if err := db.Exec(testSchema + consoleTestSchema).Error; err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 10, 16, 1, 2, 3, 0, time.UTC)
@@ -118,7 +129,7 @@ func setup(t *testing.T) (*Service, *gorm.DB, *time.Time, *fakeProvider) {
 			if scope.ID != "" && !sameScope(scope, testScope()) {
 				return RuntimeScope{}, ErrUnsupported
 			}
-			return RuntimeScope{Scope: testScope(), Credentials: Credentials{AccessKey: "AKTEST", SecretKey: "test-secret"}, Capabilities: Capabilities{true, true, true, true, true, true}, ExecutionRetentionConsent: true, CaptureHistory: true}, nil
+			return RuntimeScope{Scope: testScope(), Credentials: Credentials{AccessKey: "AKTEST", SecretKey: "test-secret"}, Capabilities: Capabilities{VirtualGroups: true, Images: true, Videos: true, Audio: true, Portrait: true, DeleteVirtualEmptyGroups: true, Sync: true, Update: true, DeleteAssets: true, ExclusiveProjectWrites: true}, ExecutionRetentionConsent: true, CaptureHistory: true}, nil
 		},
 		VerifyMedia: func(_ context.Context, _ uint64, _ string, _ string) (MediaEvidence, error) {
 			return MediaEvidence{ImmutableObjectRef: "immutable1", FetchURL: "https://media.example/immutable.png", ObjectSHA256: strings.Repeat("a", 64), MIME: "image/png", ByteSize: 4096, Width: 640, Height: 480, Version: 1, VerifiedAt: now}, nil
@@ -194,7 +205,7 @@ func TestSignedManagementRequestAndBoundaries(t *testing.T) {
 	if req.Header.Get("Authorization") != expected || req.URL.Host != managementHost || req.GetBody != nil {
 		t.Fatal("signature or replay policy mismatch")
 	}
-	if _, err := signedRequest(context.Background(), testScope(), Credentials{AccessKey: "AKTEST", SecretKey: "test-secret"}, "DeleteAsset", body, now); !errors.Is(err, ErrInvalid) {
+	if _, err := signedRequest(context.Background(), testScope(), Credentials{AccessKey: "AKTEST", SecretKey: "test-secret"}, "UnverifiedAction", body, now); !errors.Is(err, ErrInvalid) {
 		t.Fatal("unverified action signed")
 	}
 	wrong := testScope()

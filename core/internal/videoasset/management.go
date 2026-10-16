@@ -61,7 +61,7 @@ func NewManagementClient(client *http.Client) *ManagementClient {
 }
 func allowedAction(a string) bool {
 	switch a {
-	case "CreateAssetGroup", "GetAssetGroup", "DeleteAssetGroup", "CreateAsset", "GetAsset", "CreateVisualValidateSession", "GetVisualValidateResult":
+	case "ListAssetGroups", "ListAssets", "UpdateAssetGroup", "UpdateAsset", "DeleteAsset", "CreateAssetGroup", "GetAssetGroup", "DeleteAssetGroup", "CreateAsset", "GetAsset", "CreateVisualValidateSession", "GetVisualValidateResult":
 		return true
 	}
 	return false

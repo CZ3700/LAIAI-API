@@ -100,10 +100,10 @@ func (s *Service) replay(tx *gorm.DB, c CreateContext, path string, raw []byte) 
 	return old, true, nil
 }
 func validCreate(c CreateContext) bool {
-	return c.OrgID > 0 && c.KeyID > 0 && validID(c.RequestID) && len(c.IdempotencyKey) > 0 && len(c.IdempotencyKey) <= 128 && strings.IndexFunc(c.IdempotencyKey, unicode.IsControl) < 0
+	return c.OrgID > 0 && ((c.CallerKind == "session_user" && c.UserID > 0 && c.KeyID == 0) || ((c.CallerKind == "" || c.CallerKind == "api_key") && c.KeyID > 0)) && validID(c.RequestID) && len(c.IdempotencyKey) > 0 && len(c.IdempotencyKey) <= 128 && strings.IndexFunc(c.IdempotencyKey, unicode.IsControl) < 0
 }
 
-func (s *Service) accept(ctx context.Context, c CreateContext, r RuntimeScope, path, action, resourceType, resourceID string, public, provider []byte, create func(*gorm.DB, Operation) error) (Operation, bool, error) {
+func (s *Service) accept(ctx context.Context, c CreateContext, r RuntimeScope, path, action, resourceType, resourceID string, public, provider []byte, create func(*gorm.DB, Operation) error, initialReceipt ...string) (Operation, bool, error) {
 	if !validCreate(c) || !r.ExecutionRetentionConsent {
 		return Operation{}, false, ErrInvalid
 	}
@@ -119,6 +119,9 @@ func (s *Service) accept(ctx context.Context, c CreateContext, r RuntimeScope, p
 	op := Operation{ID: id, OrgID: c.OrgID, Action: action, ResourceType: resourceType, ResourceID: resourceID, RequestID: c.RequestID, CanonicalPath: path,
 		HMACKeyVersion: s.options.ActiveHMACKey, IdempotencyHash: s.digest(s.options.ActiveHMACKey, "idempotency", c.OrgID, path, c.IdempotencyKey), BodyHash: s.digest(s.options.ActiveHMACKey, "body", c.OrgID, path, string(public)),
 		ScopeID: r.Scope.ID, ScopeVersion: r.Scope.Version, AccountID: r.Scope.AccountID, Region: r.Scope.Region, Project: r.Scope.Project, Status: "pending", PayloadID: prepared.PayloadID(), CreatedAt: now, UpdatedAt: now, NextAttemptAt: now}
+	if len(initialReceipt) > 0 {
+		op.Receipt = initialReceipt[0]
+	}
 	replayed := false
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockTenant(tx, c.OrgID); err != nil {
@@ -148,7 +151,7 @@ func (s *Service) accept(ctx context.Context, c CreateContext, r RuntimeScope, p
 }
 
 func (s *Service) CreateGroup(ctx context.Context, c CreateContext, input GroupCreate) (GroupDTO, bool, error) {
-	if !validCreate(c) || input.Kind != KindVirtual || !safeName(input.Name, 100, true) {
+	if !validCreate(c) || input.Kind != KindVirtual || !safeName(input.Name, 64, true) || !safeName(input.Description, 300, false) {
 		return GroupDTO{}, false, ErrInvalid
 	}
 	if old, found, err := s.replay(s.db.WithContext(ctx), c, "/v1/video/asset-groups", bodyJSON(input)); err != nil {
@@ -168,13 +171,16 @@ func (s *Service) CreateGroup(ctx context.Context, c CreateContext, input GroupC
 	if err != nil {
 		return GroupDTO{}, false, err
 	}
-	provider := bodyJSON(map[string]any{"Name": id, "GroupType": "AIGC", "ProjectName": r.Scope.Project})
+	provider := bodyJSON(map[string]any{"Name": input.Name, "Description": input.Description, "GroupType": "AIGC", "ProjectName": r.Scope.Project})
 	op, replayed, err := s.accept(ctx, c, r, "/v1/video/asset-groups", "CreateAssetGroup", "asset_group", id, bodyJSON(input), provider, func(tx *gorm.DB, op Operation) error {
 		now := nowMillis(s)
 		g := Group{ID: id, OrgID: c.OrgID, Kind: KindVirtual, Name: input.Name, ScopeID: r.Scope.ID, ScopeVersion: r.Scope.Version, AccountID: r.Scope.AccountID, Region: r.Scope.Region, Project: r.Scope.Project,
 			Status: StatusPending, ReviewState: ReviewClear, CreateOperationID: op.ID, RowVersion: 1, CreatedAt: now, UpdatedAt: now}
 		if err := tx.Create(&g).Error; err != nil {
 			return ErrStorage
+		}
+		if err := saveDetails(tx, c.OrgID, id, input.Description, "platform", now); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -228,10 +234,10 @@ func (s *Service) CreateAsset(ctx context.Context, c CreateContext, input AssetC
 	if err != nil {
 		return AssetDTO{}, false, err
 	}
-	if !mediaAllowed(r.Capabilities, input.MediaType) || s.options.VerifyMedia == nil {
+	if !mediaAllowed(r.Capabilities, input.MediaType) || s.options.VerifyMedia == nil && s.console.Media == nil {
 		return AssetDTO{}, false, ErrUnsupported
 	}
-	media, err := s.options.VerifyMedia(ctx, c.OrgID, input.URL, input.MediaType)
+	media, err := s.verifyMedia(ctx, c.OrgID, input.URL, input.MediaType)
 	if err != nil || !validMedia(media, input.MediaType, s.now()) {
 		return AssetDTO{}, false, ErrInvalid
 	}
@@ -242,7 +248,7 @@ func (s *Service) CreateAsset(ctx context.Context, c CreateContext, input AssetC
 	if err != nil {
 		return AssetDTO{}, false, err
 	}
-	provider := bodyJSON(map[string]any{"GroupId": *group.ProviderID, "URL": media.FetchURL, "Name": id, "AssetType": strings.ToUpper(input.MediaType[:1]) + input.MediaType[1:], "ProjectName": r.Scope.Project})
+	provider := bodyJSON(map[string]any{"GroupId": *group.ProviderID, "URL": media.FetchURL, "Name": input.Name, "AssetType": strings.ToUpper(input.MediaType[:1]) + input.MediaType[1:], "ProjectName": r.Scope.Project})
 	op, replayed, err := s.accept(ctx, c, r, "/v1/video/assets", "CreateAsset", "asset", id, bodyJSON(input), provider, func(tx *gorm.DB, op Operation) error {
 		var current Group
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND group_id = ?", c.OrgID, group.ID).Take(&current).Error; err != nil {
@@ -268,6 +274,11 @@ func (s *Service) CreateAsset(ctx context.Context, c CreateContext, input AssetC
 	}
 	dto, err := s.GetAsset(ctx, c.OrgID, op.ResourceID)
 	return dto, replayed, err
+}
+
+// Durable immutable facts do not expire with the temporary upstream fetch URL.
+func hasMediaFacts(a Asset) bool {
+	return validMedia(MediaEvidence{ImmutableObjectRef: a.ImmutableObjectRef, FetchURL: "https://verified.invalid/media", ObjectSHA256: a.ObjectSHA256, MIME: a.MIME, ByteSize: a.ByteSize, DurationMS: a.DurationMS, Width: a.Width, Height: a.Height, FPSNum: a.FPSNum, FPSDen: a.FPSDen, Version: a.MetadataVersion, VerifiedAt: a.VerifiedAt}, a.MediaType, a.VerifiedAt)
 }
 
 func (s *Service) ResolveBindingsTx(tx *gorm.DB, org uint64, scope Scope, taskID string, refs []ReferenceInput) ([]Binding, error) {
@@ -325,7 +336,7 @@ func (s *Service) resolveBindingsTx(tx *gorm.DB, org uint64, scope Scope, taskID
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", org, asset.GroupID).Take(&group).Error; err != nil {
 			return nil, ErrNotFound
 		}
-		if asset.Status != StatusActive || asset.ReviewState != ReviewClear || asset.ProviderID == nil || group.Status != StatusActive || group.ReviewState != ReviewClear || !sameScope(groupScope(group), scope) || asset.ScopeID != scope.ID || asset.ScopeVersion != scope.Version {
+		if asset.Status != StatusActive || asset.ReviewState != ReviewClear || !hasMediaFacts(asset) || asset.ProviderID == nil || group.Status != StatusActive || group.ReviewState != ReviewClear || !sameScope(groupScope(group), scope) || asset.ScopeID != scope.ID || asset.ScopeVersion != scope.Version {
 			return nil, ErrConflict
 		}
 		licenseVersion, err := s.authorizeGroup(tx, group, "video_generation")
