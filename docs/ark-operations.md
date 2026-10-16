@@ -20,9 +20,9 @@
 
 按顺序完成：
 
-1. 应用正式迁移，重复执行应显示 up-to-date，运行 schema-doctor。`0073` 仅扩大旧任务 ID、状态及价格字段；先检查备份、空间和锁窗口，应用回滚不得缩窄列或删除新增账务数据。
+1. 应用正式迁移至 `0101`，重复执行应显示 up-to-date，运行 schema-doctor。`0073` 仅扩大旧任务 ID、状态及价格字段；先检查备份、空间和锁窗口，应用回滚不得缩窄列或删除新增账务数据。`0101` 对账户/区域/项目加唯一索引，已有重复scope时应停止并人工核对历史账务，不能自动合并或删除历史行。
 2. `POST /api/admin/video/configurations` 原子发布 `configuration`、`provider_scope`、`prices`、`supplier_budgets`、`evidence_hash`。嵌套字段当前使用对应 Go 结构的字段名（ModelConfig / ProviderScope / PricingRule / QuotaPolicy），不是公开客户 DTO。能力及维度为已核验 JSON 字符串；范围必须覆盖所有启用分辨率/比例，不能用客户声称的尺寸作为保守上界。至少提供供应商日/月金额上限。
-3. 价格版本必须新建，旧任务继续按自己的快照。更改能力语义必须变更 capability version。配置发布历史保留 SHA-256 及操作者；`evidence_hash` 是运营核验材料的摘要，并不自行证明官方能力。
+3. 价格版本必须新建，模型跨 scope 切换也不能重用价格版本；旧任务继续按自己的快照。更改能力语义必须变更 capability version。已有账户/区域/项目复用同一 scope ID，FX升版更新其最新汇率，不能借新 ScopeKey 重置供应商预算；旧任务的 FX 快照不变。配置发布历史保留 SHA-256 及操作者；`evidence_hash` 是运营核验材料的摘要，并不自行证明官方能力。
 4. `PUT /api/admin/video/org-policies/{org_id}` 明确 `async_execution_allowed`、`capture_history`、`retention_days`（1–30）。缺失组织策略即拒绝受理。开启既有组织视频 entitlement，并签发平台 `video:read` / `video:write` 或 `video:*` Key；客户从不接收官方 Key。
 5. `PUT /api/admin/video/orgs/{org_id}/quota-policies` 发布 org/key/org_model 的 USD、Token 或任务次数日/月/累计限制；新版本切换不重置稳定窗口已用和预留量。Key 的既有预算及模型权限仍检查。渠道限制在途任务数，供应商作用域共享数据库限速。
 6. 使用客户 `GET /v1/video/models` 与 `POST /v1/video/estimates` 核对实际配置、报价版本与最大冻结额；随后才在指定测试预算内灰度。请求 `expected_pricing_version` 或 `max_charge_usd` 可约束接受条件，估算不作为最终收费 usage。

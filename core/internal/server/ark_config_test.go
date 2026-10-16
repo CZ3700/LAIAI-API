@@ -134,6 +134,45 @@ func TestMySQLArkConfigurationPublicationAndPublicRoutes(t *testing.T) {
 	if repeated.Header().Get("Idempotency-Replayed") != "true" {
 		t.Fatal("replay failed")
 	}
+	var before []videobilling.QuotaBucket
+	arkBillMust(t, f.db.Where("org_id=0 AND policy_id IN (?)", f.db.Model(&videobilling.QuotaPolicy{}).Select("id").Where("scope=? AND owner_id=?", videobilling.ScopeProvider, scope.ID)).Find(&before).Error)
+	if len(before) != 2 || !before[0].ReservedAmount.IsPositive() {
+		t.Fatal("supplier reservation missing")
+	}
+	// An alternative display key cannot create a fresh budget for the same
+	// official account/project. Database uniqueness covers concurrent operators.
+	in.Configuration.Version = f.uid + "-3"
+	in.Configuration.PricingVersion = f.uid + "-3"
+	in.Prices[0].Version = f.uid + "-3"
+	in.Prices[0].RuleID = f.uid + "-3"
+	for i := range in.SupplierBudgets {
+		in.SupplierBudgets[i].Version = f.uid + "-3"
+	}
+	in.Scope.ID = 0
+	in.Scope.ScopeKey = f.uid + "-duplicate"
+	call("POST", "/api/admin/video/configurations", f.tokens[0], in, 422)
+	duplicate := scope
+	duplicate.ID = 0
+	duplicate.ScopeKey = f.uid + "-direct-duplicate"
+	if f.db.Create(&duplicate).Error == nil {
+		t.Fatal("database accepted duplicate financial scope")
+	}
+	in.Scope = scope
+	in.Scope.FXVersion = f.uid + "-fx2"
+	in.Scope.FXUSDPerCNY = "0.15"
+	call("POST", "/api/admin/video/configurations", f.tokens[0], in, 201)
+	for _, old := range before {
+		var after videobilling.QuotaBucket
+		arkBillMust(t, f.db.First(&after, old.ID).Error)
+		if !after.ReservedAmount.Equal(old.ReservedAmount) || !after.ConsumedAmount.Equal(old.ConsumedAmount) {
+			t.Fatal("publication reset supplier usage")
+		}
+	}
+	var snap videobilling.Snapshot
+	arkBillMust(t, f.db.Where("org_id=? AND task_id=?", f.org, view.ID).First(&snap).Error)
+	if !snap.FXUSDPerCNY.Equal(decimal.RequireFromString("0.14")) {
+		t.Fatal("FX revision changed historical snapshot")
+	}
 	for _, suffix := range []string{"", "/billing", "/events"} {
 		call("GET", "/v1/video/generations/"+view.ID+suffix, plain, nil, 200)
 	}
@@ -154,6 +193,20 @@ func TestMySQLArkConfigurationPublicationAndPublicRoutes(t *testing.T) {
 	f.r.ServeHTTP(w, req)
 	if w.Code != 403 {
 		t.Fatalf("shared administrator accepted: %d", w.Code)
+	}
+	// Disabling the new runtime must never expose official tasks through the
+	// legacy handler, including its weaker read scopes and absent soft-delete.
+	disabled := New(f.db, Options{AuthSecret: f.s.secret, Keyring: f.s.keyring})
+	for _, id := range []string{view.ID, f.taskID} {
+		for _, suffix := range []string{"", "/content"} {
+			req := httptest.NewRequest("GET", "/v1/video/generations/"+id+suffix, nil)
+			req.Header.Set("Authorization", "Bearer "+plain)
+			w := httptest.NewRecorder()
+			disabled.ServeHTTP(w, req)
+			if w.Code != 404 {
+				t.Fatalf("disabled official task leaked through legacy route: %d %s", w.Code, w.Body.String())
+			}
+		}
 	}
 }
 

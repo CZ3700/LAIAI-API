@@ -523,7 +523,9 @@ func (s *Service) abortSubmit(t *Task, reason string) {
 // Get：org 隔离读取（红线 5）。
 func (s *Service) Get(orgID uint64, taskID string) (*Task, error) {
 	t := &Task{}
-	if err := s.DB.Where("task_id = ? AND org_id = ?", taskID, orgID).First(t).Error; err != nil {
+	// Official video owns its authorization, deletion and evidence semantics.
+	// This guard also applies when that runtime is deliberately disabled.
+	if err := s.DB.Where("task_id = ? AND org_id = ? AND provider <> ?", taskID, orgID, "ark_official").First(t).Error; err != nil {
 		return nil, err
 	}
 	return t, nil

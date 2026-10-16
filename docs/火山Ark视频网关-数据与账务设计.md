@@ -1,6 +1,6 @@
 # 火山 Ark 视频网关：数据、账务与恢复设计
 
-> 设计基线为 2026-10-15；2026-10-16 已按此边界实施。下文保留逻辑设计，实际物理列名、索引和精度以 `migrations/0049` 至 `0100` 及代码为准；已在专用 MySQL 8.4 测试库应用，未对生产执行。已实现与剩余灰度项见[阶段记录](ark-delivery-status.md)、[架构事实源](整体架构设计.md)和[运维说明](ark-operations.md)，公开契约见[OpenAPI 3.1](api/seedance-v1.openapi.yaml)。
+> 设计基线为 2026-10-15；2026-10-16 已按此边界实施。下文保留逻辑设计，实际物理列名、索引和精度以 `migrations/0049` 至 `0101` 及代码为准；已在专用 MySQL 8.4 测试库应用，未对生产执行。已实现与剩余灰度项见[阶段记录](ark-delivery-status.md)、[架构事实源](整体架构设计.md)和[运维说明](ark-operations.md)，公开契约见[OpenAPI 3.1](api/seedance-v1.openapi.yaml)。
 
 ## 1. 复用范围与当前差距
 

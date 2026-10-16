@@ -116,7 +116,7 @@ func arkBillMySQLFixture(t *testing.T, status string) *arkBillFixture {
 		f.tokens[i], _, err = identity.IssueSessionToken(f.s.secret, u.ID, org.ID, time.Hour, f.now)
 		arkBillMust(t, err)
 	}
-	scope := video.ProviderScope{ScopeKey: "bill-" + f.uid, AccountRef: "test-account", Region: "cn-beijing", ProjectName: "test", Enabled: true, FXUSDPerCNY: "0.14", FXVersion: "test", FXObservedAt: f.now}
+	scope := video.ProviderScope{ScopeKey: "bill-" + f.uid, AccountRef: "bill-" + f.uid, Region: "cn-beijing", ProjectName: "test", Enabled: true, FXUSDPerCNY: "0.14", FXVersion: "test", FXObservedAt: f.now}
 	arkBillMust(t, db.Create(&scope).Error)
 	f.scope = scope.ID
 	var key *identity.APIKey

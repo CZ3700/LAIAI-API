@@ -211,7 +211,7 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 		return
 	}
 	fx, e := decimal.NewFromString(scope.FXUSDPerCNY)
-	if e != nil || !fx.IsPositive() || scope.FXVersion == "" || scope.FXObservedAt.IsZero() {
+	if e != nil || !fx.IsPositive() || scope.FXVersion == "" || scope.FXObservedAt.IsZero() || scope.FXObservedAt.After(s.now().UTC()) {
 		fail(c, 422, "invalid FX snapshot")
 		return
 	}
@@ -246,7 +246,7 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			}
 		}
 		var conflicting int64
-		if e := tx.Model(&videoConfigurationRevision{}).Where("public_model = ? AND (version = ? OR (capability_version = ? AND capability_hash <> ?))", cfg.PublicModel, cfg.Version, cap.Version, capHash).Count(&conflicting).Error; e != nil {
+		if e := tx.Model(&videoConfigurationRevision{}).Where("public_model = ? AND (version = ? OR pricing_version = ? OR (capability_version = ? AND capability_hash <> ?))", cfg.PublicModel, cfg.Version, cfg.PricingVersion, cap.Version, capHash).Count(&conflicting).Error; e != nil {
 			return e
 		}
 		if conflicting > 0 {
@@ -260,6 +260,13 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			return video.ErrInvalid
 		}
 		if scope.ID == 0 {
+			var canonical int64
+			if e := tx.Model(&video.ProviderScope{}).Where("account_ref=? AND region=? AND project_name=?", scope.AccountRef, scope.Region, scope.ProjectName).Count(&canonical).Error; e != nil {
+				return e
+			}
+			if canonical != 0 {
+				return video.ErrConflict
+			}
 			if e := tx.Create(&scope).Error; e != nil {
 				return e
 			}
@@ -269,14 +276,22 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 				return e
 			}
 			oldFX, parseErr := decimal.NewFromString(old.FXUSDPerCNY)
-			if parseErr != nil || old.ScopeKey != scope.ScopeKey || old.AccountRef != scope.AccountRef || old.Region != scope.Region || old.ProjectName != scope.ProjectName || old.FXVersion != scope.FXVersion || !oldFX.Equal(fx) || !old.Enabled {
+			if parseErr != nil || old.ScopeKey != scope.ScopeKey || old.AccountRef != scope.AccountRef || old.Region != scope.Region || old.ProjectName != scope.ProjectName || !old.Enabled || (old.FXVersion == scope.FXVersion && !oldFX.Equal(fx)) {
 				return video.ErrConflict
 			}
+			// FX revisions do not create a new financial scope or reset its quota
+			// buckets. Accepted tasks already own immutable FX snapshots.
+			if e := tx.Model(&old).Updates(map[string]any{"fx_usd_per_cny": fx.StringFixed(12), "fx_version": scope.FXVersion, "fx_observed_at": scope.FXObservedAt}).Error; e != nil {
+				return e
+			}
+			old.FXUSDPerCNY = fx.StringFixed(12)
+			old.FXVersion = scope.FXVersion
+			old.FXObservedAt = scope.FXObservedAt
 			scope = old
 		}
 		cfg.ProviderScopeID = scope.ID
 		var existingPrice int64
-		if e := tx.Model(&videobilling.PricingRule{}).Where("provider_scope_id = ? AND model = ? AND version = ?", scope.ID, cfg.PublicModel, cfg.PricingVersion).Count(&existingPrice).Error; e != nil {
+		if e := tx.Model(&videobilling.PricingRule{}).Where("model = ? AND version = ?", cfg.PublicModel, cfg.PricingVersion).Count(&existingPrice).Error; e != nil {
 			return e
 		}
 		if existingPrice > 0 {

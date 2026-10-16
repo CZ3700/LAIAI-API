@@ -1,6 +1,7 @@
 package video
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -103,7 +104,7 @@ func mysqlFixture(t *testing.T) *fixture {
 	must(t, e)
 	ch := relay.Channel{Name: "Ark integration", Provider: "volcengine", BaseURL: "https://ark.cn-beijing.volces.com/api/v3", CredentialEnc: encrypted, Models: ark.Model20, Weight: 1, Status: 1, MaxConcurrentTasks: 100}
 	must(t, db.Create(&ch).Error)
-	scope := ProviderScope{ScopeKey: uid, AccountRef: "test-account", Region: "cn-beijing", ProjectName: "default", Enabled: true, FXUSDPerCNY: "0.14", FXVersion: "test-fx", FXObservedAt: now}
+	scope := ProviderScope{ScopeKey: uid, AccountRef: "test-" + uid, Region: "cn-beijing", ProjectName: "default", Enabled: true, FXUSDPerCNY: "0.14", FXVersion: "test-fx", FXObservedAt: now}
 	must(t, db.Create(&scope).Error)
 	cap := ark.Capability{PublicModel: ark.Model20, UpstreamModel: "doubao-seedance-2-0-260128", Version: "test-cap-v1", Enabled: true, Verified: true, Resolutions: []string{"720p"}, Ratios: []string{"16:9"}, MinDuration: 4, MaxDuration: 15, DefaultDuration: 5, DefaultResolution: "720p", DefaultRatio: "16:9", DefaultSeed: -1, DefaultExecutionExpiresAfter: 172800, MinExecutionExpiresAfter: 3600, MaxExecutionExpiresAfter: 259200, FPS: 24, MaxContentItems: 4}
 	capJSON, _ := json.Marshal(cap)
@@ -372,6 +373,35 @@ func TestMySQLVideoHTTPAuditAndRetention(t *testing.T) {
 	if log.Outcome != "completed" || log.HTTPStatus != 202 {
 		t.Fatal("missing request finish")
 	}
+	if log.ResponsePayloadID == "" {
+		t.Fatal("client response evidence missing")
+	}
+	responseBody, e := f.s.Evidence.ReadForHistory(context.Background(), f.key.OrgID, log.ResponsePayloadID, invocation.VideoAccess{ActorRole: invocation.VideoRoleOrgReader, ActorID: fmt.Sprint(f.key.ID), ReasonCode: "response_test"})
+	must(t, e)
+	if !bytes.Contains(responseBody, []byte(`"billing_state":"reserved"`)) {
+		t.Fatal("client response evidence did not preserve safe DTO")
+	}
+	g.GET("/v1/video/portrait-authorizations/:session_id", func(c *gin.Context) {
+		c.JSON(200, gin.H{"session_id": c.Param("session_id"), "authorization_url": "https://identity.example.test?token=secret-h5-one-use"})
+	})
+	portrait := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/v1/video/portrait-authorizations/pas_test", nil)
+		req.Header.Set("Authorization", "Bearer "+f.plain)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+	portraitResponse := portrait()
+	if portraitResponse.Code != 200 {
+		t.Fatal("portrait response")
+	}
+	log = invocation.VideoRequestLog{}
+	must(t, f.s.DB.Where("request_id=?", portraitResponse.Header().Get("X-Request-Id")).First(&log).Error)
+	responseBody, e = f.s.Evidence.ReadForHistory(context.Background(), f.key.OrgID, log.ResponsePayloadID, invocation.VideoAccess{ActorRole: invocation.VideoRoleOrgReader, ActorID: fmt.Sprint(f.key.ID), ReasonCode: "response_test"})
+	must(t, e)
+	if bytes.Contains(responseBody, []byte("authorization_url")) || bytes.Contains(responseBody, []byte("secret-h5")) {
+		t.Fatal("short-lived authorization secret entered response history")
+	}
 	denied := httptest.NewRecorder()
 	r.ServeHTTP(denied, httptest.NewRequest("GET", "/v1/video/generations/task_missing", nil))
 	if denied.Code != 401 {
@@ -379,6 +409,12 @@ func TestMySQLVideoHTTPAuditAndRetention(t *testing.T) {
 	}
 	must(t, f.s.DB.Where("request_id = ?", denied.Header().Get("X-Request-Id")).First(&log).Error)
 	must(t, f.s.DB.Model(&Policy{}).Where("org_id = ?", f.key.OrgID).Update("capture_history", false).Error)
+	portraitResponse = portrait()
+	log = invocation.VideoRequestLog{}
+	must(t, f.s.DB.Where("request_id=?", portraitResponse.Header().Get("X-Request-Id")).First(&log).Error)
+	if log.ResponsePayloadID != "" {
+		t.Fatal("disabled response history captured body")
+	}
 	v := f.create(t, "zero-history-1")
 	f.dispatch(t, v.ID)
 	must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
