@@ -34,6 +34,39 @@ jobs:
       - name: Console 类型检查 + 构建
         run: make web
 
+  ark-mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ark-ci-test-only
+          MYSQL_ROOT_HOST: '%'
+          MYSQL_DATABASE: ark_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -park-ci-test-only"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      GOPROXY: https://proxy.golang.org,direct
+      LAIAI_DSN: root:ark-ci-test-only@tcp(127.0.0.1:3306)/ark_test?parseTime=true
+      ARK_TEST_MYSQL_DSN: root:ark-ci-test-only@tcp(127.0.0.1:3306)/ark_test?parseTime=true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache: true
+      - name: Apply and replay formal MySQL migrations
+        run: |
+          go -C core run ./cmd/migrate -dir ../migrations
+          go -C core run ./cmd/migrate -dir ../migrations
+      - name: Ark MySQL transaction and HTTP integration
+        run: go -C core test ./internal/video ./internal/server -run TestMySQL -count=1 -timeout=10m
+      - name: Ark concurrency and Linux storage checks
+        run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=10m
+
   redline:
     # CLAUDE.md 平台红线中可机检项
     runs-on: ubuntu-latest

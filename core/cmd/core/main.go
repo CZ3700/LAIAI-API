@@ -22,6 +22,8 @@ import (
 	"github.com/laiai/laiai-next/core/internal/mailer"
 	"github.com/laiai/laiai-next/core/internal/server"
 	"github.com/laiai/laiai-next/core/internal/task"
+	"github.com/laiai/laiai-next/core/internal/video"
+	"github.com/laiai/laiai-next/core/internal/videoartifact"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -100,8 +102,68 @@ func main() {
 	// 异步任务轮询循环（Seedance 类任务的状态同步与结算，设计 §4.4）。仅 leader 实例轮询，
 	// 避免 N 副本对同一批在途任务做 N 倍上游 query（终态结算本就 CAS 幂等，多跑只是浪费）。
 	var taskSvc *task.Service
+	var videoSvc *video.Service
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	defer pollerCancel()
+	if len(cfg.VideoHMACSecret) > 0 {
+		videoSvc, err = video.NewService(db, cfg.Keyring, cfg.VideoHMACSecret, log.With("component", "video"))
+		if err != nil {
+			log.Error("official video initialization failed")
+			os.Exit(1)
+		}
+		blobs, berr := videoartifact.NewFilesystemBlobStore(cfg.VideoArtifactRoot)
+		if berr != nil {
+			log.Error("private video artifact storage unavailable")
+			os.Exit(1)
+		}
+		defer blobs.Close()
+		downloader, derr := videoartifact.NewDownloader(videoartifact.DownloadConfig{AllowedHosts: cfg.VideoArtifactHosts, MaxBytes: 2 << 30, Timeout: 2 * time.Minute, TempDir: cfg.VideoArtifactTemp})
+		if derr != nil {
+			log.Error("video output download configuration invalid")
+			os.Exit(1)
+		}
+		repo := videoartifact.Repository{DB: db}
+		videoSvc.ArtifactWorker = &videoartifact.Worker{Repo: repo, Resolver: videoSvc, Downloader: downloader, Blobs: blobs, LeaseDuration: 4 * time.Minute, TransferTimeout: 3 * time.Minute, MaxAttempts: 3}
+		videoSvc.ArtifactService = &videoartifact.Service{Repo: repo, Blobs: blobs}
+		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL}); err != nil {
+			log.Error("video asset configuration invalid")
+			os.Exit(1)
+		}
+		jobs := []struct {
+			name     string
+			interval time.Duration
+			run      func(context.Context) error
+		}{
+			{"task", 2 * time.Second, videoSvc.ProcessOnce},
+			{"artifacts", 10 * time.Second, videoSvc.ProcessArtifacts},
+			{"assets", 5 * time.Second, videoSvc.Assets.ProcessOnce},
+			{"events", 5 * time.Second, videoSvc.ProcessOutbox},
+			{"evidence_retention", time.Minute, func(ctx context.Context) error {
+				if _, err := videoSvc.Evidence.PurgeExpired(ctx, 100); err != nil {
+					return err
+				}
+				return videoSvc.RecoverRequestLogs(time.Now().UTC())
+			}},
+		}
+		for _, job := range jobs {
+			go func() {
+				ticker := time.NewTicker(job.interval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						if leaderLease.IsLeader() {
+							if err := job.run(pollerCtx); err != nil && pollerCtx.Err() == nil {
+								log.Warn("video background job deferred", "job", job.name)
+							}
+						}
+					case <-pollerCtx.Done():
+						return
+					}
+				}
+			}()
+		}
+	}
 	if cfg.Keyring != nil {
 		taskSvc = task.NewService(db, cfg.Keyring, log.With("component", "task"))
 		go func() {
@@ -121,11 +183,12 @@ func main() {
 	}
 
 	handler, apiSrv := server.NewWithServer(db, server.Options{
-		AuthSecret:  cfg.AuthSecret,
-		AdminToken:  cfg.AdminToken,
-		Keyring:     cfg.Keyring,
-		Recorder:    rec,
-		TaskService: taskSvc,
+		AuthSecret:   cfg.AuthSecret,
+		AdminToken:   cfg.AdminToken,
+		Keyring:      cfg.Keyring,
+		Recorder:     rec,
+		TaskService:  taskSvc,
+		VideoService: videoSvc,
 		Mailer: mailer.New(mailer.Config{
 			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 			Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,

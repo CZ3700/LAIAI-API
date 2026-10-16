@@ -16,17 +16,19 @@ import (
 	"github.com/laiai/laiai-next/core/internal/notify"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/task"
+	"github.com/laiai/laiai-next/core/internal/video"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
 	"gorm.io/gorm"
 )
 
 type Options struct {
-	AuthSecret  []byte               // session token HMAC（必填）
-	AdminToken  []byte               // X-Admin-Token；空 = admin API 整组禁用
-	Keyring     *crypto.Keyring      // 渠道凭证信封加密；nil = 渠道管理禁用
-	Recorder    *invocation.Recorder // 调用记录；nil = relay 不记录
-	TaskService *task.Service        // 异步任务服务；nil = 按默认构造（main 传入以共享轮询实例）
+	AuthSecret   []byte               // session token HMAC（必填）
+	AdminToken   []byte               // X-Admin-Token；空 = admin API 整组禁用
+	Keyring      *crypto.Keyring      // 渠道凭证信封加密；nil = 渠道管理禁用
+	Recorder     *invocation.Recorder // 调用记录；nil = relay 不记录
+	TaskService  *task.Service        // 异步任务服务；nil = 按默认构造（main 传入以共享轮询实例）
+	VideoService *video.Service
 	// AuthRateBurst：认证端点 per-IP 突发上限；0 = 生产默认 5。测试设大值绕开。
 	AuthRateBurst int
 	Mailer        mailer.Mailer // 邮件发送；nil = 邮件功能禁用（验证端点 503）
@@ -51,11 +53,12 @@ type Server struct {
 	adminToken          []byte
 	keyring             *crypto.Keyring
 	authLimiter         *ipLimiter
-	diagLimiter         *ipLimiter // per-user Key 检测配额（§4.8）——以 userID 为键，抗 IP 轮换
-	twofaLimiter        *ipLimiter    // 2FA 二阶段 per-account 限流（防中间票窗口内暴力猜 TOTP）
-	relay               *relay.Relay  // 渠道一键测试用；nil = 测试端点 503
-	mailer              mailer.Mailer // 邮件发送；nil = 邮件功能禁用
+	diagLimiter         *ipLimiter         // per-user Key 检测配额（§4.8）——以 userID 为键，抗 IP 轮换
+	twofaLimiter        *ipLimiter         // 2FA 二阶段 per-account 限流（防中间票窗口内暴力猜 TOTP）
+	relay               *relay.Relay       // 渠道一键测试用；nil = 测试端点 503
+	mailer              mailer.Mailer      // 邮件发送；nil = 邮件功能禁用
 	notify              *notify.Dispatcher // 统一通知层（§4.9）；nil = 通知禁用
+	video               *video.Service
 	log                 *slog.Logger
 	now                 func() time.Time // 可注入时钟，测试用
 	invRetentionDefault int              // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
@@ -98,10 +101,11 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 	}
 	s := &Server{
 		db: db, readDB: opts.ReadDB, secret: opts.AuthSecret,
+		video:      opts.VideoService,
 		adminToken: opts.AdminToken, keyring: opts.Keyring,
 		authLimiter:         newIPLimiter(rate.Every(time.Second), authBurst),
 		twofaLimiter:        newIPLimiter(rate.Every(time.Second), authBurst), // 与 auth 同档（生产默认 5）；测试设大值绕开
-		diagLimiter:         newIPLimiter(rate.Every(30*time.Second), 20), // per-user 诊断配额（§4.8 对抗 review）：突发 20 后 2/min，抗 IP 轮换的账号侧封顶
+		diagLimiter:         newIPLimiter(rate.Every(30*time.Second), 20),     // per-user 诊断配额（§4.8 对抗 review）：突发 20 后 2/min，抗 IP 轮换的账号侧封顶
 		log:                 log,
 		now:                 time.Now,
 		invRetentionDefault: opts.InvocationRetentionDays,
@@ -186,7 +190,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			authed.GET("/orgs", s.listOrgs)
 			authed.POST("/orgs", s.createOrg)
 			authed.POST("/auth/switch", s.switchOrg)
-				authed.POST("/diagnostics/check", s.authRateLimit(), s.checkKey) // Key 检测工具站（§4.8）；限流防拿平台当扫描器/SSRF 跳板
+			authed.POST("/diagnostics/check", s.authRateLimit(), s.checkKey) // Key 检测工具站（§4.8）；限流防拿平台当扫描器/SSRF 跳板
 			// 团队邀请（被邀请人侧，0029）：未入队前不能 org-scoped，故挂 authed。
 			authed.GET("/invitations", s.listMyInvitations)              // 我收到的待确认邀请
 			authed.POST("/invitations/:id/accept", s.acceptInvitation)   // 接受 → 入队
@@ -203,7 +207,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/usage/export", s.getUsageExport) // 调用明细 CSV 自助导出（Latency/Usage 页）
 				org.GET("/usage/summary", s.getUsageSummary)
 				org.GET("/usage/by-model", s.getUsageByModel)
-				org.GET("/usage/by-key", s.getUsageByKey) // 仪表盘密钥排行榜
+				org.GET("/usage/by-key", s.getUsageByKey)         // 仪表盘密钥排行榜
 				org.GET("/usage/perf-stats", s.getUsagePerfStats) // 延迟/成功率 服务端分位聚合（Latency 页）
 				org.GET("/balance", s.getBalance)
 				org.GET("/ledger", s.getLedger)
@@ -212,11 +216,11 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/payment/orders", s.listTopups)
 				org.GET("/payment/recharge-stats", s.getRechargeStats) // 仪表盘本月/近7日充值聚合
 				org.GET("/affiliate", s.getAffiliate)
-				org.GET("/org/balance-alert", s.getBalanceAlert)  // 余额低预警阈值（0042）
-				org.PUT("/org/balance-alert", s.putBalanceAlert)  // 仅 owner/admin
+				org.GET("/org/balance-alert", s.getBalanceAlert)     // 余额低预警阈值（0042）
+				org.PUT("/org/balance-alert", s.putBalanceAlert)     // 仅 owner/admin
 				org.GET("/org/notify-settings", s.getNotifySettings) // 统一通知订阅（§4.9 Notify）
 				org.PUT("/org/notify-settings", s.putNotifySettings) // 仅 owner/admin
-				org.GET("/org/byok-channels", s.listByokChannels) // BYOK 自带上游 Key（0044）
+				org.GET("/org/byok-channels", s.listByokChannels)    // BYOK 自带上游 Key（0044）
 				org.POST("/org/byok-channels", s.createByokChannel)
 				org.PATCH("/org/byok-channels/:id", s.patchByokChannel)
 				org.DELETE("/org/byok-channels/:id", s.deleteByokChannel)
@@ -259,8 +263,8 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.GET("/orgs", s.adminListOrgs)
 			admin.GET("/overview", s.adminOverview)
 			admin.GET("/analytics", s.adminAnalytics)
-			admin.GET("/channel-health", s.adminChannelHealth)             // M2 渠道健康看板
-			admin.GET("/model-channel-stats", s.adminModelChannelStats)    // (model×channel) 交叉看板（§5）
+			admin.GET("/channel-health", s.adminChannelHealth)          // M2 渠道健康看板
+			admin.GET("/model-channel-stats", s.adminModelChannelStats) // (model×channel) 交叉看板（§5）
 			admin.GET("/audit-logs", s.adminListAuditLogs)
 			admin.GET("/users", s.adminListUsers)
 			admin.POST("/users/:id/manage", s.adminManageUser)           // 含 targetRole 守卫（不能动同级/更高）
@@ -272,6 +276,9 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			// —— superadmin 级（资金 / 系统设置 / 定价策略 / 授权）——（对标 NewAPI RootAuth）
 			su := admin.Group("", s.requireSuperadmin())
 			{
+				s.registerVideoConfiguration(su)
+				s.registerArkBillingAdmin(su)
+				s.registerArkAssetAdmin(su)
 				// 跨租户全平台调用明细（org_id/user_id/model/cost）：限 superadmin（P2-3）
 				su.GET("/invocations", s.adminListInvocations)
 				su.POST("/credits", s.adminGrantCredit) // 授信入金（动钱）
@@ -335,9 +342,16 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		}
 		// 数据面体上限（P0-2）：与 relay 各端点 io.LimitReader 同一上限，超限 413
 		vg := r.Group("", bodyLimit(relay.MaxRequestBodySize))
-		vg.POST("/v1/video/generations", ts.HandleCreate)
-		vg.GET("/v1/video/generations/:id", ts.HandleGet)
-		vg.GET("/v1/video/generations/:id/content", ts.HandleContent) // 产物代理下发（sora 二进制/veo 带 key URI，0038）
+		if opts.VideoService != nil {
+			if opts.VideoService.Gate == nil {
+				opts.VideoService.Gate = rl
+			}
+			opts.VideoService.RegisterRoutes(vg, ts)
+		} else {
+			vg.POST("/v1/video/generations", video.DisabledOfficialCreate(ts.HandleCreate))
+			vg.GET("/v1/video/generations/:id", ts.HandleGet)
+			vg.GET("/v1/video/generations/:id/content", ts.HandleContent)
+		}
 		// Midjourney（mjproxy 网关方言，丝滑度批 C-4）：MJ 客户端生态标准协议；task 骨架复用
 		vg.POST("/mj/submit/:action", ts.HandleMJSubmit)
 		vg.GET("/mj/task/:id/fetch", ts.HandleMJFetch)

@@ -12,6 +12,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/task"
+	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 )
@@ -176,6 +177,26 @@ func (s *Service) HandleBilling(c *gin.Context) {
 			rows = append(rows, gin.H{"entry_id": "be_release_" + fmt.Sprint(entry.ID), "type": "release", "amount": entry.ReleasedUSD.StringFixed(8), "currency": "USD", "created_at": entry.CreatedAt})
 		}
 	}
+	var adjustments []videobilling.AdjustmentApplication
+	if e := s.DB.Where("org_id = ? AND task_id = ?", org, id).Order("id").Find(&adjustments).Error; e != nil {
+		respondError(c, e)
+		return
+	}
+	for _, a := range adjustments {
+		net := a.NetUSD.StringFixed(8)
+		settled = &net
+		if a.CompletionTokens != nil {
+			tokens = a.CompletionTokens
+		}
+		if a.CustomerDeltaUSD.IsZero() {
+			continue
+		}
+		typ := "adjustment_debit"
+		if a.CustomerDeltaUSD.IsNegative() {
+			typ = "adjustment_credit"
+		}
+		rows = append(rows, gin.H{"entry_id": "be_adjust_" + fmt.Sprint(a.ID), "type": typ, "amount": a.CustomerDeltaUSD.Abs().StringFixed(8), "currency": "USD", "created_at": a.CreatedAt})
+	}
 	mode := "without_input_video"
 	var meter videobilling.MeteringInput
 	_ = json.Unmarshal([]byte(snap.MeteringJSON), &meter)
@@ -220,7 +241,12 @@ func (s *Service) HandleModels(c *gin.Context) {
 			}
 			prices = append(prices, gin.H{"price_rule_id": p.RuleID, "label": p.Resolution + "/" + mode + "/" + p.ServiceTier, "unit": "million_video_tokens", "amount": p.RetailUSDPer1M.Mul(relay.EffectiveRatio(s.DB, key.OrgID, cfg.PublicModel)).String(), "currency": "USD"})
 		}
-		data = append(data, gin.H{"id": cfg.PublicModel, "enabled": cfg.Enabled && cap.Enabled, "verified": cfg.VerifiedAt != nil && cap.Verified, "capability_version": cap.Version, "pricing_version": cfg.PricingVersion, "billing_rule_version": formula, "capabilities": gin.H{"resolutions": cap.Resolutions, "max_duration_seconds": cap.MaxDuration, "automatic_duration": cap.AutomaticDuration, "frames": cap.Frames, "input_video": cap.VideoInput, "input_audio": cap.AudioInput, "draft": cap.Draft, "portrait_assets": false}, "prices": prices})
+		portraitAssets := false
+		if s.Assets != nil {
+			runtime, e := s.assetScopeTx(s.DB.WithContext(c.Request.Context()), key.OrgID, cfg.ProviderScopeID, videoasset.Scope{}, false)
+			portraitAssets = e == nil && runtime.ExecutionRetentionConsent && runtime.Capabilities.Portrait
+		}
+		data = append(data, gin.H{"id": cfg.PublicModel, "enabled": cfg.Enabled && cap.Enabled, "verified": cfg.VerifiedAt != nil && cap.Verified, "capability_version": cap.Version, "pricing_version": cfg.PricingVersion, "billing_rule_version": formula, "capabilities": gin.H{"resolutions": cap.Resolutions, "max_duration_seconds": cap.MaxDuration, "automatic_duration": cap.AutomaticDuration, "frames": cap.Frames, "input_video": cap.VideoInput, "input_audio": cap.AudioInput, "draft": cap.Draft, "portrait_assets": portraitAssets}, "prices": prices})
 	}
 	c.JSON(200, gin.H{"data": data})
 }

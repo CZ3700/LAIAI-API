@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -13,13 +14,18 @@ import (
 )
 
 type Config struct {
-	DSN           string          // LAIAI_DSN，必填
-	ListenAddr    string          // LAIAI_LISTEN_ADDR，默认 :8080
-	AuthSecret    []byte          // LAIAI_AUTH_SECRET，必填且 >= 32 字符（session token HMAC）
-	AdminToken    []byte          // LAIAI_ADMIN_TOKEN，可选；设置则须 >= 32 字符，未设置 admin API 整组禁用
-	Keyring       *crypto.Keyring // LAIAI_DATA_KEYS + LAIAI_DATA_KEY_ACTIVE，可选；未设置则渠道管理/relay 禁用
-	RedisAddr     string          // LAIAI_REDIS_ADDR，可选（跨实例限流需要；空=退化进程内限流）
-	RedisPassword string          // LAIAI_REDIS_PASSWORD，可选（compose 的 redis 启用 requirepass）
+	DSN                      string          // LAIAI_DSN，必填
+	ListenAddr               string          // LAIAI_LISTEN_ADDR，默认 :8080
+	AuthSecret               []byte          // LAIAI_AUTH_SECRET，必填且 >= 32 字符（session token HMAC）
+	AdminToken               []byte          // LAIAI_ADMIN_TOKEN，可选；设置则须 >= 32 字符，未设置 admin API 整组禁用
+	Keyring                  *crypto.Keyring // LAIAI_DATA_KEYS + LAIAI_DATA_KEY_ACTIVE，可选；未设置则渠道管理/relay 禁用
+	VideoHMACSecret          []byte
+	VideoArtifactRoot        string
+	VideoArtifactTemp        string
+	VideoArtifactHosts       []string
+	VideoPortraitCallbackURL string
+	RedisAddr                string // LAIAI_REDIS_ADDR，可选（跨实例限流需要；空=退化进程内限流）
+	RedisPassword            string // LAIAI_REDIS_PASSWORD，可选（compose 的 redis 启用 requirepass）
 	// 规模化（读副本 + 连接池可调，扩容旋钮）：
 	// LAIAI_DSN_REPLICAS：逗号分隔的只读副本 DSN，空=无副本（所有读走主库，行为不变）。
 	//   🚨 只把分析/用量历史/排行/公开价目这类「非金钱、容延迟」的只读路由到副本；余额/quota/hold
@@ -132,6 +138,23 @@ func Load() (*Config, error) {
 	}
 
 	c.SMTPHost = os.Getenv("LAIAI_SMTP_HOST")
+	if v := os.Getenv("LAIAI_VIDEO_HMAC_SECRET"); v != "" {
+		if len(v) < 32 || c.Keyring == nil {
+			return nil, fmt.Errorf("config: video gateway requires a separate HMAC secret of 32+ bytes and the data keyring")
+		}
+		c.VideoHMACSecret = []byte(v)
+	}
+	c.VideoArtifactRoot = os.Getenv("LAIAI_VIDEO_ARTIFACT_ROOT")
+	c.VideoArtifactTemp = os.Getenv("LAIAI_VIDEO_ARTIFACT_TEMP")
+	c.VideoPortraitCallbackURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_CALLBACK_URL")
+	for _, host := range strings.Split(os.Getenv("LAIAI_VIDEO_ARTIFACT_HOSTS"), ",") {
+		if h := strings.TrimSpace(host); h != "" {
+			c.VideoArtifactHosts = append(c.VideoArtifactHosts, h)
+		}
+	}
+	if len(c.VideoHMACSecret) > 0 && (!filepath.IsAbs(c.VideoArtifactRoot) || !filepath.IsAbs(c.VideoArtifactTemp) || len(c.VideoArtifactHosts) == 0) {
+		return nil, fmt.Errorf("config: video gateway requires private artifact root/temp paths and verified exact output hosts")
+	}
 	c.SMTPPort = 587
 	if v := os.Getenv("LAIAI_SMTP_PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

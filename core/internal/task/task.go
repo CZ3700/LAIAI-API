@@ -180,6 +180,9 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		}
 	}
 	ad, err := adaptorFor(ch.Provider)
+	if officialArkChannel(ch) {
+		return nil, relay.ErrNoChannel
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -219,8 +222,8 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		PriceOutUSDPer1M: price.OutputUSDPer1M,
 		PricePerCallUSD:  price.PerCallUSD, // 0048：按次计价快照（MJ 等），settle 与 hold 同口径
 
-		HoldAmountUSD:    holdAmount, GroupRatio: ratio,
-		CredentialID:     credID, // 钉住提交用的 key（0035），轮询固定用它
+		HoldAmountUSD: holdAmount, GroupRatio: ratio,
+		CredentialID: credID, // 钉住提交用的 key（0035），轮询固定用它
 	}
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
 		// 锁渠道行（MySQL FOR UPDATE；SQLite 测试靠单连接串行）
@@ -413,6 +416,10 @@ func (s *Service) nextSubmitCandidate(model string, attempt int, tried map[uint6
 		if err != nil {
 			return nil, nil, "", false // 无更多渠道
 		}
+		if officialArkChannel(ch) {
+			tried[ch.ID] = true
+			continue
+		}
 		ad, err := adaptorFor(ch.Provider)
 		if err != nil {
 			tried[ch.ID] = true
@@ -441,6 +448,17 @@ func (s *Service) nextSubmitCandidate(model string, attempt int, tried map[uint6
 }
 
 type repinResult int
+
+// Official Ark traffic must use the durable gateway even when an operator
+// configured a historical model alias on a legacy channel.
+func officialArkChannel(ch *relay.Channel) bool {
+	u, err := url.Parse(ch.BaseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return strings.HasPrefix(host, "ark.") && strings.HasSuffix(host, ".volces.com")
+}
 
 const (
 	repinOK repinResult = iota

@@ -181,7 +181,7 @@ func (d *Dispatcher) ProcessOnce(ctx context.Context, batch int) (sent, failed i
 		// 最多丢一次尝试预算）。取代此前"发送后无条件 UPDATE status='sent'"（无并发防护）。
 		row.Attempts++
 		claim := map[string]any{"attempts": row.Attempts, "next_attempt_at": d.Now().Add(backoffSteps[min(row.Attempts-1, len(backoffSteps)-1)])}
-		res := d.DB.Model(&Outbox{}).Where("id = ? AND status = ?", row.ID, StatusPending).Updates(claim)
+		res := d.DB.Model(&Outbox{}).Where("id = ? AND status = ? AND attempts = ? AND next_attempt_at <= ?", row.ID, StatusPending, row.Attempts-1, now).Updates(claim)
 		if res.Error != nil || res.RowsAffected != 1 {
 			continue // 被另一实例抢走 / DB 错误 → 跳过（不重复投递）
 		}
@@ -195,13 +195,13 @@ func (d *Dispatcher) ProcessOnce(ctx context.Context, batch int) (sent, failed i
 			err = fmt.Errorf("unknown channel %q", row.Channel)
 		}
 		if err == nil {
-			d.DB.Model(&Outbox{}).Where("id = ?", row.ID).Updates(map[string]any{"status": StatusSent, "sent_at": d.Now()})
+			d.DB.Model(&Outbox{}).Where("id = ? AND status = ? AND attempts = ?", row.ID, StatusPending, row.Attempts).Updates(map[string]any{"status": StatusSent, "sent_at": d.Now()})
 			sent++
 			continue
 		}
 		failed++
 		if row.Attempts >= maxAttempts {
-			d.DB.Model(&Outbox{}).Where("id = ?", row.ID).Update("status", StatusDead)
+			d.DB.Model(&Outbox{}).Where("id = ? AND status = ? AND attempts = ?", row.ID, StatusPending, row.Attempts).Update("status", StatusDead)
 			d.Log.Warn("notify delivery dead-lettered", "outbox", row.ID, "event", row.Event, "channel", row.Channel)
 		}
 		// 失败但未 dead：claim 已写 attempts+退避，无需再 UPDATE，下轮自然重试。
