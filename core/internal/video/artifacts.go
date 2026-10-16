@@ -3,6 +3,7 @@ package video
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -28,9 +29,6 @@ func (s *Service) afterObservationTx(tx *gorm.DB, t *task.Task, st *State, hasVi
 				return e
 			}
 		}
-	}
-	if terminal(t.Status) && s.Assets != nil {
-		return s.Assets.ReleaseBindingsTx(tx, t.OrgID, t.TaskID)
 	}
 	return nil
 }
@@ -73,7 +71,7 @@ func (s *Service) ResolveSource(ctx context.Context, org uint64, id string, kind
 			return e
 		}
 		if !allowed {
-			return ErrUnavailable
+			return videoartifact.ErrSourceDeferred
 		}
 		return tx.Create(&Attempt{OrgID: org, TaskID: id, AttemptID: attempt, RequestID: attempt, Phase: "artifact_query_sending", ObservedAt: now}).Error
 	})
@@ -127,17 +125,14 @@ func (s *Service) ProcessArtifacts(ctx context.Context) error {
 	}
 	now := s.Now().UTC()
 	var rows []videoartifact.Record
-	if e := s.DB.WithContext(ctx).Where("deleted_at IS NULL AND expires_at > ? AND status IN ? AND attempts < ? AND (attempts = 0 OR updated_at < ?)", now, []string{"pending", "failed"}, s.ArtifactWorker.MaxAttempts, now.Add(-time.Minute)).Order("updated_at").Limit(10).Find(&rows).Error; e != nil {
+	candidates := s.artifactCandidates(ctx, now)
+	if e := s.DB.WithContext(ctx).Table("(?) AS eligible", candidates).Where("scope_rank = 1").Order("updated_at, task_id, kind").Limit(10).Find(&rows).Error; e != nil {
 		return e
 	}
 	for _, r := range rows {
-		record, e := s.ArtifactWorker.Transfer(ctx, r.OrgID, r.TaskID, r.Kind, r.Attempts > 0)
+		_, _ = s.ArtifactWorker.Transfer(ctx, r.OrgID, r.TaskID, r.Kind, r.Attempts > 0)
 		if r.Kind == videoartifact.Video {
-			status := "failed"
-			if e == nil && record.Status == videoartifact.Ready {
-				status = "ready"
-			}
-			if e := s.DB.Model(&State{}).Where("org_id = ? AND task_id = ? AND deleted_at IS NULL", r.OrgID, r.TaskID).Updates(map[string]any{"artifact_status": status, "updated_at": s.Now().UTC()}).Error; e != nil {
+			if e := s.syncArtifactProjection(ctx, r.OrgID, r.TaskID, s.Now().UTC()); e != nil {
 				return e
 			}
 		}
@@ -150,8 +145,44 @@ func (s *Service) ProcessArtifacts(ctx context.Context) error {
 		if e := s.ArtifactService.Cleanup(ctx, r.OrgID, r.TaskID, r.Kind, now); e != nil {
 			return e
 		}
+		if r.Kind == videoartifact.Video {
+			if e := s.syncArtifactProjection(ctx, r.OrgID, r.TaskID, now); e != nil {
+				return e
+			}
+		}
 	}
 	return nil
+}
+
+func (s *Service) artifactCandidates(ctx context.Context, now time.Time) *gorm.DB {
+	return s.DB.WithContext(ctx).Table("video_artifacts AS a").Select("a.*, ROW_NUMBER() OVER (PARTITION BY v.provider_scope_id ORDER BY a.updated_at, a.task_id, a.kind) AS scope_rank").Joins("JOIN video_task_states v ON v.org_id = a.org_id AND v.task_id = a.task_id").Where("v.deleted_at IS NULL AND a.deleted_at IS NULL AND a.expires_at > ? AND a.status IN ? AND a.attempts < ? AND (a.lease_until IS NULL OR a.lease_until <= ?) AND (a.attempts = 0 OR a.updated_at < ?)", now, []string{"pending", "failed"}, s.ArtifactWorker.MaxAttempts, now, now.Add(-time.Minute))
+}
+
+// Transfer errors describe one attempt, not the current record. Re-read under
+// task/state then artifact locks, the same order as registration/deletion, so
+// a late busy/error result can never overwrite another worker's Ready state.
+func (s *Service) syncArtifactProjection(ctx context.Context, org uint64, id string, now time.Time) error {
+	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		_, _, e := loadTask(tx, org, id, true)
+		if isNotFound(e) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		var current videoartifact.Record
+		if e = locked(tx).Where("org_id = ? AND task_id = ? AND kind = ?", org, id, videoartifact.Video).First(&current).Error; e != nil {
+			return e
+		}
+		if current.DeletedAt != nil {
+			return nil
+		}
+		status := string(current.Status)
+		if !current.ExpiresAt.After(now) {
+			status = "expired"
+		}
+		return tx.Model(&State{}).Where("org_id = ? AND task_id = ? AND deleted_at IS NULL", org, id).Updates(map[string]any{"artifact_status": status, "updated_at": now}).Error
+	})
 }
 func (s *Service) HandleContent(c *gin.Context) {
 	key := requestKey(c)
@@ -176,8 +207,11 @@ func (s *Service) HandleContent(c *gin.Context) {
 	defer content.Body.Close()
 	c.Header("Cache-Control", "private, no-store")
 	c.Header("Content-Type", content.Metadata.MediaType)
+	c.Header("Content-Length", fmt.Sprint(content.Metadata.Size))
 	c.Status(200)
-	if _, e = io.Copy(c.Writer, content.Body); e != nil {
+	if n, e := io.Copy(c.Writer, content.Body); e != nil || n != content.Metadata.Size {
+		c.Set("video_stream_incomplete", true)
+		c.Set("video_error", "content_stream_interrupted")
 		s.Log.Warn("video content interrupted", "task_id", c.Param("id"))
 	}
 }

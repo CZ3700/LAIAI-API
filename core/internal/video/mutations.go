@@ -80,6 +80,9 @@ func (s *Service) Cancel(ctx context.Context, org uint64, id, requestID, key str
 			if e = tx.Create(&Attempt{OrgID: org, TaskID: id, RequestID: requestID, OperationID: opID, Phase: "not_dispatched_cancel", EvidenceRef: evidence, ObservedAt: now}).Error; e != nil {
 				return e
 			}
+			if e = s.afterAssetsTerminalTx(tx, org, id); e != nil {
+				return e
+			}
 			if _, e = videobilling.ReleaseConfirmedTx(tx, videobilling.ReleaseInput{OrgID: org, TaskID: id, EvidenceID: evidence, Reason: videobilling.ReleaseNotDispatched, Confirmed: true, Now: now}); e != nil {
 				return e
 			}

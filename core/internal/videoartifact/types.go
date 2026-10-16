@@ -4,9 +4,15 @@ package videoartifact
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 )
+
+// ErrSourceDeferred means the resolver did not send an upstream request. It
+// permits scheduling later without spending the bounded transfer attempt.
+// Never return it after a network request or download may have occurred.
+var ErrSourceDeferred = errors.New("artifact_source_deferred")
 
 type Kind string
 

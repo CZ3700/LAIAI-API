@@ -128,6 +128,7 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	var t task.Task
 	var st State
 	claimed := false
+	var validationErr error
 	now := s.Now().UTC()
 	attemptID, err := randomID("att_")
 	if err != nil {
@@ -142,9 +143,12 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 		if t.Status != "accepted" {
 			return nil
 		}
-		allowed, e := s.rateTx(tx, st.ProviderScopeID, "create", now)
-		if e != nil || !allowed {
-			return e
+		validationErr = s.ValidateTaskAssetsTx(tx, t.OrgID, t.TaskID)
+		if validationErr == nil {
+			allowed, e := s.rateTx(tx, st.ProviderScopeID, "create", now)
+			if e != nil || !allowed {
+				return e
+			}
 		}
 		expires := now.Add(3 * time.Minute)
 		update := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND status = ? AND version = ?", op.OrgID, op.ID, "pending", op.Version).Updates(map[string]any{"status": "in_flight", "version": op.Version + 1, "attempt_id": attemptID, "lease_until": expires, "updated_at": now})
@@ -167,6 +171,9 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	})
 	if err != nil || !claimed {
 		return err
+	}
+	if validationErr != nil {
+		return s.knownUnsent(ctx, t, st, op, "asset_validation_failed")
 	}
 	body, err := s.Evidence.ReadForExecution(ctx, t.OrgID, op.PayloadRef, invocation.VideoAccess{ActorRole: invocation.VideoRoleWorker, ActorID: "video-dispatch", ReasonCode: "dispatch", OperationID: op.ID})
 	if err != nil {
@@ -275,6 +282,9 @@ func (s *Service) applyCreateReceipt(ctx context.Context, op Operation) error {
 			}
 		case ark.OutcomeRejected:
 			// A definite synchronous rejection did not create an accepted task.
+			if err := s.afterAssetsTerminalTx(tx, t.OrgID, t.TaskID); err != nil {
+				return err
+			}
 			if _, err := videobilling.ReleaseConfirmedTx(tx, videobilling.ReleaseInput{OrgID: t.OrgID, TaskID: t.TaskID, EvidenceID: op.ReceiptRef, Reason: videobilling.ReleaseProviderNoCharge, Confirmed: true, Now: now}); err != nil {
 				return err
 			}
@@ -336,6 +346,9 @@ func (s *Service) knownUnsent(ctx context.Context, t task.Task, st State, op Ope
 			return err
 		}
 		if err := tx.Create(&Attempt{OrgID: t.OrgID, TaskID: t.TaskID, AttemptID: op.AttemptID, RequestID: st.CreateRequestID, OperationID: op.ID, Phase: "not_sent", EvidenceRef: evidence, ErrorCode: code, ObservedAt: s.Now().UTC()}).Error; err != nil {
+			return err
+		}
+		if err := s.afterAssetsTerminalTx(tx, t.OrgID, t.TaskID); err != nil {
 			return err
 		}
 		if _, err := videobilling.ReleaseConfirmedTx(tx, videobilling.ReleaseInput{OrgID: t.OrgID, TaskID: t.TaskID, EvidenceID: evidence, Reason: videobilling.ReleaseNotDispatched, Confirmed: true, Now: s.Now().UTC()}); err != nil {
@@ -507,6 +520,13 @@ func (s *Service) applyQueryReceipt(ctx context.Context, receipt QueryReceipt) e
 		}
 		observation := response.Observation
 		if !transition.NeedsReview && observation != nil {
+			// Asset admission takes the tenant lock before Key/quota/ledger locks.
+			// Terminal release must use the same ordering within this transaction.
+			if terminal(t.Status) {
+				if e = s.afterAssetsTerminalTx(tx, org, id); e != nil {
+					return e
+				}
+			}
 			final := financialFinal(st.BillingState)
 			if final {
 				// An omitted or conflicting value is never permission to erase or

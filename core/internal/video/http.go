@@ -15,6 +15,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/task"
+	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"gorm.io/gorm"
 )
@@ -56,17 +57,17 @@ func respondError(c *gin.Context, err error) {
 	switch {
 	case errors.As(err, &a):
 		apiError(c, a.HTTPStatus, a.Code)
-	case isNotFound(err):
+	case isNotFound(err) || errors.Is(err, videoasset.ErrNotFound):
 		apiError(c, 404, "not_found")
-	case errors.Is(err, ErrForbidden):
+	case errors.Is(err, ErrForbidden) || errors.Is(err, videoasset.ErrAuthorization) || errors.Is(err, videoasset.ErrSecret):
 		apiError(c, 403, "forbidden")
-	case errors.Is(err, ErrInvalid) || errors.Is(err, videobilling.ErrInvalid):
+	case errors.Is(err, ErrInvalid) || errors.Is(err, videobilling.ErrInvalid) || errors.Is(err, videoasset.ErrInvalid):
 		apiError(c, 422, "invalid_request")
 	case errors.Is(err, ErrConflict) || errors.Is(err, videobilling.ErrConflict):
 		apiError(c, 409, "idempotency_conflict")
-	case errors.Is(err, ErrState):
+	case errors.Is(err, ErrState) || errors.Is(err, videoasset.ErrConflict) || errors.Is(err, videoasset.ErrInUse) || errors.Is(err, videoasset.ErrNotEmpty):
 		apiError(c, 409, "invalid_state")
-	case errors.Is(err, ErrCapability) || errors.Is(err, videobilling.ErrPricingUnavailable):
+	case errors.Is(err, ErrCapability) || errors.Is(err, videobilling.ErrPricingUnavailable) || errors.Is(err, videoasset.ErrUnsupported):
 		apiError(c, 422, "unsupported_capability")
 	case errors.Is(err, task.ErrConcurrencyLimit):
 		apiError(c, 429, "concurrency_limit")
@@ -117,6 +118,26 @@ func hasScope(key *identity.APIKey, scope string) bool {
 	return false
 }
 
+func requestResource(c *gin.Context) (string, string) {
+	for _, candidate := range []struct{ parameter, kind, prefix string }{{"id", "task", "task_"}, {"operation_id", "operation", "op_"}, {"asset_id", "asset", "asset_"}, {"group_id", "asset_group", "ag_"}, {"session_id", "portrait_authorization", "pas_"}} {
+		id := c.Param(candidate.parameter)
+		if id == "" || len(id) > 128 || !strings.HasPrefix(id, candidate.prefix) {
+			continue
+		}
+		valid := true
+		for _, ch := range id {
+			if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '-') {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			return candidate.kind, id
+		}
+	}
+	return "", ""
+}
+
 func (s *Service) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID, err := randomID("")
@@ -128,6 +149,7 @@ func (s *Service) Middleware() gin.HandlerFunc {
 		c.Header("X-Request-Id", requestID)
 		c.Header("Cache-Control", "private, no-store")
 		start := invocation.VideoRequestStart{RequestID: requestID, AuthOutcome: "rejected", Method: c.Request.Method, Route: c.FullPath(), Operation: "video_api", StartedAt: s.Now().UTC()}
+		start.ResourceType, start.ResourceID = requestResource(c)
 		if c.Request.ContentLength > 0 {
 			start.RequestBytes = c.Request.ContentLength
 		}
@@ -157,19 +179,26 @@ func (s *Service) Middleware() gin.HandlerFunc {
 		}
 		defer func() {
 			if v := recover(); v != nil {
-				if !stream {
+				if stream && c.Writer.Written() {
+					c.Set("video_stream_incomplete", true)
+					c.Set("video_error", "content_stream_interrupted")
+				} else {
 					buffered.body.Reset()
 					buffered.status = 0
+					apiError(c, 500, "internal_error")
 				}
-				apiError(c, 500, "internal_error")
 			}
 			status := c.Writer.Status()
 			size := c.Writer.Size()
 			if size < 0 {
 				size = 0
 			}
+			outcome := "completed"
+			if stream && c.GetBool("video_stream_incomplete") {
+				outcome, status = "incomplete", 0
+			}
 			finishErr := s.DB.Transaction(func(tx *gorm.DB) error {
-				return s.Evidence.RequestFinishTx(tx, invocation.VideoRequestFinish{RequestID: requestID, OrgID: start.OrgID, HTTPStatus: status, ResponseBytes: int64(size), SafeErrorCode: c.GetString("video_error"), Outcome: "completed", FinishedAt: s.Now().UTC()})
+				return s.Evidence.RequestFinishTx(tx, invocation.VideoRequestFinish{RequestID: requestID, OrgID: start.OrgID, HTTPStatus: status, ResponseBytes: int64(size), SafeErrorCode: c.GetString("video_error"), Outcome: outcome, FinishedAt: s.Now().UTC()})
 			})
 			c.Writer = original
 			if finishErr != nil {
