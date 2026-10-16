@@ -66,6 +66,7 @@ type createPlan struct {
 	normalized ark.NormalizedRequest
 	quote      videobilling.QuoteResult
 	canonical  []byte
+	resources  taskResourcePlan
 }
 
 func (s *Service) plan(tx *gorm.DB, org uint64, in ark.CreateRequest) (createPlan, error) {
@@ -86,9 +87,12 @@ func (s *Service) plan(tx *gorm.DB, org uint64, in ark.CreateRequest) (createPla
 	if json.Unmarshal([]byte(p.config.CapabilityJSON), &cap) != nil || cap.PublicModel != in.Model {
 		return p, ErrCapability
 	}
-	// Asset/Draft bindings are resolved by the resource module in the same
-	// transaction. Until that module is wired, those references fail closed.
-	normalized, err := ark.Normalize(in, cap, ark.Bindings{})
+	effectiveInput, bindings, resources, err := s.taskBindingsTx(tx, org, in, p.scope, cap)
+	if err != nil {
+		return p, err
+	}
+	p.resources = resources
+	normalized, err := ark.Normalize(effectiveInput, cap, bindings)
 	if err != nil {
 		return p, err
 	}
@@ -112,11 +116,15 @@ func (s *Service) plan(tx *gorm.DB, org uint64, in ark.CreateRequest) (createPla
 	}
 	inputDuration := int64(0)
 	if normalized.HasInputVideo {
-		inputDuration = p.config.MaxInputVideoDurationMS
-		if inputDuration <= 0 {
+		inputDuration = resources.InputDurationMS
+		if resources.HasUnverifiedVideo {
+			inputDuration = p.config.MaxInputVideoDurationMS
+		}
+		if inputDuration <= 0 || p.config.MaxInputVideoDurationMS > 0 && inputDuration > p.config.MaxInputVideoDurationMS {
 			return p, ErrCapability
 		}
 	}
+	p.resources.InputDurationMS = inputDuration
 	fx, err := decimal.NewFromString(p.scope.FXUSDPerCNY)
 	if err != nil {
 		return p, ErrCapability
@@ -265,6 +273,9 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		}
 		t := task.Task{TaskID: taskID, OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID, Model: in.Model, ChannelID: ch.ID, Provider: Provider, Status: "accepted", HoldID: reserved.Snapshot.HoldID, CredentialID: credentialID, EstTokens: p.quote.EstimatedTokens, PriceOutUSDPer1M: p.quote.Rule.RetailUSDPer1M, HoldAmountUSD: p.quote.HoldUSD, GroupRatio: p.quote.Metering.EffectiveRatio, SubmittedAt: now}
 		if e = tx.Create(&t).Error; e != nil {
+			return e
+		}
+		if e = s.persistTaskResourcesTx(tx, key.OrgID, taskID, p); e != nil {
 			return e
 		}
 		st := State{TaskID: taskID, OrgID: key.OrgID, CreateRequestID: requestID, ProviderScopeID: p.scope.ID, CredentialSnapshotID: credential.ID, ProviderBaseURL: ch.BaseURL, ConfigVersion: p.config.Version, CapabilityVersion: p.normalized.CapabilityVersion, UpstreamModel: p.normalized.UpstreamModel, NoChargeStatuses: p.config.NoChargeStatuses, BillingState: "reserved", SyncState: "fresh", ArtifactStatus: "pending", EffectivePayloadRef: payload, BillingSnapshotID: reserved.Snapshot.ID, IdempotencyRecordID: idem.ID, ParentDraftTaskID: p.normalized.SourceDraftID, RowVersion: 1, CreatedAt: now, UpdatedAt: now}
