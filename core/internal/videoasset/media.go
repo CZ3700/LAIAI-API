@@ -175,11 +175,13 @@ type Upload struct {
 	ObjectRef                     string `json:"-"`
 	ObjectSHA256                  string `json:"-"`
 	MIME                          string `json:"mime,omitempty"`
-	Bytes, DurationMS             int64
+	Bytes                         int64  `json:"bytes"`
+	DurationMS                    int64  `json:"duration_ms"`
 	Width, Height, FPSNum, FPSDen int
 	ErrorCode                     string    `json:"error_code,omitempty"`
 	ExpiresAt                     time.Time `json:"expires_at"`
-	CreatedAt, UpdatedAt          time.Time
+	CreatedAt                     time.Time `json:"created_at"`
+	UpdatedAt                     time.Time `json:"updated_at"`
 }
 
 func (Upload) TableName() string { return "video_media_uploads" }
@@ -221,6 +223,63 @@ func (s *Service) BeginUpload(ctx context.Context, c CreateContext, mediaType st
 	})
 	return out, e
 }
+
+type UploadPage struct {
+	Data       []Upload `json:"data"`
+	Total      int64    `json:"total"`
+	NextCursor string   `json:"next_cursor,omitempty"`
+}
+
+func (s *Service) ListUploads(ctx context.Context, org uint64, f ListFilter) (UploadPage, error) {
+	out := UploadPage{Data: []Upload{}}
+	if org == 0 || f.Limit < 1 || f.Limit > 100 || (f.MediaType != "" && f.MediaType != "image" && f.MediaType != "video" && f.MediaType != "audio") {
+		return out, ErrInvalid
+	}
+	switch f.Status {
+	case "", "uploading", "verifying", "ready", "failed", "expired":
+	default:
+		return out, ErrInvalid
+	}
+	identity := "uploads:" + f.Status + ":" + f.MediaType
+	after, err := s.parseCursor(org, identity, f.Cursor)
+	if err != nil {
+		return out, err
+	}
+	q := s.db.WithContext(ctx).Model(&Upload{}).Where("org_id = ?", org)
+	now := s.now()
+	if f.Status == "expired" {
+		q = q.Where("status = ? OR (status IN ? AND expires_at <= ?)", "expired", []string{"uploading", "verifying", "ready"}, now)
+	} else if f.Status != "" {
+		q = q.Where("status = ?", f.Status)
+		if f.Status != "failed" {
+			q = q.Where("expires_at > ?", now)
+		}
+	}
+	if f.MediaType != "" {
+		q = q.Where("media_type = ?", f.MediaType)
+	}
+	if q.Count(&out.Total).Error != nil {
+		return out, ErrStorage
+	}
+	if after != "" {
+		q = q.Where("id > ?", after)
+	}
+	if q.Order("id").Limit(f.Limit+1).Find(&out.Data).Error != nil {
+		return out, ErrStorage
+	}
+	if len(out.Data) > f.Limit {
+		out.Data = out.Data[:f.Limit]
+		out.NextCursor = s.cursor(org, identity, out.Data[f.Limit-1].ID)
+	}
+	for i := range out.Data {
+		row := &out.Data[i]
+		if (row.Status == "uploading" || row.Status == "verifying" || row.Status == "ready") && !row.ExpiresAt.After(now) {
+			row.Status = "expired"
+		}
+	}
+	return out, nil
+}
+
 func (s *Service) GetUpload(ctx context.Context, org uint64, id string) (Upload, error) {
 	var row Upload
 	if s.db.WithContext(ctx).Where("org_id = ? AND id = ?", org, id).Take(&row).Error != nil {
@@ -414,18 +473,20 @@ func (s *Service) uploadEvidence(ctx context.Context, org uint64, id, kind strin
 	if e != nil || row.Status != "ready" || row.MediaType != kind || !row.ExpiresAt.After(s.now()) || s.console.Media == nil {
 		return MediaEvidence{}, ErrInvalid
 	}
-	return MediaEvidence{ImmutableObjectRef: row.ObjectRef, ObjectSHA256: row.ObjectSHA256, MIME: row.MIME, ByteSize: row.Bytes, DurationMS: row.DurationMS, Width: row.Width, Height: row.Height, FPSNum: row.FPSNum, FPSDen: row.FPSDen, Version: 1, VerifiedAt: s.now(), FetchURL: s.console.Media.url(org, row.ID, s.now().Add(12*time.Hour))}, nil
+	return MediaEvidence{ImmutableObjectRef: row.ObjectRef, ObjectSHA256: row.ObjectSHA256, MIME: row.MIME, ByteSize: row.Bytes, DurationMS: row.DurationMS, Width: row.Width, Height: row.Height, FPSNum: row.FPSNum, FPSDen: row.FPSDen, Version: 1, VerifiedAt: s.now(), FetchURL: s.console.Media.url(org, row.ID, row.ExpiresAt)}, nil
 }
 func (s *Service) CreateAssetFromMedia(ctx context.Context, c CreateContext, group, id, name string) (AssetDTO, bool, error) {
 	row, e := s.GetUpload(ctx, c.OrgID, id)
 	if e != nil {
 		return AssetDTO{}, false, e
 	}
-	media, e := s.uploadEvidence(ctx, c.OrgID, id, row.MediaType)
-	if e != nil {
-		return AssetDTO{}, false, e
+	if s.console.Media == nil {
+		return AssetDTO{}, false, ErrUnsupported
 	}
-	return s.CreateAsset(ctx, c, AssetCreate{GroupID: group, URL: media.FetchURL, MediaType: row.MediaType, Name: name})
+	// Reconstruct the frozen identity before expiry validation so an existing
+	// idempotent registration can still be read after its fetch URL expires.
+	source := s.console.Media.url(c.OrgID, row.ID, row.ExpiresAt)
+	return s.CreateAsset(ctx, c, AssetCreate{GroupID: group, URL: source, MediaType: row.MediaType, Name: name})
 }
 func (s *Service) verifyMedia(ctx context.Context, org uint64, raw, kind string) (MediaEvidence, error) {
 	if s.console.Media != nil && strings.HasPrefix(raw, s.console.Media.base+"/") {

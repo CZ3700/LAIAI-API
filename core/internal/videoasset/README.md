@@ -250,3 +250,12 @@ Console group/assets listings use organization-bound signed cursors. The
 superadmin assignment endpoint stores review evidence in Invocation Store before
 assignment; named superadmin license review remains a separate audited action.
 Operations retain tombstones and task/financial history after deletion.
+
+
+`GET /api/video/media-uploads` exposes durable upload sessions with organization,
+media type and stage filtering plus signed pagination. Verified sessions can be
+registered from the console after a page refresh. These records remain separate
+from official asset registration state. Fetch URL expiry is fixed at the upload
+session expiry: retrying registration, including after expiry, replays the same
+idempotency result; expired media cannot start a new registration. Administrative
+discovery pagination binds its cursor to the exact configured scope.
