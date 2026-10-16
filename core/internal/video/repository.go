@@ -60,6 +60,38 @@ func validIdempotency(key string) bool {
 	return true
 }
 
+// lookupIdempotency does not reserve a new key. Admission limits apply only
+// after this authenticated, tenant-scoped replay lookup has found no request.
+func lookupIdempotency(db *gorm.DB, secret []byte, org uint64, method, path, key string, body []byte) (IdempotencyRecord, bool, error) {
+	if len(secret) < 32 || org == 0 || !validIdempotency(key) {
+		return IdempotencyRecord{}, false, ErrInvalid
+	}
+	var version HashVersion
+	err := db.Where("version = ?", "v1").First(&version).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return IdempotencyRecord{}, false, nil
+	}
+	if err != nil {
+		return IdempotencyRecord{}, false, err
+	}
+	if !hmac.Equal([]byte(version.Fingerprint), []byte(digest(secret, "version-fingerprint:v1"))) {
+		return IdempotencyRecord{}, false, ErrUnavailable
+	}
+	scope := fmt.Sprint(org)
+	var row IdempotencyRecord
+	err = db.Where("org_id = ? AND method = ? AND operation = ? AND key_hmac = ?", org, method, path, digest(secret, "idempotency-key:v1", scope, method, path, key)).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return row, false, nil
+	}
+	if err != nil {
+		return row, false, err
+	}
+	if !hmac.Equal([]byte(row.BodyHMAC), []byte(digest(secret, "idempotency-body:v1", scope, method, path, string(body)))) {
+		return row, false, ErrConflict
+	}
+	return row, true, nil
+}
+
 func claimIdempotencyTx(tx *gorm.DB, secret []byte, org uint64, method, path, key string, body []byte, resource, operation string, now time.Time) (IdempotencyRecord, bool, error) {
 	if len(secret) < 32 || org == 0 || !validIdempotency(key) {
 		return IdempotencyRecord{}, false, ErrInvalid

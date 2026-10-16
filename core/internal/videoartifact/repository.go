@@ -157,6 +157,20 @@ func (r Repository) Fail(ctx context.Context, lease Lease, cause error, now time
 	return nil
 }
 
+// Defer returns an unused attempt only for a proven pre-dispatch scheduling
+// deferral. The fence/token prevent an old resolver from refunding a new lease.
+func (r Repository) Defer(ctx context.Context, lease Lease, now time.Time) error {
+	now = now.UTC()
+	res := leaseScope(r.DB.WithContext(ctx), lease, now).Where("attempts = ? AND attempts > 0", lease.Record.Attempts).Updates(map[string]any{"status": Pending, "attempts": gorm.Expr("attempts - 1"), "lease_token": "", "lease_until": nil, "error_code": "", "updated_at": now})
+	if res.Error != nil {
+		return failure("artifact_store_unavailable", 503, true)
+	}
+	if res.RowsAffected != 1 {
+		return failure("artifact_lease_lost", 409, false)
+	}
+	return nil
+}
+
 var safeFailureCodes = map[string]bool{"artifact_source_unavailable": true, "artifact_download_failed": true, "artifact_download_timeout": true, "artifact_url_blocked": true, "artifact_too_large": true, "artifact_invalid_media": true, "artifact_blob_unavailable": true, "artifact_transfer_failed": true}
 
 // HideTaskTx must run in the SAME transaction as task soft deletion. It

@@ -15,30 +15,59 @@ import (
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/task"
+	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"gorm.io/gorm"
 )
 
 func apiError(c *gin.Context, status int, code string) {
 	c.Set("video_error", code)
-	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"code": code, "message": strings.ReplaceAll(code, "_", " "), "request_id": c.GetString("video_request_id"), "retryable": status == 429 || status == 503}})
+	publicCode := publicErrorCode(code, status)
+	c.AbortWithStatusJSON(status, gin.H{"request_id": c.GetString("video_request_id"), "error": gin.H{"code": publicCode, "message": strings.ReplaceAll(publicCode, "_", " "), "retryable": status == 429 || status == 503}})
+}
+
+func publicErrorCode(code string, status int) string {
+	switch code {
+	case "invalid_request", "unauthenticated", "forbidden", "not_found", "idempotency_conflict", "invalid_state", "insufficient_balance", "quota_exceeded", "rate_limited", "unsupported_capability", "invalid_asset", "authorization_required", "authorization_expired", "group_not_empty", "resource_in_use", "content_expired", "content_not_ready", "provider_unavailable", "submission_uncertain", "generation_failed", "cancellation_failed", "deletion_failed", "internal_error":
+		return code
+	}
+	switch status {
+	case 400, 413, 422:
+		return "invalid_request"
+	case 401:
+		return "unauthenticated"
+	case 403:
+		return "forbidden"
+	case 404:
+		return "not_found"
+	case 409:
+		return "content_not_ready"
+	case 410:
+		return "content_expired"
+	case 429:
+		return "rate_limited"
+	case 502, 503, 504:
+		return "provider_unavailable"
+	default:
+		return "internal_error"
+	}
 }
 func respondError(c *gin.Context, err error) {
 	var a *ark.Error
 	switch {
 	case errors.As(err, &a):
 		apiError(c, a.HTTPStatus, a.Code)
-	case isNotFound(err):
+	case isNotFound(err) || errors.Is(err, videoasset.ErrNotFound):
 		apiError(c, 404, "not_found")
-	case errors.Is(err, ErrForbidden):
+	case errors.Is(err, ErrForbidden) || errors.Is(err, videoasset.ErrAuthorization) || errors.Is(err, videoasset.ErrSecret):
 		apiError(c, 403, "forbidden")
-	case errors.Is(err, ErrInvalid) || errors.Is(err, videobilling.ErrInvalid):
+	case errors.Is(err, ErrInvalid) || errors.Is(err, videobilling.ErrInvalid) || errors.Is(err, videoasset.ErrInvalid):
 		apiError(c, 422, "invalid_request")
 	case errors.Is(err, ErrConflict) || errors.Is(err, videobilling.ErrConflict):
 		apiError(c, 409, "idempotency_conflict")
-	case errors.Is(err, ErrState):
+	case errors.Is(err, ErrState) || errors.Is(err, videoasset.ErrConflict) || errors.Is(err, videoasset.ErrInUse) || errors.Is(err, videoasset.ErrNotEmpty):
 		apiError(c, 409, "invalid_state")
-	case errors.Is(err, ErrCapability) || errors.Is(err, videobilling.ErrPricingUnavailable):
+	case errors.Is(err, ErrCapability) || errors.Is(err, videobilling.ErrPricingUnavailable) || errors.Is(err, videoasset.ErrUnsupported):
 		apiError(c, 422, "unsupported_capability")
 	case errors.Is(err, task.ErrConcurrencyLimit):
 		apiError(c, 429, "concurrency_limit")
@@ -89,6 +118,26 @@ func hasScope(key *identity.APIKey, scope string) bool {
 	return false
 }
 
+func requestResource(c *gin.Context) (string, string) {
+	for _, candidate := range []struct{ parameter, kind, prefix string }{{"id", "task", "task_"}, {"operation_id", "operation", "op_"}, {"asset_id", "asset", "asset_"}, {"group_id", "asset_group", "ag_"}, {"session_id", "portrait_authorization", "pas_"}} {
+		id := c.Param(candidate.parameter)
+		if id == "" || len(id) > 128 || !strings.HasPrefix(id, candidate.prefix) {
+			continue
+		}
+		valid := true
+		for _, ch := range id {
+			if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '-') {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			return candidate.kind, id
+		}
+	}
+	return "", ""
+}
+
 func (s *Service) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID, err := randomID("")
@@ -100,6 +149,7 @@ func (s *Service) Middleware() gin.HandlerFunc {
 		c.Header("X-Request-Id", requestID)
 		c.Header("Cache-Control", "private, no-store")
 		start := invocation.VideoRequestStart{RequestID: requestID, AuthOutcome: "rejected", Method: c.Request.Method, Route: c.FullPath(), Operation: "video_api", StartedAt: s.Now().UTC()}
+		start.ResourceType, start.ResourceID = requestResource(c)
 		if c.Request.ContentLength > 0 {
 			start.RequestBytes = c.Request.ContentLength
 		}
@@ -129,15 +179,26 @@ func (s *Service) Middleware() gin.HandlerFunc {
 		}
 		defer func() {
 			if v := recover(); v != nil {
-				apiError(c, 500, "internal_error")
+				if stream && c.Writer.Written() {
+					c.Set("video_stream_incomplete", true)
+					c.Set("video_error", "content_stream_interrupted")
+				} else {
+					buffered.body.Reset()
+					buffered.status = 0
+					apiError(c, 500, "internal_error")
+				}
 			}
 			status := c.Writer.Status()
 			size := c.Writer.Size()
 			if size < 0 {
 				size = 0
 			}
+			outcome := "completed"
+			if stream && c.GetBool("video_stream_incomplete") {
+				outcome, status = "incomplete", 0
+			}
 			finishErr := s.DB.Transaction(func(tx *gorm.DB) error {
-				return s.Evidence.RequestFinishTx(tx, invocation.VideoRequestFinish{RequestID: requestID, OrgID: start.OrgID, HTTPStatus: status, ResponseBytes: int64(size), SafeErrorCode: c.GetString("video_error"), Outcome: "completed", FinishedAt: s.Now().UTC()})
+				return s.Evidence.RequestFinishTx(tx, invocation.VideoRequestFinish{RequestID: requestID, OrgID: start.OrgID, HTTPStatus: status, ResponseBytes: int64(size), SafeErrorCode: c.GetString("video_error"), Outcome: outcome, FinishedAt: s.Now().UTC()})
 			})
 			c.Writer = original
 			if finishErr != nil {
@@ -191,6 +252,31 @@ func (s *Service) HandleCreate(c *gin.Context) {
 	in, err := ark.Decode(c.Request.Body, ark.DefaultMaxRequestBytes)
 	if err != nil {
 		respondError(c, err)
+		return
+	}
+	if !key.AllowsModel(in.Model) {
+		apiError(c, 403, "model_not_allowed")
+		return
+	}
+	canonical, err := json.Marshal(in)
+	if err != nil {
+		respondError(c, ErrInvalid)
+		return
+	}
+	previous, replay, err := lookupIdempotency(s.DB.WithContext(c.Request.Context()), s.Secret, key.OrgID, http.MethodPost, "/v1/video/generations", c.GetHeader("Idempotency-Key"), canonical)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	if replay {
+		result, err := s.Get(key.OrgID, previous.ResourceID)
+		if err != nil {
+			respondError(c, err)
+			return
+		}
+		c.Header("Location", "/v1/video/generations/"+result.ID)
+		c.Header("Idempotency-Replayed", "true")
+		c.JSON(202, result)
 		return
 	}
 	ent, e := identity.LoadEntitlements(s.DB, key.OrgID)
@@ -291,23 +377,41 @@ func (s *Service) LegacyCreate(legacy gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw, e := io.ReadAll(io.LimitReader(c.Request.Body, ark.DefaultMaxRequestBytes+1))
 		if e != nil || int64(len(raw)) > ark.DefaultMaxRequestBytes {
-			apiError(c, 413, "request_too_large")
+			s.Middleware()(withNext(c, func(c *gin.Context) { apiError(c, 413, "request_too_large") }))
 			return
 		}
 		c.Request.Body = io.NopCloser(bytes.NewReader(raw))
-		var fields map[string]json.RawMessage
 		official := false
-		if json.Unmarshal(raw, &fields) != nil {
+		// Walk raw members rather than decoding a map: duplicate model keys
+		// must not conceal an official model behind a later legacy spelling.
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		first, err := decoder.Token()
+		if err != nil || first != json.Delim('{') {
 			official = true
 		}
-		for k, v := range fields {
+		for !official && decoder.More() {
+			member, err := decoder.Token()
+			if err != nil {
+				official = true
+				break
+			}
+			k, ok := member.(string)
+			var v json.RawMessage
+			if !ok || decoder.Decode(&v) != nil {
+				official = true
+				break
+			}
 			if strings.EqualFold(k, "model") {
 				var m string
 				_ = json.Unmarshal(v, &m)
-				if strings.HasPrefix(strings.ToLower(m), "seedance-2.") {
+				m = strings.ToLower(strings.TrimSpace(m))
+				if strings.Contains(m, "seedance-2") || strings.Contains(m, "seedance_2") || strings.Contains(m, "seedance2") {
 					official = true
 				}
 			}
+		}
+		if !json.Valid(raw) {
+			official = true
 		}
 		if !official {
 			legacy(c)

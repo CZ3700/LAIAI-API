@@ -50,6 +50,16 @@ func (s *Service) Cancel(ctx context.Context, org uint64, id, requestID, key str
 		if e != nil {
 			return e
 		}
+		// A second idempotency key is another reference to the same unresolved
+		// cancellation, never authority to send another DELETE after uncertainty.
+		e = locked(tx).Where("org_id = ? AND resource_id = ? AND kind = ? AND status IN ?", org, id, "cancel_task", []string{"pending", "in_flight", "unknown"}).Order("created_at, id").First(&op).Error
+		if e == nil {
+			replay = true
+			return tx.Model(&IdempotencyRecord{}).Where("org_id = ? AND id = ?", org, idem.ID).Update("operation_id", op.ID).Error
+		}
+		if !errors.Is(e, gorm.ErrRecordNotFound) {
+			return e
+		}
 		decision := ark.CancellationDecision(ark.Status(t.Status), t.Status != "accepted", nil)
 		if decision.Error != nil {
 			return ErrState
@@ -70,6 +80,9 @@ func (s *Service) Cancel(ctx context.Context, org uint64, id, requestID, key str
 			if e = tx.Create(&Attempt{OrgID: org, TaskID: id, RequestID: requestID, OperationID: opID, Phase: "not_dispatched_cancel", EvidenceRef: evidence, ObservedAt: now}).Error; e != nil {
 				return e
 			}
+			if e = s.afterAssetsTerminalTx(tx, org, id); e != nil {
+				return e
+			}
 			if _, e = videobilling.ReleaseConfirmedTx(tx, videobilling.ReleaseInput{OrgID: org, TaskID: id, EvidenceID: evidence, Reason: videobilling.ReleaseNotDispatched, Confirmed: true, Now: now}); e != nil {
 				return e
 			}
@@ -81,6 +94,10 @@ func (s *Service) Cancel(ctx context.Context, org uint64, id, requestID, key str
 				return e
 			}
 			if e = appendEventTx(tx, &t, &st, "task.cancelled", t.Status, "cancelled", requestID, evidence, now); e != nil {
+				return e
+			}
+			t.Status = "cancelled"
+			if e = s.afterObservationTx(tx, &t, &st, false, false, now); e != nil {
 				return e
 			}
 		}
@@ -126,6 +143,11 @@ func (s *Service) Delete(ctx context.Context, org uint64, id, requestID string) 
 		}
 		if e = tx.Model(&State{}).Where("org_id = ? AND task_id = ?", org, id).Updates(map[string]any{"deletion_operation_id": opID, "deleted_at": st.DeletedAt, "updated_at": now}).Error; e != nil {
 			return e
+		}
+		if st.DeletedAt != nil {
+			if e = s.afterDeletionTx(tx, &t, &st, now); e != nil {
+				return e
+			}
 		}
 		return appendEventTx(tx, &t, &st, "task.deletion_requested", t.Status, t.Status, requestID, "", now)
 	})
@@ -234,9 +256,15 @@ func (s *Service) applyMutationReceipt(ctx context.Context, op Operation) error 
 			if e = tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error; e != nil {
 				return e
 			}
+			if e = s.afterDeletionTx(tx, &t, &st, now); e != nil {
+				return e
+			}
 		}
 		if current.Kind == "cancel_task" && status == "unknown" {
-			if e = tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"next_poll_at": now, "sync_state": "needs_review"}).Error; e != nil {
+			if !financialFinal(st.BillingState) {
+				st.BillingState = "pending_usage"
+			}
+			if e = tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"next_poll_at": now, "sync_state": "needs_review", "billing_state": st.BillingState}).Error; e != nil {
 				return e
 			}
 		}

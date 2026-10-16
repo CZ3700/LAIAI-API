@@ -58,6 +58,14 @@ func (w Worker) Transfer(ctx context.Context, org uint64, task string, kind Kind
 	}
 	source, err := w.Resolver.ResolveSource(transferCtx, org, task, kind)
 	if err != nil {
+		if errors.Is(err, ErrSourceDeferred) {
+			deferCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer stop()
+			if e := w.Repo.Defer(deferCtx, lease, w.now()); e != nil {
+				return Record{}, e
+			}
+			return Record{}, ErrSourceDeferred
+		}
 		return fail(failure("artifact_source_unavailable", 502, true))
 	}
 	download, err := w.Downloader.Fetch(transferCtx, source, kind)
