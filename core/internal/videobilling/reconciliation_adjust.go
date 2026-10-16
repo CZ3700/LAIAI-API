@@ -289,7 +289,7 @@ func ApplyAdjustmentTx(tx *gorm.DB, in ApplyAdjustmentInput) (AdjustmentResult, 
 		if a.CustomerDeltaUSD.IsPositive() {
 			kind = ledger.KindDebit
 		}
-		j, replay, err := ledger.Post(tx, ledger.PostInput{IdempotencyKey: fmt.Sprintf("video-adjustment:%d", p.ID), AccountID: h.AccountID, Kind: kind, Delta: a.CustomerDeltaUSD.Neg(), RefType: "video_adjustment", RefID: s.TaskID, Reason: p.Reason})
+		j, replay, err := ledger.Post(tx, ledger.PostInput{IdempotencyKey: fmt.Sprintf("video-adjustment:%d", p.ID), AccountID: h.AccountID, Kind: kind, Delta: a.CustomerDeltaUSD.Neg(), RefType: "video_adjustment", RefID: s.TaskID, Reason: p.Reason, Correction: &ledger.CorrectionLink{ProposalID: p.ID, ReviewID: r.ID, HoldID: s.HoldID}})
 		if err != nil {
 			return AdjustmentResult{}, err
 		}

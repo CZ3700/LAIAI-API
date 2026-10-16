@@ -73,22 +73,27 @@ func (PricingRule) TableName() string { return "video_pricing_rules" }
 // MeteringInput contains VERIFIED upper bounds, not client-asserted durations.
 // Adaptive duration/ratio and Draft inheritance must be resolved by the caller.
 type MeteringInput struct {
-	InputVideo        bool
-	InputDurationMS   int64
-	OutputDurationMS  int64
-	OutputFrames      int64 // mutually exclusive with OutputDurationMS
-	Width             int64
-	Height            int64
-	FPSNumerator      int64
-	FPSDenominator    int64
-	BoundsVerified    bool
-	CapabilityVersion string
-	InputContextHash  string
-	ParentDraftTaskID string
-	EffectiveRatio    decimal.Decimal
-	FXUSDPerCNY       decimal.Decimal
-	FXVersion         string
-	FXObservedAt      time.Time
+	Resolution, Ratio, Mode, ServiceTier string
+	Draft                                bool
+	MinimumRuleSetID                     uint64
+	MinimumTokens                        int64
+	MinimumEvidenceHash                  string
+	InputVideo                           bool
+	InputDurationMS                      int64
+	OutputDurationMS                     int64
+	OutputFrames                         int64 // mutually exclusive with OutputDurationMS
+	Width                                int64
+	Height                               int64
+	FPSNumerator                         int64
+	FPSDenominator                       int64
+	BoundsVerified                       bool
+	CapabilityVersion                    string
+	InputContextHash                     string
+	ParentDraftTaskID                    string
+	EffectiveRatio                       decimal.Decimal
+	FXUSDPerCNY                          decimal.Decimal
+	FXVersion                            string
+	FXObservedAt                         time.Time
 }
 
 type QuoteResult struct {
