@@ -45,7 +45,10 @@ type Scope struct {
 	Region    string
 	Project   string
 }
-type Capabilities struct{ VirtualGroups, Images, Videos, Audio, Portrait, DeleteVirtualEmptyGroups bool }
+type Capabilities struct {
+	VirtualGroups, Images, Videos, Audio, Portrait, DeleteVirtualEmptyGroups bool
+	Sync, Update, DeleteAssets, ExclusiveProjectWrites                       bool
+}
 type Credentials struct {
 	AccessKey, SecretKey, SessionToken string `json:"-"`
 }
@@ -96,6 +99,7 @@ type Service struct {
 	evidence *invocation.VideoStore
 	now      func() time.Time
 	options  Options
+	console  ConsoleOptions
 }
 
 func NewService(db *gorm.DB, keys *crypto.Keyring, evidence *invocation.VideoStore, options Options) (*Service, error) {
@@ -284,12 +288,14 @@ type OperationDTO struct {
 	CompletedAt *time.Time `json:"completed_at"`
 }
 type CreateContext struct {
+	CallerKind                string
 	OrgID, UserID, KeyID      uint64
 	RequestID, IdempotencyKey string
 }
 type GroupCreate struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Kind        string `json:"kind"`
+	Name        string `json:"name"`
 }
 type AssetCreate struct {
 	GroupID   string `json:"group_id"`
@@ -298,6 +304,8 @@ type AssetCreate struct {
 	Name      string `json:"name,omitempty"`
 }
 type PortraitCreate struct {
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
 	CallbackURL string `json:"callback_url"`
 }
 type ReferenceInput struct {

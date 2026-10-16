@@ -26,6 +26,8 @@ func (s *Service) RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/assets", s.listAssetsHTTP)
 	group.GET("/assets/:asset_id", s.getAssetHTTP)
 	group.DELETE("/assets/:asset_id", s.deleteAssetHTTP)
+	group.PATCH("/assets/:asset_id", s.renameAssetHTTP)
+	group.PATCH("/asset-groups/:group_id", s.renameGroupHTTP)
 	group.POST("/portrait-authorizations", s.createPortraitHTTP)
 	group.GET("/portrait-authorizations", s.listPortraitsHTTP)
 	group.GET("/portrait-authorizations/:session_id", s.getPortraitHTTP)
@@ -297,7 +299,16 @@ func (s *Service) deleteAssetHTTP(c *gin.Context) {
 		s.httpError(c, err)
 		return
 	}
-	s.httpError(c, ErrUnsupported)
+	dto, done, err := s.DeleteAsset(c.Request.Context(), auth, c.Param("asset_id"))
+	if err != nil {
+		s.httpError(c, err)
+		return
+	}
+	if done {
+		c.Status(204)
+		return
+	}
+	c.JSON(202, dto)
 }
 func (s *Service) createPortraitHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, true)
@@ -347,4 +358,28 @@ func (s *Service) listPortraitsHTTP(c *gin.Context) {
 		return
 	}
 	pageResponse(c, data, next)
+}
+
+func (s *Service) renameAssetHTTP(c *gin.Context) { s.renameHTTP(c, false) }
+func (s *Service) renameGroupHTTP(c *gin.Context) { s.renameHTTP(c, true) }
+func (s *Service) renameHTTP(c *gin.Context, group bool) {
+	auth, ok := s.auth(c, true)
+	if !ok {
+		return
+	}
+	var in Rename
+	if decodeBody(c, &in) != nil {
+		s.httpError(c, ErrInvalid)
+		return
+	}
+	id := c.Param("asset_id")
+	if group {
+		id = c.Param("group_id")
+	}
+	dto, err := s.RenameResource(c.Request.Context(), auth, id, group, in)
+	if err != nil {
+		s.httpError(c, err)
+		return
+	}
+	c.JSON(202, dto)
 }

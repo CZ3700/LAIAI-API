@@ -55,6 +55,14 @@ func (s *Service) ProcessOnce(ctx context.Context) error {
 			return err
 		}
 	}
+	if s.consoleEnabled() {
+		if err := s.syncPortraitNames(ctx); err != nil {
+			return err
+		}
+		if err := s.processSyncJobs(ctx); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -133,6 +141,19 @@ func (s *Service) process(ctx context.Context, op Operation) error {
 	if count != 1 {
 		return nil
 	}
+	if op.Action == "DeleteAssetGroup" {
+		check := s.options.Client.Call(ctx, runtime.Scope, runtime.Credentials, "ListAssets", bodyJSON(map[string]any{"Filter": map[string]any{"GroupType": "AIGC", "GroupIds": []string{extractProviderID(body)}}, "MaxResults": 1, "ProjectName": runtime.Scope.Project}), s.now())
+		var page struct {
+			Items     []json.RawMessage
+			NextToken string
+		}
+		valid := check.Outcome == "accepted" && json.Unmarshal(check.Data, &page) == nil && page.Items != nil && len(page.Items) == 0 && page.NextToken == ""
+		clear(check.Body)
+		clear(check.Data)
+		if !valid {
+			return s.finish(ctx, op, runtime, Result{Outcome: "not_sent", SafeErrorCode: "group_not_empty_or_unverified"}, body)
+		}
+	}
 	result := s.options.Client.Call(ctx, runtime.Scope, runtime.Credentials, op.Action, body, s.now())
 	defer clear(result.Body)
 	defer clear(result.Data)
@@ -140,10 +161,16 @@ func (s *Service) process(ctx context.Context, op Operation) error {
 }
 func operationAllowed(c Capabilities, action string) bool {
 	switch action {
+	case "UpdateAssetGroup", "UpdateAsset":
+		return c.Update
+	case "DeleteAsset":
+		return c.DeleteAssets
+	case "ListAssetGroups", "ListAssets":
+		return c.Sync
 	case "CreateAssetGroup":
 		return c.VirtualGroups
 	case "DeleteAssetGroup":
-		return c.DeleteVirtualEmptyGroups
+		return c.DeleteVirtualEmptyGroups && c.ExclusiveProjectWrites
 	case "CreateAsset", "GetAsset":
 		return c.Images || c.Videos || c.Audio
 	case "CreateVisualValidateSession", "GetVisualValidateResult":
@@ -278,6 +305,9 @@ func (s *Service) finish(ctx context.Context, op Operation, r RuntimeScope, resu
 				receipt = string(bodyJSON(value))
 			}
 		}
+		if status == "unknown" && op.Action == "DeleteAsset" {
+			receipt = op.Receipt
+		}
 		updates := map[string]any{"status": status, "http_status": result.HTTPStatus, "upstream_request_id": result.RequestID, "safe_error_code": code, "response_payload_id": op.ResponsePayloadID, "receipt": receipt, "updated_at": nowMillis(s), "lease_expires_at": nil}
 		if err := tx.Model(&Operation{}).Where("operation_id = ? AND fence = ?", op.ID, op.Fence).Updates(updates).Error; err != nil {
 			return ErrStorage
@@ -289,11 +319,11 @@ func (s *Service) finish(ctx context.Context, op Operation, r RuntimeScope, resu
 func (s *Service) markUnknown(tx *gorm.DB, op Operation) error {
 	updates := map[string]any{"review_state": ReviewRequired, "updated_at": nowMillis(s)}
 	switch op.Action {
-	case "CreateAssetGroup", "DeleteAssetGroup":
+	case "CreateAssetGroup", "DeleteAssetGroup", "UpdateAssetGroup":
 		if err := tx.Model(&Group{}).Where("org_id = ? AND group_id = ?", op.OrgID, op.ResourceID).Updates(updates).Error; err != nil {
 			return ErrStorage
 		}
-	case "CreateAsset":
+	case "CreateAsset", "DeleteAsset", "UpdateAsset":
 		if err := tx.Model(&Asset{}).Where("org_id = ? AND asset_id = ?", op.OrgID, op.ResourceID).Updates(updates).Error; err != nil {
 			return ErrStorage
 		}
@@ -329,6 +359,21 @@ func (s *Service) markRejected(tx *gorm.DB, op Operation) error {
 		}
 	case "DeleteAssetGroup":
 		if err := tx.Model(&Group{}).Where("org_id = ? AND group_id = ?", op.OrgID, op.ResourceID).Updates(map[string]any{"status": StatusActive, "delete_operation_id": "", "review_state": ReviewClear, "updated_at": nowMillis(s)}).Error; err != nil {
+			return ErrStorage
+		}
+	case "DeleteAsset":
+		var prior struct {
+			Status string `json:"prior_status"`
+			Review string `json:"prior_review_state"`
+		}
+		_ = json.Unmarshal([]byte(op.Receipt), &prior)
+		if prior.Status != StatusActive && prior.Status != StatusFailed {
+			prior.Status = StatusFailed
+		}
+		if prior.Review != ReviewClear {
+			prior.Review = ReviewRequired
+		}
+		if err := tx.Model(&Asset{}).Where("org_id = ? AND asset_id = ?", op.OrgID, op.ResourceID).Updates(map[string]any{"status": prior.Status, "review_state": prior.Review, "updated_at": nowMillis(s)}).Error; err != nil {
 			return ErrStorage
 		}
 	case "GetAsset", "GetVisualValidateResult":
@@ -433,9 +478,14 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 		if err != nil {
 			return err
 		}
-		group := Group{ID: id, OrgID: op.OrgID, Kind: KindReal, Name: "", ScopeID: p.ScopeID, ScopeVersion: p.ScopeVersion, AccountID: p.AccountID, Region: p.Region, Project: p.Project, ProviderID: &data.GroupID, Status: StatusActive, ReviewState: ReviewClear, PortraitID: p.ID, CreateOperationID: op.ID, RowVersion: 1, CreatedAt: now, UpdatedAt: now}
+		label := PortraitLabel{}
+		_ = tx.Where("org_id = ? AND session_id = ?", op.OrgID, p.ID).Take(&label).Error
+		group := Group{ID: id, OrgID: op.OrgID, Kind: KindReal, Name: label.Name, ScopeID: p.ScopeID, ScopeVersion: p.ScopeVersion, AccountID: p.AccountID, Region: p.Region, Project: p.Project, ProviderID: &data.GroupID, Status: StatusActive, ReviewState: ReviewClear, PortraitID: p.ID, CreateOperationID: op.ID, RowVersion: 1, CreatedAt: now, UpdatedAt: now}
 		if err := tx.Create(&group).Error; err != nil {
 			return ErrStorage
+		}
+		if err := saveDetails(tx, op.OrgID, id, label.Description, "platform", now); err != nil {
+			return err
 		}
 		if err := tx.Model(&Portrait{}).Where("org_id = ? AND session_id = ? AND session_status = ?", op.OrgID, p.ID, "pending").Updates(map[string]any{"session_status": "succeeded", "group_id": id, "license_status": "unknown", "row_version": gorm.Expr("row_version + 1"), "updated_at": now}).Error; err != nil {
 			return ErrStorage
@@ -445,7 +495,7 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 		}
 		return s.event(tx, op.OrgID, "portrait", p.ID, op.ID, "official_identity_verified", op.ResponsePayloadID, op.LeaseOwner)
 	}
-	return ErrUnsupported
+	return s.applyConsoleAccepted(tx, op, result, request)
 }
 
 func (s *Service) enqueueQueries(ctx context.Context) error {
@@ -498,8 +548,12 @@ func (s *Service) enqueueQuery(ctx context.Context, org uint64, scope Scope, res
 		if err := lockTenant(tx, org); err != nil {
 			return err
 		}
+		states := []string{"pending", "in_flight"}
+		if strings.HasPrefix(action, "Update") {
+			states = append(states, "unknown", "rejected", "confirmed")
+		}
 		var count int64
-		if err := tx.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND action = ? AND status IN ?", org, resourceID, action, []string{"pending", "in_flight"}).Count(&count).Error; err != nil {
+		if err := tx.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND action = ? AND status IN ?", org, resourceID, action, states).Count(&count).Error; err != nil {
 			return ErrStorage
 		}
 		if count > 0 {

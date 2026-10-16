@@ -67,8 +67,26 @@ func (s *Service) GetAsset(ctx context.Context, org uint64, id string) (AssetDTO
 		return AssetDTO{}, ErrStorage
 	}
 	dto := AssetDTO{ID: row.ID, GroupID: row.GroupID, MediaType: row.MediaType, Name: row.Name, Status: publicStatus(row.Status), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
-	if row.Status == StatusActive && row.ReviewState == ReviewClear {
-		dto.Reference = "asset://" + row.ID
+	if row.Status == StatusActive {
+		usable := row.ReviewState == ReviewClear && hasMediaFacts(row) && row.ProviderID != nil
+		var group Group
+		if err := s.db.WithContext(ctx).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", org, row.GroupID).Take(&group).Error; err != nil {
+			return AssetDTO{}, ErrStorage
+		}
+		usable = usable && group.Status == StatusActive && group.ReviewState == ReviewClear && row.ScopeID == group.ScopeID && row.ScopeVersion == group.ScopeVersion
+		if group.Kind == KindReal {
+			var p Portrait
+			if s.db.WithContext(ctx).Where("org_id = ? AND session_id = ?", org, group.PortraitID).Take(&p).Error != nil {
+				usable = false
+			} else {
+				usable = usable && s.licenseStatus(p, "video_generation") == "authorized"
+			}
+		}
+		if usable {
+			dto.Reference = "asset://" + row.ID
+		} else {
+			dto.Status = "needs_review"
+		}
 	}
 	return dto, nil
 }
@@ -77,7 +95,7 @@ func (s *Service) GetOperation(ctx context.Context, org uint64, id string) (Oper
 		return OperationDTO{}, ErrInvalid
 	}
 	var row Operation
-	if err := s.db.WithContext(ctx).Where("org_id = ? AND operation_id = ? AND action = ?", org, id, "DeleteAssetGroup").Take(&row).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("org_id = ? AND operation_id = ? ", org, id).Take(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return OperationDTO{}, ErrNotFound
 		}
@@ -86,7 +104,7 @@ func (s *Service) GetOperation(ctx context.Context, org uint64, id string) (Oper
 	return operationDTO(row), nil
 }
 func operationDTO(row Operation) OperationDTO {
-	dto := OperationDTO{ID: row.ID, Kind: "delete_asset_group", ResourceID: row.ResourceID, Status: row.Status, PollURL: "/v1/video/operations/" + row.ID, CreatedAt: row.CreatedAt}
+	dto := OperationDTO{ID: row.ID, Kind: row.Action, ResourceID: row.ResourceID, Status: row.Status, PollURL: "/v1/video/operations/" + row.ID, CreatedAt: row.CreatedAt}
 	if row.Status == "confirmed" || row.Status == "rejected" {
 		dto.CompletedAt = &row.UpdatedAt
 	}
@@ -220,13 +238,15 @@ func (s *Service) DeleteGroup(ctx context.Context, c CreateContext, id string, c
 	if err != nil {
 		return OperationDTO{}, false, err
 	}
-	if !r.Capabilities.DeleteVirtualEmptyGroups || group.Kind != KindVirtual {
+	if !r.Capabilities.DeleteVirtualEmptyGroups || !r.Capabilities.ExclusiveProjectWrites || group.Kind != KindVirtual {
 		return OperationDTO{}, false, ErrUnsupported
 	}
 	if group.ProviderID == nil {
 		return OperationDTO{}, false, ErrConflict
 	}
-	c.IdempotencyKey = "delete:" + id + ":" + c.RequestID
+	if c.IdempotencyKey == "" {
+		c.IdempotencyKey = "delete:" + id + ":" + c.RequestID
+	}
 	op, _, err := s.accept(ctx, c, r, "/v1/video/asset-groups/"+id, "DeleteAssetGroup", "asset_group", id, bodyJSON(map[string]any{"id": id, "cascade": false}), bodyJSON(map[string]any{"Id": *group.ProviderID, "ProjectName": r.Scope.Project}), func(tx *gorm.DB, op Operation) error {
 		var current Group
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", c.OrgID, id).Take(&current).Error; err != nil {
@@ -267,7 +287,7 @@ func (s *Service) licenseStatus(p Portrait, purpose string) string {
 	if p.LicenseStatus == "expired" || p.ValidUntil != nil && !p.ValidUntil.After(now) {
 		return "expired"
 	}
-	if p.SessionStatus != "succeeded" || p.LicenseStatus != "verified" || p.ValidFrom == nil || p.ValidUntil == nil || p.ValidFrom.After(now) || !p.ValidUntil.After(*p.ValidFrom) || p.LicenseScope != purpose || p.LicenseEvidenceRef == "" || p.LastVerifiedAt == nil || p.LastVerifiedAt.After(now) || now.Sub(*p.LastVerifiedAt) > s.options.MaxLicenseAge || p.ReverifyDueAt == nil || !p.ReverifyDueAt.After(now) {
+	if (p.SessionStatus != "succeeded" && p.SessionStatus != "imported_verified") || p.LicenseStatus != "verified" || p.ValidFrom == nil || p.ValidUntil == nil || p.ValidFrom.After(now) || !p.ValidUntil.After(*p.ValidFrom) || p.LicenseScope != purpose || p.LicenseEvidenceRef == "" || p.LastVerifiedAt == nil || p.LastVerifiedAt.After(now) || now.Sub(*p.LastVerifiedAt) > s.options.MaxLicenseAge || p.ReverifyDueAt == nil || !p.ReverifyDueAt.After(now) {
 		return "needs_review"
 	}
 	return "authorized"
@@ -315,10 +335,14 @@ func (s *Service) verifyLicenseTx(tx *gorm.DB, org uint64, sessionID string, e L
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND session_id = ?", org, sessionID).Take(&p).Error; err != nil {
 		return ErrNotFound
 	}
-	if p.SessionStatus != "succeeded" || p.GroupID == nil || p.RevokedAt != nil {
+	if (p.SessionStatus != "succeeded" && p.SessionStatus != "imported_verified" && p.SessionStatus != "imported_pending") || p.GroupID == nil || p.RevokedAt != nil {
 		return ErrAuthorization
 	}
-	if err := tx.Model(&Portrait{}).Where("org_id = ? AND session_id = ?", org, sessionID).Updates(map[string]any{"license_status": "verified", "valid_from": e.ValidFrom, "valid_until": e.ValidUntil, "license_scope": e.Purpose, "license_version": gorm.Expr("license_version + 1"), "license_evidence_ref": e.EvidenceRef, "license_source": e.Source, "last_verified_at": e.VerifiedAt, "reverify_due_at": e.ReverifyDueAt, "updated_at": nowMillis(s)}).Error; err != nil {
+	state := p.SessionStatus
+	if state == "imported_pending" {
+		state = "imported_verified"
+	}
+	if err := tx.Model(&Portrait{}).Where("org_id = ? AND session_id = ?", org, sessionID).Updates(map[string]any{"session_status": state, "license_status": "verified", "valid_from": e.ValidFrom, "valid_until": e.ValidUntil, "license_scope": e.Purpose, "license_version": gorm.Expr("license_version + 1"), "license_evidence_ref": e.EvidenceRef, "license_source": e.Source, "last_verified_at": e.VerifiedAt, "reverify_due_at": e.ReverifyDueAt, "updated_at": nowMillis(s)}).Error; err != nil {
 		return ErrStorage
 	}
 	return s.event(tx, org, "portrait", sessionID, "", "license_verified", e.EvidenceRef, e.ActorID)
