@@ -19,6 +19,31 @@ import (
 
 var requestModelName = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
 
+// Disabled history still gets a metadata row. This distinguishes a policy
+// decision from an empty response or a body that was never captured.
+func (s *Service) captureResponseTx(tx *gorm.DB, org uint64, rid string, body []byte) (string, error) {
+	if len(body) == 0 || !json.Valid(body) {
+		return "", nil
+	}
+	var policy Policy
+	err := tx.Where("org_id = ?", org).Take(&policy).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", err
+	}
+	days := policy.RetentionDays
+	if days < 1 || days > 30 {
+		if policy.CaptureHistory {
+			return "", ErrCapability
+		}
+		days = 1
+	}
+	p, err := s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: org, RequestID: rid, Direction: invocation.VideoClientResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: body, CaptureEnabled: policy.CaptureHistory, ExpiresAt: s.Now().UTC().Add(time.Duration(days) * 24 * time.Hour), CaptureRepresentation: "response_json_redacted"})
+	if err != nil {
+		return "", err
+	}
+	return s.Evidence.StageTx(tx, p)
+}
+
 func requestOperation(method, route string) string {
 	switch {
 	case route == "/v1/video/generations" && method == http.MethodPost:

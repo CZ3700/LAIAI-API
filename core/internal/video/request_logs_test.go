@@ -101,19 +101,54 @@ func TestMySQLRequestLogsCaptureFailuresReplayAndHistoryBoundary(t *testing.T) {
 func TestMySQLRequestHistoryDisabledDoesNotReadExecution(t *testing.T) {
 	f := mysqlFixture(t)
 	must(t, f.s.DB.Model(&Policy{}).Where("org_id = ?", f.key.OrgID).Update("capture_history", false).Error)
-	v, _, e := f.s.Create(context.Background(), f.key, "request_disabled", "log-disabled-1", ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "text", Text: "history disabled"}}})
+	rid, e := randomID("request_disabled_")
+	must(t, e)
+	v, _, e := f.s.Create(context.Background(), f.key, rid, "log-disabled-1", ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "text", Text: "history disabled"}}})
 	must(t, e)
 	org := f.key.OrgID
 	must(t, f.s.DB.Transaction(func(tx *gorm.DB) error {
-		return f.s.Evidence.RequestStartTx(tx, invocation.VideoRequestStart{RequestID: "request_disabled", OrgID: &org, AuthOutcome: "authenticated", Method: "POST", Route: "/v1/video/generations", Operation: "create_task", StartedAt: f.now})
+		return f.s.Evidence.RequestStartTx(tx, invocation.VideoRequestStart{RequestID: rid, OrgID: &org, AuthOutcome: "authenticated", Method: "POST", Route: "/v1/video/generations", Operation: "create_task", StartedAt: f.now})
 	}))
-	d, e := f.s.RequestLogDetail(context.Background(), org, "request_disabled", true)
+	d, e := f.s.RequestLogDetail(context.Background(), org, rid, true)
 	must(t, e)
 	if d.Request.TaskID != v.ID || d.Bodies[invocation.VideoEffectiveRequest].Availability != "disabled" {
 		t.Fatal("disabled history descriptor", d)
 	}
-	_, e = f.s.ReadRequestHistory(context.Background(), org, "request_disabled", invocation.VideoEffectiveRequest, "", invocation.VideoAccess{ActorRole: invocation.VideoRoleRoot, ActorID: "user_1", ReasonCode: "request_debugging", OperationID: "disabled_read"})
+	_, e = f.s.ReadRequestHistory(context.Background(), org, rid, invocation.VideoEffectiveRequest, "", invocation.VideoAccess{ActorRole: invocation.VideoRoleRoot, ActorID: "user_1", ReasonCode: "request_debugging", OperationID: "disabled_read"})
 	if !errors.Is(e, invocation.ErrVideoRetentionDenied) {
 		t.Fatal("execution exposed as history", e)
+	}
+}
+
+func TestMySQLRequestDisabledResponseKeepsOnlyPolicyMetadata(t *testing.T) {
+	f := mysqlFixture(t)
+	must(t, f.s.DB.Model(&Policy{}).Where("org_id = ?", f.key.OrgID).Update("capture_history", false).Error)
+	r := gin.New()
+	r.POST("/v1/video/generations", f.s.Middleware(), f.s.HandleCreate)
+	q := httptest.NewRequest("POST", "/v1/video/generations", strings.NewReader(`{"model":"seedance-2.0","content":[{"type":"text","text":"never retained"}]}`))
+	q.Header.Set("Authorization", "Bearer "+f.plain)
+	q.Header.Set("Idempotency-Key", "no-history-http")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, q)
+	if w.Code != 202 {
+		t.Fatalf("create status %d", w.Code)
+	}
+	rid := w.Header().Get("X-Request-Id")
+	d, err := f.s.RequestLogDetail(context.Background(), f.key.OrgID, rid, true)
+	must(t, err)
+	for _, section := range []string{invocation.VideoClientRequest, invocation.VideoClientResponse, invocation.VideoEffectiveRequest} {
+		if d.Bodies[section].Availability != "disabled" {
+			t.Fatalf("%s should be disabled: %+v", section, d.Bodies[section])
+		}
+	}
+	var rows []invocation.VideoPayload
+	must(t, f.s.DB.Where("org_id = ? AND request_id = ? AND purpose = ?", f.key.OrgID, rid, invocation.VideoPurposeHistory).Find(&rows).Error)
+	if len(rows) != 3 {
+		t.Fatalf("history descriptors %d", len(rows))
+	}
+	for _, row := range rows {
+		if row.PlaintextBytes != 0 || row.CiphertextSHA256 != "" || row.WrappedKey != "" || row.ObjectRef != "" || len(row.Nonce) != 0 {
+			t.Fatal("disabled descriptor retained body material")
+		}
 	}
 }
