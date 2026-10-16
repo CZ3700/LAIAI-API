@@ -274,10 +274,30 @@ func emailTemplate(row *Outbox) (subject, body string) {
 	switch row.Event {
 	case EventTaskCompleted:
 		subject = fmt.Sprintf("[LAIAI] Task completed: %s", get("task_id"))
-		body = fmt.Sprintf("Your task %s (model %s) has completed.\nCost: $%s\n", get("task_id"), get("model"), get("cost_usd"))
+		body = fmt.Sprintf("Your task %s has completed.\n", get("task_id"))
+		if model := get("model"); model != "" {
+			body += "Model: " + model + "\n"
+		}
+		if cost := get("cost_usd"); cost != "" {
+			body += "Cost: $" + cost + "\n"
+		}
+		if get("billing_state") == "pending_usage" {
+			body += "Billing is awaiting verified usage.\n"
+		}
 	case EventTaskFailed:
 		subject = fmt.Sprintf("[LAIAI] Task failed: %s", get("task_id"))
-		body = fmt.Sprintf("Your task %s (model %s) has failed. The hold has been fully released.\n", get("task_id"), get("model"))
+		body = fmt.Sprintf("Your task %s has failed.\n", get("task_id"))
+		if model := get("model"); model != "" {
+			body += "Model: " + model + "\n"
+		}
+		switch get("billing_state") {
+		case "released":
+			body += "The hold has been fully released.\n"
+		case "settled", "adjusted":
+			body += "Billing has been finalized; see the task bill for the charged amount.\n"
+		default:
+			body += "Check the task bill for the current billing and hold status.\n"
+		}
 	case EventBalanceLow:
 		subject = fmt.Sprintf("[LAIAI] Low balance alert: $%s remaining", get("available_usd"))
 		body = fmt.Sprintf("Your organization has $%s available balance, below your alert threshold of $%s.\n\n"+
