@@ -19,7 +19,7 @@ const en = {
   artifactWaiting: 'Generation completed. Waiting for the private artifact.', billingWaiting: 'Usage or billing is still being confirmed.', noQuote: 'A valid quote is required before generation.',
   confirmDelete: 'Delete this task and hide its artifact? The financial record is retained.', generationState: 'Generation status', source: 'Representation', expires: 'Expires at',
   referenceVideo: 'Reference video', referenceAudio: 'Reference audio', mediaNotice: 'Use an authorized platform asset or a supported HTTPS reference. The server verifies media and uses trusted durations or configured upper bounds for pricing.', defaultOption: 'Model default', automaticDuration: 'Automatic duration', modelUnavailable: 'This model is not enabled and verified for this account.',
-  metering: 'Creation-time estimate', meteringNotice: 'These are pricing inputs saved at creation. Final billable tokens come from confirmed provider usage.', estimatedTokens: 'Estimated tokens', unitPrice: 'USD per million tokens', inputVideoCount: 'Reference videos', inputDuration: 'Input video duration', outputDuration: 'Output duration', frames: 'Frames', dimensions: 'Dimensions', minimumTokens: 'Minimum billable tokens', unknown: 'Unknown', none: 'None', verified_media: 'Verified media', configured_upper_bound: 'Configured upper bound', draft_inherited: 'Inherited from Draft',
+  reportedUsage: 'Provider-reported usage', metering: 'Creation-time estimate', meteringNotice: 'These are pricing inputs saved at creation. Final billable tokens come from confirmed provider usage.', estimatedTokens: 'Estimated tokens', unitPrice: 'USD per million tokens', inputVideoCount: 'Reference videos', inputDuration: 'Input video duration', outputDuration: 'Output duration', frames: 'Frames', dimensions: 'Dimensions', minimumTokens: 'Minimum billable tokens', unknown: 'Unknown', none: 'None', verified_media: 'Verified media', configured_upper_bound: 'Configured upper bound', draft_inherited: 'Inherited from Draft',
 }
 const zh = {
   tab: 'Seedance 视频', general: '通用模型', received: '请求接收', result: '任务结果', response: '接口响应',
@@ -40,7 +40,7 @@ const zh = {
   artifactWaiting: '生成已完成，正在等待私有产物就绪。', billingWaiting: '用量或账务仍待确认。', noQuote: '生成前需要有效报价。',
   confirmDelete: '删除此任务并隐藏产物？财务记录仍保留。', generationState: '生成状态', source: '保存形式', expires: '到期时间',
   referenceVideo: '参考视频', referenceAudio: '参考音频', mediaNotice: '使用已授权的平台素材或支持的 HTTPS 引用。服务端校验素材，并按可信时长或已配置的时长上限计价。', defaultOption: '模型默认值', automaticDuration: '自动时长', modelUnavailable: '此账户的模型尚未启用并完成核验。',
-  metering: '创建时计量预估', meteringNotice: '这里是创建时保存的计价输入，最终计费 Token 以已确认的官方用量为准。', estimatedTokens: '预估 Token', unitPrice: '每百万 Token 单价（USD）', inputVideoCount: '参考视频数量', inputDuration: '输入视频时长', outputDuration: '输出时长', frames: '帧数', dimensions: '尺寸', minimumTokens: '最低计费 Token', unknown: '未知', none: '无', verified_media: '已核验素材', configured_upper_bound: '配置时长上限', draft_inherited: '继承 Draft',
+  reportedUsage: '原始上报用量', metering: '创建时计量预估', meteringNotice: '这里是创建时保存的计价输入，最终计费 Token 以已确认的官方用量为准。', estimatedTokens: '预估 Token', unitPrice: '每百万 Token 单价（USD）', inputVideoCount: '参考视频数量', inputDuration: '输入视频时长', outputDuration: '输出时长', frames: '帧数', dimensions: '尺寸', minimumTokens: '最低计费 Token', unknown: '未知', none: '无', verified_media: '已核验素材', configured_upper_bound: '配置时长上限', draft_inherited: '继承 Draft',
 }
 export const seedanceMessages = { en: { seedance: en }, 'zh-CN': { seedance: zh } }
 export function useSeedanceI18n() {

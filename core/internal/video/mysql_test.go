@@ -327,7 +327,7 @@ func TestMySQLVideoConcurrentIdempotencyAndRollback(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("task count %d", count)
 	}
-	_, _, e := f.s.Create(context.Background(), f.key, "changed-request", "concurrent-create-1", ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "text", Text: "different"}}})
+	_, _, e := f.s.Create(context.Background(), f.key, f.requestID("changed-request"), "concurrent-create-1", ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "text", Text: "different"}}})
 	if !errors.Is(e, ErrConflict) {
 		t.Fatal("changed body not rejected")
 	}
@@ -339,7 +339,7 @@ func TestMySQLVideoConcurrentIdempotencyAndRollback(t *testing.T) {
 		}
 	}))
 	defer f.s.DB.Callback().Create().Remove(name)
-	_, _, e = f.s.Create(context.Background(), f.key, "rollback-request", "rollback-create-1", ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "text", Text: "rollback"}}})
+	_, _, e = f.s.Create(context.Background(), f.key, f.requestID("rollback-request"), "rollback-create-1", ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "text", Text: "rollback"}}})
 	if e == nil {
 		t.Fatal("injected error ignored")
 	}

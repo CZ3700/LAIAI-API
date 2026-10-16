@@ -196,6 +196,7 @@ type RequestBilling struct {
 	BillingRuleVersion     string                `json:"billing_rule_version"`
 	UnitPriceUSD           string                `json:"unit_price_usd_per_1m"`
 	EstimatedTokens        int64                 `json:"estimated_tokens"`
+	BillableTokens         *int64                `json:"billable_tokens"`
 	ActualUsage            *UsageView            `json:"actual_usage"`
 	InputTokensExplanation string                `json:"input_tokens_explanation"`
 	Metering               *RequestMetering      `json:"metering"`
@@ -272,6 +273,7 @@ func requestBilling(tx *gorm.DB, org uint64, st State) (*RequestBilling, error) 
 			v := x.CapturedUSD.StringFixed(8)
 			b.SettledAmount = &v
 			b.NetChargedAmount = &v
+			b.BillableTokens = x.CompletionTokens
 		}
 		if x.State == videobilling.Settled {
 			b.Entries = append(b.Entries, RequestBillingEntry{ID: fmt.Sprintf("capture_%d", x.ID), Type: "capture", Amount: x.CapturedUSD.StringFixed(8), CreatedAt: x.CreatedAt})
@@ -289,7 +291,7 @@ func requestBilling(tx *gorm.DB, org uint64, st State) (*RequestBilling, error) 
 		v := x.NetUSD.StringFixed(8)
 		b.NetChargedAmount = &v
 		if x.CompletionTokens != nil {
-			b.ActualUsage.CompletionTokens = x.CompletionTokens
+			b.BillableTokens = x.CompletionTokens
 		}
 		if !x.CustomerDeltaUSD.IsZero() {
 			kind := "adjustment_debit"
