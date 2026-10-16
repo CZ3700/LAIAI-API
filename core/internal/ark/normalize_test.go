@@ -1,7 +1,11 @@
 package ark
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -141,6 +145,71 @@ func TestNormalizeDraftRequestContract(t *testing.T) {
 				t.Fatalf("effective draft = %t, want %t", out.Parameters.Draft, tc.wantDraft)
 			}
 		})
+	}
+}
+
+func TestSubmitOmitsDefaultServiceTierAndRetainsBillingContext(t *testing.T) {
+	for _, model := range []string{Model20, Model25} {
+		for _, explicit := range []bool{false, true} {
+			name := model + "/omitted"
+			if explicit {
+				name = model + "/explicit-default"
+			}
+			t.Run(name, func(t *testing.T) {
+				in := textRequest(model)
+				if explicit {
+					in.ServiceTier = ptr("default")
+				}
+				normalized, err := Normalize(in, testCapability(model), Bindings{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if normalized.Parameters.ServiceTier != "default" {
+					t.Fatal("default service tier was lost from the billing context")
+				}
+				requests := make(chan map[string]json.RawMessage, 1)
+				upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					if req.Method != http.MethodPost || req.URL.Path != "/api/v3/contents/generations/tasks" {
+						t.Error("unexpected submission method or path")
+					}
+					var body map[string]json.RawMessage
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						t.Errorf("invalid outgoing JSON: %v", err)
+					}
+					requests <- body
+					w.Header().Set("Content-Type", "application/json")
+					if _, present := body["service_tier"]; present {
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = w.Write([]byte(`{"error":{"code":"InvalidParameter","message":"service_tier must be omitted"}}`))
+						return
+					}
+					_, _ = w.Write([]byte(`{"id":"cgt-local-contract"}`))
+				}))
+				defer upstream.Close()
+				localURL, err := url.Parse(upstream.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				transport := upstream.Client().Transport
+				client := testClient(func(req *http.Request) (*http.Response, error) {
+					// Exercise the built HTTP request over loopback only; never contact Ark.
+					local := req.Clone(req.Context())
+					local.URL.Scheme, local.URL.Host = localURL.Scheme, localURL.Host
+					return transport.RoundTrip(local)
+				})
+				result := client.Submit(context.Background(), normalized)
+				if result.Outcome != OutcomeAccepted || result.TaskID != "cgt-local-contract" {
+					t.Fatalf("local contract rejected submission: outcome=%s status=%d", result.Outcome, result.HTTPStatus)
+				}
+				if _, present := (<-requests)["service_tier"]; present {
+					t.Fatal("service_tier escaped into the outgoing HTTP request")
+				}
+				in.ServiceTier = ptr("flex")
+				if _, err := Normalize(in, testCapability(model), Bindings{}); err == nil {
+					t.Fatal("nondefault pricing tier was accepted")
+				}
+			})
+		}
 	}
 }
 

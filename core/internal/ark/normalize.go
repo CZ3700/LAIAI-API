@@ -231,7 +231,8 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if drafts > 0 && (drafts != 1 || len(content) != 1 || in.Resolution == nil || *in.Resolution != "1080p" || in.Duration != nil || in.Frames != nil || in.Ratio != nil || in.Seed != nil || in.GenerateAudio != nil || in.OmniReferenceTaskType != nil || p.Draft) {
 		return bad("content", "draft conversion requires only its parent and resolution 1080p; inherited fields cannot be supplied")
 	}
-	payload := map[string]any{"model": cap.UpstreamModel, "content": content, "resolution": p.Resolution, "watermark": p.Watermark, "return_last_frame": p.ReturnLastFrame, "service_tier": p.ServiceTier, "execution_expires_after": p.ExecutionExpiresAfter}
+	// Keep the default service tier in billing context, not the optional upstream request field.
+	payload := map[string]any{"model": cap.UpstreamModel, "content": content, "resolution": p.Resolution, "watermark": p.Watermark, "return_last_frame": p.ReturnLastFrame, "execution_expires_after": p.ExecutionExpiresAfter}
 	if drafts == 0 {
 		payload["ratio"] = p.Ratio
 		payload["seed"] = p.Seed
