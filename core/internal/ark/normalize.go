@@ -236,7 +236,9 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 		payload["ratio"] = p.Ratio
 		payload["seed"] = p.Seed
 		payload["generate_audio"] = p.GenerateAudio
-		payload["draft"] = p.Draft
+		if cap.Draft {
+			payload["draft"] = p.Draft
+		}
 		if in.Frames != nil {
 			payload["frames"] = p.Frames
 		} else {

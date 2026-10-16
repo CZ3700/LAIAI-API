@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // Keep IANA quota timezones available in standalone deployments.
 
 	"github.com/laiai/laiai-next/core/internal/alert"
 	"github.com/laiai/laiai-next/core/internal/config"

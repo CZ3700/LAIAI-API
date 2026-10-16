@@ -87,6 +87,63 @@ func TestNormalizeCapabilityAndCanonicalBody(t *testing.T) {
 	}
 }
 
+func TestNormalizeDraftRequestContract(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		model      string
+		capDraft   bool
+		request    *bool
+		wantDraft  bool
+		wantReject bool
+	}{
+		{name: "2.0 omitted unsupported field", model: Model20},
+		{name: "2.0 explicit false stays local", model: Model20, request: ptr(false)},
+		{name: "2.0 true rejected", model: Model20, request: ptr(true), wantReject: true},
+		{name: "2.5 disabled capability omits field", model: Model25, request: ptr(false)},
+		{name: "2.5 verified capability default false", model: Model25, capDraft: true},
+		{name: "2.5 verified capability explicit false", model: Model25, capDraft: true, request: ptr(false)},
+		{name: "2.5 verified capability true", model: Model25, capDraft: true, request: ptr(true), wantDraft: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := textRequest(tc.model)
+			in.Draft = tc.request
+			if tc.wantDraft {
+				in.Resolution = ptr("480p")
+			}
+			cap := testCapability(tc.model)
+			cap.Draft = tc.capDraft
+			out, err := Normalize(in, cap, Bindings{})
+			if tc.wantReject {
+				apiErr, ok := err.(*Error)
+				if !ok || apiErr.Code != "unsupported_capability" || apiErr.Field != "draft" || len(out.Body) != 0 {
+					t.Fatalf("unsupported draft must fail before emitting a body: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(out.Body, &body); err != nil {
+				t.Fatal(err)
+			}
+			raw, present := body["draft"]
+			if present != tc.capDraft {
+				t.Fatalf("draft presence = %t for capability %t: %s", present, tc.capDraft, out.Body)
+			}
+			if present {
+				var actual bool
+				if err := json.Unmarshal(raw, &actual); err != nil || actual != tc.wantDraft {
+					t.Fatalf("draft value = %s, want %t", raw, tc.wantDraft)
+				}
+			}
+			if out.Parameters.Draft != tc.wantDraft {
+				t.Fatalf("effective draft = %t, want %t", out.Parameters.Draft, tc.wantDraft)
+			}
+		})
+	}
+}
+
 func TestNormalizeRejectsUnverifiedAndInvalidParameters(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -171,20 +228,30 @@ func TestMediaBindingsAndNoInputMutation(t *testing.T) {
 func TestDraftConversionDoesNotReinjectInheritedParameters(t *testing.T) {
 	r := CreateRequest{Model: Model25, Content: []ContentItem{{Type: "draft_task", DraftTask: &DraftReference{ID: "task_parent"}}}, Resolution: ptr("1080p"), OutputFormat: ptr("mov")}
 	b := Bindings{Drafts: map[string]DraftBinding{"task_parent": {UpstreamTaskID: "cgt-parent", PublicModel: Model25, CapabilityVersion: "test-v1", HasInputVideo: true, Parameters: EffectiveParameters{Duration: 12, Ratio: "adaptive", Seed: 42, GenerateAudio: true, OmniReferenceTaskType: "edit", FramesPerSecond: 24}}}}
-	out, err := Normalize(r, testCapability(Model25), b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var payload map[string]any
-	_ = json.Unmarshal(out.Body, &payload)
-	for _, key := range []string{"duration", "frames", "ratio", "seed", "generate_audio", "omni_reference_task_type", "draft"} {
-		if _, ok := payload[key]; ok {
-			t.Errorf("inherited field in JSON: %s", key)
+	for _, draft := range []*bool{nil, ptr(false)} {
+		r.Draft = draft
+		out, err := Normalize(r, testCapability(Model25), b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(out.Body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"duration", "frames", "ratio", "seed", "generate_audio", "omni_reference_task_type", "draft"} {
+			if _, ok := payload[key]; ok {
+				t.Errorf("inherited field in JSON: %s", key)
+			}
+		}
+		if out.Parameters.Draft || out.Parameters.Duration != 12 || !out.HasInputVideo || out.SourceDraftID != "task_parent" {
+			t.Fatal("lost inherited billing context or marked converted video as draft")
 		}
 	}
-	if out.Parameters.Duration != 12 || !out.HasInputVideo || out.SourceDraftID != "task_parent" {
-		t.Fatal("lost inherited billing context")
+	r.Draft = ptr(true)
+	if _, err := Normalize(r, testCapability(Model25), b); err == nil {
+		t.Fatal("draft conversion accepts draft mode")
 	}
+	r.Draft = nil
 	r.Duration = ptr(12)
 	if _, err := Normalize(r, testCapability(Model25), b); err == nil {
 		t.Fatal("draft accepts inherited duration")
