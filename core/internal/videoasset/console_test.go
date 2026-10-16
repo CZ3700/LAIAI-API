@@ -5,18 +5,23 @@ import (
 	"context"
 	"encoding/json"
 	"gorm.io/gorm"
+	"image"
+	"image/png"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 const consoleTestSchema = `
+CREATE TABLE video_asset_sync_gates(account_key TEXT PRIMARY KEY,version INTEGER NOT NULL,next_dispatch_at DATETIME);
 CREATE TABLE video_asset_details(resource_id TEXT PRIMARY KEY,org_id INTEGER NOT NULL,description TEXT NOT NULL,source TEXT NOT NULL,last_synced_at DATETIME,updated_at DATETIME NOT NULL);
 CREATE TABLE video_portrait_labels(session_id TEXT PRIMARY KEY,org_id INTEGER NOT NULL,name TEXT NOT NULL,description TEXT NOT NULL,name_synced BOOLEAN NOT NULL);
 CREATE TABLE video_asset_sync_jobs(id TEXT PRIMARY KEY,org_id INTEGER NOT NULL,scope_id TEXT NOT NULL,scope_version INTEGER NOT NULL,account_id TEXT NOT NULL,region TEXT NOT NULL,project TEXT NOT NULL,mode TEXT NOT NULL,kind TEXT NOT NULL,phase TEXT NOT NULL,status TEXT NOT NULL,group_id TEXT NOT NULL,after_group_id TEXT NOT NULL,checkpoint_id TEXT NOT NULL,seen_hashes TEXT NOT NULL,idempotency_hash TEXT NOT NULL,pages INTEGER NOT NULL,items INTEGER NOT NULL,fence INTEGER NOT NULL,lease_until DATETIME,error_code TEXT NOT NULL,created_at DATETIME NOT NULL,updated_at DATETIME NOT NULL,UNIQUE(org_id,idempotency_hash));
@@ -166,7 +171,7 @@ func TestSyncDiscoveryDoesNotGrantTenantAccess(t *testing.T) {
 	}
 }
 func TestSyncPaginationCycleKeepsCheckpointAndFails(t *testing.T) {
-	s, _, _, _ := setup(t)
+	s, _, now, _ := setup(t)
 	_ = s.ConfigureConsole(ConsoleOptions{})
 	s.options.Client = NewManagementClient(&http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
 		var body map[string]any
@@ -184,6 +189,7 @@ func TestSyncPaginationCycleKeepsCheckpointAndFails(t *testing.T) {
 	if err = s.processSyncJobs(ctx); err != nil {
 		t.Fatal(err)
 	}
+	*now = now.Add(time.Second)
 	if err = s.processSyncJobs(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -236,5 +242,198 @@ func TestPublicMediaSignatureAndRange(t *testing.T) {
 	}
 	if _, err := m.path("../escape"); err == nil {
 		t.Fatal("path traversal allowed")
+	}
+}
+
+func TestAssetMediaScanProcess(t *testing.T) {
+	for _, arg := range os.Args {
+		if arg == "--asset-test-scanner" {
+			os.Exit(0)
+		}
+	}
+}
+func TestMediaUploadVerifiedFileAndTenantIsolation(t *testing.T) {
+	probe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("ffprobe not installed; deployment integration exercises probe")
+	}
+	media, err := NewMediaStore(MediaStoreConfig{Root: t.TempDir(), PublicBaseURL: "https://media.example/api/video/media-source", FFProbePath: probe, SigningKey: bytes.Repeat([]byte{8}, 32), ScanCommand: []string{os.Args[0], "-test.run=^TestAssetMediaScanProcess$", "--", "--asset-test-scanner"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, db, now, _ := setup(t)
+	if err = s.ConfigureConsole(ConsoleOptions{Media: media}); err != nil {
+		t.Fatal(err)
+	}
+	c := CreateContext{CallerKind: "session_user", OrgID: 1, UserID: 22, RequestID: "upload-test", IdempotencyKey: "upload-test"}
+	upload, err := s.BeginUpload(context.Background(), c, "image")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := c
+	wrong.UserID = 23
+	if _, err = s.CompleteUpload(context.Background(), wrong, upload.ID, strings.NewReader("bad"), ""); err != ErrAuthorization {
+		t.Fatal(err)
+	}
+	var pngBytes bytes.Buffer
+	if err = png.Encode(&pngBytes, image.NewRGBA(image.Rect(0, 0, 640, 480))); err != nil {
+		t.Fatal(err)
+	}
+	upload, err = s.CompleteUpload(context.Background(), c, upload.ID, bytes.NewReader(pngBytes.Bytes()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upload.Status != "ready" || upload.Width != 640 || upload.Height != 480 || upload.Bytes != int64(pngBytes.Len()) {
+		t.Fatalf("bad immutable facts: %+v", upload)
+	}
+	if _, err = s.GetUpload(context.Background(), 2, upload.ID); err != ErrNotFound {
+		t.Fatal(err)
+	}
+	g := readyGroup(t, s, "media-group")
+	c.IdempotencyKey = "register-upload"
+	a, _, err := s.CreateAssetFromMedia(context.Background(), c, g.ID, upload.ID, "uploaded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ProcessOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(16 * time.Second)
+	if err = s.ProcessOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a, err = s.GetAsset(context.Background(), 1, a.ID)
+	if err != nil || a.Reference == "" {
+		t.Fatal(a, err)
+	}
+	var count int64
+	db.Model(&Asset{}).Where("org_id = ? AND immutable_object_ref = ? AND object_sha256 = ?", 1, upload.ObjectRef, upload.ObjectSHA256).Count(&count)
+	if count != 1 {
+		t.Fatal(count)
+	}
+}
+func TestSyncGateSerializesSharedScopeAndLimitsAccount(t *testing.T) {
+	s, _, now, provider := setup(t)
+	ctx := context.Background()
+	c := createContext("scope-a")
+	var wg sync.WaitGroup
+	out := make(chan error, 2)
+	for i := uint64(1); i <= 2; i++ {
+		wg.Add(1)
+		go func(org uint64) {
+			defer wg.Done()
+			caller := c
+			caller.OrgID = org
+			_, err := s.CreateSyncJob(ctx, caller, "virtual", "discover")
+			out <- err
+		}(i)
+	}
+	wg.Wait()
+	close(out)
+	accepted, conflicts := 0, 0
+	for err := range out {
+		if err == nil {
+			accepted++
+		} else if err == ErrConflict {
+			conflicts++
+		} else {
+			t.Fatal(err)
+		}
+	}
+	if accepted != 1 || conflicts != 1 {
+		t.Fatal(accepted, conflicts)
+	}
+	if err := s.processSyncJobs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c.IdempotencyKey = "next-scope-job"
+	if _, err := s.CreateSyncJob(ctx, c, "virtual", "discover"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.processSyncJobs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls["ListAssetGroups"] != 1 {
+		t.Fatal("unlimited account dispatch")
+	}
+	*now = now.Add(time.Second)
+	if err := s.processSyncJobs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls["ListAssetGroups"] != 2 {
+		t.Fatal("gate did not release")
+	}
+}
+func TestConsoleReadyFilterRequiresImmutableFacts(t *testing.T) {
+	s, db, now, _ := setup(t)
+	g := readyGroup(t, s, "ready-filter")
+	a := readyAsset(t, s, now, g.ID, "ready-filter")
+	if err := db.Model(&Asset{}).Where("asset_id = ?", a.ID).Updates(map[string]any{"immutable_object_ref": "", "metadata_version": 0}).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetAsset(context.Background(), 1, a.ID)
+	if err != nil || got.Reference != "" || got.Status != "needs_review" {
+		t.Fatal(got, err)
+	}
+	page, err := s.ConsoleAssets(context.Background(), 1, ListFilter{GroupID: g.ID, Status: "ready", Limit: 20})
+	if err != nil || page.Total != 0 {
+		t.Fatal(page, err)
+	}
+	page, err = s.ConsoleAssets(context.Background(), 1, ListFilter{GroupID: g.ID, Status: "verifying", Limit: 20})
+	if err != nil || page.Total != 1 {
+		t.Fatal(page, err)
+	}
+	if _, err = s.ResolveBindingsTx(db, 1, testScope(), "missing-facts", []ReferenceInput{{AssetID: a.ID, Role: "reference_image", ContentIndex: 0}}); err != ErrConflict {
+		t.Fatal(err)
+	}
+}
+func TestRejectedDeleteRestoresFailedState(t *testing.T) {
+	s, db, now, _ := setup(t)
+	g := readyGroup(t, s, "delete-reject")
+	a := readyAsset(t, s, now, g.ID, "delete-reject")
+	db.Model(&Asset{}).Where("asset_id = ?", a.ID).Update("status", StatusFailed)
+	s.options.Client = NewManagementClient(&http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+		raw := bodyJSON(map[string]any{"ResponseMetadata": map[string]any{"RequestId": "reject", "Error": map[string]string{"Code": "AccessDenied", "Message": "blocked"}}})
+		return &http.Response{StatusCode: 403, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(raw)), Request: req}, nil
+	})})
+	if _, _, err := s.DeleteAsset(context.Background(), createContext("reject-delete"), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProcessOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetAsset(context.Background(), 1, a.ID)
+	if err != nil || got.Status != "failed" || got.Reference != "" {
+		t.Fatal(got, err)
+	}
+}
+
+func TestMediaCleanupRetainsReferencedEvidence(t *testing.T) {
+	s, db, now, _ := setup(t)
+	g := readyGroup(t, s, "cleanup")
+	a := readyAsset(t, s, now, g.ID, "cleanup")
+	media := &MediaStore{root: t.TempDir()}
+	s.console.Media = media
+	old := now.Add(-48 * time.Hour)
+	for _, id := range []string{"media_keep", "media_orphan", "pending-old"} {
+		p := filepath.Join(media.root, id)
+		if err := os.WriteFile(p, []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Model(&Asset{}).Where("asset_id = ?", a.ID).Update("immutable_object_ref", "media_keep")
+	if err := s.cleanupMedia(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(media.root, "media_keep")); err != nil {
+		t.Fatal("referenced evidence removed", err)
+	}
+	for _, id := range []string{"media_orphan", "pending-old"} {
+		if _, err := os.Stat(filepath.Join(media.root, id)); !os.IsNotExist(err) {
+			t.Fatal("orphan retained", id, err)
+		}
 	}
 }

@@ -11,6 +11,27 @@ import (
 	"time"
 )
 
+type SyncGate struct {
+	AccountKey     string `gorm:"primaryKey"`
+	Version        uint64
+	NextDispatchAt *time.Time
+}
+
+func (SyncGate) TableName() string { return "video_asset_sync_gates" }
+func lockSyncGate(tx *gorm.DB, account, region string) (SyncGate, error) {
+	gate := SyncGate{AccountKey: hash(bodyJSON([]string{account, region}))}
+	if tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "account_key"}}, DoNothing: true}).Create(&gate).Error != nil {
+		return gate, ErrStorage
+	}
+	if tx.Model(&SyncGate{}).Where("account_key = ?", gate.AccountKey).Update("version", gorm.Expr("version + 1")).Error != nil {
+		return gate, ErrStorage
+	}
+	if tx.Where("account_key = ?", gate.AccountKey).Take(&gate).Error != nil {
+		return gate, ErrStorage
+	}
+	return gate, nil
+}
+
 type SyncJob struct {
 	ID                                              string     `gorm:"primaryKey" json:"id"`
 	OrgID                                           uint64     `json:"-"`
@@ -91,6 +112,9 @@ func (s *Service) CreateSyncJob(ctx context.Context, c CreateContext, kind, mode
 		}
 		if !errors.Is(e, gorm.ErrRecordNotFound) {
 			return ErrStorage
+		}
+		if _, err := lockSyncGate(tx, r.Scope.AccountID, r.Scope.Region); err != nil {
+			return err
 		}
 		var n int64
 		if tx.Model(&SyncJob{}).Where("scope_id = ? AND status IN ?", r.Scope.ID, []string{"pending", "running"}).Count(&n).Error != nil {
@@ -206,11 +230,32 @@ func (s *Service) processSyncJobs(ctx context.Context) error {
 func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 	now := nowMillis(s)
 	lease := now.Add(2 * time.Minute)
-	claim := s.db.WithContext(ctx).Model(&SyncJob{}).Where("id = ? AND fence = ? AND (status = ? OR lease_until <= ?)", job.ID, job.Fence, "pending", now).Updates(map[string]any{"status": "running", "fence": job.Fence + 1, "lease_until": lease, "updated_at": now})
-	if claim.Error != nil {
-		return ErrStorage
+	claimed := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		gate, err := lockSyncGate(tx, job.AccountID, job.Region)
+		if err != nil {
+			return err
+		}
+		if gate.NextDispatchAt != nil && gate.NextDispatchAt.After(now) {
+			return nil
+		}
+		claim := tx.Model(&SyncJob{}).Where("id = ? AND fence = ? AND (status = ? OR (status = ? AND lease_until <= ?))", job.ID, job.Fence, "pending", "running", now).Updates(map[string]any{"status": "running", "fence": job.Fence + 1, "lease_until": lease, "updated_at": now})
+		if claim.Error != nil {
+			return ErrStorage
+		}
+		if claim.RowsAffected != 1 {
+			return nil
+		}
+		if tx.Model(&SyncGate{}).Where("account_key = ?", gate.AccountKey).Update("next_dispatch_at", now.Add(time.Second)).Error != nil {
+			return ErrStorage
+		}
+		claimed = true
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	if claim.RowsAffected != 1 {
+	if !claimed {
 		return nil
 	}
 	job.Fence++

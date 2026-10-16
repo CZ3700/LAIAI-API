@@ -16,7 +16,7 @@ mandatory. Media upload also requires Options.VerifyMedia, which must safely
 fetch and verify an immutable object including digest/type/size/duration/shape,
 and return its approved immutable FetchURL; this URL is used for provider import
 and is retained only in encrypted execution evidence, never metadata;
-the package checks the documented bounds but does not implement a downloader.
+the package checks the documented bounds. ConfigureConsole can supply the built-in immutable MediaStore with DNS/IP pinning, HTTPS-only fetch, no redirects, byte limits, external malware scan and bounded ffprobe.
 Options.ResolveCallback must return an exact pre-registered HTTPS target.
 Options.ResolveCallbackByID resolves that registered target on return;
 PlatformCallbackURL is a fixed platform HTTPS URL with path
@@ -40,9 +40,9 @@ caller has authoritative proof the task is terminal; it retains historical refs.
 Both resource mutation and task binding serialize through a per-org lock; root
 must use the same lock order before quota/ledger locks.
 
-The public DTOs expose platform IDs only. The local display group name may use
-100 characters; the official Name is the generated platform ID (under 64), so
-customer labels are not silently truncated or sent upstream. CreateAsset returns
+The public DTOs expose platform IDs only. Names are limited to 64 Unicode characters and sent to the official API. Group
+descriptions are limited to 300 characters. H5 group names are applied only after
+the official group ID is known; unknown updates are not automatically resent. CreateAsset returns
 processing until a scoped GetAsset says Active; HTTP 200 with Status Failed is
 failed. A status query never incurs another resource creation.
 
@@ -58,9 +58,11 @@ and requires reconciliation; it must never be interpreted as safe to create agai
 The service does not promise automatic discovery of unknown creates without an
 official ID. Read-only query intents can be recreated after a bounded delay.
 
-Only verified virtual empty-group deletion is enabled by its capability flag.
-Nonempty/cascade and real-person deletion are rejected, and DeleteAsset is always
-unsupported because its full official contract has not been verified. Deletion
+Virtual empty-group deletion requires both the explicit deletion capability and
+exclusive project write control, because official deletion cascades without an
+atomic empty-group precondition. Local and fresh official emptiness checks are
+mandatory. Nonempty/cascade and real-person group deletion are rejected.
+Individual DeleteAsset is enabled separately and rejects live task references. Deletion
 sets a barrier before external dispatch; unknown outcomes keep that barrier.
 Deletion confirmation preserves evidence and task references. A definite
 rejection restores the prior group and permits a new explicit delete request.
@@ -69,7 +71,7 @@ H5 session creation is independent of business portrait permission. BytedToken
 and H5Link are stored only in a separate encrypted short-lived secret table;
 tenant/session/scope/expiry are checked inside the decrypted sealed structure.
 They are stripped from Invocation Store bodies. Pending H5 URL reads require the
-creating key, a committed audit event and an unexpired session; lists contain no
+creating key or original session user, a committed audit event and an unexpired session; lists contain no
 URL. This is repeatable URL retrieval, while official authentication itself is
 single use. Callback parameters never grant identity or license: polling verifies
 GetVisualValidateResult and maps its group transactionally. The session expiry
@@ -213,3 +215,38 @@ CREATE TABLE video_asset_events (
 
 Validate these models against MySQL migrations plus concurrency/deadlock tests
 in integration. SQLite mock tests alone cannot establish production lock behavior.
+
+
+## Console integration
+
+Call `ConfigureConsole(ConsoleOptions{CallbackURL: registeredReturnURL, Media: store})`.
+The caller identity is `session_user` with actual OrgID/UserID and KeyID zero;
+public API callers retain `api_key` and key scopes. Do not mint synthetic keys.
+The platform H5 callback and registered return URL remain distinct.
+
+`NewMediaStore(MediaStoreConfig{Root, PublicBaseURL, FFProbePath, SigningKey,
+ScanCommand})` requires a private writable directory, public HTTPS base URL,
+32-byte signing key, ffprobe and an actual malware scanner executable/arguments.
+The scanner receives the temporary file path as the final argument; exit zero
+means clean. No shell is invoked. Example public path is
+`https://public.example/api/video/media-source`; only GET/HEAD ServeHTTP routes
+may bypass session authentication, and each fetch needs a tenant-bound signature.
+Raw `POST /api/video/media-uploads/:id/complete` has its own strict byte limit and
+must be outside the global 1 MB JSON body limiter. All other console routes remain
+inside authentication, active membership and JSON limits. Previews require a
+session, organization predicate and audit event. No source URL or signing query
+is returned in ordinary list metadata.
+
+`ProcessOnce` drives durable synchronization. Same-scope active jobs are serialized
+under an account gate; different scopes can coexist and share at most one page
+per second per account/region. Page checkpoints are encrypted, filter-bound and
+fenced. Unknown groups enter superadmin discovery only. Explicit reviewed
+assignment creates an organization mapping; it never grants all of default.
+Imported real groups use imported_pending/imported_verified, never fabricated
+H5 success. Imported media remains needs_review until a fresh scoped GetAsset
+URL has been downloaded, scanned and probed. Missing pages never cause tombstones.
+
+Console group/assets listings use organization-bound signed cursors. The
+superadmin assignment endpoint stores review evidence in Invocation Store before
+assignment; named superadmin license review remains a separate audited action.
+Operations retain tombstones and task/financial history after deletion.

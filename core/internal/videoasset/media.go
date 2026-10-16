@@ -1,6 +1,7 @@
 package videoasset
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/laiai/laiai-next/core/internal/invocation"
 	"gorm.io/gorm"
 	"io"
 	"net"
@@ -19,8 +21,18 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+type cappedProbeBuffer struct{ buffer bytes.Buffer }
+
+func (b *cappedProbeBuffer) Write(p []byte) (int, error) {
+	if b.buffer.Len()+len(p) > 1<<20 {
+		return 0, ErrInvalid
+	}
+	return b.buffer.Write(p)
+}
 
 type MediaStoreConfig struct {
 	Root, PublicBaseURL, FFProbePath string
@@ -32,6 +44,8 @@ type MediaStore struct {
 	key               []byte
 	scan              []string
 	client            *http.Client
+	cleanupMu         sync.Mutex
+	lastCleanup       time.Time
 }
 
 func NewMediaStore(c MediaStoreConfig) (*MediaStore, error) {
@@ -67,7 +81,7 @@ func publicIP(ip net.IP) bool {
 	if !a.IsGlobalUnicast() || a.IsPrivate() || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified() {
 		return false
 	}
-	for _, s := range []string{"100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "240.0.0.0/4", "2001:db8::/32"} {
+	for _, s := range []string{"100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "240.0.0.0/4", "2001:db8::/32", "2002::/16", "64:ff9b::/96", "::/96"} {
 		if netip.MustParsePrefix(s).Contains(a) {
 			return false
 		}
@@ -325,8 +339,12 @@ func (m *MediaStore) write(ctx context.Context, id, kind string, r io.Reader) (M
 	probeCtx, cancelProbe := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelProbe()
 	cmd = exec.CommandContext(probeCtx, m.probe, "-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=format_name,duration:stream=codec_type,width,height,r_frame_rate", "-of", "json", tmpName)
-	raw, e := cmd.Output()
-	if e != nil || len(raw) > 1<<20 {
+	var output cappedProbeBuffer
+	cmd.Stdout = &output
+	cmd.Stderr = io.Discard
+	e = cmd.Run()
+	raw := output.buffer.Bytes()
+	if e != nil {
 		return out, ErrInvalid
 	}
 	var probe struct {
@@ -497,6 +515,14 @@ func (s *Service) VerifyImportedAsset(ctx context.Context, org uint64, id string
 		return e
 	}
 	now := nowMillis(s)
+	requestID, e := newID("amv_")
+	if e != nil {
+		return e
+	}
+	prepared, e := s.evidence.Prepare(invocation.VideoPayloadInput{OrgID: org, RequestID: requestID, AttemptID: requestID, Direction: invocation.VideoUpstreamResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: result.Body, ExpiresAt: now.Add(30 * 24 * time.Hour), CaptureEnabled: true, SecretValues: []string{r.Credentials.AccessKey, r.Credentials.SecretKey, r.Credentials.SessionToken}})
+	if e != nil {
+		return ErrStorage
+	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if e := lockTenant(tx, org); e != nil {
 			return e
@@ -505,13 +531,86 @@ func (s *Service) VerifyImportedAsset(ctx context.Context, org uint64, id string
 		if tx.Where("org_id = ? AND group_id = ? AND status = ? AND deleted_at IS NULL", org, g.ID, StatusActive).Take(&current).Error != nil {
 			return ErrConflict
 		}
-		res := tx.Model(&Asset{}).Where("org_id = ? AND asset_id = ? AND row_version = ? AND status = ? AND deleted_at IS NULL", org, id, a.RowVersion, StatusActive).Updates(map[string]any{"immutable_object_ref": object, "object_sha256": media.ObjectSHA256, "mime": media.MIME, "byte_size": media.ByteSize, "duration_ms": media.DurationMS, "width": media.Width, "height": media.Height, "fps_num": media.FPSNum, "fps_den": media.FPSDen, "metadata_version": gorm.Expr("metadata_version + 1"), "verified_at": now, "review_state": ReviewClear, "row_version": gorm.Expr("row_version + 1"), "updated_at": now})
+		ref, e := s.evidence.StageTx(tx, prepared)
+		if e != nil {
+			return ErrStorage
+		}
+		res := tx.Model(&Asset{}).Where("org_id = ? AND asset_id = ? AND row_version = ? AND status = ? AND deleted_at IS NULL", org, id, a.RowVersion, StatusActive).Updates(map[string]any{"source_payload_id": ref, "immutable_object_ref": object, "object_sha256": media.ObjectSHA256, "mime": media.MIME, "byte_size": media.ByteSize, "duration_ms": media.DurationMS, "width": media.Width, "height": media.Height, "fps_num": media.FPSNum, "fps_den": media.FPSDen, "metadata_version": gorm.Expr("metadata_version + 1"), "verified_at": now, "review_state": ReviewClear, "row_version": gorm.Expr("row_version + 1"), "updated_at": now})
 		if res.Error != nil {
 			return ErrStorage
 		}
 		if res.RowsAffected != 1 {
 			return ErrConflict
 		}
-		return s.event(tx, org, "asset", id, "", "imported_media_verified", "", "worker")
+		return s.event(tx, org, "asset", id, "", "imported_media_verified", ref, "worker")
 	})
+}
+
+// Cleanup removes only old unreferenced private objects, never asset evidence.
+// A 24-hour grace covers interrupted upload transactions and expiring Ark fetches.
+func (s *Service) cleanupMedia(ctx context.Context) error {
+	m := s.console.Media
+	if m == nil {
+		return nil
+	}
+	m.cleanupMu.Lock()
+	defer m.cleanupMu.Unlock()
+	now := s.now()
+	if !m.lastCleanup.IsZero() && now.Sub(m.lastCleanup) < time.Hour {
+		return nil
+	}
+	m.lastCleanup = now
+	if s.db.WithContext(ctx).Model(&Upload{}).Where("status IN ? AND expires_at <= ?", []string{"uploading", "verifying"}, now).Updates(map[string]any{"status": "expired", "error_code": "upload_expired", "updated_at": nowMillis(s)}).Error != nil {
+		return ErrStorage
+	}
+	dir, err := os.Open(m.root)
+	if err != nil {
+		return ErrStorage
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(1000)
+	if err != nil && err != io.EOF {
+		return ErrStorage
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || (!strings.HasPrefix(name, "media_") && !strings.HasPrefix(name, "pending-")) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || info.ModTime().After(now.Add(-24*time.Hour)) {
+			continue
+		}
+		path := filepath.Join(m.root, name)
+		if filepath.Dir(path) != m.root {
+			continue
+		}
+		if strings.HasPrefix(name, "media_") {
+			if !validID(name) {
+				continue
+			}
+			var count int64
+			if s.db.WithContext(ctx).Model(&Asset{}).Where("immutable_object_ref = ?", name).Count(&count).Error != nil {
+				return ErrStorage
+			}
+			if count > 0 {
+				continue
+			}
+			if s.db.WithContext(ctx).Model(&Upload{}).Where("id = ? AND expires_at > ?", name, now).Count(&count).Error != nil {
+				return ErrStorage
+			}
+			if count > 0 {
+				continue
+			}
+		}
+		if err = os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return ErrStorage
+		}
+		if strings.HasPrefix(name, "media_") {
+			if s.db.WithContext(ctx).Model(&Upload{}).Where("id = ? AND expires_at <= ?", name, now).Updates(map[string]any{"status": "expired", "updated_at": nowMillis(s)}).Error != nil {
+				return ErrStorage
+			}
+		}
+	}
+	return nil
 }
