@@ -94,3 +94,25 @@ ALTER TABLE ledger_movements
 `reversed` labels a new reviewed corrective posting (refund or additional charge), never a rewritten original entry or an assertion of full cancellation. ApplyAdjustmentTx supplies the actual two-person proposal/review/hold links. Live movements have occurred_at; historical journal/hold creation uses source time, release inferred from state has NULL occurred_at and `derived_time_unknown` quality. Date-filtered sums use occurred_at, so unknown historical release time cannot become today's activity. created_at is ingestion time only. No org balance_after is fabricated.
 
 `ledger.BackfillActivities(db, cutoffUTC, limit)` is a bounded operator job (limit 1–500) using source uniqueness also used by live writes. Repeat until 0. It never writes balances or journal. Every inserted movement is in one transaction with its operation. Historical failed attempts cannot be recovered from successful journal and are never synthesized.
+
+## Durable export DDL (0117)
+
+```sql
+CREATE TABLE ledger_export_jobs (
+ id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ org_id BIGINT UNSIGNED NOT NULL, user_id BIGINT UNSIGNED NOT NULL,
+ idempotency_key VARCHAR(128) NOT NULL, request_hash CHAR(64) NOT NULL,
+ filter_json TEXT NOT NULL, max_movement_id BIGINT UNSIGNED NOT NULL,
+ cursor_id BIGINT UNSIGNED NOT NULL DEFAULT 0, row_count INT NOT NULL DEFAULT 0,
+ status VARCHAR(16) NOT NULL, error_code VARCHAR(64) NOT NULL DEFAULT '',
+ csv_data MEDIUMTEXT NOT NULL, created_at DATETIME(3) NOT NULL,
+ expires_at DATETIME(3) NOT NULL, updated_at DATETIME(3) NOT NULL,
+ UNIQUE KEY uk_fund_export_request (org_id,user_id,idempotency_key),
+ KEY idx_fund_export_work (status,expires_at,id),
+ KEY idx_fund_export_owner (org_id,user_id,id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+Launch `go srv.RunFundExportJobs(shutdownContext)` once after constructing server. Each SQL-only chunk serializes on the job row, so multiple replicas are safe. A restarted worker resumes the saved cursor; CSV and cursor commit together. POST `/api/fund-exports` accepts the list filters and Idempotency-Key; GET `/:id` returns status; GET `/:id/download` returns authenticated JSON `{filename,csv,rows,currency,snapshot_at}`. Register in the active-membership org group, never a bare token group. Owner user + org + 15-minute TTL are checked again on every fetch; create/download are audited. CSV contents are cleared after expiration. Max 100,000 rows / 14 MiB fails explicitly instead of silently truncating. Ordinary GET `/fund-exports` remains a bounded compatibility preview, not the full export job.
+
+Movement pagination is actual occurred_at DESC, id DESC, NULL time last. `before` remains a movement ID; the repository resolves the same-org anchor and uses its timestamp in a compound keyset predicate. Unknown historical timestamps are never classified as today's activity. Export also fixes max_movement_id, so later live or backfill inserts are excluded.

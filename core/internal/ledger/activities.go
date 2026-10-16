@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -216,9 +217,16 @@ func movementType(ref, direction string) string {
 	case "admin_override":
 		return "admin_adjustment"
 	case "video_adjustment":
-		return "video_adjustment"
+		if direction == "credit" {
+			return "video_refund"
+		}
+		return "video_debit_adjustment"
 	case "rebalance":
 		return "internal_transfer"
+	case "usage", "task", "video", "realtime", "usage_overage", "task_overage", "video_overage", "realtime_overage":
+		if direction == "debit" {
+			return "usage"
+		}
 	}
 	if direction == "freeze" {
 		return "reservation"
@@ -227,7 +235,7 @@ func movementType(ref, direction string) string {
 		return "reservation_release"
 	}
 	if direction == "debit" {
-		return "usage"
+		return "other_debit"
 	}
 	return "other_credit"
 }
@@ -244,7 +252,9 @@ func recordMovement(tx *gorm.DB, m Movement) error {
 	}
 	m.OrgID, m.AccountType = account.OrgID, account.Type
 	m.AvailableDelta = m.PostedDelta.Sub(m.HeldDelta)
-	m.Type = movementType(m.RefType, m.Direction)
+	if m.Type == "" {
+		m.Type = movementType(m.RefType, m.Direction)
+	}
 	m.Currency = "USD"
 	m.Status = "success"
 	m.CreatedAt = time.Now().UTC()
@@ -295,6 +305,9 @@ func recordPost(tx *gorm.DB, e *JournalEntry, correction *CorrectionLink) error 
 		direction = "debit"
 	}
 	m := Movement{AccountID: e.AccountID, Direction: direction, Amount: e.Delta.Abs(), PostedDelta: e.Delta, JournalID: &e.ID, SourceType: "journal", SourceID: e.ID, Component: "posted", RefType: e.RefType, RefID: e.RefID}
+	if e.Kind == KindExpire {
+		m.Type = "expiry"
+	}
 	if correction != nil && ActivityTrackingEnabled(tx) {
 		if correction.ProposalID == 0 || correction.ReviewID == 0 || correction.HoldID == 0 || e.RefType != "video_adjustment" {
 			return ErrInvalidInput
@@ -334,7 +347,11 @@ func recordRelease(tx *gorm.DB, h *Hold, amount decimal.Decimal, component strin
 	if amount.IsZero() {
 		return nil
 	}
-	return recordMovement(tx, Movement{AccountID: h.AccountID, Direction: "unfreeze", Amount: amount, HeldDelta: amount.Neg(), HoldID: &h.ID, SourceType: "hold", SourceID: h.ID, Component: component, RefType: h.RefType, RefID: h.RefID})
+	typ := "remainder_release"
+	if amount.Equal(h.Amount) {
+		typ = "full_release"
+	}
+	return recordMovement(tx, Movement{AccountID: h.AccountID, Type: typ, Direction: "unfreeze", Amount: amount, HeldDelta: amount.Neg(), HoldID: &h.ID, SourceType: "hold", SourceID: h.ID, Component: component, RefType: h.RefType, RefID: h.RefID})
 }
 func recordCapture(tx *gorm.DB, h *Hold, actual decimal.Decimal, e *JournalEntry) error {
 	if actual.IsPositive() {
@@ -349,6 +366,7 @@ type ActivityFilter struct {
 	Before                         uint64
 	Limit                          int
 	Type, Direction, Status, RefID string
+	RefType, Keyword, FailureCode  string
 	From, Until                    *time.Time
 }
 
@@ -368,6 +386,13 @@ func filterActivities(q *gorm.DB, f ActivityFilter, timeColumn string) *gorm.DB 
 	if f.RefID != "" {
 		q = q.Where("ref_id = ?", f.RefID)
 	}
+	if f.RefType != "" {
+		q = q.Where("ref_type = ?", f.RefType)
+	}
+	if f.Keyword != "" {
+		escaped := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(f.Keyword)
+		q = q.Where("ref_id LIKE ? ESCAPE '!'", "%"+escaped+"%")
+	}
 	if f.From != nil {
 		q = q.Where(timeColumn+" >= ?", *f.From)
 	}
@@ -381,7 +406,23 @@ func ListMovements(db *gorm.DB, org uint64, f ActivityFilter) ([]Movement, error
 		return nil, ErrInvalidInput
 	}
 	rows := []Movement{}
-	e := filterActivities(db.Where("org_id = ? AND account_type = ? AND type <> ?", org, AccountUserCredit, "internal_transfer"), f, "occurred_at").Order("id DESC").Limit(f.Limit).Find(&rows).Error
+	if f.FailureCode != "" {
+		return rows, nil
+	}
+	q := db.Session(&gorm.Session{}).Where("org_id = ? AND account_type = ? AND type <> ?", org, AccountUserCredit, "internal_transfer")
+	if f.Before > 0 {
+		var anchor Movement
+		if e := q.Session(&gorm.Session{}).Where("id = ?", f.Before).Take(&anchor).Error; e != nil {
+			return nil, e
+		}
+		if anchor.OccurredAt == nil {
+			q = q.Where("occurred_at IS NULL AND id < ?", anchor.ID)
+		} else {
+			q = q.Where("(occurred_at < ? OR (occurred_at = ? AND id < ?) OR occurred_at IS NULL)", *anchor.OccurredAt, *anchor.OccurredAt, anchor.ID)
+		}
+	}
+	f.Before = 0
+	e := filterActivities(q, f, "occurred_at").Order("CASE WHEN occurred_at IS NULL THEN 1 ELSE 0 END, occurred_at DESC, id DESC").Limit(f.Limit).Find(&rows).Error
 	return rows, e
 }
 func ListOperations(db *gorm.DB, org uint64, f ActivityFilter) ([]Operation, error) {
@@ -389,13 +430,20 @@ func ListOperations(db *gorm.DB, org uint64, f ActivityFilter) ([]Operation, err
 		return nil, ErrInvalidInput
 	}
 	rows := []Operation{}
-	e := filterActivities(db.Where("org_id = ? AND type <> ?", org, "internal_transfer"), f, "created_at").Order("id DESC").Limit(f.Limit).Find(&rows).Error
+	q := db.Where("org_id = ? AND type <> ?", org, "internal_transfer")
+	if f.FailureCode != "" {
+		q = q.Where("failure_code = ?", f.FailureCode)
+	}
+	e := filterActivities(q, f, "created_at").Order("id DESC").Limit(f.Limit).Find(&rows).Error
 	return rows, e
 }
 func OperationDetail(db *gorm.DB, org, id uint64) (Operation, []Movement, []OperationEvent, error) {
 	var op Operation
 	rows := []Movement{}
 	events := []OperationEvent{}
+	if org == 0 || id == 0 {
+		return op, rows, events, ErrInvalidInput
+	}
 	e := db.Transaction(func(tx *gorm.DB) error {
 		if e := tx.Where("id = ? AND org_id = ? AND type <> ?", id, org, "internal_transfer").Take(&op).Error; e != nil {
 			return e

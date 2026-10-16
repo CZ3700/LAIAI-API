@@ -295,3 +295,56 @@ func TestActivityDBClonesDoNotLeakScopes(t *testing.T) {
 		t.Fatalf("shared DB polluted %d %v", n, e)
 	}
 }
+
+func TestActivityOccurrencePaginationWithLateBackfill(t *testing.T) {
+	db := trackedDB(t)
+	seedAccount(t, db, 10, "10")
+	seedAccount(t, db, 20, "10")
+	var account Account
+	db.Where("org_id = ?", 10).Take(&account)
+	old := time.Now().UTC().Add(-24 * time.Hour)
+	older := old.Add(-time.Hour)
+	for i, occurred := range []*time.Time{&old, nil, &older, &old} {
+		if e := db.Transaction(func(tx *gorm.DB) error {
+			return recordMovement(tx, Movement{AccountID: account.ID, Direction: "credit", Amount: d("1"), PostedDelta: d("1"), SourceType: "historical-fixture", SourceID: uint64(i + 100), Component: "posted", RefType: "test", RefID: "history", Quality: "historical_fixture", OccurredAt: occurred})
+		}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	seen := map[uint64]bool{}
+	cursor := uint64(0)
+	lastTime := time.Now().UTC()
+	unknownSeen := false
+	for {
+		rows, e := ListMovements(db, 10, ActivityFilter{Limit: 2, Before: cursor})
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, r := range rows {
+			if seen[r.ID] {
+				t.Fatal("pagination duplicated row")
+			}
+			seen[r.ID] = true
+			if r.OccurredAt == nil {
+				unknownSeen = true
+			} else {
+				if unknownSeen || r.OccurredAt.After(lastTime) {
+					t.Fatal("historical chronology incorrect")
+				}
+				lastTime = *r.OccurredAt
+			}
+		}
+		cursor = rows[len(rows)-1].ID
+	}
+	if len(seen) != 5 {
+		t.Fatalf("lost rows %d", len(seen))
+	}
+	var foreign Movement
+	db.Where("org_id = ?", 20).Take(&foreign)
+	if _, e := ListMovements(db, 10, ActivityFilter{Limit: 2, Before: foreign.ID}); e == nil {
+		t.Fatal("foreign cursor accepted")
+	}
+}

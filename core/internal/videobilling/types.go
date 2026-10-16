@@ -78,6 +78,8 @@ type MeteringInput struct {
 	MinimumRuleSetID                     uint64
 	MinimumTokens                        int64
 	MinimumEvidenceHash                  string
+	InputDurationSource                  string
+	InputVideoCount                      *int
 	InputVideo                           bool
 	InputDurationMS                      int64
 	OutputDurationMS                     int64
