@@ -20,7 +20,7 @@ const videoTestSchema = `
 CREATE TABLE invocation_payloads (
  payload_id TEXT PRIMARY KEY,org_id INTEGER NOT NULL,request_id TEXT NOT NULL,attempt_id TEXT NOT NULL,
  correlation_key TEXT UNIQUE NOT NULL,direction TEXT NOT NULL,purpose TEXT NOT NULL,schema_version INTEGER NOT NULL,
- body_format TEXT NOT NULL,encryption_key_id TEXT NOT NULL,wrapped_key TEXT NOT NULL,nonce BLOB NOT NULL,
+ body_format TEXT NOT NULL,capture_representation TEXT NOT NULL DEFAULT 'legacy_unknown',encryption_key_id TEXT NOT NULL,wrapped_key TEXT NOT NULL,nonce BLOB NOT NULL,
  ciphertext_sha256 TEXT NOT NULL,plaintext_bytes INTEGER NOT NULL,redaction_version TEXT NOT NULL,
  capture_status TEXT NOT NULL,object_ref TEXT NOT NULL,created_at DATETIME NOT NULL,expires_at DATETIME NOT NULL,
  cleanup_after DATETIME,object_deleted_at DATETIME);
