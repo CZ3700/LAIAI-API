@@ -277,7 +277,7 @@ func (s *Service) ResolveBindingsTx(tx *gorm.DB, org uint64, scope Scope, taskID
 	var bindings []Binding
 	err := tx.Transaction(func(inner *gorm.DB) error {
 		var err error
-		bindings, err = s.resolveBindingsTx(inner, org, scope, taskID, refs)
+		bindings, err = s.resolveBindingsTx(inner, org, scope, taskID, refs, true)
 		return err
 	})
 	if err != nil {
@@ -285,12 +285,26 @@ func (s *Service) ResolveBindingsTx(tx *gorm.DB, org uint64, scope Scope, taskID
 	}
 	return bindings, nil
 }
-func (s *Service) resolveBindingsTx(tx *gorm.DB, org uint64, scope Scope, taskID string, refs []ReferenceInput) ([]Binding, error) {
-	if tx == nil || org == 0 || !validScope(scope) || !validID(taskID) || len(refs) > 50 {
+
+// ValidateBindingsTx shares every authorization check with ResolveBindingsTx,
+// but creates no references. The existing tenant row is locked before groups,
+// so a caller can later persist references in the same transaction safely.
+func (s *Service) ValidateBindingsTx(tx *gorm.DB, org uint64, scope Scope, refs []ReferenceInput) ([]Binding, error) {
+	return s.resolveBindingsTx(tx, org, scope, "", refs, false)
+}
+func (s *Service) resolveBindingsTx(tx *gorm.DB, org uint64, scope Scope, taskID string, refs []ReferenceInput, persist bool) ([]Binding, error) {
+	if tx == nil || org == 0 || !validScope(scope) || persist && !validID(taskID) || len(refs) > 50 {
 		return nil, ErrInvalid
 	}
-	if err := lockTenant(tx, org); err != nil {
-		return nil, err
+	if persist {
+		if err := lockTenant(tx, org); err != nil {
+			return nil, err
+		}
+	} else {
+		var tenant TenantLock
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ?", org).Take(&tenant).Error; err != nil {
+			return nil, ErrNotFound
+		}
 	}
 	// The per-org lock serializes group/asset deletion and binding across all
 	// callers; stable group/asset order also makes lock intent explicit.
@@ -318,18 +332,20 @@ func (s *Service) resolveBindingsTx(tx *gorm.DB, org uint64, scope Scope, taskID
 		if err != nil {
 			return nil, err
 		}
-		row := TaskReference{OrgID: org, TaskID: taskID, AssetID: asset.ID, GroupID: group.ID, ContentIndex: ref.ContentIndex, Role: ref.Role, AssetMetadataVersion: asset.MetadataVersion, AuthorizationVersion: licenseVersion, CreatedAt: nowMillis(s)}
-		created := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "org_id"}, {Name: "task_id"}, {Name: "content_index"}}, DoNothing: true}).Create(&row)
-		if created.Error != nil {
-			return nil, ErrStorage
-		}
-		if created.RowsAffected == 0 {
-			var old TaskReference
-			if err := tx.Where("org_id = ? AND task_id = ? AND content_index = ?", org, taskID, ref.ContentIndex).Take(&old).Error; err != nil {
+		if persist {
+			row := TaskReference{OrgID: org, TaskID: taskID, AssetID: asset.ID, GroupID: group.ID, ContentIndex: ref.ContentIndex, Role: ref.Role, AssetMetadataVersion: asset.MetadataVersion, AuthorizationVersion: licenseVersion, CreatedAt: nowMillis(s)}
+			created := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "org_id"}, {Name: "task_id"}, {Name: "content_index"}}, DoNothing: true}).Create(&row)
+			if created.Error != nil {
 				return nil, ErrStorage
 			}
-			if old.AssetID != row.AssetID || old.Role != row.Role || old.ReleasedAt != nil || old.AssetMetadataVersion != row.AssetMetadataVersion || old.AuthorizationVersion != row.AuthorizationVersion {
-				return nil, ErrConflict
+			if created.RowsAffected == 0 {
+				var old TaskReference
+				if err := tx.Where("org_id = ? AND task_id = ? AND content_index = ?", org, taskID, ref.ContentIndex).Take(&old).Error; err != nil {
+					return nil, ErrStorage
+				}
+				if old.AssetID != row.AssetID || old.Role != row.Role || old.ReleasedAt != nil || old.AssetMetadataVersion != row.AssetMetadataVersion || old.AuthorizationVersion != row.AuthorizationVersion {
+					return nil, ErrConflict
+				}
 			}
 		}
 		result = append(result, Binding{AssetID: asset.ID, ProviderAssetID: *asset.ProviderID, MediaType: asset.MediaType, Role: ref.Role, ContentIndex: ref.ContentIndex, DurationMS: asset.DurationMS, Width: asset.Width, Height: asset.Height, FPSNum: asset.FPSNum, FPSDen: asset.FPSDen, MetadataVersion: asset.MetadataVersion, AuthorizationVersion: licenseVersion})
