@@ -1774,9 +1774,13 @@ onMounted(async () => {
         </div>
 
         <!-- 编辑渠道弹窗 -->
+        <Teleport to="body">
         <div v-if="editing" class="modal-backdrop" @click.self="editing = null">
-          <form class="app-panel modal-panel w-full max-w-md p-6 space-y-4" @submit.prevent="saveEdit">
-            <h2 class="font-semibold">{{ t('admin.chEdit') }} · {{ editing.name }}</h2>
+          <form class="app-panel modal-panel channel-edit-panel" @submit.prevent="saveEdit">
+            <header class="channel-edit-header">
+              <h2 class="font-semibold">{{ t('admin.chEdit') }} · {{ editing.name }}</h2>
+            </header>
+            <div class="channel-edit-body space-y-4">
             <div>
               <label class="label" for="edit-baseurl">{{ t('admin.chBaseUrl') }}</label>
               <input id="edit-baseurl" v-model="editForm.base_url" class="input font-mono text-xs" />
@@ -1901,13 +1905,17 @@ onMounted(async () => {
               <p class="text-xs text-muted">{{ t('admin.chKeysHint') }}</p>
             </div>
 
-            <p v-if="editError" class="inline-alert" role="alert">{{ editError }}</p>
-            <div class="flex justify-end gap-2">
-              <button type="button" class="btn-ghost" @click="editing = null">{{ t('common.cancel') }}</button>
-              <button class="btn-primary" :disabled="editBusy">{{ t('common.confirm') }}</button>
             </div>
+            <footer class="channel-edit-footer">
+              <p v-if="editError" class="inline-alert" role="alert">{{ editError }}</p>
+              <div class="flex justify-end gap-2">
+                <button type="button" class="btn-ghost" @click="editing = null">{{ t('common.cancel') }}</button>
+                <button class="btn-primary" :disabled="editBusy">{{ t('common.confirm') }}</button>
+              </div>
+            </footer>
           </form>
         </div>
+        </Teleport>
 
         <!-- 拉取上游模型结果（gap P2-D）：缺失/多余/未定价差集 -->
         <div v-if="fetchModelsResult" class="modal-backdrop" @click.self="fetchModelsResult = null">
