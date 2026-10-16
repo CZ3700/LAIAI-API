@@ -62,6 +62,9 @@ func (s *Service) ProcessOnce(ctx context.Context) error {
 		if err := s.processSyncJobs(ctx); err != nil {
 			return err
 		}
+		if err := s.cleanupMedia(ctx); err != nil {
+			return err
+		}
 	}
 	return nil
 }

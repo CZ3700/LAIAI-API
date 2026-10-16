@@ -41,3 +41,10 @@ CREATE TABLE video_media_uploads (
  error_code VARCHAR(64) NOT NULL DEFAULT '', expires_at DATETIME(3) NOT NULL, created_at DATETIME(3) NOT NULL, updated_at DATETIME(3) NOT NULL,
  UNIQUE KEY uk_video_media_upload_idem(org_id,idempotency_hash), KEY idx_video_media_upload_expiry(status,expires_at),KEY idx_video_media_upload_org(org_id,id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Integration migration 0118 (separate from the five tables above).
+CREATE TABLE video_asset_sync_gates (
+ account_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+ version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ next_dispatch_at DATETIME(3) NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
