@@ -196,7 +196,7 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 	// A first read supports preparation before T1. A replay is still resolved
 	// under the idempotency lock before any capability or price revalidation.
 	var p createPlan
-	var execution, original *invocation.PreparedVideoPayload
+	var execution, effectiveHistory *invocation.PreparedVideoPayload
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		idem, repeat, e := claimIdempotencyTx(tx, s.Secret, key.OrgID, http.MethodPost, "/v1/video/generations", idempotency, canonical, taskID, opID, now)
 		if e != nil {
@@ -209,7 +209,7 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 			}
 			result = taskView(t, st)
 			replay = true
-			return nil
+			return s.linkCreateRequestTx(tx, key.OrgID, requestID, t, st, idem.OperationID, true)
 		}
 		var policy Policy
 		if e = tx.Where("org_id = ? AND async_execution_allowed = ?", key.OrgID, true).First(&policy).Error; e != nil {
@@ -227,7 +227,7 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		if e != nil {
 			return e
 		}
-		original, e = s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: key.OrgID, RequestID: requestID, Direction: invocation.VideoClientRequest, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: canonical, ExpiresAt: now.Add(time.Duration(policy.RetentionDays) * 24 * time.Hour), CaptureEnabled: policy.CaptureHistory})
+		effectiveHistory, e = s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: key.OrgID, RequestID: requestID, Direction: invocation.VideoEffectiveRequest, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: p.normalized.Body, ExpiresAt: now.Add(time.Duration(policy.RetentionDays) * 24 * time.Hour), CaptureEnabled: policy.CaptureHistory, CaptureRepresentation: "effective_json_redacted"})
 		if e != nil {
 			return e
 		}
@@ -268,7 +268,10 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		if e != nil {
 			return e
 		}
-		if _, e = s.Evidence.StageTx(tx, original); e != nil {
+		if _, e = s.Evidence.StageTx(tx, effectiveHistory); e != nil {
+			return e
+		}
+		if e = s.ensureClientHistoryTx(tx, key.OrgID, requestID, canonical, policy, now); e != nil {
 			return e
 		}
 		t := task.Task{TaskID: taskID, OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID, Model: in.Model, ChannelID: ch.ID, Provider: Provider, Status: "accepted", HoldID: reserved.Snapshot.HoldID, CredentialID: credentialID, EstTokens: p.quote.EstimatedTokens, PriceOutUSDPer1M: p.quote.Rule.RetailUSDPer1M, HoldAmountUSD: p.quote.HoldUSD, GroupRatio: p.quote.Metering.EffectiveRatio, SubmittedAt: now}
@@ -296,7 +299,7 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 			return e
 		}
 		result = taskView(t, st)
-		return nil
+		return s.linkCreateRequestTx(tx, key.OrgID, requestID, t, st, opID, false)
 	})
 	return result, replay, err
 }

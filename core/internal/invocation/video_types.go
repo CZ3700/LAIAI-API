@@ -49,16 +49,17 @@ const (
 // supplements structural redaction with credentials known to the caller; none
 // of those values is persisted. Disabled history captures keep metadata only.
 type VideoPayloadInput struct {
-	OrgID          uint64
-	RequestID      string
-	AttemptID      string
-	Direction      string
-	Purpose        string
-	SchemaVersion  uint32
-	Body           []byte
-	ExpiresAt      time.Time
-	CaptureEnabled bool
-	SecretValues   []string
+	OrgID                 uint64
+	RequestID             string
+	AttemptID             string
+	Direction             string
+	Purpose               string
+	SchemaVersion         uint32
+	Body                  []byte
+	ExpiresAt             time.Time
+	CaptureEnabled        bool
+	SecretValues          []string
+	CaptureRepresentation string
 }
 
 // PreparedVideoPayload owns ciphertext only. Reuse it when retrying a local
@@ -78,27 +79,28 @@ func (p *PreparedVideoPayload) PayloadID() string {
 // VideoPayload, VideoPayloadStaging and VideoPayloadAccess are internal storage
 // models, not HTTP DTOs. Their schema is documented in README.video.md.
 type VideoPayload struct {
-	PayloadID        string
-	OrgID            uint64
-	RequestID        string
-	AttemptID        string
-	CorrelationKey   string
-	Direction        string
-	Purpose          string
-	SchemaVersion    uint32
-	BodyFormat       string
-	EncryptionKeyID  string
-	WrappedKey       string
-	Nonce            []byte
-	CiphertextSHA256 string
-	PlaintextBytes   int64
-	RedactionVersion string
-	CaptureStatus    string
-	ObjectRef        string
-	CreatedAt        time.Time
-	ExpiresAt        time.Time
-	CleanupAfter     *time.Time
-	ObjectDeletedAt  *time.Time
+	PayloadID             string
+	OrgID                 uint64
+	RequestID             string
+	AttemptID             string
+	CorrelationKey        string
+	Direction             string
+	Purpose               string
+	SchemaVersion         uint32
+	BodyFormat            string
+	CaptureRepresentation string
+	EncryptionKeyID       string
+	WrappedKey            string
+	Nonce                 []byte
+	CiphertextSHA256      string
+	PlaintextBytes        int64
+	RedactionVersion      string
+	CaptureStatus         string
+	ObjectRef             string
+	CreatedAt             time.Time
+	ExpiresAt             time.Time
+	CleanupAfter          *time.Time
+	ObjectDeletedAt       *time.Time
 }
 
 func (VideoPayload) TableName() string { return "invocation_payloads" }

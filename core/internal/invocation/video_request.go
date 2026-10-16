@@ -95,6 +95,11 @@ func (s *VideoStore) RequestStartTx(tx *gorm.DB, input VideoRequestStart) error 
 		return ErrVideoStorage
 	}
 	a, b := old.VideoRequestStart, input
+	// A later authenticated capture may fill the pointer without changing the
+	// original start intent. Replaying that original empty-pointer intent is safe.
+	if b.RequestPayloadID == "" {
+		b.RequestPayloadID = a.RequestPayloadID
+	}
 	if !providedTime {
 		b.StartedAt = a.StartedAt
 	}
