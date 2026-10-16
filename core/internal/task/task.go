@@ -520,7 +520,7 @@ func (s *Service) PollOnce(ctx context.Context) {
 	// 此前固定 `Order(id) LIMIT 50` 在总在途 >50 时让尾部较新任务永远轮不到、只能靠 30min
 	// 超时误判失败退款（用户拿不到已生成的产物）。游标保证每个在途任务轮流被处理。
 	var tasks []Task
-	if err := s.DB.Where("status IN ? AND id > ?", []string{StatusQueued, StatusRunning}, s.pollCursor).
+	if err := s.DB.Where("status IN ? AND id > ? AND provider <> ?", []string{StatusQueued, StatusRunning}, s.pollCursor, "ark_official").
 		Order("id").Limit(pollBatch).Find(&tasks).Error; err != nil {
 		s.Log.Error("task poll query failed", "err", err)
 		return
@@ -824,8 +824,8 @@ func clipReason(sv string, maxBytes int) string {
 func (s *Service) sweepTimedOut() {
 	cutoff := s.Now().Add(-s.TaskTimeout)
 	var tasks []Task
-	if err := s.DB.Where("status IN ? AND submitted_at < ?",
-		[]string{StatusQueued, StatusRunning}, cutoff).Limit(100).Find(&tasks).Error; err != nil {
+	if err := s.DB.Where("status IN ? AND submitted_at < ? AND provider <> ?",
+		[]string{StatusQueued, StatusRunning}, cutoff, "ark_official").Limit(100).Find(&tasks).Error; err != nil {
 		return
 	}
 	for i := range tasks {

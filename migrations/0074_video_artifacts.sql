@@ -1,0 +1,27 @@
+-- Ark S2: durable video_artifacts
+CREATE TABLE video_artifacts (
+  org_id BIGINT UNSIGNED NOT NULL,
+  task_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+  kind VARCHAR(16) COLLATE utf8mb4_bin NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'pending',
+  object_key VARCHAR(256) NOT NULL DEFAULT '',
+  sha256 CHAR(64) NOT NULL DEFAULT '',
+  size BIGINT NOT NULL DEFAULT 0,
+  media_type VARCHAR(64) NOT NULL DEFAULT '',
+  width INT NULL,
+  height INT NULL,
+  fence BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  lease_token CHAR(32) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+  lease_until DATETIME(6) NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  error_code VARCHAR(64) NOT NULL DEFAULT '',
+  expires_at DATETIME(6) NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  deleted_at DATETIME(6) NULL,
+  cleaned_at DATETIME(6) NULL,
+  PRIMARY KEY (org_id, task_id, kind),
+  KEY ix_video_artifacts_pending (status, lease_until, updated_at),
+  KEY ix_video_artifacts_expiry (expires_at, cleaned_at),
+  KEY ix_video_artifacts_deletion (deleted_at, cleaned_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

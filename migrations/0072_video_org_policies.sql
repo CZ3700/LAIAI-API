@@ -1,0 +1,5 @@
+CREATE TABLE video_org_policies (
+ org_id BIGINT UNSIGNED PRIMARY KEY, async_execution_allowed BOOLEAN NOT NULL DEFAULT FALSE,
+ capture_history BOOLEAN NOT NULL DEFAULT FALSE, retention_days INT NOT NULL DEFAULT 30,
+ updated_at DATETIME(3) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
