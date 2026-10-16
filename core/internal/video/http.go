@@ -202,37 +202,11 @@ func (s *Service) Middleware() gin.HandlerFunc {
 					return e
 				}
 				responseRef := ""
-				if !stream && key != nil && buffered.body.Len() > 0 {
-					var policy Policy
-					e := tx.Where("org_id=?", key.OrgID).First(&policy).Error
-					if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
+				if !stream && key != nil {
+					var e error
+					responseRef, e = s.captureResponseTx(tx, key.OrgID, requestID, buffered.body.Bytes())
+					if e != nil {
 						return e
-					}
-					if e == nil && policy.CaptureHistory {
-						if policy.RetentionDays < 1 || policy.RetentionDays > 30 {
-							return ErrCapability
-						}
-						body := buffered.body.Bytes()
-						// The one-use H5 secret belongs exclusively to its short-lived
-						// secret store, never the general response history.
-						var fields map[string]json.RawMessage
-						if json.Unmarshal(body, &fields) == nil {
-							if _, exists := fields["authorization_url"]; exists {
-								delete(fields, "authorization_url")
-								body, e = json.Marshal(fields)
-								if e != nil {
-									return e
-								}
-							}
-						}
-						payload, e := s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: key.OrgID, RequestID: requestID, Direction: invocation.VideoClientResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: body, ExpiresAt: s.Now().UTC().Add(time.Duration(policy.RetentionDays) * 24 * time.Hour), CaptureEnabled: true, CaptureRepresentation: "response_json_redacted"})
-						if e != nil {
-							return e
-						}
-						responseRef, e = s.Evidence.StageTx(tx, payload)
-						if e != nil {
-							return e
-						}
 					}
 				}
 				return s.Evidence.RequestFinishTx(tx, invocation.VideoRequestFinish{RequestID: requestID, OrgID: start.OrgID, HTTPStatus: status, ResponseBytes: int64(size), ResponsePayloadID: responseRef, SafeErrorCode: c.GetString("video_error"), Outcome: outcome, FinishedAt: s.Now().UTC()})

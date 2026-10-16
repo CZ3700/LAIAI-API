@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { api, errorMessage } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
 import HistoryJSON from './HistoryJSON.vue'
+import MeteringFacts from './MeteringFacts.vue'
 import { useSeedanceI18n } from './messages'
 import type { BodyInfo, BodyRead, ExecutionRow, LogDetail, LogRow, Page } from './types'
 
@@ -157,8 +158,10 @@ onBeforeUnmount(() => { listVersion++; close() })
               <div v-if="detail.billing" class="grid grid-cols-2 gap-3 rounded border border-line p-4 text-sm">
                 <p>{{ t('seedance.reserved') }}: {{ detail.billing.reserved_amount }} USD</p><p>{{ t('seedance.settled') }}: {{ detail.billing.settled_amount ?? t('seedance.pending') }} USD</p><p>{{ t('seedance.released') }}: {{ detail.billing.released_amount }} USD</p><p>{{ t('seedance.net') }}: {{ detail.billing.net_charged_amount ?? t('seedance.pending') }} USD</p>
                 <p>{{ t('seedance.videoTokens') }}: {{ detail.billing.actual_usage?.completion_tokens ?? t('seedance.pending') }}</p><p>{{ t('seedance.inputTokens') }}</p><p class="break-all">{{ t('seedance.priceVersion') }}: {{ detail.billing.pricing_version }}</p><p class="break-all">{{ t('seedance.ruleVersion') }}: {{ detail.billing.billing_rule_version }}</p>
+                <p>{{ t('seedance.estimatedTokens') }}: {{ detail.billing.estimated_tokens ?? '—' }}</p><p>{{ t('seedance.unitPrice') }}: {{ detail.billing.unit_price_usd_per_1m ?? '—' }}</p>
                 <p v-for="entry in detail.billing.entries" :key="entry.entry_id" class="col-span-2">{{ entry.type }} · {{ entry.amount }} USD · {{ time(entry.created_at) }}</p>
               </div>
+              <MeteringFacts v-if="detail.billing?.metering" :value="detail.billing.metering" />
               <HistoryJSON v-if="detail.task" :body="detail.task" :name="`${selected}-current-task`" />
               <h3>{{ t('seedance.events') }}</h3><ol class="space-y-2"><li v-for="event in events" :key="event.id" class="rounded border border-line p-3 text-xs"><p>{{ event.type }} · {{ event.from_status }} → {{ event.to_status }}</p><p>{{ event.billing_state }} · {{ time(event.created_at) }}</p><p class="break-all font-mono">{{ event.request_id }}</p></li></ol><button v-if="eventsNext" type="button" class="table-link" @click="loadExecution('events', true)">{{ t('seedance.loadMore') }}</button>
             </template>

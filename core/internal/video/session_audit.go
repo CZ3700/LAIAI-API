@@ -1,10 +1,7 @@
 package video
 
 import (
-	"encoding/json"
-	"errors"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/invocation"
@@ -76,24 +73,11 @@ func (s *Service) SessionAudit(resolve func(*gin.Context) (orgID, userID uint64,
 					return e
 				}
 				ref := ""
-				if !stream && buffered.body.Len() > 0 && json.Valid(buffered.body.Bytes()) {
-					var policy Policy
-					e := tx.Where("org_id = ?", org).Take(&policy).Error
-					if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
+				if !stream {
+					var e error
+					ref, e = s.captureResponseTx(tx, org, rid, buffered.body.Bytes())
+					if e != nil {
 						return e
-					}
-					if policy.CaptureHistory {
-						if policy.RetentionDays < 1 || policy.RetentionDays > 30 {
-							return ErrCapability
-						}
-						p, e := s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: org, RequestID: rid, Direction: invocation.VideoClientResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: buffered.body.Bytes(), CaptureEnabled: true, ExpiresAt: s.Now().UTC().Add(time.Duration(policy.RetentionDays) * 24 * time.Hour), CaptureRepresentation: "response_json_redacted"})
-						if e != nil {
-							return e
-						}
-						ref, e = s.Evidence.StageTx(tx, p)
-						if e != nil {
-							return e
-						}
 					}
 				}
 				return s.Evidence.RequestFinishTx(tx, invocation.VideoRequestFinish{RequestID: rid, OrgID: &org, HTTPStatus: status, ResponseBytes: int64(size), ResponsePayloadID: ref, SafeErrorCode: c.GetString("video_error"), Outcome: outcome, FinishedAt: s.Now().UTC()})
