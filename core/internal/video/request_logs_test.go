@@ -101,7 +101,7 @@ func TestMySQLRequestLogsCaptureFailuresReplayAndHistoryBoundary(t *testing.T) {
 func TestMySQLRequestHistoryDisabledDoesNotReadExecution(t *testing.T) {
 	f := mysqlFixture(t)
 	must(t, f.s.DB.Model(&Policy{}).Where("org_id = ?", f.key.OrgID).Update("capture_history", false).Error)
-	rid, e := randomID("request_disabled_")
+	rid, e := randomID("")
 	must(t, e)
 	v, _, e := f.s.Create(context.Background(), f.key, rid, "log-disabled-1", ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "text", Text: "history disabled"}}})
 	must(t, e)
