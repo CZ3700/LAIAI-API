@@ -327,7 +327,8 @@ type PostInput struct {
 	RefType        string
 	RefID          string
 	Reason         string
-	AllowNegative  bool // 仅平台内部账户（如 platform_revenue 冲销）可置 true
+	AllowNegative  bool            // 仅平台内部账户（如 platform_revenue 冲销）可置 true
+	Correction     *CorrectionLink // only the approved video billing correction path
 }
 
 // Post 过账一笔。返回 (entry, alreadyApplied, error)。
@@ -392,6 +393,9 @@ func Post(tx *gorm.DB, in PostInput) (*JournalEntry, bool, error) {
 		}
 		return nil, false, fmt.Errorf("ledger: post affected 0 rows on account %d", in.AccountID)
 	}
+	if err := recordPost(tx, entry, in.Correction); err != nil {
+		return nil, false, err
+	}
 	return entry, false, nil
 }
 
@@ -448,6 +452,9 @@ func CreateHold(tx *gorm.DB, in HoldInput) (*Hold, bool, error) {
 	}
 	if n == 0 {
 		return nil, false, ErrInsufficientBalance // 余额不足 → 上层回滚，hold 行随之撤销
+	}
+	if err := recordHold(tx, h); err != nil {
+		return nil, false, err
 	}
 	return h, false, nil
 }
@@ -510,6 +517,9 @@ func Capture(tx *gorm.DB, holdID uint64, actual decimal.Decimal, reason string) 
 		if err := tx.Create(entry).Error; err != nil {
 			return nil, err
 		}
+	}
+	if err := recordCapture(tx, h, actual, entry); err != nil {
+		return nil, err
 	}
 	return entry, nil
 }
@@ -575,7 +585,7 @@ func Release(tx *gorm.DB, holdID uint64) error {
 	if n == 0 {
 		return fmt.Errorf("ledger: release would drive held_amount negative on account %d (invariant violation)", h.AccountID)
 	}
-	return nil
+	return recordRelease(tx, h, h.Amount, "release")
 }
 
 // SweepStuckHolds 释放超时仍 Active 的 hold（审查 H-1）。
