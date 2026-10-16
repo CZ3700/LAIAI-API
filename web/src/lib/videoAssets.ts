@@ -13,3 +13,5 @@ export async function uploadAssetFile(id:string,file:File){const token=useAuth()
 export async function assetPreview(path:string){const response=await fetch(path,{headers:{Authorization:`Bearer ${useAuth().token}`},cache:'no-store'});if(!response.ok)throw new Error('preview_unavailable');return URL.createObjectURL(await response.blob())}
 
 export interface AssetDiscovery {id:string;scope_id:string;provider_id:string;kind:string;name:string;description:string;status:string;version:number}
+
+export interface MediaUpload {id:string;media_type:string;status:string;mime?:string;bytes:number;duration_ms:number;error_code?:string;expires_at:string;created_at:string;updated_at:string}

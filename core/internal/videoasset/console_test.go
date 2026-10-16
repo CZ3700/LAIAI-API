@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"gorm.io/gorm"
 	"image"
 	"image/png"
@@ -295,6 +296,11 @@ func TestMediaUploadVerifiedFileAndTenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	*now = now.Add(2 * time.Second)
+	repeated, replayed, err := s.CreateAssetFromMedia(context.Background(), c, g.ID, upload.ID, "uploaded")
+	if err != nil || !replayed || repeated.ID != a.ID {
+		t.Fatal("signed URL changed idempotency", repeated, replayed, err)
+	}
 	if err = s.ProcessOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -310,6 +316,15 @@ func TestMediaUploadVerifiedFileAndTenantIsolation(t *testing.T) {
 	db.Model(&Asset{}).Where("org_id = ? AND immutable_object_ref = ? AND object_sha256 = ?", 1, upload.ObjectRef, upload.ObjectSHA256).Count(&count)
 	if count != 1 {
 		t.Fatal(count)
+	}
+	*now = now.Add(25 * time.Hour)
+	expiredReplay, replayed, err := s.CreateAssetFromMedia(context.Background(), c, g.ID, upload.ID, "uploaded")
+	if err != nil || !replayed || expiredReplay.ID != a.ID {
+		t.Fatal("expired upload broke replay", expiredReplay, replayed, err)
+	}
+	c.IdempotencyKey = "expired-new-registration"
+	if _, _, err = s.CreateAssetFromMedia(context.Background(), c, g.ID, upload.ID, "uploaded"); err == nil {
+		t.Fatal("expired media accepted for new registration")
 	}
 }
 func TestSyncGateSerializesSharedScopeAndLimitsAccount(t *testing.T) {
@@ -435,5 +450,69 @@ func TestMediaCleanupRetainsReferencedEvidence(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(media.root, id)); !os.IsNotExist(err) {
 			t.Fatal("orphan retained", id, err)
 		}
+	}
+}
+
+func TestUploadSessionListIsDurableAndTenantFiltered(t *testing.T) {
+	s, db, now, _ := setup(t)
+	s.console.Media = &MediaStore{}
+	ctx := context.Background()
+	for i := 0; i < 4; i++ {
+		c := createContext(fmt.Sprintf("list-upload-%d", i))
+		if i == 3 {
+			c.OrgID = 2
+		}
+		u, err := s.BeginUpload(ctx, c, "image")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 1 {
+			db.Model(&Upload{}).Where("id = ?", u.ID).Updates(map[string]any{"status": "failed", "error_code": "media_verification_failed"})
+		}
+		if i == 2 {
+			db.Model(&Upload{}).Where("id = ?", u.ID).Updates(map[string]any{"status": "ready", "expires_at": now.Add(-time.Second)})
+		}
+	}
+	p, err := s.ListUploads(ctx, 1, ListFilter{Limit: 1})
+	if err != nil || p.Total != 3 || len(p.Data) != 1 || p.NextCursor == "" {
+		t.Fatal(p, err)
+	}
+	second, err := s.ListUploads(ctx, 1, ListFilter{Limit: 1, Cursor: p.NextCursor})
+	if err != nil || second.Data[0].ID == p.Data[0].ID {
+		t.Fatal(second, err)
+	}
+	if _, err = s.ListUploads(ctx, 2, ListFilter{Limit: 1, Cursor: p.NextCursor}); err != ErrInvalid {
+		t.Fatal("cursor crossed org", err)
+	}
+	failed, err := s.ListUploads(ctx, 1, ListFilter{Limit: 10, Status: "failed"})
+	if err != nil || failed.Total != 1 || failed.Data[0].ErrorCode != "media_verification_failed" {
+		t.Fatal(failed, err)
+	}
+	expired, err := s.ListUploads(ctx, 1, ListFilter{Limit: 10, Status: "expired"})
+	if err != nil || expired.Total != 1 || expired.Data[0].Status != "expired" {
+		t.Fatal(expired, err)
+	}
+	if _, err = s.ListUploads(ctx, 1, ListFilter{Limit: 1, Status: "failed", Cursor: p.NextCursor}); err != ErrInvalid {
+		t.Fatal("cursor crossed filter", err)
+	}
+}
+func TestDiscoveryCursorReachesBeyondFirstHundred(t *testing.T) {
+	s, db, now, _ := setup(t)
+	for i := 0; i < 105; i++ {
+		d := Discovery{ID: fmt.Sprintf("ad_%03d", i), ScopeID: "scope1", ScopeVersion: 1, AccountID: "account1", Region: "cn-beijing", Project: "project1", ProviderID: fmt.Sprintf("provider-%03d", i), Kind: KindVirtual, Name: "discovered", Status: "unassigned", Version: 1, CreatedAt: *now, UpdatedAt: *now}
+		if err := db.Create(&d).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := s.DiscoveryPage(context.Background(), "scope1", 100, "")
+	if err != nil || first.Total != 105 || len(first.Data) != 100 || first.NextCursor == "" {
+		t.Fatal(first, err)
+	}
+	second, err := s.DiscoveryPage(context.Background(), "scope1", 100, first.NextCursor)
+	if err != nil || len(second.Data) != 5 || second.Data[0].ID != "ad_100" || second.NextCursor != "" {
+		t.Fatal(second, err)
+	}
+	if _, err = s.DiscoveryPage(context.Background(), "scope2", 100, first.NextCursor); err != ErrInvalid {
+		t.Fatal("cursor crossed scope", err)
 	}
 }

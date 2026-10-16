@@ -281,6 +281,18 @@ func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 		}
 		c.JSON(201, out)
 	})
+	g.GET("/media-uploads", func(c *gin.Context) {
+		a, ok := s.assetConsoleCaller(c, false)
+		if !ok {
+			return
+		}
+		out, err := s.video.Assets.ListUploads(c.Request.Context(), a.OrgID, assetConsoleFilter(c))
+		if err != nil {
+			assetConsoleError(c, err)
+			return
+		}
+		c.JSON(200, out)
+	})
 	g.GET("/media-uploads/:id", func(c *gin.Context) {
 		a, ok := s.assetConsoleCaller(c, false)
 		if !ok {
@@ -421,12 +433,13 @@ func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 			fail(c, 503, "video gateway unavailable")
 			return
 		}
-		out, e := s.video.Assets.ListDiscoveries(c.Request.Context(), c.Query("scope_id"))
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "30"))
+		out, e := s.video.Assets.DiscoveryPage(c.Request.Context(), c.Query("scope_id"), limit, c.Query("cursor"))
 		if e != nil {
 			assetConsoleError(c, e)
 			return
 		}
-		c.JSON(200, gin.H{"data": out})
+		c.JSON(200, out)
 	})
 	ag.POST("/asset-discoveries/:id/assign", func(c *gin.Context) {
 		actor, ok := s.videoAdminActor(c)

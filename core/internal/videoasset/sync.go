@@ -37,8 +37,8 @@ type SyncJob struct {
 	OrgID                                           uint64     `json:"-"`
 	ScopeID                                         string     `json:"scope_id"`
 	ScopeVersion                                    uint64     `json:"-"`
-	AccountID                                       string     `json:"account_id"`
-	Region                                          string     `json:"region"`
+	AccountID                                       string     `json:"-"`
+	Region                                          string     `json:"-"`
 	Project                                         string     `json:"project"`
 	Mode                                            string     `json:"mode"`
 	Kind                                            string     `json:"kind"`
@@ -143,15 +143,42 @@ func (s *Service) GetSyncJob(ctx context.Context, org uint64, id string, admin b
 	}
 	return out, nil
 }
-func (s *Service) ListDiscoveries(ctx context.Context, scope string) ([]Discovery, error) {
-	var out []Discovery
-	if !validID(scope) {
-		return nil, ErrInvalid
+
+type DiscoveryPage struct {
+	Data       []Discovery `json:"data"`
+	Total      int64       `json:"total"`
+	NextCursor string      `json:"next_cursor,omitempty"`
+}
+
+// Administrative discovery is scope-bound; HTTP callers must be named superadmins.
+func (s *Service) DiscoveryPage(ctx context.Context, scope string, limit int, cursor string) (DiscoveryPage, error) {
+	out := DiscoveryPage{Data: []Discovery{}}
+	if !validID(scope) || limit < 1 || limit > 100 {
+		return out, ErrInvalid
 	}
-	if s.db.WithContext(ctx).Where("scope_id = ? AND status = ?", scope, "unassigned").Order("id").Limit(100).Find(&out).Error != nil {
-		return nil, ErrStorage
+	after, err := s.parseCursor(0, "discoveries:"+scope, cursor)
+	if err != nil {
+		return out, err
+	}
+	q := s.db.WithContext(ctx).Model(&Discovery{}).Where("scope_id = ? AND status = ?", scope, "unassigned")
+	if q.Count(&out.Total).Error != nil {
+		return out, ErrStorage
+	}
+	if after != "" {
+		q = q.Where("id > ?", after)
+	}
+	if q.Order("id").Limit(limit+1).Find(&out.Data).Error != nil {
+		return out, ErrStorage
+	}
+	if len(out.Data) > limit {
+		out.Data = out.Data[:limit]
+		out.NextCursor = s.cursor(0, "discoveries:"+scope, out.Data[limit-1].ID)
 	}
 	return out, nil
+}
+func (s *Service) ListDiscoveries(ctx context.Context, scope string) ([]Discovery, error) {
+	page, err := s.DiscoveryPage(ctx, scope, 100, "")
+	return page.Data, err
 }
 func (s *Service) AssignDiscovery(ctx context.Context, c CreateContext, id string, version uint64, evidence string) (GroupDTO, error) {
 	if !validCreate(c) || !validID(evidence) {
