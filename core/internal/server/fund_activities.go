@@ -24,7 +24,6 @@ func (s *Server) registerFundActivities(org *gin.RouterGroup) {
 	org.GET("/fund-activities", s.listFundActivities)
 	org.GET("/fund-activities/:id", s.getFundActivity)
 	org.GET("/fund-summary", s.getFundSummary)
-	org.GET("/fund-exports", s.exportFundActivities)
 	org.POST("/fund-exports", s.createFundExport)
 	org.GET("/fund-exports/:id", s.getFundExport)
 	org.GET("/fund-exports/:id/download", s.downloadFundExport)
@@ -203,42 +202,6 @@ func fundCSVSafe(s string) string {
 	}
 	return s
 }
-func (s *Server) exportFundActivities(c *gin.Context) {
-	f, e := fundFilter(c, 1000)
-	if e != nil {
-		fail(c, 422, "invalid activity filters")
-		return
-	}
-	org := mustClaims(c).OrgID
-	rows, e := ledger.ListMovements(s.db, org, f)
-	if e != nil {
-		fail(c, 503, "export unavailable")
-		return
-	}
-	var b bytes.Buffer
-	w := csv.NewWriter(&b)
-	_ = w.Write([]string{"id", "operation_id", "occurred_at", "recorded_at", "type", "direction", "status", "currency", "amount", "posted_delta", "held_delta", "available_delta", "ref_type", "ref_id", "quality", "original_journal_id", "original_hold_id", "correction_proposal_id", "correction_review_id"})
-	for _, r := range rows {
-		occurred := ""
-		if r.OccurredAt != nil {
-			occurred = r.OccurredAt.Format(time.RFC3339)
-		}
-		_ = w.Write([]string{fmt.Sprint(r.ID), fmt.Sprint(r.OperationID), occurred, r.CreatedAt.Format(time.RFC3339), fundCSVSafe(r.Type), r.Direction, r.Status, r.Currency, r.Amount.String(), r.PostedDelta.String(), r.HeldDelta.String(), r.AvailableDelta.String(), fundCSVSafe(r.RefType), fundCSVSafe(r.RefID), r.Quality, fundOptionalID(r.OriginalJournalID), fundOptionalID(r.OriginalHoldID), fundOptionalID(r.CorrectionProposalID), fundOptionalID(r.CorrectionReviewID)})
-	}
-	w.Flush()
-	if w.Error() != nil {
-		fail(c, 503, "export unavailable")
-		return
-	}
-	// JSON transport permits authenticated downloads through the existing API
-	// helper; the caller saves csv verbatim and can continue with next_before.
-	var next uint64
-	if len(rows) == 1000 {
-		next = rows[len(rows)-1].ID
-	}
-	c.JSON(200, gin.H{"filename": "fund-movements.csv", "csv": b.String(), "rows": len(rows), "next_before": next, "limit": 1000})
-}
-
 func fundOptionalID(v *uint64) string {
 	if v == nil {
 		return ""

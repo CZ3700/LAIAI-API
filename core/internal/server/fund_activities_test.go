@@ -117,11 +117,10 @@ func TestFundActivitiesTenantSummaryAndExport(t *testing.T) {
 	if !found {
 		t.Fatal("debit missing")
 	}
-	body = fundCall(t, r, "/api/fund-exports", "10", 200)
-	var csv string
-	_ = json.Unmarshal(body["csv"], &csv)
-	if !strings.Contains(csv, "'=1+1") {
-		t.Fatal("CSV formula not escaped", csv)
+	preview := httptest.NewRecorder()
+	r.ServeHTTP(preview, httptest.NewRequest("GET", "/api/fund-exports", nil))
+	if preview.Code != 404 {
+		t.Fatal("synchronous export bypass remains")
 	}
 	fundCall(t, r, "/api/fund-activities?direction=invalid", "10", 422)
 	fundCall(t, r, "/api/fund-summary?from=not-a-date", "10", 422)
@@ -192,6 +191,9 @@ func TestFundExportSnapshotReplayResumeAndExpiry(t *testing.T) {
 	db.First(&stored, job.ID)
 	if stored.Status != "success" || stored.RowCount != 4 || strings.Contains(stored.CSVData, "later-credit") {
 		t.Fatalf("snapshot exported wrong rows %#v", stored)
+	}
+	if !strings.Contains(stored.CSVData, "'=1+1") {
+		t.Fatal("CSV formula not escaped")
 	}
 	path := fmt.Sprintf("/api/fund-exports/%d", job.ID)
 	fundCall(t, r, path, "20", 404)
