@@ -1,6 +1,6 @@
 # Ark 视频网关交付记录
 
-更新：2026-10-16。基线 `e4eb84f`，最终代码验证提交 `5212f4e`。开发、测试和分支提交已完成；所有 PR 保持开放供评审，未合并 main、未部署生产、未发起火山真实付费调用。
+更新：2026-10-16。基线 `e4eb84f`，集成代码验证提交 `5212f4e`；后续本地官方验收修复验证提交 `f3d2d92`。开发、测试和分支提交已完成；所有 PR 保持开放供评审，未合并 main、未部署生产。两模型真实文本出片、Token 结算和私有下载已通过，按官方 usage/刊例价计算合计 4.5008 CNY；详见[真实冒烟记录](ark-official-smoke-2026-10-16.md)，不代表官方账单或全部素材能力已完成验收。
 
 ## 阶段与对应 PR
 
@@ -18,6 +18,8 @@
 | S3-B | 12 个账单管理入口及来源复核 | codex/ark-billing-admin | [#10](https://github.com/CZ3700/LAIAI-API/pull/10) |
 | S3-C | 未知结果、回执顺序、转存、通知、锁序 | codex/ark-s3-hardening | [#11](https://github.com/CZ3700/LAIAI-API/pull/11) |
 | 最终集成 | 公开及管理路由、运行调度、配置/预算不变式、全链路 | codex/ark-integration | [#12](https://github.com/CZ3700/LAIAI-API/pull/12) |
+| 本地界面修复 | 渠道编辑尺寸、滚动正文及可见操作区 | codex/channel-dialog-layout | [#13](https://github.com/CZ3700/LAIAI-API/pull/13) |
+| 官方真实验收 | 参数及时区兼容、真实出片与账务核验 | codex/ark-smoke-validation | [#14](https://github.com/CZ3700/LAIAI-API/pull/14) |
 
 各阶段使用独立 worktree，各自文件所有权及提交保留。S3 分支重排到共同依赖，避免重复共享 helper 改动；`#11` 依赖 `#9`。`#12` 是面向 main 的最终聚合候选，包含阶段实现以及最后的集成修复。建议先按组件评审，再评审聚合差异；不能把同一变更重复 cherry-pick/merge。任何合并及部署仍由评审后的发布流程处理。
 
