@@ -24,7 +24,12 @@ func fileMetadata(data []byte) Metadata {
 
 func filesystemStore(t *testing.T) (*FilesystemBlobStore, string) {
 	t.Helper()
-	root := t.TempDir()
+	// TempDir's numbered child uses 0777 subject to umask, not the private
+	// permissions required for a production artifact volume on Unix.
+	root := filepath.Join(t.TempDir(), "private-artifacts")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	store, err := NewFilesystemBlobStore(root)
 	if err != nil {
 		t.Fatal(err)
