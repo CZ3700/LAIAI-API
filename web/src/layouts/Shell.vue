@@ -33,11 +33,12 @@ const icons = {
   diag: 'm21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z',
 }
 
-type NavItem = { to: string; label: string; icon: keyof typeof icons; admin?: boolean }
+type NavItem = { to: string; label: string; icon: keyof typeof icons; admin?: boolean; superadmin?: boolean }
 const sections: { title: string; items: NavItem[] }[] = [
   { title: 'shell.groupWorkspace', items: [
     { to: '/app', label: 'shell.navOverview', icon: 'dashboard' },
     { to: '/app/models', label: 'shell.navModels', icon: 'model' },
+    { to: '/app/video-assets', label: 'shell.navVideoAssets', icon: 'image' },
     { to: '/app/playground', label: 'nav.playground', icon: 'chat' },
     { to: '/app/compare', label: 'nav.compare', icon: 'node' },
     { to: '/app/diagnostics', label: 'shell.navDiagnostics', icon: 'diag' },
@@ -49,6 +50,7 @@ const sections: { title: string; items: NavItem[] }[] = [
   { title: 'shell.groupUsage', items: [
     { to: '/app/usage', label: 'shell.navUsage', icon: 'dashboard' },
     { to: '/app/billing', label: 'shell.navBilling', icon: 'wallet' },
+    { to: '/app/fund-activities', label: 'shell.navFundActivities', icon: 'invoice' },
     { to: '/app/recharges', label: 'shell.navRecharges', icon: 'card' },
   ] },
   { title: 'shell.groupObservability', items: [
@@ -57,11 +59,12 @@ const sections: { title: string; items: NavItem[] }[] = [
   { title: 'shell.groupSystem', items: [
     { to: '/app/settings', label: 'shell.navSettings', icon: 'user' },
     { to: '/app/admin', label: 'shell.navAdmin', icon: 'admin', admin: true },
+    { to: '/app/video-pricing', label: 'shell.navVideoPricing', icon: 'model', superadmin: true },
   ] },
 ]
 
 const visibleSections = computed(() => sections
-  .map((s) => ({ ...s, items: s.items.filter((item) => !item.admin || auth.isAdmin) }))
+  .map((s) => ({ ...s, items: s.items.filter((item) => (!item.admin || auth.isAdmin) && (!item.superadmin || auth.isSuperadmin)) }))
   .filter((s) => s.items.length > 0))
 
 const currentTitle = computed(() => {

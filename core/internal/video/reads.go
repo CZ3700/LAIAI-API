@@ -166,6 +166,10 @@ func (s *Service) HandleBilling(c *gin.Context) {
 	var tokens *int64
 	rows := []gin.H{{"entry_id": "be_reserve_" + fmt.Sprint(snap.ID), "type": "reserve", "amount": snap.HoldUSD.StringFixed(8), "currency": "USD", "created_at": snap.CreatedAt}}
 	for _, entry := range entries {
+		if entry.State == videobilling.Released {
+			v := entry.CapturedUSD.StringFixed(8)
+			settled = &v
+		}
 		if entry.State == videobilling.Settled {
 			v := entry.CapturedUSD.StringFixed(8)
 			settled = &v
@@ -207,7 +211,7 @@ func (s *Service) HandleBilling(c *gin.Context) {
 	if st.ObservedCompletionTokens != nil || st.TotalTokens != nil {
 		usage = &UsageView{CompletionTokens: st.ObservedCompletionTokens, TotalTokens: st.TotalTokens}
 	}
-	c.JSON(200, gin.H{"task_id": id, "state": st.BillingState, "currency": "USD", "reserved_amount": snap.HoldUSD.StringFixed(8), "settled_amount": settled, "released_amount": released.StringFixed(8), "actual_usage": usage, "billable_tokens": tokens, "pricing_version": snap.RuleVersion, "billing_rule_version": snap.FormulaVersion, "pricing_snapshot": gin.H{"price_rule_id": snap.RuleID, "mode": mode, "unit": "million_video_tokens", "unit_price_usd_per_1m": snap.RetailUSDPer1M.Mul(snap.EffectiveRatio).String(), "currency": "USD", "rounding_mode": "half_up", "rounding_scale": 8}, "entries": rows})
+	c.JSON(200, gin.H{"task_id": id, "state": st.BillingState, "currency": "USD", "reserved_amount": snap.HoldUSD.StringFixed(8), "settled_amount": settled, "released_amount": released.StringFixed(8), "actual_usage": usage, "billable_tokens": tokens, "pricing_version": snap.RuleVersion, "billing_rule_version": snap.FormulaVersion, "metering": publicMetering(meter, snap.MinimumRuleVersion), "pricing_snapshot": gin.H{"price_rule_id": snap.RuleID, "mode": mode, "generation_mode": meter.Mode, "resolution": meter.Resolution, "input_video": meter.InputVideo, "service_tier": meter.ServiceTier, "draft": meter.Draft, "minimum_rule_version": snap.MinimumRuleVersion, "unit": "million_video_tokens", "unit_price_usd_per_1m": snap.RetailUSDPer1M.Mul(snap.EffectiveRatio).String(), "currency": "USD", "rounding_mode": "half_up", "rounding_scale": 8}, "entries": rows})
 }
 
 func (s *Service) HandleModels(c *gin.Context) {
@@ -235,11 +239,7 @@ func (s *Service) HandleModels(c *gin.Context) {
 		formula := ""
 		for _, p := range rules {
 			formula = p.FormulaVersion
-			mode := "without_input_video"
-			if p.InputVideo {
-				mode = "with_input_video"
-			}
-			prices = append(prices, gin.H{"price_rule_id": p.RuleID, "label": p.Resolution + "/" + mode + "/" + p.ServiceTier, "unit": "million_video_tokens", "amount": p.RetailUSDPer1M.Mul(relay.EffectiveRatio(s.DB, key.OrgID, cfg.PublicModel)).String(), "currency": "USD"})
+			prices = append(prices, publicPrice(p, p.RetailUSDPer1M.Mul(relay.EffectiveRatio(s.DB, key.OrgID, cfg.PublicModel)).String()))
 		}
 		portraitAssets := false
 		if s.Assets != nil {

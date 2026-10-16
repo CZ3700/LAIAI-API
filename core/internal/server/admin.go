@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,7 +128,7 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 	//   add=授信(+) / subtract=扣减(-) / override=订正到目标值(delta=目标-当前，正补负扣)
 	var applied, noop bool
 	var balanceAfter decimal.Decimal
-	err = s.db.Transaction(func(tx *gorm.DB) error {
+	adjust := func(tx *gorm.DB) error {
 		acc, err := ledger.EnsureAccount(tx, req.OrgID, ledger.AccountUserCredit) // 主分片（shard 0），调账落点
 		if err != nil {
 			return err
@@ -179,13 +181,50 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 		}
 		balanceAfter = posted
 		return nil
-	})
+	}
+	if ledger.ActivityTrackingEnabled(s.db) && (mode == "add" || mode == "subtract" || mode == "override") {
+		direction, activityType := "credit", "admin_credit"
+		requested := amount
+		if mode == "subtract" {
+			direction, activityType = "debit", "admin_debit"
+		} else if mode == "override" {
+			// The actual delta is only known after locking all account shards.
+			direction, activityType, requested = "", "admin_adjustment", decimal.Zero
+		}
+		fingerprintBody, _ := json.Marshal([]string{mode, amount.String(), req.Reason})
+		fingerprint := sha256.Sum256(fingerprintBody)
+		executed := false
+		_, err = ledger.RunOperation(s.db.WithContext(c.Request.Context()), ledger.OperationIntent{
+			OrgID: req.OrgID, IdempotencyKey: "admin-adjust:" + req.IdempotencyKey,
+			Type: activityType, Direction: direction, RequestedAmount: requested,
+			RequestFingerprint: hex.EncodeToString(fingerprint[:]),
+			RefType:            "admin_adjustment", RefID: req.IdempotencyKey,
+		}, func(tx *gorm.DB) error {
+			executed = true
+			return adjust(tx)
+		})
+		if err == nil && !executed {
+			applied = true
+			balanceAfter, _, err = ledger.OrgBalances(s.db, req.OrgID, ledger.AccountUserCredit)
+		}
+	} else {
+		err = s.db.Transaction(adjust)
+	}
 	switch {
 	case errors.Is(err, errBadAdjustMode):
 		fail(c, http.StatusBadRequest, "mode must be add, subtract or override")
 		return
 	case errors.Is(err, ledger.ErrInsufficientBalance):
 		fail(c, http.StatusConflict, "insufficient available balance for this adjustment")
+		return
+	case errors.Is(err, ledger.ErrOperationPending):
+		fail(c, http.StatusConflict, "adjustment outcome is pending reconciliation")
+		return
+	case errors.Is(err, ledger.ErrOperationConflict):
+		fail(c, http.StatusConflict, "idempotency key belongs to another adjustment")
+		return
+	case errors.Is(err, ledger.ErrOperationFailed):
+		fail(c, http.StatusConflict, "previous adjustment failed; use a new key for an explicit new attempt")
 		return
 	case err != nil:
 		fail(c, http.StatusInternalServerError, "adjustment failed")
@@ -379,20 +418,20 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 }
 
 type updateChannelReq struct {
-	BaseURL        *string            `json:"base_url"`
-	APIKey         *string            `json:"api_key"` // 省略=不改凭证
-	Models         []string           `json:"models"`
-	Weight         *int               `json:"weight"`
-	Priority       *int               `json:"priority"`
-	StrictResponse *bool              `json:"strict_response"`
-	ModelMapping   *map[string]string `json:"model_mapping"`   // 指针区分"不改"与"清空"
-	Proxy          *string            `json:"proxy"`           // 指针区分"不改"与"清空代理"
-	ParamOverride  *string            `json:"param_override"`  // 指针区分"不改"与"清空"（0033）
-	HeaderOverride *string            `json:"header_override"` // 同上
-	CredentialMode *string            `json:"credential_mode"` // random|polling|weighted（0034）
-	Converter        *string          `json:"converter"`          // 格式转换器（0036）
-	UpstreamPath     *string          `json:"upstream_path"`      // 自定义端点路径（0036）
-	ModelSyncEnabled *bool            `json:"model_sync_enabled"` // 周期自动检测上游模型（0037）
+	BaseURL          *string            `json:"base_url"`
+	APIKey           *string            `json:"api_key"` // 省略=不改凭证
+	Models           []string           `json:"models"`
+	Weight           *int               `json:"weight"`
+	Priority         *int               `json:"priority"`
+	StrictResponse   *bool              `json:"strict_response"`
+	ModelMapping     *map[string]string `json:"model_mapping"`      // 指针区分"不改"与"清空"
+	Proxy            *string            `json:"proxy"`              // 指针区分"不改"与"清空代理"
+	ParamOverride    *string            `json:"param_override"`     // 指针区分"不改"与"清空"（0033）
+	HeaderOverride   *string            `json:"header_override"`    // 同上
+	CredentialMode   *string            `json:"credential_mode"`    // random|polling|weighted（0034）
+	Converter        *string            `json:"converter"`          // 格式转换器（0036）
+	UpstreamPath     *string            `json:"upstream_path"`      // 自定义端点路径（0036）
+	ModelSyncEnabled *bool              `json:"model_sync_enabled"` // 周期自动检测上游模型（0037）
 }
 
 // adminUpdateChannel：PUT /api/admin/channels/:id —— 编辑渠道（部署冒烟暴露的高频缺口）。

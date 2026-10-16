@@ -343,7 +343,7 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			p.ProviderScopeID = scope.ID
 			p.SourceHash = in.EvidenceHash
 			p.Enabled = true
-			if p.EffectiveFrom.IsZero() || p.EffectiveFrom.After(now) || (p.EffectiveUntil != nil && !p.EffectiveUntil.After(now)) || p.ServiceTier != "default" || (p.Mode != "generate" && p.Mode != "edit" && p.Mode != "extend") || !videoContains(cap.Resolutions, p.Resolution) || (p.Draft && !cap.Draft) || (p.InputVideo && (!cap.VideoInput || cfg.MaxInputVideoDurationMS <= 0)) {
+			if p.EffectiveFrom.IsZero() || p.EffectiveFrom.After(now) || (p.EffectiveUntil != nil && !p.EffectiveUntil.After(now)) || !priceCellSupported(pricingCell{Mode: p.Mode, Resolution: p.Resolution, InputVideo: p.InputVideo, ServiceTier: p.ServiceTier, Draft: p.Draft}, cap) || (p.InputVideo && cfg.MaxInputVideoDurationMS <= 0) {
 				return video.ErrInvalid
 			}
 			priceKey := fmt.Sprintf("%s/%s/%t/%s/%t", p.Mode, p.Resolution, p.InputVideo, p.ServiceTier, p.Draft)
@@ -358,8 +358,11 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			input := int64(0)
 			if p.InputVideo {
 				input = cfg.MaxInputVideoDurationMS
+				if e := videobilling.ValidateMinimumCoverageTx(tx, p, videobilling.MinimumContext{Resolution: p.Resolution, Ratios: cap.Ratios, MinDuration: cap.MinDuration, MaxDuration: cap.MaxDuration}, int64(cap.FPS)); e != nil {
+					return e
+				}
 			}
-			_, e := videobilling.Quote(p, videobilling.MeteringInput{InputVideo: p.InputVideo, InputDurationMS: input, OutputDurationMS: int64(cap.MaxDuration) * 1000, Width: dimension.Width, Height: dimension.Height, FPSNumerator: int64(cap.FPS), FPSDenominator: 1, BoundsVerified: true, CapabilityVersion: cap.Version, EffectiveRatio: decimal.NewFromInt(1), FXUSDPerCNY: fx, FXVersion: scope.FXVersion, FXObservedAt: scope.FXObservedAt})
+			_, e := videobilling.QuoteWithMinimumTx(tx, p, videobilling.MeteringInput{InputVideo: p.InputVideo, InputDurationMS: input, OutputDurationMS: int64(cap.MaxDuration) * 1000, Width: dimension.Width, Height: dimension.Height, FPSNumerator: int64(cap.FPS), FPSDenominator: 1, BoundsVerified: true, CapabilityVersion: cap.Version, EffectiveRatio: decimal.NewFromInt(1), FXUSDPerCNY: fx, FXVersion: scope.FXVersion, FXObservedAt: scope.FXObservedAt}, videobilling.MinimumContext{Resolution: p.Resolution, Ratio: cap.DefaultRatio})
 			if e != nil {
 				return e
 			}

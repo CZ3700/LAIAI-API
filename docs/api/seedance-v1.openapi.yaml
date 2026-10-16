@@ -1206,6 +1206,10 @@ components:
         guaranteed_price:
           type: boolean
           const: false
+        metering:
+          $ref: '#/components/schemas/ReservationMetering'
+        price:
+          $ref: '#/components/schemas/VideoPrice'
     ModelInfo:
       type: object
       additionalProperties: false
@@ -1254,23 +1258,88 @@ components:
           type: array
           description: 本组织客户售价规则，不是火山账单价格或平台采购成本。
           items:
-            type: object
-            additionalProperties: false
-            required: [price_rule_id, label, unit, amount, currency]
-            properties:
-              price_rule_id:
-                type: string
-              label:
-                type: string
-                description: 展示标签，当前为分辨率/输入视频场景/服务档；不作为唯一计价键，完整请求应先调用 estimates。
-              unit:
-                type: string
-                const: million_video_tokens
-              amount:
-                $ref: '#/components/schemas/PriceAmount'
-              currency:
-                type: string
-                const: USD
+            $ref: '#/components/schemas/VideoPrice'
+    VideoPrice:
+      type: object
+      additionalProperties: false
+      required: [price_rule_id, label, mode, resolution, input_video, service_tier, draft, unit, amount, currency, minimum_rule_version]
+      properties:
+        price_rule_id:
+          type: string
+        label:
+          type: string
+          description: 仅用于展示。计价键使用结构化字段，完整请求先调用 estimates。
+        mode:
+          type: string
+          enum: [generate, edit, extend, draft_conversion]
+        resolution:
+          type: string
+          enum: [480p, 720p, 1080p, 4k]
+        input_video:
+          type: boolean
+        service_tier:
+          type: string
+        draft:
+          type: boolean
+        minimum_rule_version:
+          type: string
+        unit:
+          type: string
+          const: million_video_tokens
+        amount:
+          $ref: '#/components/schemas/PriceAmount'
+        currency:
+          type: string
+          const: USD
+    ReservationMetering:
+      type: object
+      additionalProperties: false
+      description: 创建时预冻结的计量依据，不等于官方实际 usage。历史未记录的维度为空，时长来源 unknown，视频数量 null；不回填猜测值。
+      properties:
+        mode:
+          type: string
+        resolution:
+          type: string
+        ratio:
+          type: string
+        service_tier:
+          type: string
+        draft:
+          type: boolean
+        input_video:
+          type: boolean
+        input_video_count:
+          type: [integer, 'null']
+          minimum: 0
+        input_duration_ms:
+          type: integer
+        input_duration_source:
+          type: string
+          enum: [none, verified_media, configured_upper_bound, draft_inherited, unknown]
+        output_duration_ms:
+          type: integer
+        output_frames:
+          type: integer
+        width:
+          type: integer
+        height:
+          type: integer
+        fps_numerator:
+          type: integer
+        fps_denominator:
+          type: integer
+        minimum_tokens:
+          type: integer
+        minimum_rule_version:
+          type: string
+        capability_version:
+          type: string
+        input_token_semantics:
+          type: string
+          const: official_zero_not_separately_metered
+        usage_semantics:
+          type: string
+          const: reservation_upper_bound
     Billing:
       type: object
       additionalProperties: false
@@ -1302,6 +1371,8 @@ components:
           type: string
         billing_rule_version:
           type: string
+        metering:
+          $ref: '#/components/schemas/ReservationMetering'
         pricing_snapshot:
           type: object
           additionalProperties: false
@@ -1319,6 +1390,18 @@ components:
               type: string
               enum: [without_input_video, with_input_video]
               description: 客户销售价所选计费场景；判定依据规范化请求及实际计量规则。
+            generation_mode:
+              type: string
+            resolution:
+              type: string
+            input_video:
+              type: boolean
+            service_tier:
+              type: string
+            draft:
+              type: boolean
+            minimum_rule_version:
+              type: string
             unit:
               type: string
               const: million_video_tokens

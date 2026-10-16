@@ -70,6 +70,15 @@ func assetConsoleFilter(c *gin.Context) videoasset.ListFilter {
 // named actor, so a break-glass root token cannot silently claim external groups.
 func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 	g := org.Group("/video")
+	media := mediaOrg.Group("/video")
+	if s.video != nil {
+		audit := s.video.SessionAudit(func(c *gin.Context) (uint64, uint64, error) {
+			claims := mustClaims(c)
+			return claims.OrgID, claims.UserID, nil
+		})
+		g.Use(audit)
+		media.Use(audit)
+	}
 	g.GET("/asset-capabilities", func(c *gin.Context) {
 		a, ok := s.assetConsoleCaller(c, false)
 		if !ok {
@@ -305,7 +314,7 @@ func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 		}
 		c.JSON(200, out)
 	})
-	mediaOrg.POST("/video/media-uploads/:id/complete", func(c *gin.Context) {
+	media.POST("/media-uploads/:id/complete", func(c *gin.Context) {
 		a, ok := s.assetConsoleCaller(c, true)
 		if !ok {
 			return

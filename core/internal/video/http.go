@@ -395,7 +395,7 @@ func (s *Service) HandleEstimate(c *gin.Context) {
 		respondError(c, e)
 		return
 	}
-	c.JSON(200, gin.H{"model": in.Model, "estimated_tokens": q.EstimatedTokens, "maximum_reserved_tokens": q.EstimatedTokens, "estimated_amount": q.HoldUSD.StringFixed(8), "reserved_amount": q.HoldUSD.StringFixed(8), "currency": "USD", "capability_version": q.Metering.CapabilityVersion, "pricing_version": q.Rule.Version, "billing_rule_version": q.Rule.FormulaVersion, "guaranteed_price": false})
+	c.JSON(200, gin.H{"model": in.Model, "estimated_tokens": q.EstimatedTokens, "maximum_reserved_tokens": q.EstimatedTokens, "estimated_amount": q.HoldUSD.StringFixed(8), "reserved_amount": q.HoldUSD.StringFixed(8), "currency": "USD", "capability_version": q.Metering.CapabilityVersion, "pricing_version": q.Rule.Version, "billing_rule_version": q.Rule.FormulaVersion, "metering": publicMetering(q.Metering, q.Rule.MinimumRuleVersion), "price": publicPrice(q.Rule, q.Rule.RetailUSDPer1M.Mul(q.Metering.EffectiveRatio).String()), "guaranteed_price": false})
 }
 
 // LegacyCreate selects the existing adapter for other model families. Any

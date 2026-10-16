@@ -346,12 +346,19 @@ func TestMySQLRawVideoUsesAggregateUpperBound(t *testing.T) {
 	rule.ID = 0
 	rule.RuleID, _ = randomID("")
 	rule.InputVideo = true
-	rule.MinimumRuleVersion = "fixture-minimum-rule"
+	rule.MinimumRuleVersion = "fixture-" + rule.RuleID
 	must(t, f.s.DB.Create(&rule).Error)
 	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "video_url", VideoURL: &ark.MediaReference{URL: "https://public.example/one.mp4"}}, {Type: "video_url", VideoURL: &ark.MediaReference{URL: "https://public.example/two.mp4"}}}}
+	if _, err := f.s.Estimate(f.key.OrgID, in); !errors.Is(err, videobilling.ErrPricingUnavailable) {
+		t.Fatalf("missing versioned minimum evidence must reject admission: %v", err)
+	}
+	must(t, f.s.DB.Transaction(func(tx *gorm.DB) error {
+		_, err := videobilling.PublishMinimumTx(tx, videobilling.MinimumRuleSet{Model: ark.Model20, Version: rule.MinimumRuleVersion, SourceURL: "https://docs.volcengine.com/fixture-only", EvidenceHash: strings.Repeat("a", 64), ObservedAt: f.now, VerifiedAt: f.now, VerifiedBy: 77}, []videobilling.MinimumRuleCell{{Resolution: "720p", Ratio: "16:9", OutputDurationMS: 5000, FPS: 24, MinimumTokens: 1000000}})
+		return err
+	}))
 	quote, err := f.s.Estimate(f.key.OrgID, in)
 	must(t, err)
-	if quote.Metering.InputDurationMS != 15000 {
+	if quote.Metering.InputDurationMS != 15000 || quote.Metering.InputDurationSource != "configured_upper_bound" || quote.Metering.InputVideoCount == nil || *quote.Metering.InputVideoCount != 2 || quote.EstimatedTokens != 1000000 || quote.Metering.MinimumTokens != 1000000 {
 		t.Fatal("unknown raw inputs did not use aggregate bound")
 	}
 	media := assetTestMedia(f)
@@ -359,7 +366,7 @@ func TestMySQLRawVideoUsesAggregateUpperBound(t *testing.T) {
 	in.Content = []ark.ContentItem{{Type: "video_url", VideoURL: &ark.MediaReference{URL: media.ClientURL}}}
 	quote, err = f.s.Estimate(f.key.OrgID, in)
 	must(t, err)
-	if quote.Metering.InputDurationMS != 4000 {
+	if quote.Metering.InputDurationMS != 4000 || quote.Metering.InputDurationSource != "verified_media" || quote.Metering.InputVideoCount == nil || *quote.Metering.InputVideoCount != 1 {
 		t.Fatal("registered input did not use measured duration")
 	}
 	must(t, f.s.DB.Model(&ModelConfig{}).Where("public_model = ?", ark.Model20).Update("max_input_video_duration_ms", 0).Error)

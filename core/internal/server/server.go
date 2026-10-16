@@ -23,12 +23,13 @@ import (
 )
 
 type Options struct {
-	AuthSecret   []byte               // session token HMAC（必填）
-	AdminToken   []byte               // X-Admin-Token；空 = admin API 整组禁用
-	Keyring      *crypto.Keyring      // 渠道凭证信封加密；nil = 渠道管理禁用
-	Recorder     *invocation.Recorder // 调用记录；nil = relay 不记录
-	TaskService  *task.Service        // 异步任务服务；nil = 按默认构造（main 传入以共享轮询实例）
-	VideoService *video.Service
+	AuthSecret       []byte               // session token HMAC（必填）
+	AdminToken       []byte               // X-Admin-Token；空 = admin API 整组禁用
+	Keyring          *crypto.Keyring      // 渠道凭证信封加密；nil = 渠道管理禁用
+	Recorder         *invocation.Recorder // 调用记录；nil = relay 不记录
+	TaskService      *task.Service        // 异步任务服务；nil = 按默认构造（main 传入以共享轮询实例）
+	VideoService     *video.Service
+	VideoMediaSource http.Handler // Signed, short-lived media fetches for the provider.
 	// AuthRateBurst：认证端点 per-IP 突发上限；0 = 生产默认 5。测试设大值绕开。
 	AuthRateBurst int
 	Mailer        mailer.Mailer // 邮件发送；nil = 邮件功能禁用（验证端点 503）
@@ -156,6 +157,14 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 	}
 
 	r.GET("/healthz", s.healthz)
+	if opts.VideoMediaSource != nil {
+		r.GET("/api/video/media-source/*path", gin.WrapH(opts.VideoMediaSource))
+		r.HEAD("/api/video/media-source/*path", gin.WrapH(opts.VideoMediaSource))
+	}
+	// Streaming media has a per-type limit in its handler. Keep the ordinary
+	// JSON API's 1 MiB limit and all session/membership checks intact.
+	mediaOrg := r.Group("/api", s.authRequired(), s.requireActiveUser(), s.requireActiveMembership())
+	var videoConsoleOrg *gin.RouterGroup
 
 	api := r.Group("/api")
 	api.Use(bodyLimit(controlPlaneBodyLimit)) // 控制面体上限（审查 M2）
@@ -198,7 +207,9 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 
 			// —— org-scoped（P0-1：还需 org active + 当前会话用户仍是该 org 成员）——
 			org := authed.Group("", s.requireActiveMembership())
+			videoConsoleOrg = org
 			{
+				s.registerFundActivities(org)
 				org.POST("/keys", s.requireStepUpForKeys(), s.createKey) // 受开关保护：开启则需 step-up
 				org.GET("/keys", s.listKeys)
 				org.DELETE("/keys/:id", s.revokeKey)
@@ -279,6 +290,9 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				s.registerVideoConfiguration(su)
 				s.registerArkBillingAdmin(su)
 				s.registerArkAssetAdmin(su)
+				s.registerArkAssetsConsole(videoConsoleOrg, su, mediaOrg)
+				s.registerArkPricingConsole(su)
+				s.registerArkRequestLogs(videoConsoleOrg, su)
 				// 跨租户全平台调用明细（org_id/user_id/model/cost）：限 superadmin（P2-3）
 				su.GET("/invocations", s.adminListInvocations)
 				su.POST("/credits", s.adminGrantCredit) // 授信入金（动钱）

@@ -3,8 +3,10 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,6 +26,11 @@ type Config struct {
 	VideoArtifactTemp        string
 	VideoArtifactHosts       []string
 	VideoPortraitCallbackURL string
+	VideoMediaRoot           string
+	VideoMediaPublicBaseURL  string
+	VideoMediaSigningKey     []byte
+	VideoMediaFFProbePath    string
+	VideoMediaScanCommand    []string
 	RedisAddr                string // LAIAI_REDIS_ADDR，可选（跨实例限流需要；空=退化进程内限流）
 	RedisPassword            string // LAIAI_REDIS_PASSWORD，可选（compose 的 redis 启用 requirepass）
 	// 规模化（读副本 + 连接池可调，扩容旋钮）：
@@ -147,6 +154,9 @@ func Load() (*Config, error) {
 	c.VideoArtifactRoot = os.Getenv("LAIAI_VIDEO_ARTIFACT_ROOT")
 	c.VideoArtifactTemp = os.Getenv("LAIAI_VIDEO_ARTIFACT_TEMP")
 	c.VideoPortraitCallbackURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_CALLBACK_URL")
+	if err := c.loadVideoMedia(); err != nil {
+		return nil, err
+	}
 	for _, host := range strings.Split(os.Getenv("LAIAI_VIDEO_ARTIFACT_HOSTS"), ",") {
 		if h := strings.TrimSpace(host); h != "" {
 			c.VideoArtifactHosts = append(c.VideoArtifactHosts, h)
@@ -165,6 +175,32 @@ func Load() (*Config, error) {
 	c.SMTPPassword = os.Getenv("LAIAI_SMTP_PASSWORD")
 	c.SMTPFrom = os.Getenv("LAIAI_SMTP_FROM")
 	return c, nil
+}
+
+// Media upload is optional, but a partial configuration must never silently
+// accept unscanned files or publish unsigned download URLs.
+func (c *Config) loadVideoMedia() error {
+	c.VideoMediaRoot = os.Getenv("LAIAI_VIDEO_MEDIA_ROOT")
+	c.VideoMediaPublicBaseURL = os.Getenv("LAIAI_VIDEO_MEDIA_PUBLIC_BASE_URL")
+	c.VideoMediaSigningKey = []byte(os.Getenv("LAIAI_VIDEO_MEDIA_SIGNING_KEY"))
+	c.VideoMediaFFProbePath = os.Getenv("LAIAI_VIDEO_MEDIA_FFPROBE_PATH")
+	scan := os.Getenv("LAIAI_VIDEO_MEDIA_SCAN_COMMAND")
+	if c.VideoMediaRoot == "" && c.VideoMediaPublicBaseURL == "" && len(c.VideoMediaSigningKey) == 0 && c.VideoMediaFFProbePath == "" && scan == "" {
+		return nil
+	}
+	u, err := url.Parse(c.VideoMediaPublicBaseURL)
+	if len(c.VideoHMACSecret) == 0 || !filepath.IsAbs(c.VideoMediaRoot) || len(c.VideoMediaSigningKey) < 32 || c.VideoMediaFFProbePath == "" || err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.TrimRight(u.Path, "/") != "/api/video/media-source" {
+		return fmt.Errorf("config: video media requires the video gateway, a private absolute root, signing key of 32+ bytes, ffprobe and an HTTPS /api/video/media-source base URL")
+	}
+	if err := json.Unmarshal([]byte(scan), &c.VideoMediaScanCommand); err != nil || len(c.VideoMediaScanCommand) == 0 || strings.TrimSpace(c.VideoMediaScanCommand[0]) == "" {
+		return fmt.Errorf("config: LAIAI_VIDEO_MEDIA_SCAN_COMMAND must be a non-empty JSON array of executable and arguments")
+	}
+	for _, arg := range c.VideoMediaScanCommand {
+		if strings.ContainsRune(arg, '\x00') {
+			return fmt.Errorf("config: video media scanner arguments must not contain NUL")
+		}
+	}
+	return nil
 }
 
 func getenvDefault(key, def string) string {

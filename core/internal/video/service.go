@@ -115,10 +115,24 @@ func (s *Service) plan(tx *gorm.DB, org uint64, in ark.CreateRequest) (createPla
 		duration = 0
 	}
 	inputDuration := int64(0)
+	inputSource := "none"
+	inputCount := 0
+	var inputVideoCount *int = &inputCount
 	if normalized.HasInputVideo {
+		inputSource = "verified_media"
+		for _, item := range effectiveInput.Content {
+			if item.Type == "video_url" {
+				inputCount++
+			}
+		}
 		inputDuration = resources.InputDurationMS
 		if resources.HasUnverifiedVideo {
 			inputDuration = p.config.MaxInputVideoDurationMS
+			inputSource = "configured_upper_bound"
+		}
+		if normalized.SourceDraftID != "" {
+			inputSource = "draft_inherited"
+			inputVideoCount = nil // Older draft metadata did not persist a count.
 		}
 		if inputDuration <= 0 || p.config.MaxInputVideoDurationMS > 0 && inputDuration > p.config.MaxInputVideoDurationMS {
 			return p, ErrCapability
@@ -133,6 +147,9 @@ func (s *Service) plan(tx *gorm.DB, org uint64, in ark.CreateRequest) (createPla
 	if effective.OmniReferenceTaskType == "edit" || effective.OmniReferenceTaskType == "extend" {
 		mode = effective.OmniReferenceTaskType
 	}
+	if normalized.SourceDraftID != "" {
+		mode = "draft_conversion"
+	}
 	rule, err := videobilling.ResolvePricingTx(tx, videobilling.PricingKey{ProviderScopeID: p.scope.ID, Model: in.Model, Mode: mode, Resolution: effective.Resolution, InputVideo: normalized.HasInputVideo, ServiceTier: effective.ServiceTier, Draft: effective.Draft}, s.Now().UTC())
 	if err != nil {
 		return p, err
@@ -146,7 +163,8 @@ func (s *Service) plan(tx *gorm.DB, org uint64, in ark.CreateRequest) (createPla
 	}
 	p.canonical = canonical
 	meter := videobilling.MeteringInput{InputVideo: normalized.HasInputVideo, InputDurationMS: inputDuration, OutputDurationMS: duration, OutputFrames: frames, Width: dimension.Width, Height: dimension.Height, FPSNumerator: int64(effective.FramesPerSecond), FPSDenominator: 1, BoundsVerified: cap.Verified, CapabilityVersion: cap.Version, ParentDraftTaskID: normalized.SourceDraftID, EffectiveRatio: relay.EffectiveRatio(tx, org, in.Model), FXUSDPerCNY: fx, FXVersion: p.scope.FXVersion, FXObservedAt: p.scope.FXObservedAt}
-	p.quote, err = videobilling.Quote(rule, meter)
+	meter.InputDurationSource, meter.InputVideoCount = inputSource, inputVideoCount
+	p.quote, err = videobilling.QuoteWithMinimumTx(tx, rule, meter, videobilling.MinimumContext{Resolution: effective.Resolution, Ratio: effective.Ratio, Ratios: cap.Ratios, MinDuration: cap.MinDuration, MaxDuration: cap.MaxDuration, AutomaticDuration: effective.Duration == -1})
 	if err != nil {
 		return p, err
 	}
