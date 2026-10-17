@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { setImmediate as nextTurn } from 'node:timers/promises'
+import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises'
 import { build } from 'esbuild'
 import { parse, compileScript } from '@vue/compiler-sfc'
 import * as vue from 'vue'
@@ -53,7 +53,8 @@ function deferred() {
 }
 function json(value) { return new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } }) }
 async function until(predicate, message = 'condition did not become true') {
-  for (let i = 0; i < 100; i++) { if (predicate()) return; await nextTurn() }
+  const deadline = performance.now() + 3000
+  while (performance.now() < deadline) { if (predicate()) return; await delay(5) }
   assert.fail(message)
 }
 
