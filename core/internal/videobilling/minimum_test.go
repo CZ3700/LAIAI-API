@@ -42,6 +42,7 @@ func TestMinimumExactCoverageAndSnapshot(t *testing.T) {
 		t.Fatal(e)
 	}
 	ctx := MinimumContext{Resolution: "720p", Ratio: "adaptive", Ratios: []string{"16:9", "1:1", "adaptive"}, AutomaticDuration: true, MinDuration: 4, MaxDuration: 5}
+	m.OutputDurationMS = 5000
 	if e := db.Transaction(func(tx *gorm.DB) error {
 		q, e := QuoteWithMinimumTx(tx, r, m, ctx)
 		if e != nil {

@@ -2274,6 +2274,12 @@ onMounted(async () => {
               </label>
             </div>
           </div>
+          <p class="mb-3 rounded-lg border border-line bg-elev px-3 py-2 text-xs leading-relaxed text-muted">
+            {{ t('admin.catPricingScope') }}
+            <router-link v-if="auth.isSuperadmin" to="/app/video-pricing" class="ml-1 text-accent underline underline-offset-2">
+              {{ t('admin.catVideoPricingLink') }}
+            </router-link>
+          </p>
           <div class="max-h-96 overflow-y-auto rounded-lg border border-line">
             <table class="table w-full text-sm">
               <thead class="sticky top-0 bg-panel/80 backdrop-blur">

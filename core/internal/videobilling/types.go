@@ -105,6 +105,9 @@ type QuoteResult struct {
 	HoldUSD             decimal.Decimal
 	SupplierReservedCNY decimal.Decimal
 	SupplierReservedUSD decimal.Decimal
+	// Only QuoteWithMinimumTx can retain the verified selection domain. This is
+	// an in-process quote, not an authorization token supplied by an API client.
+	minimumSelection *minimumSelection
 }
 
 type QuotaPolicy struct {

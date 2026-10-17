@@ -846,6 +846,8 @@ export default {
     mgrHint: '疊加在分組倍率之上的第二層：最終 = 分組倍率 × 此值。如只給「vip」組的某個模型 0.5 倍。',
     prUpsert: '保存定價',
     catTitle: '模型目錄',
+    catPricingScope: '這裡僅統計通用模型價格；Seedance 官方影片依影片定價中的解析度／參考影片組合計費，缺少有效規則時不會自動採用官方參考價。',
+    catVideoPricingLink: '查看影片定價',
     catSummary: '{total} 個上游模型 · {priced} 已定價',
     catUnpriced: '{n} 個漏配價',
     catSearch: '搜尋模型…',

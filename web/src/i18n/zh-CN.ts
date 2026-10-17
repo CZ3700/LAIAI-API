@@ -845,6 +845,8 @@ export default {
     mgrHint: '叠加在分组倍率之上的第二层：最终 = 分组倍率 × 此值。如只给「vip」组的某个模型 0.5 倍。',
     prUpsert: '保存定价',
     catTitle: '模型目录',
+    catPricingScope: '这里仅统计通用模型价格；Seedance 官方视频按视频定价中的分辨率／参考视频组合计费，缺少有效规则不会自动采用官方参考价。',
+    catVideoPricingLink: '查看视频定价',
     catSummary: '{total} 个上游模型 · {priced} 已定价',
     catUnpriced: '{n} 个漏配价',
     catSearch: '搜索模型…',

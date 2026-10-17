@@ -12,6 +12,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/crypto"
 	"github.com/laiai/laiai-next/core/internal/identity"
+	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
@@ -360,6 +361,40 @@ func TestMySQLRawVideoUsesAggregateUpperBound(t *testing.T) {
 	must(t, err)
 	if quote.Metering.InputDurationMS != 15000 || quote.Metering.InputDurationSource != "configured_upper_bound" || quote.Metering.InputVideoCount == nil || *quote.Metering.InputVideoCount != 2 || quote.EstimatedTokens != 1000000 || quote.Metering.MinimumTokens != 1000000 {
 		t.Fatal("unknown raw inputs did not use aggregate bound")
+	}
+	// The published scalar is zero: creation must reselect the same verified
+	// minimum as Estimate, instead of conflicting with the geometric estimate.
+	created, replay, err := f.s.Create(context.Background(), f.key, "minimum-create", "minimum-create-key", in)
+	must(t, err)
+	if replay {
+		t.Fatal("first minimum reservation was treated as a replay")
+	}
+	var snap videobilling.Snapshot
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, created.ID).First(&snap).Error)
+	var meter videobilling.MeteringInput
+	must(t, json.Unmarshal([]byte(snap.MeteringJSON), &meter))
+	if snap.EstimatedTokens != quote.EstimatedTokens || !snap.HoldUSD.Equal(quote.HoldUSD) || !snap.SupplierReservedCNY.Equal(quote.SupplierReservedCNY) || meter.MinimumRuleSetID != quote.Metering.MinimumRuleSetID || meter.MinimumEvidenceHash != quote.Metering.MinimumEvidenceHash || meter.MinimumTokens != quote.Metering.MinimumTokens || meter.Ratio != "16:9" || meter.OutputDurationMS != 5000 {
+		t.Fatal("accepted snapshot disagrees with minimum estimate")
+	}
+	if h := f.hold(t, created.ID); h.Status != ledger.HoldActive || !h.Amount.Equal(quote.HoldUSD) {
+		t.Fatal("ledger hold disagrees with minimum estimate")
+	}
+	posted, held, err := ledger.OrgBalances(f.s.DB, f.key.OrgID, ledger.AccountUserCredit)
+	must(t, err)
+	if posted.String() != "100" || !held.Equal(quote.HoldUSD) {
+		t.Fatal("minimum reservation changed posted funds or held the wrong amount")
+	}
+	again, replay, err := f.s.Create(context.Background(), f.key, "minimum-create-replay", "minimum-create-key", in)
+	must(t, err)
+	var snapshots int64
+	must(t, f.s.DB.Model(&videobilling.Snapshot{}).Where("org_id = ?", f.key.OrgID).Count(&snapshots).Error)
+	if !replay || again.ID != created.ID || snapshots != 1 || f.posts.Load() != 0 || f.gets.Load() != 0 {
+		t.Fatal("replay duplicated admission or unexpectedly contacted upstream")
+	}
+	postedAgain, heldAgain, err := ledger.OrgBalances(f.s.DB, f.key.OrgID, ledger.AccountUserCredit)
+	must(t, err)
+	if !postedAgain.Equal(posted) || !heldAgain.Equal(held) {
+		t.Fatal("replay changed ledger balances")
 	}
 	media := assetTestMedia(f)
 	must(t, f.s.RegisterAssetMedia(context.Background(), assetTestActor(), media))

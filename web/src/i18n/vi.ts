@@ -786,6 +786,8 @@ export default {
     mgrHint: 'Lớp thứ hai chồng lên hệ số nhóm: cuối = hệ số nhóm × giá trị này. Vd hệ số 0.5 cho nhóm vip chỉ trên một mô hình.',
     prUpsert: 'Lưu giá',
     catTitle: 'Danh mục mô hình',
+    catPricingScope: 'Danh mục này chỉ thống kê giá mô hình thông dụng. Video Seedance chính thức được tính phí theo tổ hợp độ phân giải và video tham chiếu trong phần định giá video. Khi không có quy tắc hợp lệ, giá tham khảo chính thức sẽ không được áp dụng tự động.',
+    catVideoPricingLink: 'Xem giá video',
     catSummary: '{total} mô hình thượng nguồn · {priced} đã định giá',
     catUnpriced: '{n} chưa có giá',
     catSearch: 'Tìm mô hình…',

@@ -6,6 +6,7 @@ Implemented here: exact decimal quote from verified metering bounds, immutable t
 
 ```go
 Quote(rule PricingRule, in MeteringInput) (QuoteResult, error)
+QuoteWithMinimumTx(tx *gorm.DB, rule PricingRule, in MeteringInput, ctx MinimumContext) (QuoteResult, error)
 ResolvePricingTx(tx *gorm.DB, key PricingKey, at time.Time) (PricingRule, error)
 ReserveTx(tx *gorm.DB, in ReserveInput) (ReservationResult, error)
 SettleUsageTx(tx *gorm.DB, in SettlementInput) (SettlementResult, error)
@@ -22,6 +23,7 @@ Every Tx function requires a real GORM transaction and never commits it. Every r
 - Release requires `Confirmed=true`, an evidence ID and `not_dispatched` or `provider_no_charge`. This is an internal trusted API, never an HTTP-bound DTO. Confirmed means the caller has durable proof of no dispatch, or a verified provider terminal outcome with applicable no-charge policy. Timeout, unknown submit, missing usage, 404 and ambiguous DELETE 200+404 do not qualify. Supplier liability uncertainty must remain in recovery.
 - Capture and release share `(org_id,task_id,settlement_key='initial')`. A different terminal outcome/changed actual usage cannot overwrite it; future customer adjustments need a separate authorized append-only flow. Supplier bill corrections cannot call customer debit automatically.
 - Quote input contains verified integer width/height, rational fps, input-video duration and output duration OR frames. Adaptive/Draft/asset semantics belong to the normalizer. Set `BoundsVerified` only after establishing a defensible bound; caller-derived or changing URL duration is insufficient. The rule supplies minimum-token and platform risk versions; the package does not seed any commercial or official pricing assumptions.
+- Input-video reservations must pass the in-process result of `QuoteWithMinimumTx`. It owns a private copy of the verified minimum selection domain; JSON/client round-trips or plain arithmetic `Quote` results cannot supply that proof. `ReserveTx` rereads the official-source evidence and every applicable cell in its transaction, then checks source ID/hash, minimum and all quoted amounts before writing Key/quota/Ledger state. Adaptive ratios and automatic durations retain the full domain (automatic geometric duration must equal its verified maximum), without assuming minima increase with duration. Exposed `Metering.MinimumTokens` is audit data, never the authority. Text-only reservations do not require minimum tables or this proof; accepted task replays return their original snapshot before current evidence/pricing checks.
 - Money is USD `DECIMAL(20,8)`, rates `DECIMAL(24,12)`, CNY supplier amounts separate. Freeze uses ceiling to 8 decimals, final settlement uses decimal half-away-from-zero rounding to 8, then caps capture. Per-million scaling uses exact decimal shifts, never float or an intermediate rounded division. `fx_usd_per_cny` always means USD for 1 CNY. No FX refetch at settlement.
 
 ## Quota publication and locking

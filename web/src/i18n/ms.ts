@@ -786,6 +786,8 @@ export default {
     mgrHint: 'Lapisan kedua atas nisbah kumpulan: akhir = nisbah kumpulan × ini. Cth nisbah 0.5 untuk kumpulan vip pada satu model sahaja.',
     prUpsert: 'Simpan harga',
     catTitle: 'Katalog model',
+    catPricingScope: 'Katalog ini hanya mengira harga model umum. Video rasmi Seedance dicaj mengikut gabungan resolusi dan video rujukan dalam harga video. Tanpa peraturan yang sah, harga rujukan rasmi tidak digunakan secara automatik.',
+    catVideoPricingLink: 'Lihat harga video',
     catSummary: '{total} model huluan · {priced} berharga',
     catUnpriced: '{n} tiada harga',
     catSearch: 'Cari model…',

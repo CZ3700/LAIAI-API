@@ -846,6 +846,8 @@ const messages = {
     mgrHint: 'A second layer stacked on the group ratio: final = group ratio × this. E.g. give group "vip" a 0.5 ratio on one model only.',
     prUpsert: 'Save price',
     catTitle: 'Model catalog',
+    catPricingScope: 'This catalog only counts general model prices. Official Seedance video is billed using the resolution and reference-video combinations in Video pricing. Without a valid rule, official reference prices are not applied automatically.',
+    catVideoPricingLink: 'View video pricing',
     catSummary: '{total} upstream models · {priced} priced',
     catUnpriced: '{n} missing a price',
     catSearch: 'Search model…',

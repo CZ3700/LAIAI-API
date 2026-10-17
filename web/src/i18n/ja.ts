@@ -785,6 +785,8 @@ export default {
     mgrHint: 'グループ倍率に重ねる第二層：最終 = グループ倍率 × この値。例：vip グループの特定モデルだけ 0.5 倍。',
     prUpsert: '価格を保存',
     catTitle: 'モデルカタログ',
+    catPricingScope: 'ここでは汎用モデルの価格のみを集計します。Seedance 公式動画は、動画料金設定の解像度と参照動画の組み合わせに基づいて課金されます。有効なルールがない場合、公式参考価格は自動適用されません。',
+    catVideoPricingLink: '動画料金設定を見る',
     catSummary: '上流モデル {total} 件 · {priced} 件設定済み',
     catUnpriced: '{n} 件は価格未設定',
     catSearch: 'モデルを検索…',

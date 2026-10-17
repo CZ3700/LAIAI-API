@@ -786,6 +786,8 @@ export default {
     mgrHint: 'Une deuxième couche au-dessus du ratio de groupe : final = ratio de groupe × ceci. Ex. ratio 0.5 pour le groupe vip sur un seul modèle.',
     prUpsert: 'Enregistrer le tarif',
     catTitle: 'Catalogue de modèles',
+    catPricingScope: 'Ce catalogue ne comptabilise que les tarifs des modèles généraux. Les vidéos Seedance officielles sont facturées selon les combinaisons de résolution et de vidéo de référence dans la tarification vidéo. Sans règle valide, les tarifs de référence officiels ne sont pas appliqués automatiquement.',
+    catVideoPricingLink: 'Voir la tarification vidéo',
     catSummary: '{total} modèles amont · {priced} tarifés',
     catUnpriced: '{n} sans tarif',
     catSearch: 'Rechercher un modèle…',

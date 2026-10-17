@@ -45,6 +45,14 @@ type MinimumContext struct {
 	AutomaticDuration        bool
 }
 
+// Keep the domain private and owned by the quote so a later reserve cannot
+// accidentally replace automatic/adaptive coverage with just its upper bound.
+type minimumSelection struct {
+	context          MinimumContext
+	outputDurationMS int64
+	fps              int64
+}
+
 func validMinimumSource(s MinimumRuleSet) bool {
 	u, e := url.Parse(s.SourceURL)
 	h, he := hex.DecodeString(s.EvidenceHash)
@@ -145,6 +153,7 @@ func QuoteWithMinimumTx(tx *gorm.DB, rule PricingRule, in MeteringInput, ctx Min
 	in.Resolution, in.Ratio, in.Mode, in.ServiceTier, in.Draft = rule.Resolution, ctx.Ratio, rule.Mode, rule.ServiceTier, rule.Draft
 	if !rule.InputVideo {
 		rule.MinimumTokens = 0
+		in.MinimumRuleSetID, in.MinimumTokens, in.MinimumEvidenceHash = 0, 0, ""
 		return Quote(rule, in)
 	}
 	if ctx.Resolution != rule.Resolution || in.OutputFrames != 0 || in.FPSDenominator != 1 {
@@ -171,7 +180,7 @@ func QuoteWithMinimumTx(tx *gorm.DB, rule PricingRule, in MeteringInput, ctx Min
 	}
 	durations := []int64{in.OutputDurationMS}
 	if ctx.AutomaticDuration {
-		if ctx.MinDuration < 4 || ctx.MaxDuration < ctx.MinDuration || ctx.MaxDuration > 30 {
+		if ctx.MinDuration < 4 || ctx.MaxDuration < ctx.MinDuration || ctx.MaxDuration > 30 || in.OutputDurationMS != int64(ctx.MaxDuration)*1000 {
 			return QuoteResult{}, ErrPricingUnavailable
 		}
 		durations = nil
@@ -196,5 +205,41 @@ func QuoteWithMinimumTx(tx *gorm.DB, rule PricingRule, in MeteringInput, ctx Min
 		}
 	}
 	in.MinimumRuleSetID, in.MinimumTokens, in.MinimumEvidenceHash = set.ID, rule.MinimumTokens, set.EvidenceHash
-	return Quote(rule, in)
+	q, err := Quote(rule, in)
+	if err != nil {
+		return QuoteResult{}, err
+	}
+	ctx.Ratios = append([]string(nil), ctx.Ratios...)
+	q.minimumSelection = &minimumSelection{context: ctx, outputDurationMS: in.OutputDurationMS, fps: in.FPSNumerator}
+	return q, nil
+}
+
+// Re-query trusted evidence inside the reservation transaction. Neither the
+// quoted scalar minimum nor its exposed provenance is sufficient on its own.
+func requoteReservationTx(tx *gorm.DB, rule PricingRule, quoted QuoteResult) (QuoteResult, error) {
+	in := quoted.Metering
+	if !rule.InputVideo {
+		if in.MinimumRuleSetID != 0 || in.MinimumTokens != 0 || in.MinimumEvidenceHash != "" {
+			return QuoteResult{}, ErrConflict
+		}
+		// Match QuoteWithMinimumTx: input-video floors never apply to text-only
+		// requests, including legacy rules with a nonzero scalar minimum.
+		rule.MinimumTokens = 0
+		return Quote(rule, in)
+	}
+	selection := quoted.minimumSelection
+	if selection == nil {
+		return QuoteResult{}, ErrPricingUnavailable
+	}
+	if rule.MinimumRuleVersion != quoted.Rule.MinimumRuleVersion || in.Resolution != selection.context.Resolution || in.Ratio != selection.context.Ratio || in.Mode != rule.Mode || in.ServiceTier != rule.ServiceTier || in.Draft != rule.Draft || in.OutputDurationMS != selection.outputDurationMS || in.OutputFrames != 0 || in.FPSNumerator != selection.fps || in.FPSDenominator != 1 {
+		return QuoteResult{}, ErrConflict
+	}
+	q, err := QuoteWithMinimumTx(tx, rule, in, selection.context)
+	if err != nil {
+		return QuoteResult{}, err
+	}
+	if q.Metering.MinimumRuleSetID != in.MinimumRuleSetID || q.Metering.MinimumTokens != in.MinimumTokens || q.Metering.MinimumEvidenceHash != in.MinimumEvidenceHash {
+		return QuoteResult{}, ErrConflict
+	}
+	return q, nil
 }

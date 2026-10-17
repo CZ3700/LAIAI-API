@@ -45,7 +45,7 @@ func ReserveTx(tx *gorm.DB, in ReserveInput) (ReservationResult, error) {
 	if rule.RuleID != in.Quote.Rule.RuleID || rule.Version != in.Quote.Rule.Version {
 		return ReservationResult{}, ErrConflict
 	}
-	q, err := Quote(rule, in.Quote.Metering)
+	q, err := requoteReservationTx(tx, rule, in.Quote)
 	if err != nil {
 		return ReservationResult{}, err
 	}
