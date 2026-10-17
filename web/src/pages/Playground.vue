@@ -67,18 +67,20 @@ const input = ref('')
 // **模型选择一并持久化**：聊天区只在 mode==='chat' 时渲染，而 mode 由所选模型推导。此前刷新后
 // 模型被重置为价目表第一个（字母序，很可能是生图/视频模型）→ 记录明明恢复了却整片不渲染，
 // 表现为"对话记录没了"（用户实测反馈的真因）。
-const CHAT_STORE = 'laiai_pg_chat'
+const CHAT_STORE = 'laiai_pg_chat.v2'
 const CHAT_TTL = 3 * 24 * 60 * 60 * 1000
 function persistChat() {
+  if (!storageNamespace) return
+  const store = `${CHAT_STORE}.${storageNamespace}`
   try {
     // 只留完成的消息（不含流式中的空占位气泡）；system / 所选模型一并存
     const done = messages.value.filter((m) => m.content)
     if (done.length === 0 && !model.value && !system.value) {
-      localStorage.removeItem(CHAT_STORE)
+      localStorage.removeItem(store)
       return
     }
     localStorage.setItem(
-      CHAT_STORE,
+      store,
       JSON.stringify({ at: Date.now(), system: system.value, model: model.value, messages: done }),
     )
   } catch {
@@ -87,19 +89,21 @@ function persistChat() {
 }
 // restoreChat：恢复消息/system，并返回上次所选模型名（模型需等价目表加载完再套用，见 onMounted）。
 function restoreChat(): string {
+  if (!storageNamespace) return ''
+  const store = `${CHAT_STORE}.${storageNamespace}`
   try {
-    const raw = localStorage.getItem(CHAT_STORE)
+    const raw = localStorage.getItem(store)
     if (!raw) return ''
     const saved = JSON.parse(raw) as { at: number; system?: string; model?: string; messages: Msg[] }
     if (!saved.at || Date.now() - saved.at > CHAT_TTL) {
-      localStorage.removeItem(CHAT_STORE)
+      localStorage.removeItem(store)
       return ''
     }
     if (Array.isArray(saved.messages)) messages.value = saved.messages
     if (saved.system) system.value = saved.system
     return typeof saved.model === 'string' ? saved.model : ''
   } catch {
-    localStorage.removeItem(CHAT_STORE)
+    localStorage.removeItem(store)
     return ''
   }
 }
@@ -129,7 +133,7 @@ interface VideoTask {
   cost_usd?: string
   completion_tokens?: number
 }
-const VIDEO_TASK_STORE = 'laiai_pg_video_task' // 刷新后恢复跟踪（sessionStorage，同 Key 纪律）
+const VIDEO_TASK_STORE = 'laiai_pg_video_task.v2' // 仅恢复同组织、同 Key 指纹的任务，不猜旧缓存归属。
 const videoPrompt = ref('')
 const videoImage = ref('') // 可选参考图 URL（图生视频）
 const videoDuration = ref('default')
@@ -156,8 +160,52 @@ const lastDetail = ref<{ endpoint: string; status: number; durationMs: number; r
 let detailEpoch = 0
 function closeDetail() { showDetail.value = false }
 function clearDetail() { detailEpoch++; closeDetail(); lastDetail.value = null }
-// 详情仅使用已收到的响应；换组织/Key 后，旧请求不能重新填回可读正文。
-watch(() => [auth.orgId, apiKey.value], clearDetail)
+type RequestContext = { generation: number; orgId: number; key: string }
+let contextGeneration = 0
+let storageNamespace = ''
+let restoredGeneration = -1
+const restoringContext = ref(true)
+let videoContext: RequestContext | null = null
+const mediaControllers = new Set<AbortController>()
+function captureContext(): RequestContext { return { generation: contextGeneration, orgId: auth.orgId, key: apiKey.value } }
+function currentContext(context: RequestContext) { return context.generation === contextGeneration && context.orgId === auth.orgId && context.key === apiKey.value }
+function currentVideoContext(context: RequestContext) { return currentContext(context) && videoContext === context }
+function taskStore() { return storageNamespace ? `${VIDEO_TASK_STORE}.${storageNamespace}` : '' }
+function forgetTrackedTask() {
+  try { const key = taskStore(); if (key) sessionStorage.removeItem(key) } catch { /* Browser storage may be disabled. */ }
+}
+async function restoreWorkspace(context: RequestContext): Promise<string> {
+  try {
+    if (!context.key || !context.orgId || restoredGeneration === context.generation) return ''
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(context.key))
+    if (!currentContext(context) || restoredGeneration === context.generation) return ''
+    restoredGeneration = context.generation
+    storageNamespace = `${context.orgId}.${Array.from(new Uint8Array(digest), n => n.toString(16).padStart(2, '0')).join('')}`
+    const savedModel = restoreChat()
+    const raw = sessionStorage.getItem(taskStore())
+    if (raw) {
+      const saved = JSON.parse(raw) as { id?: string; startedAt?: number }
+      if (typeof saved.id === 'string' && /^[a-zA-Z0-9_-]+$/.test(saved.id)) {
+        videoContext = context
+        videoTask.value = { id: saved.id, status: 'running' }
+        videoStartMs.value = Number.isFinite(saved.startedAt) ? saved.startedAt! : Date.now()
+        startVideoPolling(context)
+      }
+    }
+    return savedModel
+  } catch { return '' } // Missing WebCrypto/storage disables restoration, never guesses ownership.
+  finally { if (currentContext(context)) restoringContext.value = false }
+}
+function resetContext() {
+  contextGeneration++; clearDetail(); storageNamespace = ''; restoringContext.value = true
+  abort?.abort(); abort = null; sending.value = false; generating.value = false; videoSubmitting.value = false
+  for (const controller of mediaControllers) controller.abort()
+  mediaControllers.clear(); stopVideoPolling(); resetVideoResult(false)
+  messages.value = []; system.value = ''; input.value = ''; error.value = ''; lastUsage.value = null
+  images.value = []; imagePrompt.value = ''; genError.value = ''; videoPrompt.value = ''; videoImage.value = ''
+}
+// Context identity belongs to the task, not to whichever poll happens to run next.
+watch(() => [auth.orgId, apiKey.value], () => { resetContext(); void restoreWorkspace(captureContext()) }, { flush: 'sync' })
 onDeactivated(closeDetail)
 function recordDetail(current: number, ep: string, status: number, t0: number, requestBody: unknown, response: string) {
   if (current !== detailEpoch) return
@@ -197,13 +245,13 @@ const endpoint = computed(() =>
 )
 
 const canSend = computed(
-  () => !!apiKey.value && !!model.value && !!input.value.trim() && !sending.value && mode.value === 'chat',
+  () => !restoringContext.value && !!apiKey.value && !!model.value && !!input.value.trim() && !sending.value && mode.value === 'chat',
 )
 const canGenerate = computed(
-  () => !!apiKey.value && !!model.value && !!imagePrompt.value.trim() && !generating.value && mode.value === 'image',
+  () => !restoringContext.value && !!apiKey.value && !!model.value && !!imagePrompt.value.trim() && !generating.value && mode.value === 'image',
 )
 const canSubmitVideo = computed(
-  () => !!apiKey.value && !!model.value && !!videoPrompt.value.trim() && !videoSubmitting.value && !videoActive.value && mode.value === 'video',
+  () => !restoringContext.value && !!apiKey.value && !!model.value && !!videoPrompt.value.trim() && !videoSubmitting.value && !videoActive.value && mode.value === 'video',
 )
 
 async function toBottom() {
@@ -212,22 +260,19 @@ async function toBottom() {
 }
 
 onMounted(async () => {
-  const savedModel = restoreChat() // 对话保留 3 天：切走再切回/刷新后恢复
-  // 恢复未完成的视频任务跟踪（刷新/误关后回到页面继续轮询）
-  const savedTask = sessionStorage.getItem(VIDEO_TASK_STORE)
-  if (savedTask && apiKey.value) {
-    videoTask.value = { id: savedTask, status: 'running' }
-    videoStartMs.value = Date.now() // 刷新后计时从回页起算（提交时刻已不可知）
-    startVideoPolling()
-  }
+  const context = captureContext()
+  const savedModel = await restoreWorkspace(context)
+  // The session price catalog belongs to the org, independently of the editable API Key.
+  if (auth.orgId !== context.orgId) return
   try {
     const r = await api<{ models: PricedModel[] }>('GET', '/api/pricing')
+    if (auth.orgId !== context.orgId) return
     models.value = r.models
     // 优先级：?model= 深链（Models 页"试一试"）> 上次所选（须仍在售）> 价目表首项
     const requested = typeof route.query.model === 'string' ? route.query.model : ''
     const found = requested ? r.models.find((m) => m.model === requested) : null
     if (found) model.value = found.model
-    else if (savedModel && r.models.some((m) => m.model === savedModel)) model.value = savedModel
+    else if (currentContext(context) && savedModel && r.models.some((m) => m.model === savedModel)) model.value = savedModel
     else if (r.models.length) model.value = r.models[0].model
   } catch {
     // 无价目不阻塞：用户仍可手填模型名（input fallback 见模板）
@@ -248,11 +293,7 @@ onActivated(() => {
 
 // keep-alive 下导航离开不触发 onUnmounted（视频轮询后台继续，切回即见结果）；
 // 只在组件真正销毁（登出/布局卸载）时清理。
-onUnmounted(() => {
-  clearDetail()
-  stopVideoPolling()
-  if (videoBlobUrl) URL.revokeObjectURL(videoBlobUrl)
-})
+onUnmounted(resetContext)
 
 function clearAll() {
   clearDetail()
@@ -271,6 +312,7 @@ function stop() {
 
 async function send() {
   if (!canSend.value) return
+  const context = captureContext()
   const currentDetailEpoch = detailEpoch
   error.value = ''
   lastUsage.value = null
@@ -294,15 +336,17 @@ async function send() {
     stream: stream.value,
   }
 
-  abort = new AbortController()
+  const controller = new AbortController()
+  abort = controller
   const t0 = performance.now()
   try {
     const resp = await fetch('/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey.value}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${context.key}` },
       body: JSON.stringify(body),
-      signal: abort.signal,
+      signal: controller.signal,
     })
+    if (!currentContext(context)) return
     if (!resp.ok) {
       const data = (await resp.json().catch(() => ({}))) as { error?: { message?: string } | string }
       recordDetail(currentDetailEpoch, '/v1/chat/completions', resp.status, t0, body, JSON.stringify(data, null, 2))
@@ -318,6 +362,7 @@ async function send() {
       let streamErr = ''
       for (;;) {
         const { done, value } = await reader.read()
+        if (!currentContext(context)) { await reader.cancel(); return }
         if (done) break
         buf += decoder.decode(value, { stream: true })
         const lines = buf.split('\n')
@@ -355,6 +400,7 @@ async function send() {
         usage?: { prompt_tokens: number; completion_tokens: number }
         error?: { message?: string } | string
       }
+      if (!currentContext(context)) return
       recordDetail(currentDetailEpoch, '/v1/chat/completions', resp.status, t0, body, JSON.stringify(j, null, 2))
       if (j.error) throw new Error(typeof j.error === 'object' ? (j.error.message ?? JSON.stringify(j.error)) : String(j.error))
       assistant.value.content = j.choices?.[0]?.message?.content ?? ''
@@ -362,6 +408,7 @@ async function send() {
       if (!assistant.value.content) throw new Error(t('play.noReply'))
     }
   } catch (e) {
+    if (!currentContext(context)) return
     if ((e as Error).name === 'AbortError') {
       assistant.value.content += ' ⏹'
     } else {
@@ -370,6 +417,7 @@ async function send() {
       if (!assistant.value.content) messages.value.pop()
     }
   } finally {
+    if (!currentContext(context)) return
     sending.value = false
     abort = null
     persistChat() // 每轮对话完落盘（保留 3 天）
@@ -380,6 +428,7 @@ async function send() {
 // 生图：与 chat 同样用用户 Key 直打 /v1/images/generations（OpenAI 兼容，按张计费）。
 async function generate() {
   if (!canGenerate.value) return
+  const context = captureContext()
   const currentDetailEpoch = detailEpoch
   genError.value = ''
   images.value = []
@@ -395,9 +444,10 @@ async function generate() {
   try {
     const resp = await fetch('/v1/images/generations', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey.value}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${context.key}` },
       body: JSON.stringify(body),
     })
+    if (!currentContext(context)) return
     if (!resp.ok) {
       const data = (await resp.json().catch(() => ({}))) as { error?: { message?: string } | string }
       recordDetail(currentDetailEpoch, '/v1/images/generations', resp.status, t0, body, JSON.stringify(data, null, 2))
@@ -406,12 +456,15 @@ async function generate() {
       throw new Error(msg || `request failed (${resp.status})`)
     }
     const j = (await resp.json()) as { data?: GenImage[] }
+    if (!currentContext(context)) return
     recordDetail(currentDetailEpoch, '/v1/images/generations', resp.status, t0, body, redactB64(j))
     images.value = (j.data ?? []).filter((d) => d.url || d.b64_json)
     if (!images.value.length) throw new Error(t('play.noReply'))
   } catch (e) {
+    if (!currentContext(context)) return
     genError.value = (e as Error).message
   } finally {
+    if (!currentContext(context)) return
     generating.value = false
   }
 }
@@ -422,16 +475,19 @@ function imgSrc(img: GenImage): string {
 
 // —— 视频任务：提交 → 轮询 → 播放/下载 ——
 
-function resetVideoResult() {
+function resetVideoResult(forget = true) {
+  videoContext = null
   videoTask.value = null
   videoError.value = ''
   videoSrc.value = ''
   videoPlayFallback.value = false
+  videoStartMs.value = 0
+  videoElapsedSec.value = 0
   if (videoBlobUrl) {
     URL.revokeObjectURL(videoBlobUrl)
     videoBlobUrl = ''
   }
-  sessionStorage.removeItem(VIDEO_TASK_STORE)
+  if (forget) forgetTrackedTask()
 }
 
 function stopVideoPolling() {
@@ -441,44 +497,49 @@ function stopVideoPolling() {
   videoTickTimer = null
 }
 
-function startVideoPolling() {
+function startVideoPolling(context: RequestContext) {
+  if (!currentVideoContext(context)) return
   stopVideoPolling()
   videoElapsedSec.value = Math.max(0, Math.round((Date.now() - videoStartMs.value) / 1000))
   videoTickTimer = window.setInterval(() => {
+    if (!currentVideoContext(context)) return
     videoElapsedSec.value = Math.round((Date.now() - videoStartMs.value) / 1000)
   }, 1000)
-  videoPollTimer = window.setInterval(() => void pollVideoOnce(), 5000)
-  void pollVideoOnce()
+  videoPollTimer = window.setInterval(() => void pollVideoOnce(context), 5000)
+  void pollVideoOnce(context)
 }
 
-async function pollVideoOnce() {
+async function pollVideoOnce(context = videoContext) {
+  if (!context || !currentVideoContext(context)) return
   const id = videoTask.value?.id
   if (!id) return stopVideoPolling()
   const currentDetailEpoch = detailEpoch
   try {
     const resp = await fetch(`/v1/video/generations/${encodeURIComponent(id)}`, {
-      headers: { Authorization: `Bearer ${apiKey.value}` },
+      headers: { Authorization: `Bearer ${context.key}` },
     })
+    if (!currentVideoContext(context)) return
     if (!resp.ok) {
       // 401/403/404 = 不可恢复（key 失效/越权/任务不存在）；5xx/网络抖动留给下一轮
       if ([401, 403, 404].includes(resp.status)) {
         videoError.value = `poll failed (${resp.status})`
         stopVideoPolling()
-        sessionStorage.removeItem(VIDEO_TASK_STORE)
+        forgetTrackedTask()
       }
       return
     }
     const task = (await resp.json()) as VideoTask
+    if (!currentVideoContext(context)) return
     videoTask.value = task
     if (task.status === 'succeeded') {
       stopVideoPolling()
-      sessionStorage.removeItem(VIDEO_TASK_STORE)
+      forgetTrackedTask()
       // 终态详情：轮询响应含 result_url 与实际结算费用
       recordDetail(currentDetailEpoch, `/v1/video/generations/${id}`, resp.status, performance.now(), { poll: true }, JSON.stringify(task, null, 2))
-      await loadVideoResult(task)
+      await loadVideoResult(task, context)
     } else if (task.status === 'failed') {
       stopVideoPolling()
-      sessionStorage.removeItem(VIDEO_TASK_STORE)
+      forgetTrackedTask()
       videoError.value = task.fail_reason || t('play.videoFailed')
     }
   } catch {
@@ -496,15 +557,18 @@ async function pollVideoOnce() {
 //   ③ 直链交给 <video>：Content-Type 正常即可播；否则显示下载提示（下载路径始终独立可用）
 let lastVideoLoadErr = ''
 
-async function loadVideoResult(task: VideoTask) {
+async function loadVideoResult(task: VideoTask, context: RequestContext) {
+  if (!currentVideoContext(context)) return
   if (!task.result_url) {
     videoError.value = t('play.videoNoResult')
     return
   }
   lastVideoLoadErr = ''
   const direct = /^https?:\/\//i.test(task.result_url)
-  if (direct && (await tryVideoBlob(task.result_url))) return
-  if (await tryVideoBlob(`/v1/video/generations/${encodeURIComponent(task.id)}/content`, true)) return
+  if (direct && (await tryVideoBlob(task.result_url, context))) return
+  if (!currentVideoContext(context)) return
+  if (await tryVideoBlob(`/v1/video/generations/${encodeURIComponent(task.id)}/content`, context, true)) return
+  if (!currentVideoContext(context)) return
   if (direct) {
     videoSrc.value = task.result_url // 兜底：能播就播；拒播时 @error 触发下载提示
     return
@@ -514,20 +578,24 @@ async function loadVideoResult(task: VideoTask) {
 
 // tryVideoBlob：取流 → blob 重贴可识别 MIME → 作为播放源。成功 true；失败（CORS/网络/非 2xx/空体）
 // 返回 false 交下一级，并记录原因供全部失败时展示。
-async function tryVideoBlob(url: string, withAuth = false): Promise<boolean> {
+async function tryVideoBlob(url: string, context: RequestContext, withAuth = false): Promise<boolean> {
+  if (!currentVideoContext(context)) return false
   // 单级超时：跨境不可达时后端守卫客户端是 2 分钟超时，不能让用户干等到那时才降级
   const ac = new AbortController()
+  mediaControllers.add(ac)
   const timer = window.setTimeout(() => ac.abort(), 25_000)
   try {
     const r = await fetch(url, {
       signal: ac.signal,
-      ...(withAuth ? { headers: { Authorization: `Bearer ${apiKey.value}` } } : {}),
+      ...(withAuth ? { headers: { Authorization: `Bearer ${context.key}` } } : {}),
     })
+    if (!currentVideoContext(context)) return false
     if (!r.ok) {
       lastVideoLoadErr = `content fetch failed (${r.status})`
       return false
     }
     const blob = await r.blob()
+    if (!currentVideoContext(context)) return false
     if (blob.size === 0) {
       lastVideoLoadErr = 'empty content'
       return false
@@ -539,17 +607,21 @@ async function tryVideoBlob(url: string, withAuth = false): Promise<boolean> {
     videoPlayFallback.value = false // 换新源：清掉上一次的拒播提示
     return true
   } catch (e) {
+    if (!currentVideoContext(context)) return false
     lastVideoLoadErr = (e as Error).message // 跨域被拦/网络失败/超时：交下一级
     return false
   } finally {
+    mediaControllers.delete(ac)
     window.clearTimeout(timer)
   }
 }
 
 async function submitVideo() {
   if (!canSubmitVideo.value) return
+  const context = captureContext()
   const currentDetailEpoch = detailEpoch
   resetVideoResult()
+  videoContext = context
   videoSubmitting.value = true
   const content: unknown[] = [{ type: 'text', text: videoPrompt.value.trim() }]
   if (videoImage.value.trim()) content.push({ type: 'image_url', image_url: { url: videoImage.value.trim() } })
@@ -562,9 +634,10 @@ async function submitVideo() {
   try {
     const resp = await fetch('/v1/video/generations', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey.value}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${context.key}` },
       body: JSON.stringify(body),
     })
+    if (!currentVideoContext(context)) return
     if (!resp.ok) {
       const data = (await resp.json().catch(() => ({}))) as { error?: { message?: string } | string }
       recordDetail(currentDetailEpoch, '/v1/video/generations', resp.status, t0, body, JSON.stringify(data, null, 2))
@@ -573,20 +646,26 @@ async function submitVideo() {
       throw new Error(msg || `request failed (${resp.status})`)
     }
     const task = (await resp.json()) as VideoTask
+    if (!currentVideoContext(context)) return
     recordDetail(currentDetailEpoch, '/v1/video/generations', resp.status, t0, body, JSON.stringify(task, null, 2))
     videoTask.value = task
-    sessionStorage.setItem(VIDEO_TASK_STORE, task.id)
     videoStartMs.value = Date.now()
-    startVideoPolling()
+    try {
+      if (taskStore()) sessionStorage.setItem(taskStore(), JSON.stringify({ id: task.id, startedAt: videoStartMs.value }))
+    } catch { /* Storage unavailable must not turn an accepted server task into a failed submit. */ }
+    startVideoPolling(context)
   } catch (e) {
+    if (!currentContext(context)) return
     videoError.value = (e as Error).message
   } finally {
+    if (!currentContext(context)) return
     videoSubmitting.value = false
   }
 }
 
 // 下载：blob 源直接触发下载；跨域直链 fetch-blob 失败时回退新标签页（右键另存）。
 async function saveVideo() {
+  const context = captureContext()
   const name = `laiai-${model.value}-video.mp4`.replace(/[^\w.-]+/g, '_')
   const src = videoSrc.value
   if (!src) return
@@ -595,7 +674,9 @@ async function saveVideo() {
     let revoke = ''
     if (!src.startsWith('blob:')) {
       const r = await fetch(src)
-      href = URL.createObjectURL(await r.blob())
+      const blob = await r.blob()
+      if (!currentContext(context)) return
+      href = URL.createObjectURL(blob)
       revoke = href
     }
     const a = document.createElement('a')
@@ -606,12 +687,13 @@ async function saveVideo() {
     a.remove()
     if (revoke) URL.revokeObjectURL(revoke)
   } catch {
-    window.open(src, '_blank')
+    if (currentContext(context)) window.open(src, '_blank')
   }
 }
 
 // 保存：base64 直接下载；URL 先取 blob 再下载，跨域取失败则回退新标签页打开（让用户右键另存）。
 async function saveImage(img: GenImage, idx: number) {
+  const context = captureContext()
   const name = `laiai-${model.value}-${idx + 1}.png`.replace(/[^\w.-]+/g, '_')
   try {
     let href = ''
@@ -620,7 +702,9 @@ async function saveImage(img: GenImage, idx: number) {
       href = `data:image/png;base64,${img.b64_json}`
     } else if (img.url) {
       const r = await fetch(img.url)
-      href = URL.createObjectURL(await r.blob())
+      const blob = await r.blob()
+      if (!currentContext(context)) return
+      href = URL.createObjectURL(blob)
       revoke = href
     } else {
       return
@@ -633,7 +717,7 @@ async function saveImage(img: GenImage, idx: number) {
     a.remove()
     if (revoke) URL.revokeObjectURL(revoke)
   } catch {
-    if (img.url) window.open(img.url, '_blank') // 跨域无法 fetch 时的兜底
+    if (currentContext(context) && img.url) window.open(img.url, '_blank') // 跨域无法 fetch 时的兜底
   }
 }
 </script>
