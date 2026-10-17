@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import DetailDrawer from '@/components/DetailDrawer.vue'
+import { useAuth } from '@/stores/auth'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { api, copyText, errorMessage } from '@/lib/api'
@@ -7,6 +9,7 @@ import { filterModels, modelModality, type ModelModality, type PricedModel } fro
 
 const { t } = useI18n()
 const router = useRouter()
+const auth = useAuth()
 const models = ref<PricedModel[]>([])
 const search = ref('')
 const loading = ref(true)
@@ -78,11 +81,12 @@ async function copySnippet() {
   }
 }
 
+watch(() => auth.orgId, () => { selected.value = null })
+
 onMounted(async () => {
   try {
     const r = await api<{ models: PricedModel[] }>('GET', '/api/pricing', undefined, { auth: false })
     models.value = r.models
-    selected.value = r.models[0] ?? null
     error.value = ''
   } catch (e) {
     error.value = errorMessage(e, t('common.error'))
@@ -130,7 +134,7 @@ onMounted(async () => {
       <div v-for="i in 6" :key="i" class="skeleton h-5" :style="{ maxWidth: `${50 + ((i * 13) % 40)}%` }"></div>
     </div>
 
-    <div v-else class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
+    <div v-else class="space-y-4">
       <!-- 模型列表 -->
       <div class="data-table-wrap max-h-[34rem]">
         <table class="table w-full text-sm">
@@ -150,10 +154,9 @@ onMounted(async () => {
               :key="m.model"
               class="cursor-pointer border-b border-line last:border-0 transition-colors"
               :class="selected?.model === m.model ? 'bg-accent/10' : ''"
-              @click="selected = m"
             >
               <td class="px-4 py-3">
-                <div class="font-mono text-xs font-semibold">{{ m.model }}</div>
+                <button type="button" class="table-link font-mono text-xs font-semibold text-left" @click="selected = m">{{ m.model }}</button>
                 <div class="mt-1 text-xs text-muted">{{ modalityLabel(m) }}</div>
               </td>
               <td class="px-4 py-3"><span class="badge-muted">{{ m.provider }}</span></td>
@@ -168,7 +171,8 @@ onMounted(async () => {
       </div>
 
       <!-- 详情面板 -->
-      <div v-if="selected" class="model-inspector app-panel h-fit p-5 xl:sticky xl:top-6">
+      <DetailDrawer :open="!!selected" :title="selected?.model || t('models.model')" @update:open="open => { if (!open) selected = null }">
+      <div v-if="selected">
         <div class="flex items-start justify-between gap-3">
           <div>
             <p class="text-xs font-medium text-accent">{{ t('surface.selectedModel') }}</p>
@@ -232,6 +236,7 @@ onMounted(async () => {
         </div>
         <p class="mt-3 text-xs text-muted">{{ t('models.unitHint') }}</p>
       </div>
+      </DetailDrawer>
     </div>
   </div>
 </template>
