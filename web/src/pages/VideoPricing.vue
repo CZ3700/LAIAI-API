@@ -90,7 +90,7 @@ onMounted(load)
 
 <template>
   <main class="video-pricing-page">
-    <header class="page-heading"><div><h1>视频定价</h1><p>创建时冻结上限，成功后按官方 Token 用量结算。输入 Token 为 0 表示官方不单独计量输入。</p></div><label>收费配置模型 <select v-model="model" :disabled="busy || loading" @change="load"><option>seedance-2.0</option><option>seedance-2.5</option></select></label></header>
+    <header class="page-heading"><div><h1>视频定价</h1><p>创建时冻结上限，成功后按官方实际计费 Token 结算；参考视频按对应价格组合计费。</p></div><label>收费配置模型 <select v-model="model" :disabled="busy || loading" @change="load"><option>seedance-2.0</option><option>seedance-2.5</option></select></label></header>
     <section class="panel"><OfficialVideoPriceCatalog /></section>
     <p v-if="error" class="message error" role="alert">{{ error }}</p><p v-if="notice" class="message success" role="status">{{ notice }}</p>
     <p v-if="loading" aria-live="polite">正在读取价格和证据版本…</p>

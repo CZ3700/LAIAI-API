@@ -364,7 +364,7 @@ func TestMySQLRawVideoUsesAggregateUpperBound(t *testing.T) {
 	}
 	// The published scalar is zero: creation must reselect the same verified
 	// minimum as Estimate, instead of conflicting with the geometric estimate.
-	created, replay, err := f.s.Create(context.Background(), f.key, "minimum-create", "minimum-create-key", in)
+	created, replay, err := f.s.Create(context.Background(), f.key, f.requestID("minimum-create"), "minimum-create-key", in)
 	must(t, err)
 	if replay {
 		t.Fatal("first minimum reservation was treated as a replay")
@@ -384,7 +384,7 @@ func TestMySQLRawVideoUsesAggregateUpperBound(t *testing.T) {
 	if posted.String() != "100" || !held.Equal(quote.HoldUSD) {
 		t.Fatal("minimum reservation changed posted funds or held the wrong amount")
 	}
-	again, replay, err := f.s.Create(context.Background(), f.key, "minimum-create-replay", "minimum-create-key", in)
+	again, replay, err := f.s.Create(context.Background(), f.key, f.requestID("minimum-create-replay"), "minimum-create-key", in)
 	must(t, err)
 	var snapshots int64
 	must(t, f.s.DB.Model(&videobilling.Snapshot{}).Where("org_id = ?", f.key.OrgID).Count(&snapshots).Error)
