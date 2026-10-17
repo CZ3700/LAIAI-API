@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { uuid } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
+import DetailDrawer from '@/components/DetailDrawer.vue'
 import { useSeedanceI18n } from './messages'
 import { authorizedRequest, canDelete, createBody, generationActive, safeContentPath, shouldPoll } from './workflow'
 import HistoryJSON from './HistoryJSON.vue'
@@ -36,6 +37,7 @@ const received = ref<unknown>(null)
 const responseStatus = ref<number | null>(null)
 const src = ref('')
 const showDetails = ref(false)
+function closeDetails() { showDetails.value = false }
 const cancelKey = ref('')
 const cancelOperation = ref<{ operation_id: string; status: string } | null>(null)
 const mutationKind = ref<'cancel' | 'delete'>('cancel')
@@ -184,6 +186,7 @@ watch([prompt, image, video, audio, duration, resolution, ratio], () => { quote.
 watch(() => [auth.orgId, props.model, props.apiKey], () => { clearPrivate(); void loadModels(); restore() })
 onMounted(() => { void loadModels(); restore() })
 onActivated(() => { if (task.value && shouldPoll(task.value)) start() })
+onDeactivated(closeDetails)
 onBeforeUnmount(clearPrivate)
 </script>
 
@@ -207,7 +210,9 @@ onBeforeUnmount(clearPrivate)
     <div v-if="task" class="space-y-2 rounded border border-line p-4 text-sm"><p class="break-all font-mono">{{ task.id }}</p><p>{{ t('seedance.generationState') }}: {{ task.status }} · {{ t('seedance.billing') }}: {{ task.billing_state }} · {{ t('seedance.artifact') }}: {{ task.artifact_status }}</p><p v-if="cancelOperation" class="break-all">{{ cancelOperation.operation_id }} · {{ cancelOperation.status }}</p><p v-if="task.status === 'succeeded' && task.artifact_status === 'pending'">{{ t('seedance.artifactWaiting') }}</p><p v-if="task.billing_state === 'pending_usage'">{{ t('seedance.billingWaiting') }}</p><p>{{ t('seedance.videoTokens') }}: {{ billing?.billable_tokens ?? t('seedance.pending') }}</p><p>{{ t('seedance.inputTokens') }}</p><p v-if="billing">{{ t('seedance.reserved') }}: {{ billing.reserved_amount }} · {{ t('seedance.settled') }}: {{ billing.settled_amount ?? t('seedance.pending') }} · {{ t('seedance.released') }}: {{ billing.released_amount }} USD</p></div>
     <video v-if="src" :src="src" controls playsinline class="w-full rounded border border-line bg-black" />
     <a v-if="src" class="table-link" :href="src" :download="`${task?.id ?? 'video'}.mp4`">{{ t('play.videoDownload') }}</a>
-    <div class="flex flex-wrap gap-3"><router-link v-if="requestID" class="table-link" :to="{ path: '/app/request-logs', query: { tab: 'seedance', request_id: requestID } }">{{ t('seedance.logs') }} · {{ requestID }}</router-link><button v-if="submitted || task" type="button" class="table-link" @click="showDetails = !showDetails">{{ t('reqlog.btnDetail') }}</button></div>
-    <div v-if="showDetails" class="space-y-3"><div class="segmented-control"><button v-for="item in ['received','result','response'] as const" :key="item" type="button" :class="{ active: currentTab === item }" @click="currentTab = item">{{ t(`seedance.${item}`) }}</button></div><HistoryJSON v-if="currentTab === 'received' && submitted" :body="submitted" name="client-request" /><HistoryJSON v-if="currentTab === 'result' && task" :body="{ task, billing }" name="current-task" /><template v-if="currentTab === 'response'"><p>HTTP {{ responseStatus ?? '—' }}</p><HistoryJSON v-if="received" :body="received" name="client-response" /></template></div>
+    <div class="flex flex-wrap gap-3"><router-link v-if="requestID" class="table-link" :to="{ path: '/app/request-logs', query: { tab: 'seedance', request_id: requestID } }">{{ t('seedance.logs') }} · {{ requestID }}</router-link><button v-if="submitted || task" type="button" class="table-link" @click="showDetails = true">{{ t('reqlog.btnDetail') }}</button></div>
+    <DetailDrawer v-model:open="showDetails" :title="t('reqlog.btnDetail')" :description="task?.id || requestID" :close-label="t('seedance.close')" size="lg">
+      <div class="space-y-3"><div class="segmented-control"><button v-for="item in ['received','result','response'] as const" :key="item" type="button" :class="{ active: currentTab === item }" @click="currentTab = item">{{ t(`seedance.${item}`) }}</button></div><HistoryJSON v-if="currentTab === 'received' && submitted" :body="submitted" name="client-request" /><HistoryJSON v-if="currentTab === 'result' && task" :body="{ task, billing }" name="current-task" /><template v-if="currentTab === 'response'"><p>HTTP {{ responseStatus ?? '—' }}</p><HistoryJSON v-if="received" :body="received" name="client-response" /></template></div>
+    </DetailDrawer>
   </div>
 </template>
