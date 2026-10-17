@@ -3,6 +3,8 @@ import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError, copyText, errorMessage } from '@/lib/api'
 import ByokPanel from '@/components/ByokPanel.vue'
+import DetailDrawer from '@/components/DetailDrawer.vue'
+import { useAuth } from '@/stores/auth'
 
 interface KeyRow {
   id: number
@@ -18,7 +20,10 @@ interface KeyRow {
   route_policy: string
 }
 
-const { t } = useI18n()
+const { t, d } = useI18n()
+const auth = useAuth()
+const selectedKey = ref<KeyRow | null>(null)
+let loadEpoch = 0
 const keys = ref<KeyRow[]>([])
 const loading = ref(true)
 const error = ref('')
@@ -97,15 +102,18 @@ onBeforeUnmount(() => {
 })
 
 async function load() {
+  const epoch = ++loadEpoch, org = auth.orgId
   loading.value = true
   try {
     const r = await api<{ keys: KeyRow[] }>('GET', '/api/keys')
+    if (epoch !== loadEpoch || org !== auth.orgId) return
     keys.value = r.keys
+    selectedKey.value = null
     error.value = ''
   } catch (e) {
-    error.value = errorMessage(e, t('common.error'))
+    if (epoch === loadEpoch && org === auth.orgId) error.value = errorMessage(e, t('common.error'))
   } finally {
-    loading.value = false
+    if (epoch === loadEpoch) loading.value = false
   }
 }
 
@@ -204,6 +212,8 @@ async function remove(id: number) {
   }
 }
 
+watch(() => auth.orgId, () => { selectedKey.value = null; keys.value = []; void load() })
+onBeforeUnmount(() => { loadEpoch++; selectedKey.value = null })
 onMounted(load)
 </script>
 
@@ -284,6 +294,7 @@ onMounted(load)
               </span>
             </td>
             <td class="px-4 py-3 text-right">
+              <button type="button" class="btn-ghost !py-1 text-xs" @click="selectedKey = k">{{ t('reqlog.btnDetail') }}</button>
               <button
                 v-if="k.status === 1"
                 class="btn-danger !py-1 text-xs"
@@ -305,6 +316,18 @@ onMounted(load)
         </tbody>
       </table>
     </div>
+
+    <DetailDrawer :open="!!selectedKey" :title="selectedKey?.name || t('keys.title')" @update:open="open => { if (!open) selectedKey = null }">
+      <dl v-if="selectedKey" class="detail-grid">
+        <div><dt>ID</dt><dd>{{ selectedKey.id }}</dd></div><div><dt>{{ t('keys.prefix') }}</dt><dd>{{ selectedKey.prefix }}…</dd></div>
+        <div><dt>{{ t('keys.name') }}</dt><dd>{{ selectedKey.name || '—' }}</dd></div><div><dt>{{ t('keys.status') }}</dt><dd>{{ t(selectedKey.status === 1 ? 'keys.active' : 'keys.revoked') }}</dd></div>
+        <div><dt>{{ t('keys.used') }}</dt><dd>USD {{ selectedKey.used_amount }}</dd></div><div><dt>{{ t('keys.quotaLimit') }}</dt><dd>{{ Number(selectedKey.quota_limit) === 0 ? '∞' : `USD ${selectedKey.quota_limit}` }}</dd></div>
+        <div><dt>expires_at</dt><dd>{{ selectedKey.expires_at ? d(new Date(selectedKey.expires_at), { dateStyle: 'short', timeStyle: 'medium' }) : '—' }}</dd></div>
+        <div><dt>{{ t('keys.rpmLimit') }}</dt><dd>{{ selectedKey.rpm_limit || '∞' }}</dd></div><div><dt>{{ t('keys.routePolicy') }}</dt><dd>{{ selectedKey.route_policy || 'order' }}</dd></div>
+        <div class="col-span-2"><dt>{{ t('keys.modelLimitsField') }}</dt><dd>{{ selectedKey.model_limits || '—' }}</dd></div><div class="col-span-2"><dt>{{ t('keys.allowIps') }}</dt><dd>{{ selectedKey.allow_ips || '—' }}</dd></div>
+      </dl>
+      <p class="mt-5 text-sm text-muted">{{ t('surface.keysSafety') }}</p>
+    </DetailDrawer>
 
     <!-- BYOK 自带上游 Key（0044） -->
     <ByokPanel />
