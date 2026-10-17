@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import DetailDrawer from '@/components/DetailDrawer.vue'
+import { useAuth } from '@/stores/auth'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
 
@@ -17,6 +19,9 @@ interface Order {
 }
 
 const { t, d } = useI18n()
+const auth = useAuth()
+const selectedOrder = ref<Order | null>(null)
+let loadEpoch = 0
 const amount = ref(50)
 const methods = ref<Method[]>([])
 const amountOptions = ref<number[]>([])
@@ -37,11 +42,14 @@ function statusLabel(s: number): string {
 }
 
 async function load() {
+  const epoch = ++loadEpoch, org = auth.orgId
+  selectedOrder.value = null
   loading.value = true
   const [m, o] = await Promise.allSettled([
     api<{ methods: Method[]; amount_options: number[] }>('GET', '/api/payment/methods'),
     api<{ orders: Order[] }>('GET', '/api/payment/orders'),
   ])
+  if (epoch !== loadEpoch || org !== auth.orgId) return
   if (m.status === 'fulfilled') {
     methods.value = m.value.methods
     amountOptions.value = m.value.amount_options ?? []
@@ -74,6 +82,8 @@ async function pay() {
   }
 }
 
+watch(() => auth.orgId, () => { selectedOrder.value = null; orders.value = []; void load() })
+onBeforeUnmount(() => { loadEpoch++; selectedOrder.value = null })
 onMounted(load)
 </script>
 
@@ -137,12 +147,12 @@ onMounted(load)
                 <th class="px-4 py-3">{{ t('recharge.colPayMethod') }}</th>
                 <th class="px-4 py-3">{{ t('recharge.colStatus') }}</th>
                 <th class="px-4 py-3">{{ t('recharge.colTradeNo') }}</th>
-                <th class="px-4 py-3">{{ t('recharge.colCreatedAt') }}</th>
+                <th class="px-4 py-3">{{ t('recharge.colCreatedAt') }}</th><th class="px-4 py-3">{{ t('reqlog.btnDetail') }}</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="loading"><td colspan="6" class="px-4 py-8 text-center text-muted">{{ t('recharge.loading') }}</td></tr>
-              <tr v-else-if="orders.length === 0"><td colspan="6" class="px-4 py-8 text-center text-muted">{{ t('recharge.emptyRecords') }}</td></tr>
+              <tr v-if="loading"><td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('recharge.loading') }}</td></tr>
+              <tr v-else-if="orders.length === 0"><td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('recharge.emptyRecords') }}</td></tr>
               <tr v-for="o in orders" :key="o.id">
                 <td class="px-4 py-2.5 font-mono text-xs">{{ o.order_no }}</td>
                 <td class="px-4 py-2.5 text-right font-mono">{{ o.pay_amount }} {{ o.pay_currency }}</td>
@@ -151,12 +161,15 @@ onMounted(load)
                   <span :class="o.status === 1 ? 'badge-ok' : o.status === 0 ? 'badge-warn' : 'badge-danger'">{{ statusLabel(o.status) }}</span>
                 </td>
                 <td class="px-4 py-2.5 font-mono text-xs text-muted">{{ o.trade_no || '—' }}</td>
-                <td class="px-4 py-2.5 text-muted">{{ d(new Date(o.created_at * 1000), { dateStyle: 'short', timeStyle: 'short' }) }}</td>
+                <td class="px-4 py-2.5 text-muted">{{ d(new Date(o.created_at * 1000), { dateStyle: 'short', timeStyle: 'short' }) }}</td><td class="px-4 py-2.5"><button type="button" class="table-link" @click="selectedOrder = o">{{ t('reqlog.btnDetail') }}</button></td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
     </section>
+    <DetailDrawer :open="!!selectedOrder" :title="selectedOrder?.order_no || t('recharge.recordsTitle')" @update:open="open => { if (!open) selectedOrder = null }">
+      <dl v-if="selectedOrder" class="detail-grid"><div><dt>ID</dt><dd>{{ selectedOrder.id }}</dd></div><div><dt>{{ t('recharge.colOrderNo') }}</dt><dd>{{ selectedOrder.order_no }}</dd></div><div><dt>{{ t('recharge.colStatus') }}</dt><dd>{{ statusLabel(selectedOrder.status) }}</dd></div><div><dt>{{ t('recharge.colAmount') }}</dt><dd>{{ selectedOrder.pay_amount }} {{ selectedOrder.pay_currency }}</dd></div><div><dt>USD</dt><dd>{{ selectedOrder.amount_usd }}</dd></div><div><dt>{{ t('recharge.colPayMethod') }}</dt><dd>{{ selectedOrder.provider }}</dd></div><div><dt>{{ t('recharge.colTradeNo') }}</dt><dd>{{ selectedOrder.trade_no || '—' }}</dd></div><div><dt>{{ t('recharge.colCreatedAt') }}</dt><dd>{{ d(new Date(selectedOrder.created_at * 1000), { dateStyle: 'short', timeStyle: 'medium' }) }}</dd></div></dl>
+    </DetailDrawer>
   </div>
 </template>

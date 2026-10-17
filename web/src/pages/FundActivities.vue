@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import DetailDrawer from '@/components/DetailDrawer.vue'
+import { useAuth } from '@/stores/auth'
 import { api, errorMessage, uuid } from '@/lib/api'
 interface Movement { id: number; operation_id: number; type: string; direction: string; status: string; currency: string; amount: string; posted_delta: string; held_delta: string; available_delta: string; ref_type: string; ref_id: string; quality: string; occurred_at: string | null; original_movement_id?: number; original_journal_id?: number; original_hold_id?: number; correction_proposal_id?: number; correction_review_id?: number; created_at: string; journal_id?: number; hold_id?: number }
 interface Operation { id: number; type: string; direction: string; requested_amount: string; currency: string; status: string; ref_id: string; failure_code?: string; created_at: string }
 interface Summary { posted_balance: string; held_amount: string; available_balance: string; movements: { direction: string; amount: string }[]; history_scope: string; net_change_usd: string; refund_usd: string; net_usage_usd: string }
 interface Detail { operation: Operation; movements: Movement[]; related_movements: Movement[]; related_has_more: boolean; events: { id: number; status: string; code: string; created_at: string }[] }
+const auth = useAuth()
+const selectedOperation = ref<number | null>(null), detailLoading = ref(false), detailError = ref('')
+let detailEpoch = 0, listEpoch = 0
+function closeDetail() { detailEpoch++; selectedOperation.value = null; detail.value = null; detailError.value = ''; detailLoading.value = false }
 const keyword = ref(''), refType = ref(''), failureCode = ref('')
 const view = ref('movements'), direction = ref(''), status = ref(''), type = ref(''), refID = ref(''), from = ref(''), until = ref('')
 const movements = ref<Movement[]>([]), operations = ref<Operation[]>([]), summary = ref<Summary | null>(null), detail = ref<Detail | null>(null)
@@ -16,11 +22,30 @@ const typeLabels: Record<string, string> = { topup: '充值', grant: '赠送', a
 const title = computed(() => view.value === 'movements' ? '已提交的资金变动' : '资金操作记录')
 function query(before = 0) { const p = new URLSearchParams({ view: view.value }); for (const [k, v] of Object.entries({ direction: direction.value, status: status.value, type: type.value, ref_id: refID.value, keyword: keyword.value, ref_type: refType.value, failure_code: view.value === 'operations' ? failureCode.value : '' })) if (v) p.set(k, v); if (from.value) p.set('from', new Date(from.value).toISOString()); if (until.value) p.set('until', new Date(until.value).toISOString()); if (before) p.set('before', String(before)); return p.toString() }
 async function load(more = false) {
-  loading.value = true; error.value = ''; detail.value = null
-  try { const q = query(more ? next.value : 0); const data = await api<{ items: Movement[] | Operation[]; next_before: number }>('GET', `/api/fund-activities?${q}`); if (view.value === 'movements') movements.value = more ? [...movements.value, ...(data.items as Movement[])] : data.items as Movement[]; else operations.value = more ? [...operations.value, ...(data.items as Operation[])] : data.items as Operation[]; next.value = data.next_before; if (!more) summary.value = await api<Summary>('GET', `/api/fund-summary?${query()}`) }
-  catch (e) { error.value = errorMessage(e, '无法读取资金记录') } finally { loading.value = false }
+  const current = ++listEpoch, org = auth.orgId, targetView = view.value
+  loading.value = true; error.value = ''; closeDetail()
+  try {
+    const data = await api<{ items: Movement[] | Operation[]; next_before: number }>('GET', `/api/fund-activities?${query(more ? next.value : 0)}`)
+    if (current !== listEpoch || org !== auth.orgId) return
+    if (targetView === 'movements') movements.value = more ? [...movements.value, ...(data.items as Movement[])] : data.items as Movement[]
+    else operations.value = more ? [...operations.value, ...(data.items as Operation[])] : data.items as Operation[]
+    next.value = data.next_before
+    if (!more) {
+      const value = await api<Summary>('GET', `/api/fund-summary?${query()}`)
+      if (current === listEpoch && org === auth.orgId) summary.value = value
+    }
+  } catch (e) { if (current === listEpoch && org === auth.orgId) error.value = errorMessage(e, '无法读取资金记录') }
+  finally { if (current === listEpoch) loading.value = false }
 }
-async function show(id: number) { error.value = ''; try { detail.value = await api<Detail>('GET', `/api/fund-activities/${id}`) } catch (e) { error.value = errorMessage(e, '记录不存在或无访问权限') } }
+async function show(id: number) {
+  closeDetail(); selectedOperation.value = id; detailLoading.value = true
+  const current = detailEpoch, org = auth.orgId
+  try {
+    const value = await api<Detail>('GET', `/api/fund-activities/${id}`)
+    if (current === detailEpoch && org === auth.orgId) detail.value = value
+  } catch (e) { if (current === detailEpoch && org === auth.orgId) detailError.value = errorMessage(e, '记录不存在或无访问权限') }
+  finally { if (current === detailEpoch) detailLoading.value = false }
+}
 async function download() {
   exporting.value = true; error.value = ''; notice.value = ''
   try {
@@ -44,6 +69,8 @@ async function downloadReady() {
     notice.value = `已下载 ${data.rows} 条快照资金变动。`
   } catch (e) { error.value = errorMessage(e, '下载失败') } finally { exporting.value = false }
 }
+watch(() => auth.orgId, () => { closeDetail(); movements.value = []; operations.value = []; summary.value = null; exportJob.value = null; notice.value = ''; void load() })
+onBeforeUnmount(() => { listEpoch++; closeDetail() })
 onMounted(() => load())
 </script>
 
@@ -61,7 +88,7 @@ onMounted(() => load())
       <table v-else><thead><tr><th>时间 / 类型</th><th>意图方向</th><th>申请金额</th><th>状态</th><th>结果 / 关联</th><th>详情</th></tr></thead><tbody><tr v-for="r in operations" :key="r.id"><td>{{ r.created_at }}<small>{{ typeLabels[r.type] || r.type }}</small></td><td>{{ directionLabels[r.direction] }}</td><td>${{ r.requested_amount }}</td><td>{{ statusLabels[r.status] || r.status }}</td><td>{{ r.failure_code || r.ref_id || '—' }}</td><td><button @click="show(r.id)">查看 #{{ r.id }}</button></td></tr><tr v-if="!operations.length && !loading"><td colspan="6" class="empty">当前筛选范围没有操作记录</td></tr></tbody></table></div>
       <button v-if="next" class="more" :disabled="loading" @click="load(true)">加载更早记录</button>
     </section>
-    <section v-if="detail" class="panel detail" aria-label="操作详情"><div class="detail-heading"><h2>操作 #{{ detail.operation.id }} · {{ statusLabels[detail.operation.status] }}</h2><button @click="detail = null">关闭详情</button></div><p>关联：{{ detail.operation.ref_id || '—' }} · 申请 ${{ detail.operation.requested_amount }}</p><ol><li v-for="event in detail.events" :key="event.id">{{ event.created_at }} · {{ statusLabels[event.status] || event.status }} {{ event.code }}</li></ol><p v-if="!detail.movements.length">没有已提交资金变动。该操作不计入扣费汇总。</p><p v-if="detail.related_movements.length">同一业务关联的冻结、扣费、解冻和调整（最多 100 条）</p><div v-for="m in (detail.related_movements.length ? detail.related_movements : detail.movements)" :key="m.id" class="movement-detail"><strong>{{ directionLabels[m.direction] }} ${{ m.amount }}</strong><span>账面 {{ m.posted_delta }} / 冻结 {{ m.held_delta }} / 可用 {{ m.available_delta }}</span><small>记账凭证 {{ m.journal_id || '无（冻结或解冻）' }} · 冻结单 {{ m.hold_id || '无' }} · {{ m.quality }}</small><small v-if="m.correction_proposal_id">纠正原冻结单 #{{ m.original_hold_id }} / 原凭证 #{{ m.original_journal_id || '无' }} · 提案 #{{ m.correction_proposal_id }} / 审核 #{{ m.correction_review_id }}。原记录保留，此项为已审核的退款或补扣。</small></div></section>
+    <DetailDrawer :open="selectedOperation !== null" :title="`资金操作 #${selectedOperation ?? ''}`" size="lg" @update:open="open => { if (!open) closeDetail() }"><p v-if="detailLoading" role="status">正在读取详情…</p><p v-if="detailError" class="text-danger" role="alert">{{ detailError }}</p><section v-if="detail"><h2>{{ statusLabels[detail.operation.status] || detail.operation.status }}</h2><p>关联：{{ detail.operation.ref_id || '—' }} · 申请 ${{ detail.operation.requested_amount }}</p><ol><li v-for="event in detail.events" :key="event.id">{{ event.created_at }} · {{ statusLabels[event.status] || event.status }} {{ event.code }}</li></ol><p v-if="!detail.movements.length">没有已提交资金变动。该操作不计入扣费汇总。</p><p v-if="detail.related_movements.length">同一业务关联的冻结、扣费、解冻和调整（最多 100 条）</p><div v-for="m in (detail.related_movements.length ? detail.related_movements : detail.movements)" :key="m.id" class="movement-detail"><strong>{{ directionLabels[m.direction] }} ${{ m.amount }}</strong><span>账面 {{ m.posted_delta }} / 冻结 {{ m.held_delta }} / 可用 {{ m.available_delta }}</span><small>记账凭证 {{ m.journal_id || '无（冻结或解冻）' }} · 冻结单 {{ m.hold_id || '无' }} · {{ m.quality }}</small><small v-if="m.correction_proposal_id">纠正原冻结单 #{{ m.original_hold_id }} / 原凭证 #{{ m.original_journal_id || '无' }} · 提案 #{{ m.correction_proposal_id }} / 审核 #{{ m.correction_review_id }}。原记录保留，此项为已审核的退款或补扣。</small></div></section></DetailDrawer>
   </main>
 </template>
 
