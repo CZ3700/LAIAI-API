@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { api, errorMessage, uuid } from '@/lib/api'
+import OfficialVideoPriceCatalog from '@/components/OfficialVideoPriceCatalog.vue'
+import DetailDrawer from '@/components/DetailDrawer.vue'
+import { useAuth } from '@/stores/auth'
 
 interface Cell { mode: string; resolution: string; input_video: boolean; service_tier: string; draft: boolean; enabled: boolean; retail_usd_per_1m: string; supplier_cny_per_1m: string; risk_multiplier: string; minimum_rule_version: string; available: boolean; unavailable_reason?: string }
 interface Pricing { model: string; config_version: string; pricing_version: string; capability_version: string; enabled: boolean; cells: Cell[]; fx_usd_per_cny: string; fx_version: string; fx_observed_at: string; ratios: string[]; min_duration: number; max_duration: number }
@@ -12,42 +15,83 @@ const loading = ref(false), busy = ref(false), error = ref(''), notice = ref('')
 const configVersion = ref(''), priceVersion = ref(''), evidenceHash = ref('')
 const previews = ref<Preview[]>([]), revisions = ref<Revision[]>([]), minimums = ref<Minimum[]>([])
 const minimumJSON = ref(''), selectedRevision = ref<Revision | null>(null)
+const auth = useAuth()
+let loadGeneration = 0
+let operationGeneration = 0
+const revisionOpen = computed({ get: () => selectedRevision.value !== null, set: (open: boolean) => { if (!open) selectedRevision.value = null } })
 const validatedBody = ref(''), publishKey = ref(uuid())
 const base = computed(() => `/api/admin/video/models/${encodeURIComponent(model.value)}/pricing`)
 const body = computed(() => ({ expected_config_version: pricing.value?.config_version ?? '', config_version: configVersion.value, pricing_version: priceVersion.value, evidence_hash: evidenceHash.value, cells: pricing.value?.cells ?? [] }))
 const canPublish = computed(() => validatedBody.value !== '' && validatedBody.value === JSON.stringify(body.value) && !busy.value)
 watch(body, () => { publishKey.value = uuid() }, { deep: true })
 async function load() {
-  loading.value = true; error.value = ''; pricing.value = null; previews.value = []; validatedBody.value = ''
+  const generation = ++loadGeneration
+  ++operationGeneration; busy.value = false
+  loading.value = true; error.value = ''; notice.value = ''; pricing.value = null; previews.value = []; validatedBody.value = ''; selectedRevision.value = null; revisions.value = []; minimums.value = []
   try {
     const [data, history, minimum] = await Promise.all([api<Pricing>('GET', base.value), api<{ items: Revision[] }>('GET', `${base.value}/revisions`), api<{ items: Minimum[] }>('GET', `${base.value}/minimum-rules`)])
+    if (generation !== loadGeneration) return
     pricing.value = data; revisions.value = history.items; minimums.value = minimum.items
     configVersion.value = ''; priceVersion.value = ''; evidenceHash.value = ''
-  } catch (e) { error.value = errorMessage(e, '无法加载已核验的视频配置') } finally { loading.value = false }
+  } catch (e) { if (generation === loadGeneration) error.value = errorMessage(e, '无法加载已核验的视频配置') } finally { if (generation === loadGeneration) loading.value = false }
 }
 async function validate() {
+  const generation = loadGeneration, operation = ++operationGeneration
+  const endpoint = base.value, snapshot = JSON.stringify(body.value)
+  const current = () => generation === loadGeneration && operation === operationGeneration
   busy.value = true; error.value = ''; notice.value = ''; validatedBody.value = ''
-  try { const result = await api<{ preview: Preview[] }>('POST', `${base.value}/validate`, body.value); previews.value = result.preview; validatedBody.value = JSON.stringify(body.value); notice.value = '校验通过。预览使用已核验上界，未发起生成请求。' }
-  catch (e) { error.value = errorMessage(e, '校验失败，请检查版本、金额和最低量覆盖') } finally { busy.value = false }
+  try {
+    const result = await api<{ preview: Preview[] }>('POST', `${endpoint}/validate`, JSON.parse(snapshot))
+    if (!current() || snapshot !== JSON.stringify(body.value)) return
+    previews.value = result.preview; validatedBody.value = snapshot; notice.value = '校验通过。预览使用已核验上界，未发起生成请求。'
+  } catch (e) { if (current()) error.value = errorMessage(e, '校验失败，请检查版本、金额和最低量覆盖') }
+  finally { if (current()) busy.value = false }
 }
 async function publish() {
   if (!canPublish.value) return
+  const generation = loadGeneration, operation = ++operationGeneration
+  const endpoint = base.value, snapshot = JSON.stringify(body.value), idempotencyKey = publishKey.value
+  const current = () => generation === loadGeneration && operation === operationGeneration
   busy.value = true; error.value = ''
-  try { await api('POST', `${base.value}/publications`, body.value, { headers: { 'Idempotency-Key': publishKey.value } }); await load(); notice.value = '新价格版本已发布。历史任务仍使用创建时快照。' }
-  catch (e) { error.value = errorMessage(e, '发布失败；版本冲突时请刷新后重新编辑') } finally { busy.value = false }
+  try {
+    await api('POST', `${endpoint}/publications`, JSON.parse(snapshot), { headers: { 'Idempotency-Key': idempotencyKey } })
+    if (!current()) return
+    const refreshedGeneration = loadGeneration + 1
+    await load()
+    if (loadGeneration === refreshedGeneration) notice.value = '新价格版本已发布。历史任务仍使用创建时快照。'
+  } catch (e) { if (current()) error.value = errorMessage(e, '发布失败；版本冲突时请刷新后重新编辑') }
+  finally { if (current()) busy.value = false }
 }
 async function importMinimum() {
+  const generation = loadGeneration, operation = ++operationGeneration
+  const endpoint = base.value, snapshot = minimumJSON.value
+  const current = () => generation === loadGeneration && operation === operationGeneration
   busy.value = true; error.value = ''; notice.value = ''
-  try { await api('POST', `${base.value}/minimum-rules`, JSON.parse(minimumJSON.value)); const result = await api<{ items: Minimum[] }>('GET', `${base.value}/minimum-rules`); minimums.value = result.items; minimumJSON.value = ''; validatedBody.value = ''; notice.value = '最低量证据版本已登记。发布价格前仍需校验完整覆盖。' }
-  catch (e) { error.value = errorMessage(e, '最低量 JSON 或证据字段无效') } finally { busy.value = false }
+  try {
+    await api('POST', `${endpoint}/minimum-rules`, JSON.parse(snapshot))
+    if (!current()) return
+    const result = await api<{ items: Minimum[] }>('GET', `${endpoint}/minimum-rules`)
+    if (!current()) return
+    minimums.value = result.items
+    if (minimumJSON.value === snapshot) minimumJSON.value = ''
+    validatedBody.value = ''; notice.value = '最低量证据版本已登记。发布价格前仍需校验完整覆盖。'
+  } catch (e) { if (current()) error.value = errorMessage(e, '最低量 JSON 或证据字段无效') }
+  finally { if (current()) busy.value = false }
 }
 function revisionText(r: Revision) { try { return JSON.stringify(JSON.parse(r.snapshot_json), null, 2) } catch { return r.snapshot_json } }
+watch(() => [auth.orgId, auth.token], () => {
+  ++loadGeneration; ++operationGeneration; busy.value = false; error.value = ''; notice.value = ''; selectedRevision.value = null; revisions.value = []; minimums.value = []; pricing.value = null; previews.value = []; minimumJSON.value = ''; validatedBody.value = ''
+  if (auth.isAuthed) void load()
+})
+onDeactivated(() => { selectedRevision.value = null })
+onBeforeUnmount(() => { ++loadGeneration; ++operationGeneration; selectedRevision.value = null })
 onMounted(load)
 </script>
 
 <template>
   <main class="video-pricing-page">
-    <header class="page-heading"><div><h1>视频定价</h1><p>创建时冻结上限，成功后按官方 Token 用量结算。输入 Token 为 0 表示官方不单独计量输入。</p></div><label>模型 <select v-model="model" :disabled="busy || loading" @change="load"><option>seedance-2.0</option><option>seedance-2.5</option></select></label></header>
+    <header class="page-heading"><div><h1>视频定价</h1><p>创建时冻结上限，成功后按官方 Token 用量结算。输入 Token 为 0 表示官方不单独计量输入。</p></div><label>收费配置模型 <select v-model="model" :disabled="busy || loading" @change="load"><option>seedance-2.0</option><option>seedance-2.5</option></select></label></header>
+    <section class="panel"><OfficialVideoPriceCatalog /></section>
     <p v-if="error" class="message error" role="alert">{{ error }}</p><p v-if="notice" class="message success" role="status">{{ notice }}</p>
     <p v-if="loading" aria-live="polite">正在读取价格和证据版本…</p>
     <template v-else-if="pricing">
@@ -58,10 +102,11 @@ onMounted(load)
         <div class="actions"><button :disabled="busy" @click="validate">校验并预览</button><button class="primary" :disabled="!canPublish" @click="publish">发布已校验版本</button><span>启用范围：{{ pricing.ratios.join('、') }}，{{ pricing.min_duration }}–{{ pricing.max_duration }} 秒</span></div>
       </section>
       <section v-if="previews.length" class="panel"><h2>预冻结上界预览</h2><p>按有效倍率 1 计算，覆盖当前能力全部比例和时长；实际组织倍率与请求参数以任务快照为准。冻结金额不是最终扣费。</p><div class="table-scroll"><table><thead><tr><th>组合</th><th>估算 Token 上界</th><th>客户冻结上界 USD</th><th>供应商预留 CNY</th></tr></thead><tbody><tr v-for="p in previews" :key="p.key"><td>{{ p.key }}</td><td>{{ p.maximum_estimated_tokens }}</td><td>{{ p.maximum_hold_usd }}</td><td>{{ p.supplier_reserved_cny }}</td></tr></tbody></table></div></section>
-      <section class="panel"><h2>官方最低量证据</h2><p>按分辨率、比例、输出时长及帧率登记，不能使用单个最小 Token 值替代整张表。登记代表当前实名管理员已人工核验来源，不代表系统自动证明真实性。</p><details><summary>导入新证据版本</summary><p>JSON 字段：version、source_url、evidence_hash、observed_at，以及 cells 数组；每项包含 resolution、ratio、output_duration_ms、fps、minimum_tokens。仅接受官方来源 HTTPS 地址，禁止填写未核验数值。</p><textarea v-model="minimumJSON" rows="8" aria-label="官方最低量 JSON" spellcheck="false" placeholder="粘贴经过核验的结构化最低量表"></textarea><button :disabled="busy || !minimumJSON.trim()" @click="importMinimum">确认已人工核验并登记</button></details><ul v-if="minimums.length"><li v-for="m in minimums" :key="m.id"><strong>{{ m.version }}</strong> · <a :href="m.source_url" target="_blank" rel="noopener noreferrer">官方来源</a> · 核验人 #{{ m.verified_by }} · {{ m.verified_at }}<small>{{ m.evidence_hash }}</small></li></ul><p v-else>尚无已核验最低量表。参考视频组合不可发布。</p></section>
-      <section class="panel"><h2>发布历史</h2><p v-if="!revisions.length">尚无通过本页发布的版本。当前价格仍显示在上方。</p><div class="history"><button v-for="r in revisions" :key="r.id" @click="selectedRevision = selectedRevision?.id === r.id ? null : r">{{ r.version }} · #{{ r.created_by }} · {{ r.created_at }}</button></div><pre v-if="selectedRevision">{{ revisionText(selectedRevision) }}</pre></section>
+      <section class="panel"><h2>官方最低量证据</h2><p>按分辨率、比例、输出时长及帧率登记，不能使用单个最小 Token 值替代整张表。登记代表当前实名管理员已人工核验来源，不代表系统自动证明真实性。上方参考目录中的估算下界不可直接作为本入口的已核验收费规则。</p><details><summary>导入新证据版本</summary><p>JSON 字段：version、source_url、evidence_hash、observed_at，以及 cells 数组；每项包含 resolution、ratio、output_duration_ms、fps、minimum_tokens。仅接受官方来源 HTTPS 地址，禁止填写未核验数值。</p><textarea v-model="minimumJSON" rows="8" aria-label="官方最低量 JSON" spellcheck="false" placeholder="粘贴经过核验的结构化最低量表"></textarea><button :disabled="busy || !minimumJSON.trim()" @click="importMinimum">确认已人工核验并登记</button></details><ul v-if="minimums.length"><li v-for="m in minimums" :key="m.id"><strong>{{ m.version }}</strong> · <a :href="m.source_url" target="_blank" rel="noopener noreferrer">官方来源</a> · 核验人 #{{ m.verified_by }} · {{ m.verified_at }}<small>{{ m.evidence_hash }}</small></li></ul><p v-else>尚无已核验最低量表。参考视频组合不可发布。</p></section>
+      <section class="panel"><h2>发布历史</h2><p v-if="!revisions.length">尚无通过本页发布的版本。当前价格仍显示在上方。</p><div class="history"><button v-for="r in revisions" :key="r.id" @click="selectedRevision = r">{{ r.version }} · #{{ r.created_by }} · {{ r.created_at }}</button></div></section>
     </template>
     <section v-else-if="!loading" class="panel"><p>模型尚未配置或缺少实名超管权限。请先完成渠道与能力核验。</p><button @click="load">重新加载</button></section>
+    <DetailDrawer v-model:open="revisionOpen" title="价格发布详情" size="lg" description="历史发布快照，只读查看；不修改当前价格。"><template v-if="selectedRevision"><p>{{ selectedRevision.version }} · 配置 {{ selectedRevision.config_version }} · #{{ selectedRevision.created_by }} · {{ selectedRevision.created_at }}</p><pre>{{ revisionText(selectedRevision) }}</pre></template></DetailDrawer>
   </main>
 </template>
 

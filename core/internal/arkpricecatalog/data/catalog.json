@@ -1,0 +1,1166 @@
+{
+  "schema_version": 1,
+  "version": "ark-official-2026-10-17-v1",
+  "title": "火山方舟视频生成模型官方参考目录",
+  "tables": [
+    {
+      "id": "seedance-2.5-prices",
+      "reference_video_scope": "per_row_input_duration",
+      "title": "Seedance 2.5 价格",
+      "series": [
+        "2.5"
+      ],
+      "status": "captured",
+      "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblwgvQd3CUQ9K6j&view=vew7f33fzS",
+      "table_id": "tblwgvQd3CUQ9K6j",
+      "view_id": "vew7f33fzS",
+      "captured_at": "2026-10-17T13:45:19Z",
+      "raw_file": "seedance-2.5-prices.tsv",
+      "raw_sha256": "45ed01c15034a1671520689706ef3f96b174ec2c9ab46ebeee8d20a1c9726a9c",
+      "expected_rows": 48,
+      "headers": [
+        "索引",
+        "单价",
+        "时长-输入视频（秒）",
+        "时长-输出视频（秒）",
+        "用量（token）",
+        "视频价格",
+        "分辨率",
+        "画面比例",
+        "长边×短边",
+        "帧率"
+      ],
+      "columns": [
+        {
+          "semantic": "series",
+          "unit": "",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "supplier_token_price",
+          "unit": "CNY/1M_tokens",
+          "precision": "exact"
+        },
+        {
+          "semantic": "input_duration",
+          "unit": "second",
+          "precision": "exact"
+        },
+        {
+          "semantic": "output_duration",
+          "unit": "second",
+          "precision": "exact"
+        },
+        {
+          "semantic": "estimated_tokens",
+          "unit": "token",
+          "precision": "estimated"
+        },
+        {
+          "semantic": "reference_video_amount",
+          "unit": "CNY/video",
+          "precision": "rounded"
+        },
+        {
+          "semantic": "resolution",
+          "unit": "",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "ratio",
+          "unit": "",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "dimensions",
+          "unit": "pixel",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "fps",
+          "unit": "fps",
+          "precision": "exact"
+        }
+      ],
+      "notes": [
+        "原表“索引”列显示系列名 2.5，不是已核验的官方部署模型 ID。",
+        "单价单位为 CNY / 百万 Token；视频价格为舍入后的示例金额，不能当成额外最低扣费金额。",
+        "表中用量属于估算参考，最终用量以官方 usage.completion_tokens 为准。本目录不导入或启用最低量规则。"
+      ]
+    },
+    {
+      "id": "seedance-2.5-minimum",
+      "reference_video_scope": "requires_reference_video",
+      "title": "seedance-2.5系列最低token限制（仅针对含输入视频时）",
+      "series": [
+        "2.5"
+      ],
+      "status": "captured",
+      "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblheIYDXXwYM43b&view=vewPa39Do4",
+      "table_id": "tblheIYDXXwYM43b",
+      "view_id": "vewPa39Do4",
+      "notes": [
+        "此表仅针对含输入视频的场景。官方最低 Token 表属于估算参考，最终以 usage.completion_tokens 为准，不直接导入或启用计费最低量规则。",
+        "原始 339 行与官方明细视图页脚数量核对一致；保留原表空白、关联列和合并显示的比例，不进行展开、插值或反推。",
+        "原表 Model ID 空白时继续保留空白，不用系列名伪造官方部署 ID。"
+      ],
+      "captured_at": "2026-10-17T14:10:42.585Z",
+      "raw_file": "seedance-2.5-minimum.tsv",
+      "raw_sha256": "7c658f40bfe41ab3506e3cb42ccf7581297fa6149b87375be7ec99716835925d",
+      "expected_rows": 339,
+      "headers": [
+        "Model ID",
+        "时长-输入视频（秒）",
+        "时长-输出视频（秒）",
+        "最低token用量",
+        "分辨率",
+        "画面比例",
+        "长边（像素）",
+        "短边（像素）",
+        "帧率",
+        "父记录",
+        "短边（像素）(1)",
+        "帧率(1)"
+      ],
+      "columns": [
+        {
+          "semantic": "model_id",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "input_duration",
+          "unit": "second",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "output_duration",
+          "unit": "second",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "minimum_tokens",
+          "unit": "token",
+          "precision": "estimated",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "resolution",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "ratio",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "dimension_pixels",
+          "unit": "pixel",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "dimension_pixels",
+          "unit": "pixel",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "fps",
+          "unit": "fps",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "context",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "dimension_pixels",
+          "unit": "pixel",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "fps",
+          "unit": "fps",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "seedance-2.0-prices",
+      "title": "Seedance 2.0 价格",
+      "series": [
+        "2.0",
+        "2.0fast",
+        "2.0mini"
+      ],
+      "status": "captured",
+      "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblns3WjGMNbR8sL",
+      "table_id": "tblns3WjGMNbR8sL",
+      "view_id": null,
+      "notes": [
+        "官方表可见的 seedance-2.0 / seedance-2.0-fast / seedance-2.0-mini 三个视图分别采集 52 / 26 / 26 行，共 104 行；逐视图保留原始文件、行序、来源和摘要。",
+        "原表“索引”显示系列标签，不用它伪造官方部署模型 ID；4k 等原始枚举仅供查阅，不代表当前平台已经支持或启用。",
+        "单价为 CNY / 百万 Token，视频价格为舍入后的示例金额，用量为估算参考；最终用量以 usage.completion_tokens 为准，不反推或启用最低量规则。",
+        "Fast / Mini 仅作为官方参考目录收录，不新增部署模型 ID、平台能力或商业售价，也不发布任何新组合。"
+      ],
+      "captured_at": null,
+      "raw_file": "",
+      "raw_sha256": "",
+      "expected_rows": 104,
+      "reference_video_scope": "per_row_input_duration",
+      "headers": [
+        "索引",
+        "单价",
+        "时长-输入视频（秒）",
+        "时长-输出视频（秒）",
+        "用量（token）",
+        "视频价格",
+        "分辨率",
+        "画面比例",
+        "长边×短边",
+        "帧率"
+      ],
+      "columns": [
+        {
+          "semantic": "series",
+          "unit": "",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "supplier_token_price",
+          "unit": "CNY/1M_tokens",
+          "precision": "exact"
+        },
+        {
+          "semantic": "input_duration",
+          "unit": "second",
+          "precision": "exact"
+        },
+        {
+          "semantic": "output_duration",
+          "unit": "second",
+          "precision": "exact"
+        },
+        {
+          "semantic": "estimated_tokens",
+          "unit": "token",
+          "precision": "estimated"
+        },
+        {
+          "semantic": "reference_video_amount",
+          "unit": "CNY/video",
+          "precision": "rounded"
+        },
+        {
+          "semantic": "resolution",
+          "unit": "",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "ratio",
+          "unit": "",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "dimensions",
+          "unit": "pixel",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "fps",
+          "unit": "fps",
+          "precision": "exact"
+        }
+      ],
+      "expected_views": [
+        "vew7f33fzS",
+        "vewAf9cSae",
+        "vewFrH7ax8"
+      ],
+      "captures": [
+        {
+          "title": "seedance-2.0",
+          "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblns3WjGMNbR8sL&view=vew7f33fzS",
+          "view_id": "vew7f33fzS",
+          "captured_at": "2026-10-17T14:12:25.700Z",
+          "raw_file": "seedance-2.0-prices.tsv",
+          "raw_sha256": "51820151891038ae6cad7efaa4db4132a939c46a08b826e04e96c55988b674d2",
+          "expected_rows": 52
+        },
+        {
+          "title": "seedance-2.0-fast",
+          "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblns3WjGMNbR8sL&view=vewAf9cSae",
+          "view_id": "vewAf9cSae",
+          "captured_at": "2026-10-17T14:14:31.824Z",
+          "raw_file": "seedance-2.0-fast-prices.tsv",
+          "raw_sha256": "a1012d4429dfdb39e633d8f2840094d3b6fc706ae179461d1de3027487c64e62",
+          "expected_rows": 26
+        },
+        {
+          "title": "seedance-2.0-mini",
+          "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblns3WjGMNbR8sL&view=vewFrH7ax8",
+          "view_id": "vewFrH7ax8",
+          "captured_at": "2026-10-17T14:18:59.432Z",
+          "raw_file": "seedance-2.0-mini-prices.tsv",
+          "raw_sha256": "5ebbbc6a171376c7fd3f22157f8657a51b7f734a9c7db87a6eca8ba81835a552",
+          "expected_rows": 26
+        }
+      ]
+    },
+    {
+      "id": "seedance-2.0-minimum",
+      "title": "seedance-2.0系列最低token限制（仅针对含输入视频时）",
+      "series": [
+        "2.0"
+      ],
+      "status": "captured",
+      "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblmNCuMjADrXtDf",
+      "table_id": "tblmNCuMjADrXtDf",
+      "view_id": null,
+      "notes": [
+        "官方最低 Token 表为估算下界参考，仅针对含输入视频的场景；最终用量以 usage.completion_tokens 为准，不直接导入或启用计费最低量规则。",
+        "480p、720p、1080p、4k 四个视图各 48 行，共 192 行。前三个视图原始 6 列，分辨率来自视图上下文；4k 视图原始 7 列，含分辨率列。逐视图保留原始结构，不补列或重排。",
+        "原表 Model ID 空白继续保留；适用范围沿用原表“2.0 系列”文字，不根据空白自行推定所有变体或平台已经支持。"
+      ],
+      "captured_at": null,
+      "raw_file": "",
+      "raw_sha256": "",
+      "expected_rows": 192,
+      "reference_video_scope": "requires_reference_video",
+      "headers": [
+        "Model ID",
+        "时长-输出视频（秒）",
+        "最低token用量",
+        "画面比例",
+        "长边（像素）",
+        "短边（像素）"
+      ],
+      "columns": [
+        {
+          "semantic": "model_id",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "output_duration",
+          "unit": "second",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "minimum_tokens",
+          "unit": "token",
+          "precision": "estimated",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "ratio",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "dimension_pixels",
+          "unit": "pixel",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "dimension_pixels",
+          "unit": "pixel",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        }
+      ],
+      "expected_views": [
+        "vew2CR2JYM",
+        "vewVBehIlq",
+        "vewQ2CK6dj",
+        "vewrMAE6IZ"
+      ],
+      "captures": [
+        {
+          "title": "最低tokens-480p",
+          "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblmNCuMjADrXtDf&view=vew2CR2JYM",
+          "view_id": "vew2CR2JYM",
+          "captured_at": "2026-10-17T14:23:01.169Z",
+          "raw_file": "seedance-2.0-minimum-480p.tsv",
+          "raw_sha256": "94e2598e88f886ca082877d2e166e8917992f31adb68b8b3a3003d0fe95361bf",
+          "expected_rows": 48,
+          "resolution": "480p",
+          "headers": [
+            "Model ID",
+            "时长-输出视频（秒）",
+            "最低token用量",
+            "画面比例",
+            "长边（像素）",
+            "短边（像素）"
+          ],
+          "columns": [
+            {
+              "semantic": "model_id",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "output_duration",
+              "unit": "second",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "minimum_tokens",
+              "unit": "token",
+              "precision": "estimated",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "ratio",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "title": "最低tokens-720p",
+          "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblmNCuMjADrXtDf&view=vewVBehIlq",
+          "view_id": "vewVBehIlq",
+          "captured_at": "2026-10-17T14:26:36.756Z",
+          "raw_file": "seedance-2.0-minimum-720p.tsv",
+          "raw_sha256": "9caba96a5ad810ea9673f5b26a114a5d8e35f8f7324fd240f2a9722136194e35",
+          "expected_rows": 48,
+          "resolution": "720p",
+          "headers": [
+            "Model ID",
+            "时长-输出视频（秒）",
+            "最低token用量",
+            "画面比例",
+            "长边（像素）",
+            "短边（像素）"
+          ],
+          "columns": [
+            {
+              "semantic": "model_id",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "output_duration",
+              "unit": "second",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "minimum_tokens",
+              "unit": "token",
+              "precision": "estimated",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "ratio",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "title": "最低tokens-1080p",
+          "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblmNCuMjADrXtDf&view=vewQ2CK6dj",
+          "view_id": "vewQ2CK6dj",
+          "captured_at": "2026-10-17T14:30:22.942Z",
+          "raw_file": "seedance-2.0-minimum-1080p.tsv",
+          "raw_sha256": "cfd5ff77650b9f3cda59290ba0a9a8fd266c30970c468ba7bacb0b577b7cde3b",
+          "expected_rows": 48,
+          "resolution": "1080p",
+          "headers": [
+            "Model ID",
+            "时长-输出视频（秒）",
+            "最低token用量",
+            "画面比例",
+            "长边（像素）",
+            "短边（像素）"
+          ],
+          "columns": [
+            {
+              "semantic": "model_id",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "output_duration",
+              "unit": "second",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "minimum_tokens",
+              "unit": "token",
+              "precision": "estimated",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "ratio",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "title": "最低tokens-4k",
+          "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblmNCuMjADrXtDf&view=vewrMAE6IZ",
+          "view_id": "vewrMAE6IZ",
+          "captured_at": "2026-10-17T14:34:27.161Z",
+          "raw_file": "seedance-2.0-minimum-4k.tsv",
+          "raw_sha256": "2b6adc1eef391a3f62ef4b45f28df6679de77729ade522a337ed679768086dd1",
+          "expected_rows": 48,
+          "resolution": "4k",
+          "headers": [
+            "Model ID",
+            "时长-输出视频（秒）",
+            "最低token用量",
+            "分辨率",
+            "画面比例",
+            "长边（像素）",
+            "短边（像素）"
+          ],
+          "columns": [
+            {
+              "semantic": "model_id",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "output_duration",
+              "unit": "second",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "minimum_tokens",
+              "unit": "token",
+              "precision": "estimated",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "resolution",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "ratio",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "seedance-1.5-prices",
+      "title": "seedance-1.5系列",
+      "series": [
+        "1.5"
+      ],
+      "status": "captured",
+      "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblyYwswtJHVhCLb&view=vewJGEMo3E",
+      "table_id": "tblyYwswtJHVhCLb",
+      "view_id": "vewJGEMo3E",
+      "notes": [
+        "唯一可见 seedance-1.5-pro 视图原始 12 行、14 列。无声 / 有声单价分别保留，单位为 CNY / 百万 Token。",
+        "有声、Draft 有声、无声、Draft 无声四个视频价格列保留原样，均为示例视频的舍入金额；不是最低收费金额。720p / 1080p 的 Draft 价格空白继续保留，不视作免费或自动补价。",
+        "此表未提供参考视频输入时长维度；“是否支持draft功能”保留官方原文，目录不会据此启用平台能力、增加模型配置或修改客户售价。"
+      ],
+      "captured_at": "2026-10-17T14:36:47.386Z",
+      "raw_file": "seedance-1.5-prices.tsv",
+      "raw_sha256": "388d195f91cc55921ec079a2aedd9a1c90b6d81de5cb7d825483bb827bf1b8d9",
+      "expected_rows": 12,
+      "reference_video_scope": "unspecified",
+      "headers": [
+        "Model ID",
+        "无声单价",
+        "有声单价",
+        "分辨率",
+        "画面比例",
+        "长边（像素）",
+        "短边（像素）",
+        "帧率",
+        "时长（秒）",
+        "是否支持draft功能",
+        "有声视频价格",
+        "Draft有声视频价格",
+        "无声视频价格",
+        "Draft无声视频价格"
+      ],
+      "columns": [
+        {
+          "semantic": "model_id",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "supplier_token_price",
+          "unit": "CNY/1M_tokens",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "supplier_token_price",
+          "unit": "CNY/1M_tokens",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "resolution",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "ratio",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "dimension_pixels",
+          "unit": "pixel",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "dimension_pixels",
+          "unit": "pixel",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "fps",
+          "unit": "fps",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "output_duration",
+          "unit": "second",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "context",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "reference_video_amount",
+          "unit": "CNY/video",
+          "precision": "rounded",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "reference_video_amount",
+          "unit": "CNY/video",
+          "precision": "rounded",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "reference_video_amount",
+          "unit": "CNY/video",
+          "precision": "rounded",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "reference_video_amount",
+          "unit": "CNY/video",
+          "precision": "rounded",
+          "missing_values": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "seedance-1.0-prices",
+      "title": "seedance-1.0系列",
+      "series": [
+        "1.0"
+      ],
+      "status": "captured",
+      "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tbl9E3YrLJ3n8Bk5",
+      "table_id": "tbl9E3YrLJ3n8Bk5",
+      "view_id": null,
+      "notes": [
+        "官方可见 seedance-1.0-pro / seedance-1.0-pro-fast 两个视图分别 12 行，共 24 行，各原始 9 列；逐视图保留原始字节、来源、时间和摘要。",
+        "单价为 CNY / 百万 Token，视频价格为原表舍入后的示例金额，不能当成额外最低收费金额。",
+        "表内未给出的参考视频输入、音频、在线/离线折扣等条件不推断；收录 1.0 系列不会增加平台能力、修改售价或发布新组合。"
+      ],
+      "captured_at": null,
+      "raw_file": "",
+      "raw_sha256": "",
+      "expected_rows": 24,
+      "reference_video_scope": "unspecified",
+      "headers": [
+        "Model ID",
+        "单价",
+        "分辨率",
+        "画面比例",
+        "长边（像素）",
+        "短边（像素）",
+        "帧率",
+        "时长（秒）",
+        "视频价格"
+      ],
+      "columns": [
+        {
+          "semantic": "model_id",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "supplier_token_price",
+          "unit": "CNY/1M_tokens",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "resolution",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "ratio",
+          "unit": "",
+          "precision": "not_applicable",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "dimension_pixels",
+          "unit": "pixel",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "dimension_pixels",
+          "unit": "pixel",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "fps",
+          "unit": "fps",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "output_duration",
+          "unit": "second",
+          "precision": "exact",
+          "missing_values": [
+            ""
+          ]
+        },
+        {
+          "semantic": "reference_video_amount",
+          "unit": "CNY/video",
+          "precision": "rounded",
+          "missing_values": [
+            ""
+          ]
+        }
+      ],
+      "expected_views": [
+        "vewltUCWg2",
+        "vewc6F7QJj"
+      ],
+      "captures": [
+        {
+          "title": "seedance-1.0-pro",
+          "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tbl9E3YrLJ3n8Bk5&view=vewltUCWg2",
+          "view_id": "vewltUCWg2",
+          "captured_at": "2026-10-17T14:42:05.217Z",
+          "raw_file": "seedance-1.0-prices.tsv",
+          "raw_sha256": "a314dee40aa6c9b0f39dd27ffaebe061bc8edbb5063725b3c3c81725a156f0ce",
+          "expected_rows": 12,
+          "headers": [
+            "Model ID",
+            "单价",
+            "分辨率",
+            "画面比例",
+            "长边（像素）",
+            "短边（像素）",
+            "帧率",
+            "时长（秒）",
+            "视频价格"
+          ],
+          "columns": [
+            {
+              "semantic": "model_id",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "supplier_token_price",
+              "unit": "CNY/1M_tokens",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "resolution",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "ratio",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "fps",
+              "unit": "fps",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "output_duration",
+              "unit": "second",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "reference_video_amount",
+              "unit": "CNY/video",
+              "precision": "rounded",
+              "missing_values": [
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "title": "seedance-1.0-pro-fast",
+          "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tbl9E3YrLJ3n8Bk5&view=vewc6F7QJj",
+          "view_id": "vewc6F7QJj",
+          "captured_at": "2026-10-17T14:43:41.251Z",
+          "raw_file": "seedance-1.0-fast-prices.tsv",
+          "raw_sha256": "6a8e09392b6374f9ef0cc383da9b6f530f05dc226d2f0fb721182a57f423920e",
+          "expected_rows": 12,
+          "headers": [
+            "Model ID",
+            "单价",
+            "分辨率",
+            "画面比例",
+            "长边（像素）",
+            "短边（像素）",
+            "帧率",
+            "时长（秒）",
+            "视频价格"
+          ],
+          "columns": [
+            {
+              "semantic": "model_id",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "supplier_token_price",
+              "unit": "CNY/1M_tokens",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "resolution",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "ratio",
+              "unit": "",
+              "precision": "not_applicable",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "dimension_pixels",
+              "unit": "pixel",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "fps",
+              "unit": "fps",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "output_duration",
+              "unit": "second",
+              "precision": "exact",
+              "missing_values": [
+                ""
+              ]
+            },
+            {
+              "semantic": "reference_video_amount",
+              "unit": "CNY/video",
+              "precision": "rounded",
+              "missing_values": [
+                ""
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

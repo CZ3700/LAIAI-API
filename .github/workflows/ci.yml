@@ -31,8 +31,12 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Install console dependencies
+        run: npm --prefix web ci
       - name: Console 类型检查 + 构建
         run: make web
+      - name: Video pricing context regressions
+        run: npm --prefix web run test:video-pricing
 
   ark-mysql:
     runs-on: ubuntu-latest
