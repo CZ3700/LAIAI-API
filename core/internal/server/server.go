@@ -292,6 +292,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				s.registerArkAssetAdmin(su)
 				s.registerArkAssetsConsole(videoConsoleOrg, su, mediaOrg)
 				s.registerArkPricingConsole(su)
+				s.registerArkOfficialPriceCatalog(su)
 				s.registerArkRequestLogs(videoConsoleOrg, su)
 				// 跨租户全平台调用明细（org_id/user_id/model/cost）：限 superadmin（P2-3）
 				su.GET("/invocations", s.adminListInvocations)

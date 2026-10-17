@@ -7,6 +7,7 @@
     "dev": "vite",
     "test:models": "node --test src/lib/modelCatalog.test.mjs",
     "test:playground": "node --test src/pages/Playground.context.test.mjs",
+    "test:video-pricing": "node --test src/pages/VideoPricing.context.test.mjs",
     "check:i18n": "node scripts/check-i18n.mjs",
     "build": "node scripts/check-i18n.mjs && vue-tsc -b && vite build",
     "typecheck": "vue-tsc -b",

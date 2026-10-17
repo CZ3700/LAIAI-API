@@ -37,6 +37,8 @@ jobs:
         run: npm run test:playground --prefix web
       - name: Console 类型检查 + 构建
         run: make web
+      - name: Video pricing context regressions
+        run: npm --prefix web run test:video-pricing
 
   ark-mysql:
     runs-on: ubuntu-latest
