@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
 import { fmtUsd } from '@/lib/money'
 import { useRoute, useRouter } from 'vue-router'
+import { useAuth } from '@/stores/auth'
+import DetailDrawer from '@/components/DetailDrawer.vue'
 import SeedanceRequestLogs from '@/components/seedance/SeedanceRequestLogs.vue'
 import { useSeedanceI18n } from '@/components/seedance/messages'
 
@@ -41,8 +43,9 @@ const { t, n, d } = useI18n()
 useSeedanceI18n()
 const route = useRoute()
 const router = useRouter()
+const auth = useAuth()
 const seedanceTab = computed(() => route.query.tab === 'seedance')
-function switchTab(value: boolean) { selected.value = null; void router.replace({ query: value ? { tab: 'seedance' } : {} }) }
+function switchTab(value: boolean) { closeDetail(); void router.replace({ query: value ? { tab: 'seedance' } : {} }) }
 const rows = ref<UsageRow[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -60,6 +63,9 @@ const customEnd = ref('')
 const models = ref<ModelStat[]>([])
 const keys = ref<KeyRow[]>([])
 const selected = ref<UsageRow | null>(null)
+let listVersion = 0
+let metaVersion = 0
+function closeDetail() { selected.value = null }
 
 function statusText(r: UsageRow): string {
   if (r.status === 'success') return `${r.status_code || 200} OK`
@@ -114,15 +120,18 @@ function protocolLabel(p?: string): string {
 }
 
 async function loadMeta() {
+  const version = ++metaVersion; const org = auth.orgId
   const [bm, k] = await Promise.allSettled([
     api<{ items: ModelStat[] }>('GET', '/api/usage/by-model?days=30'),
     api<{ keys: KeyRow[] }>('GET', '/api/keys'),
   ])
+  if (version !== metaVersion || org !== auth.orgId) return
   if (bm.status === 'fulfilled') models.value = bm.value.items
   if (k.status === 'fulfilled') keys.value = k.value.keys
 }
 
 async function load() {
+  const version = ++listVersion; const org = auth.orgId
   loading.value = true
   error.value = ''
   try {
@@ -136,12 +145,13 @@ async function load() {
     if (w.since) q.set('since', w.since)
     if (w.until) q.set('until', w.until)
     const r = await api<{ total: number; items: UsageRow[] }>('GET', `/api/usage?${q}`)
+    if (version !== listVersion || org !== auth.orgId) return
     rows.value = r.items
     total.value = r.total
   } catch (e) {
-    error.value = errorMessage(e, t('reqlog.loadFailed'))
+    if (version === listVersion && org === auth.orgId) error.value = errorMessage(e, t('reqlog.loadFailed'))
   } finally {
-    loading.value = false
+    if (version === listVersion && org === auth.orgId) loading.value = false
   }
 }
 
@@ -150,6 +160,12 @@ watch([model, apiKeyId, requestId, result, modality, range, customStart, customE
   void load()
 })
 watch(page, () => void load())
+watch(() => auth.orgId, () => {
+  closeDetail(); rows.value = []; models.value = []; keys.value = []; total.value = 0
+  void loadMeta(); void load()
+})
+watch(seedanceTab, closeDetail)
+onBeforeUnmount(() => { listVersion++; metaVersion++; closeDetail() })
 onMounted(() => {
   void loadMeta()
   void load()
@@ -271,13 +287,8 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="selected" class="drawer-backdrop" @click.self="selected = null">
-      <aside class="detail-drawer" role="dialog" aria-modal="true">
-        <div class="drawer-head">
-          <button class="btn-ghost !h-8 !min-h-0 !w-8 !px-0 !py-0" type="button" @click="selected = null">×</button>
-          <h2 class="font-semibold">{{ t('reqlog.drawerTitle', { id: selected.id }) }}</h2>
-        </div>
-        <div class="drawer-body">
+    <DetailDrawer :open="!!selected" :title="t('reqlog.drawerTitle', { id: selected?.id ?? '' })" :close-label="t('seedance.close')" size="lg" @update:open="open => { if (!open) closeDetail() }">
+        <div v-if="selected" class="space-y-4">
           <div class="grid grid-cols-3 divide-x divide-line rounded border border-line bg-panel">
             <div class="p-4 text-center">
               <p class="text-xs text-muted">{{ t('reqlog.statTokensTotal') }}</p>
@@ -342,8 +353,7 @@ onMounted(() => {
             </dl>
           </section>
         </div>
-      </aside>
-    </div>
+    </DetailDrawer>
     </template>
   </div>
 </template>

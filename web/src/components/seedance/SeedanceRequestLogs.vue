@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, errorMessage } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
+import DetailDrawer from '@/components/DetailDrawer.vue'
 import HistoryJSON from './HistoryJSON.vue'
 import MeteringFacts from './MeteringFacts.vue'
 import { useSeedanceI18n } from './messages'
@@ -27,22 +28,12 @@ const events = ref<ExecutionRow[]>([])
 const attempts = ref<ExecutionRow[]>([])
 const eventsNext = ref<string | null>(null)
 const attemptsNext = ref<string | null>(null)
-const dialog = ref<HTMLElement | null>(null)
-let returnFocus: HTMLElement | null = null
 let epoch = 0
 let listVersion = 0
 function base() { return auth.isSuperadmin ? '/api/admin/video/request-logs' : '/api/video/request-logs' }
 function url(path = '', query = new URLSearchParams()) { if (auth.isSuperadmin) query.set('org_id', String(auth.orgId)); return `${base()}${path}?${query}` }
 function time(value: string | null) { return value ? new Intl.DateTimeFormat(locale.value, { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) : '—' }
-function close() { epoch++; selected.value = ''; detail.value = null; bodies.value = {}; events.value = []; attempts.value = []; eventsNext.value = null; attemptsNext.value = null; bodyLoading.value = ''; returnFocus?.focus(); returnFocus = null }
-function dialogKey(event: KeyboardEvent) {
-  if (event.key !== 'Tab' || !dialog.value) return
-  const items = [...dialog.value.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]')].filter(el => el.getClientRects().length)
-  const first = items[0]; const last = items.at(-1)
-  if (!first) { event.preventDefault(); dialog.value.focus(); return }
-  if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog.value)) { event.preventDefault(); last?.focus() }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
-}
+function close() { epoch++; selected.value = ''; detail.value = null; bodies.value = {}; events.value = []; attempts.value = []; eventsNext.value = null; attemptsNext.value = null; bodyLoading.value = '' }
 function reset() { close(); rows.value = []; cursors.value = ['']; next.value = null; error.value = ''; void load() }
 async function load(restart = false) {
   if (restart) cursors.value = ['']
@@ -60,13 +51,8 @@ async function load(restart = false) {
 function pageForward() { if (next.value) { cursors.value.push(next.value); void load() } }
 function pageBack() { if (cursors.value.length > 1) { cursors.value.pop(); void load() } }
 async function open(id: string) {
-  const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
   close(); selected.value = id; tab.value = 'received'; error.value = ''
-  returnFocus = trigger
   const current = epoch
-  await nextTick()
-  if (current !== epoch) return
-  dialog.value?.focus()
   try {
     const value = await api<LogDetail>('GET', url(`/${encodeURIComponent(id)}`))
     if (current !== epoch) return
@@ -127,9 +113,7 @@ onBeforeUnmount(() => { listVersion++; close() })
     </div>
     <div class="flex justify-end gap-2"><button type="button" class="btn-ghost" :disabled="loading || cursors.length < 2" @click="pageBack">{{ t('seedance.previous') }}</button><button type="button" class="btn-ghost" :disabled="loading || !next" @click="pageForward">{{ t('seedance.next') }}</button></div>
 
-    <div v-if="selected" class="fixed inset-0 z-50 flex justify-end bg-black/50" @click.self="close" @keydown.esc="close">
-      <section ref="dialog" class="flex h-full w-full max-w-4xl flex-col border-l border-line bg-panel shadow-xl" role="dialog" aria-modal="true" :aria-label="t('seedance.request')" tabindex="-1" @keydown="dialogKey">
-        <header class="flex items-center justify-between gap-3 border-b border-line p-4"><h2 class="break-all font-mono text-sm">{{ selected }}</h2><button autofocus type="button" class="btn-ghost" @click="close">{{ t('seedance.close') }}</button></header>
+    <DetailDrawer :open="!!selected" :title="t('seedance.request')" :description="selected" :close-label="t('seedance.close')" size="lg" @update:open="open => { if (!open) close() }">
         <p v-if="error" class="p-4 text-danger" role="alert">{{ error }}</p>
         <template v-if="detail">
           <div class="grid grid-cols-2 gap-2 border-b border-line p-4 text-xs sm:grid-cols-3">
@@ -139,7 +123,7 @@ onBeforeUnmount(() => { listVersion++; close() })
             <p v-if="detail.request.origin_request_id" class="col-span-2 break-all">{{ t('seedance.original') }}: {{ detail.request.origin_request_id }}</p>
           </div>
           <div class="segmented-control m-4" role="tablist"><button v-for="item in ['received','result','response'] as const" :key="item" type="button" role="tab" :aria-selected="tab === item" :class="{ active: tab === item }" @click="tab = item">{{ t(`seedance.${item}`) }}</button></div>
-          <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4" role="tabpanel">
+          <div class="space-y-4 p-4" role="tabpanel">
             <label class="flex items-center gap-2 text-sm">{{ t('seedance.reason') }}<select v-model="reason" class="input"><option v-for="r in ['request_debugging','billing_review','customer_support']" :key="r" :value="r">{{ t(`seedance.${r}`) }}</option></select></label>
             <template v-if="tab === 'received' || tab === 'response'">
               <p class="text-sm text-muted">{{ t(tab === 'received' ? 'seedance.receivedNotice' : 'seedance.responseNotice') }}</p>
@@ -169,7 +153,6 @@ onBeforeUnmount(() => { listVersion++; close() })
           </div>
         </template>
         <p v-else class="p-8 text-muted">{{ t('seedance.loading') }}</p>
-      </section>
-    </div>
+    </DetailDrawer>
   </section>
 </template>

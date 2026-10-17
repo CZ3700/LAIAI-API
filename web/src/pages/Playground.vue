@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { api } from '@/lib/api'
 import { fmtUsd } from '@/lib/money'
+import { useAuth } from '@/stores/auth'
+import DetailDrawer from '@/components/DetailDrawer.vue'
 import ArkVideoPlayground from '@/components/seedance/ArkVideoPlayground.vue'
 import { isOfficialSeedance } from '@/components/seedance/workflow'
 
@@ -39,6 +41,7 @@ interface GenImage { url?: string; b64_json?: string }
 
 const { t } = useI18n()
 const route = useRoute()
+const auth = useAuth()
 
 // API Key：playground 模拟真实外部调用，用用户自己的 Key 直打 /v1（不走 session）。
 // sessionStorage 记住，关标签页即失效（不持久化凭证）。
@@ -150,7 +153,14 @@ const videoActive = computed(() => {
 // —— 请求详情面板（指令 §5：原始 request/response + 耗时）——
 const showDetail = ref(false)
 const lastDetail = ref<{ endpoint: string; status: number; durationMs: number; request: string; response: string } | null>(null)
-function recordDetail(ep: string, status: number, t0: number, requestBody: unknown, response: string) {
+let detailEpoch = 0
+function closeDetail() { showDetail.value = false }
+function clearDetail() { detailEpoch++; closeDetail(); lastDetail.value = null }
+// 详情仅使用已收到的响应；换组织/Key 后，旧请求不能重新填回可读正文。
+watch(() => [auth.orgId, apiKey.value], clearDetail)
+onDeactivated(closeDetail)
+function recordDetail(current: number, ep: string, status: number, t0: number, requestBody: unknown, response: string) {
+  if (current !== detailEpoch) return
   lastDetail.value = {
     endpoint: ep,
     status,
@@ -239,11 +249,13 @@ onActivated(() => {
 // keep-alive 下导航离开不触发 onUnmounted（视频轮询后台继续，切回即见结果）；
 // 只在组件真正销毁（登出/布局卸载）时清理。
 onUnmounted(() => {
+  clearDetail()
   stopVideoPolling()
   if (videoBlobUrl) URL.revokeObjectURL(videoBlobUrl)
 })
 
 function clearAll() {
+  clearDetail()
   messages.value = []
   error.value = ''
   lastUsage.value = null
@@ -259,6 +271,7 @@ function stop() {
 
 async function send() {
   if (!canSend.value) return
+  const currentDetailEpoch = detailEpoch
   error.value = ''
   lastUsage.value = null
   const userMsg: Msg = { role: 'user', content: input.value.trim() }
@@ -292,7 +305,7 @@ async function send() {
     })
     if (!resp.ok) {
       const data = (await resp.json().catch(() => ({}))) as { error?: { message?: string } | string }
-      recordDetail('/v1/chat/completions', resp.status, t0, body, JSON.stringify(data, null, 2))
+      recordDetail(currentDetailEpoch, '/v1/chat/completions', resp.status, t0, body, JSON.stringify(data, null, 2))
       const msg =
         typeof data.error === 'object' ? data.error?.message : typeof data.error === 'string' ? data.error : ''
       throw new Error(msg || `request failed (${resp.status})`)
@@ -332,7 +345,7 @@ async function send() {
         }
       }
       // 流式详情：SSE 帧不留原文（体量），记录汇总形状 + usage + 耗时
-      recordDetail('/v1/chat/completions', resp.status, t0, body,
+      recordDetail(currentDetailEpoch, '/v1/chat/completions', resp.status, t0, body,
         JSON.stringify({ streamed: true, content: assistant.value.content, usage: lastUsage.value, error: streamErr || undefined }, null, 2))
       // 流已开始(200)但全程无内容：把静默"转圈"变成可见原因（上游错误帧 / 空回复 / 非 SSE 响应）
       if (!assistant.value.content) throw new Error(streamErr || t('play.noReply'))
@@ -342,7 +355,7 @@ async function send() {
         usage?: { prompt_tokens: number; completion_tokens: number }
         error?: { message?: string } | string
       }
-      recordDetail('/v1/chat/completions', resp.status, t0, body, JSON.stringify(j, null, 2))
+      recordDetail(currentDetailEpoch, '/v1/chat/completions', resp.status, t0, body, JSON.stringify(j, null, 2))
       if (j.error) throw new Error(typeof j.error === 'object' ? (j.error.message ?? JSON.stringify(j.error)) : String(j.error))
       assistant.value.content = j.choices?.[0]?.message?.content ?? ''
       if (j.usage) lastUsage.value = j.usage
@@ -367,6 +380,7 @@ async function send() {
 // 生图：与 chat 同样用用户 Key 直打 /v1/images/generations（OpenAI 兼容，按张计费）。
 async function generate() {
   if (!canGenerate.value) return
+  const currentDetailEpoch = detailEpoch
   genError.value = ''
   images.value = []
   generating.value = true
@@ -386,13 +400,13 @@ async function generate() {
     })
     if (!resp.ok) {
       const data = (await resp.json().catch(() => ({}))) as { error?: { message?: string } | string }
-      recordDetail('/v1/images/generations', resp.status, t0, body, JSON.stringify(data, null, 2))
+      recordDetail(currentDetailEpoch, '/v1/images/generations', resp.status, t0, body, JSON.stringify(data, null, 2))
       const msg =
         typeof data.error === 'object' ? data.error?.message : typeof data.error === 'string' ? data.error : ''
       throw new Error(msg || `request failed (${resp.status})`)
     }
     const j = (await resp.json()) as { data?: GenImage[] }
-    recordDetail('/v1/images/generations', resp.status, t0, body, redactB64(j))
+    recordDetail(currentDetailEpoch, '/v1/images/generations', resp.status, t0, body, redactB64(j))
     images.value = (j.data ?? []).filter((d) => d.url || d.b64_json)
     if (!images.value.length) throw new Error(t('play.noReply'))
   } catch (e) {
@@ -440,6 +454,7 @@ function startVideoPolling() {
 async function pollVideoOnce() {
   const id = videoTask.value?.id
   if (!id) return stopVideoPolling()
+  const currentDetailEpoch = detailEpoch
   try {
     const resp = await fetch(`/v1/video/generations/${encodeURIComponent(id)}`, {
       headers: { Authorization: `Bearer ${apiKey.value}` },
@@ -459,7 +474,7 @@ async function pollVideoOnce() {
       stopVideoPolling()
       sessionStorage.removeItem(VIDEO_TASK_STORE)
       // 终态详情：轮询响应含 result_url 与实际结算费用
-      recordDetail(`/v1/video/generations/${id}`, resp.status, performance.now(), { poll: true }, JSON.stringify(task, null, 2))
+      recordDetail(currentDetailEpoch, `/v1/video/generations/${id}`, resp.status, performance.now(), { poll: true }, JSON.stringify(task, null, 2))
       await loadVideoResult(task)
     } else if (task.status === 'failed') {
       stopVideoPolling()
@@ -533,6 +548,7 @@ async function tryVideoBlob(url: string, withAuth = false): Promise<boolean> {
 
 async function submitVideo() {
   if (!canSubmitVideo.value) return
+  const currentDetailEpoch = detailEpoch
   resetVideoResult()
   videoSubmitting.value = true
   const content: unknown[] = [{ type: 'text', text: videoPrompt.value.trim() }]
@@ -551,13 +567,13 @@ async function submitVideo() {
     })
     if (!resp.ok) {
       const data = (await resp.json().catch(() => ({}))) as { error?: { message?: string } | string }
-      recordDetail('/v1/video/generations', resp.status, t0, body, JSON.stringify(data, null, 2))
+      recordDetail(currentDetailEpoch, '/v1/video/generations', resp.status, t0, body, JSON.stringify(data, null, 2))
       const msg =
         typeof data.error === 'object' ? data.error?.message : typeof data.error === 'string' ? data.error : ''
       throw new Error(msg || `request failed (${resp.status})`)
     }
     const task = (await resp.json()) as VideoTask
-    recordDetail('/v1/video/generations', resp.status, t0, body, JSON.stringify(task, null, 2))
+    recordDetail(currentDetailEpoch, '/v1/video/generations', resp.status, t0, body, JSON.stringify(task, null, 2))
     videoTask.value = task
     sessionStorage.setItem(VIDEO_TASK_STORE, task.id)
     videoStartMs.value = Date.now()
@@ -760,13 +776,14 @@ async function saveImage(img: GenImage, idx: number) {
           </p>
           <button
             v-if="lastDetail && !(mode === 'video' && officialSeedance)" type="button" class="btn-ghost !min-h-0 !px-2.5 !py-1.5 text-xs"
-            :class="{ '!text-accent': showDetail }" @click="showDetail = !showDetail"
+            :class="{ '!text-accent': showDetail }" @click="showDetail = true"
           >{{ t('play.detailBtn') }}</button>
         </div>
       </div>
 
       <!-- 请求详情抽屉：endpoint/status/耗时 + 原始 request/response（图像 b64 已收敛占位） -->
-      <div v-if="showDetail && lastDetail && !(mode === 'video' && officialSeedance)" class="max-h-72 overflow-y-auto border-b border-line bg-elev/30 p-4 text-xs">
+      <DetailDrawer :open="showDetail && !!lastDetail && !(mode === 'video' && officialSeedance)" :title="t('play.detailBtn')" size="lg" @update:open="open => { if (!open) closeDetail() }">
+        <div v-if="lastDetail" class="text-xs">
         <p class="font-mono text-muted">
           {{ lastDetail.endpoint }} · <span :class="lastDetail.status < 400 ? 'text-ok' : 'text-danger'">{{ lastDetail.status }}</span> · {{ lastDetail.durationMs }}ms
         </p>
@@ -774,7 +791,8 @@ async function saveImage(img: GenImage, idx: number) {
         <pre class="mt-1 overflow-x-auto rounded border border-line bg-panel p-3 font-mono leading-relaxed">{{ lastDetail.request }}</pre>
         <p class="mt-3 font-medium">{{ t('play.detailResponse') }}</p>
         <pre class="mt-1 overflow-x-auto rounded border border-line bg-panel p-3 font-mono leading-relaxed">{{ lastDetail.response }}</pre>
-      </div>
+        </div>
+      </DetailDrawer>
 
       <!-- chat 模态：消息流 + 输入 -->
       <template v-if="mode === 'chat'">
