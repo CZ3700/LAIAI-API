@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { adminApi, adminToken, ApiError, copyText, errorMessage, uuid } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
 import Sparkline from '@/components/Sparkline.vue'
+import DetailDrawer from '@/components/DetailDrawer.vue'
 
 const auth = useAuth()
 
@@ -588,6 +589,7 @@ function exportUsageByUser() {
 // —— 审计日志 ——
 interface AuditRow { id: number; actor: string; action: string; target: string; detail: string; ip: string; created_at: number }
 const audit = ref<AuditRow[]>([])
+const selectedAudit = ref<AuditRow | null>(null)
 async function loadAudit() {
   audit.value = (await adminApi<{ items: AuditRow[] }>('GET', '/api/admin/audit-logs')).items
 }
@@ -755,7 +757,7 @@ const logs = ref<LogRow[]>([])
 const logTotal = ref(0)
 const logPage = ref(1)
 const logFilter = ref({ status: '', model: '', channel_id: '', org_id: '', since: '', until: '' })
-const expandedLog = ref<number | null>(null)
+const selectedLog = ref<LogRow | null>(null)
 const LOG_PAGE_SIZE = 20
 
 async function loadLogs() {
@@ -769,9 +771,8 @@ function applyLogFilter() {
   logPage.value = 1
   void loadLogs().catch(showError)
 }
-function toggleLog(id: number) {
-  expandedLog.value = expandedLog.value === id ? null : id
-}
+function showLog(row: LogRow) { if (auth.isSuperadmin) selectedLog.value = row }
+watch([() => auth.orgId, () => auth.role, tab, unlocked], () => { selectedLog.value = null; selectedAudit.value = null })
 watch(logPage, () => void loadLogs().catch(showError))
 // 切到日志 tab 时首次加载
 watch(tab, (v) => {
@@ -2704,10 +2705,10 @@ onMounted(async () => {
                 <td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
               </tr>
               <template v-for="l in logs" :key="l.id">
-                <tr class="cursor-pointer border-b border-line last:border-0" @click="toggleLog(l.id)">
+                <tr class="border-b border-line last:border-0">
                   <td class="px-4 py-2.5 text-muted">{{ d(new Date(l.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
                   <td class="px-4 py-2.5 font-mono text-xs">{{ l.org_id }}</td>
-                  <td class="px-4 py-2.5 font-mono text-xs">{{ l.model }}</td>
+                  <td class="px-4 py-2.5 font-mono text-xs"><button type="button" class="table-link" @click="showLog(l)">{{ l.model }} · {{ t('reqlog.btnDetail') }}</button></td>
                   <td class="px-4 py-2.5 font-mono text-xs">#{{ l.channel_id }} {{ l.provider }}</td>
                   <td class="px-4 py-2.5">
                     <span :class="l.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ l.status }}</span>
@@ -2715,27 +2716,7 @@ onMounted(async () => {
                   <td class="px-4 py-2.5 text-right font-mono">{{ l.prompt_tokens }} / {{ l.completion_tokens }}</td>
                   <td class="px-4 py-2.5 text-right font-mono">${{ Number(l.cost_usd).toFixed(4) }}</td>
                 </tr>
-                <tr v-if="expandedLog === l.id" class="!border-0 bg-elev/40">
-                  <td colspan="7" class="px-4 pb-4 pt-1">
-                    <dl class="grid grid-cols-2 gap-x-8 gap-y-1.5 text-xs sm:grid-cols-4">
-                      <div><dt class="text-muted">{{ t('usage.requestId') }}</dt><dd class="font-mono select-all">{{ l.request_id }}</dd></div>
-                      <div><dt class="text-muted">{{ t('usage.dStatusCode') }}</dt><dd class="font-mono">{{ l.status_code }}</dd></div>
-                      <div><dt class="text-muted">{{ t('admin.lgAttempts') }}</dt><dd class="font-mono">{{ l.attempts }}</dd></div>
-                      <div><dt class="text-muted">{{ t('usage.dStream') }}</dt><dd class="font-mono">{{ l.is_stream ? t('common.yes') : t('common.no') }}</dd></div>
-                      <div><dt class="text-muted">{{ t('admin.lgUser') }}</dt><dd class="font-mono">{{ l.user_id ?? '—' }}</dd></div>
-                      <div><dt class="text-muted">{{ t('admin.lgApiKey') }}</dt><dd class="font-mono">#{{ l.api_key_id }}</dd></div>
-                      <div><dt class="text-muted">{{ t('usage.dFrt') }}</dt><dd class="font-mono">{{ l.frt_ms }} ms</dd></div>
-                      <div><dt class="text-muted">{{ t('usage.dDuration') }}</dt><dd class="font-mono">{{ l.duration_ms }} ms</dd></div>
-                      <div v-if="l.usage_source"><dt class="text-muted">{{ t('usage.dUsageSource') }}</dt><dd class="font-mono">{{ l.usage_source }}</dd></div>
-                      <div v-if="l.upstream_request_id"><dt class="text-muted">{{ t('admin.lgUpstreamId') }}</dt><dd class="font-mono select-all break-all">{{ l.upstream_request_id }}</dd></div>
-                      <div v-if="l.payload_object_key" class="col-span-2"><dt class="text-muted">{{ t('admin.lgPayloadKey') }}</dt><dd class="font-mono select-all break-all">{{ l.payload_object_key }}</dd></div>
-                      <div v-if="l.error_brief" class="col-span-2 sm:col-span-4">
-                        <dt class="text-muted">{{ t('usage.dError') }}</dt>
-                        <dd class="font-mono text-danger break-all">{{ l.error_brief }}</dd>
-                      </div>
-                    </dl>
-                  </td>
-                </tr>
+
               </template>
             </tbody>
           </table>
@@ -3171,13 +3152,38 @@ onMounted(async () => {
                 <td class="px-4 py-2.5 font-mono text-xs">{{ a.actor }}</td>
                 <td class="px-4 py-2.5"><span :class="auditSensitive(a.action) ? 'badge-danger' : 'badge-muted'">{{ auditActionLabel(a.action) }}</span></td>
                 <td class="px-4 py-2.5 font-mono text-xs text-muted">{{ a.target || '—' }}</td>
-                <td class="px-4 py-2.5 text-muted">{{ a.detail }}</td>
+                <td class="px-4 py-2.5 text-muted"><button type="button" class="table-link" @click="selectedAudit = a">{{ t('reqlog.btnDetail') }}</button></td>
                 <td class="px-4 py-2.5 font-mono text-xs text-muted">{{ a.ip }}</td>
               </tr>
             </tbody>
           </table>
         </div>
       </template>
+      <DetailDrawer :open="!!selectedLog && auth.isSuperadmin" :title="t('reqlog.drawerTitle', { id: selectedLog?.id ?? '' })" size="lg" @update:open="open => { if (!open) selectedLog = null }">
+        <template v-if="selectedLog">
+          <dl class="detail-grid mb-6"><div><dt>{{ t('admin.lgOrg') }}</dt><dd>{{ selectedLog.org_id }}</dd></div><div><dt>{{ t('usage.model') }}</dt><dd>{{ selectedLog.model }}</dd></div><div><dt>{{ t('usage.tokens') }}</dt><dd>{{ selectedLog.prompt_tokens }} / {{ selectedLog.completion_tokens }}</dd></div><div><dt>{{ t('usage.cost') }}</dt><dd>USD {{ selectedLog.cost_usd }}</dd></div><div><dt>{{ t('usage.status') }}</dt><dd>{{ selectedLog.status }}</dd></div><div><dt>{{ t('admin.lgChannel') }}</dt><dd>#{{ selectedLog.channel_id }} {{ selectedLog.provider }}</dd></div></dl>
+                    <dl class="grid grid-cols-2 gap-x-8 gap-y-1.5 text-xs sm:grid-cols-4">
+                      <div><dt class="text-muted">{{ t('usage.requestId') }}</dt><dd class="font-mono select-all">{{ selectedLog.request_id }}</dd></div>
+                      <div><dt class="text-muted">{{ t('usage.dStatusCode') }}</dt><dd class="font-mono">{{ selectedLog.status_code }}</dd></div>
+                      <div><dt class="text-muted">{{ t('admin.lgAttempts') }}</dt><dd class="font-mono">{{ selectedLog.attempts }}</dd></div>
+                      <div><dt class="text-muted">{{ t('usage.dStream') }}</dt><dd class="font-mono">{{ selectedLog.is_stream ? t('common.yes') : t('common.no') }}</dd></div>
+                      <div><dt class="text-muted">{{ t('admin.lgUser') }}</dt><dd class="font-mono">{{ selectedLog.user_id ?? '—' }}</dd></div>
+                      <div><dt class="text-muted">{{ t('admin.lgApiKey') }}</dt><dd class="font-mono">#{{ selectedLog.api_key_id }}</dd></div>
+                      <div><dt class="text-muted">{{ t('usage.dFrt') }}</dt><dd class="font-mono">{{ selectedLog.frt_ms }} ms</dd></div>
+                      <div><dt class="text-muted">{{ t('usage.dDuration') }}</dt><dd class="font-mono">{{ selectedLog.duration_ms }} ms</dd></div>
+                      <div v-if="selectedLog.usage_source"><dt class="text-muted">{{ t('usage.dUsageSource') }}</dt><dd class="font-mono">{{ selectedLog.usage_source }}</dd></div>
+                      <div v-if="selectedLog.upstream_request_id"><dt class="text-muted">{{ t('admin.lgUpstreamId') }}</dt><dd class="font-mono select-all break-all">{{ selectedLog.upstream_request_id }}</dd></div>
+                      <div v-if="selectedLog.payload_object_key" class="col-span-2"><dt class="text-muted">{{ t('admin.lgPayloadKey') }}</dt><dd class="font-mono select-all break-all">{{ selectedLog.payload_object_key }}</dd></div>
+                      <div v-if="selectedLog.error_brief" class="col-span-2 sm:col-span-4">
+                        <dt class="text-muted">{{ t('usage.dError') }}</dt>
+                        <dd class="font-mono text-danger break-all">{{ selectedLog.error_brief }}</dd>
+                      </div>
+                    </dl>
+        </template>
+      </DetailDrawer>
+      <DetailDrawer :open="!!selectedAudit" :title="t('admin.auDetail')" @update:open="open => { if (!open) selectedAudit = null }">
+        <dl v-if="selectedAudit" class="detail-grid"><div><dt>ID</dt><dd>{{ selectedAudit.id }}</dd></div><div><dt>{{ t('usage.time') }}</dt><dd>{{ d(new Date(selectedAudit.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</dd></div><div><dt>{{ t('admin.auActor') }}</dt><dd>{{ selectedAudit.actor }}</dd></div><div><dt>{{ t('admin.auAction') }}</dt><dd>{{ auditActionLabel(selectedAudit.action) }}</dd></div><div><dt>{{ t('admin.auTarget') }}</dt><dd>{{ selectedAudit.target || '—' }}</dd></div><div><dt>IP</dt><dd>{{ selectedAudit.ip }}</dd></div><div class="col-span-2"><dt>{{ t('admin.auDetail') }}</dt><dd class="whitespace-pre-wrap">{{ selectedAudit.detail || '—' }}</dd></div></dl>
+      </DetailDrawer>
     </template>
   </div>
 </template>
