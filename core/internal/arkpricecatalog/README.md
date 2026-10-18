@@ -98,3 +98,29 @@ diff and commit the evidence and manifest together. Failed hash, row/column or
 unit validation makes the endpoint unavailable rather than returning a partial
 successful catalog. No deployment changes an existing retail price, task snapshot,
 quota, capability or minimum rule.
+
+`ReferenceCandidates` additionally projects the verified embedded evidence for
+standard `seedance-2.0` and `seedance-2.5` only. Its administrative GET endpoint
+is `/api/admin/video/models/:model/pricing/reference-candidates`, with the same
+individual active superadmin requirement. It exposes 8 and 6 standard
+generate/default/non-Draft cost cells respectively; Fast/Mini and all 1.x remain
+excluded. Each cost cell has exact CNY/1M_tokens semantics and points to every
+contributing original source row. Conflicting values fail closed.
+
+Minimum candidates expand only literal paired aspect ratios and deduplicate
+equal primary dimensions/values, retaining every original row reference. The
+2.0 result has 288 cells from 192 rows and unknown FPS (`null`); the 2.5 result
+has 486 cells from 339 rows, including 15 duplicate rows whose evidence survives.
+The primary source FPS field is distinct from linked `帧率(1)`. Candidates retain
+`estimated`, `hold_estimation_only`, and `requires_operator_verification`; they
+are not a verified minimum-rule import or a settlement floor. No FPS, verified
+actor, observation date or production version is manufactured.
+
+The server joins current prices by model/scope/version and copies the existing
+USD retail, enabled state, risk multiplier and minimum version into the response.
+New cells keep empty commercial fields and remain disabled. A reference cost is
+only returned as a candidate, never persisted by a GET. Unverified capability or
+a missing provider/channel binding makes the candidate unavailable; a conflicting
+standard upstream series or duplicate current pricing cell rejects the response.
+Existing publication, version checks and evidence registration remain separate
+explicit operations. This feature performs no paid upstream requests.
