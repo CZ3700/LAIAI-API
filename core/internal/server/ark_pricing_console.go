@@ -264,7 +264,7 @@ func (s *Server) getArkPricingConsole(c *gin.Context) {
 		fail(c, 503, "pricing unavailable")
 		return
 	}
-	c.JSON(200, gin.H{"model": cfg.PublicModel, "config_version": cfg.Version, "pricing_version": cfg.PricingVersion, "capability_version": cap.Version, "enabled": cfg.Enabled, "cells": priceMatrix(cap, prices), "fx_usd_per_cny": scope.FXUSDPerCNY, "fx_version": scope.FXVersion, "fx_observed_at": scope.FXObservedAt, "ratios": cap.Ratios, "min_duration": cap.MinDuration, "max_duration": cap.MaxDuration, "input_token_semantics": "official_zero_not_separately_metered"})
+	c.JSON(200, gin.H{"model": cfg.PublicModel, "config_version": cfg.Version, "pricing_version": cfg.PricingVersion, "capability_version": cap.Version, "enabled": cfg.Enabled, "cells": priceMatrix(cap, prices), "fx_usd_per_cny": scope.FXUSDPerCNY, "fx_version": scope.FXVersion, "fx_observed_at": scope.FXObservedAt, "ratios": cap.Ratios, "min_duration": cap.MinDuration, "max_duration": cap.MaxDuration, "input_token_semantics": "not_projected_separately_completion_tokens_authoritative"})
 }
 func (s *Server) validateArkPricingConsole(c *gin.Context) {
 	if _, ok := s.videoAdminActor(c); !ok {

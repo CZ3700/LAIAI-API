@@ -270,6 +270,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.GET("/model-prices", s.adminListPrices)
 			admin.POST("/model-meta", s.adminUpsertModelMeta) // 模型元数据 upsert（gap P2-D）
 			admin.GET("/model-catalog", s.adminModelCatalog)
+			admin.GET("/pricing-catalog", s.adminPricingCatalog)
 			admin.GET("/providers", s.adminListProviders)
 			admin.GET("/orgs", s.adminListOrgs)
 			admin.GET("/overview", s.adminOverview)
@@ -293,6 +294,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				s.registerArkAssetsConsole(videoConsoleOrg, su, mediaOrg)
 				s.registerArkPricingConsole(su)
 				s.registerArkOfficialPriceCatalog(su)
+				su.GET("/video/models/:model/pricing/reference-candidates", s.getArkReferenceCandidates)
 				s.registerArkRequestLogs(videoConsoleOrg, su)
 				// 跨租户全平台调用明细（org_id/user_id/model/cost）：限 superadmin（P2-3）
 				su.GET("/invocations", s.adminListInvocations)
