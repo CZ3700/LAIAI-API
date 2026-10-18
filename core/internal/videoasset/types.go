@@ -244,6 +244,7 @@ func (TenantLock) TableName() string { return "video_asset_tenant_locks" }
 
 type GroupDTO struct {
 	ID                          string     `json:"id"`
+	Version                     uint64     `json:"version"`
 	Kind                        string     `json:"kind"`
 	Name                        string     `json:"name"`
 	Status                      string     `json:"status"`
@@ -256,6 +257,7 @@ type GroupDTO struct {
 }
 type AssetDTO struct {
 	ID        string    `json:"id"`
+	Version   uint64    `json:"version"`
 	GroupID   string    `json:"group_id"`
 	MediaType string    `json:"media_type"`
 	Name      string    `json:"name"`

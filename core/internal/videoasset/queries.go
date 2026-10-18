@@ -38,7 +38,7 @@ func (s *Service) GetGroup(ctx context.Context, org uint64, id string) (GroupDTO
 		}
 		return GroupDTO{}, ErrStorage
 	}
-	dto := GroupDTO{ID: row.ID, Kind: row.Kind, Name: row.Name, Status: publicStatus(row.Status), AuthorizationStatus: "not_required", CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	dto := GroupDTO{ID: row.ID, Version: row.RowVersion, Kind: row.Kind, Name: row.Name, Status: publicStatus(row.Status), AuthorizationStatus: "not_required", CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 	if err := s.db.WithContext(ctx).Model(&Asset{}).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", org, id).Count(&dto.AssetCount).Error; err != nil {
 		return GroupDTO{}, ErrStorage
 	}
@@ -66,7 +66,7 @@ func (s *Service) GetAsset(ctx context.Context, org uint64, id string) (AssetDTO
 		}
 		return AssetDTO{}, ErrStorage
 	}
-	dto := AssetDTO{ID: row.ID, GroupID: row.GroupID, MediaType: row.MediaType, Name: row.Name, Status: publicStatus(row.Status), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	dto := AssetDTO{ID: row.ID, Version: row.RowVersion, GroupID: row.GroupID, MediaType: row.MediaType, Name: row.Name, Status: publicStatus(row.Status), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 	if row.Status == StatusActive {
 		usable := row.ReviewState == ReviewClear && hasMediaFacts(row) && row.ProviderID != nil
 		var group Group
