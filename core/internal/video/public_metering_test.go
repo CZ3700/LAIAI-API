@@ -27,7 +27,7 @@ func TestPublicMeteringOmitsPrivateEvidenceAndPreservesUnknownHistory(t *testing
 			t.Fatalf("private metering field leaked: %s", prohibited)
 		}
 	}
-	if out["usage_semantics"] != "reservation_upper_bound" || out["input_token_semantics"] != "official_zero_not_separately_metered" {
+	if out["usage_semantics"] != "reservation_upper_bound" || out["input_token_semantics"] != "not_projected_separately_completion_tokens_authoritative" {
 		t.Fatal("upper bound must not masquerade as actual usage")
 	}
 }

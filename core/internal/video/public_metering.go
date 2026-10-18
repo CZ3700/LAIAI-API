@@ -22,7 +22,7 @@ func publicMetering(m videobilling.MeteringInput, minimumVersion string) gin.H {
 		"fps_numerator": m.FPSNumerator, "fps_denominator": m.FPSDenominator,
 		"minimum_tokens": m.MinimumTokens, "minimum_rule_version": minimumVersion,
 		"capability_version":    m.CapabilityVersion,
-		"input_token_semantics": "official_zero_not_separately_metered",
+		"input_token_semantics": "not_projected_separately_completion_tokens_authoritative",
 		"usage_semantics":       "reservation_upper_bound",
 	}
 }
