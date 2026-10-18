@@ -5,6 +5,8 @@ import { adminApi, adminToken, ApiError, copyText, errorMessage, uuid } from '@/
 import { useAuth } from '@/stores/auth'
 import Sparkline from '@/components/Sparkline.vue'
 import DetailDrawer from '@/components/DetailDrawer.vue'
+import AdminPricingPanel from '@/components/pricing/AdminPricingPanel.vue'
+import type { ModelMeta } from '@/components/pricing/types'
 
 const auth = useAuth()
 
@@ -82,13 +84,6 @@ interface OrgRow {
 interface GroupRatio {
   name: string
   ratio: string
-}
-interface Price {
-  Model: string
-  InputUSDPer1M: string
-  OutputUSDPer1M: string
-  ImageUSD: string
-  CachedInputUSDPer1M: string
 }
 interface LogRow {
   id: number
@@ -1059,81 +1054,14 @@ function grantTo(o: OrgRow) {
   openGrant(o.id, o.name || `#${o.id}`)
 }
 
-// —— 定价 ——
-const prices = ref<Price[]>([])
-const pr = ref({ model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '', per_call_usd: '', tts_usd_per_1k_chars: '', transcription_usd_per_call: '', audio_input_usd_per_1m: '', audio_output_usd_per_1m: '' })
-const prBusy = ref(false)
-
-// 模型目录：上游已上货模型 → 承载渠道 + 是否已定价（定价管理一眼看缺口）
-interface CatalogChannel { id: number; name: string; provider: string; status: number }
-interface ModelMeta { model: string; vendor: string; category: string; tags: string; description: string; context_length: number; icon: string; updated_at?: number }
-interface CatalogModel { model: string; channels: CatalogChannel[]; priced: boolean; input_usd_per_1m?: string; output_usd_per_1m?: string; meta?: ModelMeta }
-const catalog = ref<{ models: CatalogModel[]; total: number; priced: number; unpriced: number } | null>(null)
-const catalogQuery = ref('')
-const catalogOnlyUnpriced = ref(false)
-async function loadCatalog() {
-  catalog.value = await adminApi<{ models: CatalogModel[]; total: number; priced: number; unpriced: number }>('GET', '/api/admin/model-catalog')
-}
-const catalogFiltered = computed(() => {
-  const c = catalog.value
-  if (!c) return []
-  const q = catalogQuery.value.trim().toLowerCase()
-  return c.models.filter((m) => {
-    if (catalogOnlyUnpriced.value && m.priced) return false
-    if (q && !m.model.toLowerCase().includes(q)) return false
-    return true
-  })
-})
-// 从目录挑一个模型 → 填入定价表单（已定价的带回现价，便于改价）
-function pickModelForPricing(m: CatalogModel) {
-  pr.value = {
-    model: m.model,
-    input_usd_per_1m: m.input_usd_per_1m ?? '0',
-    output_usd_per_1m: m.output_usd_per_1m ?? '0',
-    image_usd: '',
-    cached_input_usd_per_1m: '',
-    per_call_usd: '',
-    tts_usd_per_1k_chars: '',
-    transcription_usd_per_call: '',
-    audio_input_usd_per_1m: '',
-    audio_output_usd_per_1m: '',
-  }
-}
-
-async function loadPrices() {
-  const r = await adminApi<{ prices: Price[] }>('GET', '/api/admin/model-prices')
-  prices.value = r.prices
-}
-async function upsertPrice() {
-  prBusy.value = true
-  try {
-    const body: Record<string, string> = {
-      model: pr.value.model,
-      input_usd_per_1m: pr.value.input_usd_per_1m,
-      output_usd_per_1m: pr.value.output_usd_per_1m,
-    }
-    if (pr.value.image_usd) body.image_usd = pr.value.image_usd
-    if (pr.value.cached_input_usd_per_1m) body.cached_input_usd_per_1m = pr.value.cached_input_usd_per_1m
-    if (pr.value.per_call_usd) body.per_call_usd = pr.value.per_call_usd
-    if (pr.value.tts_usd_per_1k_chars) body.tts_usd_per_1k_chars = pr.value.tts_usd_per_1k_chars
-    if (pr.value.transcription_usd_per_call) body.transcription_usd_per_call = pr.value.transcription_usd_per_call
-    if (pr.value.audio_input_usd_per_1m) body.audio_input_usd_per_1m = pr.value.audio_input_usd_per_1m
-    if (pr.value.audio_output_usd_per_1m) body.audio_output_usd_per_1m = pr.value.audio_output_usd_per_1m
-    await adminApi('POST', '/api/admin/model-prices', body)
-    pr.value = { model: '', input_usd_per_1m: '0', output_usd_per_1m: '0', image_usd: '', cached_input_usd_per_1m: '', per_call_usd: '', tts_usd_per_1k_chars: '', transcription_usd_per_call: '', audio_input_usd_per_1m: '', audio_output_usd_per_1m: '' }
-    await loadPrices()
-    error.value = ''
-  } catch (e) {
-    showError(e)
-  } finally {
-    prBusy.value = false
-  }
-}
+const pricingCatalogVersion = ref(0)
+const metadataOpen = ref(false)
 
 // —— 模型元数据（gap P2-D）——
 const metaForm = ref({ model: '', vendor: '', category: '', tags: '', description: '', context_length: '', icon: '' })
 const metaBusy = ref(false)
-function pickModelForMeta(m: CatalogModel) {
+function pickModelForMeta(m: { model: string; meta?: ModelMeta | null }) {
+  metadataOpen.value = true
   metaForm.value = {
     model: m.model,
     vendor: m.meta?.vendor ?? '',
@@ -1158,7 +1086,7 @@ async function upsertMeta() {
       icon: metaForm.value.icon,
     })
     metaForm.value = { model: '', vendor: '', category: '', tags: '', description: '', context_length: '', icon: '' }
-    await loadCatalog()
+    pricingCatalogVersion.value++
     error.value = ''
   } catch (e) {
     showError(e)
@@ -1257,7 +1185,7 @@ async function loadAll() {
     // group-ratios/model-group-ratios 是 superadmin-only 端点，非超管加载会 403 → 按角色分支（FE-1）
     // analytics 随 overview（默认 tab）、health 随 channels 一并加载——减法合并后二者不再有独立 tab，
     // watch(tab) 在初始 tab 上不触发，故在此预载（admin 侧多两查询可接受）。
-    const tasks = [loadOverview(), loadAnalytics(), loadChannels(), loadHealth(), loadPrices(), loadCatalog(), loadOrgs()]
+    const tasks = [loadOverview(), loadAnalytics(), loadChannels(), loadHealth(), loadOrgs()]
     if (auth.isSuperadmin) {
       tasks.push(loadGroupRatios(), loadModelGroupRatios())
     }
@@ -2170,55 +2098,10 @@ onMounted(async () => {
 
       <!-- 定价 -->
       <template v-if="tab === 'prices'">
-        <form class="app-panel grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-5 xl:items-end" @submit.prevent="upsertPrice">
-          <div>
-            <label class="label" for="pr-model">{{ t('admin.prModel') }}</label>
-            <input id="pr-model" v-model="pr.model" class="input font-mono text-xs" required />
-          </div>
-          <div>
-            <label class="label" for="pr-input">{{ t('admin.prInput') }}</label>
-            <input id="pr-input" v-model="pr.input_usd_per_1m" class="input" required />
-          </div>
-          <div>
-            <label class="label" for="pr-cached">{{ t('admin.prCached') }}</label>
-            <input id="pr-cached" v-model="pr.cached_input_usd_per_1m" class="input" placeholder="0" />
-          </div>
-          <div>
-            <label class="label" for="pr-output">{{ t('admin.prOutput') }}</label>
-            <input id="pr-output" v-model="pr.output_usd_per_1m" class="input" required />
-          </div>
-          <div>
-            <label class="label" for="pr-image">{{ t('admin.prImage') }}</label>
-            <input id="pr-image" v-model="pr.image_usd" class="input" placeholder="0" />
-          </div>
-          <div>
-            <label class="label" for="pr-percall">{{ t('admin.prPerCall') }}</label>
-            <input id="pr-percall" v-model="pr.per_call_usd" class="input" placeholder="0" />
-          </div>
-          <div>
-            <label class="label" for="pr-tts">{{ t('admin.prTTS') }}</label>
-            <input id="pr-tts" v-model="pr.tts_usd_per_1k_chars" class="input" placeholder="0" />
-          </div>
-          <div>
-            <label class="label" for="pr-stt">{{ t('admin.prTranscription') }}</label>
-            <input id="pr-stt" v-model="pr.transcription_usd_per_call" class="input" placeholder="0" />
-          </div>
-          <div>
-            <label class="label" for="pr-audio-in">{{ t('admin.prAudioInput') }}</label>
-            <input id="pr-audio-in" v-model="pr.audio_input_usd_per_1m" class="input" placeholder="0" />
-          </div>
-          <div>
-            <label class="label" for="pr-audio-out">{{ t('admin.prAudioOutput') }}</label>
-            <input id="pr-audio-out" v-model="pr.audio_output_usd_per_1m" class="input" placeholder="0" />
-          </div>
-          <div class="flex flex-col gap-3 sm:col-span-2 sm:flex-row sm:items-center xl:col-span-5">
-            <button class="btn-primary" :disabled="prBusy">{{ t('admin.prUpsert') }}</button>
-            <span class="text-xs text-muted">{{ t('admin.prAdvancedHint') }}</span>
-          </div>
-        </form>
+        <AdminPricingPanel :refresh-key="pricingCatalogVersion" @edit-metadata="pickModelForMeta" />
 
         <!-- 模型元数据（gap P2-D）：厂商/分类/标签等展示元数据，前端据此替代按名猜 -->
-        <form class="app-panel grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4 xl:items-end" @submit.prevent="upsertMeta">
+        <form v-if="metadataOpen" class="app-panel grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4 xl:items-end" @submit.prevent="upsertMeta">
           <div class="sm:col-span-2 xl:col-span-4 -mb-1">
             <h2 class="font-semibold">{{ t('admin.metaTitle') }}</h2>
             <p class="mt-0.5 text-xs text-muted">{{ t('admin.metaHint') }}</p>
@@ -2256,100 +2139,6 @@ onMounted(async () => {
           </div>
         </form>
 
-        <!-- 模型目录：上游已上货模型 + 所在渠道 + 是否漏配价 -->
-        <div v-if="catalog" class="app-panel p-5">
-          <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 class="font-semibold">{{ t('admin.catTitle') }}</h2>
-              <p class="mt-0.5 text-xs text-muted">
-                {{ t('admin.catSummary', { total: catalog.total, priced: catalog.priced }) }}
-                <span v-if="catalog.unpriced" class="text-danger">· {{ t('admin.catUnpriced', { n: catalog.unpriced }) }}</span>
-              </p>
-            </div>
-            <div class="flex items-center gap-2">
-              <input v-model="catalogQuery" class="input !w-48 !py-1.5 text-sm" :placeholder="t('admin.catSearch')" />
-              <label class="flex items-center gap-1.5 text-xs text-muted whitespace-nowrap">
-                <input type="checkbox" v-model="catalogOnlyUnpriced" class="accent-accent" />
-                {{ t('admin.catOnlyUnpriced') }}
-              </label>
-            </div>
-          </div>
-          <p class="mb-3 rounded-lg border border-line bg-elev px-3 py-2 text-xs leading-relaxed text-muted">
-            {{ t('admin.catPricingScope') }}
-            <router-link v-if="auth.isSuperadmin" to="/app/video-pricing" class="ml-1 text-accent underline underline-offset-2">
-              {{ t('admin.catVideoPricingLink') }}
-            </router-link>
-          </p>
-          <div class="max-h-96 overflow-y-auto rounded-lg border border-line">
-            <table class="table w-full text-sm">
-              <thead class="sticky top-0 bg-panel/80 backdrop-blur">
-                <tr class="text-left text-muted">
-                  <th class="px-3 py-2 font-medium">{{ t('admin.prModel') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('admin.metaVendor') }}</th>
-                  <th class="px-3 py-2 font-medium">{{ t('admin.catChannels') }}</th>
-                  <th class="px-3 py-2 font-medium text-right">{{ t('admin.catPrice') }}</th>
-                  <th class="px-3 py-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-if="catalogFiltered.length === 0">
-                  <td colspan="5" class="px-3 py-6 text-center text-muted">{{ t('common.empty') }}</td>
-                </tr>
-                <tr v-for="m in catalogFiltered" :key="m.model" class="border-b border-line last:border-0">
-                  <td class="px-3 py-2 font-mono text-xs">{{ m.model }}</td>
-                  <td class="px-3 py-2 text-xs">
-                    <span v-if="m.meta?.vendor" class="text-muted">{{ m.meta.vendor }}</span>
-                    <span v-if="m.meta?.category" class="ml-1 rounded bg-elev px-1.5 py-0.5 text-[11px]">{{ m.meta.category }}</span>
-                  </td>
-                  <td class="px-3 py-2">
-                    <span v-for="ch in m.channels" :key="ch.id"
-                      class="mr-1 inline-flex items-center gap-1 rounded bg-elev px-1.5 py-0.5 text-[11px]"
-                      :title="`#${ch.id} · ${ch.provider}`">
-                      <span class="h-1.5 w-1.5 rounded-full" :class="ch.status === 1 ? 'bg-ok' : 'bg-muted'"></span>
-                      {{ ch.name }}
-                    </span>
-                  </td>
-                  <td class="px-3 py-2 text-right font-mono text-xs">
-                    <span v-if="m.priced">{{ m.input_usd_per_1m }} / {{ m.output_usd_per_1m }}</span>
-                    <span v-else class="badge-danger">{{ t('admin.catNoPrice') }}</span>
-                  </td>
-                  <td class="px-3 py-2 text-right whitespace-nowrap">
-                    <button class="btn-ghost !py-1 text-xs" @click="pickModelForPricing(m)">
-                      {{ m.priced ? t('admin.catEdit') : t('admin.catSetPrice') }}
-                    </button>
-                    <button class="btn-ghost !py-1 text-xs ml-1" @click="pickModelForMeta(m)">{{ t('admin.metaEdit') }}</button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="data-table-wrap">
-          <table class="table w-full text-sm">
-            <thead>
-              <tr class="border-b border-line text-left text-muted">
-                <th class="px-4 py-3 font-medium">{{ t('admin.prModel') }}</th>
-                <th class="px-4 py-3 font-medium text-right">{{ t('admin.prInput') }}</th>
-                <th class="px-4 py-3 font-medium text-right">{{ t('admin.prCached') }}</th>
-                <th class="px-4 py-3 font-medium text-right">{{ t('admin.prOutput') }}</th>
-                <th class="px-4 py-3 font-medium text-right">{{ t('admin.prImage') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="prices.length === 0">
-                <td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
-              </tr>
-              <tr v-for="p in prices" :key="p.Model" class="border-b border-line last:border-0">
-                <td class="px-4 py-2.5 font-mono text-xs">{{ p.Model }}</td>
-                <td class="px-4 py-2.5 text-right font-mono">{{ p.InputUSDPer1M }}</td>
-                <td class="px-4 py-2.5 text-right font-mono text-muted">{{ p.CachedInputUSDPer1M !== '0' ? p.CachedInputUSDPer1M : '—' }}</td>
-                <td class="px-4 py-2.5 text-right font-mono">{{ p.OutputUSDPer1M }}</td>
-                <td class="px-4 py-2.5 text-right font-mono">{{ p.ImageUSD }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
       </template>
 
       <!-- 分组倍率 -->
@@ -2410,7 +2199,7 @@ onMounted(async () => {
             <input id="mgr-ratio" v-model="mgr.ratio" class="input" placeholder="1" required />
           </div>
           <div>
-            <button class="btn-primary" :disabled="prBusy">{{ t('admin.prUpsert') }}</button>
+            <button class="btn-primary">{{ t('admin.prUpsert') }}</button>
           </div>
           <p class="text-xs text-muted sm:col-span-2 xl:col-span-4">{{ t('admin.mgrHint') }}</p>
         </form>
