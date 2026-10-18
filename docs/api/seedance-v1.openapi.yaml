@@ -10,8 +10,8 @@ info:
     同组织 Key 的访问权限由组织资源策略控制。GET 列表仅查询本组织平台库，不开放上游全账户枚举。
     网关、产物存储、模型能力、客户价格、供应商预算、路由与租户执行保留策略均须显式配置。
     未配置默认禁用；seedance-2.0/2.5 出现在契约中不代表账号已取得官方能力或模型已上线。
-    GET 要求 video:read，POST/DELETE（含预估）要求 video:write；video:* 或 * 覆盖二者。
-    POST 创建、取消、素材创建和授权创建要求 Idempotency-Key；唯一作用域为
+    GET 要求 video:read，POST/PATCH/DELETE（含预估）要求 video:write；video:* 或 * 覆盖二者。
+    POST 创建、取消、素材创建、授权创建、素材 PATCH 和单素材 DELETE 要求 Idempotency-Key；唯一作用域为
     (org_id, HTTP method, normalized canonical resource path, HMAC-SHA256(Idempotency-Key))。
     路径包含实际资源 ID；哈希针对幂等键而非 Gateway Key。同组织 Key 轮换不会重新派单，
     但 pending 真人会话的 H5 URL 仅创建该会话的原 Key 可读取；换 Key 重放可能返回 403。
@@ -379,7 +379,10 @@ paths:
                 name:
                   type: string
                   minLength: 1
-                  maxLength: 100
+                  maxLength: 64
+                description:
+                  type: string
+                  maxLength: 300
       responses:
         '202':
           description: 素材组已持久化受理
@@ -423,6 +426,36 @@ paths:
   /v1/video/asset-groups/{group_id}:
     parameters:
       - $ref: '#/components/parameters/GroupId'
+    patch:
+      tags: [Assets]
+      operationId: updateVideoAssetGroup
+      summary: 异步编辑素材组名称与说明
+      description: |
+        先 GET 或列表读取 version，作为 expected_version 提交。需要 Update 能力及有效幂等键。
+        name 必填，description 可选；版本过期、资源不就绪或已有在途操作为 409 invalid_state。
+        不支持客户修改 kind、上游 ID 或业务许可。接受返回操作，轮询 confirmed 后重新读取资源版本。
+      parameters:
+        - $ref: '#/components/parameters/AssetIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, expected_version]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+                description: { type: string, maxLength: 300 }
+                expected_version: { type: integer, minimum: 1 }
+            example: { name: 示例素材组新版, description: 更新说明, expected_version: 1 }
+      responses:
+        '202':
+          $ref: '#/components/responses/OperationAccepted'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
     get:
       tags: [Assets]
       operationId: getVideoAssetGroup
@@ -473,9 +506,10 @@ paths:
         group_id 必须属于本组织且就绪；真人素材组必须由服务端确认官方 H5 认证成功，
         并有经核验且仍有效、适用当前用途的业务肖像许可。H5 认证成功本身不等同于取得该许可。
         image/video/audio 只有当前账号/项目对应能力显式启用时允许提交，不支持组合返回 422。
-        必须先由平台可信管理员登记已核实的不可变媒体、SHA-256、大小/类型/尺寸/时长/FPS、证据和有效期。
-        url 必须精确匹配当前组织有效登记项；未登记、已撤销、过期或校验不符返回 400，不会自动抓取或信任客户断言。
-        登记有效期最长为核验后一小时；原始 URL 与实际取件 URL 只在加密安全域保存。
+        url 必须通过当前组织的可信媒体验证：可使用控制台上传/导入且已验证的媒体来源，
+        或由可信管理员登记的有效不可变媒体。包含 SHA-256、大小/类型/尺寸/时长/FPS 与有效性证据。
+        外部地址必须精确匹配有效可信登记项；未登记、已撤销、过期或校验不符拒绝，不信任客户自报信息。
+        管理员登记有效期最长为核验后一小时；控制台媒体按自身 expires_at 校验。
         接受不等于审核通过；仅 status=ready 的资产可用于任务，平台 asset:// 引用会在内部转换。
       parameters:
         - $ref: '#/components/parameters/AssetIdempotencyKey'
@@ -495,7 +529,7 @@ paths:
                   format: uri
                   pattern: '^https://'
                   maxLength: 4096
-                  description: 必须精确匹配本组织有效可信媒体登记项的 HTTPS 地址；URL query 可能含签名，不得进入普通日志或安全事件。
+                  description: 本组织可通过可信媒体验证的 HTTPS 地址；支持已就绪控制台媒体或有效管理员登记，不能任意注册公网 URL。URL query 可能含签名，不得进入普通日志或安全事件。
                 media_type:
                   $ref: '#/components/schemas/MediaType'
                 name:
@@ -549,6 +583,35 @@ paths:
   /v1/video/assets/{asset_id}:
     parameters:
       - $ref: '#/components/parameters/AssetId'
+    patch:
+      tags: [Assets]
+      operationId: updateVideoAsset
+      summary: 异步编辑素材名称
+      description: |
+        先 GET 或列表读取 version，作为 expected_version 提交。需要 Update 能力及有效幂等键。
+        仅允许 name 与 expected_version；版本过期或有在途操作为 409 invalid_state。
+        接受返回操作，轮询 confirmed 后重新读取；不接受 description、group_id 或媒体内容变更。
+      parameters:
+        - $ref: '#/components/parameters/AssetIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, expected_version]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+                expected_version: { type: integer, minimum: 1 }
+            example: { name: 示例素材新版, expected_version: 1 }
+      responses:
+        '202':
+          $ref: '#/components/responses/OperationAccepted'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
     get:
       tags: [Assets]
       operationId: getVideoAsset
@@ -565,12 +628,22 @@ paths:
     delete:
       tags: [Assets]
       operationId: deleteVideoAsset
-      summary: 单素材删除能力占位（当前禁用）
+      summary: 异步删除单个素材（能力门控）
       description: |
-        当前不调用官方 DeleteAsset。存在且属于本组织的素材固定返回 422 unsupported_capability；
-        不存在、跨组织或已删除返回 404。不会建立删除操作，也不会返回 202/204。
-        官方 DeleteAsset 完整契约与能力验证完成前保持禁用。
+        需要有效 Idempotency-Key 与显式启用的 DeleteAssets 能力。素材必须属于本组织，
+        已有上游映射且处于允许删除的 ready/failed 状态；未启用返回 422 unsupported_capability。
+        存在在途任务引用为 409 resource_in_use；在途修改/删除或状态冲突为 409 invalid_state。
+        受理返回 202 操作，按 poll_url 确认完成；未知结果不能盲重发。
+        不存在、跨组织或已删除可能返回 404，因此重复请求的 404 不是删除成功证据。
+      parameters:
+        - $ref: '#/components/parameters/AssetIdempotencyKey'
       responses:
+        '202':
+          $ref: '#/components/responses/OperationAccepted'
+        '204':
+          description: 处理时已确认删除完成；后续请求也可能在资源预检时返回 404，应保留原操作 ID。
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Error'
         '404':
@@ -603,6 +676,14 @@ paths:
               additionalProperties: false
               required: [callback_url]
               properties:
+                name:
+                  type: string
+                  maxLength: 64
+                  description: 可选会话名称。
+                description:
+                  type: string
+                  maxLength: 300
+                  description: 可选会话说明。
                 callback_url:
                   type: string
                   format: uri
@@ -893,6 +974,9 @@ components:
         有歧义也返回 422 并提示改用结构化字段。本版本不开放任意 provider_params。
         基于 draft_task 的正式生成只允许唯一 draft_task 内容项且 resolution 必须为 1080p；
         duration/frames/ratio/seed/generate_audio/omni_reference_task_type 不得重传，这些有效参数继承 Draft。
+        转正式不能同时设置 draft:true。首尾帧模式各最多一张，尾帧须有首帧，ratio 必须为 adaptive，
+        不能混入参考图片、视频或音频。2.5 edit 需要恰好一个视频、adaptive 与 duration=-1；
+        extend 需要恰好一个视频与 adaptive；这些组合还受已发布能力约束。
         return_last_frame/output_format/watermark/service_tier/execution_expires_after 的省略不表示继承，
         按官方正式任务默认值及当前能力版本解释。未在本契约公开的回调/priority 等字段不允许透传。
       properties:
@@ -995,6 +1079,8 @@ components:
                 maxItems: 1
               resolution:
                 const: 1080p
+              draft:
+                const: false
             not:
               anyOf:
                 - required: [duration]
@@ -1155,14 +1241,14 @@ components:
           pattern: '^op_[A-Za-z0-9_-]+$'
         kind:
           type: string
-          enum: [cancel_task, delete_task, delete_asset_group]
+          description: 任务为 cancel_task/delete_task；素材操作保留动作名，如 CreateAssetGroup、CreateAsset、UpdateAssetGroup、UpdateAsset、DeleteAssetGroup、DeleteAsset、CreateVisualValidateSession。
         status:
           type: string
           enum: [pending, in_flight, sending, unknown, confirmed, rejected]
-          description: 任务发送态为 in_flight，素材组发送态为 sending；只有 confirmed 证明完成，unknown 不凭响应超时或 404 推断完成。
+          description: 任务发送态为 in_flight，素材操作发送态为 sending；只有 confirmed 证明完成，unknown 不凭响应超时或 404 推断完成。
         resource_id:
           type: string
-          pattern: '^(task_|ag_)[A-Za-z0-9_-]+$'
+          pattern: '^(task_|ag_|asset_|pas_)[A-Za-z0-9_-]+$'
         poll_url:
           type: string
           pattern: '^/v1/video/operations/op_[A-Za-z0-9_-]+$'
@@ -1173,10 +1259,10 @@ components:
         completed_at:
           type: [string, 'null']
           format: date-time
-          description: 当前仅素材组删除操作返回；pending/sending/unknown 为 null，confirmed/rejected 为完成时间。任务操作不返回此字段。
+          description: 素材操作返回；pending/sending/unknown 为 null，confirmed/rejected 为完成时间。任务操作不返回此字段。
         error:
           $ref: '#/components/schemas/SafeError'
-          description: 当前仅素材组操作有安全错误投影时出现；任务操作不返回该字段。
+          description: 素材操作有安全错误投影时出现；任务操作不返回该字段。
     Estimate:
       type: object
       additionalProperties: false
@@ -1336,7 +1422,8 @@ components:
           type: string
         input_token_semantics:
           type: string
-          const: official_zero_not_separately_metered
+          const: not_projected_separately_completion_tokens_authoritative
+          description: 平台不单列输入 Token，按核实的 completion_tokens 结算；不声称官方输入用量为零。
         usage_semantics:
           type: string
           const: reservation_upper_bound
@@ -1463,8 +1550,12 @@ components:
     AssetGroup:
       type: object
       additionalProperties: false
-      required: [id, kind, name, status, asset_count, authorization_status, created_at, updated_at]
+      required: [id, kind, name, status, asset_count, authorization_status, version, created_at, updated_at]
       properties:
+        version:
+          type: integer
+          minimum: 1
+          description: 当前资源版本；PATCH 的 expected_version 必须来自最近 GET 或列表，不能自行递增猜测。
         id:
           $ref: '#/components/schemas/GroupId'
         kind:
@@ -1501,8 +1592,12 @@ components:
     Asset:
       type: object
       additionalProperties: false
-      required: [id, group_id, media_type, name, status, created_at, updated_at]
+      required: [id, group_id, media_type, name, status, version, created_at, updated_at]
       properties:
+        version:
+          type: integer
+          minimum: 1
+          description: 当前资源版本；PATCH 时提交为 expected_version，版本过期返回 409。
         id:
           $ref: '#/components/schemas/AssetId'
         group_id:
@@ -1514,7 +1609,7 @@ components:
           maxLength: 64
         status:
           type: string
-          enum: [creating, processing, ready, failed]
+          enum: [creating, processing, ready, needs_review, failed, deleting]
         reference:
           type: string
           pattern: '^asset://asset_[A-Za-z0-9_-]+$'
