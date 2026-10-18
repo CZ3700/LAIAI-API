@@ -347,7 +347,7 @@
           },
           "pricing_snapshot": {
             "additionalProperties": false,
-            "description": "创建时的客户销售计价快照。unit_price_usd_per_1m 已包含客户适用倍率/折扣，不能再次乘倍率；\n生成基础费用=ROUND(billable_tokens / 1000000 × unit_price_usd_per_1m, rounding_scale)。\n后续人工调整以 entries 中 adjustment_credit/debit 独立反映，不覆盖快照。\nsettled_amount 为调整后的净额；不能把调整后 billable_tokens 再乘原单价当作所有人工调整的重建公式。\n不会返回火山成本、资源包或采购折扣。\n",
+            "description": "创建时的客户销售计价快照。unit_price_usd_per_1m 已包含客户适用倍率/折扣，不能再次乘倍率；\n实际量计算金额=ROUND(completion_tokens / 1000000 × unit_price_usd_per_1m, rounding_scale)，\ncompletion_tokens 使用首次结算时已核实的实际用量，不能用 total_tokens 或预估量替代。\n首次实扣=MIN(实际量计算金额, reserved_amount)，不超过预冻结额，超出部分不自动追扣。\n后续人工调整以 entries 中 adjustment_credit/debit 独立反映，不覆盖快照。\nsettled_amount 为调整后的净额；不能把调整后 billable_tokens 再乘原单价当作所有人工调整的重建公式。\n不会返回火山成本、资源包或采购折扣。\n",
             "properties": {
               "currency": {
                 "const": "USD",
@@ -420,7 +420,7 @@
           },
           "settled_amount": {
             "$ref": "#/components/schemas/NullableMoneyAmount",
-            "description": "未结算为 null；调整后返回累计净客户金额，历史 capture 与 adjustment 分录保留。"
+            "description": "未结算为 null；首次返回实际扣款，不超过预冻结额，超出部分不自动追扣。后续经审核调整后返回累计净客户金额，历史 capture 与 adjustment 分录保留，详情见 entries。"
           },
           "state": {
             "$ref": "#/components/schemas/BillingState"
@@ -3798,5 +3798,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "4422087ee4520f9b1c42c71990bfc784e2495ff3828619070d602e68abe3ce04"
+  "x-seedance-source-sha256": "e0295e9d001efdecd0217eddc758723b04526b97de88112d38d52ac1878ca0d2"
 }

@@ -1443,7 +1443,7 @@ components:
           $ref: '#/components/schemas/MoneyAmount'
         settled_amount:
           $ref: '#/components/schemas/NullableMoneyAmount'
-          description: 未结算为 null；调整后返回累计净客户金额，历史 capture 与 adjustment 分录保留。
+          description: 未结算为 null；首次返回实际扣款，不超过预冻结额，超出部分不自动追扣。后续经审核调整后返回累计净客户金额，历史 capture 与 adjustment 分录保留，详情见 entries。
         released_amount:
           $ref: '#/components/schemas/MoneyAmount'
         actual_usage:
@@ -1466,7 +1466,9 @@ components:
           required: [price_rule_id, mode, unit, unit_price_usd_per_1m, currency, rounding_mode, rounding_scale]
           description: |
             创建时的客户销售计价快照。unit_price_usd_per_1m 已包含客户适用倍率/折扣，不能再次乘倍率；
-            生成基础费用=ROUND(billable_tokens / 1000000 × unit_price_usd_per_1m, rounding_scale)。
+            实际量计算金额=ROUND(completion_tokens / 1000000 × unit_price_usd_per_1m, rounding_scale)，
+            completion_tokens 使用首次结算时已核实的实际用量，不能用 total_tokens 或预估量替代。
+            首次实扣=MIN(实际量计算金额, reserved_amount)，不超过预冻结额，超出部分不自动追扣。
             后续人工调整以 entries 中 adjustment_credit/debit 独立反映，不覆盖快照。
             settled_amount 为调整后的净额；不能把调整后 billable_tokens 再乘原单价当作所有人工调整的重建公式。
             不会返回火山成本、资源包或采购折扣。

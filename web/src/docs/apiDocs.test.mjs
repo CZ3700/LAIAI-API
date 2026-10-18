@@ -132,6 +132,10 @@ test('served video specification records current canonical contract digest', () 
   assert.equal(spec.components.schemas.ReservationMetering.properties.input_token_semantics.const, 'not_projected_separately_completion_tokens_authoritative')
   assert.ok(!JSON.stringify(spec.paths).includes('failures refund in full'))
   assert.ok(!JSON.stringify(spec.paths).includes('Any extra top-level params'))
+  assert.match(spec.components.schemas.Billing.properties.pricing_snapshot.description, /首次实扣=MIN\(实际量计算金额, reserved_amount\)/)
+  const formula = docPages.find(p => p.id === 'video-billing').sections.find(s => s.id === 'billing-formula')
+  assert.ok(formula.table.rows.some(row => row[0] === '实际量计算金额'))
+  assert.ok(formula.table.rows.some(row => row[0] === '首次实扣' && row[1].includes('不自动追扣')))
 })
 
 test('inline OpenAPI examples satisfy their accompanying schemas', t => {

@@ -102,6 +102,8 @@ curl -fsS "$BASE_URL/v1/video/generations/$TASK_ID/billing" \
 
 `metering.input_token_semantics=not_projected_separately_completion_tokens_authoritative` 表示平台不单独投影输入 Token，并以核实的 `completion_tokens` 作为结算依据；不能解释成官方输入用量一定为零。输入视频仍影响视频 Token 计算。最低 Token 参考表是估算依据，不是实际消耗：冻结会覆盖输入组合、自动时长与 adaptive 比例的完整域；实际用量未知时不得用估算量、零或 `total_tokens` 替代结算。
 
+实际量计算金额由已核实 `completion_tokens` 与接受时客户有效单价计算，并按账单舍入规则处理。首次实扣取该计算金额与预冻结额的较小值，不超过预冻结额；超出部分不自动追扣。`settled_amount` 首次表示实际扣款，后续经审核调整另见 `entries`。
+
 调整分录的 `amount` 均为非负数：credit 减少净费用，debit 增加净费用；`settled_amount` 是调整后的净额。不要覆盖历史 capture，也不要把 release 等同于退回已扣费用。人工调整可能独立于原 Token 计价公式，应结合 entries 与净额核对。单价可能超过 8 位小数，最终 USD 账款使用 8 位小数；无需把供应商汇率、采购折扣再次乘入客户账单。
 
 任务 DTO 当前不返回 `effective_parameters`、原始错误、上游 ID、内嵌取消/删除操作或尾帧 URL。事件不返回 prompt、媒体 URL、H5 URL 或供应商成本。软删除任务后，账单与安全事件仍按账务保留策略查询。
