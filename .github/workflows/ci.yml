@@ -39,6 +39,10 @@ jobs:
         run: make web
       - name: Video pricing context regressions
         run: npm --prefix web run test:video-pricing
+      - name: Provider pricing editor regressions
+        run: npm --prefix web run test:pricing-editor
+      - name: Public API documentation contracts
+        run: npm --prefix web run test:api-docs
 
   ark-mysql:
     runs-on: ubuntu-latest
