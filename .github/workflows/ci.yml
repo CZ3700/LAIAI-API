@@ -6,7 +6,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, 'codex/ark-*', 'codex/maas-*', 'codex/model-*']
+    branches: [main, 'codex/ark-*', 'codex/maas-*', 'codex/model-*', 'codex/seedance-*']
 
 jobs:
   ci:
