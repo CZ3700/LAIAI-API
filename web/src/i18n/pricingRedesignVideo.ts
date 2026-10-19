@@ -1,4 +1,10 @@
 const en = {
+  templateTitle: 'Reusable pricing templates', templateSummary: 'Use the versioned Seedance prices installed by migration. Review changes before publishing to the selected channel.', templateAction: 'Apply pricing template',
+  templateHelp: 'Load prices into the local draft, then use the existing preview, validation and publication steps. Applying a template does not enable models or change budgets.', templateLoading: 'Loading installed templates…', templateEmpty: 'No pricing template is installed for this exact model.',
+  templateVersion: 'Template version', templateModel: 'Matching model', templateSourceVersion: 'Source price version', templateSourceFX: 'Source USD / CNY snapshot', templateDigest: 'Template SHA-256', templateFXHelp: 'USD selling prices are fixed values from the saved configuration. The source FX is informational; applying this template does not change the target scope’s FX or recalculate selling prices.',
+  templateMode: 'Apply mode', templateFill: 'Fill missing combinations (default)', templateFillHelp: 'Keep every existing price rule, including disabled rules and other task modes. Fill only combinations without a saved rule; new combinations stay disabled until you enable them.', templateReplace: 'Replace template-covered combinations', templateReplaceHelp: 'Replace selling prices, costs, reserve multipliers and minimum rule versions for matching combinations. Existing enablement and other combinations are preserved.',
+  templateDirty: 'Save or discard your current draft before previewing a template.', templatePreview: 'Preview template changes', templateDiff: '{count} combinations will change', templateApplyDraft: 'Load into draft', templateNoChanges: 'This mode makes no changes. Existing prices already cover the template.', templateStale: 'The draft, model or template selection changed. Preview again before applying.',
+  templateLoadFailed: 'Installed templates could not be loaded. You can continue editing prices manually.', templatePreviewFailed: 'Template preview failed. Reload the current configuration and verify the template and channel binding.', templateApplied: 'Template prices loaded into the draft. Review and publish to save them; model enablement and budgets were preserved.', templateDraftSource: 'Draft template source',
   verified: 'Verified', fpsVerifiedRule: 'The original minimum usage table does not list FPS. Verified rules use 24 fps from the official model list; the original source remains unchanged.',
   title: 'Seedance pricing', subtitle: 'Reserve at creation. Settle using the official billable video Tokens returned for the task.',
   retail: 'Selling prices', rules: 'Billing rules', reference: 'Official reference', history: 'Publications',
@@ -36,6 +42,12 @@ const en = {
   details: 'Details', expiry: 'Unpublished changes exist. Leave this page?', pricePlaceholder: 'Set selling price', inactive: 'Disabled',
 }
 const zhCN: typeof en = {
+  templateTitle: '可复用定价模板', templateSummary: '使用版本迁移安装的 Seedance 价格，核对差异后发布到当前渠道。', templateAction: '应用定价模板',
+  templateHelp: '先载入本地编辑草稿，再沿用价格预览、校验及发布流程。应用模板不会开通模型或修改预算。', templateLoading: '正在读取已安装模板…', templateEmpty: '当前精确模型尚未安装定价模板。',
+  templateVersion: '模板版本', templateModel: '匹配模型', templateSourceVersion: '来源价格版本', templateSourceFX: '来源 USD / CNY 汇率快照', templateDigest: '模板 SHA-256', templateFXHelp: 'USD 售价是保存配置中的固定值。来源汇率仅供参考；应用模板不会改写目标作用域汇率，也不会重新折算售价。',
+  templateMode: '应用方式', templateFill: '仅补缺失组合（默认）', templateFillHelp: '保留所有已保存价格规则，包括禁用规则与其他任务模式；仅补充尚无价格规则的组合，新组合需确认后手动启用。', templateReplace: '替换模板覆盖的组合', templateReplaceHelp: '替换对应组合的售价、成本、预冻结系数和最低量版本。已有启用状态以及模板外的组合继续保留。',
+  templateDirty: '请先保存或放弃当前草稿，再预览定价模板。', templatePreview: '预览模板差异', templateDiff: '将变更 {count} 个组合', templateApplyDraft: '载入编辑草稿', templateNoChanges: '当前方式没有需要修改的组合，现有价格已覆盖模板。', templateStale: '草稿、模型或模板选择已变化，请重新预览后应用。',
+  templateLoadFailed: '无法读取已安装模板，可继续手动编辑价格。', templatePreviewFailed: '模板预览失败，请重新加载当前配置并核对模板及渠道绑定。', templateApplied: '模板价格已载入编辑草稿，预览并发布后才会保存；模型启用状态与预算保持原值。', templateDraftSource: '草稿来源模板',
   verified: '已核验', fpsVerifiedRule: '原始最低量表未提供 FPS；核验规则已依据官方模型列表补充 24 fps，原始来源保持不变。',
   title: 'Seedance 定价', subtitle: '创建时预冻结，成功后按火山任务实际返回的视频计费 Token 结算。',
   retail: '售价设置', rules: '计费规则', reference: '官方参考', history: '发布记录',

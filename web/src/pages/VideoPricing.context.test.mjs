@@ -90,6 +90,15 @@ function reference(orgId, model = 'seedance-2.0') {
 function verification(orgId, model = 'seedance-2.0') {
   return { model, profile_version: 'official-fixture-v1', evidence_sha256: 'c'.repeat(64), config_version: `cfg-${orgId}`, capability_version: 'cap-current', minimum_version: 'official-minimum-fixture', minimum_cell_count: 6, resolutions: ['480p','720p'], ratios: ['16:9'], min_duration: 4, max_duration: 15, verified: false, sources: [{ id: 'fixture-source', url: 'https://example.com/official', sha256: 'd'.repeat(64) }] }
 }
+function pricingTemplate(model = 'seedance-2.0') {
+  return { version: 'seedance-20261019-v1', model, upstream_model: 'fixture-upstream', label: 'Seedance prices', body_sha256: 'e'.repeat(64), currency: 'USD', fx_usd_per_cny: '0.148765248438', fx_version: 'source-fx', fx_observed_at: '2026-10-19T00:00:00Z', source_pricing_version: 'source-price', profile_version: 'profile-v1', minimum_rule_version: 'minimum-v1', minimum_cell_count: 144,
+    cells: [{ ...pricing(1, model).cells[0], retail_usd_per_1m: '5.504314192206', supplier_cny_per_1m: '37', risk_multiplier: '4', minimum_rule_version: '' }] }
+}
+function templatePreview(h, cells) {
+  const selected = h.vm.selectedTemplate.value
+  return { model: h.vm.model.value, channel_id: 10, config_version: h.vm.pricing.value.config_version, template_ref: {version: selected.version, model: selected.model, sha256: selected.body_sha256}, mode: h.vm.templateMode.value, cells,
+    diff: cells.map(cell => ({key: `${cell.mode}/${cell.resolution}/${cell.input_video}/${cell.service_tier}/${cell.draft}`, change: 'changed', before: null, after: cell})) }
+}
 async function harness(t, props = {}) {
   const original = globalThis.__pricingHarness
   const h = {
@@ -98,6 +107,7 @@ async function harness(t, props = {}) {
     respond: () => { throw new Error('Unexpected write request in test') },
   }
   h.defaultGet = call => {
+    if (call.path.startsWith('/api/admin/video/pricing-templates?')) return {items: [pricingTemplate(decodeURIComponent(call.path.split('?model=')[1]))]}
     const model = decodeURIComponent(call.path.split('/models/')[1]?.split('/')[0] ?? '')
     return call.path.endsWith('/revisions') || call.path.endsWith('/minimum-rules')
       ? { items: [] } : call.path.endsWith('/reference-candidates') ? reference(call.orgId, model) : call.path.endsWith('/verification') ? verification(call.orgId, model) : pricing(call.orgId, model)
@@ -128,6 +138,140 @@ async function harness(t, props = {}) {
 
 const changePrice = (h, value = '20.000000000001') => { h.vm.pricing.value.cells[0].retail_usd_per_1m = value }
 const writes = h => h.calls.filter(c => c.method !== 'GET')
+
+test('installed templates are read-only on load, and unavailable templates do not block manual pricing', async t => {
+  const h = await harness(t), fallback = h.defaultGet
+  assert.equal(h.vm.templates.value[0].version, 'seedance-20261019-v1')
+  assert.equal(h.vm.templateMode.value, 'fill_missing')
+  assert.equal(h.vm.templateRef.value, null)
+  assert.equal(h.vm.dirty.value, false)
+  assert.equal(writes(h).length, 0)
+  h.defaultGet = call => { if (call.path.includes('/pricing-templates?')) throw new Error('migration not installed'); return fallback(call) }
+  await h.vm.load()
+  assert.equal(h.vm.templateError.value, 'migration not installed')
+  assert.equal(h.vm.canEdit.value, true)
+  assert.equal(h.vm.error.value, '')
+  changePrice(h)
+  h.respond = () => ({preview: []})
+  await h.vm.validate()
+  assert.equal(h.vm.canPublish.value, true)
+  assert.equal(writes(h).some(call => call.path.endsWith('/template-preview')), false)
+})
+
+test('template preview loads a full disabled draft and preserves provenance through manual edits and publication', async t => {
+  const h = await harness(t), fallback = h.defaultGet
+  const hidden = {...pricing(1).cells[0], mode: 'extend', service_tier: 'flex', draft: true, retail_usd_per_1m: '17.123456789012', supplier_cny_per_1m: '99'}
+  const missing = {...pricing(1).cells[0], input_video: true, retail_usd_per_1m: '', supplier_cny_per_1m: '', risk_multiplier: '', minimum_rule_version: ''}
+  h.defaultGet = call => { const data = fallback(call); if (call.path.endsWith('/pricing')) data.cells.push(missing, hidden); return data }
+  await h.vm.load()
+  const baseline = JSON.parse(JSON.stringify(h.vm.pricing.value)), filled = {...missing, retail_usd_per_1m: '3.272835465636', supplier_cny_per_1m: '22', risk_multiplier: '4', minimum_rule_version: 'minimum-v1'}
+  h.respond = call => {
+    assert.ok(call.path.endsWith('/template-preview'))
+    assert.deepEqual(call.body, {channel_id: 10, expected_config_version: 'cfg-1', template_version: 'seedance-20261019-v1', mode: 'fill_missing'})
+    const result = templatePreview(h, [baseline.cells[0], filled, hidden])
+    result.diff[0].change = 'unchanged'; result.diff[2].change = 'unchanged'
+    return result
+  }
+  h.vm.openTemplate(); await h.vm.previewTemplate()
+  assert.deepEqual(JSON.parse(JSON.stringify(h.vm.pricing.value)), baseline, 'preview never edits pricing')
+  assert.equal(h.vm.templateChanges.value.length, 1)
+  assert.equal(h.vm.canApplyTemplate.value, true)
+  h.vm.applyTemplate()
+  assert.equal(writes(h).length, 1, 'applying only edits the local draft')
+  assert.equal(h.vm.templateOpen.value, false)
+  assert.equal(h.vm.priceDirty.value, true)
+  assert.equal(h.vm.canPublish.value, false)
+  assert.deepEqual(JSON.parse(JSON.stringify(h.vm.pricing.value.cells[2])), hidden)
+  assert.ok(h.vm.pricing.value.cells.every(cell => !cell.enabled))
+  changePrice(h, '8.123456789012')
+  const reference = {version: 'seedance-20261019-v1', model: 'seedance-2.0', sha256: 'e'.repeat(64)}
+  assert.deepEqual(JSON.parse(JSON.stringify(h.vm.body.value.template_ref)), reference)
+  h.respond = call => { assert.ok(call.path.endsWith('/validate')); return {preview: []} }
+  await h.vm.validate()
+  assert.deepEqual(writes(h).find(call => call.path.endsWith('/prepare')).body.template_ref, reference)
+  assert.equal(h.vm.canPublish.value, true)
+  h.respond = call => { assert.ok(call.path.endsWith('/publications')); assert.deepEqual(call.body.template_ref, reference); assert.equal(call.body.cells.length, 3); return {} }
+  await h.vm.publish()
+  assert.equal(h.vm.templateRef.value, null, 'a refreshed publication has no stale draft provenance')
+  assert.deepEqual(writes(h).map(call => call.path.split('/').at(-1)), ['template-preview', 'prepare', 'validate', 'publications'])
+})
+
+test('replace mode is explicit, invalidates an earlier preview and keeps existing enablement', async t => {
+  const h = await harness(t)
+  h.respond = () => templatePreview(h, [{...pricingTemplate().cells[0], enabled: false}])
+  h.vm.openTemplate(); await h.vm.previewTemplate()
+  assert.equal(h.vm.templatePreview.value.mode, 'fill_missing')
+  h.vm.templateMode.value = 'replace'
+  assert.equal(h.vm.templatePreview.value, null)
+  assert.equal(h.vm.canApplyTemplate.value, false)
+  await h.vm.previewTemplate()
+  assert.equal(writes(h).at(-1).body.mode, 'replace')
+  h.vm.applyTemplate()
+  assert.equal(h.vm.pricing.value.cells[0].retail_usd_per_1m, '5.504314192206')
+  assert.equal(h.vm.pricing.value.cells[0].enabled, false)
+  h.vm.discardChanges()
+  assert.equal(h.vm.templateRef.value, null)
+  assert.equal(h.vm.dirty.value, false)
+  h.vm.openTemplate()
+  assert.equal(h.vm.templateMode.value, 'fill_missing', 'each new application defaults to preserving existing prices')
+})
+
+test('dirty and busy guards prevent template requests; edits during a preview discard the stale response', async t => {
+  const h = await harness(t), late = deferred()
+  changePrice(h); h.vm.openTemplate(); await h.vm.previewTemplate()
+  assert.equal(writes(h).length, 0)
+  h.vm.discardChanges()
+  const result = templatePreview(h, pricingTemplate().cells)
+  h.respond = () => late.promise
+  const pending = h.vm.previewTemplate()
+  assert.equal(h.vm.busy.value, true)
+  await h.vm.previewTemplate()
+  assert.equal(writes(h).length, 1)
+  const old = h.vm.pricing.value.cells[0].retail_usd_per_1m
+  changePrice(h); changePrice(h, old)
+  late.resolve(result); await pending
+  assert.equal(h.vm.templatePreview.value, null, 'even edited-then-reverted drafts cannot accept late previews')
+  assert.equal(h.vm.canApplyTemplate.value, false)
+  assert.equal(h.vm.busy.value, false)
+  h.respond = () => templatePreview(h, pricingTemplate().cells)
+  await h.vm.previewTemplate()
+  assert.equal(h.vm.canApplyTemplate.value, true)
+  changePrice(h); changePrice(h, old)
+  assert.equal(h.vm.templatePreview.value, null, 'editing after a preview also invalidates it even when reverted')
+})
+
+test('late template listings and previews cannot leak into a different model, channel or admin context', async t => {
+  const h = await harness(t, {selectedModel: 'seedance-2.0-fast', selectedChannelId: 10}), fallback = h.defaultGet, lateList = deferred(), latePreview = deferred()
+  h.defaultGet = call => call.path.includes('/pricing-templates?model=seedance-2.0-fast') ? lateList.promise : fallback(call)
+  const listing = h.vm.loadTemplates()
+  h.vm.model.value = 'seedance-2.0-mini'
+  await until(() => !h.vm.loading.value && h.vm.pricing.value?.model === 'seedance-2.0-mini')
+  lateList.resolve({items: [pricingTemplate('seedance-2.0-fast')]}); await listing
+  assert.equal(h.vm.selectedTemplate.value.model, 'seedance-2.0-mini')
+  const result = templatePreview(h, pricingTemplate('seedance-2.0-mini').cells)
+  h.respond = () => latePreview.promise
+  const pending = h.vm.previewTemplate()
+  h.props.selectedChannelId = 20
+  await until(() => !h.vm.loading.value)
+  latePreview.resolve(result); await pending
+  assert.equal(h.vm.templatePreview.value, null)
+  assert.equal(h.vm.templateRef.value, null)
+  assert.equal(h.vm.canEdit.value, false)
+  h.auth.isSuperadmin = false
+  assert.equal(h.vm.templates.value.length, 0)
+})
+
+test('template preview refuses missing hidden cells, changed enablement and mismatched digests', async t => {
+  const h = await harness(t), original = JSON.parse(JSON.stringify(h.vm.pricing.value))
+  for (const mutate of [result => { result.cells = [] }, result => { result.cells[0].enabled = true }, result => { result.template_ref.sha256 = 'f'.repeat(64) }]) {
+    h.respond = () => { const result = templatePreview(h, pricingTemplate().cells); mutate(result); return result }
+    await h.vm.previewTemplate()
+    assert.equal(h.vm.templatePreview.value, null)
+    assert.equal(h.vm.canApplyTemplate.value, false)
+    assert.equal(h.vm.templateError.value, 'templatePreviewFailed')
+    assert.deepEqual(JSON.parse(JSON.stringify(h.vm.pricing.value)), original)
+  }
+})
 
 test('loading preserves every price, cost, flag and rule; references never edit the draft', async t => {
   const h = await harness(t)
@@ -161,7 +305,7 @@ for (const [model, series, referenceCost] of [['seedance-2.0-fast','2.0fast','22
     assert.equal(h.vm.verification.value.minimum_cell_count, 144)
     assert.equal(h.vm.dirty.value, false)
     assert.equal(writes(h).length, 0)
-    assert.ok(h.calls.every(call => call.path.startsWith(`/api/admin/video/models/${model}/`)))
+    assert.ok(h.calls.every(call => call.path.startsWith(`/api/admin/video/models/${model}/`) || call.path === `/api/admin/video/pricing-templates?model=${model}`))
     h.vm.verificationOpen.value = true
     h.respond = call => {
       assert.equal(call.path, `/api/admin/video/models/${model}/verification`)
@@ -674,7 +818,7 @@ test('verification requires a clean explicit preview, posts exact versions and r
   const before = h.calls.length
   await h.vm.syncVerification()
   assert.equal(writes(h).length, 1)
-  assert.equal(h.calls.slice(before).filter(c => c.method === 'GET').length, 5)
+  assert.equal(h.calls.slice(before).filter(c => c.method === 'GET').length, 6)
   assert.equal(h.vm.verification.value.verified, true)
   assert.equal(h.vm.minimums.value[0].version, 'official-minimum-fixture')
   assert.equal(h.vm.pricing.value.cells[0].retail_usd_per_1m, '10.00000000')

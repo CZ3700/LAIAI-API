@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/ark"
+	"github.com/laiai/laiai-next/core/internal/arkpricetemplate"
 	"github.com/laiai/laiai-next/core/internal/video"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
@@ -47,12 +48,13 @@ type pricingCell struct {
 	UnavailableReason  string `json:"unavailable_reason,omitempty"`
 }
 type pricingRequest struct {
-	ExpectedConfigVersion string            `json:"expected_config_version"`
-	ConfigVersion         string            `json:"config_version"`
-	PricingVersion        string            `json:"pricing_version"`
-	EvidenceHash          string            `json:"evidence_hash"`
-	Cells                 []pricingCell     `json:"cells"`
-	SourceSet             *pricingSourceSet `json:"source_set,omitempty"`
+	ExpectedConfigVersion string                      `json:"expected_config_version"`
+	ConfigVersion         string                      `json:"config_version"`
+	PricingVersion        string                      `json:"pricing_version"`
+	EvidenceHash          string                      `json:"evidence_hash"`
+	Cells                 []pricingCell               `json:"cells"`
+	SourceSet             *pricingSourceSet           `json:"source_set,omitempty"`
+	TemplateRef           *arkpricetemplate.Reference `json:"template_ref,omitempty"`
 }
 
 var priceDecimal = regexp.MustCompile(`^(0|[1-9][0-9]{0,11})(\.[0-9]{1,12})?$`)
@@ -182,11 +184,17 @@ func validatePricingRequest(tx *gorm.DB, model string, in pricingRequest, now ti
 	if e = requireCompletePricingMatrix(in.Cells, current); e != nil {
 		return cfg, nil, nil, e
 	}
+	if in.TemplateRef != nil && in.SourceSet == nil {
+		return cfg, nil, nil, videobilling.ErrConflict
+	}
 	if in.SourceSet != nil {
 		if e = validatePricingBinding(tx, cfg); e != nil {
 			return cfg, nil, nil, e
 		}
 		expected, evidence, e := resolvePricingSources(tx, cfg, in.Cells, current)
+		if e == nil {
+			e = templatePricingSource(tx, cfg, in.TemplateRef, &expected)
+		}
 		if e != nil || !samePricingSources(*in.SourceSet, expected) || in.EvidenceHash != evidence {
 			return cfg, nil, nil, videobilling.ErrConflict
 		}
@@ -282,6 +290,8 @@ func validatePricingRequest(tx *gorm.DB, model string, in pricingRequest, now ti
 }
 func (s *Server) registerArkPricingConsole(su *gin.RouterGroup) {
 	base := "/video/models/:model/pricing"
+	su.GET("/video/pricing-templates", s.listArkPricingTemplates)
+	su.POST(base+"/template-preview", s.previewArkPricingTemplate)
 	su.GET(base, s.getArkPricingConsole)
 	su.POST(base+"/prepare", s.prepareArkPricingConsole)
 	su.POST(base+"/validate", s.validateArkPricingConsole)
@@ -390,6 +400,11 @@ func (s *Server) publishArkPricingConsole(c *gin.Context) {
 	hash := hex.EncodeToString(digest[:])
 	var receipt pricingPublication
 	e := s.db.Transaction(func(tx *gorm.DB) error {
+		if in.TemplateRef != nil {
+			if _, err := loadPricingTemplateRef(tx, c.Param("model"), *in.TemplateRef); err != nil {
+				return err
+			}
+		}
 		prior := tx.Where("created_by = ? AND idempotency_key = ?", actor.ID, key).Take(&receipt).Error
 		if prior == nil {
 			if receipt.BodyHash != hash || receipt.Model != c.Param("model") {
@@ -439,7 +454,11 @@ func (s *Server) publishArkPricingConsole(c *gin.Context) {
 		if e = tx.Create(&receipt).Error; e != nil {
 			return e
 		}
-		return tx.Create(&AuditLog{Actor: fmt.Sprintf("user#%d", actor.ID), Action: "video.pricing.publish", Target: cfg.PublicModel, Detail: "version=" + in.PricingVersion, CreatedAt: now.UnixMilli()}).Error
+		detail := "version=" + in.PricingVersion
+		if in.TemplateRef != nil {
+			detail += ";template=" + in.TemplateRef.Version + ";template_sha256=" + in.TemplateRef.SHA256
+		}
+		return tx.Create(&AuditLog{Actor: fmt.Sprintf("user#%d", actor.ID), Action: "video.pricing.publish", Target: cfg.PublicModel, Detail: detail, CreatedAt: now.UnixMilli()}).Error
 	})
 	if e != nil {
 		fail(c, 409, "pricing publication rejected: stale version, duplicate or invalid coverage")

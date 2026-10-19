@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/arkpricecatalog"
+	"github.com/laiai/laiai-next/core/internal/arkpricetemplate"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/video"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
@@ -137,11 +138,7 @@ func resolvePricingSources(tx *gorm.DB, cfg video.ModelConfig, cells []pricingCe
 			}
 		}
 	}
-	sort.Slice(out.Refs, func(i, j int) bool {
-		a, _ := json.Marshal(out.Refs[i])
-		b, _ := json.Marshal(out.Refs[j])
-		return string(a) < string(b)
-	})
+	sealPricingSources(&out)
 	// Keep legacy evidence_hash a source digest, never a synthesized body/set digest.
 	for _, r := range out.Refs {
 		b, e := hex.DecodeString(r.RawSHA256)
@@ -153,13 +150,20 @@ func resolvePricingSources(tx *gorm.DB, cfg video.ModelConfig, cells []pricingCe
 	if evidence == "" {
 		return out, "", videobilling.ErrPricingUnavailable
 	}
+	return out, evidence, nil
+}
+func sealPricingSources(out *pricingSourceSet) {
+	sort.Slice(out.Refs, func(i, j int) bool {
+		a, _ := json.Marshal(out.Refs[i])
+		b, _ := json.Marshal(out.Refs[j])
+		return string(a) < string(b)
+	})
 	raw, _ := json.Marshal(struct {
 		SchemaVersion int                `json:"schema_version"`
 		Refs          []pricingSourceRef `json:"refs"`
 	}{out.SchemaVersion, out.Refs})
 	h := sha256.Sum256(raw)
 	out.SHA256 = hex.EncodeToString(h[:])
-	return out, evidence, nil
 }
 func samePricingSources(a, b pricingSourceSet) bool {
 	ar, _ := json.Marshal(a)
@@ -199,9 +203,10 @@ func (s *Server) prepareArkPricingConsole(c *gin.Context) {
 		return
 	}
 	var in struct {
-		ExpectedConfigVersion string        `json:"expected_config_version"`
-		ChannelID             uint64        `json:"channel_id"`
-		Cells                 []pricingCell `json:"cells"`
+		ExpectedConfigVersion string                      `json:"expected_config_version"`
+		ChannelID             uint64                      `json:"channel_id"`
+		Cells                 []pricingCell               `json:"cells"`
+		TemplateRef           *arkpricetemplate.Reference `json:"template_ref,omitempty"`
 	}
 	if videoAdminDecode(c, &in) != nil {
 		fail(c, 422, "invalid complete pricing matrix")
@@ -231,12 +236,15 @@ func (s *Server) prepareArkPricingConsole(c *gin.Context) {
 		if e != nil {
 			return e
 		}
+		if e := templatePricingSource(tx, cfg, in.TemplateRef, &source); e != nil {
+			return e
+		}
 		var token [16]byte
 		if _, e := rand.Read(token[:]); e != nil {
 			return e
 		}
 		version := hex.EncodeToString(token[:])
-		request = pricingRequest{ExpectedConfigVersion: cfg.Version, ConfigVersion: "cfg-" + version, PricingVersion: "price-" + version, EvidenceHash: evidence, Cells: in.Cells, SourceSet: &source}
+		request = pricingRequest{ExpectedConfigVersion: cfg.Version, ConfigVersion: "cfg-" + version, PricingVersion: "price-" + version, EvidenceHash: evidence, Cells: in.Cells, SourceSet: &source, TemplateRef: in.TemplateRef}
 		diff = preparePricingDiff(priceMatrix(cap, current), in.Cells)
 		return nil
 	})

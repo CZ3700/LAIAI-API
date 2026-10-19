@@ -22,6 +22,10 @@ interface Prepared { request: Record<string, unknown>; diff: Diff[]; sources: un
 interface BulkChange { key: string; before: string; after: string }
 interface Verification { model: string; profile_version: string; evidence_sha256: string; config_version: string; capability_version: string; minimum_version: string; minimum_cell_count: number; minimum_precision?: string; resolutions: string[]; ratios: string[]; min_duration: number; max_duration: number; verified: boolean; sources: { id: string; url: string; sha256: string }[] }
 interface AdoptionChange { key: string; costBefore: string; costAfter: string; riskBefore: string; riskAfter: string; minimumBefore: string; minimumAfter: string }
+interface TemplateRef { version: string; model: string; sha256: string }
+interface PricingTemplate { version: string; model: string; upstream_model: string; label: string; body_sha256: string; currency: string; fx_usd_per_cny: string; fx_version: string; fx_observed_at: string; source_pricing_version: string; profile_version: string; minimum_rule_version: string; minimum_cell_count: number; cells: Cell[] }
+type TemplateMode = 'fill_missing' | 'replace'
+interface TemplatePreview { model: string; channel_id: number; config_version: string; template_ref: TemplateRef; mode: TemplateMode; cells: Cell[]; diff: Diff[] }
 const auth = useAuth(), model = ref(props.selectedModel ?? 'seedance-2.0'), pricing = ref<Pricing | null>(null)
 const loading = ref(false), busy = ref(false), error = ref(''), notice = ref(''), tab = ref('retail')
 const initialCells = ref(''), initialPricing = ref<Pricing | null>(null)
@@ -33,6 +37,8 @@ const evidenceQuery = ref(''), evidencePage = ref(1), evidencePageSize = 20
 const selectedKeys = ref<string[]>([]), bulkMode = ref('same'), bulkValue = ref(''), bulkChanges = ref<BulkChange[]>([]), bulkError = ref('')
 const verification = ref<Verification | null>(null), verificationError = ref(''), verificationOpen = ref(false), verificationReloadRequired = ref(false)
 const adoptionOpen = ref(false), adoptionRisk = ref(''), adoptionError = ref(''), adoptionSnapshot = ref('')
+const templates = ref<PricingTemplate[]>([]), templatesLoading = ref(false), templateError = ref(''), templateOpen = ref(false)
+const templateVersion = ref(''), templateMode = ref<TemplateMode>('fill_missing'), templatePreview = ref<TemplatePreview | null>(null), templateSnapshot = ref(''), templateRef = ref<TemplateRef | null>(null)
 const prepared = ref<Prepared | null>(null), validatedBody = ref(''), validatedDraft = ref(''), previewOpen = ref(false), publishKey = ref(uuid())
 const base = computed(() => `/api/admin/video/models/${encodeURIComponent(model.value)}/pricing`)
 const verificationBase = computed(() => `/api/admin/video/models/${encodeURIComponent(model.value)}/verification`)
@@ -40,10 +46,14 @@ const supported = computed(() => isOfficialVideoModel(model.value))
 const referenceSeries = computed(() => officialVideoSeries(model.value))
 const bindingMatches = computed(() => !props.selectedChannelId || (pricing.value?.channel_id ?? candidates.value?.config?.channel_id) === props.selectedChannelId)
 const canEdit = computed(() => !!pricing.value && bindingMatches.value && auth.isSuperadmin && supported.value)
-const body = computed(() => ({ expected_config_version: pricing.value?.config_version ?? '', channel_id: props.selectedChannelId ?? pricing.value?.channel_id ?? candidates.value?.config?.channel_id ?? 0, cells: pricing.value?.cells ?? [] }))
+const body = computed(() => ({ expected_config_version: pricing.value?.config_version ?? '', channel_id: props.selectedChannelId ?? pricing.value?.channel_id ?? candidates.value?.config?.channel_id ?? 0, cells: pricing.value?.cells ?? [], ...(templateRef.value ? { template_ref: templateRef.value } : {}) }))
 const dirty = computed(() => !!pricing.value && (JSON.stringify(pricing.value.cells) !== initialCells.value || !!minimumJSON.value.trim()))
 const priceDirty = computed(() => !!pricing.value && JSON.stringify(pricing.value.cells) !== initialCells.value)
 const canPublish = computed(() => canEdit.value && !!validatedBody.value && validatedDraft.value === JSON.stringify(body.value) && !busy.value)
+const selectedTemplate = computed(() => templates.value.find(item => item.version === templateVersion.value))
+const canPreviewTemplate = computed(() => canEdit.value && !!selectedTemplate.value && !dirty.value && !busy.value && !loading.value && !templatesLoading.value)
+const templateChanges = computed(() => templatePreview.value?.diff.filter(row => row.change !== 'unchanged') ?? [])
+const canApplyTemplate = computed(() => canPreviewTemplate.value && !!templatePreview.value && templateChanges.value.length > 0 && templateSnapshot.value === JSON.stringify(body.value) && templatePreview.value.template_ref.version === templateVersion.value && templatePreview.value.mode === templateMode.value)
 const originalByKey = computed(() => new Map((initialPricing.value?.cells ?? []).map(c => [cellKey(c), c])))
 const incompleteNewPrices = computed(() => (pricing.value?.cells ?? []).filter(cell => {
   const original = originalByKey.value.get(cellKey(cell))
@@ -91,23 +101,26 @@ const sourceEvidence = computed(() => allSourceEvidence.value.slice((evidencePag
 const minimumEvidence = computed(() => allMinimumEvidence.value.slice((evidencePage.value - 1) * evidencePageSize, evidencePage.value * evidencePageSize))
 let loadGeneration = 0, operationGeneration = 0, editGeneration = 0
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value))
-function invalidate() { ++editGeneration; prepared.value = null; validatedBody.value = ''; validatedDraft.value = ''; previews.value = []; previewOpen.value = false; publishKey.value = uuid() }
+function invalidate() { ++editGeneration; prepared.value = null; validatedBody.value = ''; validatedDraft.value = ''; previews.value = []; previewOpen.value = false; publishKey.value = uuid(); templatePreview.value = null; templateSnapshot.value = '' }
 watch(body, () => { invalidate(); bulkChanges.value = [] }, { deep: true, flush: 'sync' })
 watch([minimumJSON, selectedKeys, bulkMode, bulkValue], () => { invalidate(); bulkChanges.value = [] }, { deep: true, flush: 'sync' })
 watch(dirty, value => emit('dirty-change', value), { immediate: true, flush: 'sync' })
 watch(busy, value => emit('busy-change', value), { immediate: true, flush: 'sync' })
 watch([selectedEvidence, showMinimum], () => { evidenceQuery.value = ''; evidencePage.value = 1 }, { flush: 'sync' })
 watch(evidenceQuery, () => { evidencePage.value = 1 }, { flush: 'sync' })
+watch([templateVersion, templateMode], () => { templatePreview.value = null; templateSnapshot.value = ''; templateError.value = '' }, { flush: 'sync' })
 function clear() {
   ++operationGeneration; busy.value = false; error.value = ''; notice.value = ''; pricing.value = null; initialPricing.value = null; initialCells.value = ''; invalidate()
   selectedRevision.value = null; revisions.value = []; minimums.value = []; minimumJSON.value = ''; candidates.value = null; referenceError.value = ''; selectedEvidence.value = null; showMinimum.value = false
   selectedKeys.value = []; bulkValue.value = ''; bulkChanges.value = []; bulkError.value = ''; tab.value = 'retail'
   verification.value = null; verificationError.value = ''; verificationOpen.value = false; verificationReloadRequired.value = false; adoptionOpen.value = false; adoptionRisk.value = ''; adoptionError.value = ''; adoptionSnapshot.value = ''
+  templates.value = []; templatesLoading.value = false; templateError.value = ''; templateOpen.value = false; templateVersion.value = ''; templateMode.value = 'fill_missing'; templatePreview.value = null; templateSnapshot.value = ''; templateRef.value = null
 }
 async function load() {
   const generation = ++loadGeneration
   clear(); loading.value = true
   if (!auth.isSuperadmin || !supported.value) { loading.value = false; return }
+  void loadTemplates(generation)
   const endpoint = base.value
   try {
     const [data, history, minimum, reference, official] = await Promise.allSettled([api<Pricing>('GET', endpoint), api<{ items: Revision[] }>('GET', `${endpoint}/revisions`), api<{ items: Minimum[] }>('GET', `${endpoint}/minimum-rules`), api<ReferenceCandidates>('GET', `${endpoint}/reference-candidates`), api<Verification>('GET', verificationBase.value)])
@@ -129,6 +142,48 @@ function discardChanges() {
   pricing.value = initialPricing.value ? clone(initialPricing.value) : null
   minimumJSON.value = ''; selectedKeys.value = []; bulkChanges.value = []; bulkError.value = ''; error.value = ''; notice.value = ''; invalidate()
   adoptionOpen.value = false; adoptionSnapshot.value = ''; adoptionError.value = ''
+  templateRef.value = null; templatePreview.value = null; templateSnapshot.value = ''; templateError.value = ''
+}
+async function loadTemplates(generation = loadGeneration) {
+  if (!auth.isSuperadmin || !supported.value || templatesLoading.value) return
+  const selectedModel = model.value
+  templatesLoading.value = true; templateError.value = ''
+  try {
+    const result = await api<{ items: PricingTemplate[] }>('GET', `/api/admin/video/pricing-templates?model=${encodeURIComponent(selectedModel)}`)
+    if (generation !== loadGeneration) return
+    if (!Array.isArray(result.items) || result.items.some(item => item.model !== selectedModel || !item.version || !/^[a-f0-9]{64}$/.test(item.body_sha256) || !Array.isArray(item.cells))) throw new Error(t('templateLoadFailed'))
+    templates.value = result.items
+    templateVersion.value = result.items[0]?.version ?? ''
+  } catch (e) { if (generation === loadGeneration) templateError.value = errorMessage(e, t('templateLoadFailed')) }
+  finally { if (generation === loadGeneration) templatesLoading.value = false }
+}
+function openTemplate() {
+  if (!canEdit.value || busy.value || loading.value) return
+  templatePreview.value = null; templateSnapshot.value = ''; templateMode.value = 'fill_missing'; templateOpen.value = true
+}
+async function previewTemplate() {
+  if (!canPreviewTemplate.value) return
+  const generation = loadGeneration, operation = ++operationGeneration, endpoint = base.value, snapshot = JSON.stringify(body.value), version = templateVersion.value, mode = templateMode.value, sha256 = selectedTemplate.value!.body_sha256
+  const current = () => generation === loadGeneration && operation === operationGeneration
+  busy.value = true; templateError.value = ''; templatePreview.value = null; templateSnapshot.value = ''
+  const edit = editGeneration
+  const unchanged = () => edit === editGeneration && snapshot === JSON.stringify(body.value) && version === templateVersion.value && mode === templateMode.value
+  try {
+    const result = await api<TemplatePreview>('POST', `${endpoint}/template-preview`, { channel_id: body.value.channel_id, expected_config_version: body.value.expected_config_version, template_version: version, mode })
+    if (!current() || !unchanged()) return
+    if (result.model !== model.value || result.channel_id !== body.value.channel_id || result.config_version !== body.value.expected_config_version || result.mode !== mode || result.template_ref?.version !== version || result.template_ref?.model !== model.value || result.template_ref?.sha256 !== sha256 || !Array.isArray(result.cells) || !Array.isArray(result.diff)) throw new Error(t('templatePreviewFailed'))
+    const cells = new Map(result.cells.map(cell => [cellKey(cell), cell]))
+    if (cells.size !== result.cells.length || pricing.value!.cells.some(cell => !cells.has(cellKey(cell)) || cells.get(cellKey(cell))!.enabled !== cell.enabled) || result.cells.some(cell => !originalByKey.value.has(cellKey(cell)) && cell.enabled)) throw new Error(t('templatePreviewFailed'))
+    templatePreview.value = result; templateSnapshot.value = snapshot
+  } catch (e) { if (current() && unchanged()) templateError.value = errorMessage(e, t('templatePreviewFailed')) }
+  finally { if (current()) busy.value = false }
+}
+function applyTemplate() {
+  if (!canApplyTemplate.value) return
+  const result = clone(templatePreview.value!)
+  pricing.value!.cells = result.cells; templateRef.value = result.template_ref
+  templateOpen.value = false; templatePreview.value = null; templateSnapshot.value = ''; selectedKeys.value = []; bulkChanges.value = []
+  notice.value = t('templateApplied'); tab.value = 'retail'
 }
 function selectCell(key: string, value: boolean) { selectedKeys.value = value ? [...new Set([...selectedKeys.value, key])] : selectedKeys.value.filter(k => k !== key) }
 function previewBulk() {
@@ -259,6 +314,7 @@ function officialSourceURL(value: string): string | undefined {
 }
 function revisionText(r: Revision) { try { return JSON.stringify(JSON.parse(r.snapshot_json), null, 2) } catch { return r.snapshot_json } }
 function changeLabel(change: Diff['change']) { return t(change === 'disabled' ? 'turnedOff' : change) }
+function templateCellLabel(cell?: Cell | null) { return cell ? `${cell.resolution} · ${t(cell.input_video ? 'withVideo' : 'noVideo')}` : '—' }
 function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value || busy.value) { event.preventDefault(); event.returnValue = '' } }
 function tabKeydown(event: KeyboardEvent) {
   const index = tabs.indexOf(tab.value)
@@ -292,6 +348,7 @@ defineExpose({ hasUnsavedChanges: () => dirty.value, discardChanges })
       <nav class="tabs" role="tablist" :aria-label="t('title')"><button v-for="name in tabs" :id="`${tabsId}-${name}`" :key="name" type="button" role="tab" :class="{ active: tab === name }" :aria-selected="tab === name" :tabindex="tab === name ? 0 : -1" :aria-controls="`${tabsId}-panel`" @keydown="tabKeydown" @click="tab = name">{{ t(name) }}</button></nav>
       <div v-if="tab === 'retail'" class="tab-body" :id="`${tabsId}-panel`" role="tabpanel" :aria-labelledby="`${tabsId}-${tab}`">
         <p class="intro">{{ t('subtitle') }}</p>
+        <section class="panel adoption-action"><div><h2>{{ t('templateTitle') }}</h2><p>{{ t('templateSummary') }}</p><p v-if="templateRef" class="evidence-hash">{{ t('templateDraftSource') }} · {{ templateRef.version }}</p><p v-if="templateError && !templateOpen" role="status">{{ t('templateLoadFailed') }}</p></div><button :disabled="busy || loading || !canEdit" @click="openTemplate">{{ t('templateAction') }}</button></section>
         <div class="matrix" role="group" :aria-label="t('retail')"><div class="matrix-heading"><strong>{{ t('resolution') }}</strong><strong>{{ t('noVideo') }}</strong><strong>{{ t('withVideo') }}</strong></div>
           <div v-for="resolution in resolutions" :key="resolution" class="matrix-row"><strong class="resolution">{{ resolution }}</strong><div v-for="input in [false, true]" :key="String(input)" class="matrix-value"><template v-for="cell in primaryCells.filter(c => c.resolution === resolution && c.input_video === input)" :key="cellKey(cell)"><SimpleVideoPriceCell :cell="cell" :original="originalByKey.get(cellKey(cell))" :reference="referenceCost(cell)" :selected="selectedKeys.includes(cellKey(cell))" :disabled="!canEdit || busy" @select="selectCell" @rules="tab = 'rules'" /></template><span v-if="!primaryCells.some(c => c.resolution === resolution && c.input_video === input)" class="empty-cell">{{ t('unavailable') }}</span></div></div>
         </div>
@@ -317,6 +374,21 @@ defineExpose({ hasUnsavedChanges: () => dirty.value, discardChanges })
       <footer class="pricing-footer"><span>{{ busy ? t('busy') : dirty ? t('dirty') : t('noChanges') }}</span><div class="footer-actions"><button v-if="dirty" :disabled="busy" @click="discardChanges">{{ t('discard') }}</button><button :disabled="busy || !canEdit || !priceDirty" @click="validate">{{ t('preview') }}</button><button class="primary" :disabled="!canPublish" :title="canPublish ? '' : t('validateFirst')" @click="publish">{{ t('publish') }}</button></div></footer>
     </template>
     <section v-else-if="!loading && auth.isSuperadmin && supported" class="panel"><p>{{ t('noConfig') }}</p><button @click="load">{{ t('reload') }}</button></section>
+    <DetailDrawer v-model:open="templateOpen" :title="t('templateAction')" size="lg" :close-disabled="busy" :description="t('templateHelp')">
+      <p v-if="templatesLoading" aria-live="polite">{{ t('templateLoading') }}</p>
+      <p v-else-if="!templates.length" class="message">{{ t('templateEmpty') }}</p>
+      <label v-if="templates.length" class="adoption-risk">{{ t('templateVersion') }}<select v-model="templateVersion" :disabled="busy"><option v-for="item in templates" :key="item.version" :value="item.version">{{ item.label || item.version }} · {{ item.version }}</option></select></label>
+      <template v-if="selectedTemplate">
+        <dl class="verification-metadata"><dt>{{ t('templateModel') }}</dt><dd>{{ selectedTemplate.model }}<small>{{ selectedTemplate.upstream_model }}</small></dd><dt>{{ t('templateSourceVersion') }}</dt><dd>{{ selectedTemplate.source_pricing_version }}</dd><dt>{{ t('templateSourceFX') }}</dt><dd>{{ selectedTemplate.fx_usd_per_cny }} · {{ selectedTemplate.fx_version }}<small>{{ selectedTemplate.fx_observed_at }}</small></dd><dt>{{ t('verificationProfile') }}</dt><dd>{{ selectedTemplate.profile_version }}</dd><dt>{{ t('minimum') }}</dt><dd>{{ selectedTemplate.minimum_rule_version }}<small>{{ t('minimumCellCount', { count: selectedTemplate.minimum_cell_count }) }}</small></dd><dt>{{ t('templateDigest') }}</dt><dd class="evidence-hash">{{ selectedTemplate.body_sha256 }}</dd></dl>
+        <p>{{ t('templateFXHelp') }}</p>
+        <div class="table-scroll"><table><thead><tr><th>{{ t('key') }}</th><th>{{ t('unit') }}</th><th>{{ t('cost') }}</th><th>{{ t('risk') }}</th></tr></thead><tbody><tr v-for="cell in selectedTemplate.cells" :key="cellKey(cell)"><td>{{ templateCellLabel(cell) }}</td><td>{{ cell.retail_usd_per_1m }}</td><td>{{ cell.supplier_cny_per_1m }}</td><td>{{ cell.risk_multiplier }}</td></tr></tbody></table></div>
+        <fieldset class="template-modes" :disabled="busy"><legend>{{ t('templateMode') }}</legend><label><input v-model="templateMode" type="radio" value="fill_missing">{{ t('templateFill') }}<small>{{ t('templateFillHelp') }}</small></label><label><input v-model="templateMode" type="radio" value="replace">{{ t('templateReplace') }}<small>{{ t('templateReplaceHelp') }}</small></label></fieldset>
+        <p v-if="dirty" class="message" role="status">{{ t('templateDirty') }}</p>
+        <template v-if="templatePreview"><h2>{{ t('templateDiff', { count: templateChanges.length }) }}</h2><div class="table-scroll"><table><thead><tr><th>{{ t('key') }}</th><th>{{ t('change') }}</th><th>{{ t('before') }}</th><th>{{ t('after') }}</th></tr></thead><tbody><tr v-for="row in templatePreview.diff" :key="row.key"><td>{{ templateCellLabel(row.after ?? row.before) }}</td><td>{{ changeLabel(row.change) }}</td><td>{{ row.before?.retail_usd_per_1m || '—' }}<small>{{ t('cost') }}: {{ row.before?.supplier_cny_per_1m || '—' }}</small><small>{{ t('risk') }}: {{ row.before?.risk_multiplier || '—' }}</small><small>{{ t('minimum') }}: {{ row.before?.minimum_rule_version || '—' }}</small><small>{{ row.before?.enabled ? t('published') : t('disabled') }}</small></td><td>{{ row.after?.retail_usd_per_1m || '—' }}<small>{{ t('cost') }}: {{ row.after?.supplier_cny_per_1m || '—' }}</small><small>{{ t('risk') }}: {{ row.after?.risk_multiplier || '—' }}</small><small>{{ t('minimum') }}: {{ row.after?.minimum_rule_version || '—' }}</small><small>{{ row.after?.enabled ? t('published') : t('disabled') }}</small></td></tr></tbody></table></div><p v-if="!templateChanges.length" class="message">{{ t('templateNoChanges') }}</p><p v-else-if="!canApplyTemplate && !busy" class="message" role="status">{{ t('templateStale') }}</p></template>
+      </template>
+      <p v-if="templateError" class="message error" role="alert">{{ templateError }}</p>
+      <template #footer><button v-if="!templates.length || templateError" :disabled="busy || templatesLoading" @click="loadTemplates()">{{ t('reload') }}</button><button :disabled="!canPreviewTemplate" @click="previewTemplate">{{ busy ? t('busy') : t('templatePreview') }}</button><button class="primary" :disabled="!canApplyTemplate" @click="applyTemplate">{{ t('templateApplyDraft') }}</button></template>
+    </DetailDrawer>
     <DetailDrawer v-model:open="verificationOpen" :title="t('verificationPreview')" size="lg" :close-disabled="busy" :description="t('verificationHelp')">
       <template v-if="verification"><p class="message" :class="verification.verified ? 'success' : ''">{{ verification.verified ? t('verificationSynced') : t('verificationAvailable') }}</p><dl class="verification-metadata"><dt>{{ t('verificationProfile') }}</dt><dd>{{ verification.profile_version }}</dd><dt>{{ t('config') }}</dt><dd>{{ verification.config_version || '—' }}</dd><dt>{{ t('capability') }}</dt><dd>{{ verification.capability_version || '—' }}</dd><dt>{{ t('verificationEvidence') }}</dt><dd class="evidence-hash">{{ verification.evidence_sha256 }}</dd><dt>{{ t('verificationScope') }}</dt><dd>{{ verification.resolutions.join(' / ') }}<br>{{ verification.ratios.join(' / ') }}<br>{{ verification.min_duration }}–{{ verification.max_duration }} s</dd><dt>{{ t('minimum') }}</dt><dd>{{ verification.minimum_version }}<small>{{ t('minimumCellCount', { count: verification.minimum_cell_count }) }}</small></dd></dl>
       <p v-if="verification.minimum_precision">{{ t('minimumPrecision') }}: {{ verification.minimum_precision === 'estimated' ? t('estimatedMinimum') : verification.minimum_precision }}</p>
@@ -345,6 +417,7 @@ defineExpose({ hasUnsavedChanges: () => dirty.value, discardChanges })
 .video-pricing-page{max-width:1120px;margin:auto;padding:24px;display:flex;flex-direction:column;gap:18px;color:rgb(var(--c-ink));min-width:0}
 .video-pricing-page.embedded{padding:0;max-width:none;width:100%;min-height:100%}
 .verification-summary,.adoption-action{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}.verification-summary>div,.adoption-action>div{flex:1;min-width:220px}.verification-summary p,.adoption-action p{font-size:12px;margin:6px 0 0}.verification-metadata{display:grid;grid-template-columns:140px minmax(0,1fr);gap:14px;font-size:13px}.verification-metadata dt{color:rgb(var(--c-muted))}.verification-metadata dd{margin:0;overflow-wrap:anywhere}.adoption-risk{display:grid;gap:8px;margin:16px 0}.adoption-risk input{max-width:220px}
+.template-modes{display:grid;gap:12px;border:1px solid rgb(var(--c-line));border-radius:10px;padding:16px;margin:20px 0}.template-modes legend{font-size:13px;padding:0 6px}.template-modes label{font-size:13px;cursor:pointer}.template-modes input{margin-right:8px}.template-modes small{padding-left:23px}.template-modes input:disabled+small{opacity:.5}
 .embedded .pricing-footer{bottom:-20px}
 .page-heading,.section-title{display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .page-heading h1{font-size:22px;margin:0}.page-heading p{margin:6px 0 0}.state{border-radius:20px;background:rgb(var(--c-bg));padding:7px 10px;font-size:12px;color:rgb(var(--c-muted))}.state.dirty{color:#a65b00;background:#fef3c7}

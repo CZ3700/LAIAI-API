@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/ark"
+	"github.com/laiai/laiai-next/core/internal/arkpricetemplate"
 	"github.com/laiai/laiai-next/core/internal/arkverification"
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/relay"
@@ -107,11 +108,12 @@ func (s *Server) videoAdminReply(c *gin.Context, e error) {
 }
 
 type videoPublication struct {
-	Configuration   video.ModelConfig          `json:"configuration"`
-	Scope           video.ProviderScope        `json:"provider_scope"`
-	Prices          []videobilling.PricingRule `json:"prices"`
-	SupplierBudgets []videobilling.QuotaPolicy `json:"supplier_budgets"`
-	EvidenceHash    string                     `json:"evidence_hash"`
+	Configuration   video.ModelConfig           `json:"configuration"`
+	Scope           video.ProviderScope         `json:"provider_scope"`
+	Prices          []videobilling.PricingRule  `json:"prices"`
+	SupplierBudgets []videobilling.QuotaPolicy  `json:"supplier_budgets"`
+	EvidenceHash    string                      `json:"evidence_hash"`
+	PricingTemplate *arkpricetemplate.Reference `json:"pricing_template,omitempty"`
 }
 
 type videoConfigurationRevision struct {
@@ -187,8 +189,32 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 		return
 	}
 	var in videoPublication
-	if videoAdminDecode(c, &in) != nil || len(in.EvidenceHash) != 64 || in.Configuration.Version == "" || len(in.Prices) == 0 || len(in.Prices) > 100 || len(in.SupplierBudgets) < 2 || len(in.SupplierBudgets) > 20 {
+	if videoAdminDecode(c, &in) != nil || in.Configuration.Version == "" || len(in.Prices) > 100 || len(in.SupplierBudgets) < 2 || len(in.SupplierBudgets) > 20 {
 		fail(c, 422, "versioned verified configuration, prices and supplier budgets required")
+		return
+	}
+	var template arkpricetemplate.Template
+	var templateProfile arkverification.Profile
+	var templateBodyHash string
+	templateReplayed := false
+	templateKey := c.GetHeader("Idempotency-Key")
+	if in.PricingTemplate != nil {
+		if len(in.Prices) != 0 || len(templateKey) < 1 || len(templateKey) > 128 {
+			fail(c, 422, "template and explicit prices are mutually exclusive; Idempotency-Key required")
+			return
+		}
+		raw, _ := json.Marshal(in)
+		hash := sha256.Sum256(raw)
+		templateBodyHash = hex.EncodeToString(hash[:])
+		var err error
+		template, templateProfile, err = resolveInitialPricingTemplate(s.db.WithContext(c.Request.Context()), &in, s.now().UTC())
+		if err != nil {
+			fail(c, 422, "installed pricing template or verified profile unavailable")
+			return
+		}
+	}
+	if len(in.EvidenceHash) != 64 || len(in.Prices) == 0 {
+		fail(c, 422, "verified evidence and prices required")
 		return
 	}
 	cfg := in.Configuration
@@ -221,6 +247,29 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 	cfg.VerifiedAt = &now
 	cfg.UpdatedAt = now
 	e = s.db.Transaction(func(tx *gorm.DB) error {
+		if in.PricingTemplate != nil {
+			// Re-read the installed template inside the publication transaction.
+			if _, err := loadPricingTemplateRef(tx, cfg.PublicModel, *in.PricingTemplate); err != nil {
+				return err
+			}
+			var receipt pricingPublication
+			prior := tx.Where("created_by = ? AND idempotency_key = ?", actor.ID, templateKey).Take(&receipt).Error
+			if prior == nil {
+				if receipt.Model != cfg.PublicModel || receipt.BodyHash != templateBodyHash {
+					return video.ErrConflict
+				}
+				var published videoConfigurationRevision
+				if err := tx.Where("public_model = ? AND version = ? AND pricing_version = ?", cfg.PublicModel, receipt.ConfigVersion, receipt.Version).Take(&published).Error; err != nil {
+					return err
+				}
+				cfg.ProviderScopeID, scope.ID = published.ProviderScopeID, published.ProviderScopeID
+				templateReplayed = true
+				return nil
+			}
+			if !errors.Is(prior, gorm.ErrRecordNotFound) {
+				return prior
+			}
+		}
 		// Admission locks the configuration before channel and quota rows too.
 		var oldConfig video.ModelConfig
 		prior := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("public_model = ?", cfg.PublicModel).First(&oldConfig).Error
@@ -228,6 +277,11 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			return prior
 		}
 		if prior == nil && oldConfig.Version == cfg.Version {
+			return video.ErrConflict
+		}
+		if prior == nil && in.PricingTemplate != nil {
+			// Existing prices must use the version-checked template preview and
+			// normal pricing publication flow, never the first-admission route.
 			return video.ErrConflict
 		}
 		capBytes, _ := json.Marshal(cap)
@@ -280,14 +334,19 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			if parseErr != nil || old.ScopeKey != scope.ScopeKey || old.AccountRef != scope.AccountRef || old.Region != scope.Region || old.ProjectName != scope.ProjectName || !old.Enabled || (old.FXVersion == scope.FXVersion && !oldFX.Equal(fx)) {
 				return video.ErrConflict
 			}
+			if in.PricingTemplate != nil && (old.FXVersion != scope.FXVersion || !oldFX.Equal(fx) || !old.FXObservedAt.Equal(scope.FXObservedAt)) {
+				return video.ErrConflict
+			}
 			// FX revisions do not create a new financial scope or reset its quota
 			// buckets. Accepted tasks already own immutable FX snapshots.
-			if e := tx.Model(&old).Updates(map[string]any{"fx_usd_per_cny": fx.StringFixed(12), "fx_version": scope.FXVersion, "fx_observed_at": scope.FXObservedAt}).Error; e != nil {
-				return e
+			if in.PricingTemplate == nil {
+				if e := tx.Model(&old).Updates(map[string]any{"fx_usd_per_cny": fx.StringFixed(12), "fx_version": scope.FXVersion, "fx_observed_at": scope.FXObservedAt}).Error; e != nil {
+					return e
+				}
+				old.FXUSDPerCNY = fx.StringFixed(12)
+				old.FXVersion = scope.FXVersion
+				old.FXObservedAt = scope.FXObservedAt
 			}
-			old.FXUSDPerCNY = fx.StringFixed(12)
-			old.FXVersion = scope.FXVersion
-			old.FXObservedAt = scope.FXObservedAt
 			scope = old
 		}
 		cfg.ProviderScopeID = scope.ID
@@ -330,6 +389,11 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 		}
 		if !day || !month {
 			return video.ErrInvalid
+		}
+		if in.PricingTemplate != nil {
+			if err := importTemplateMinimum(tx, templateProfile, actor.ID, now); err != nil {
+				return err
+			}
 		}
 		// Old tasks retain immutable rate snapshots. New admission sees one active
 		// price version after the whole publication commits.
@@ -377,13 +441,39 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 		if e := tx.Save(&cfg).Error; e != nil {
 			return e
 		}
-		return tx.Create(&AuditLog{Actor: fmt.Sprintf("user#%d", actor.ID), Action: "video.configuration.publish", Target: cfg.PublicModel, Detail: "version=" + cfg.Version + ";evidence_sha256=" + in.EvidenceHash, CreatedAt: s.now().UnixMilli()}).Error
+		detail := "version=" + cfg.Version + ";evidence_sha256=" + in.EvidenceHash
+		if in.PricingTemplate != nil {
+			cells := make([]pricingCell, 0, len(in.Prices))
+			for _, p := range in.Prices {
+				cells = append(cells, cellFromRule(p))
+			}
+			sources, _, err := resolvePricingSources(tx, cfg, cells, nil)
+			if err != nil {
+				return err
+			}
+			if err := templatePricingSource(tx, cfg, in.PricingTemplate, &sources); err != nil {
+				return err
+			}
+			snapshot, _ := json.Marshal(pricingRequest{ConfigVersion: cfg.Version, PricingVersion: cfg.PricingVersion, EvidenceHash: in.EvidenceHash, Cells: cells, SourceSet: &sources, TemplateRef: in.PricingTemplate})
+			if err := tx.Create(&pricingPublication{Model: cfg.PublicModel, Version: cfg.PricingVersion, ConfigVersion: cfg.Version, IdempotencyKey: templateKey, BodyHash: templateBodyHash, SnapshotJSON: string(snapshot), CreatedBy: actor.ID, CreatedAt: now}).Error; err != nil {
+				return err
+			}
+			detail += ";template=" + template.Version + ";template_sha256=" + template.BodySHA256
+		}
+		return tx.Create(&AuditLog{Actor: fmt.Sprintf("user#%d", actor.ID), Action: "video.configuration.publish", Target: cfg.PublicModel, Detail: detail, CreatedAt: s.now().UnixMilli()}).Error
 	})
 	if e != nil {
 		s.videoAdminReply(c, e)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"public_model": cfg.PublicModel, "version": cfg.Version, "provider_scope_id": scope.ID})
+	out := gin.H{"public_model": cfg.PublicModel, "version": cfg.Version, "provider_scope_id": scope.ID}
+	if in.PricingTemplate != nil {
+		out["pricing_template"], out["pricing_version"] = in.PricingTemplate, cfg.PricingVersion
+		if templateReplayed {
+			c.Header("Idempotency-Replayed", "true")
+		}
+	}
+	c.JSON(http.StatusCreated, out)
 }
 
 func videoContains(values []string, want string) bool {
