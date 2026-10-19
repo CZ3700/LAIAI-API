@@ -1,7 +1,9 @@
+import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
 import en, { type Messages } from './en'
 
 export default {
+  pricingAdmin: pricingRedesignAdminMessages['vi'].pricingAdmin,
   catalog: modelCatalogMessages['vi'],
   pricingx: {
     "title": "Định giá theo nhà cung cấp",

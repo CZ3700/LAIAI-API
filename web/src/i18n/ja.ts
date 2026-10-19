@@ -1,7 +1,9 @@
+import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
 import en, { type Messages } from './en'
 
 export default {
+  pricingAdmin: pricingRedesignAdminMessages['ja'].pricingAdmin,
   catalog: modelCatalogMessages['ja'],
   pricingx: {
     "title": "プロバイダー別の料金設定",

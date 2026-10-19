@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { adminApi, adminToken, ApiError, copyText, errorMessage, uuid } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
@@ -9,6 +10,8 @@ import AdminPricingPanel from '@/components/pricing/AdminPricingPanel.vue'
 import type { ModelMeta } from '@/components/pricing/types'
 
 const auth = useAuth()
+const route = useRoute(), router = useRouter()
+const pricingPanel = ref<InstanceType<typeof AdminPricingPanel> | null>(null)
 
 interface Provider {
   name: string
@@ -124,6 +127,7 @@ function unlock() {
   void loadAll()
 }
 function lock() {
+  if (tab.value === 'prices' && pricingPanel.value && !pricingPanel.value.confirmLeave()) return
   adminToken.clear()
   unlocked.value = false
 }
@@ -145,6 +149,19 @@ const ALL_TABS = ['overview', 'channels', 'payments', 'prices', 'orgs', 'users',
 // logs（全局调用明细）跨租户 → superadmin-only（配合后端 P2-3 把 /invocations 收归超管）
 const SUPER_ONLY_TABS = new Set(['payments', 'settings', 'logs'])
 const visibleTabs = computed(() => ALL_TABS.filter((tb) => auth.isSuperadmin || !SUPER_ONLY_TABS.has(tb)))
+function requestedTab(value: unknown): typeof ALL_TABS[number] {
+  if (value === 'pricing') return 'prices'
+  return ALL_TABS.includes(value as typeof ALL_TABS[number]) ? value as typeof ALL_TABS[number] : 'overview'
+}
+function selectAdminTab(value: typeof ALL_TABS[number]) {
+  if (value !== tab.value && tab.value === 'prices' && pricingPanel.value && !pricingPanel.value.confirmLeave()) return
+  tab.value = value
+  void router.replace({ query: { ...route.query, tab: value } })
+}
+watch(() => route.query.tab, value => { tab.value = requestedTab(value) }, { immediate: true })
+onBeforeRouteUpdate(to => {
+  if (tab.value === 'prices' && requestedTab(to.query.tab) !== 'prices' && pricingPanel.value) return pricingPanel.value.confirmLeave()
+})
 
 // —— 运营分析（资金 / 用户 / 质量 颗粒度） ——
 interface Analytics {
@@ -1238,7 +1255,7 @@ onMounted(async () => {
             :aria-selected="tab === tb"
             class="shrink-0 rounded-md px-3 py-1.5 text-sm transition-colors"
             :class="tab === tb ? 'bg-panel text-ink shadow-sm' : 'text-muted hover:text-ink'"
-            @click="tab = tb"
+            @click="selectAdminTab(tb)"
           >
             {{ t(`admin.${tb}`) }}
           </button>
@@ -2098,10 +2115,10 @@ onMounted(async () => {
 
       <!-- 定价 -->
       <template v-if="tab === 'prices'">
-        <AdminPricingPanel :refresh-key="pricingCatalogVersion" @edit-metadata="pickModelForMeta" />
+        <AdminPricingPanel ref="pricingPanel" :refresh-key="pricingCatalogVersion" @edit-metadata="pickModelForMeta" />
 
         <!-- 模型元数据（gap P2-D）：厂商/分类/标签等展示元数据，前端据此替代按名猜 -->
-        <form v-if="metadataOpen" class="app-panel grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4 xl:items-end" @submit.prevent="upsertMeta">
+        <DetailDrawer :open="metadataOpen" :title="t('admin.metaTitle')" @update:open="metadataOpen = $event"><form class="grid gap-4 sm:grid-cols-2" @submit.prevent="upsertMeta">
           <div class="sm:col-span-2 xl:col-span-4 -mb-1">
             <h2 class="font-semibold">{{ t('admin.metaTitle') }}</h2>
             <p class="mt-0.5 text-xs text-muted">{{ t('admin.metaHint') }}</p>
@@ -2137,7 +2154,7 @@ onMounted(async () => {
           <div class="sm:col-span-2 xl:col-span-4">
             <button class="btn-primary" :disabled="metaBusy">{{ t('admin.metaSave') }}</button>
           </div>
-        </form>
+        </form></DetailDrawer>
 
       </template>
 

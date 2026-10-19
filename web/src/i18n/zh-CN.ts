@@ -1,8 +1,10 @@
+import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
 // zh-CN：一等翻译。`satisfies Messages` = 键集与 en 不一致时构建期报错
 import type { Messages } from './en'
 
 export default {
+  pricingAdmin: pricingRedesignAdminMessages['zh-CN'].pricingAdmin,
   catalog: modelCatalogMessages['zh-CN'],
   pricingx: {
     "title": "按厂商配置定价",

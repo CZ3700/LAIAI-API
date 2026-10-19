@@ -58,4 +58,4 @@ if (errors) {
   console.error(`\n${errors} i18n message(s) failed to compile — vue-i18n would crash at runtime. Fix before building.`)
   process.exit(1)
 }
-console.log(`✓ i18n: ${count} messages compile cleanly across ${localeFiles.length} locales`)
+console.log(`✓ i18n: ${count} messages compile cleanly across ${localeFiles.length} message bundles`)

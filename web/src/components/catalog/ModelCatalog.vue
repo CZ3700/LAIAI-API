@@ -6,7 +6,7 @@ import DetailDrawer from '@/components/DetailDrawer.vue'
 import ModelPriceSummary from './ModelPriceSummary.vue'
 import { api, copyText, errorMessage } from '@/lib/api'
 import { catalogCategory, catalogPricing, catalogTags, filterModels, modelDocs, modelSnippet, type CatalogCategory, type PricedModel, type SnippetLanguage } from '@/lib/modelCatalog'
-defineProps<{ console?: boolean }>()
+const props = defineProps<{ console?: boolean }>()
 const { t } = useI18n()
 const route = useRoute(), router = useRouter()
 const models = ref<PricedModel[]>([]), loading = ref(true), error = ref(''), copied = ref('')
@@ -61,7 +61,7 @@ onMounted(load)
 onBeforeUnmount(() => { loadGeneration++; clearTimeout(copyTimer) })
 </script>
 <template>
-  <div :class="console ? 'app-page catalog-page' : 'catalog-page mx-auto max-w-[1440px] px-4 py-10 sm:px-6 lg:px-8'">
+  <div :class="props.console ? 'app-page catalog-page' : 'catalog-page mx-auto max-w-[1440px] px-4 py-10 sm:px-6 lg:px-8'">
     <header class="catalog-header"><div><p class="app-eyebrow">{{ t('surface.modelsCatalog') }}</p><h1 class="app-page-title mt-2">{{ t('models.title') }}</h1><p class="mt-3 max-w-3xl text-sm leading-6 text-muted">{{ t('catalog.intro') }}</p></div><div class="catalog-count"><strong>{{ loading ? '—' : models.length }}</strong><span>{{ t('surface.statModels') }}</span><span>{{ providers.length }} {{ t('surface.statProviders') }}</span></div></header>
     <div class="mt-7 flex flex-wrap items-center gap-3"><button class="btn-ghost text-sm" type="button" :aria-expanded="showFilters" aria-controls="catalog-filters" @click="showFilters = !showFilters">{{ t('catalog.filters') }}</button><label class="grow min-w-0"><span class="sr-only">{{ t('models.search') }}</span><input v-model="search" class="input w-full" :placeholder="t('models.search')" type="search" /></label><div class="catalog-view" role="group" :aria-label="t('catalog.cards') + ' / ' + t('catalog.list')"><button v-for="mode in ['cards', 'list']" :key="mode" type="button" :aria-pressed="view === mode" @click="view = mode">{{ t('catalog.' + mode) }}</button></div></div>
     <div class="mt-4 flex flex-wrap gap-2" role="group" :aria-label="t('catalog.type')"><button type="button" class="catalog-chip" :aria-pressed="!category" @click="category = ''">{{ t('catalog.all') }} <span>{{ models.length }}</span></button><button v-for="kind in categories.filter(c => counts[c] || category === c)" :key="kind" type="button" class="catalog-chip" :aria-pressed="category === kind" @click="category = category === kind ? '' : kind">{{ categoryLabel(kind) }} <span>{{ counts[kind] }}</span></button></div>

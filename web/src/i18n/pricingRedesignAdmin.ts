@@ -1,4 +1,5 @@
 const en = {
+  legacyNotice: 'The previous link does not identify a unique connected model. Select a model and channel below.',
   title: 'Model pricing', intro: 'Find a connected model, review its billing unit, and configure its price.',
   allProviders: 'All providers', allTypes: 'All model types', allStatuses: 'All statuses', search: 'Search model, upstream model or provider',
   modelType: 'Model type', status: 'Configuration status', text: 'Text', image: 'Image', video: 'Video', audio: 'Audio', other: 'Other',
@@ -25,6 +26,7 @@ const en = {
   noChanges: 'Change a price to preview and publish.', unpriced: 'Not configured', loading: 'Loading model directory…',
 }
 const zhCN: typeof en = {
+  legacyNotice: '原链接未能确定唯一的已接入模型，请在下方选择模型和渠道。',
   title: '模型定价', intro: '找到已接入的模型，查看实际计价方式，按需设置售价。',
   allProviders: '全部厂商', allTypes: '全部模型类型', allStatuses: '全部配置状态', search: '搜索模型、上游模型或厂商',
   modelType: '模型类型', status: '配置状态', text: '文本', image: '图片', video: '视频', audio: '音频', other: '其他',

@@ -1,7 +1,9 @@
+import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
 import type { Messages } from './en'
 
 export default {
+  pricingAdmin: pricingRedesignAdminMessages['zh-TW'].pricingAdmin,
   catalog: modelCatalogMessages['zh-TW'],
   pricingx: {
     "title": "按廠商配置定價",
