@@ -1,4 +1,7 @@
 const en = {
+  officialVerified: 'Official prices verified', adapterNotIntegrated: 'Adapter not integrated', officialCNYUnit: 'CNY / 1M video billing tokens', referenceCombinations: '{count} official price conditions', viewEvidence: 'View official price evidence',
+  variantEvidenceHelp: 'These are official reference costs, separate from USD selling prices. This variant has no integrated adapter and is unavailable for calls or price editing. Verification is based on official documentation, not live generation tests.',
+  resolution: 'Resolution', referenceVideo: 'Reference video input', withReferenceVideo: 'With reference video', withoutReferenceVideo: 'Without reference video', officialReferencePrice: 'Official reference cost (CNY)', evidenceSources: 'Price evidence sources', officialSource: 'Official source',
   legacyNotice: 'The previous link does not identify a unique connected model. Select a model and channel below.',
   title: 'Model pricing', intro: 'Find a connected model, review its billing unit, and configure its price.',
   allProviders: 'All providers', allTypes: 'All model types', allStatuses: 'All statuses', search: 'Search model, upstream model or provider',
@@ -26,6 +29,9 @@ const en = {
   noChanges: 'Change a price to preview and publish.', unpriced: 'Not configured', loading: 'Loading model directory…',
 }
 const zhCN: typeof en = {
+  officialVerified: '官方价格已核验', adapterNotIntegrated: '适配器未接入', officialCNYUnit: 'CNY / 百万视频计费 Token', referenceCombinations: '{count} 个官方价格条件', viewEvidence: '查看官方价格证据',
+  variantEvidenceHelp: '这里展示官方参考成本，与 USD 客户售价分开。该变体独立适配器尚未接入，暂不开放调用和售价编辑；价格依据官方文档核验，不代表已完成真实出片测试。',
+  resolution: '分辨率', referenceVideo: '参考视频输入', withReferenceVideo: '有参考视频', withoutReferenceVideo: '无参考视频', officialReferencePrice: '官方参考成本（CNY）', evidenceSources: '价格证据来源', officialSource: '官方来源',
   legacyNotice: '原链接未能确定唯一的已接入模型，请在下方选择模型和渠道。',
   title: '模型定价', intro: '找到已接入的模型，查看实际计价方式，按需设置售价。',
   allProviders: '全部厂商', allTypes: '全部模型类型', allStatuses: '全部配置状态', search: '搜索模型、上游模型或厂商',

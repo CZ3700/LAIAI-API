@@ -42,6 +42,8 @@ async function component(relative) {
 const Generic = await component('./GenericPriceEditor.vue')
 const Panel = await component('./AdminPricingPanel.vue')
 const Official = await component('../OfficialVideoPriceCatalog.vue')
+const Summary = await component('./AdminPriceSummary.vue')
+const VariantEvidence = await component('./OfficialPriceEvidence.vue')
 const presentationBuild = await build({ entryPoints: [fileURLToPath(new URL('./catalogPresentation.ts', import.meta.url))], bundle: true, format: 'esm', write: false })
 const presentation = await import(`data:text/javascript;base64,${Buffer.from(presentationBuild.outputFiles[0].text).toString('base64')}`)
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
@@ -261,4 +263,59 @@ test('official catalog scoped to standard 2.0 excludes 1.x, Fast and Mini origin
   await vue.nextTick()
   assert.deepEqual(h.vm.rows.value.map(row => row.cells), [['2.5', '70']])
   assert.ok(h.calls.every(c => c.method === 'GET'))
+})
+
+function variantRow(variant = 'fast') {
+  const model = `seedance-2.0-${variant}`
+  return {...row(`1:${model}`), model, upstream_model: model, pricing_kind: 'video', generic_price: null, unsupported_reason: 'seedance_variant_not_supported', pricing: {billing_kind: 'video', currency: 'USD', unit: 'USD/1M_video_tokens', status: 'blocked', rates: [], combinations: [], endpoints: []}, official_price_evidence: {
+    status: 'verified', model, verified_at: '2026-10-19T00:00:00Z', unit: 'CNY/1M_tokens',
+    prices: ['480p','720p'].flatMap(resolution => [false,true].map(input_video => ({resolution,input_video,supplier_cny_per_1m: input_video ? '22.00000001' : '37.12345678'}))),
+    sources: [{id: `${variant}-source`, url: 'https://example.com/official-prices', sha256: 'a'.repeat(64)}],
+  }}
+}
+
+test('verified Fast and Mini price evidence stays separate from sellability and opens only read-only details', async t => {
+  const data = {...catalog(), models: [variantRow('fast'),variantRow('mini')]}
+  const h = await harness(t, Panel, {}, () => data)
+  for (const item of h.vm.catalog.value.models) {
+    assert.equal(presentation.pricingStatus(item, data), 'blocked')
+    assert.equal(h.vm.statusLabel(item), 'pricingAdmin.adapterNotIntegrated')
+    assert.deepEqual(presentation.displayRates(item), [])
+    assert.equal(presentation.videoPriceRange(item), null)
+    h.vm.openModel(item, 'pricing')
+    assert.equal(h.vm.drawerTab.value, 'overview')
+    assert.deepEqual([...h.vm.drawerTabs.value], ['overview'])
+    assert.equal(h.vm.selectedOfficialEvidence.value.model, item.model)
+    assert.equal(h.vm.selectedOfficialEvidence.value.prices.length, 4)
+    assert.equal(h.vm.selectedOfficialEvidence.value.unit, 'CNY/1M_tokens')
+    assert.equal(h.vm.selected.value.video_model, null)
+  }
+  h.route.query = {tab: 'prices', pricing_model: '1:seedance-2.0-fast'}
+  await vue.nextTick()
+  assert.equal(h.vm.drawerTab.value, 'overview')
+  assert.equal(h.vm.selectedOfficialEvidence.value.model, 'seedance-2.0-fast')
+  assert.equal(h.vm.summary.value.published, 0)
+  assert.ok(h.calls.every(call => call.method === 'GET'))
+})
+
+test('official cost summaries preserve exact CNY evidence and never invent USD prices or unverified evidence', async t => {
+  const variant = variantRow()
+  const h = await harness(t, Summary, {row: variant, expanded: false})
+  assert.equal(h.vm.evidence.value.prices[0].supplier_cny_per_1m, '37.12345678')
+  assert.equal(h.vm.range.value, null)
+  assert.deepEqual([...h.vm.rates.value], [])
+  h.props.row = {...variant, official_price_evidence: {...variant.official_price_evidence, unit: 'USD/1M_tokens'}}
+  assert.equal(h.vm.evidence.value, null)
+  h.props.row = {...variant, official_price_evidence: {...variant.official_price_evidence, status: 'pending'}}
+  assert.equal(h.vm.evidence.value, null)
+  h.props.row = {...variant, official_price_evidence: undefined}
+  assert.equal(h.vm.evidence.value, null)
+  assert.equal(h.calls.length, 0)
+})
+
+test('read-only official evidence restricts links to public HTTPS URLs and performs no API calls', async t => {
+  const h = await harness(t, VariantEvidence, {evidence: variantRow().official_price_evidence})
+  assert.equal(h.vm.sourceURL('https://example.com/official-prices'), 'https://example.com/official-prices')
+  for (const url of ['javascript:alert(1)', 'http://example.com/', 'https://user:password@example.com/']) assert.equal(h.vm.sourceURL(url), undefined)
+  assert.equal(h.calls.length, 0)
 })

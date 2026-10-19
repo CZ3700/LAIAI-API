@@ -30,6 +30,10 @@ export function pricingStatus(row: PricingModel, catalog: PricingCatalog | null)
   if (row.video_model || row.pricing_kind === 'video') return 'missing'
   return row.generic_price ? 'published' : 'missing'
 }
+export function officialPriceEvidence(row: PricingModel | null) {
+  const evidence = row?.official_price_evidence
+  return evidence?.status === 'verified' && evidence.unit === 'CNY/1M_tokens' && ['seedance-2.0-fast', 'seedance-2.0-mini'].includes(evidence.model) ? evidence : null
+}
 export function displayRates(row: PricingModel) {
   if (row.pricing) return row.pricing.rates
   if (!row.generic_price || row.video_model || row.pricing_kind === 'video') return []

@@ -93,6 +93,11 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	}
 	if in.OmniReferenceTaskType != nil {
 		p.OmniReferenceTaskType = *in.OmniReferenceTaskType
+	} else if in.Model == Model25 && contains(cap.OmniReferenceTaskTypes, "reference") &&
+		!contains(cap.OmniReferenceTaskTypes, "auto") && !contains(cap.OmniReferenceTaskTypes, "edit") && !contains(cap.OmniReferenceTaskTypes, "extend") {
+		// Omitting this field lets Ark infer edit/extend from the prompt. A
+		// reference-only capability must also constrain the outgoing request.
+		p.OmniReferenceTaskType = "reference"
 	}
 	if in.OutputFormat != nil {
 		p.OutputFormat = *in.OutputFormat
@@ -176,7 +181,9 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 			if !cap.ImageInput {
 				return unsupported("content")
 			}
-			if item.Role == "first_frame" {
+			// Ark treats an omitted image role as first_frame. Count it for
+			// capability and exclusivity checks without rewriting the payload.
+			if item.Role == "first_frame" || item.Role == "" {
 				first++
 			}
 			if item.Role == "last_frame" {
@@ -219,8 +226,11 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if first > 1 || last > 1 || (last > 0 && first == 0) || ((first+last) > 0 && !cap.ImageFrames) {
 		return bad("content", "invalid frame reference combination")
 	}
-	if (first+last) > 0 && (images != first+last || videos > 0 || audios > 0 || p.Ratio != "adaptive") {
-		return bad("content", "frame mode requires adaptive ratio and no reference media")
+	if (first+last) > 0 && (images != first+last || videos > 0 || audios > 0) {
+		return bad("content", "frame mode cannot include reference media")
+	}
+	if (first+last) > 0 && in.Model == Model25 && p.Ratio != "adaptive" {
+		return bad("content", "2.5 frame mode requires adaptive ratio")
 	}
 	if drafts == 0 && p.OmniReferenceTaskType == "edit" && (videos != 1 || p.Ratio != "adaptive" || p.Duration != -1) {
 		return bad("omni_reference_task_type", "edit mode requires one video, adaptive ratio and duration -1")

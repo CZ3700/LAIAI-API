@@ -7,10 +7,13 @@ import { exactRate } from './videoPriceDecimal'
 const props = defineProps<{ cell: PriceCell; original?: PriceCell; reference?: string; selected: boolean; disabled: boolean }>()
 const emit = defineEmits<{ select: [key: string, value: boolean]; rules: [] }>()
 const { t } = useI18n({ useScope: 'local', messages })
-const editable = computed(() => props.cell.available || props.cell.unavailable_reason === 'verified_minimum_coverage_missing')
+// Price editing is independent of capability admission. A collected official
+// candidate or an existing configured row can be saved while disabled.
+const capabilityReady = computed(() => props.cell.available || props.cell.unavailable_reason === 'verified_minimum_coverage_missing')
+const editable = computed(() => capabilityReady.value || props.reference !== undefined || !!props.original?.retail_usd_per_1m || !!props.original?.supplier_cny_per_1m || props.cell.enabled)
 function validRate(value: string) { try { exactRate(value); return true } catch { return false } }
 const reasons = computed(() => [
-  !editable.value ? t('unavailable') : '',
+  !capabilityReady.value ? t('unavailable') : '',
   !validRate(props.cell.retail_usd_per_1m) ? t('missingRetail') : '',
   !validRate(props.cell.supplier_cny_per_1m) ? t('missingCost') : '',
   !validRate(props.cell.risk_multiplier) ? t('missingRisk') : '',
@@ -18,18 +21,20 @@ const reasons = computed(() => [
 ].filter(Boolean))
 // An existing unsupported price must still be switchable off. Once off, its
 // capability reason blocks re-enabling; do not disable this control wholesale.
-const canEnable = computed(() => props.cell.enabled || reasons.value.length === 0)
+const canEnable = computed(() => props.cell.enabled || (capabilityReady.value && reasons.value.length === 0))
+const minimumValidationHint = computed(() => !reasons.value.length && props.cell.unavailable_reason === 'verified_minimum_coverage_missing' ? t('validateFirst') : '')
 </script>
 <template>
-  <div class="price-cell" :class="{ unavailable: !editable }">
-    <div class="cell-heading"><label><input type="checkbox" :checked="selected" :disabled="disabled || !editable" :aria-label="`${t('select')} ${cellKey(cell)}`" @change="emit('select', cellKey(cell), ($event.target as HTMLInputElement).checked)"> {{ cell.enabled ? t('published') : t('disabled') }}</label><span v-if="!editable">{{ t('unavailable') }}</span></div>
+  <div class="price-cell" :class="{ unavailable: !capabilityReady }">
+    <div class="cell-heading"><label><input type="checkbox" :checked="selected" :disabled="disabled || !editable" :aria-label="`${t('select')} ${cellKey(cell)}`" @change="emit('select', cellKey(cell), ($event.target as HTMLInputElement).checked)"> {{ cell.enabled ? t('published') : t('disabled') }}</label><span v-if="!capabilityReady">{{ t('unavailable') }}</span></div>
     <label class="sr-only" :for="`price-${cellKey(cell)}`">{{ t('draft') }} {{ cellKey(cell) }}</label>
     <input :id="`price-${cellKey(cell)}`" v-model="cell.retail_usd_per_1m" class="rate" inputmode="decimal" :disabled="disabled || !editable" :placeholder="t('pricePlaceholder')">
     <small>{{ t('current') }}: {{ original?.retail_usd_per_1m || '—' }}</small>
     <small v-if="reference">{{ t('official') }}: {{ reference }}</small>
+    <small v-if="editable && !capabilityReady">{{ t('priceEditableCapabilityBlocked') }}</small>
     <div class="cell-footer"><label><input v-model="cell.enabled" type="checkbox" :disabled="disabled || !canEnable"> {{ t('enable') }}</label><button type="button" @click="emit('rules')">{{ t('viewRules') }}</button></div>
     <small v-if="reasons.length" class="blocking">{{ reasons.join(' · ') }}</small>
-    <small v-else-if="cell.unavailable_reason === 'verified_minimum_coverage_missing'" class="blocking">{{ t('missingMinimum') }} · {{ t('validateFirst') }}</small>
+    <small v-else-if="minimumValidationHint" class="blocking">{{ minimumValidationHint }}</small>
   </div>
 </template>
 <style scoped>

@@ -87,6 +87,9 @@ function reference(orgId, model = 'seedance-2.0') {
     prices: [{ ...pricing(orgId, model).cells[0], key: 'generate/720p/false/default/false', unit: 'CNY/1M_tokens', precision: 'exact', supplier_cny_per_1m: '46', source_rows: [] }],
     minimum: { cells: [], issues: ['estimated_reference_requires_verification'] }, sources: [] }
 }
+function verification(orgId, model = 'seedance-2.0') {
+  return { model, profile_version: 'official-fixture-v1', evidence_sha256: 'c'.repeat(64), config_version: `cfg-${orgId}`, capability_version: 'cap-current', minimum_version: 'official-minimum-fixture', minimum_cell_count: 6, resolutions: ['480p','720p'], ratios: ['16:9'], min_duration: 4, max_duration: 15, verified: false, sources: [{ id: 'fixture-source', url: 'https://example.com/official', sha256: 'd'.repeat(64) }] }
+}
 async function harness(t, props = {}) {
   const original = globalThis.__pricingHarness
   const h = {
@@ -97,7 +100,7 @@ async function harness(t, props = {}) {
   h.defaultGet = call => {
     const model = decodeURIComponent(call.path.split('/models/')[1]?.split('/')[0] ?? '')
     return call.path.endsWith('/revisions') || call.path.endsWith('/minimum-rules')
-      ? { items: [] } : call.path.endsWith('/reference-candidates') ? reference(call.orgId, model) : pricing(call.orgId, model)
+      ? { items: [] } : call.path.endsWith('/reference-candidates') ? reference(call.orgId, model) : call.path.endsWith('/verification') ? verification(call.orgId, model) : pricing(call.orgId, model)
   }
   h.prepare = call => ({ request: { ...call.body, config_version: `server-config-${call.orgId}`, pricing_version: `server-price-${call.orgId}`, evidence_hash: 'a'.repeat(64), source_set: { schema_version: 1, sha256: 'b'.repeat(64), refs: [] } }, diff: call.body.cells.map(cell => ({key: `${cell.mode}/${cell.resolution}/${cell.input_video}/${cell.service_tier}/${cell.draft}`, change: 'changed', before: null, after: cell})), sources: [] })
   h.api = async (method, path, body, options) => {
@@ -461,7 +464,7 @@ test('capability-blocked active prices may be disabled but cannot be enabled aga
   await harness(t)
   const props = vue.reactive({cell: {...pricing(1).cells[0], available: false, enabled: true, unavailable_reason: 'capability_not_verified', supplier_cny_per_1m: '46'}, selected: false, disabled: false})
   const vm = SimpleVideoPriceCell.setup(props, {expose() {}, emit() {}})
-  assert.equal(vm.editable.value, false)
+  assert.equal(vm.editable.value, true, 'an existing active configuration remains editable')
   assert.equal(vm.canEnable.value, true, 'allow only switching an existing enabled row off')
   props.cell.enabled = false
   assert.equal(vm.canEnable.value, false)
@@ -470,15 +473,239 @@ test('capability-blocked active prices may be disabled but cannot be enabled aga
   assert.equal(vm.canEnable.value, true)
 })
 
-test('minimum-coverage gaps remain repairable while capability blocks stay read-only', async t => {
+test('minimum-coverage gaps remain repairable; a collected reference permits editing without bypassing capability', async t => {
   await harness(t)
   const props = vue.reactive({cell: {...pricing(1).cells[0], input_video: true, available: false, enabled: false, unavailable_reason: 'verified_minimum_coverage_missing', minimum_rule_version: '', supplier_cny_per_1m: '46'}, selected: false, disabled: false})
   const vm = SimpleVideoPriceCell.setup(props, {expose() {}, emit() {}})
   assert.equal(vm.editable.value, true)
   assert.equal(vm.canEnable.value, false)
+  assert.equal(vm.minimumValidationHint.value, '')
   props.cell.minimum_rule_version = 'manually-verified-version'
   assert.equal(vm.canEnable.value, true, 'server validation still verifies the complete coverage before publishing')
+  assert.equal(vm.minimumValidationHint.value, 'validateFirst', 'an associated version must not still be described as missing')
+  assert.equal(vm.reasons.value.includes('missingMinimum'), false)
   props.cell.unavailable_reason = 'capability_not_verified'
   assert.equal(vm.editable.value, false)
   assert.equal(vm.canEnable.value, false)
+  props.reference = '46'
+  assert.equal(vm.editable.value, true)
+  assert.equal(vm.canEnable.value, false)
+})
+
+test('official candidates can receive bulk prices and be saved disabled before capability verification', async t => {
+  const h = await harness(t), fallback = h.defaultGet
+  h.defaultGet = call => {
+    const data = fallback(call)
+    if (call.path.endsWith('/pricing')) data.cells[0] = {...data.cells[0], available: false, unavailable_reason: 'capability_not_verified', retail_usd_per_1m: '', risk_multiplier: ''}
+    return data
+  }
+  await h.vm.load()
+  const cell = h.vm.pricing.value.cells[0]
+  assert.equal(h.vm.editableCell(cell), true)
+  assert.equal(h.vm.primaryCells.value.length, 1)
+  h.vm.selectCell('generate/720p/false/default/false', true)
+  h.vm.bulkValue.value = '12.125'; h.vm.previewBulk(); h.vm.applyBulk()
+  assert.equal(cell.retail_usd_per_1m, '12.125')
+  assert.equal(cell.enabled, false)
+  h.respond = () => ({preview: []})
+  await h.vm.validate(); await h.vm.publish()
+  assert.equal(writes(h).at(-1).body.cells[0].enabled, false)
+  assert.equal(writes(h).at(-1).body.cells[0].retail_usd_per_1m, '12.125')
+})
+
+test('adopting costs explicitly fills only selected empty fields and never enables or changes selling prices', async t => {
+  const h = await harness(t), fallback = h.defaultGet
+  h.defaultGet = call => {
+    const data = fallback(call)
+    if (call.path.endsWith('/verification')) data.verified = true
+    if (call.path.endsWith('/minimum-rules')) data.items = [{id: 1, version: 'official-minimum-fixture'}]
+    if (call.path.endsWith('/pricing')) {
+      data.cells[0].supplier_cny_per_1m = '40'; data.cells[0].risk_multiplier = '4'
+      data.cells.push({...data.cells[0], input_video: true, retail_usd_per_1m: '', supplier_cny_per_1m: '', risk_multiplier: '', minimum_rule_version: ''})
+    }
+    if (call.path.endsWith('/reference-candidates')) data.prices.push({...data.prices[0], input_video: true, key: 'generate/720p/true/default/false', supplier_cny_per_1m: '22'})
+    return data
+  }
+  await h.vm.load()
+  const [existing, fresh] = h.vm.pricing.value.cells
+  assert.equal(fresh.risk_multiplier, '', 'reading references must not silently adopt risk or costs')
+  assert.equal(fresh.minimum_rule_version, '')
+  h.vm.selectCell('generate/720p/false/default/false', true)
+  h.vm.selectCell('generate/720p/true/default/false', true)
+  fresh.retail_usd_per_1m = '9'
+  h.vm.previewOfficialAdoption()
+  assert.equal(h.vm.adoptionRisk.value, '4')
+  assert.equal(fresh.supplier_cny_per_1m, '', 'opening preview does not change prices')
+  assert.equal(h.vm.adoptionChanges.value.length, 1)
+  h.vm.applyOfficialAdoption()
+  assert.equal(existing.supplier_cny_per_1m, '40')
+  assert.equal(existing.retail_usd_per_1m, '10.00000000')
+  assert.equal(fresh.supplier_cny_per_1m, '22')
+  assert.equal(fresh.risk_multiplier, '4')
+  assert.equal(fresh.minimum_rule_version, 'official-minimum-fixture')
+  assert.equal(fresh.retail_usd_per_1m, '9')
+  assert.equal(fresh.enabled, false)
+  assert.equal(writes(h).length, 0)
+})
+
+test('cost adoption rejects stale selections and requires an explicit valid reserve multiplier for new cells', async t => {
+  const h = await harness(t), fallback = h.defaultGet
+  h.defaultGet = call => {
+    const data = fallback(call)
+    if (call.path.endsWith('/pricing')) Object.assign(data.cells[0], {retail_usd_per_1m: '', risk_multiplier: '', minimum_rule_version: ''})
+    return data
+  }
+  await h.vm.load()
+  const cell = h.vm.pricing.value.cells[0]
+  h.vm.selectCell('generate/720p/false/default/false', true)
+  h.vm.previewOfficialAdoption()
+  assert.equal(h.vm.adoptionRisk.value, '')
+  for (const risk of ['', '0.99', '101', '1e2']) {
+    h.vm.adoptionRisk.value = risk; h.vm.applyOfficialAdoption()
+    assert.equal(h.vm.adoptionError.value, 'adoptionRiskRequired')
+    assert.equal(cell.supplier_cny_per_1m, '')
+  }
+  h.vm.adoptionRisk.value = '4'
+  changePrice(h, '17')
+  h.vm.applyOfficialAdoption()
+  assert.equal(h.vm.adoptionError.value, 'adoptionStale')
+  assert.equal(cell.supplier_cny_per_1m, '')
+  h.vm.previewOfficialAdoption(); h.vm.adoptionRisk.value = '4'; h.vm.applyOfficialAdoption()
+  assert.equal(cell.supplier_cny_per_1m, '46')
+  assert.equal(cell.minimum_rule_version, '', 'unsynchronized minimum versions are never selected')
+  assert.equal(cell.retail_usd_per_1m, '17')
+})
+
+test('verification requires a clean explicit preview, posts exact versions and refreshes every pricing source', async t => {
+  const h = await harness(t), fallback = h.defaultGet
+  await h.vm.syncVerification()
+  assert.equal(writes(h).length, 0, 'opening the review drawer is required')
+  h.vm.verificationOpen.value = true
+  changePrice(h)
+  await h.vm.syncVerification()
+  assert.equal(writes(h).length, 0, 'dirty drafts block rule synchronization')
+  h.vm.discardChanges()
+  h.respond = call => {
+    assert.ok(call.path.endsWith('/verification'))
+    assert.deepEqual(call.body, {expected_config_version: 'cfg-1', profile_version: 'official-fixture-v1'})
+    h.defaultGet = get => {
+      const data = fallback(get)
+      if (get.path.endsWith('/verification')) data.verified = true
+      if (get.path.endsWith('/minimum-rules')) data.items = [{id: 1, version: 'official-minimum-fixture'}]
+      return data
+    }
+    return {}
+  }
+  const before = h.calls.length
+  await h.vm.syncVerification()
+  assert.equal(writes(h).length, 1)
+  assert.equal(h.calls.slice(before).filter(c => c.method === 'GET').length, 5)
+  assert.equal(h.vm.verification.value.verified, true)
+  assert.equal(h.vm.minimums.value[0].version, 'official-minimum-fixture')
+  assert.equal(h.vm.pricing.value.cells[0].retail_usd_per_1m, '10.00000000')
+  assert.ok(h.events.some(([event]) => event === 'verification-synced'))
+  assert.equal(h.events.some(([event]) => event === 'published'), false)
+})
+
+test('late official synchronization cannot reload a different model or clear that model draft', async t => {
+  const h = await harness(t), response = deferred()
+  h.vm.verificationOpen.value = true
+  h.respond = () => response.promise
+  const pending = h.vm.syncVerification()
+  h.vm.model.value = 'seedance-2.5'
+  await until(() => !h.vm.loading.value && h.vm.pricing.value?.model === 'seedance-2.5')
+  changePrice(h, '28')
+  const count = h.calls.length
+  response.resolve({})
+  await pending
+  assert.equal(h.calls.length, count)
+  assert.equal(h.vm.pricing.value.cells[0].retail_usd_per_1m, '28')
+  assert.equal(h.vm.verification.value.model, 'seedance-2.5')
+  assert.equal(h.vm.notice.value, '')
+})
+
+test('a draft edited during official synchronization is kept until explicit discard and reload', async t => {
+  const h = await harness(t), response = deferred()
+  h.vm.verificationOpen.value = true
+  h.respond = () => response.promise
+  const pending = h.vm.syncVerification(), count = h.calls.length
+  changePrice(h, '29')
+  response.resolve({})
+  await pending
+  assert.equal(h.calls.length, count, 'do not reload over a changed draft')
+  assert.equal(h.vm.pricing.value.cells[0].retail_usd_per_1m, '29')
+  assert.equal(h.vm.verificationReloadRequired.value, true)
+  assert.equal(h.vm.canSyncVerification.value, false)
+  await h.vm.reloadVerification()
+  assert.equal(h.calls.length, count, 'reload stays blocked while dirty')
+  h.vm.discardChanges(); await h.vm.reloadVerification()
+  assert.equal(h.vm.verificationReloadRequired.value, false)
+  assert.equal(h.vm.pricing.value.cells[0].retail_usd_per_1m, '10.00000000')
+})
+
+test('FPS warning follows actual evidence, not the Seedance model name', async t => {
+  const h = await harness(t, {selectedModel: 'seedance-2.5'})
+  h.vm.candidates.value.minimum.cells = [{fps: 24}]
+  assert.equal(h.vm.missingSourceFPS.value, false)
+  assert.equal(h.vm.sourceFPSNotice.value, '')
+  h.vm.candidates.value.minimum.cells.push({fps: null})
+  assert.equal(h.vm.missingSourceFPS.value, true)
+  assert.equal(h.vm.officialSourceURL('https://example.com/official'), 'https://example.com/official')
+  assert.equal(h.vm.officialSourceURL('javascript:alert(1)'), undefined)
+  assert.equal(h.vm.officialSourceURL('https://user:password@example.com/'), undefined)
+})
+
+test('synchronized Seedance 2.0 explains verified FPS without modifying the original source', async t => {
+  const h = await harness(t)
+  h.vm.candidates.value.minimum.cells = [{fps: null}]
+  assert.equal(h.vm.sourceFPSNotice.value, 'fpsWarning')
+  h.vm.verification.value.verified = true
+  assert.equal(h.vm.sourceFPSNotice.value, 'fpsVerifiedRule')
+  assert.equal(h.vm.candidates.value.minimum.cells[0].fps, null)
+})
+
+test('synchronized standard matrices keep every resolution visible while reference-video rules still need selection', async t => {
+  const h = await harness(t), fallback = h.defaultGet
+  h.defaultGet = call => {
+    const data = fallback(call)
+    if (call.path.endsWith('/pricing')) {
+      const resolutions = data.model === 'seedance-2.0' ? ['480p','720p','1080p','4k'] : ['480p','720p','1080p']
+      data.cells = resolutions.flatMap(resolution => [false,true].map(input_video => ({...pricing(1).cells[0], resolution, input_video, retail_usd_per_1m: '', supplier_cny_per_1m: '', minimum_rule_version: '', available: !input_video, unavailable_reason: input_video ? 'verified_minimum_coverage_missing' : ''})))
+    }
+    if (call.path.endsWith('/verification')) data.verified = true
+    return data
+  }
+  await h.vm.load()
+  assert.deepEqual(h.vm.resolutions.value, ['480p','720p','1080p','4k'])
+  assert.equal(h.vm.primaryCells.value.length, 8)
+  assert.equal(h.vm.pendingCells.value.length, 0)
+  assert.ok(h.vm.primaryCells.value.every(cell => !cell.enabled && !cell.minimum_rule_version))
+  h.vm.model.value = 'seedance-2.5'
+  await until(() => !h.vm.loading.value && h.vm.pricing.value?.model === 'seedance-2.5')
+  assert.deepEqual(h.vm.resolutions.value, ['480p','720p','1080p'])
+  assert.equal(h.vm.primaryCells.value.length, 6)
+  assert.equal(h.vm.pendingCells.value.length, 0)
+})
+
+test('new cost-only drafts cannot report a successful save and retain their costs until a retail price is supplied', async t => {
+  const h = await harness(t), fallback = h.defaultGet
+  h.defaultGet = call => {
+    const data = fallback(call)
+    if (call.path.endsWith('/pricing')) Object.assign(data.cells[0], {retail_usd_per_1m: '', supplier_cny_per_1m: '', risk_multiplier: '', minimum_rule_version: ''})
+    return data
+  }
+  await h.vm.load()
+  h.vm.selectCell('generate/720p/false/default/false', true)
+  h.vm.previewOfficialAdoption(); h.vm.adoptionRisk.value = '4'; h.vm.applyOfficialAdoption()
+  h.respond = () => ({preview: []})
+  await h.vm.validate(); await h.vm.publish()
+  assert.equal(h.vm.error.value, 'newPriceRequired')
+  assert.equal(writes(h).length, 0)
+  assert.equal(h.vm.pricing.value.cells[0].supplier_cny_per_1m, '46')
+  assert.equal(h.vm.dirty.value, true)
+  changePrice(h, '9.5')
+  await h.vm.validate()
+  assert.equal(h.vm.canPublish.value, true)
+  assert.equal(writes(h)[0].body.cells[0].supplier_cny_per_1m, '46')
+  assert.equal(writes(h)[0].body.cells[0].enabled, false)
 })

@@ -148,6 +148,72 @@ func TestNormalizeDraftRequestContract(t *testing.T) {
 	}
 }
 
+func TestNormalizeReferenceOnlyTaskType(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		model      string
+		allowed    []string
+		request    *string
+		want       string
+		wantReject bool
+	}{
+		{name: "reference-only default is explicit", model: Model25, allowed: []string{"reference"}, want: "reference"},
+		{name: "explicit reference retained", model: Model25, allowed: []string{"reference"}, request: ptr("reference"), want: "reference"},
+		{name: "explicit auto rejected", model: Model25, allowed: []string{"reference"}, request: ptr("auto"), wantReject: true},
+		{name: "explicit edit rejected", model: Model25, allowed: []string{"reference"}, request: ptr("edit"), wantReject: true},
+		{name: "explicit extend rejected", model: Model25, allowed: []string{"reference"}, request: ptr("extend"), wantReject: true},
+		{name: "legacy empty capabilities omit field", model: Model25},
+		{name: "all capabilities preserve implicit auto", model: Model25, allowed: []string{"auto", "reference", "edit", "extend"}},
+		{name: "auto capability preserves default", model: Model25, allowed: []string{"reference", "auto"}},
+		{name: "edit capability preserves default", model: Model25, allowed: []string{"reference", "edit"}},
+		{name: "extend capability preserves default", model: Model25, allowed: []string{"reference", "extend"}},
+		{name: "existing explicit auto retained", model: Model25, allowed: []string{"auto", "reference", "edit", "extend"}, request: ptr("auto"), want: "auto"},
+		{name: "2.0 does not receive 2.5 field", model: Model20, allowed: []string{"reference"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := textRequest(tc.model)
+			// The prompt could otherwise cause upstream's implicit auto mode to
+			// choose an editing task outside the configured capability.
+			in.Content[0].Text = "Edit the reference video and remove the boat."
+			in.Content = append(in.Content, ContentItem{Type: "video_url", Role: "reference_video", VideoURL: &MediaReference{URL: "https://media.example/reference.mp4"}})
+			in.OmniReferenceTaskType = tc.request
+			cap := testCapability(tc.model)
+			cap.OmniReferenceTaskTypes = tc.allowed
+			out, err := Normalize(in, cap, Bindings{})
+			if tc.wantReject {
+				apiErr, ok := err.(*Error)
+				if !ok || apiErr.Code != "unsupported_capability" || apiErr.Field != "omni_reference_task_type" || len(out.Body) != 0 {
+					t.Fatalf("disabled task type must be rejected before emitting JSON: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Parameters.OmniReferenceTaskType != tc.want {
+				t.Fatalf("effective task type = %q, want %q", out.Parameters.OmniReferenceTaskType, tc.want)
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(out.Body, &body); err != nil {
+				t.Fatal(err)
+			}
+			raw, present := body["omni_reference_task_type"]
+			if present != (tc.want != "") {
+				t.Fatalf("outgoing task type presence = %t, want %t", present, tc.want != "")
+			}
+			if present {
+				var actual string
+				if err := json.Unmarshal(raw, &actual); err != nil || actual != tc.want {
+					t.Fatalf("outgoing task type = %s, want %q", raw, tc.want)
+				}
+			}
+			if in.OmniReferenceTaskType != tc.request {
+				t.Fatal("normalization mutated the caller's task type")
+			}
+		})
+	}
+}
+
 func TestSubmitOmitsDefaultServiceTierAndRetainsBillingContext(t *testing.T) {
 	for _, model := range []string{Model20, Model25} {
 		for _, explicit := range []bool{false, true} {
@@ -199,7 +265,7 @@ func TestSubmitOmitsDefaultServiceTierAndRetainsBillingContext(t *testing.T) {
 				})
 				result := client.Submit(context.Background(), normalized)
 				if result.Outcome != OutcomeAccepted || result.TaskID != "cgt-local-contract" {
-					t.Fatalf("local contract rejected submission: outcome=%s status=%d", result.Outcome, result.HTTPStatus)
+					t.Fatalf("local contract rejected submission: outcome=%s status=%d error=%v", result.Outcome, result.HTTPStatus, result.Error)
 				}
 				if _, present := (<-requests)["service_tier"]; present {
 					t.Fatal("service_tier escaped into the outgoing HTTP request")
@@ -343,5 +409,113 @@ func TestImageFrameAndEditCombinations(t *testing.T) {
 	r.Content = append(r.Content, ContentItem{Type: "video_url", VideoURL: &MediaReference{URL: "https://media.example/reference.mp4"}})
 	if _, err := Normalize(r, testCapability(Model25), Bindings{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFrameRatiosFollowModelCapabilities(t *testing.T) {
+	ratios := []string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"}
+	for _, model := range []string{Model20, Model25} {
+		for _, ratio := range ratios {
+			for _, withLast := range []bool{false, true} {
+				name := model + "/" + ratio + "/first"
+				if withLast {
+					name += "-last"
+				}
+				t.Run(name, func(t *testing.T) {
+					cap := testCapability(model)
+					cap.Ratios = ratios
+					for _, duration := range []int{cap.MinDuration, cap.MaxDuration} {
+						in := textRequest(model)
+						in.Ratio, in.Duration = ptr(ratio), ptr(duration)
+						in.Content = append(in.Content, ContentItem{Type: "image_url", Role: "first_frame", ImageURL: &MediaReference{URL: "https://media.example/first.jpg"}})
+						if withLast {
+							in.Content = append(in.Content, ContentItem{Type: "image_url", Role: "last_frame", ImageURL: &MediaReference{URL: "https://media.example/last.jpg"}})
+						}
+						out, err := Normalize(in, cap, Bindings{})
+						if model == Model25 && ratio != "adaptive" {
+							apiErr, ok := err.(*Error)
+							if !ok || apiErr.Code != "invalid_request" || apiErr.Field != "content" || len(out.Body) != 0 {
+								t.Fatalf("2.5 explicit frame ratio must be rejected: %v", err)
+							}
+							continue
+						}
+						if err != nil {
+							t.Fatalf("frame duration %d rejected: %v", duration, err)
+						}
+						var body struct {
+							Ratio    string        `json:"ratio"`
+							Duration int           `json:"duration"`
+							Content  []ContentItem `json:"content"`
+						}
+						if err := json.Unmarshal(out.Body, &body); err != nil || body.Ratio != ratio || body.Duration != duration || body.Content[1].Role != "first_frame" || withLast && body.Content[2].Role != "last_frame" {
+							t.Fatalf("frame parameters changed in outbound JSON: %s", out.Body)
+						}
+						cap.ImageFrames = false
+						if _, err := Normalize(in, cap, Bindings{}); err == nil {
+							t.Fatal("disabled frame capability accepted")
+						}
+						cap.ImageFrames = true
+						in.Content = append(in.Content, ContentItem{Type: "video_url", Role: "reference_video", VideoURL: &MediaReference{URL: "https://media.example/reference.mp4"}})
+						if _, err := Normalize(in, cap, Bindings{}); err == nil {
+							t.Fatal("frame mode accepted mixed reference media")
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestImplicitFirstFrameCannotBypassCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		model           string
+		ratio           string
+		frames          bool
+		secondImageRole *string
+		wantReject      bool
+	}{
+		{name: "2.0 omitted image role is first frame", model: Model20, ratio: "16:9", frames: true},
+		{name: "2.0 disabled implicit frame", model: Model20, ratio: "16:9", wantReject: true},
+		{name: "2.5 reference-only cannot admit implicit frame", model: Model25, ratio: "1:1", wantReject: true},
+		{name: "2.5 disabled adaptive implicit frame", model: Model25, ratio: "adaptive", wantReject: true},
+		{name: "2.5 implicit frame still requires adaptive", model: Model25, ratio: "16:9", frames: true, wantReject: true},
+		{name: "2.5 enabled adaptive implicit frame", model: Model25, ratio: "adaptive", frames: true},
+		{name: "two omitted image roles are not first and last", model: Model20, ratio: "16:9", frames: true, secondImageRole: ptr(""), wantReject: true},
+		{name: "implicit frame cannot mix reference image", model: Model20, ratio: "16:9", frames: true, secondImageRole: ptr("reference_image"), wantReject: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cap := testCapability(tc.model)
+			cap.ImageFrames = tc.frames
+			if tc.model == Model25 && !tc.frames {
+				cap.OmniReferenceTaskTypes = []string{"reference"}
+			}
+			in := textRequest(tc.model)
+			in.Ratio = ptr(tc.ratio)
+			in.Content = append(in.Content, ContentItem{Type: "image_url", ImageURL: &MediaReference{URL: "https://media.example/first.jpg"}})
+			if tc.secondImageRole != nil {
+				in.Content = append(in.Content, ContentItem{Type: "image_url", Role: *tc.secondImageRole, ImageURL: &MediaReference{URL: "https://media.example/second.jpg"}})
+			}
+			out, err := Normalize(in, cap, Bindings{})
+			if tc.wantReject {
+				apiErr, ok := err.(*Error)
+				if !ok || apiErr.Code != "invalid_request" || apiErr.Field != "content" || len(out.Body) != 0 {
+					t.Fatalf("implicit frame bypassed capability or combination checks: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body struct {
+				Content []map[string]json.RawMessage `json:"content"`
+			}
+			if err := json.Unmarshal(out.Body, &body); err != nil || len(body.Content) != len(in.Content) {
+				t.Fatalf("invalid outgoing content: %s", out.Body)
+			}
+			if _, exists := body.Content[1]["role"]; exists || in.Content[1].Role != "" {
+				t.Fatal("implicit first frame was rewritten in the input or outgoing JSON")
+			}
+		})
 	}
 }

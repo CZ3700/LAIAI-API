@@ -13,10 +13,16 @@ export interface PricingDescriptor {
   endpoints: string[]
 }
 export interface ModelMeta { model: string; vendor: string; category: string; tags: string; description: string; context_length: number; icon: string }
+export interface OfficialPriceEvidence {
+  status: 'verified'; model: 'seedance-2.0-fast' | 'seedance-2.0-mini'; verified_at: string; unit: 'CNY/1M_tokens'
+  prices: { resolution: '480p' | '720p'; input_video: boolean; supplier_cny_per_1m: string }[]
+  sources: { id: string; url: string; sha256: string }[]
+}
 export interface PricingModel {
   key: string; provider: string; channel_id: number; model: string; upstream_model: string
   pricing_kind: PricingKind
   pricing?: PricingDescriptor
+  official_price_evidence?: OfficialPriceEvidence
   recognition_source: string; billing_modes: string[]; generic_price: GenericPrice | null; meta: ModelMeta | null
   video_model: string | null; video_configuration: { channel_id: number; provider_scope_id: number; config_version: string; pricing_version: string; enabled: boolean } | null
   unsupported_reason: string

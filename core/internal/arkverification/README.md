@@ -1,0 +1,79 @@
+# Official standard-generation verification profile
+
+`Load` is a pure, immutable evidence package. The server applies it only through
+an explicit superadmin transaction with an expected configuration version. It
+does not assert that every combination has been tested against a live channel.
+
+Reviewed on 2026-10-19 against the official model pricing, model list and create
+task API. `Sources` identifies their downloaded Markdown bytes by SHA-256. The
+previously captured Lark tables keep their 2026-10-17 source hashes and timestamps
+in `arkpricecatalog`; they are not relabeled as freshly captured. Minimum tokens
+remain estimates for holds, never the actual settlement usage. The absent 2.0
+FPS column is supplemented from the official model list (24fps); raw rows remain
+unchanged. Profile hashes cover the merged facts and source references, and are
+not labeled as raw document hashes.
+
+Standard 2.0 has eight price conditions and 288 minimum cells; standard 2.5 has
+six price conditions and 486 minimum cells. All six explicit ratios and the full
+4–15/4–30 second duration domain are covered. Output dimensions are exact pairs
+from the official create API table; larger non-16:9 areas are not overlooked.
+
+The package intentionally excludes arbitrary-ratio 2.5 edit/extend/first-frame
+and Draft workflows until their input-derived dimensions can be bounded safely.
+For 2.5, reference-only capabilities explicitly send `omni_reference_task_type`
+as `reference` rather than allowing the upstream default `auto` to choose an
+unpublished editing mode. Standard 2.0 first/last frame uses enumerated ratios.
+Frames, flex, 1.x, Fast and Mini are not granted through a standard profile.
+
+Reviewed supplier rates (CNY / one million video tokens):
+
+| Standard model | Resolution | No reference video | With reference video |
+| --- | --- | ---: | ---: |
+| 2.0 | 480p / 720p | 46 | 28 |
+| 2.0 | 1080p | 51 | 31 |
+| 2.0 | 4k | 26 | 16 |
+| 2.5 | 480p / 720p | 70 | 42 |
+| 2.5 | 1080p | 77 | 46 |
+| 2.0 Fast | 480p / 720p | 37 | 22 |
+| 2.0 Mini | 480p / 720p | 23 | 14 |
+
+Fast and Mini each have four separately reviewed price conditions. `LoadTariff`
+checks their own captured rows and official pricing evidence; it does not grant
+standard-model capabilities or minimum usage rules. The admin catalog shows
+their verified CNY reference prices independently from adapter availability.
+These models remain blocked for commercial publication and public invocation.
+
+Administration uses `GET/POST /api/admin/video/models/:model/verification`.
+POST requires `expected_config_version` and `profile_version`. It atomically
+adds the immutable minimum set, updates documented capabilities and bounds,
+and appends configuration/audit records. It preserves current price versions,
+retail and supplier rates, enabled flags, FX, channel, budgets and balances.
+Replaying the same request is safe; stale or incompatible contexts return 409.
+
+In the price editor, synchronize official rules, select desired cells and preview
+“采用官方成本”. Adoption fills only missing supplier cost and new-cell minimum
+bindings; it retains existing rates. Complete the USD retail price before
+saving a new cell. The editor allows a fully configured cell to be saved while
+disabled, but capability and minimum coverage are still required to enable it.
+No new cell is published by rule synchronization or cost adoption.
+
+The quote uses verified pixel pairs, 24fps and input/output duration, with the
+applicable minimum estimate for reference-video holds. Actual settlement uses
+the upstream `usage.completion_tokens`; it never substitutes the estimate or
+adds a fabricated input-token charge. Zero separately reported input tokens
+does not imply that reference-video duration is free.
+
+Acceptance on 2026-10-19: both local models synchronized successfully; replay
+returned the same configuration and a stale request was rejected. All 14
+standard conditions passed prepare/validate with synthetic, unpublished prices.
+Existing published rates, FX, balances and price publication history stayed
+identical. Browser checks covered cost adoption, the missing-retail guard,
+disabled-price preview and responsive right-side evidence drawers. No upstream
+generation request or paid test was performed for this change.
+
+Public sources:
+
+- https://console.volcengine.com/ark/region:cn-beijing/docs/model-pricing
+- https://console.volcengine.com/ark/region:cn-beijing/docs/model-list
+- https://ark.volcengine.com/region:cn-beijing/docs/create-video-generation-task-api.md
+- Exact minimum-table view links and capture hashes are in `arkpricecatalog`.

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { displayRates, unitKeys, videoPriceRange } from './catalogPresentation'
+import { displayRates, officialPriceEvidence, unitKeys, videoPriceRange } from './catalogPresentation'
 import type { PricingModel } from './types'
 const props = defineProps<{ row: PricingModel; expanded?: boolean }>()
 const { t } = useI18n()
@@ -9,11 +9,13 @@ const rates = computed(() => displayRates(props.row))
 const shown = computed(() => props.expanded ? rates.value : rates.value.slice(0, 3))
 const range = computed(() => videoPriceRange(props.row))
 const isVideo = computed(() => props.row.pricing?.billing_kind === 'video' || !!props.row.video_model)
+const evidence = computed(() => officialPriceEvidence(props.row))
 function unit(value: string) { return t(`pricingAdmin.${unitKeys[value] ?? 'unitUnknown'}`) }
 </script>
 <template>
   <div class="price-summary">
-    <template v-if="isVideo">
+    <template v-if="evidence"><strong>{{ t('pricingAdmin.officialVerified') }}</strong><small>{{ t('pricingAdmin.officialCNYUnit') }} · {{ t('pricingAdmin.referenceCombinations', { count: evidence.prices.length }) }}</small><small>{{ t('pricingAdmin.adapterNotIntegrated') }}</small></template>
+    <template v-else-if="isVideo">
       <template v-if="range"><strong class="video-range">{{ range.min }}<template v-if="range.max !== range.min"> – {{ range.max }}</template></strong><small>{{ t('pricingAdmin.unitVideo') }}</small><small>{{ t('pricingAdmin.combinations', { count: row.pricing?.combinations.length ?? 0 }) }}</small><p v-if="expanded">{{ t('pricingAdmin.rangeConditions') }}</p></template>
       <template v-else-if="row.pricing?.combinations.length"><small>{{ t('pricingAdmin.combinations', { count: row.pricing.combinations.length }) }}</small><small>{{ t('pricingAdmin.unitVideo') }}</small></template>
       <span v-else class="no-price">{{ t('pricingAdmin.noPrice') }}</span>

@@ -88,6 +88,92 @@ func catalogGET(t *testing.T, f *gin999, path, token, emergency string, want int
 	return w
 }
 
+func TestPricingCatalogVariantPriceEvidenceDoesNotOpenPricingOrPublicModels(t *testing.T) {
+	f, db, tokens := pricingCatalogFixture(t)
+	models := "seedance-2.0-fast,seedance-2.0-mini,fast-alias,wrong-variant,seedance-2.5-fast,seedance-2.0,mini-alias"
+	mapping := `{"fast-alias":"doubao-seedance-2-0-fast-260128","wrong-variant":"unknown-upstream","seedance-2.0":"doubao-seedance-2-0-fast-260128","mini-alias":"doubao-seedance-2-0-mini-260615"}`
+	if e := db.Model(&relay.Channel{}).Where("id=99").Updates(map[string]any{"models": models, "model_mapping": mapping}).Error; e != nil {
+		t.Fatal(e)
+	}
+	for _, ch := range []relay.Channel{
+		{ID: 110, Name: "conflicting", Provider: "modelark", BaseURL: "https://ark.cn-beijing.volces.com/api/v3", Status: 1, Models: "seedance-2.0-fast", ModelMapping: `{"seedance-2.0-fast":"doubao-seedance-2-0-mini-260615"}`},
+		{ID: 111, Name: "byok", Provider: "volcengine", BaseURL: "https://ark.cn-beijing.volces.com/api/v3", Status: 1, OwnerOrgID: 42, Models: "seedance-2.0-fast"},
+		{ID: 112, Name: "nonofficial-base", Provider: "volcengine", BaseURL: "https://proxy.invalid", Status: 1, Models: "seedance-2.0-fast"},
+	} {
+		if e := db.Create(&ch).Error; e != nil {
+			t.Fatal(e)
+		}
+	}
+	before := verificationSnapshot(t, db, "channels", "video_model_configs", "video_pricing_rules", "model_prices")
+	for _, actor := range []uint64{1, 2} {
+		w := catalogGET(t, f, "/api/admin/pricing-catalog", tokens[actor], "", 200)
+		var out struct {
+			Models []catalogModel `json:"models"`
+		}
+		if e := json.Unmarshal(w.Body.Bytes(), &out); e != nil {
+			t.Fatal(e)
+		}
+		seen := map[string]bool{}
+		for _, row := range out.Models {
+			want := actor == 1 && (row.Key == "99:seedance-2.0-fast" || row.Key == "99:seedance-2.0-mini" || row.Key == "99:fast-alias" || row.Key == "99:mini-alias")
+			if (row.OfficialPriceEvidence != nil) != want {
+				t.Fatalf("wrong price badge for %s role %d", row.Key, actor)
+			}
+			if want {
+				seen[row.Key] = true
+				if row.Pricing.Status != "blocked" || row.VideoModel != nil || row.UnsupportedReason != "seedance_variant_not_supported" || len(row.Pricing.Rates) != 0 || len(row.Pricing.Combinations) != 0 || len(row.OfficialPriceEvidence.Prices) != 4 {
+					t.Fatalf("price evidence changed capability or retail: %#v", row)
+				}
+			}
+		}
+		if actor == 1 && len(seen) != 4 {
+			t.Fatal("missing explicit official variant rows")
+		}
+	}
+	public := catalogGET(t, f, "/api/pricing", "", "", 200)
+	if strings.Contains(public.Body.String(), "official_price_evidence") || strings.Contains(public.Body.String(), "seedance-2.0-fast") || strings.Contains(public.Body.String(), "seedance-2.0-mini") {
+		t.Fatal("documentary reference leaked into public callable catalog")
+	}
+	for _, model := range []string{"seedance-2.0-fast", "seedance-2.0-mini"} {
+		catalogGET(t, f, "/api/admin/video/models/"+model+"/pricing/reference-candidates", tokens[1], "", 404)
+		catalogGET(t, f, "/api/admin/video/models/"+model+"/verification", tokens[1], "", 404)
+	}
+	if before != verificationSnapshot(t, db, "channels", "video_model_configs", "video_pricing_rules", "model_prices") {
+		t.Fatal("read-only variant projection wrote configuration")
+	}
+}
+
+func TestOfficialVariantTariffIdentityPinsReviewedDeployments(t *testing.T) {
+	channel := relay.Channel{Provider: "volcengine", BaseURL: "https://ark.cn-beijing.volces.com/api/v3", Status: 1}
+	for _, tc := range []struct {
+		model, upstream, want string
+	}{
+		{"seedance-2.0-fast", "doubao-seedance-2-0-fast-260128", "seedance-2.0-fast"},
+		{"seedance-2.0-mini", "doubao-seedance-2-0-mini-260615", "seedance-2.0-mini"},
+		{"fast-alias", "seedance-2.0-fast", "seedance-2.0-fast"},
+		{"mini-alias", "seedance-2.0-mini", "seedance-2.0-mini"},
+		{"doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-fast-260128", "seedance-2.0-fast"},
+		{"doubao-seedance-2-0-mini-260615", "doubao-seedance-2-0-mini-260615", "seedance-2.0-mini"},
+		{"fast-alias", "doubao-seedance-2-0-fast-270101", ""},
+		{"mini-alias", "doubao-seedance-2-0-mini-270101", ""},
+		{"seedance-2.0-fast-270101", "doubao-seedance-2-0-fast-260128", ""},
+		{"seedance-2.0-mini-270101", "doubao-seedance-2-0-mini-260615", ""},
+		{"fast-alias", "doubao-seedance-2-0-fast-260615", ""},
+		{"mini-alias", "doubao-seedance-2-0-mini-260128", ""},
+		{"seedance-2.0-fast", "doubao-seedance-2-0-mini-260615", ""},
+		{"seedance-2.0-mini", "doubao-seedance-2-0-fast-260128", ""},
+		{"seedance-2.5-fast", "doubao-seedance-2-0-fast-260128", ""},
+		{"seedance-2.0-fast", "doubao-seedance-2-5-fast-260128", ""},
+		{"seedance-2.0", "doubao-seedance-2-0-fast-260128", ""},
+	} {
+		t.Run(tc.model+"/"+tc.upstream, func(t *testing.T) {
+			if got := officialVariantTariffModel(catalogModel{Model: tc.model, UpstreamModel: tc.upstream}, channel); got != tc.want {
+				t.Fatalf("identity = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPricingCatalogPermissionsAliasesAndFullPriceProjection(t *testing.T) {
 	f, db, tokens := pricingCatalogFixture(t)
 	writes := 0
