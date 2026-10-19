@@ -18,6 +18,19 @@ export interface OfficialPriceEvidence {
   prices: { resolution: '480p' | '720p'; input_video: boolean; supplier_cny_per_1m: string }[]
   sources: { id: string; url: string; sha256: string }[]
 }
+export interface VariantPriceProposal {
+  fx_usd_per_cny: string; fx_version: string; fx_observed_at: string
+  source_config_version: string; source_pricing_version: string
+  risk_source: 'existing_standard_2_0_policy'; minimum_status: 'unverified'
+  prices: { resolution: '480p' | '720p'; input_video: boolean; retail_usd_per_1m: string; supplier_cny_per_1m: string; risk_multiplier: string }[]
+  sources: { id: string; url: string; sha256: string }[]; evidence_sha256: string
+}
+export interface VariantPricePlan {
+  channel_id: number; model: string; upstream_model: string; canonical_model: string; context_sha256: string
+  adapter_status: 'not_integrated'; invocable: false; proposal: VariantPriceProposal
+  saved: null | { id: number; version: string; created_at: string; created_by: number; proposal: VariantPriceProposal }
+  saved_matches_proposal: boolean
+}
 export interface PricingModel {
   key: string; provider: string; channel_id: number; model: string; upstream_model: string
   pricing_kind: PricingKind

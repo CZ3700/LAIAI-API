@@ -75,7 +75,9 @@ jobs:
           go -C core run ./cmd/migrate -dir ../migrations
           go -C core run ./cmd/migrate -dir ../migrations
       - name: Ark MySQL transaction and HTTP integration
-        run: go -C core test ./internal/video ./internal/server -run TestMySQL -count=1 -timeout=10m
+        # Both packages seed the same global model configuration in ark_test.
+        # Keep package fixtures isolated while retaining in-test concurrency.
+        run: go -C core test -p 1 ./internal/video ./internal/server -run TestMySQL -count=1 -timeout=10m
       - name: Ark concurrency and Linux storage checks
         run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=10m
 

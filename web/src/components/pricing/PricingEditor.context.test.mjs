@@ -29,7 +29,7 @@ async function component(relative) {
         if (args.path === 'vue-i18n') return { contents: 'export const useI18n = () => ({t: key => key});' }
         if (args.path === 'vue-router') return { contents: 'export const useRoute = () => globalThis.__editorHarness.route; export const useRouter = () => globalThis.__editorHarness.router; export const onBeforeRouteLeave = fn => globalThis.__editorHarness.guards.push(fn);' }
         if (args.path === '@/stores/auth') return { contents: 'export const useAuth = () => globalThis.__editorHarness.auth;' }
-        if (args.path === '@/lib/api') return { contents: 'export const adminApi = (...args) => globalThis.__editorHarness.api(...args); export const api = adminApi; export const errorMessage = e => e.message;' }
+        if (args.path === '@/lib/api') return { contents: 'export class ApiError extends Error { constructor(status,message) { super(message); this.status = status; } } export const adminApi = (...args) => globalThis.__editorHarness.api(...args); export const api = (...args) => { globalThis.__editorHarness.ApiError = ApiError; return adminApi(...args); }; export const errorMessage = (e,fallback) => e instanceof ApiError ? e.message : fallback; export const uuid = () => "fixture-key-" + ++globalThis.__editorHarness.id;' }
         if (args.path === './types') return { contents: await readFile(new URL('./types.ts', import.meta.url), 'utf8'), loader: 'ts' }
         if (args.path === './catalogPresentation') return { contents: await readFile(new URL('./catalogPresentation.ts', import.meta.url), 'utf8'), loader: 'ts' }
         if (args.path.endsWith('.vue')) return { contents: 'export default {};' }
@@ -44,6 +44,7 @@ const Panel = await component('./AdminPricingPanel.vue')
 const Official = await component('../OfficialVideoPriceCatalog.vue')
 const Summary = await component('./AdminPriceSummary.vue')
 const VariantEvidence = await component('./OfficialPriceEvidence.vue')
+const VariantPlan = await component('./VariantPricePlan.vue')
 const presentationBuild = await build({ entryPoints: [fileURLToPath(new URL('./catalogPresentation.ts', import.meta.url))], bundle: true, format: 'esm', write: false })
 const presentation = await import(`data:text/javascript;base64,${Buffer.from(presentationBuild.outputFiles[0].text).toString('base64')}`)
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
@@ -54,10 +55,10 @@ function catalog() { return { providers: [{ name: 'one', display_name: 'First pr
 async function harness(t, Component, props = {}, response = () => catalog()) {
   const original = globalThis.__editorHarness
   const oldWindow = globalThis.window
-  const h = { vue, auth: vue.reactive({ orgId: 1, token: 'fixture-a', role: 'superadmin', isSuperadmin: true }), props: vue.reactive(props), calls: [], events: [], mounted: [], activated: [], deactivated: [], unmounted: [], guards: [], route: vue.reactive({ query: { tab: 'prices' } }), respond: response, confirmResult: false, confirmations: 0 }
+  const h = { vue, auth: vue.reactive({ orgId: 1, token: 'fixture-a', role: 'superadmin', isSuperadmin: true }), props: vue.reactive(props), calls: [], events: [], mounted: [], activated: [], deactivated: [], unmounted: [], guards: [], route: vue.reactive({ query: { tab: 'prices' } }), respond: response, confirmResult: false, confirmations: 0, id: 0 }
   h.router = { replace(next) { h.route.query = next.query; return Promise.resolve() } }
   globalThis.window = { addEventListener() {}, removeEventListener() {}, confirm() { h.confirmations++; return h.confirmResult } }
-  h.api = async (method, path, body) => { const call = { method, path, body, org: h.auth.orgId }; h.calls.push(call); return h.respond(call) }
+  h.api = async (method, path, body, options) => { const call = { method, path, body, options, org: h.auth.orgId }; h.calls.push(call); return h.respond(call) }
   globalThis.__editorHarness = h
   const scope = vue.effectScope()
   h.vm = scope.run(() => Component.setup(h.props, { expose() {}, emit: (...args) => h.events.push(args) }))
@@ -318,4 +319,168 @@ test('read-only official evidence restricts links to public HTTPS URLs and perfo
   assert.equal(h.vm.sourceURL('https://example.com/official-prices'), 'https://example.com/official-prices')
   for (const url of ['javascript:alert(1)', 'http://example.com/', 'https://user:password@example.com/']) assert.equal(h.vm.sourceURL(url), undefined)
   assert.equal(h.calls.length, 0)
+})
+
+function variantPlan(row = variantRow(), saved = false, context = 'b'.repeat(64)) {
+  const proposal = {
+    fx_usd_per_cny: '0.1412345678', fx_version: 'scope-fx-v1', fx_observed_at: '2026-10-19T01:00:00Z', source_config_version: 'standard-cfg-v1', source_pricing_version: 'standard-price-v1', risk_source: 'existing_standard_2_0_policy', minimum_status: 'unverified',
+    prices: row.official_price_evidence.prices.map(price => ({...price, retail_usd_per_1m: '5.238900001234', risk_multiplier: '4'})), sources: row.official_price_evidence.sources, evidence_sha256: 'e'.repeat(64),
+  }
+  return {channel_id: row.channel_id, model: row.model, upstream_model: row.upstream_model, canonical_model: row.official_price_evidence.model, context_sha256: context, adapter_status: 'not_integrated', invocable: false, proposal, saved: saved ? {id: 8, version: 'plan-v1', created_at: '2026-10-19T02:00:00Z', created_by: 1, proposal: structuredClone(proposal)} : null, saved_matches_proposal: saved}
+}
+
+test('variant plan GET is the exact server proposal and saving sends only the reviewed context with idempotency', async t => {
+  const row = {...variantRow(), key: '1:public/video fast', model: 'public/video fast'}, preview = variantPlan(row), saved = variantPlan(row, true)
+  const h = await harness(t, VariantPlan, {row, contextKey: 'A'}, call => call.method === 'GET' ? preview : saved)
+  assert.equal(h.calls.length, 1)
+  assert.equal(h.calls[0].path, '/api/admin/video/variant-price-plans/1/public%2Fvideo%20fast')
+  assert.deepEqual(JSON.parse(JSON.stringify(h.vm.data.value.proposal)), preview.proposal)
+  assert.equal(h.vm.data.value.proposal.prices[0].retail_usd_per_1m, '5.238900001234', 'the browser never recomputes USD from CNY and FX')
+  assert.equal(h.vm.minimumLabel(h.vm.data.value.proposal.prices[0]), 'pricingAdmin.variantPlanMinimumNotApplicable')
+  assert.equal(h.vm.minimumLabel(h.vm.data.value.proposal.prices[1]), 'pricingAdmin.variantPlanMinimumUnverified')
+  assert.equal(h.vm.statusKey.value, 'variantPlanUnsaved')
+  assert.equal(h.vm.canSave.value, true)
+  const key = h.vm.idempotencyKey.value
+  await h.vm.save()
+  assert.deepEqual(h.calls[1].body, {expected_context_sha256: preview.context_sha256})
+  assert.deepEqual(h.calls[1].options, {headers: {'Idempotency-Key': key}})
+  assert.equal(h.vm.statusKey.value, 'variantPlanSavedState')
+  assert.equal(h.vm.canSave.value, false)
+  assert.equal(h.vm.data.value.invocable, false)
+  assert.equal(h.vm.data.value.proposal.minimum_status, 'unverified')
+  assert.equal(row.pricing.status, 'blocked')
+  assert.deepEqual(h.events.filter(([name]) => name === 'saved'), [['saved', row.key, 'A']])
+  assert.ok(h.events.some(([name,value]) => name === 'busy-change' && value))
+  await h.vm.save()
+  assert.equal(h.calls.length, 2, 'an unchanged saved plan cannot create a second save')
+})
+
+test('variant save prevents duplicate clicks and retries an unknown outcome with the original key and body', async t => {
+  const row = variantRow(), response = deferred()
+  const h = await harness(t, VariantPlan, {row, contextKey: 'A'}, () => variantPlan(row))
+  const key = h.vm.idempotencyKey.value
+  h.respond = () => response.promise
+  const pending = h.vm.save()
+  await h.vm.save()
+  assert.equal(h.calls.filter(call => call.method === 'POST').length, 1)
+  response.reject(new h.ApiError(502, 'unknown result'))
+  await pending
+  assert.equal(h.vm.retryPending.value, true)
+  assert.equal(h.vm.canSave.value, true)
+  assert.equal(h.vm.idempotencyKey.value, key)
+  const count = h.calls.length
+  await h.vm.load()
+  assert.equal(h.calls.length, count, 'an unknown outcome keeps its original operation available for retry')
+  h.respond = () => variantPlan(row, true)
+  await h.vm.save()
+  const writes = h.calls.filter(call => call.method === 'POST')
+  assert.deepEqual(writes[0].body, writes[1].body)
+  assert.deepEqual(writes[0].options, writes[1].options)
+  assert.equal(h.vm.retryPending.value, false)
+  assert.equal(h.vm.statusKey.value, 'variantPlanSavedState')
+})
+
+test('variant context conflict blocks saving until a new GET proposal is reviewed', async t => {
+  const row = variantRow(), h = await harness(t, VariantPlan, {row, contextKey: 'A'}, () => variantPlan(row))
+  const oldKey = h.vm.idempotencyKey.value
+  h.respond = () => { throw new h.ApiError(409, 'context conflict') }
+  await h.vm.save()
+  assert.equal(h.vm.requiresReload.value, true)
+  assert.equal(h.vm.canSave.value, false)
+  assert.equal(h.vm.error.value, 'pricingAdmin.variantPlanConflict')
+  await h.vm.save()
+  assert.equal(h.calls.filter(call => call.method === 'POST').length, 1)
+  h.respond = () => variantPlan(row, false, 'c'.repeat(64))
+  await h.vm.load()
+  assert.equal(h.vm.requiresReload.value, false)
+  assert.equal(h.vm.canSave.value, true)
+  assert.notEqual(h.vm.idempotencyKey.value, oldKey)
+  assert.equal(h.vm.requestSnapshot.value.expected_context_sha256, 'c'.repeat(64))
+})
+
+test('a late variant proposal cannot replace the current model, channel or authentication context', async t => {
+  const fast = variantRow(), mini = {...variantRow('mini'), key: '3:mini-alias', channel_id: 3, model: 'mini-alias'}, late = deferred()
+  const h = await harness(t, VariantPlan, {row: fast, contextKey: 'A'}, () => variantPlan(fast))
+  h.respond = call => call.path.endsWith('/mini-alias') ? variantPlan(mini) : late.promise
+  const previous = h.vm.load()
+  h.props.row = mini; h.props.contextKey = 'B'
+  await until(() => !h.vm.loading.value && h.vm.data.value?.model === 'mini-alias')
+  late.resolve(variantPlan(fast))
+  await previous
+  assert.equal(h.vm.data.value.channel_id, 3)
+  assert.equal(h.vm.data.value.canonical_model, 'seedance-2.0-mini')
+  assert.equal(h.vm.error.value, '')
+  h.auth.isSuperadmin = false
+  assert.equal(h.vm.data.value, null)
+  assert.equal(h.vm.requestSnapshot.value, null)
+  const count = h.calls.length
+  await h.vm.load(); await h.vm.save()
+  assert.equal(h.calls.length, count)
+})
+
+test('late variant save cannot emit success or unlock another model save', async t => {
+  const fast = variantRow(), mini = variantRow('mini'), previous = deferred(), current = deferred()
+  const h = await harness(t, VariantPlan, {row: fast, contextKey: 'A'}, () => variantPlan(fast))
+  h.respond = call => call.method === 'GET' ? variantPlan(mini) : call.path.endsWith('/seedance-2.0-fast') ? previous.promise : current.promise
+  const oldSave = h.vm.save()
+  h.props.row = mini; h.props.contextKey = 'B'
+  await until(() => !h.vm.loading.value && h.vm.data.value?.model === mini.model)
+  const newSave = h.vm.save()
+  previous.resolve(variantPlan(fast, true)); await oldSave
+  assert.equal(h.vm.busy.value, true)
+  assert.equal(h.vm.notice.value, '')
+  assert.equal(h.events.filter(([name]) => name === 'saved').length, 0)
+  current.resolve(variantPlan(mini, true)); await newSave
+  assert.deepEqual(h.events.filter(([name]) => name === 'saved'), [['saved', mini.key, 'B']])
+  assert.equal(h.vm.data.value.canonical_model, mini.model)
+})
+
+test('variant proposal validates response identity and keeps older saved amounts separate from new proposals', async t => {
+  const row = variantRow(), proposed = variantPlan(row, true)
+  proposed.saved_matches_proposal = false
+  proposed.saved.proposal.prices[0].retail_usd_per_1m = '3.000000000001'
+  const h = await harness(t, VariantPlan, {row, contextKey: 'A'}, () => proposed)
+  assert.equal(h.vm.statusKey.value, 'variantPlanUpdatePending')
+  assert.equal(h.vm.previousPrice(h.vm.data.value.proposal.prices[0]).retail_usd_per_1m, '3.000000000001')
+  assert.equal(h.vm.data.value.proposal.prices[0].retail_usd_per_1m, '5.238900001234')
+  for (const altered of [{channel_id: 9}, {canonical_model: 'seedance-2.0'}, {upstream_model: 'different'}, {adapter_status: 'enabled', invocable: true}]) {
+    h.respond = () => ({...variantPlan(row), ...altered})
+    await h.vm.load()
+    assert.equal(h.vm.data.value, null)
+    assert.equal(h.vm.canSave.value, false)
+    assert.equal(h.vm.error.value, 'pricingAdmin.variantPlanLoadFailed')
+  }
+})
+
+test('variant plan deactivation discards private state and late callbacks cannot restore it', async t => {
+  const row = variantRow(), response = deferred()
+  const h = await harness(t, VariantPlan, {row, contextKey: 'A'}, () => variantPlan(row))
+  h.respond = () => response.promise
+  const pending = h.vm.save()
+  h.deactivated.forEach(fn => fn())
+  response.resolve(variantPlan(row, true)); await pending
+  assert.equal(h.vm.data.value, null)
+  assert.equal(h.vm.idempotencyKey.value, '')
+  assert.equal(h.vm.canSave.value, false)
+  assert.equal(h.vm.notice.value, '')
+  assert.equal(h.events.filter(([name]) => name === 'saved').length, 0)
+})
+
+test('variant plan saved events refresh only their source drawer and do not report published prices', async t => {
+  const data = {...catalog(), models: [variantRow(),variantRow('mini')]}
+  const h = await harness(t, Panel, {}, () => data)
+  h.vm.openModel(data.models[0]); await vue.nextTick()
+  const oldContext = h.vm.contextKey.value
+  h.vm.openModel(data.models[1]); await vue.nextTick()
+  await h.vm.variantPlanSaved(data.models[0].key, oldContext)
+  assert.equal(h.calls.length, 1)
+  const currentContext = h.vm.contextKey.value
+  h.vm.editorBusy.value = true
+  await h.vm.requestClose(false)
+  assert.equal(h.vm.detailsOpen.value, true)
+  await h.vm.variantPlanSaved(data.models[1].key, currentContext)
+  assert.equal(h.calls.length, 2)
+  assert.equal(h.vm.notice.value, 'pricingAdmin.variantPlanSavedNotice')
+  assert.equal(h.vm.summary.value.published, 0)
+  assert.equal(h.vm.selected.value.pricing.status, 'blocked')
 })

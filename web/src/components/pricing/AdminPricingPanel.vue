@@ -9,6 +9,7 @@ import VideoPricing from '@/pages/VideoPricing.vue'
 import GenericPriceEditor from './GenericPriceEditor.vue'
 import AdminPriceSummary from './AdminPriceSummary.vue'
 import OfficialPriceEvidence from './OfficialPriceEvidence.vue'
+import VariantPricePlan from './VariantPricePlan.vue'
 import { modelType, modelTypes, officialPriceEvidence, pricingStatus, pricingStatuses, type ModelTypeFilter } from './catalogPresentation'
 import type { PricingCatalog, PricingModel, PricingStatus } from './types'
 
@@ -105,6 +106,13 @@ async function saved(rowKey: string, sourceContext: string) {
 }
 function videoPublished() { if (selected.value) void saved(selected.value.key, contextKey.value) }
 function verificationSynced() { void load(true) }
+async function variantPlanSaved(rowKey: string, sourceContext: string) {
+  if (rowKey !== modelKey.value || sourceContext !== contextKey.value) return
+  editorBusy.value = false
+  const expected = generation + 1
+  await load(true)
+  if (expected === generation && !error.value) notice.value = t('pricingAdmin.variantPlanSavedNotice')
+}
 function openModel(row: PricingModel, tab: 'pricing' | 'overview' = 'pricing') { modelKey.value = row.key; drawerTab.value = officialPriceEvidence(row) ? 'overview' : tab; detailsOpen.value = true; notice.value = '' }
 async function requestClose(open = false) {
   if (open) { detailsOpen.value = true; return }
@@ -174,7 +182,7 @@ defineExpose({ hasUnsavedChanges: () => dirty.value, isBusy: () => editorBusy.va
           <template v-else><p class="scope-note">{{ t('pricingAdmin.sharedScope', { count: impact }) }}</p><GenericPriceEditor :key="selected.key" :row="selected" :context-key="contextKey" @saved="saved" @dirty-change="dirty = $event" @busy-change="editorBusy = $event" /></template>
         </div>
         <div v-show="drawerTab === 'overview'" id="pricing-drawer-panel-overview" role="tabpanel" aria-labelledby="pricing-drawer-tab-overview" class="drawer-overview">
-          <AdminPriceSummary :row="selected" expanded /><OfficialPriceEvidence v-if="selectedOfficialEvidence" :evidence="selectedOfficialEvidence" /><dl class="pricing-detail"><dt>{{ t('pricingx.publicModel') }}</dt><dd>{{ selected.model }}</dd><dt>{{ t('pricingx.upstreamModel') }}</dt><dd>{{ selected.upstream_model }}</dd><dt>{{ t('pricingx.provider') }}</dt><dd>{{ providerLabel(selected.provider) }} ({{ selected.provider }})</dd><dt>{{ t('pricingx.channel') }}</dt><dd>{{ channelLabel(selected.channel_id) }}</dd><dt>{{ t('pricingx.billingModes') }}</dt><dd>{{ t(`pricingx.${selected.pricing_kind}`) }} · {{ selected.billing_modes.join(', ') || '—' }}</dd></dl>
+          <AdminPriceSummary :row="selected" expanded /><VariantPricePlan v-if="selectedOfficialEvidence && videoAllowed" :key="selected.key" :row="selected" :context-key="contextKey" @busy-change="editorBusy = $event" @saved="variantPlanSaved" /><OfficialPriceEvidence v-if="selectedOfficialEvidence" :evidence="selectedOfficialEvidence" /><dl class="pricing-detail"><dt>{{ t('pricingx.publicModel') }}</dt><dd>{{ selected.model }}</dd><dt>{{ t('pricingx.upstreamModel') }}</dt><dd>{{ selected.upstream_model }}</dd><dt>{{ t('pricingx.provider') }}</dt><dd>{{ providerLabel(selected.provider) }} ({{ selected.provider }})</dd><dt>{{ t('pricingx.channel') }}</dt><dd>{{ channelLabel(selected.channel_id) }}</dd><dt>{{ t('pricingx.billingModes') }}</dt><dd>{{ t(`pricingx.${selected.pricing_kind}`) }} · {{ selected.billing_modes.join(', ') || '—' }}</dd></dl>
           <p v-if="!selectedOfficialEvidence">{{ t(selected.video_model ? 'pricingAdmin.boundScope' : 'pricingx.globalScope') }}</p><p>{{ t('pricingAdmin.unitNote') }}</p><p>{{ t('pricingx.noAutomaticPrice') }}</p><button class="btn-ghost" :disabled="editorBusy" @click="editMetadata">{{ t('pricingAdmin.editMetadata') }}</button>
         </div>
       </template>

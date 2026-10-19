@@ -43,6 +43,24 @@ standard-model capabilities or minimum usage rules. The admin catalog shows
 their verified CNY reference prices independently from adapter availability.
 These models remain blocked for commercial publication and public invocation.
 
+Fast `doubao-seedance-2-0-fast-260128` and Mini
+`doubao-seedance-2-0-mini-260615` may additionally save a separate price plan in
+the admin drawer. `GET/POST /api/admin/video/variant-price-plans/:channel/:model`
+previews and saves the four official resolution/reference-video combinations.
+Retail USD equals the official CNY price multiplied by the bound scope's existing
+USD/CNY rate. The plan inherits the consistent risk multiplier from currently
+active standard 2.0 rules on that channel; this platform hold policy is not an
+official tariff and is not multiplied into retail prices.
+
+The append-only plan stores its exact source, FX and risk-policy snapshots. Save
+requires the complete preview context digest and an idempotency key, revalidates
+the current context under locks, and commits an audit record in the same
+transaction. It does not write executable pricing rules, create model
+capabilities or change public model availability. The UI distinguishes a saved
+plan from a current preview when the context changes. Variant minimum usage is
+explicitly unverified: the captured 26-row examples do not establish a complete
+minimum table, and standard-model minimum versions must not be reused.
+
 Administration uses `GET/POST /api/admin/video/models/:model/verification`.
 POST requires `expected_config_version` and `profile_version`. It atomically
 adds the immutable minimum set, updates documented capabilities and bounds,

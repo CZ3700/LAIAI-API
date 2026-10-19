@@ -294,6 +294,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				s.registerArkAssetsConsole(videoConsoleOrg, su, mediaOrg)
 				s.registerArkPricingConsole(su)
 				s.registerArkVerification(su)
+				s.registerArkVariantPricePlans(su)
 				s.registerArkOfficialPriceCatalog(su)
 				su.GET("/video/models/:model/pricing/reference-candidates", s.getArkReferenceCandidates)
 				s.registerArkRequestLogs(videoConsoleOrg, su)
