@@ -1,10 +1,22 @@
 export const genericPriceFields = ['input_usd_per_1m', 'output_usd_per_1m', 'cached_input_usd_per_1m', 'image_usd', 'per_call_usd', 'tts_usd_per_1k_chars', 'transcription_usd_per_call', 'audio_input_usd_per_1m', 'audio_output_usd_per_1m'] as const
 export type PriceField = typeof genericPriceFields[number]
 export type GenericPrice = { model: string } & Record<PriceField, string>
+export type PricingKind = 'token' | 'image' | 'per_call' | 'audio' | 'mixed' | 'video' | 'generic_video' | 'unknown'
+export type PricingStatus = 'published' | 'partial' | 'missing' | 'blocked' | 'disabled'
+export interface PricingDescriptor {
+  billing_kind: PricingKind
+  currency: 'USD'
+  unit: string
+  status: PricingStatus
+  rates: { key: string; amount: string; unit: string }[]
+  combinations: { key: string; mode: string; resolution: string; input_video: boolean; service_tier: string; draft: boolean; amount: string }[]
+  endpoints: string[]
+}
 export interface ModelMeta { model: string; vendor: string; category: string; tags: string; description: string; context_length: number; icon: string }
 export interface PricingModel {
   key: string; provider: string; channel_id: number; model: string; upstream_model: string
-  pricing_kind: 'token' | 'image' | 'per_call' | 'audio' | 'mixed' | 'video' | 'generic_video' | 'unknown'
+  pricing_kind: PricingKind
+  pricing?: PricingDescriptor
   recognition_source: string; billing_modes: string[]; generic_price: GenericPrice | null; meta: ModelMeta | null
   video_model: string | null; video_configuration: { channel_id: number; provider_scope_id: number; config_version: string; pricing_version: string; enabled: boolean } | null
   unsupported_reason: string
