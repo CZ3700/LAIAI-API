@@ -1,6 +1,8 @@
+import { modelCatalogMessages } from './modelCatalogRedesign'
 import en, { type Messages } from './en'
 
 export default {
+  catalog: modelCatalogMessages['th'],
   pricingx: {
     "title": "ตั้งราคาตามผู้ให้บริการ",
     "intro": "รายชื่อผู้ให้บริการตรงกับหน้าตั้งค่าช่องทาง เลือกผู้ให้บริการและช่องทางเพื่อกำหนดราคาสำหรับโมเดลที่เชื่อมต่อแล้ว",

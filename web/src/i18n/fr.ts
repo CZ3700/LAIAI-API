@@ -1,6 +1,8 @@
+import { modelCatalogMessages } from './modelCatalogRedesign'
 import en, { type Messages } from './en'
 
 export default {
+  catalog: modelCatalogMessages['fr'],
   pricingx: {
     "title": "Tarification par fournisseur",
     "intro": "La liste des fournisseurs est commune à la configuration des canaux. Choisissez un fournisseur et un canal pour définir les tarifs des modèles connectés.",

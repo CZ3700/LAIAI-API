@@ -1,6 +1,8 @@
+import { modelCatalogMessages } from './modelCatalogRedesign'
 import en, { type Messages } from './en'
 
 export default {
+  catalog: modelCatalogMessages['ru'],
   pricingx: {
     "title": "Цены по поставщикам",
     "intro": "Список поставщиков совпадает со списком в настройках каналов. Выберите поставщика и канал, чтобы настроить цены подключённых моделей.",

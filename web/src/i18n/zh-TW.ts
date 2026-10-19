@@ -1,6 +1,8 @@
+import { modelCatalogMessages } from './modelCatalogRedesign'
 import type { Messages } from './en'
 
 export default {
+  catalog: modelCatalogMessages['zh-TW'],
   pricingx: {
     "title": "按廠商配置定價",
     "intro": "廠商與渠道接入保持一致。選擇廠商和渠道，為已接入模型配置對應的計價方式。",

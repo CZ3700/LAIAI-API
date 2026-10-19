@@ -1,7 +1,9 @@
+import { modelCatalogMessages } from './modelCatalogRedesign'
 // zh-CN：一等翻译。`satisfies Messages` = 键集与 en 不一致时构建期报错
 import type { Messages } from './en'
 
 export default {
+  catalog: modelCatalogMessages['zh-CN'],
   pricingx: {
     "title": "按厂商配置定价",
     "intro": "厂商与渠道接入保持一致。选择厂商和渠道，为已接入模型配置对应的计价方式。",

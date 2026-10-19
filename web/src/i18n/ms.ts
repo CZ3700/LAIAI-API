@@ -1,6 +1,8 @@
+import { modelCatalogMessages } from './modelCatalogRedesign'
 import en, { type Messages } from './en'
 
 export default {
+  catalog: modelCatalogMessages['ms'],
   pricingx: {
     "title": "Harga mengikut penyedia",
     "intro": "Senarai penyedia adalah sama dengan tetapan saluran. Pilih penyedia dan saluran untuk menetapkan harga model yang disambungkan.",

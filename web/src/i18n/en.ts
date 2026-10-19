@@ -1,7 +1,9 @@
+import { modelCatalogMessages } from './modelCatalogRedesign'
 // 源语言 = English（设计 §5.6 的根本反转）；禁止字符串拼接句子。
 // 其余语种必须 `satisfies Messages`——键集与 en 不一致时 vue-tsc 构建期报错
 // （§5.6"缺 key CI 报错而非运行时静默回退"的类型级实现）。
 const messages = {
+  catalog: modelCatalogMessages['en'],
   pricingx: {
     "title": "Pricing by provider",
     "intro": "Providers match the channel setup list. Choose a provider and channel to configure pricing for connected models.",

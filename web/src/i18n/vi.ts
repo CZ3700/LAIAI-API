@@ -1,6 +1,8 @@
+import { modelCatalogMessages } from './modelCatalogRedesign'
 import en, { type Messages } from './en'
 
 export default {
+  catalog: modelCatalogMessages['vi'],
   pricingx: {
     "title": "Định giá theo nhà cung cấp",
     "intro": "Danh sách nhà cung cấp khớp với phần thiết lập kênh. Chọn nhà cung cấp và kênh để cấu hình giá cho các mô hình đã kết nối.",
