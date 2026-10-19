@@ -70,6 +70,7 @@ type catalogModel struct {
 	VideoModel         *string                    `json:"video_model"`
 	VideoConfiguration *catalogVideoConfiguration `json:"video_configuration"`
 	UnsupportedReason  string                     `json:"unsupported_reason"`
+	Pricing            pricingDescriptor          `json:"pricing"`
 }
 
 // A known family is an explicit identifier grammar, not a modality keyword guess.
@@ -108,6 +109,12 @@ func (s *Server) adminPricingCatalog(c *gin.Context) {
 		}
 	}
 	channels := []relay.Channel{}
+	db = db.Begin()
+	if db.Error != nil {
+		fail(c, 503, "pricing catalog unavailable")
+		return
+	}
+	defer db.Rollback()
 	prices := []relay.ModelPrice{}
 	metas := []ModelMeta{}
 	configs := []video.ModelConfig{}
@@ -125,7 +132,12 @@ func (s *Server) adminPricingCatalog(c *gin.Context) {
 		fail(c, 503, "pricing catalog unavailable")
 		return
 	}
-	if e := db.Select("public_model,channel_id,provider_scope_id,version,pricing_version,capability_json,enabled").Order("public_model").Find(&configs).Error; e != nil {
+	if e := db.Order("public_model").Find(&configs).Error; e != nil {
+		fail(c, 503, "pricing catalog unavailable")
+		return
+	}
+	videoPrices, e := loadVideoPricingProjection(db, configs, channels, s.now().UTC())
+	if e != nil {
 		fail(c, 503, "pricing catalog unavailable")
 		return
 	}
@@ -172,6 +184,15 @@ func (s *Server) adminPricingCatalog(c *gin.Context) {
 				row.Meta = &copy
 			}
 			classifyCatalogModel(&row, ch, p, priced, configs, videoDetails)
+			row.Pricing = genericDescriptor(row, p, priced, ch)
+			if row.VideoModel != nil && row.UnsupportedReason == "" {
+				if v, ok := videoPrices[*row.VideoModel]; ok && v.Config.ChannelID == ch.ID {
+					row.Pricing = v.Pricing
+				}
+			}
+			if ch.Status != 1 {
+				row.Pricing.Status = "disabled"
+			}
 			models = append(models, row)
 		}
 	}
@@ -183,6 +204,10 @@ func (s *Server) adminPricingCatalog(c *gin.Context) {
 		return models[i].Model < models[j].Model
 	})
 	c.Header("Cache-Control", "private, no-store")
+	if e := db.Commit().Error; e != nil {
+		fail(c, 503, "pricing catalog unavailable")
+		return
+	}
 	c.JSON(200, gin.H{"providers": providers, "channels": channelRows, "models": models, "permissions": gin.H{"video_details": videoDetails}, "price_scope": "public_model_global"})
 }
 

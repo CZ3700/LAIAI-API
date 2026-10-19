@@ -47,11 +47,12 @@ type pricingCell struct {
 	UnavailableReason  string `json:"unavailable_reason,omitempty"`
 }
 type pricingRequest struct {
-	ExpectedConfigVersion string        `json:"expected_config_version"`
-	ConfigVersion         string        `json:"config_version"`
-	PricingVersion        string        `json:"pricing_version"`
-	EvidenceHash          string        `json:"evidence_hash"`
-	Cells                 []pricingCell `json:"cells"`
+	ExpectedConfigVersion string            `json:"expected_config_version"`
+	ConfigVersion         string            `json:"config_version"`
+	PricingVersion        string            `json:"pricing_version"`
+	EvidenceHash          string            `json:"evidence_hash"`
+	Cells                 []pricingCell     `json:"cells"`
+	SourceSet             *pricingSourceSet `json:"source_set,omitempty"`
 }
 
 var priceDecimal = regexp.MustCompile(`^(0|[1-9][0-9]{0,11})(\.[0-9]{1,12})?$`)
@@ -118,6 +119,18 @@ func priceMatrix(cap ark.Capability, prices []videobilling.PricingRule) []pricin
 			cells = append(cells, pricingCell{Mode: "draft_conversion", Resolution: "1080p", InputVideo: input, ServiceTier: "default"})
 		}
 	}
+	// Complete replacement must preserve dimensions outside today's grid.
+	known := map[string]bool{}
+	for _, c := range cells {
+		known[priceCellKey(c)] = true
+	}
+	for _, p := range prices {
+		c := pricingCell{Mode: p.Mode, Resolution: p.Resolution, InputVideo: p.InputVideo, ServiceTier: p.ServiceTier, Draft: p.Draft}
+		if !known[priceCellKey(c)] {
+			cells = append(cells, c)
+			known[priceCellKey(c)] = true
+		}
+	}
 	for i := range cells {
 		c := &cells[i]
 		c.Available = priceCellSupported(*c, cap)
@@ -159,6 +172,22 @@ func validatePricingRequest(tx *gorm.DB, model string, in pricingRequest, now ti
 	if e != nil {
 		return cfg, nil, nil, e
 	}
+	current, e := currentPricingRules(tx, cfg)
+	if e != nil {
+		return cfg, nil, nil, e
+	}
+	if e = requireCompletePricingMatrix(in.Cells, current); e != nil {
+		return cfg, nil, nil, e
+	}
+	if in.SourceSet != nil {
+		if e = validatePricingBinding(tx, cfg); e != nil {
+			return cfg, nil, nil, e
+		}
+		expected, evidence, e := resolvePricingSources(tx, cfg, in.Cells, current)
+		if e != nil || !samePricingSources(*in.SourceSet, expected) || in.EvidenceHash != evidence {
+			return cfg, nil, nil, videobilling.ErrConflict
+		}
+	}
 	hash, he := hex.DecodeString(in.EvidenceHash)
 	if cfg.Version != in.ExpectedConfigVersion || !priceVersion.MatchString(in.ConfigVersion) || !priceVersion.MatchString(in.PricingVersion) || in.ConfigVersion == cfg.Version || in.PricingVersion == cfg.PricingVersion || he != nil || len(hash) != 32 || len(in.Cells) < 1 || len(in.Cells) > 100 {
 		return cfg, nil, nil, videobilling.ErrConflict
@@ -168,6 +197,11 @@ func validatePricingRequest(tx *gorm.DB, model string, in pricingRequest, now ti
 		return cfg, nil, nil, e
 	}
 	rules := []videobilling.PricingRule{}
+	currentKeys := map[string]bool{}
+	for _, p := range current {
+		currentKeys[priceCellKey(cellFromRule(p))] = true
+	}
+	activeCount := 0
 	preview := []gin.H{}
 	seen := map[string]bool{}
 	for i, c := range in.Cells {
@@ -177,8 +211,20 @@ func validatePricingRequest(tx *gorm.DB, model string, in pricingRequest, now ti
 		}
 		seen[key] = true
 		if !c.Enabled {
+			// Retain configured, explicitly disabled rows in the new version so
+			// subsequent edits cannot silently erase their dimensions or values.
+			if currentKeys[key] || c.RetailUSDPer1M != "" {
+				retail, re := parsePrice(c.RetailUSDPer1M)
+				supplier, se := parsePrice(c.SupplierCNYPer1M)
+				risk, ke := parsePrice(c.RiskMultiplier)
+				if re != nil || se != nil || ke != nil {
+					return cfg, nil, nil, videobilling.ErrInvalid
+				}
+				rules = append(rules, videobilling.PricingRule{RuleID: fmt.Sprintf("%s-%d", in.PricingVersion, i), Version: in.PricingVersion, PricingKey: videobilling.PricingKey{ProviderScopeID: cfg.ProviderScopeID, Model: model, Mode: c.Mode, Resolution: c.Resolution, InputVideo: c.InputVideo, ServiceTier: c.ServiceTier, Draft: c.Draft}, RetailUSDPer1M: retail, SupplierCNYPer1M: supplier, RiskMultiplier: risk, MinimumRuleVersion: c.MinimumRuleVersion, FormulaVersion: "ark-video-token-v1", SourceHash: in.EvidenceHash, EffectiveFrom: now, Enabled: false})
+			}
 			continue
 		}
+		activeCount++
 		if !priceCellSupported(c, cap) {
 			return cfg, nil, nil, videobilling.ErrPricingUnavailable
 		}
@@ -226,7 +272,7 @@ func validatePricingRequest(tx *gorm.DB, model string, in pricingRequest, now ti
 		preview = append(preview, gin.H{"key": key, "maximum_hold_usd": first.HoldUSD.String(), "maximum_estimated_tokens": first.EstimatedTokens, "supplier_reserved_cny": first.SupplierReservedCNY.String(), "effective_ratio": "1", "minimum_rule_version": c.MinimumRuleVersion})
 		rules = append(rules, rule)
 	}
-	if len(rules) == 0 {
+	if activeCount == 0 {
 		return cfg, nil, nil, videobilling.ErrInvalid
 	}
 	return cfg, rules, preview, nil
@@ -234,6 +280,7 @@ func validatePricingRequest(tx *gorm.DB, model string, in pricingRequest, now ti
 func (s *Server) registerArkPricingConsole(su *gin.RouterGroup) {
 	base := "/video/models/:model/pricing"
 	su.GET(base, s.getArkPricingConsole)
+	su.POST(base+"/prepare", s.prepareArkPricingConsole)
 	su.POST(base+"/validate", s.validateArkPricingConsole)
 	su.POST(base+"/publications", s.publishArkPricingConsole)
 	su.GET(base+"/revisions", func(c *gin.Context) {
@@ -254,17 +301,54 @@ func (s *Server) getArkPricingConsole(c *gin.Context) {
 	if _, ok := s.videoAdminActor(c); !ok {
 		return
 	}
-	cfg, cap, scope, _, e := loadPricingContext(s.db, c.Param("model"), false)
+	tx := s.db.WithContext(c.Request.Context()).Begin()
+	if tx.Error != nil {
+		fail(c, 503, "pricing unavailable")
+		return
+	}
+	defer tx.Rollback()
+	cfg, cap, scope, _, e := loadPricingContext(tx, c.Param("model"), false)
 	if e != nil {
 		fail(c, 404, "verified model configuration unavailable")
 		return
 	}
-	prices := []videobilling.PricingRule{}
-	if e = s.db.Where("model = ? AND provider_scope_id = ? AND version = ?", cfg.PublicModel, cfg.ProviderScopeID, cfg.PricingVersion).Find(&prices).Error; e != nil {
+	prices, e := currentPricingRules(tx, cfg)
+	if e != nil {
 		fail(c, 503, "pricing unavailable")
 		return
 	}
-	c.JSON(200, gin.H{"model": cfg.PublicModel, "config_version": cfg.Version, "pricing_version": cfg.PricingVersion, "capability_version": cap.Version, "enabled": cfg.Enabled, "cells": priceMatrix(cap, prices), "fx_usd_per_cny": scope.FXUSDPerCNY, "fx_version": scope.FXVersion, "fx_observed_at": scope.FXObservedAt, "ratios": cap.Ratios, "min_duration": cap.MinDuration, "max_duration": cap.MaxDuration, "input_token_semantics": "not_projected_separately_completion_tokens_authoritative"})
+	cells := priceMatrix(cap, prices)
+	var minimumSets []videobilling.MinimumRuleSet
+	var minimumCells []videobilling.MinimumRuleCell
+	if e = tx.Where("model = ?", cfg.PublicModel).Find(&minimumSets).Error; e != nil {
+		fail(c, 503, "minimum evidence unavailable")
+		return
+	}
+	ids := []uint64{}
+	for _, m := range minimumSets {
+		ids = append(ids, m.ID)
+	}
+	if len(ids) > 0 {
+		if e = tx.Where("rule_set_id IN ?", ids).Find(&minimumCells).Error; e != nil {
+			fail(c, 503, "minimum evidence unavailable")
+			return
+		}
+	}
+	for i := range cells {
+		cell := &cells[i]
+		if cell.Available && cell.InputVideo {
+			rule := videobilling.PricingRule{PricingKey: videobilling.PricingKey{Model: cfg.PublicModel, Resolution: cell.Resolution, InputVideo: true}, MinimumRuleVersion: cell.MinimumRuleVersion}
+			if _, e := videobilling.CatalogMinimumTokens(rule, minimumSets, minimumCells, videobilling.MinimumContext{Ratios: cap.Ratios, MinDuration: cap.MinDuration, MaxDuration: cap.MaxDuration}, int64(cap.FPS)); e != nil {
+				cell.Available = false
+				cell.UnavailableReason = "verified_minimum_coverage_missing"
+			}
+		}
+	}
+	if e = tx.Commit().Error; e != nil {
+		fail(c, 503, "pricing unavailable")
+		return
+	}
+	c.JSON(200, gin.H{"model": cfg.PublicModel, "channel_id": cfg.ChannelID, "config_version": cfg.Version, "pricing_version": cfg.PricingVersion, "capability_version": cap.Version, "enabled": cfg.Enabled, "cells": cells, "fx_usd_per_cny": scope.FXUSDPerCNY, "fx_version": scope.FXVersion, "fx_observed_at": scope.FXObservedAt, "ratios": cap.Ratios, "min_duration": cap.MinDuration, "max_duration": cap.MaxDuration, "input_token_semantics": "not_projected_separately_completion_tokens_authoritative"})
 }
 func (s *Server) validateArkPricingConsole(c *gin.Context) {
 	if _, ok := s.videoAdminActor(c); !ok {
