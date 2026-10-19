@@ -139,15 +139,19 @@ func (s *Server) adminPricingCatalog(c *gin.Context) {
 	}
 	providers := []catalogProvider{}
 	seenProviders := map[string]bool{}
+	// Use the same registry as channel setup, including providers that do not
+	// have a channel yet. Only actual channels below contribute model rows.
+	for _, p := range relay.ListProviders() {
+		providers = append(providers, catalogProvider{p.Name, p.DisplayName})
+		seenProviders[p.Name] = true
+	}
 	channelRows := []catalogChannel{}
 	models := []catalogModel{}
 	for _, ch := range channels {
 		if !seenProviders[ch.Provider] {
-			display := ch.Provider
-			if p, ok := relay.ProfileFor(ch.Provider); ok {
-				display = p.DisplayName
-			}
-			providers = append(providers, catalogProvider{ch.Provider, display})
+			// Existing API-created custom providers remain selectable without
+			// rewriting their identity or adding them to channel setup's registry.
+			providers = append(providers, catalogProvider{ch.Provider, ch.Provider})
 			seenProviders[ch.Provider] = true
 		}
 		channelRows = append(channelRows, catalogChannel{ch.ID, ch.Name, ch.Provider, ch.Status})

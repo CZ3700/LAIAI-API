@@ -3,7 +3,8 @@ import en, { type Messages } from './en'
 export default {
   pricingx: {
     "title": "Định giá theo nhà cung cấp",
-    "intro": "Chọn nhà cung cấp và kênh đã kết nối, sau đó cấu hình phương thức tính phí thực tế cho mô hình.",
+    "intro": "Danh sách nhà cung cấp khớp với phần thiết lập kênh. Chọn nhà cung cấp và kênh để cấu hình giá cho các mô hình đã kết nối.",
+    "noChannels": "Nhà cung cấp này chưa có kênh. Hãy thêm kênh trong mục Kênh trước khi cấu hình giá mô hình.",
     "provider": "Nhà cung cấp",
     "chooseProvider": "Chọn nhà cung cấp",
     "channel": "Kênh",

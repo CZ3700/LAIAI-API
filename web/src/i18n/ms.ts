@@ -3,7 +3,8 @@ import en, { type Messages } from './en'
 export default {
   pricingx: {
     "title": "Harga mengikut penyedia",
-    "intro": "Pilih penyedia dan saluran yang disambungkan, kemudian tetapkan kaedah bil sebenar bagi model.",
+    "intro": "Senarai penyedia adalah sama dengan tetapan saluran. Pilih penyedia dan saluran untuk menetapkan harga model yang disambungkan.",
+    "noChannels": "Penyedia ini belum mempunyai saluran. Tambah saluran dalam bahagian Saluran sebelum menetapkan harga model.",
     "provider": "Penyedia",
     "chooseProvider": "Pilih penyedia",
     "channel": "Saluran",

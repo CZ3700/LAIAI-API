@@ -61,12 +61,13 @@ onBeforeUnmount(() => { ++generation; resetSelection() })
     <p v-if="error" role="alert" class="text-danger">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="loading" aria-live="polite">{{ t('common.loading') }}</p>
     <div class="selection-grid">
-      <label>{{ t('pricingx.provider') }}<select v-model="provider" :disabled="loading"><option value="">{{ t('pricingx.chooseProvider') }}</option><option v-for="p in catalog?.providers" :key="p.name" :value="p.name">{{ p.display_name }} · {{ p.name }}</option></select></label>
-      <label>{{ t('pricingx.channel') }}<select v-model="channel" :disabled="!provider || loading"><option value="">{{ t('pricingx.allChannels') }}</option><option v-for="ch in channels" :key="ch.id" :value="String(ch.id)">{{ channelLabel(ch.id) }}</option></select></label>
-      <label>{{ t('pricingx.search') }}<input v-model="query" type="search" :disabled="!provider || loading"></label>
-      <label class="model-selection">{{ t('pricingx.model') }}<select v-model="modelKey" :disabled="!provider || loading"><option value="">{{ t('pricingx.chooseModel') }}</option><option v-for="row in rows" :key="row.key" :value="row.key">{{ row.model }} · {{ channelLabel(row.channel_id) }} · {{ t(`pricingx.${row.pricing_kind}`) }}</option></select></label>
+      <label>{{ t('pricingx.provider') }}<select v-model="provider" :disabled="loading"><option value="">{{ t('pricingx.chooseProvider') }}</option><option v-for="p in catalog?.providers" :key="p.name" :value="p.name">{{ p.display_name }} ({{ p.name }})</option></select></label>
+      <label>{{ t('pricingx.channel') }}<select v-model="channel" :disabled="!channels.length || loading"><option value="">{{ t('pricingx.allChannels') }}</option><option v-for="ch in channels" :key="ch.id" :value="String(ch.id)">{{ channelLabel(ch.id) }}</option></select></label>
+      <label>{{ t('pricingx.search') }}<input v-model="query" type="search" :disabled="!channels.length || loading"></label>
+      <label class="model-selection">{{ t('pricingx.model') }}<select v-model="modelKey" :disabled="!rows.length || loading"><option value="">{{ t('pricingx.chooseModel') }}</option><option v-for="row in rows" :key="row.key" :value="row.key">{{ row.model }} · {{ channelLabel(row.channel_id) }} · {{ t(`pricingx.${row.pricing_kind}`) }}</option></select></label>
     </div>
-    <p v-if="provider && !loading && !rows.length">{{ t('pricingx.noModels') }}</p>
+    <p v-if="provider && !loading && !channels.length" role="status">{{ t('pricingx.noChannels') }}</p>
+    <p v-else-if="provider && !loading && !rows.length" role="status">{{ t('pricingx.noModels') }}</p>
     <template v-if="selected">
       <section class="model-summary"><div><small>{{ t('pricingx.publicModel') }}</small><strong>{{ selected.model }}</strong><small>{{ t('pricingx.upstreamModel') }} · {{ selected.upstream_model }}</small></div><span class="badge">{{ t(`pricingx.${selected.pricing_kind}`) }}</span><button class="btn-ghost" @click="detailsOpen = true">{{ t('pricingx.details') }}</button><button class="btn-ghost" @click="emit('edit-metadata', { model: selected.model, meta: selected.meta })">{{ t('pricingx.editMeta') }}</button></section>
       <template v-if="selected.pricing_kind === 'video' || selected.video_model">

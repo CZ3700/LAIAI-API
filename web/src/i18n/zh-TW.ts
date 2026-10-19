@@ -3,7 +3,8 @@ import type { Messages } from './en'
 export default {
   pricingx: {
     "title": "按廠商配置定價",
-    "intro": "先選擇已接入廠商和渠道，再為實際模型配置對應的計價方式。",
+    "intro": "廠商與渠道接入保持一致。選擇廠商和渠道，為已接入模型配置對應的計價方式。",
+    "noChannels": "此廠商尚未接入渠道。請先在「渠道」中新增，再配置模型定價。",
     "provider": "廠商",
     "chooseProvider": "請選擇廠商",
     "channel": "渠道",

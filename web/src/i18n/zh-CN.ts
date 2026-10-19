@@ -4,7 +4,8 @@ import type { Messages } from './en'
 export default {
   pricingx: {
     "title": "按厂商配置定价",
-    "intro": "先选择已接入厂商和渠道，再为真实模型配置对应的计价方式。",
+    "intro": "厂商与渠道接入保持一致。选择厂商和渠道，为已接入模型配置对应的计价方式。",
+    "noChannels": "该厂商尚未接入渠道。请先在「渠道」中添加，再配置模型定价。",
     "provider": "厂商",
     "chooseProvider": "请选择厂商",
     "channel": "渠道",

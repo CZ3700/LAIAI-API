@@ -3,7 +3,8 @@ import en, { type Messages } from './en'
 export default {
   pricingx: {
     "title": "Tarification par fournisseur",
-    "intro": "Choisissez un fournisseur et un canal connectés, puis configurez le mode de facturation du modèle.",
+    "intro": "La liste des fournisseurs est commune à la configuration des canaux. Choisissez un fournisseur et un canal pour définir les tarifs des modèles connectés.",
+    "noChannels": "Ce fournisseur n’a pas encore de canal. Ajoutez-en un dans Canaux avant de configurer les tarifs des modèles.",
     "provider": "Fournisseur",
     "chooseProvider": "Choisir un fournisseur",
     "channel": "Canal",

@@ -4,7 +4,8 @@
 const messages = {
   pricingx: {
     "title": "Pricing by provider",
-    "intro": "Choose an existing provider and channel, then configure the actual billing method for a connected model.",
+    "intro": "Providers match the channel setup list. Choose a provider and channel to configure pricing for connected models.",
+    "noChannels": "This provider has no channels yet. Add one in Channels before configuring model pricing.",
     "provider": "Provider",
     "chooseProvider": "Choose a provider",
     "channel": "Channel",

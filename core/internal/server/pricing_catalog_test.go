@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -184,6 +185,106 @@ func TestPricingCatalogPermissionsAliasesAndFullPriceProjection(t *testing.T) {
 	}
 	if writes != 0 {
 		t.Fatal("catalog mutated database")
+	}
+}
+
+func TestPricingCatalogProvidersAlignWithChannelSetupWithoutInventingModels(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("empty_channels=%t", empty), func(t *testing.T) {
+			f, db, tokens := pricingCatalogFixture(t)
+			if empty {
+				if e := db.Exec("DELETE FROM channels").Error; e != nil {
+					t.Fatal(e)
+				}
+			} else {
+				for _, ch := range []relay.Channel{
+					{ID: 105, Name: "custom active", Provider: "custom-provider", BaseURL: "https://custom.example/v1", Status: 1, Models: "custom-model"},
+					{ID: 106, Name: "custom disabled", Provider: "custom-provider", BaseURL: "https://custom.example/v1", Status: 0, Models: "custom-model"},
+				} {
+					if e := db.Create(&ch).Error; e != nil {
+						t.Fatal(e)
+					}
+				}
+			}
+			writes := 0
+			deny := func(tx *gorm.DB) { writes++; tx.AddError(assertCatalogWrite{}) }
+			for _, register := range []func() error{
+				func() error {
+					return db.Callback().Create().Before("gorm:create").Register("alignment:no_create", deny)
+				},
+				func() error {
+					return db.Callback().Update().Before("gorm:update").Register("alignment:no_update", deny)
+				},
+				func() error {
+					return db.Callback().Delete().Before("gorm:delete").Register("alignment:no_delete", deny)
+				},
+			} {
+				if e := register(); e != nil {
+					t.Fatal(e)
+				}
+			}
+			var setup struct {
+				Providers []catalogProvider `json:"providers"`
+			}
+			w := catalogGET(t, f, "/api/admin/providers", tokens[1], "", 200)
+			if e := json.Unmarshal(w.Body.Bytes(), &setup); e != nil {
+				t.Fatal(e)
+			}
+			var catalog struct {
+				Providers []catalogProvider `json:"providers"`
+				Channels  []catalogChannel  `json:"channels"`
+				Models    []catalogModel    `json:"models"`
+			}
+			w = catalogGET(t, f, "/api/admin/pricing-catalog", tokens[1], "", 200)
+			if e := json.Unmarshal(w.Body.Bytes(), &catalog); e != nil {
+				t.Fatal(e)
+			}
+			registered := []catalogProvider{}
+			customCount := 0
+			for i, p := range catalog.Providers {
+				if i > 0 && catalog.Providers[i-1].Name >= p.Name {
+					t.Fatal("provider names are not unique and sorted")
+				}
+				if p.Name == "custom-provider" {
+					customCount++
+					if p.DisplayName != p.Name {
+						t.Fatal("custom provider identity was rewritten")
+					}
+				} else {
+					registered = append(registered, p)
+				}
+			}
+			if len(setup.Providers) == 0 || !reflect.DeepEqual(registered, setup.Providers) {
+				t.Fatal("pricing providers differ from channel setup names, display names or order")
+			}
+			if empty {
+				if customCount != 0 || len(catalog.Channels) != 0 || len(catalog.Models) != 0 {
+					t.Fatal("empty channel catalog acquired a custom provider, channel or model")
+				}
+			} else {
+				if customCount != 1 {
+					t.Fatal("existing custom provider missing or duplicated")
+				}
+				customModels := map[uint64]bool{}
+				for _, m := range catalog.Models {
+					if m.Provider == "anthropic" {
+						t.Fatal("unconnected registered provider acquired a model")
+					}
+					if m.Provider == "custom-provider" {
+						if m.Model != "custom-model" || m.UpstreamModel != "custom-model" || m.GenericPrice != nil {
+							t.Fatal("custom model or price was changed")
+						}
+						customModels[m.ChannelID] = true
+					}
+				}
+				if !reflect.DeepEqual(customModels, map[uint64]bool{105: true, 106: true}) {
+					t.Fatal("custom models no longer belong to their actual channels")
+				}
+			}
+			if writes != 0 {
+				t.Fatal("provider alignment mutated database")
+			}
+		})
 	}
 }
 
