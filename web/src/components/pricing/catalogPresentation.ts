@@ -1,4 +1,4 @@
-import { genericPriceFields, type PricingCatalog, type PricingModel, type PricingStatus } from './types'
+import { genericPriceFields, isOfficialVideoModel, type PricingCatalog, type PricingModel, type PricingStatus } from './types'
 
 export type ModelTypeFilter = '' | 'text' | 'image' | 'video' | 'audio' | 'other'
 export const modelTypes: Exclude<ModelTypeFilter, ''>[] = ['text', 'image', 'video', 'audio', 'other']
@@ -34,6 +34,12 @@ export function officialPriceEvidence(row: PricingModel | null) {
   const evidence = row?.official_price_evidence
   return evidence?.status === 'verified' && evidence.unit === 'CNY/1M_tokens' && ['seedance-2.0-fast', 'seedance-2.0-mini'].includes(evidence.model) ? evidence : null
 }
+// A reference-only row has no executable model configuration. Evidence remains
+// visible after configuration without replacing its published USD price/editor.
+export function configuredOfficialVideo(row: PricingModel | null) {
+  return !!row && isOfficialVideoModel(row.video_model) && !!row.video_configuration && row.video_configuration.channel_id === row.channel_id && !row.unsupported_reason
+}
+export function evidenceOnlyVariant(row: PricingModel | null) { return !!officialPriceEvidence(row) && !configuredOfficialVideo(row) }
 export function displayRates(row: PricingModel) {
   if (row.pricing) return row.pricing.rates
   if (!row.generic_price || row.video_model || row.pricing_kind === 'video') return []

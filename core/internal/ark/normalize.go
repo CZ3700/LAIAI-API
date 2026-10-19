@@ -29,10 +29,13 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	unsupported := func(field string) (NormalizedRequest, error) {
 		return out, failure("unsupported_capability", "capability is not enabled and verified", field, 422)
 	}
-	if (in.Model != Model20 && in.Model != Model25) || cap.PublicModel != in.Model {
+	if !IsPublicModel(in.Model) || cap.PublicModel != in.Model {
 		return unsupported("model")
 	}
 	if !cap.Enabled || !cap.Verified || cap.Version == "" || !upstreamID.MatchString(cap.UpstreamModel) {
+		return unsupported("model")
+	}
+	if Is20Variant(in.Model) && !valid20VariantCapability(cap) {
 		return unsupported("model")
 	}
 	maxDuration := 15

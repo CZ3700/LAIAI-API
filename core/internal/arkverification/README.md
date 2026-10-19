@@ -1,4 +1,4 @@
-# Official standard-generation verification profile
+# Official generation verification profiles
 
 `Load` is a pure, immutable evidence package. The server applies it only through
 an explicit superadmin transaction with an expected configuration version. It
@@ -23,7 +23,8 @@ and Draft workflows until their input-derived dimensions can be bounded safely.
 For 2.5, reference-only capabilities explicitly send `omni_reference_task_type`
 as `reference` rather than allowing the upstream default `auto` to choose an
 unpublished editing mode. Standard 2.0 first/last frame uses enumerated ratios.
-Frames, flex, 1.x, Fast and Mini are not granted through a standard profile.
+Frames, flex and 1.x are not granted. Fast and Mini use independent variant
+profiles rather than receiving capabilities through a standard profile.
 
 Reviewed supplier rates (CNY / one million video tokens):
 
@@ -38,10 +39,34 @@ Reviewed supplier rates (CNY / one million video tokens):
 | 2.0 Mini | 480p / 720p | 23 | 14 |
 
 Fast and Mini each have four separately reviewed price conditions. `LoadTariff`
-checks their own captured rows and official pricing evidence; it does not grant
-standard-model capabilities or minimum usage rules. The admin catalog shows
-their verified CNY reference prices independently from adapter availability.
-These models remain blocked for commercial publication and public invocation.
+checks their own captured rows and official pricing evidence; it remains a
+tariff-only API. `Load` separately provides each variant's reviewed generation
+profile: 480p/720p, six explicit ratios, 4–15 seconds, 24fps and 144 minimum
+cells. The bounds use the official ratio-specific pixel pairs. Each profile has
+an independent minimum-rule version and evidence digest. Verification alone does
+not publish prices or enable a channel; local administrative publication and
+call/settlement acceptance are separate actions.
+
+The variant applicability chain reviewed on 2026-10-19 is:
+
+- `seedance-2-0.md` explicitly names standard, Fast and Mini as the 2.0 family
+  and lists the exact `fast-260128` and `mini-260615` deployment IDs. Original
+  bytes SHA-256: `1cc95eb91d8bb7f8a69965e0815ea6fff8cde90458e4d4e60d9c8b5c99e0c39e`.
+- `model-pricing.md` applies reference-video minimum usage to the 2.0 family.
+- The captured table `tblmNCuMjADrXtDf` is titled
+  `seedance-2.0系列最低token限制（仅针对含输入视频时）`. Only its 480p and
+  720p views are admitted for the variants. Their original hashes are pinned
+  independently of the price examples and preserve the 2026-10-17 capture time.
+- `get-video-generation-task-api.md` confirms that `completion_tokens` already
+  includes the provider's minimum usage, and separately reported input tokens
+  are zero. Original bytes SHA-256:
+  `f7e6e434bb9cd12ba79d39b0cb2c80fbef8b56780e6efd6d95e98c4e1b9aabe8`.
+
+The official pricing page currently gives the same `tblheIYDXXwYM43b` link for
+both the 2.0 and 2.5 minimum tables. That is the captured 2.5 table, so the link
+alone is not used as variant evidence. The reviewed 2.0 table identity, title,
+view IDs and original hashes are retained explicitly. No missing row is
+interpolated and no minimum is reverse-calculated from rounded money.
 
 Fast `doubao-seedance-2-0-fast-260128` and Mini
 `doubao-seedance-2-0-mini-260615` may additionally save a separate price plan in
@@ -57,9 +82,11 @@ requires the complete preview context digest and an idempotency key, revalidates
 the current context under locks, and commits an audit record in the same
 transaction. It does not write executable pricing rules, create model
 capabilities or change public model availability. The UI distinguishes a saved
-plan from a current preview when the context changes. Variant minimum usage is
-explicitly unverified: the captured 26-row examples do not establish a complete
-minimum table, and standard-model minimum versions must not be reused.
+plan from a current preview when the context changes. Historical price plans
+remain immutable documentary snapshots; their former unverified minimum status
+does not automatically change or activate a model. Publication uses the newly
+reviewed variant profile and its independent minimum-rule version. The captured
+26-row price examples still do not establish a complete minimum table.
 
 Administration uses `GET/POST /api/admin/video/models/:model/verification`.
 POST requires `expected_config_version` and `profile_version`. It atomically
@@ -94,4 +121,6 @@ Public sources:
 - https://console.volcengine.com/ark/region:cn-beijing/docs/model-pricing
 - https://console.volcengine.com/ark/region:cn-beijing/docs/model-list
 - https://ark.volcengine.com/region:cn-beijing/docs/create-video-generation-task-api.md
+- https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-0.md
+- https://ark.volcengine.com/region:cn-beijing/docs/get-video-generation-task-api.md
 - Exact minimum-table view links and capture hashes are in `arkpricecatalog`.

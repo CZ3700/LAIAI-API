@@ -54,7 +54,7 @@ export default {
     "reasonMissing": "Mô hình này chưa có cấu hình video chính thức đã xác minh.",
     "reasonMismatch": "Cấu hình chính thức được gắn với một kênh khác.",
     "reasonAmbiguous": "Có nhiều ánh xạ chính thức phù hợp; cần kiểm tra liên kết.",
-    "reasonVariant": "Bộ điều hợp mô hình chuẩn hiện tại chưa kích hoạt Fast/Mini.",
+    "reasonVariant": "Cổng chính thức không hỗ trợ biến thể hoặc phiên bản thượng nguồn này.",
     "reasonExcluded": "Seedance 1.x không thuộc phạm vi cấu hình lần này.",
     "taskUnits": "Tác vụ cũ tính phí theo đơn giá đầu ra hoặc giá mỗi lượt gọi đã cấu hình. Ma trận giá Seedance chính thức không áp dụng.",
     "videoScope": "Giá video chính thức theo kênh đã liên kết, phạm vi tài khoản nhà cung cấp và phiên bản giá. Chọn kênh khác không thay đổi liên kết này."

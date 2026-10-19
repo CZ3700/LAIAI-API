@@ -1,6 +1,12 @@
 export const genericPriceFields = ['input_usd_per_1m', 'output_usd_per_1m', 'cached_input_usd_per_1m', 'image_usd', 'per_call_usd', 'tts_usd_per_1k_chars', 'transcription_usd_per_call', 'audio_input_usd_per_1m', 'audio_output_usd_per_1m'] as const
 export type PriceField = typeof genericPriceFields[number]
 export type GenericPrice = { model: string } & Record<PriceField, string>
+export const officialVideoModels = ['seedance-2.0', 'seedance-2.0-fast', 'seedance-2.0-mini', 'seedance-2.5'] as const
+export function isOfficialVideoModel(model: string | null | undefined): boolean { return officialVideoModels.some(value => value === model) }
+export function officialVideoSeries(model: string): string[] {
+  const series: Record<string, string> = { 'seedance-2.0': '2.0', 'seedance-2.0-fast': '2.0fast', 'seedance-2.0-mini': '2.0mini', 'seedance-2.5': '2.5' }
+  return series[model] ? [series[model]] : []
+}
 export type PricingKind = 'token' | 'image' | 'per_call' | 'audio' | 'mixed' | 'video' | 'generic_video' | 'unknown'
 export type PricingStatus = 'published' | 'partial' | 'missing' | 'blocked' | 'disabled'
 export interface PricingDescriptor {
@@ -27,7 +33,7 @@ export interface VariantPriceProposal {
 }
 export interface VariantPricePlan {
   channel_id: number; model: string; upstream_model: string; canonical_model: string; context_sha256: string
-  adapter_status: 'not_integrated'; invocable: false; proposal: VariantPriceProposal
+  adapter_status: 'supported_configuration_required'; invocable: false; proposal: VariantPriceProposal
   saved: null | { id: number; version: string; created_at: string; created_by: number; proposal: VariantPriceProposal }
   saved_matches_proposal: boolean
 }
@@ -68,7 +74,7 @@ export function cellKey(cell: Pick<PriceCell, 'mode' | 'resolution' | 'input_vid
 }
 export function fillMissingOfficialCosts(cells: PriceCell[], candidates: ReferenceCandidates): number {
   let count = 0
-  if (!['seedance-2.0', 'seedance-2.5'].includes(candidates.model)) return count
+  if (!isOfficialVideoModel(candidates.model)) return count
   for (const cell of cells) {
     if (cell.supplier_cny_per_1m?.trim() || cell.mode !== 'generate' || cell.service_tier !== 'default' || cell.draft) continue
     const matches = candidates.prices.filter(c => cellKey(c) === cellKey(cell) && c.unit === 'CNY/1M_tokens' && c.precision === 'exact')

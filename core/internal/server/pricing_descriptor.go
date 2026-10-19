@@ -213,7 +213,7 @@ func loadVideoPricingProjection(tx *gorm.DB, configs []video.ModelConfig, channe
 		d.Endpoints = []string{"/v1/video/generations"}
 		projection := videoPricingProjection{Config: cfg, Pricing: d}
 		out[cfg.PublicModel] = projection
-		if cfg.PublicModel != ark.Model20 && cfg.PublicModel != ark.Model25 {
+		if !ark.IsPublicModel(cfg.PublicModel) {
 			continue
 		}
 		if !cfg.Enabled {

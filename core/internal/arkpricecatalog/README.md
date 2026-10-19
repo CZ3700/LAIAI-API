@@ -99,18 +99,27 @@ unit validation makes the endpoint unavailable rather than returning a partial
 successful catalog. No deployment changes an existing retail price, task snapshot,
 quota, capability or minimum rule.
 
-`ReferenceCandidates` additionally projects the verified embedded evidence for
-standard `seedance-2.0` and `seedance-2.5` only. Its administrative GET endpoint
+`ReferenceCandidates` additionally projects the captured evidence for
+`seedance-2.0`, `seedance-2.5`, `seedance-2.0-fast` and `seedance-2.0-mini`.
+Its administrative GET endpoint
 is `/api/admin/video/models/:model/pricing/reference-candidates`, with the same
 individual active superadmin requirement. It exposes 8 and 6 standard
-generate/default/non-Draft cost cells respectively; Fast/Mini and all 1.x remain
-excluded. Each cost cell has exact CNY/1M_tokens semantics and points to every
+generate/default/non-Draft cost cells respectively; Fast and Mini each have four
+independent cost cells from their own captured view. All 1.x remain excluded.
+Each cost cell has exact CNY/1M_tokens semantics and points to every
 contributing original source row. Conflicting values fail closed.
 
 Minimum candidates expand only literal paired aspect ratios and deduplicate
 equal primary dimensions/values, retaining every original row reference. The
 2.0 result has 288 cells from 192 rows and unknown FPS (`null`); the 2.5 result
 has 486 cells from 339 rows, including 15 duplicate rows whose evidence survives.
+Each Fast/Mini result has 144 cells from the family's 480p and 720p views (96
+original rows). This scope is verified separately by `arkverification`: the
+official 2.0 tutorial names Fast and Mini as members of the 2.0 family, the
+pricing document applies the minimum restriction to that family, and the actual
+minimum table is explicitly titled as a 2.0 family table. No value is inferred
+from the variant's 26-row price examples. Each variant receives its own profile
+and minimum-rule version rather than inheriting a published standard identity.
 The primary source FPS field is distinct from linked `帧率(1)`. Candidates retain
 `estimated`, `hold_estimation_only`, and `requires_operator_verification`; they
 are not a verified minimum-rule import or a settlement floor. No FPS, verified

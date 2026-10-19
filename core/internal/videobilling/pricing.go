@@ -4,6 +4,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -26,6 +27,9 @@ func requireTx(tx *gorm.DB) error {
 }
 
 func validRule(r PricingRule) bool {
+	if ark.Is20Variant(r.Model) && (r.Mode != "generate" || !oneOf(r.Resolution, "480p", "720p") || r.ServiceTier != "default" || r.Draft) {
+		return false
+	}
 	return validID(r.RuleID) && validID(r.Version) && r.ProviderScopeID > 0 &&
 		validID(r.Model) && r.Mode != "" && r.Resolution != "" && r.ServiceTier != "" &&
 		r.RetailUSDPer1M.IsPositive() && validRate(r.RetailUSDPer1M) &&
@@ -37,6 +41,9 @@ func validRule(r PricingRule) bool {
 // Quote uses rational frame rates and decimal arithmetic; no artificial token
 // cap. Bounds that cannot be safely represented are rejected, never truncated.
 func Quote(rule PricingRule, in MeteringInput) (QuoteResult, error) {
+	if ark.Is20Variant(rule.Model) && (in.OutputFrames != 0 || in.OutputDurationMS < 4000 || in.OutputDurationMS > 15000 || in.OutputDurationMS%1000 != 0 || in.InputDurationMS > 15000 || in.FPSNumerator != 24 || in.FPSDenominator != 1) {
+		return QuoteResult{}, ErrInvalid
+	}
 	if !validRule(rule) || !in.BoundsVerified || !validID(in.CapabilityVersion) ||
 		in.InputVideo != rule.InputVideo || in.InputDurationMS < 0 ||
 		(!in.InputVideo && in.InputDurationMS != 0) || (in.InputVideo && in.InputDurationMS <= 0) ||

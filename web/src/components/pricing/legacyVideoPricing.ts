@@ -1,8 +1,7 @@
 import type { LocationQuery, LocationQueryRaw } from 'vue-router'
-import type { PricingModel } from './types'
+import { isOfficialVideoModel, type PricingModel } from './types'
 
 type LegacyModel = Pick<PricingModel, 'key' | 'model' | 'video_model' | 'channel_id' | 'video_configuration'>
-const standardModels = new Set(['seedance-2.0', 'seedance-2.5'])
 
 // A legacy link names a public video model, not a catalog row. Resolve it from
 // authorized catalog data before constructing a new deep link; never invent IDs.
@@ -11,7 +10,7 @@ export function legacyVideoPricingTarget(query: LocationQuery, models: LegacyMod
   const rawChannel = query.channel_id
   const requestedChannel = typeof rawChannel === 'string' && /^[1-9][0-9]*$/.test(rawChannel) && Number.isSafeInteger(Number(rawChannel)) ? Number(rawChannel) : null
   const hasChannel = rawChannel !== undefined
-  const candidates = models.filter(row => standardModels.has(row.video_model ?? '')
+  const candidates = models.filter(row => isOfficialVideoModel(row.video_model)
     && (row.video_model === wanted || row.model === wanted)
     && (!hasChannel || row.channel_id === requestedChannel))
   const bound = candidates.filter(row => row.video_configuration?.channel_id === row.channel_id)

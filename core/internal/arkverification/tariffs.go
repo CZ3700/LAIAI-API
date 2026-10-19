@@ -46,8 +46,8 @@ func reviewedVariant(model string) (reviewedVariantTariff, bool) {
 }
 
 // LoadTariff verifies the reviewed variant's own 26-row capture. It deliberately
-// does not call Load or ReferenceCandidates, whose minimum/capability profiles
-// belong only to the standard models.
+// does not call Load or ReferenceCandidates. Tariff-only consumers do not acquire
+// the separately reviewed family minimum/capability profile through this API.
 func LoadTariff(model string) (Tariff, error) {
 	if _, ok := reviewedVariant(model); !ok {
 		return Tariff{}, arkpricecatalog.ErrUnsupportedModel

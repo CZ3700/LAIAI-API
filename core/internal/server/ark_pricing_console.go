@@ -102,6 +102,9 @@ func priceMatrix(cap ark.Capability, prices []videobilling.PricingRule) []pricin
 	if cap.PublicModel == ark.Model25 {
 		resolutions = []string{"480p", "720p", "1080p"}
 	}
+	if ark.Is20Variant(cap.PublicModel) {
+		resolutions = []string{"480p", "720p"}
+	}
 	cells := []pricingCell{}
 	for _, res := range resolutions {
 		for _, input := range []bool{false, true} {

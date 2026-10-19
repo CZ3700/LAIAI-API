@@ -518,7 +518,11 @@
             "if": {
               "properties": {
                 "model": {
-                  "const": "seedance-2.0"
+                  "enum": [
+                    "seedance-2.0",
+                    "seedance-2.0-fast",
+                    "seedance-2.0-mini"
+                  ]
                 }
               }
             },
@@ -535,6 +539,57 @@
                       "output_format"
                     ]
                   }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "model": {
+                  "enum": [
+                    "seedance-2.0-fast",
+                    "seedance-2.0-mini"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "resolution": {
+                  "enum": [
+                    "480p",
+                    "720p"
+                  ]
+                },
+                "duration": {
+                  "oneOf": [
+                    {
+                      "const": -1
+                    },
+                    {
+                      "minimum": 4,
+                      "maximum": 15
+                    }
+                  ]
+                },
+                "draft": {
+                  "const": false
+                },
+                "ratio": {
+                  "enum": [
+                    "16:9",
+                    "4:3",
+                    "1:1",
+                    "3:4",
+                    "9:16",
+                    "21:9"
+                  ]
+                }
+              },
+              "not": {
+                "required": [
+                  "frames"
                 ]
               }
             }
@@ -624,7 +679,7 @@
             "type": "boolean"
           },
           "duration": {
-            "description": "秒。此 schema 上界不表示每个模型均支持 30 秒；按模型能力验证，2.0 与 2.5 分开。",
+            "description": "Seconds: 2.0, Fast and Mini allow 4-15; 2.5 allows 4-30. Automatic duration requires the published capability.",
             "oneOf": [
               {
                 "const": -1
@@ -1222,10 +1277,12 @@
         "type": "string"
       },
       "PublicModel": {
-        "description": "平台公开别名；是否可用以 models 返回 enabled 与 verified 为准。",
+        "description": "Platform aliases. Fast maps to doubao-seedance-2-0-fast-260128; Mini maps to doubao-seedance-2-0-mini-260615. Availability requires an enabled and verified configuration returned by /v1/video/models.",
         "enum": [
           "seedance-2.0",
-          "seedance-2.5"
+          "seedance-2.5",
+          "seedance-2.0-fast",
+          "seedance-2.0-mini"
         ],
         "type": "string"
       },
@@ -3798,5 +3855,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "e0295e9d001efdecd0217eddc758723b04526b97de88112d38d52ac1878ca0d2"
+  "x-seedance-source-sha256": "c3e4f1361f086f412a0a011aa358c556e84a7ac83acf1ab6106acd94aeb50361"
 }

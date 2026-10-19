@@ -13,7 +13,7 @@ const data = ref<VariantPricePlan | null>(null), loading = ref(false), busy = re
 const error = ref(''), notice = ref(''), requiresReload = ref(false), retryPending = ref(false)
 const idempotencyKey = ref(''), requestSnapshot = ref<{ expected_context_sha256: string } | null>(null)
 const evidence = computed(() => officialPriceEvidence(props.row))
-const allowed = computed(() => auth.isSuperadmin && !!auth.token && !!evidence.value && Number.isSafeInteger(props.row.channel_id) && props.row.channel_id > 0)
+const allowed = computed(() => auth.isSuperadmin && !!auth.token && !!evidence.value && !props.row.video_configuration && props.row.unsupported_reason === 'official_video_configuration_missing' && Number.isSafeInteger(props.row.channel_id) && props.row.channel_id > 0)
 const endpoint = computed(() => `/api/admin/video/variant-price-plans/${props.row.channel_id}/${encodeURIComponent(props.row.model)}`)
 const canSave = computed(() => allowed.value && !!data.value && !!requestSnapshot.value && !data.value.saved_matches_proposal && !loading.value && !busy.value && !requiresReload.value)
 const statusKey = computed(() => data.value?.saved_matches_proposal ? 'variantPlanSavedState' : data.value?.saved ? 'variantPlanUpdatePending' : 'variantPlanUnsaved')
@@ -24,7 +24,7 @@ function previousPrice(price: Price) { return data.value?.saved?.proposal.prices
 function minimumLabel(price: Price) { return t(price.input_video ? 'pricingAdmin.variantPlanMinimumUnverified' : 'pricingAdmin.variantPlanMinimumNotApplicable') }
 function matchesContext(value: VariantPricePlan) {
   return value.channel_id === props.row.channel_id && value.model === props.row.model && value.upstream_model === props.row.upstream_model
-    && value.canonical_model === evidence.value?.model && value.adapter_status === 'not_integrated' && value.invocable === false
+    && value.canonical_model === evidence.value?.model && value.adapter_status === 'supported_configuration_required' && value.invocable === false
     && /^[a-f0-9]{64}$/i.test(value.context_sha256) && validProposal(value.proposal) && (!value.saved || validProposal(value.saved.proposal))
 }
 function validProposal(value: VariantPriceProposal) {
@@ -72,7 +72,7 @@ function sourceURL(value: string) {
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.href : undefined } catch { return undefined }
 }
 watch(busy, value => emit('busy-change', value), { flush: 'sync' })
-watch(() => [props.row.key, props.row.channel_id, props.row.model, props.row.upstream_model, evidence.value?.model, props.contextKey, auth.orgId, auth.token, auth.role, auth.isSuperadmin], () => { reset(); if (active) void load() }, { flush: 'sync' })
+watch(() => [props.row.key, props.row.channel_id, props.row.model, props.row.upstream_model, props.row.video_model, props.row.video_configuration, props.row.unsupported_reason, evidence.value?.model, props.contextKey, auth.orgId, auth.token, auth.role, auth.isSuperadmin], () => { reset(); if (active) void load() }, { flush: 'sync' })
 onMounted(load)
 onActivated(() => { active = true; if (!data.value && !loading.value) void load() })
 onDeactivated(() => { active = false; reset() })

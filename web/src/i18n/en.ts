@@ -55,7 +55,7 @@ const messages = {
     "reasonMissing": "No verified official video configuration exists for this model.",
     "reasonMismatch": "The official configuration is bound to a different channel.",
     "reasonAmbiguous": "Multiple official mappings match; the binding needs review.",
-    "reasonVariant": "Fast/Mini is not enabled by the current standard-model adapter.",
+    "reasonVariant": "This variant or upstream version is not supported by the official gateway.",
     "reasonExcluded": "Seedance 1.x is excluded from this configuration scope.",
     "taskUnits": "Legacy task billing uses the configured output-unit rate or per-call price. The official Seedance matrix does not apply.",
     "videoScope": "Official video prices follow the bound channel, provider account scope and price version. Selecting another channel does not change this binding."

@@ -42,12 +42,6 @@ func TestVerifiedVariantTariffsRemainDocumentaryOnly(t *testing.T) {
 					t.Fatal("commercial or standard capability data included", forbidden)
 				}
 			}
-			if _, e := Load(tc.model); e == nil {
-				t.Fatal("variant capability was opened")
-			}
-			if _, e := arkpricecatalog.ReferenceCandidates(tc.model); e == nil {
-				t.Fatal("variant entered standard pricing publication candidates")
-			}
 			got.Prices[0].SupplierCNYPer1M = "999"
 			got.Sources[0].SHA256 = "changed"
 			again, e := LoadTariff(tc.model)

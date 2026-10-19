@@ -54,7 +54,7 @@ export default {
     "reasonMissing": "Ce modèle n’a aucune configuration vidéo officielle vérifiée.",
     "reasonMismatch": "La configuration officielle est liée à un autre canal.",
     "reasonAmbiguous": "Plusieurs correspondances officielles existent ; vérifiez la liaison.",
-    "reasonVariant": "L’adaptateur standard actuel n’active pas Fast/Mini.",
+    "reasonVariant": "Cette variante ou version amont n’est pas prise en charge par la passerelle officielle.",
     "reasonExcluded": "Seedance 1.x est exclu de ce périmètre de configuration.",
     "taskUnits": "Les anciennes tâches utilisent le prix configuré des unités de sortie ou par appel. La matrice officielle Seedance ne s’applique pas.",
     "videoScope": "Les prix vidéo officiels suivent le canal lié, le périmètre du compte fournisseur et la version tarifaire. Choisir un autre canal ne change pas cette liaison."

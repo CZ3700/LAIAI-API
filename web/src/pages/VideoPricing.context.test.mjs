@@ -140,6 +140,76 @@ test('loading preserves every price, cost, flag and rule; references never edit 
   assert.equal(writes(h).length, 0, 'unchanged configurations never produce a publication request')
 })
 
+for (const [model, series, referenceCost] of [['seedance-2.0-fast','2.0fast','22.12345678'], ['seedance-2.0-mini','2.0mini','11.87654321']]) {
+  test(`${model} uses its own rules, reference costs and explicit normal pricing publication`, async t => {
+    const h = await harness(t, {selectedModel: model, selectedChannelId: 10}), fallback = h.defaultGet
+    let verified = false
+    h.defaultGet = call => {
+      const data = fallback(call)
+      if (call.path.endsWith('/pricing')) data.cells = ['480p','720p'].flatMap((resolution, i) => [false,true].map(input_video => ({...pricing(1, model).cells[0], resolution, input_video, retail_usd_per_1m: !i && !input_video ? '10.00000000' : '', supplier_cny_per_1m: !i && !input_video ? '40' : '', risk_multiplier: !i && !input_video ? '4' : '', minimum_rule_version: '', enabled: false})))
+      if (call.path.endsWith('/reference-candidates')) data.prices = ['480p','720p'].flatMap(resolution => [false,true].map(input_video => ({...reference(1, model).prices[0], key: `generate/${resolution}/${input_video}/default/false`, resolution, input_video, supplier_cny_per_1m: referenceCost})))
+      if (call.path.endsWith('/verification')) Object.assign(data, {verified, profile_version: `${model}-official-v1`, minimum_version: `${model}-minimum-v1`, minimum_cell_count: 144})
+      if (call.path.endsWith('/minimum-rules')) data.items = verified ? [{id: 8, version: `${model}-minimum-v1`}] : []
+      return data
+    }
+    await h.vm.load()
+    assert.equal(h.vm.supported.value, true)
+    assert.equal(h.vm.canEdit.value, true)
+    assert.deepEqual([...h.vm.referenceSeries.value], [series])
+    assert.equal(h.vm.primaryCells.value.length, 4)
+    assert.deepEqual([...h.vm.resolutions.value], ['480p','720p'])
+    assert.equal(h.vm.verification.value.minimum_cell_count, 144)
+    assert.equal(h.vm.dirty.value, false)
+    assert.equal(writes(h).length, 0)
+    assert.ok(h.calls.every(call => call.path.startsWith(`/api/admin/video/models/${model}/`)))
+    h.vm.verificationOpen.value = true
+    h.respond = call => {
+      assert.equal(call.path, `/api/admin/video/models/${model}/verification`)
+      assert.equal(call.body.profile_version, `${model}-official-v1`)
+      verified = true
+      return {}
+    }
+    await h.vm.syncVerification()
+    assert.equal(h.vm.verification.value.verified, true)
+    assert.equal(h.vm.minimums.value[0].version, `${model}-minimum-v1`)
+    assert.equal(writes(h).length, 1, 'rule synchronization does not publish prices')
+    const [existing, fresh] = h.vm.pricing.value.cells
+    h.vm.selectCell('generate/480p/false/default/false', true)
+    h.vm.selectCell('generate/480p/true/default/false', true)
+    fresh.retail_usd_per_1m = '9.123456789012'
+    h.vm.previewOfficialAdoption(); h.vm.applyOfficialAdoption()
+    assert.equal(existing.supplier_cny_per_1m, '40', 'published cost is preserved')
+    assert.equal(existing.retail_usd_per_1m, '10.00000000')
+    assert.equal(fresh.supplier_cny_per_1m, referenceCost)
+    assert.equal(fresh.minimum_rule_version, `${model}-minimum-v1`)
+    assert.equal(fresh.retail_usd_per_1m, '9.123456789012', 'CNY must never replace USD')
+    assert.equal(fresh.enabled, false)
+    h.respond = () => ({preview: []})
+    await h.vm.validate(); await h.vm.publish()
+    const published = writes(h).find(call => call.path.endsWith('/publications'))
+    assert.equal(published.path, `/api/admin/video/models/${model}/pricing/publications`)
+    assert.ok(published.body.cells.every(cell => !cell.enabled && ['480p','720p'].includes(cell.resolution)))
+    assert.equal(published.body.cells.find(cell => cell.input_video).minimum_rule_version, `${model}-minimum-v1`)
+  })
+}
+
+test('late Fast pricing and verification cannot replace Mini drafts or source selection', async t => {
+  const h = await harness(t, {selectedModel: 'seedance-2.0-fast'}), late = deferred(), fallback = h.defaultGet
+  h.defaultGet = call => call.path.includes('/seedance-2.0-fast/') ? late.promise : fallback(call)
+  const pending = h.vm.load()
+  h.props.selectedModel = 'seedance-2.0-mini'
+  await until(() => !h.vm.loading.value && h.vm.pricing.value?.model === 'seedance-2.0-mini')
+  changePrice(h, '27')
+  late.resolve(reference(1, 'seedance-2.0-fast'))
+  await pending
+  assert.equal(h.vm.pricing.value.model, 'seedance-2.0-mini')
+  assert.equal(h.vm.pricing.value.cells[0].retail_usd_per_1m, '27')
+  assert.equal(h.vm.candidates.value.model, 'seedance-2.0-mini')
+  assert.equal(h.vm.verification.value.model, 'seedance-2.0-mini')
+  assert.deepEqual([...h.vm.referenceSeries.value], ['2.0mini'])
+  assert.equal(writes(h).length, 0)
+})
+
 test('one visible edit preserves the complete hidden matrix and forwards prepared evidence unchanged', async t => {
   const h = await harness(t), fallback = h.defaultGet
   h.defaultGet = call => {
@@ -332,7 +402,7 @@ test('channel and variant restrictions prevent all writes', async t => {
   assert.equal(h.vm.bindingMatches.value, false)
   await h.vm.validate(); await h.vm.publish(); await h.vm.importMinimum()
   assert.equal(writes(h).length, 0)
-  for (const model of ['seedance-1.5', 'seedance-2.0-fast', 'seedance-2.0-mini']) {
+  for (const model of ['seedance-1.5', 'seedance-2.0-fast-260999', 'seedance-2.0-mini-unknown']) {
     h.props.selectedModel = model
     await vue.nextTick()
     assert.equal(h.vm.supported.value, false)
@@ -440,6 +510,11 @@ test('legacy video links resolve canonical models to the actual bound catalog ro
   assert.equal(chosen.query.trace, 'keep')
   const explicit = legacyVideoPricingTarget({model: 'seedance-2.0', channel_id: '11'}, legacyRows)
   assert.equal(explicit.query.pricing_model, '11:alias-2', 'an explicit known channel must not be silently replaced by a different binding')
+  for (const [model, upstream] of [['seedance-2.0-fast','doubao-seedance-2-0-fast-260128'], ['seedance-2.0-mini','doubao-seedance-2-0-mini-260615']]) {
+    const target = legacyVideoPricingTarget({model, channel_id: '10'}, [{key: `10:${upstream}`, model: upstream, video_model: model, channel_id: 10, video_configuration: {channel_id: 10}}])
+    assert.equal(target.query.pricing_model, `10:${upstream}`)
+    assert.equal(target.query.pricing_legacy, undefined)
+  }
 })
 
 test('legacy missing, unsupported, invalid-channel and ambiguous links keep search without opening any price editor', () => {

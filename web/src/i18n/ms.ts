@@ -54,7 +54,7 @@ export default {
     "reasonMissing": "Model ini tiada konfigurasi video rasmi yang disahkan.",
     "reasonMismatch": "Konfigurasi rasmi terikat pada saluran lain.",
     "reasonAmbiguous": "Terdapat beberapa pemetaan rasmi; ikatan perlu disemak.",
-    "reasonVariant": "Penyesuai model standard semasa tidak mengaktifkan Fast/Mini.",
+    "reasonVariant": "Varian atau versi huluan ini tidak disokong oleh gerbang rasmi.",
     "reasonExcluded": "Seedance 1.x dikecualikan daripada skop konfigurasi ini.",
     "taskUnits": "Tugas legasi menggunakan kadar unit output atau harga setiap panggilan yang dikonfigurasi. Matriks rasmi Seedance tidak digunakan.",
     "videoScope": "Harga video rasmi mengikut saluran terikat, skop akaun penyedia dan versi harga. Memilih saluran lain tidak mengubah ikatan ini."

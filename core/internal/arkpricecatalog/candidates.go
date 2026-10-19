@@ -76,7 +76,7 @@ type Candidates struct {
 // ReferenceCandidates never imports minimum rules or writes a price. Missing
 // evidence (including FPS) stays missing; estimated floors are not actual usage.
 func ReferenceCandidates(model string) (Candidates, error) {
-	if model != "seedance-2.0" && model != "seedance-2.5" {
+	if _, ok := candidateIdentity(model); !ok {
 		return Candidates{}, ErrUnsupportedModel
 	}
 	c, err := Load()
@@ -86,21 +86,48 @@ func ReferenceCandidates(model string) (Candidates, error) {
 	return referenceCandidates(c, model)
 }
 
+type candidateModelIdentity struct {
+	priceTable, minimumTable, priceView, series string
+	variant                                     bool
+}
+
+// The variant minimum source is the explicitly documented 2.0 family table,
+// not a standard-model profile or the 26-row price examples. The verification
+// package independently binds the official family definition and deployment ID.
+func candidateIdentity(model string) (candidateModelIdentity, bool) {
+	switch model {
+	case "seedance-2.0":
+		return candidateModelIdentity{"seedance-2.0-prices", "seedance-2.0-minimum", "vew7f33fzS", "2.0", false}, true
+	case "seedance-2.5":
+		return candidateModelIdentity{"seedance-2.5-prices", "seedance-2.5-minimum", "", "2.5", false}, true
+	case "seedance-2.0-fast":
+		return candidateModelIdentity{"seedance-2.0-prices", "seedance-2.0-minimum", "vewAf9cSae", "2.0fast", true}, true
+	case "seedance-2.0-mini":
+		return candidateModelIdentity{"seedance-2.0-prices", "seedance-2.0-minimum", "vewFrH7ax8", "2.0mini", true}, true
+	default:
+		return candidateModelIdentity{}, false
+	}
+}
+
 func referenceCandidates(c Catalog, model string) (Candidates, error) {
-	if model != "seedance-2.0" && model != "seedance-2.5" {
+	identity, ok := candidateIdentity(model)
+	if !ok {
 		return Candidates{}, ErrUnsupportedModel
 	}
 	out := Candidates{Model: model, CatalogVersion: c.Version, ManifestSHA256: c.ManifestSHA256, Usage: "reference_candidates_only", Prices: []ReferencePrice{}, Sources: []CandidateSource{}, Minimum: ReferenceMinimum{Precision: "estimated", Purpose: "hold_estimation_only", Status: "requires_operator_verification", Cells: []ReferenceMinimumCell{}, Issues: []string{"estimated_reference_requires_verification"}}}
 	prices := map[string]int{}
 	minimums := map[string]int{}
 	resolutions := map[string]bool{"480p": true, "720p": true, "1080p": true}
+	if identity.variant {
+		delete(resolutions, "1080p")
+	}
 	if model == "seedance-2.0" {
 		resolutions["4k"] = true
 	}
 	missingFPS := false
 	for _, t := range c.Tables {
-		isPrice := t.ID == model+"-prices"
-		if !isPrice && t.ID != model+"-minimum" {
+		isPrice := t.ID == identity.priceTable
+		if !isPrice && t.ID != identity.minimumTable {
 			continue
 		}
 		if t.Status != "captured" {
@@ -114,9 +141,11 @@ func referenceCandidates(c Catalog, model string) (Candidates, error) {
 			captures = []Capture{{ViewID: *t.ViewID, SourceURL: t.SourceURL, CapturedAt: *t.CapturedAt, RawSHA256: t.RawSHA256, FirstRow: 1, ExpectedRows: len(t.RawRows), Headers: t.Headers, Columns: t.Columns}}
 		}
 		for _, capture := range captures {
-			// The standard 2.0 capture is an explicit manifest identity, not a
-			// name-prefix match that could substitute Fast/Mini prices.
-			if isPrice && model == "seedance-2.0" && capture.ViewID != "vew7f33fzS" {
+			// Exact view identities prevent substituting another variant's rate.
+			if isPrice && identity.priceView != "" && capture.ViewID != identity.priceView {
+				continue
+			}
+			if !isPrice && identity.variant && capture.ViewID != "vew2CR2JYM" && capture.ViewID != "vewVBehIlq" {
 				continue
 			}
 			start, end := capture.FirstRow-1, capture.FirstRow-1+capture.ExpectedRows
@@ -162,7 +191,7 @@ func referenceCandidates(c Catalog, model string) (Candidates, error) {
 					return Candidates{}, fmt.Errorf("catalog: invalid resolution")
 				}
 				if isPrice {
-					if get(row, "series") != strings.TrimPrefix(model, "seedance-") {
+					if get(row, "series") != identity.series {
 						return Candidates{}, fmt.Errorf("catalog: candidate series mismatch")
 					}
 					idx, ok := cols["supplier_token_price"]

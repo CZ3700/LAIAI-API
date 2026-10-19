@@ -3,6 +3,7 @@ package arkpricecatalog
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ func TestReferenceCandidatesPricesMinimumAndProvenance(t *testing.T) {
 		prices, minimums, sourceRows int
 	}{
 		{"seedance-2.0", 8, 288, 244}, {"seedance-2.5", 6, 486, 387},
+		{"seedance-2.0-fast", 4, 144, 122}, {"seedance-2.0-mini", 4, 144, 122},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
 			c, e := ReferenceCandidates(tc.model)
@@ -70,6 +72,18 @@ func TestReferenceCandidatesPricesMinimumAndProvenance(t *testing.T) {
 						}
 					}
 				}
+				if tc.model == "seedance-2.0-fast" {
+					want = "37"
+					if p.InputVideo {
+						want = "22"
+					}
+				}
+				if tc.model == "seedance-2.0-mini" {
+					want = "23"
+					if p.InputVideo {
+						want = "14"
+					}
+				}
 				if p.SupplierCNYPer1M != want {
 					t.Fatalf("%s: %s != %s", p.Key, p.SupplierCNYPer1M, want)
 				}
@@ -85,7 +99,7 @@ func TestReferenceCandidatesPricesMinimumAndProvenance(t *testing.T) {
 				if cell.MinimumTokens <= 0 || cell.OutputDurationMS%1000 != 0 {
 					t.Fatal("invalid minimum")
 				}
-				if tc.model == "seedance-2.0" && cell.FPS != nil {
+				if tc.model != "seedance-2.5" && cell.FPS != nil {
 					t.Fatal("invented missing FPS")
 				}
 				if tc.model == "seedance-2.5" && (cell.FPS == nil || *cell.FPS != 24) {
@@ -104,7 +118,7 @@ func TestReferenceCandidatesPricesMinimumAndProvenance(t *testing.T) {
 			if tc.model == "seedance-2.5" && dups != 15 {
 				t.Fatalf("duplicate evidence not retained: %d", dups)
 			}
-			if tc.model == "seedance-2.0" && !reflect.DeepEqual(c.Minimum.Issues, []string{"estimated_reference_requires_verification", "fps_not_in_source"}) {
+			if tc.model != "seedance-2.5" && !reflect.DeepEqual(c.Minimum.Issues, []string{"estimated_reference_requires_verification", "fps_not_in_source"}) {
 				t.Fatal(c.Minimum.Issues)
 			}
 			c2, e := ReferenceCandidates(tc.model)
@@ -126,7 +140,7 @@ func TestReferenceCandidatesPricesMinimumAndProvenance(t *testing.T) {
 }
 
 func TestReferenceCandidatesRejectUnsupportedAndConflictingEvidence(t *testing.T) {
-	for _, model := range []string{"seedance-1.0", "seedance-1.5", "seedance-2.0-fast", "seedance-2.0-mini", "doubao-seedance-2-0-260128", "unknown"} {
+	for _, model := range []string{"seedance-1.0", "seedance-1.5", "seedance-2.5-fast", "seedance-2.5-mini", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-0-260128", "unknown"} {
 		if _, e := ReferenceCandidates(model); !errors.Is(e, ErrUnsupportedModel) {
 			t.Fatalf("accepted %s", model)
 		}
@@ -160,5 +174,43 @@ func TestReferenceCandidatesRejectUnsupportedAndConflictingEvidence(t *testing.T
 				t.Fatal(e)
 			}
 		})
+	}
+}
+
+func TestVariantCandidatesBindOwnPricesAndFamilyMinimumViews(t *testing.T) {
+	for model, view := range map[string]string{"seedance-2.0-fast": "vewAf9cSae", "seedance-2.0-mini": "vewFrH7ax8"} {
+		c, err := ReferenceCandidates(model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(c.Sources) != 3 {
+			t.Fatal("variant did not retain exactly its own tariff and two minimum views")
+		}
+		for _, price := range c.Prices {
+			for _, ref := range price.SourceRows {
+				if ref.SourceID != "tblns3WjGMNbR8sL/"+view {
+					t.Fatal("another model's tariff substituted")
+				}
+			}
+		}
+		seen := map[string]bool{}
+		for _, cell := range c.Minimum.Cells {
+			if cell.FPS != nil || cell.OutputDurationMS < 4000 || cell.OutputDurationMS > 15000 {
+				t.Fatal("unproven minimum dimension")
+			}
+			wantView := "vew2CR2JYM"
+			if cell.Resolution == "720p" {
+				wantView = "vewVBehIlq"
+			} else if cell.Resolution != "480p" {
+				t.Fatal("unsupported variant resolution")
+			}
+			if len(cell.SourceRows) != 1 || cell.SourceRows[0].SourceID != "tblmNCuMjADrXtDf/"+wantView {
+				t.Fatal("minimum inferred from price examples or wrong table")
+			}
+			seen[fmt.Sprintf("%s/%s/%d", cell.Resolution, cell.Ratio, cell.OutputDurationMS)] = true
+		}
+		if len(seen) != 144 {
+			t.Fatal("incomplete variant minimum domain")
+		}
 	}
 }

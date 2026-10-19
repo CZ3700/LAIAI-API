@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/ark"
+	"github.com/laiai/laiai-next/core/internal/arkverification"
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/video"
@@ -196,7 +197,7 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 		fail(c, 422, "invalid evidence digest")
 		return
 	}
-	if cfg.PublicModel != ark.Model20 && cfg.PublicModel != ark.Model25 {
+	if !ark.IsPublicModel(cfg.PublicModel) {
 		fail(c, 422, "unsupported public model")
 		return
 	}
@@ -423,7 +424,7 @@ func (s *Server) publishVideoQuota(c *gin.Context) {
 		fail(c, 422, "invalid quota metric")
 		return
 	}
-	if p.Scope == videobilling.ScopeOrgModel && !videoContains([]string{ark.Model20, ark.Model25}, p.Model) || p.Scope != videobilling.ScopeOrgModel && p.Model != "" {
+	if p.Scope == videobilling.ScopeOrgModel && !ark.IsPublicModel(p.Model) || p.Scope != videobilling.ScopeOrgModel && p.Model != "" {
 		fail(c, 422, "invalid quota model")
 		return
 	}
@@ -459,17 +460,27 @@ func (s *Server) publishVideoQuota(c *gin.Context) {
 }
 func validateVideoCapability(cfg video.ModelConfig, cap ark.Capability, bounds map[string]video.Dimensions) error {
 	maxDuration := 15
-	prefix := "doubao-seedance-2-0-"
 	if cfg.PublicModel == ark.Model25 {
 		maxDuration = 30
-		prefix = "doubao-seedance-2-5-"
 	}
-	if cfg.PricingVersion == "" || len(cfg.Version) > 64 || len(cap.Version) > 64 || !strings.HasPrefix(cap.UpstreamModel, prefix) || len(cap.UpstreamModel) != len(prefix)+6 || cap.MinDuration < 4 || cap.MaxDuration > maxDuration || cap.MaxDuration < cap.MinDuration || cap.FPS <= 0 || cap.FPS > 120 || !videoContains(cap.Resolutions, cap.DefaultResolution) || !videoContains(cap.Ratios, cap.DefaultRatio) || cfg.MaxInputVideoDurationMS < 0 {
+	if cfg.PricingVersion == "" || len(cfg.Version) > 64 || len(cap.Version) > 64 || !ark.ValidUpstreamModel(cfg.PublicModel, cap.UpstreamModel) || cap.MinDuration < 4 || cap.MaxDuration > maxDuration || cap.MaxDuration < cap.MinDuration || cap.FPS <= 0 || cap.FPS > 120 || !videoContains(cap.Resolutions, cap.DefaultResolution) || !videoContains(cap.Ratios, cap.DefaultRatio) || cfg.MaxInputVideoDurationMS < 0 {
 		return video.ErrInvalid
 	}
-	for _, c := range strings.TrimPrefix(cap.UpstreamModel, prefix) {
-		if c < '0' || c > '9' {
+	if ark.Is20Variant(cfg.PublicModel) {
+		profile, err := arkverification.Load(cfg.PublicModel)
+		if err != nil || cfg.MaxInputVideoDurationMS > profile.MaxInputVideoDurationMS || cap.VideoInput && cfg.MaxInputVideoDurationMS != profile.MaxInputVideoDurationMS {
 			return video.ErrInvalid
+		}
+		// Raw reference URLs are metered at the official aggregate duration
+		// bound. A smaller administrative value must not under-reserve them.
+		for _, resolution := range cap.Resolutions {
+			for _, ratio := range cap.Ratios {
+				d, ok := profile.Bounds[resolution+"/"+ratio]
+				got, exists := bounds[resolution+"/"+ratio]
+				if !ok || !exists || got.Width != d.Width || got.Height != d.Height {
+					return video.ErrInvalid
+				}
+			}
 		}
 	}
 	for _, resolution := range cap.Resolutions {

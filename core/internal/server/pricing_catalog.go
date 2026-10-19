@@ -113,6 +113,12 @@ func seedanceIdentity(model string) (canonical, reason string) {
 	if seedanceLegacyID.MatchString(model) {
 		return "", "seedance_1x_excluded"
 	}
+	if model == ark.Model20Fast || model == "doubao-seedance-2-0-fast-260128" {
+		return ark.Model20Fast, ""
+	}
+	if model == ark.Model20Mini || model == "doubao-seedance-2-0-mini-260615" {
+		return ark.Model20Mini, ""
+	}
 	if seedanceVariantID.MatchString(model) {
 		return "", "seedance_variant_not_supported"
 	}
@@ -280,7 +286,7 @@ func classifyCatalogModel(row *catalogModel, ch relay.Channel, p relay.ModelPric
 	var caps []ark.Capability
 	matchingOtherChannel := false
 	for _, cfg := range configs {
-		if cfg.PublicModel != ark.Model20 && cfg.PublicModel != ark.Model25 {
+		if !ark.IsPublicModel(cfg.PublicModel) {
 			continue
 		}
 		var cap ark.Capability

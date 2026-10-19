@@ -129,6 +129,7 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	var st State
 	claimed := false
 	var validationErr error
+	validationCode := "asset_validation_failed"
 	now := s.Now().UTC()
 	attemptID, err := randomID("att_")
 	if err != nil {
@@ -144,6 +145,15 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 			return nil
 		}
 		validationErr = s.ValidateTaskAssetsTx(tx, t.OrgID, t.TaskID)
+		if validationErr == nil {
+			budgetErr := videobilling.ValidateDispatchBudgetTx(tx, t.OrgID, t.TaskID)
+			if budgetErr != nil && !errors.Is(budgetErr, videobilling.ErrQuotaExceeded) {
+				return budgetErr
+			}
+			if budgetErr != nil {
+				validationErr, validationCode = budgetErr, "quota_blocked"
+			}
+		}
 		if validationErr == nil {
 			allowed, e := s.rateTx(tx, st.ProviderScopeID, "create", now)
 			if e != nil || !allowed {
@@ -173,7 +183,7 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 		return err
 	}
 	if validationErr != nil {
-		return s.knownUnsent(ctx, t, st, op, "asset_validation_failed")
+		return s.knownUnsent(ctx, t, st, op, validationCode)
 	}
 	body, err := s.Evidence.ReadForExecution(ctx, t.OrgID, op.PayloadRef, invocation.VideoAccess{ActorRole: invocation.VideoRoleWorker, ActorID: "video-dispatch", ReasonCode: "dispatch", OperationID: op.ID})
 	if err != nil {

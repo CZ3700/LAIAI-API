@@ -6,6 +6,8 @@ import "net/http"
 
 const (
 	Model20                       = "seedance-2.0"
+	Model20Fast                   = "seedance-2.0-fast"
+	Model20Mini                   = "seedance-2.0-mini"
 	Model25                       = "seedance-2.5"
 	DefaultMaxRequestBytes  int64 = 10 << 20
 	DefaultMaxResponseBytes int64 = 1 << 20

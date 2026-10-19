@@ -54,7 +54,7 @@ export default {
     "reasonMissing": "模型尚無已核驗的官方影片配置。",
     "reasonMismatch": "官方配置綁定了其他渠道。",
     "reasonAmbiguous": "官方模型映射存在歧義，需要核對綁定。",
-    "reasonVariant": "目前標準版適配器未啟用 Fast/Mini。",
+    "reasonVariant": "此變體或上游版本未列入目前官方閘道白名單。",
     "reasonExcluded": "Seedance 1.x 不在本次配置範圍內。",
     "taskUnits": "舊任務適配器按已配置的輸出計量單價或按次價格計費，不適用官方 Seedance 價格矩陣。",
     "videoScope": "官方影片價格按已綁定渠道、供應商帳戶作用域和價格版本生效；選擇其他渠道不會改變綁定。"

@@ -43,6 +43,21 @@ func TestVideoAdminRejectsAmbiguousJSON(t *testing.T) {
 // Exercises administrative publication and the same public routing function
 // used by main. Every provider request is forbidden by an injected transport.
 func TestMySQLArkConfigurationPublicationAndPublicRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		model, upstream string
+		maxDuration     int
+	}{
+		{ark.Model25, "doubao-seedance-2-5-260628", 30},
+		{ark.Model20Fast, "doubao-seedance-2-0-fast-260128", 15},
+		{ark.Model20Mini, "doubao-seedance-2-0-mini-260615", 15},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			testMySQLArkConfigurationPublicationAndPublicRoutes(t, tc.model, tc.upstream, tc.maxDuration)
+		})
+	}
+}
+
+func testMySQLArkConfigurationPublicationAndPublicRoutes(t *testing.T, model, upstream string, maxDuration int) {
 	f := arkBillMySQLFixture(t, "running")
 	svc, e := video.NewService(f.db, f.s.keyring, []byte(strings.Repeat("h", 32)), nil)
 	arkBillMust(t, e)
@@ -76,16 +91,16 @@ func TestMySQLArkConfigurationPublicationAndPublicRoutes(t *testing.T) {
 	}
 	cipher, e := f.s.keyring.Encrypt("test-official-never-sent")
 	arkBillMust(t, e)
-	ch := relay.Channel{Name: "Config test", Provider: "volcengine", BaseURL: "https://ark.cn-beijing.volces.com/api/v3", CredentialEnc: cipher, Models: ark.Model25, Status: 1, Weight: 1, MaxConcurrentTasks: 20}
+	ch := relay.Channel{Name: "Config test", Provider: "volcengine", BaseURL: "https://ark.cn-beijing.volces.com/api/v3", CredentialEnc: cipher, Models: model, Status: 1, Weight: 1, MaxConcurrentTasks: 20}
 	arkBillMust(t, f.db.Create(&ch).Error)
-	cap := ark.Capability{PublicModel: ark.Model25, UpstreamModel: "doubao-seedance-2-5-260628", Version: "config-cap-v1", Enabled: true, Verified: true, Resolutions: []string{"720p"}, Ratios: []string{"16:9"}, MinDuration: 4, MaxDuration: 30, DefaultDuration: 5, DefaultResolution: "720p", DefaultRatio: "16:9", DefaultSeed: -1, DefaultExecutionExpiresAfter: 172800, MinExecutionExpiresAfter: 3600, MaxExecutionExpiresAfter: 259200, FPS: 24, MaxContentItems: 4}
+	cap := ark.Capability{PublicModel: model, UpstreamModel: upstream, Version: "config-cap-v1", Enabled: true, Verified: true, Resolutions: []string{"720p"}, Ratios: []string{"16:9"}, MinDuration: 4, MaxDuration: maxDuration, DefaultDuration: 5, DefaultResolution: "720p", DefaultRatio: "16:9", DefaultSeed: -1, DefaultExecutionExpiresAfter: 172800, MinExecutionExpiresAfter: 3600, MaxExecutionExpiresAfter: 259200, FPS: 24, MaxContentItems: 4}
 	capJSON, _ := json.Marshal(cap)
 	var scope video.ProviderScope
 	arkBillMust(t, f.db.First(&scope, f.scope).Error)
 	scope.FXUSDPerCNY = "0.14"
 	version := f.uid + "-1"
 	limit := decimal.NewFromInt(1000)
-	in := videoPublication{Configuration: video.ModelConfig{PublicModel: ark.Model25, Version: version, ChannelID: ch.ID, Enabled: true, CapabilityJSON: string(capJSON), PricingVersion: version, BoundsJSON: `{"720p/16:9":{"width":1280,"height":720}}`, NoChargeStatuses: "failed,cancelled"}, Scope: scope, EvidenceHash: strings.Repeat("a", 64), Prices: []videobilling.PricingRule{{RuleID: version, Version: version, PricingKey: videobilling.PricingKey{Model: ark.Model25, Mode: "generate", Resolution: "720p", ServiceTier: "default"}, RetailUSDPer1M: decimal.NewFromInt(8), SupplierCNYPer1M: decimal.NewFromInt(46), RiskMultiplier: decimal.NewFromInt(1), FormulaVersion: "test-formula", EffectiveFrom: f.now.Add(-time.Hour)}}, SupplierBudgets: []videobilling.QuotaPolicy{{Scope: videobilling.ScopeProvider, Metric: videobilling.MetricCNY, Period: videobilling.PeriodDay, Timezone: "UTC", LimitAmount: &limit, Version: version}, {Scope: videobilling.ScopeProvider, Metric: videobilling.MetricCNY, Period: videobilling.PeriodMonth, Timezone: "UTC", LimitAmount: &limit, Version: version}}}
+	in := videoPublication{Configuration: video.ModelConfig{PublicModel: model, Version: version, ChannelID: ch.ID, Enabled: true, CapabilityJSON: string(capJSON), PricingVersion: version, BoundsJSON: `{"720p/16:9":{"width":1280,"height":720}}`, NoChargeStatuses: "failed,cancelled"}, Scope: scope, EvidenceHash: strings.Repeat("a", 64), Prices: []videobilling.PricingRule{{RuleID: version, Version: version, PricingKey: videobilling.PricingKey{Model: model, Mode: "generate", Resolution: "720p", ServiceTier: "default"}, RetailUSDPer1M: decimal.NewFromInt(8), SupplierCNYPer1M: decimal.NewFromInt(46), RiskMultiplier: decimal.NewFromInt(1), FormulaVersion: "test-formula", EffectiveFrom: f.now.Add(-time.Hour)}}, SupplierBudgets: []videobilling.QuotaPolicy{{Scope: videobilling.ScopeProvider, Metric: videobilling.MetricCNY, Period: videobilling.PeriodDay, Timezone: "UTC", LimitAmount: &limit, Version: version}, {Scope: videobilling.ScopeProvider, Metric: videobilling.MetricCNY, Period: videobilling.PeriodMonth, Timezone: "UTC", LimitAmount: &limit, Version: version}}}
 	call("POST", "/api/admin/video/configurations", f.tokens[0], in, 201)
 	originalVersion := in.Configuration.PricingVersion
 	// New configuration identity may not silently reuse a changed price version.
@@ -93,7 +108,7 @@ func TestMySQLArkConfigurationPublicationAndPublicRoutes(t *testing.T) {
 	in.Prices[0].RetailUSDPer1M = decimal.NewFromInt(9)
 	call("POST", "/api/admin/video/configurations", f.tokens[0], in, 422)
 	var active int64
-	arkBillMust(t, f.db.Model(&videobilling.PricingRule{}).Where("provider_scope_id=? AND model=? AND enabled=?", scope.ID, ark.Model25, true).Count(&active).Error)
+	arkBillMust(t, f.db.Model(&videobilling.PricingRule{}).Where("provider_scope_id=? AND model=? AND enabled=?", scope.ID, model, true).Count(&active).Error)
 	if active != 1 {
 		t.Fatal("failed publication changed prices")
 	}
@@ -110,7 +125,7 @@ func TestMySQLArkConfigurationPublicationAndPublicRoutes(t *testing.T) {
 		in.SupplierBudgets[i].Version = f.uid + "-2"
 	}
 	call("POST", "/api/admin/video/configurations", f.tokens[0], in, 201)
-	arkBillMust(t, f.db.Model(&videobilling.PricingRule{}).Where("provider_scope_id=? AND model=? AND enabled=?", scope.ID, ark.Model25, true).Count(&active).Error)
+	arkBillMust(t, f.db.Model(&videobilling.PricingRule{}).Where("provider_scope_id=? AND model=? AND enabled=?", scope.ID, model, true).Count(&active).Error)
 	if active != 1 {
 		t.Fatal("publication left overlapping active prices")
 	}
@@ -121,7 +136,7 @@ func TestMySQLArkConfigurationPublicationAndPublicRoutes(t *testing.T) {
 		plain, _, e = identity.IssueKey(tx, identity.IssueKeyInput{OrgID: f.org, Name: "public-config", Scopes: "video:*"})
 		return e
 	}))
-	request := gin.H{"model": ark.Model25, "content": []gin.H{{"type": "text", "text": "a test landscape"}}, "expected_pricing_version": originalVersion}
+	request := gin.H{"model": model, "content": []gin.H{{"type": "text", "text": "a test landscape"}}, "expected_pricing_version": originalVersion}
 	call("POST", "/v1/video/generations", plain, request, 409)
 	request["expected_pricing_version"] = in.Configuration.PricingVersion
 	created := call("POST", "/v1/video/generations", plain, request, 202)

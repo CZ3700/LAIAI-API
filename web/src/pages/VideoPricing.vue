@@ -6,7 +6,7 @@ import OfficialVideoPriceCatalog from '@/components/OfficialVideoPriceCatalog.vu
 import DetailDrawer from '@/components/DetailDrawer.vue'
 import SimpleVideoPriceCell from '@/components/pricing/SimpleVideoPriceCell.vue'
 import { useAuth } from '@/stores/auth'
-import { cellKey, type PriceCell as Cell, type ReferenceCandidates, type SourceRow } from '@/components/pricing/types'
+import { cellKey, isOfficialVideoModel, officialVideoModels, officialVideoSeries, type PriceCell as Cell, type ReferenceCandidates, type SourceRow } from '@/components/pricing/types'
 import { exactRate, adjustRate } from '@/components/pricing/videoPriceDecimal'
 import messages from '@/i18n/pricingRedesignVideo'
 const props = defineProps<{ selectedModel?: string; selectedChannelId?: number; embedded?: boolean; contextKey?: string }>()
@@ -36,7 +36,8 @@ const adoptionOpen = ref(false), adoptionRisk = ref(''), adoptionError = ref('')
 const prepared = ref<Prepared | null>(null), validatedBody = ref(''), validatedDraft = ref(''), previewOpen = ref(false), publishKey = ref(uuid())
 const base = computed(() => `/api/admin/video/models/${encodeURIComponent(model.value)}/pricing`)
 const verificationBase = computed(() => `/api/admin/video/models/${encodeURIComponent(model.value)}/verification`)
-const supported = computed(() => ['seedance-2.0', 'seedance-2.5'].includes(model.value))
+const supported = computed(() => isOfficialVideoModel(model.value))
+const referenceSeries = computed(() => officialVideoSeries(model.value))
 const bindingMatches = computed(() => !props.selectedChannelId || (pricing.value?.channel_id ?? candidates.value?.config?.channel_id) === props.selectedChannelId)
 const canEdit = computed(() => !!pricing.value && bindingMatches.value && auth.isSuperadmin && supported.value)
 const body = computed(() => ({ expected_config_version: pricing.value?.config_version ?? '', channel_id: props.selectedChannelId ?? pricing.value?.channel_id ?? candidates.value?.config?.channel_id ?? 0, cells: pricing.value?.cells ?? [] }))
@@ -60,7 +61,7 @@ const otherPublished = computed(() => otherCells.value.filter(c => c.enabled || 
 const otherPending = computed(() => otherCells.value.filter(c => !otherPublished.value.includes(c)))
 const resolutions = computed(() => [...new Set(primaryCells.value.map(c => c.resolution))])
 const missingSourceFPS = computed(() => !!candidates.value?.minimum.cells.some(cell => cell.fps === null || cell.fps === undefined))
-const sourceFPSNotice = computed(() => missingSourceFPS.value ? t(verification.value?.verified && model.value === 'seedance-2.0' ? 'fpsVerifiedRule' : 'fpsWarning') : '')
+const sourceFPSNotice = computed(() => missingSourceFPS.value ? t(verification.value?.verified && model.value !== 'seedance-2.5' ? 'fpsVerifiedRule' : 'fpsWarning') : '')
 const currentRisk = computed(() => {
   const values = [...new Set((initialPricing.value?.cells ?? []).filter(cell => cell.retail_usd_per_1m || cell.supplier_cny_per_1m).map(cell => { try { return exactRisk(cell.risk_multiplier) } catch { return '' } }).filter(Boolean))]
   return values.length === 1 ? values[0]! : ''
@@ -281,7 +282,7 @@ defineExpose({ hasUnsavedChanges: () => dirty.value, discardChanges })
 
 <template>
   <section class="video-pricing-page" :class="{ embedded }">
-    <header class="page-heading"><div><h1>{{ model }}</h1><p>{{ t('unit') }}</p></div><span class="state" :class="{ dirty }">{{ dirty ? t('dirty') : t('clean') }}</span><label v-if="!embedded">{{ t('title') }} <select v-model="model" :disabled="busy || loading || dirty"><option>seedance-2.0</option><option>seedance-2.5</option></select></label></header>
+    <header class="page-heading"><div><h1>{{ model }}</h1><p>{{ t('unit') }}</p></div><span class="state" :class="{ dirty }">{{ dirty ? t('dirty') : t('clean') }}</span><label v-if="!embedded">{{ t('title') }} <select v-model="model" :disabled="busy || loading || dirty"><option v-for="name in officialVideoModels" :key="name" :value="name">{{ name }}</option></select></label></header>
     <p v-if="!auth.isSuperadmin" class="message">{{ t('unauthorized') }}</p><p v-else-if="!supported" class="message">{{ t('unsupported') }}</p>
     <p v-if="error" class="message error" role="alert">{{ error }}</p><p v-if="notice" class="message success" role="status">{{ notice }}</p>
     <section v-if="verification && !loading && bindingMatches" class="panel verification-summary"><div><strong>{{ verification.verified ? t('verificationSynced') : t('verificationAvailable') }}</strong><p>{{ t('verificationSummary') }}</p></div><button :disabled="busy" @click="verificationOpen = true">{{ t('verificationPreview') }}</button></section>
@@ -309,7 +310,7 @@ defineExpose({ hasUnsavedChanges: () => dirty.value, discardChanges })
       <div v-else-if="tab === 'reference'" class="tab-body" :id="`${tabsId}-panel`" role="tabpanel" :aria-labelledby="`${tabsId}-${tab}`">
         <p>{{ t('referenceHelp') }}</p><p v-if="referenceError" class="message" role="status">{{ referenceError }}</p>
         <section v-if="candidates" class="panel"><h2>{{ t('reference') }} · {{ candidates.catalog_version }}</h2><div class="table-scroll"><table><thead><tr><th>{{ t('resolution') }}</th><th>{{ t('key') }}</th><th>{{ t('official') }}</th><th>{{ t('referenceStatus') }}</th><th>{{ t('capabilityStatus') }}</th><th>{{ t('sources') }}</th></tr></thead><tbody><tr v-for="cell in candidates.prices" :key="cell.key"><td>{{ cell.resolution }}</td><td>{{ cell.input_video ? t('withVideo') : t('noVideo') }}</td><td>{{ cell.supplier_cny_per_1m }}</td><td>{{ referenceCost(cell) !== undefined ? (verification?.verified ? t('verified') : t('referenceCollected')) : t('referenceIncomplete') }}</td><td>{{ capabilityReadyCell(cell) ? t('capabilityReady') : t('unavailable') }}</td><td><button @click="selectedEvidence = cell.source_rows">{{ t('details') }}</button></td></tr></tbody></table></div><p v-if="sourceFPSNotice">{{ sourceFPSNotice }}</p><button @click="showMinimum = true">{{ t('minimumReference') }} · {{ candidates.minimum.cells.length }}</button></section>
-        <details class="panel"><summary>{{ t('reference') }} · {{ t('details') }}</summary><OfficialVideoPriceCatalog :allowed-series="[model === 'seedance-2.5' ? '2.5' : '2.0']" /></details>
+        <details class="panel"><summary>{{ t('reference') }} · {{ t('details') }}</summary><OfficialVideoPriceCatalog :allowed-series="referenceSeries" /></details>
         <section class="panel"><h2>{{ t('minimum') }}</h2><ul v-if="minimums.length"><li v-for="m in minimums" :key="m.id"><strong>{{ m.version }}</strong> · <a :href="m.source_url" target="_blank" rel="noopener noreferrer">{{ t('original') }}</a> · #{{ m.verified_by }} · {{ m.verified_at }}</li></ul><p v-else>{{ t('noMinimum') }}</p><details><summary>{{ t('importTitle') }}</summary><p>{{ t('importHelp') }}</p><textarea v-model="minimumJSON" :disabled="!canEdit || busy" rows="8" :aria-label="t('importTitle')" spellcheck="false"></textarea><button :disabled="!canEdit || busy || !minimumJSON.trim()" @click="importMinimum">{{ t('importAction') }}</button></details></section>
       </div>
       <div v-else class="tab-body" :id="`${tabsId}-panel`" role="tabpanel" :aria-labelledby="`${tabsId}-${tab}`"><p v-if="!revisions.length">{{ t('historyEmpty') }}</p><button v-for="r in revisions" :key="r.id" class="revision" @click="selectedRevision = r"><strong>{{ r.version }}</strong><span>{{ t('author') }} #{{ r.created_by }} · {{ r.created_at }}</span><span>{{ t('details') }} →</span></button></div>

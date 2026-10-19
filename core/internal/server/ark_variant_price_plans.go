@@ -117,13 +117,13 @@ func variantPlanReplay(row variantPricePlan) (variantPricePlanView, error) {
 	if e != nil {
 		return variantPricePlanView{}, e
 	}
-	return variantPricePlanView{ChannelID: row.ChannelID, Model: row.Model, UpstreamModel: row.UpstreamModel, CanonicalModel: row.CanonicalModel, ContextSHA256: variantPlanContextHash(row.ContextJSON, row.ID), AdapterStatus: "not_integrated", Proposal: saved.Proposal, Saved: saved, SavedMatchesProposal: true}, nil
+	return variantPricePlanView{ChannelID: row.ChannelID, Model: row.Model, UpstreamModel: row.UpstreamModel, CanonicalModel: row.CanonicalModel, ContextSHA256: variantPlanContextHash(row.ContextJSON, row.ID), AdapterStatus: "supported_configuration_required", Proposal: saved.Proposal, Saved: saved, SavedMatchesProposal: true}, nil
 }
 
 // Config -> channel -> scope matches the configuration publication lock order.
 // No channel credential column is read, copied into context, or returned.
 func loadVariantPricePlan(tx *gorm.DB, channelID uint64, model string, now time.Time, lock bool) (variantPricePlanView, string, uint64, error) {
-	out := variantPricePlanView{ChannelID: channelID, Model: model, AdapterStatus: "not_integrated"}
+	out := variantPricePlanView{ChannelID: channelID, Model: model, AdapterStatus: "supported_configuration_required"}
 	query := func() *gorm.DB {
 		q := tx.Session(&gorm.Session{})
 		if lock {

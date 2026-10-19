@@ -106,6 +106,10 @@ func mysqlFixture(t *testing.T) *fixture {
 	must(t, db.Create(&ch).Error)
 	scope := ProviderScope{ScopeKey: uid, AccountRef: "test-" + uid, Region: "cn-beijing", ProjectName: "default", Enabled: true, FXUSDPerCNY: "0.14", FXVersion: "test-fx", FXObservedAt: now}
 	must(t, db.Create(&scope).Error)
+	// Production publication requires a bounded shared supplier budget. Keep
+	// the dispatch gate exercised by every real-MySQL orchestration fixture.
+	supplierLimit := decimal.NewFromInt(1000000)
+	must(t, db.Create(&videobilling.QuotaPolicy{Scope: videobilling.ScopeProvider, OwnerID: scope.ID, Metric: videobilling.MetricCNY, Period: videobilling.PeriodLifetime, Timezone: "Asia/Shanghai", LimitAmount: &supplierLimit, Version: uid, Enabled: true}).Error)
 	cap := ark.Capability{PublicModel: ark.Model20, UpstreamModel: "doubao-seedance-2-0-260128", Version: "test-cap-v1", Enabled: true, Verified: true, Resolutions: []string{"720p"}, Ratios: []string{"16:9"}, MinDuration: 4, MaxDuration: 15, DefaultDuration: 5, DefaultResolution: "720p", DefaultRatio: "16:9", DefaultSeed: -1, DefaultExecutionExpiresAfter: 172800, MinExecutionExpiresAfter: 3600, MaxExecutionExpiresAfter: 259200, FPS: 24, MaxContentItems: 4}
 	capJSON, _ := json.Marshal(cap)
 	cfg := ModelConfig{PublicModel: ark.Model20, Version: "test-config", ProviderScopeID: scope.ID, ChannelID: ch.ID, Enabled: true, CapabilityJSON: string(capJSON), PricingVersion: uid, NoChargeStatuses: "failed,cancelled", BoundsJSON: `{"720p/16:9":{"width":1280,"height":720}}`, VerifiedAt: &now, UpdatedAt: now}

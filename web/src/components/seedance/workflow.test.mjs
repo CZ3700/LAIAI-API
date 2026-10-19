@@ -34,7 +34,7 @@ test('official credentials are never sent to a provider content URL supplied in 
 })
 
 test('Ark UI selection preserves unrelated and earlier legacy models', () => {
-  for (const model of ['seedance-2.0', 'seedance-2.5', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628']) assert.equal(flow.isOfficialSeedance(model), true)
+  for (const model of ['seedance-2.0', 'seedance-2.0-fast', 'seedance-2.0-mini', 'seedance-2.5', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-5-260628']) assert.equal(flow.isOfficialSeedance(model), true)
   for (const model of ['seedance-test', 'seedance-1.5', 'veo-3']) assert.equal(flow.isOfficialSeedance(model), false)
 })
 

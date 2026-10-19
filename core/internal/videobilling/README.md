@@ -9,6 +9,7 @@ Quote(rule PricingRule, in MeteringInput) (QuoteResult, error)
 QuoteWithMinimumTx(tx *gorm.DB, rule PricingRule, in MeteringInput, ctx MinimumContext) (QuoteResult, error)
 ResolvePricingTx(tx *gorm.DB, key PricingKey, at time.Time) (PricingRule, error)
 ReserveTx(tx *gorm.DB, in ReserveInput) (ReservationResult, error)
+ValidateDispatchBudgetTx(tx *gorm.DB, org uint64, taskID string) error
 SettleUsageTx(tx *gorm.DB, in SettlementInput) (SettlementResult, error)
 ReleaseConfirmedTx(tx *gorm.DB, in ReleaseInput) (SettlementResult, error)
 ```
@@ -16,6 +17,7 @@ ReleaseConfirmedTx(tx *gorm.DB, in ReleaseInput) (SettlementResult, error)
 Every Tx function requires a real GORM transaction and never commits it. Every returned error requires the caller to roll back. The caller commits task CAS, billing, encrypted evidence staging, events and outbox together. A successful function return is not permission to ignore a subsequent event/outbox error. There are no nested transactions and no global DB writes.
 
 - Creation: authenticate/normalize, then in one transaction create the platform task, reserve quota/hold/snapshot, stage execution ciphertext, and write dispatch intent/event/outbox. `ReserveTx` verifies the Key belongs to Org and rereads the published price at creation time. Replayed task+request HMAC returns the existing snapshot before re-resolving changed pricing. Task IDs are globally unique platform IDs.
+- First dispatch: after locking the accepted task and validating assets, call the read-only `ValidateDispatchBudgetTx` before claiming its send attempt. It locks the original Key, snapshot and reservation buckets in settlement order. A blocked bucket returns `ErrQuotaExceeded` so orchestration can record a known-unsent failure and release the hold. Missing or inconsistent supplier reservations and database failures keep the task undispatched for recovery. Already submitted or unknown tasks never pass through this gate. Policy changes and date boundaries do not relocate accepted reservations.
 - Hold `ref_type=video`, idempotency key `video:<task_id>:hold:v1`. Existing `task` timeout sweep and generic hold sweep must not select this product. Old task code must not poll or settle `ark_official` tasks.
 - Settlement: caller establishes a trustworthy generation outcome, saves the encrypted response evidence, calls `SettleUsageTx`, and updates task/event/outbox in the same transaction. `nil` completion tokens returns `pending_usage`, with no wallet or quota release. Explicit zero is preserved; callers must validate that zero is a credible official usage result before calling. Negative/overflow use is rejected. No estimate becomes actual usage.
 - A source record/version identifies immutable usage evidence. A changed value under the same identity is `ErrConflict`. A later receipt that supplies missing usage must have a distinct source version/receipt identity. `EvidenceID` and `PayloadRef` point to caller-persisted official evidence, never to client assertions.

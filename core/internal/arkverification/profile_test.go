@@ -9,7 +9,7 @@ import (
 )
 
 func TestReviewedProfileCoverageAndNormalizer(t *testing.T) {
-	for _, model := range []string{ark.Model20, ark.Model25} {
+	for _, model := range []string{ark.Model20, ark.Model25, ark.Model20Fast, ark.Model20Mini} {
 		t.Run(model, func(t *testing.T) {
 			p, err := Load(model)
 			if err != nil {
@@ -29,6 +29,10 @@ func TestReviewedProfileCoverageAndNormalizer(t *testing.T) {
 			cap.UpstreamModel = "doubao-seedance-2-0-260128"
 			if model == ark.Model25 {
 				cap.UpstreamModel = "doubao-seedance-2-5-260628"
+			} else if model == ark.Model20Fast {
+				cap.UpstreamModel = "doubao-seedance-2-0-fast-260128"
+			} else if model == ark.Model20Mini {
+				cap.UpstreamModel = "doubao-seedance-2-0-mini-260615"
 			}
 			mixed := ark.CreateRequest{Model: model, Content: []ark.ContentItem{{Type: "text", Text: "verification"}}}
 			for i := 0; i < cap.MaxImages; i++ {
@@ -98,9 +102,90 @@ func TestReviewedPixelBoundsAndUnsupportedModels(t *testing.T) {
 			t.Fatal("arbitrary ratio must not inherit six-enum bound")
 		}
 	}
-	for _, model := range []string{"seedance-1.0", "seedance-2.0-fast", "seedance-2.0-mini", "doubao-seedance-2-0-260128"} {
+	for _, model := range []string{"seedance-1.0", "seedance-2.5-fast", "seedance-2.5-mini", "doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615"} {
 		if _, err := Load(model); err == nil {
 			t.Fatalf("standard evidence reused for %s", model)
 		}
+	}
+}
+
+func TestVariantProfilesHaveIndependentIdentityAndReviewedMinimumEvidence(t *testing.T) {
+	standard, err := Load(ark.Model20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions, hashes := map[string]bool{standard.MinimumVersion: true}, map[string]bool{standard.EvidenceSHA256: true}
+	for _, model := range []string{ark.Model20Fast, ark.Model20Mini} {
+		p, err := Load(model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Version != VariantVersion || p.Capability.Version != VariantVersion || p.Capability.PublicModel != model || p.MinimumVersion != "official-min-"+model+"-20261019-v1" || versions[p.MinimumVersion] || hashes[p.EvidenceSHA256] {
+			t.Fatal("variant reused a standard/other variant profile identity")
+		}
+		versions[p.MinimumVersion], hashes[p.EvidenceSHA256] = true, true
+		if len(p.MinimumCells) != 144 || len(p.Bounds) != 12 || len(p.Capability.Resolutions) != 2 || p.MaxInputVideoDurationMS != 15000 || p.Capability.MaxDuration != 15 || p.Capability.MinDuration != 4 || p.Capability.FPS != 24 {
+			t.Fatal("variant capability/minimum domain incorrect")
+		}
+		for _, forbidden := range []string{"1080p/16:9", "4k/16:9", "720p/adaptive"} {
+			if _, ok := p.Bounds[forbidden]; ok {
+				t.Fatal("unsupported bounds admitted")
+			}
+		}
+		if p.Bounds["480p/16:9"] != (Dimensions{864, 496}) || p.Bounds["720p/4:3"] != (Dimensions{1112, 834}) || p.Bounds["720p/21:9"] != (Dimensions{1470, 630}) {
+			t.Fatal("official ratio-specific pixels lost")
+		}
+		for key, want := range map[string]int64{"480p/16:9/4000": 70308, "480p/1:1/4000": 67200, "720p/16:9/4000": 151200, "720p/4:3/4000": 152153, "720p/21:9/15000": 542637} {
+			found := false
+			for _, cell := range p.MinimumCells {
+				if fmt.Sprintf("%s/%s/%d", cell.Resolution, cell.Ratio, cell.OutputDurationMS) == key {
+					found = cell.MinimumTokens == want && cell.FPS == 24
+				}
+			}
+			if !found {
+				t.Fatal("literal official minimum changed", key)
+			}
+		}
+		sources := map[string]string{}
+		for _, s := range p.Sources {
+			sources[s.ID] = s.SHA256
+		}
+		if sources["official-2-0-family-20261019"] != "1cc95eb91d8bb7f8a69965e0815ea6fff8cde90458e4d4e60d9c8b5c99e0c39e" || sources["official-query-api-20261019"] != "f7e6e434bb9cd12ba79d39b0cb2c80fbef8b56780e6efd6d95e98c4e1b9aabe8" {
+			t.Fatal("independent family membership/settlement evidence missing")
+		}
+	}
+}
+
+func TestVariantMinimumEvidenceFailsClosed(t *testing.T) {
+	for _, mutation := range []string{"hash", "view", "table", "row_count", "cell_count", "duplicate_view"} {
+		t.Run(mutation, func(t *testing.T) {
+			ref, err := arkpricecatalog.ReferenceCandidates(ark.Model20Fast)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range ref.Sources {
+				if ref.Sources[i].ViewID != "vew2CR2JYM" {
+					continue
+				}
+				switch mutation {
+				case "hash":
+					ref.Sources[i].RawSHA256 = "changed"
+				case "view":
+					ref.Sources[i].ViewID = "vewQ2CK6dj"
+				case "table":
+					ref.Sources[i].TableID = "tblheIYDXXwYM43b"
+				case "row_count":
+					ref.Sources[i].RawRows = ref.Sources[i].RawRows[:47]
+				case "cell_count":
+					ref.Minimum.Cells = ref.Minimum.Cells[:143]
+				case "duplicate_view":
+					ref.Sources = append(ref.Sources, ref.Sources[i])
+				}
+				break
+			}
+			if verifyVariantMinimumSources(ref) == nil {
+				t.Fatal("changed or incomplete minimum evidence accepted")
+			}
+		})
 	}
 }

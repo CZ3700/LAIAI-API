@@ -28,7 +28,7 @@ func (s *Server) getArkReferenceCandidates(c *gin.Context) {
 	}
 	reference, e := arkpricecatalog.ReferenceCandidates(c.Param("model"))
 	if errors.Is(e, arkpricecatalog.ErrUnsupportedModel) {
-		fail(c, 404, "official reference candidates support standard seedance-2.0 and seedance-2.5 only")
+		fail(c, 404, "official reference candidates unavailable for this model")
 		return
 	}
 	if e != nil {

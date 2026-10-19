@@ -37,6 +37,12 @@ func verificationFixture(t *testing.T, model string) (*gin999, *gorm.DB, map[uin
 	if model == ark.Model25 {
 		cap.UpstreamModel = "doubao-seedance-2-5-260628"
 	}
+	if model == ark.Model20Fast {
+		cap.UpstreamModel = "doubao-seedance-2-0-fast-260128"
+	}
+	if model == ark.Model20Mini {
+		cap.UpstreamModel = "doubao-seedance-2-0-mini-260615"
+	}
 	raw, _ := json.Marshal(cap)
 	if e := db.Model(&video.ModelConfig{}).Where("public_model = ?", cfg.PublicModel).Updates(map[string]any{"public_model": model, "capability_json": string(raw)}).Error; e != nil {
 		t.Fatal(e)
@@ -78,7 +84,7 @@ func verificationSnapshot(t *testing.T, db *gorm.DB, tables ...string) string {
 }
 
 func TestArkVerificationPreservesPricesBudgetsDefaultsAndReplay(t *testing.T) {
-	for _, model := range []string{ark.Model20, ark.Model25} {
+	for _, model := range []string{ark.Model20, ark.Model25, ark.Model20Fast, ark.Model20Mini} {
 		t.Run(model, func(t *testing.T) {
 			f, db, tokens, p := verificationFixture(t, model)
 			path := "/api/admin/video/models/" + model + "/verification"
@@ -285,11 +291,17 @@ func TestArkVerificationKeepsEnabledReferenceRuleMinimumOrRejects(t *testing.T) 
 }
 
 func TestArkVerificationDoesNotEnableDisabledModel(t *testing.T) {
-	f, db, tokens, p := verificationFixture(t, ark.Model20)
-	if e := db.Model(&video.ModelConfig{}).Where("public_model=?", ark.Model20).Update("enabled", false).Error; e != nil {
+	for _, model := range []string{ark.Model20, ark.Model25, ark.Model20Fast, ark.Model20Mini} {
+		t.Run(model, func(t *testing.T) { testArkVerificationDoesNotEnableDisabledModel(t, model) })
+	}
+}
+
+func testArkVerificationDoesNotEnableDisabledModel(t *testing.T, model string) {
+	f, db, tokens, p := verificationFixture(t, model)
+	if e := db.Model(&video.ModelConfig{}).Where("public_model=?", model).Update("enabled", false).Error; e != nil {
 		t.Fatal(e)
 	}
-	w, _ := f.do(t, "POST", "/api/admin/video/models/seedance-2.0/verification", tokens[1], map[string]string{"expected_config_version": "config-v1", "profile_version": p.Version})
+	w, _ := f.do(t, "POST", "/api/admin/video/models/"+model+"/verification", tokens[1], map[string]string{"expected_config_version": "config-v1", "profile_version": p.Version})
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}

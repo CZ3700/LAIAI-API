@@ -100,10 +100,27 @@ test('navigation has exactly three groups and unique reachable deep links', () =
 
 test('search covers endpoint, parameter and model terms without changing group membership', () => {
   assert.ok(searchPages('seedance-2.5').some(p => p.id === 'video-create'))
+  for (const model of ['seedance-2.0-fast', 'seedance-2.0-mini']) {
+    assert.ok(searchPages(model).some(p => p.id === 'video-intro'))
+    assert.ok(searchPages(model).some(p => p.id === 'video-create'))
+  }
   assert.ok(searchPages('/v1/video/assets').some(p => p.id === 'video-assets'))
   assert.ok(searchPages('expected_version').some(p => p.id === 'video-assets'))
   assert.equal(searchPages('no-such-document-9382').length, 0)
   assert.equal(searchPages('  ').length, docPages.length)
+})
+
+test('Fast and Mini document only the implemented generation envelope and retain activation prerequisites', () => {
+  const models = docPages.find(page => page.id === 'video-intro').sections.find(section => section.id === 'video-models')
+  for (const model of ['seedance-2.0-fast', 'seedance-2.0-mini']) {
+    const row = models.table.rows.find(row => row[0] === model)
+    assert.match(row[1], /4–15 秒；480p \/ 720p；六种固定比例/)
+    assert.match(row[2], /独立渠道配置.*最低量.*USD.*预算/)
+  }
+  const scope = models.paragraphs.join('\n')
+  assert.match(scope, /16:9 \/ 4:3 \/ 1:1 \/ 3:4 \/ 9:16 \/ 21:9/)
+  assert.match(scope, /不开放 1080p、4k、adaptive、自动时长、frames、Draft/)
+  assert.match(scope, /不代表当前组织已开通/)
 })
 
 test('public OpenAPI has fully resolvable refs and unique operation IDs', t => {

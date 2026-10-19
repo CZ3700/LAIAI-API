@@ -79,7 +79,7 @@ func TestVariantPricePlansExactPreviewSaveReplayAndIsolation(t *testing.T) {
 	} {
 		path := "/api/admin/video/variant-price-plans/99/" + tc.model
 		preview := variantCall(t, f.engine, "GET", path, tokens[1], "", nil, 200)
-		if preview.Invocable || preview.AdapterStatus != "not_integrated" || preview.Saved != nil || preview.SavedMatchesProposal || preview.CanonicalModel != tc.canonical || len(preview.ContextSHA256) != 64 {
+		if preview.Invocable || preview.AdapterStatus != "supported_configuration_required" || preview.Saved != nil || preview.SavedMatchesProposal || preview.CanonicalModel != tc.canonical || len(preview.ContextSHA256) != 64 {
 			t.Fatal("wrong preview identity", preview)
 		}
 		p := preview.Proposal

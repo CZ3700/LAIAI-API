@@ -260,6 +260,13 @@ test('official catalog scoped to standard 2.0 excludes 1.x, Fast and Mini origin
   assert.deepEqual([...h.vm.seriesOptions.value], ['2.0'])
   assert.deepEqual(h.vm.rows.value.map(row => row.cells), [['2.0', '46']])
   assert.deepEqual(h.vm.visibleCaptures.value.map(c => c.view_id), ['2.0'])
+  for (const [series, amount] of [['2.0fast', '37'], ['2.0mini', '23']]) {
+    h.props.allowedSeries = [series]
+    await vue.nextTick()
+    assert.deepEqual([...h.vm.seriesOptions.value], [series])
+    assert.deepEqual(h.vm.rows.value.map(row => row.cells), [[series, amount]])
+    assert.deepEqual(h.vm.visibleCaptures.value.map(c => c.view_id), [series])
+  }
   h.props.allowedSeries = ['2.5']
   await vue.nextTick()
   assert.deepEqual(h.vm.rows.value.map(row => row.cells), [['2.5', '70']])
@@ -268,19 +275,19 @@ test('official catalog scoped to standard 2.0 excludes 1.x, Fast and Mini origin
 
 function variantRow(variant = 'fast') {
   const model = `seedance-2.0-${variant}`
-  return {...row(`1:${model}`), model, upstream_model: model, pricing_kind: 'video', generic_price: null, unsupported_reason: 'seedance_variant_not_supported', pricing: {billing_kind: 'video', currency: 'USD', unit: 'USD/1M_video_tokens', status: 'blocked', rates: [], combinations: [], endpoints: []}, official_price_evidence: {
+  return {...row(`1:${model}`), model, upstream_model: variant === 'fast' ? 'doubao-seedance-2-0-fast-260128' : 'doubao-seedance-2-0-mini-260615', video_model: model, pricing_kind: 'video', generic_price: null, unsupported_reason: 'official_video_configuration_missing', pricing: {billing_kind: 'video', currency: 'USD', unit: 'USD/1M_video_tokens', status: 'blocked', rates: [], combinations: [], endpoints: []}, official_price_evidence: {
     status: 'verified', model, verified_at: '2026-10-19T00:00:00Z', unit: 'CNY/1M_tokens',
     prices: ['480p','720p'].flatMap(resolution => [false,true].map(input_video => ({resolution,input_video,supplier_cny_per_1m: input_video ? '22.00000001' : '37.12345678'}))),
     sources: [{id: `${variant}-source`, url: 'https://example.com/official-prices', sha256: 'a'.repeat(64)}],
   }}
 }
 
-test('verified Fast and Mini price evidence stays separate from sellability and opens only read-only details', async t => {
+test('unconfigured Fast and Mini retain reference-only details even when canonical identity is recognized', async t => {
   const data = {...catalog(), models: [variantRow('fast'),variantRow('mini')]}
   const h = await harness(t, Panel, {}, () => data)
   for (const item of h.vm.catalog.value.models) {
     assert.equal(presentation.pricingStatus(item, data), 'blocked')
-    assert.equal(h.vm.statusLabel(item), 'pricingAdmin.adapterNotIntegrated')
+    assert.equal(h.vm.statusLabel(item), 'pricingAdmin.configurationRequired')
     assert.deepEqual(presentation.displayRates(item), [])
     assert.equal(presentation.videoPriceRange(item), null)
     h.vm.openModel(item, 'pricing')
@@ -289,7 +296,7 @@ test('verified Fast and Mini price evidence stays separate from sellability and 
     assert.equal(h.vm.selectedOfficialEvidence.value.model, item.model)
     assert.equal(h.vm.selectedOfficialEvidence.value.prices.length, 4)
     assert.equal(h.vm.selectedOfficialEvidence.value.unit, 'CNY/1M_tokens')
-    assert.equal(h.vm.selected.value.video_model, null)
+    assert.equal(h.vm.selected.value.video_model, item.model)
   }
   h.route.query = {tab: 'prices', pricing_model: '1:seedance-2.0-fast'}
   await vue.nextTick()
@@ -314,6 +321,42 @@ test('official cost summaries preserve exact CNY evidence and never invent USD p
   assert.equal(h.calls.length, 0)
 })
 
+function configuredVariant(variant = 'fast') {
+  const item = variantRow(variant)
+  return {...item, unsupported_reason: '', video_configuration: {channel_id: item.channel_id, provider_scope_id: 4, config_version: `${variant}-cfg`, pricing_version: `${variant}-prices`, enabled: true}, pricing: {...item.pricing, status: 'partial', combinations: [{key: 'generate/720p/false/default/false', mode: 'generate', resolution: '720p', input_video: false, service_tier: 'default', draft: false, amount: '5.238900001234'}]}}
+}
+
+test('configured Fast and Mini use their bound normal price editor and preserve separate official evidence', async t => {
+  const data = {...catalog(), models: [configuredVariant('fast'), configuredVariant('mini')]}
+  const h = await harness(t, Panel, {}, () => data)
+  for (const item of h.vm.catalog.value.models) {
+    h.vm.openModel(item, 'pricing')
+    assert.equal(h.vm.selectedEvidenceOnly.value, false)
+    assert.equal(h.vm.selectedVideoConfigured.value, true)
+    assert.equal(h.vm.drawerTab.value, 'pricing')
+    assert.deepEqual([...h.vm.drawerTabs.value], ['pricing','overview'])
+    assert.equal(h.vm.selectedOfficialEvidence.value.model, item.video_model)
+    assert.equal(h.vm.statusLabel(item), 'pricingAdmin.partial')
+    assert.deepEqual(presentation.videoPriceRange(item), {min: '5.238900001234', max: '5.238900001234', count: 1})
+    assert.equal(presentation.configuredOfficialVideo({...item, video_configuration: null}), false)
+    assert.equal(presentation.configuredOfficialVideo({...item, video_configuration: {...item.video_configuration, channel_id: 99}}), false)
+    assert.equal(presentation.configuredOfficialVideo({...item, unsupported_reason: 'official_video_channel_mismatch'}), false)
+  }
+  assert.ok(h.calls.every(call => call.method === 'GET'), 'opening a configured model does not publish or synchronize it')
+  h.auth.isSuperadmin = false
+  assert.equal(h.vm.videoAllowed.value, false)
+})
+
+test('configured variant summaries use published USD combinations instead of reference CNY costs', async t => {
+  const h = await harness(t, Summary, {row: configuredVariant(), expanded: false})
+  assert.equal(h.vm.referenceOnly.value, false)
+  assert.equal(h.vm.evidence.value.unit, 'CNY/1M_tokens')
+  assert.deepEqual(h.vm.range.value, {min: '5.238900001234', max: '5.238900001234', count: 1})
+  h.props.row = variantRow()
+  assert.equal(h.vm.referenceOnly.value, true)
+  assert.equal(h.vm.range.value, null)
+})
+
 test('read-only official evidence restricts links to public HTTPS URLs and performs no API calls', async t => {
   const h = await harness(t, VariantEvidence, {evidence: variantRow().official_price_evidence})
   assert.equal(h.vm.sourceURL('https://example.com/official-prices'), 'https://example.com/official-prices')
@@ -326,7 +369,7 @@ function variantPlan(row = variantRow(), saved = false, context = 'b'.repeat(64)
     fx_usd_per_cny: '0.1412345678', fx_version: 'scope-fx-v1', fx_observed_at: '2026-10-19T01:00:00Z', source_config_version: 'standard-cfg-v1', source_pricing_version: 'standard-price-v1', risk_source: 'existing_standard_2_0_policy', minimum_status: 'unverified',
     prices: row.official_price_evidence.prices.map(price => ({...price, retail_usd_per_1m: '5.238900001234', risk_multiplier: '4'})), sources: row.official_price_evidence.sources, evidence_sha256: 'e'.repeat(64),
   }
-  return {channel_id: row.channel_id, model: row.model, upstream_model: row.upstream_model, canonical_model: row.official_price_evidence.model, context_sha256: context, adapter_status: 'not_integrated', invocable: false, proposal, saved: saved ? {id: 8, version: 'plan-v1', created_at: '2026-10-19T02:00:00Z', created_by: 1, proposal: structuredClone(proposal)} : null, saved_matches_proposal: saved}
+  return {channel_id: row.channel_id, model: row.model, upstream_model: row.upstream_model, canonical_model: row.official_price_evidence.model, context_sha256: context, adapter_status: 'supported_configuration_required', invocable: false, proposal, saved: saved ? {id: 8, version: 'plan-v1', created_at: '2026-10-19T02:00:00Z', created_by: 1, proposal: structuredClone(proposal)} : null, saved_matches_proposal: saved}
 }
 
 test('variant plan GET is the exact server proposal and saving sends only the reviewed context with idempotency', async t => {
@@ -461,6 +504,25 @@ test('variant plan deactivation discards private state and late callbacks cannot
   response.resolve(variantPlan(row, true)); await pending
   assert.equal(h.vm.data.value, null)
   assert.equal(h.vm.idempotencyKey.value, '')
+  assert.equal(h.vm.canSave.value, false)
+  assert.equal(h.vm.notice.value, '')
+  assert.equal(h.events.filter(([name]) => name === 'saved').length, 0)
+})
+
+test('formal configuration hides the historical plan and invalidates a pending save without auto-publication', async t => {
+  const item = variantRow(), response = deferred()
+  const h = await harness(t, VariantPlan, {row: item, contextKey: 'A'}, () => variantPlan(item))
+  h.respond = () => response.promise
+  const pending = h.vm.save()
+  const count = h.calls.length
+  h.props.row = configuredVariant()
+  await vue.nextTick()
+  assert.equal(h.vm.allowed.value, false)
+  assert.equal(h.vm.data.value, null)
+  response.resolve(variantPlan(item, true))
+  await pending
+  await h.vm.load(); await h.vm.save()
+  assert.equal(h.calls.length, count)
   assert.equal(h.vm.canSave.value, false)
   assert.equal(h.vm.notice.value, '')
   assert.equal(h.events.filter(([name]) => name === 'saved').length, 0)

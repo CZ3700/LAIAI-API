@@ -121,7 +121,7 @@ func TestPricingCatalogVariantPriceEvidenceDoesNotOpenPricingOrPublicModels(t *t
 			}
 			if want {
 				seen[row.Key] = true
-				if row.Pricing.Status != "blocked" || row.VideoModel != nil || row.UnsupportedReason != "seedance_variant_not_supported" || len(row.Pricing.Rates) != 0 || len(row.Pricing.Combinations) != 0 || len(row.OfficialPriceEvidence.Prices) != 4 {
+				if row.Pricing.Status != "blocked" || row.VideoModel == nil || row.VideoConfiguration != nil || row.UnsupportedReason != "official_video_configuration_missing" || len(row.Pricing.Rates) != 0 || len(row.Pricing.Combinations) != 0 || len(row.OfficialPriceEvidence.Prices) != 4 {
 					t.Fatalf("price evidence changed capability or retail: %#v", row)
 				}
 			}
@@ -135,8 +135,8 @@ func TestPricingCatalogVariantPriceEvidenceDoesNotOpenPricingOrPublicModels(t *t
 		t.Fatal("documentary reference leaked into public callable catalog")
 	}
 	for _, model := range []string{"seedance-2.0-fast", "seedance-2.0-mini"} {
-		catalogGET(t, f, "/api/admin/video/models/"+model+"/pricing/reference-candidates", tokens[1], "", 404)
-		catalogGET(t, f, "/api/admin/video/models/"+model+"/verification", tokens[1], "", 404)
+		catalogGET(t, f, "/api/admin/video/models/"+model+"/pricing/reference-candidates", tokens[1], "", 200)
+		catalogGET(t, f, "/api/admin/video/models/"+model+"/verification", tokens[1], "", 409)
 	}
 	if before != verificationSnapshot(t, db, "channels", "video_model_configs", "video_pricing_rules", "model_prices") {
 		t.Fatal("read-only variant projection wrote configuration")
@@ -236,7 +236,7 @@ func TestPricingCatalogPermissionsAliasesAndFullPriceProjection(t *testing.T) {
 		}
 		for _, name := range []string{"seedance-2.0-fast", "seedance-2.0-mini", "seedance-1.5-pro"} {
 			r := rows["101:"+name]
-			if r.PricingKind != "video" || r.VideoModel != nil || r.UnsupportedReason == "" {
+			if r.PricingKind != "video" || r.VideoConfiguration != nil || r.UnsupportedReason == "" || name == "seedance-1.5-pro" && r.VideoModel != nil {
 				t.Fatalf("variant accepted %#v", r)
 			}
 		}
@@ -397,7 +397,7 @@ func TestArkReferenceCandidatesPermissionsPreservationAndNoWrites(t *testing.T) 
 	}{{0, "", 401}, {2, "", 403}, {3, "", 401}, {0, "fixture-emergency-token", 403}} {
 		catalogGET(t, f, base+ark.Model20+"/pricing/reference-candidates", tokens[tc.user], tc.emergency, tc.want)
 	}
-	for _, model := range []string{"seedance-1.5", "seedance-2.0-fast", "seedance-2.0-mini", "official-alias"} {
+	for _, model := range []string{"seedance-1.5", "seedance-2.0-fast-270101", "seedance-2.0-mini-270101", "official-alias"} {
 		catalogGET(t, f, base+model+"/pricing/reference-candidates", tokens[1], "", 404)
 	}
 	for _, model := range []string{ark.Model20, ark.Model25} {

@@ -9,7 +9,7 @@ info:
     所有资源读取与引用强制 org_id 隔离，资源 ID 不构成授权。一个下游客户应有独立组织边界；
     同组织 Key 的访问权限由组织资源策略控制。GET 列表仅查询本组织平台库，不开放上游全账户枚举。
     网关、产物存储、模型能力、客户价格、供应商预算、路由与租户执行保留策略均须显式配置。
-    未配置默认禁用；seedance-2.0/2.5 出现在契约中不代表账号已取得官方能力或模型已上线。
+    未配置默认禁用；标准 2.0/2.5 与 2.0 Fast/Mini 出现在契约中不代表账号已取得官方能力或模型已上线。
     GET 要求 video:read，POST/PATCH/DELETE（含预估）要求 video:write；video:* 或 * 覆盖二者。
     POST 创建、取消、素材创建、授权创建、素材 PATCH 和单素材 DELETE 要求 Idempotency-Key；唯一作用域为
     (org_id, HTTP method, normalized canonical resource path, HMAC-SHA256(Idempotency-Key))。
@@ -928,8 +928,8 @@ components:
       description: 平台真人授权会话 ID，不暴露官方会话 ID。
     PublicModel:
       type: string
-      enum: [seedance-2.0, seedance-2.5]
-      description: 平台公开别名；是否可用以 models 返回 enabled 与 verified 为准。
+      enum: [seedance-2.0, seedance-2.5, seedance-2.0-fast, seedance-2.0-mini]
+      description: 平台公开别名；Fast 对应 doubao-seedance-2-0-fast-260128，Mini 对应 doubao-seedance-2-0-mini-260615。是否可用以 models 返回 enabled 与 verified 为准。
     MoneyAmount:
       type: string
       pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,8})?$'
@@ -995,7 +995,7 @@ components:
             - const: -1
             - minimum: 4
               maximum: 30
-          description: 秒。此 schema 上界不表示每个模型均支持 30 秒；按模型能力验证，2.0 与 2.5 分开。
+          description: 秒。2.0、Fast、Mini 为 4–15 秒；2.5 为 4–30 秒；自动时长还受已发布能力限制。
         frames:
           type: integer
           minimum: 1
@@ -1057,12 +1057,31 @@ components:
         - if:
             properties:
               model:
-                const: seedance-2.0
+                enum: [seedance-2.0, seedance-2.0-fast, seedance-2.0-mini]
           then:
             not:
               anyOf:
                 - required: [omni_reference_task_type]
                 - required: [output_format]
+        - if:
+            properties:
+              model:
+                enum: [seedance-2.0-fast, seedance-2.0-mini]
+          then:
+            properties:
+              resolution:
+                enum: [480p, 720p]
+              duration:
+                oneOf:
+                  - const: -1
+                  - minimum: 4
+                    maximum: 15
+              draft:
+                const: false
+              ratio:
+                enum: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9']
+            not:
+              required: [frames]
         - if:
             properties:
               content:

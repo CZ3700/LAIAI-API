@@ -15,6 +15,7 @@ import (
 )
 
 const Version = "ark-official-20261019-v1"
+const VariantVersion = "ark-official-20261019-variants-v1"
 
 type Dimensions struct {
 	Width  int64 `json:"width"`
@@ -56,12 +57,13 @@ func documentationSources() []Source {
 	}
 }
 
-// Load admits standard generation with explicit ratios only. In particular it
+// Load admits reviewed generation with explicit ratios only. In particular it
 // does not claim a bound for 2.5 arbitrary-ratio editing/extension/first frames.
 // Existing defaults and exact deployment identity are preserved by the server.
 func Load(model string) (Profile, error) {
 	var p Profile
-	if model != ark.Model20 && model != ark.Model25 {
+	variant, isVariant := reviewedVariant(model)
+	if model != ark.Model20 && model != ark.Model25 && !isVariant {
 		return p, arkpricecatalog.ErrUnsupportedModel
 	}
 	ref, err := arkpricecatalog.ReferenceCandidates(model)
@@ -73,12 +75,29 @@ func Load(model string) (Profile, error) {
 	p.ObservedAt = time.Date(2026, 10, 19, 7, 54, 10, 0, time.UTC)
 	p.MinimumVersion = "official-min-" + model + "-20261019-v1"
 	p.Sources = documentationSources()
+	if isVariant {
+		// The official tutorial explicitly includes the exact Fast and Mini IDs
+		// in the 2.0 family. Keep independent versions and provenance; never use
+		// the standard model's already published minimum-rule identity.
+		p.Version = VariantVersion
+		p.ObservedAt = time.Date(2026, 10, 19, 10, 31, 47, 0, time.UTC)
+		p.MinimumVersion = "official-min-" + model + "-20261019-v1"
+		p.Sources = append(p.Sources,
+			Source{"official-2-0-family-20261019", "https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-0.md", "1cc95eb91d8bb7f8a69965e0815ea6fff8cde90458e4d4e60d9c8b5c99e0c39e"},
+			Source{"official-query-api-20261019", "https://ark.volcengine.com/region:cn-beijing/docs/get-video-generation-task-api.md", "f7e6e434bb9cd12ba79d39b0cb2c80fbef8b56780e6efd6d95e98c4e1b9aabe8"})
+		if err := verifyVariantMinimumSources(ref); err != nil {
+			return Profile{}, err
+		}
+		if _, err := LoadTariff(model); err != nil {
+			return Profile{}, err
+		}
+	}
 	for _, source := range ref.Sources {
 		p.Sources = append(p.Sources, Source{source.ID, source.SourceURL, source.RawSHA256})
 	}
 	sort.Slice(p.Sources, func(i, j int) bool { return p.Sources[i].ID < p.Sources[j].ID })
 	p.Capability = ark.Capability{
-		PublicModel: model, Version: Version, Enabled: true, Verified: true,
+		PublicModel: model, Version: p.Version, Enabled: true, Verified: true,
 		Resolutions: []string{"480p", "720p", "1080p"}, Ratios: []string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9"},
 		MinDuration: 4, MaxDuration: 15, DefaultDuration: 4, DefaultResolution: "480p", DefaultRatio: "1:1", DefaultSeed: -1,
 		DefaultWatermark: true, DefaultExecutionExpiresAfter: 3600, MinExecutionExpiresAfter: 3600, MaxExecutionExpiresAfter: 259200,
@@ -89,7 +108,7 @@ func Load(model string) (Profile, error) {
 	rates := map[string][2]string{"480p": {"46", "28"}, "720p": {"46", "28"}, "1080p": {"51", "31"}, "4k": {"26", "16"}}
 	if model == ark.Model20 {
 		p.Capability.Resolutions = append(p.Capability.Resolutions, "4k")
-	} else {
+	} else if model == ark.Model25 {
 		p.Capability.MaxDuration = 30
 		p.Capability.MaxContentItems = 51
 		p.Capability.MaxImages = 30
@@ -100,6 +119,9 @@ func Load(model string) (Profile, error) {
 		p.Capability.OutputFormats = []string{"mp4", "mov"}
 		p.MaxInputVideoDurationMS = 30000
 		rates = map[string][2]string{"480p": {"70", "42"}, "720p": {"70", "42"}, "1080p": {"77", "46"}}
+	} else if isVariant {
+		p.Capability.Resolutions = []string{"480p", "720p"}
+		rates = map[string][2]string{"480p": {variant.noVideo, variant.video}, "720p": {variant.noVideo, variant.video}}
 	}
 	// A changed captured tariff requires a fresh review/version, never silently
 	// carries an earlier verification badge forward.
@@ -139,7 +161,7 @@ func Load(model string) (Profile, error) {
 		if cell.FPS != nil && *cell.FPS != 24 {
 			return Profile{}, fmt.Errorf("verification: FPS conflicts with official model list")
 		}
-		if cell.FPS == nil && model != ark.Model20 {
+		if cell.FPS == nil && model != ark.Model20 && !isVariant {
 			return Profile{}, fmt.Errorf("verification: missing primary FPS")
 		}
 		// Supplement 2.0's absent column from the independently hashed official
@@ -169,4 +191,29 @@ func Load(model string) (Profile, error) {
 	hash := sha256.Sum256(raw)
 	p.EvidenceSHA256 = hex.EncodeToString(hash[:])
 	return p, nil
+}
+
+// A family-wide statement does not authorize an arbitrary table. Bind the two
+// reviewed source views and their original bytes, with no interpolation from
+// monetary examples or the 1080p/4k views that these models do not support.
+func verifyVariantMinimumSources(ref arkpricecatalog.Candidates) error {
+	want := map[string]string{
+		"vew2CR2JYM": "94e2598e88f886ca082877d2e166e8917992f31adb68b8b3a3003d0fe95361bf",
+		"vewVBehIlq": "9caba96a5ad810ea9673f5b26a114a5d8e35f8f7324fd240f2a9722136194e35",
+	}
+	seen := map[string]bool{}
+	for _, source := range ref.Sources {
+		if source.TableID != "tblmNCuMjADrXtDf" {
+			continue
+		}
+		hash, ok := want[source.ViewID]
+		if !ok || seen[source.ViewID] || source.RawSHA256 != hash || len(source.RawRows) != 48 {
+			return fmt.Errorf("verification: reviewed variant minimum source changed")
+		}
+		seen[source.ViewID] = true
+	}
+	if len(seen) != 2 || len(ref.Minimum.Cells) != 144 {
+		return fmt.Errorf("verification: incomplete variant minimum evidence")
+	}
+	return nil
 }

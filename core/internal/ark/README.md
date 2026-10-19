@@ -22,6 +22,13 @@ transition := ark.ApplyObservation(currentStatus, result)
   Media, frames, Draft, edit/extend, audio and last-frame support are separately
   gated; unset limits/flags do not silently enable a feature. It rejects old
   prompt parameter directives including normalized Unicode forms.
+- Canonical public models include `seedance-2.0-fast` and `seedance-2.0-mini`.
+  Their configurations pin `doubao-seedance-2-0-fast-260128` and
+  `doubao-seedance-2-0-mini-260615` respectively. They accept only verified
+  480p/720p, 4–15 second, 24 FPS capability records. Frames, Draft, 2.5 task
+  modes and output-format parameters cannot be enabled by copying another
+  model's configuration. This protocol support alone does not publish a model:
+  each needs its own capability/minimum evidence, pricing and admission config.
 - `Bindings` must come from gateway checks of organization, resource readiness,
   provider account/region/project, licence, expiry, original Draft model and
   source-video billing context. A public `asset_`/`task_` ID alone is not access
