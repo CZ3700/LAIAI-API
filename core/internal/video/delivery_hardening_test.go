@@ -187,7 +187,7 @@ func TestMySQLRevokedAssetScopeIsRejectedBeforeProviderPOST(t *testing.T) {
 	f := mysqlFixture(t)
 	scope, _ := assetTestSetup(t, f)
 	_, asset := assetTestSeed(t, f, scope, videoasset.KindVirtual)
-	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "image_url", ImageURL: &ark.MediaReference{URL: "asset://" + asset.ID}}}}
+	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "image_url", Role: "reference_image", ImageURL: &ark.MediaReference{URL: "asset://" + asset.ID}}}}
 	v, _, err := f.s.Create(context.Background(), f.key, f.requestID("asset_request"), "asset-revoke-before-post", in)
 	must(t, err)
 	must(t, f.s.SetAssetScopeEnabled(context.Background(), assetTestActor(), scope.ID, 1, false))
@@ -208,7 +208,7 @@ func TestMySQLTerminalSettlementAndAssetAdmissionUseSameLockOrder(t *testing.T) 
 	f := mysqlFixture(t)
 	scope, _ := assetTestSetup(t, f)
 	_, asset := assetTestSeed(t, f, scope, videoasset.KindVirtual)
-	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "image_url", ImageURL: &ark.MediaReference{URL: "asset://" + asset.ID}}}}
+	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "image_url", Role: "reference_image", ImageURL: &ark.MediaReference{URL: "asset://" + asset.ID}}}}
 	requestID, _ := randomID("")
 	v, _, err := f.s.Create(context.Background(), f.key, requestID, "asset-lock-order-first", in)
 	must(t, err)

@@ -219,7 +219,7 @@ func TestMySQLAssetTaskCreationBindingsAndRollback(t *testing.T) {
 	f := mysqlFixture(t)
 	scope, _ := assetTestSetup(t, f)
 	_, asset := assetTestSeed(t, f, scope, videoasset.KindVirtual)
-	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "image_url", ImageURL: &ark.MediaReference{URL: "asset://" + asset.ID}}}}
+	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "image_url", Role: "reference_image", ImageURL: &ark.MediaReference{URL: "asset://" + asset.ID}}}}
 	_, err := f.s.Estimate(f.key.OrgID, in)
 	must(t, err)
 	var count int64
@@ -284,7 +284,7 @@ func TestMySQLDraftMetadataAndLicenseRevalidation(t *testing.T) {
 	portrait := videoasset.Portrait{ID: session, OrgID: f.key.OrgID, ScopeID: group.ScopeID, ScopeVersion: 1, AccountID: scope.AccountRef, Region: scope.Region, Project: scope.ProjectName, SessionStatus: "succeeded", LicenseStatus: "verified", GroupID: &group.ID, ValidFrom: &validFrom, ValidUntil: &validUntil, LicenseScope: "video_generation", LicenseVersion: 1, LicenseEvidenceRef: "reviewed_evidence", LastVerifiedAt: &f.now, ReverifyDueAt: &reverify, CreatedAt: f.now, UpdatedAt: f.now}
 	must(t, f.s.DB.Create(&portrait).Error)
 	must(t, f.s.DB.Model(&videoasset.Group{}).Where("group_id = ?", group.ID).Update("portrait_id", session).Error)
-	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "image_url", ImageURL: &ark.MediaReference{URL: "asset://" + asset.ID}}}}
+	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{{Type: "image_url", Role: "reference_image", ImageURL: &ark.MediaReference{URL: "asset://" + asset.ID}}}}
 	parent, _, err := f.s.Create(context.Background(), f.key, f.requestID("request_draft_parent"), "idempotent-draft-parent", in)
 	must(t, err)
 	cap.PublicModel = ark.Model25
