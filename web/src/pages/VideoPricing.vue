@@ -1,82 +1,136 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, useId, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api, errorMessage, uuid } from '@/lib/api'
 import OfficialVideoPriceCatalog from '@/components/OfficialVideoPriceCatalog.vue'
 import DetailDrawer from '@/components/DetailDrawer.vue'
+import SimpleVideoPriceCell from '@/components/pricing/SimpleVideoPriceCell.vue'
 import { useAuth } from '@/stores/auth'
-import { fillMissingOfficialCosts, type PriceCell as Cell, type ReferenceCandidates, type SourceRow } from '@/components/pricing/types'
-
+import { cellKey, type PriceCell as Cell, type ReferenceCandidates, type SourceRow } from '@/components/pricing/types'
+import { exactRate, adjustRate } from '@/components/pricing/videoPriceDecimal'
+import messages from '@/i18n/pricingRedesignVideo'
 const props = defineProps<{ selectedModel?: string; selectedChannelId?: number; embedded?: boolean; contextKey?: string }>()
-interface Pricing { model: string; config_version: string; pricing_version: string; capability_version: string; enabled: boolean; cells: Cell[]; fx_usd_per_cny: string; fx_version: string; fx_observed_at: string; ratios: string[]; min_duration: number; max_duration: number }
+const emit = defineEmits<{ 'dirty-change': [dirty: boolean]; 'busy-change': [busy: boolean]; published: [] }>()
+const { t } = useI18n({ useScope: 'local', messages })
+const tabs = ['retail', 'rules', 'reference', 'history'], tabsId = `video-pricing-${useId()}`
+interface Pricing { model: string; channel_id?: number; config_version: string; pricing_version: string; capability_version: string; enabled: boolean; cells: Cell[]; fx_usd_per_cny: string; fx_version: string; fx_observed_at: string; ratios: string[]; min_duration: number; max_duration: number }
 interface Preview { key: string; maximum_hold_usd: string; maximum_estimated_tokens: number; supplier_reserved_cny: string; minimum_rule_version: string }
 interface Revision { id: number; version: string; config_version: string; created_by: number; created_at: string; snapshot_json: string }
 interface Minimum { id: number; version: string; source_url: string; evidence_hash: string; observed_at: string; verified_by: number; verified_at: string }
-const model = ref(props.selectedModel ?? 'seedance-2.0'), pricing = ref<Pricing | null>(null)
-const loading = ref(false), busy = ref(false), error = ref(''), notice = ref('')
-const configVersion = ref(''), priceVersion = ref(''), evidenceHash = ref('')
+interface Diff { key: string; change: 'added' | 'changed' | 'unchanged' | 'disabled'; before: Cell | null; after: Cell | null }
+interface Prepared { request: Record<string, unknown>; diff: Diff[]; sources: unknown[] }
+interface BulkChange { key: string; before: string; after: string }
+const auth = useAuth(), model = ref(props.selectedModel ?? 'seedance-2.0'), pricing = ref<Pricing | null>(null)
+const loading = ref(false), busy = ref(false), error = ref(''), notice = ref(''), tab = ref('retail')
+const initialCells = ref(''), initialPricing = ref<Pricing | null>(null)
 const previews = ref<Preview[]>([]), revisions = ref<Revision[]>([]), minimums = ref<Minimum[]>([])
 const minimumJSON = ref(''), selectedRevision = ref<Revision | null>(null)
-const candidates = ref<ReferenceCandidates | null>(null), referenceError = ref(''), prefilled = ref(0)
+const candidates = ref<ReferenceCandidates | null>(null), referenceError = ref('')
 const selectedEvidence = ref<SourceRow[] | null>(null), showMinimum = ref(false)
 const evidenceQuery = ref(''), evidencePage = ref(1), evidencePageSize = 20
+const selectedKeys = ref<string[]>([]), bulkMode = ref('same'), bulkValue = ref(''), bulkChanges = ref<BulkChange[]>([]), bulkError = ref('')
+const prepared = ref<Prepared | null>(null), validatedBody = ref(''), validatedDraft = ref(''), previewOpen = ref(false), publishKey = ref(uuid())
+const base = computed(() => `/api/admin/video/models/${encodeURIComponent(model.value)}/pricing`)
+const supported = computed(() => ['seedance-2.0', 'seedance-2.5'].includes(model.value))
+const bindingMatches = computed(() => !props.selectedChannelId || (pricing.value?.channel_id ?? candidates.value?.config?.channel_id) === props.selectedChannelId)
+const canEdit = computed(() => !!pricing.value && bindingMatches.value && auth.isSuperadmin && supported.value)
+const body = computed(() => ({ expected_config_version: pricing.value?.config_version ?? '', channel_id: props.selectedChannelId ?? pricing.value?.channel_id ?? candidates.value?.config?.channel_id ?? 0, cells: pricing.value?.cells ?? [] }))
+const dirty = computed(() => !!pricing.value && (JSON.stringify(pricing.value.cells) !== initialCells.value || !!minimumJSON.value.trim()))
+const priceDirty = computed(() => !!pricing.value && JSON.stringify(pricing.value.cells) !== initialCells.value)
+const canPublish = computed(() => canEdit.value && !!validatedBody.value && validatedDraft.value === JSON.stringify(body.value) && !busy.value)
+const originalByKey = computed(() => new Map((initialPricing.value?.cells ?? []).map(c => [cellKey(c), c])))
+const defaultCells = computed(() => (pricing.value?.cells ?? []).filter(c => c.mode === 'generate' && c.service_tier === 'default' && !c.draft))
+const editableCell = (cell: Cell) => cell.available || cell.unavailable_reason === 'verified_minimum_coverage_missing'
+const primaryCells = computed(() => defaultCells.value.filter(c => c.enabled || originalByKey.value.get(cellKey(c))?.enabled || (['480p', '720p', '1080p'].includes(c.resolution) && editableCell(c))))
+const pendingCells = computed(() => defaultCells.value.filter(c => !primaryCells.value.includes(c)))
+const otherCells = computed(() => (pricing.value?.cells ?? []).filter(c => !defaultCells.value.includes(c)))
+const otherPublished = computed(() => otherCells.value.filter(c => c.enabled || originalByKey.value.get(cellKey(c))?.enabled))
+const otherPending = computed(() => otherCells.value.filter(c => !otherPublished.value.includes(c)))
+const resolutions = computed(() => [...new Set(primaryCells.value.map(c => c.resolution))])
 const referenceOpen = computed({ get: () => selectedEvidence.value !== null || showMinimum.value, set: (open: boolean) => { if (!open) { selectedEvidence.value = null; showMinimum.value = false } } })
+const revisionOpen = computed({ get: () => selectedRevision.value !== null, set: (open: boolean) => { if (!open) selectedRevision.value = null } })
 const allSourceEvidence = computed(() => (selectedEvidence.value ?? []).map(row => ({ ...row, source: candidates.value?.sources.find(s => s.id === row.source_id) })).filter(row => !evidenceQuery.value.trim() || `${row.source_id} ${row.row} ${row.source?.raw_rows[row.row - 1]?.join(' ')}`.toLocaleLowerCase().includes(evidenceQuery.value.trim().toLocaleLowerCase())))
 const allMinimumEvidence = computed(() => candidates.value?.minimum.cells.filter(cell => !evidenceQuery.value.trim() || [cell.resolution, cell.ratio, cell.output_duration_ms, cell.fps, cell.minimum_tokens].join(' ').toLocaleLowerCase().includes(evidenceQuery.value.trim().toLocaleLowerCase())) ?? [])
 const evidenceCount = computed(() => showMinimum.value ? allMinimumEvidence.value.length : allSourceEvidence.value.length)
 const evidencePages = computed(() => Math.max(1, Math.ceil(evidenceCount.value / evidencePageSize)))
 const sourceEvidence = computed(() => allSourceEvidence.value.slice((evidencePage.value - 1) * evidencePageSize, evidencePage.value * evidencePageSize))
 const minimumEvidence = computed(() => allMinimumEvidence.value.slice((evidencePage.value - 1) * evidencePageSize, evidencePage.value * evidencePageSize))
+let loadGeneration = 0, operationGeneration = 0, editGeneration = 0
+const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value))
+function invalidate() { ++editGeneration; prepared.value = null; validatedBody.value = ''; validatedDraft.value = ''; previews.value = []; previewOpen.value = false; publishKey.value = uuid() }
+watch(body, () => { invalidate(); bulkChanges.value = [] }, { deep: true, flush: 'sync' })
+watch([minimumJSON, selectedKeys, bulkMode, bulkValue], () => { invalidate(); bulkChanges.value = [] }, { deep: true, flush: 'sync' })
+watch(dirty, value => emit('dirty-change', value), { immediate: true, flush: 'sync' })
+watch(busy, value => emit('busy-change', value), { immediate: true, flush: 'sync' })
 watch([selectedEvidence, showMinimum], () => { evidenceQuery.value = ''; evidencePage.value = 1 }, { flush: 'sync' })
 watch(evidenceQuery, () => { evidencePage.value = 1 }, { flush: 'sync' })
-const bindingMatches = computed(() => !props.selectedChannelId || candidates.value?.config?.channel_id === props.selectedChannelId)
-const canEdit = computed(() => !!pricing.value && bindingMatches.value && auth.isSuperadmin)
-const auth = useAuth()
-let loadGeneration = 0
-let operationGeneration = 0
-const revisionOpen = computed({ get: () => selectedRevision.value !== null, set: (open: boolean) => { if (!open) selectedRevision.value = null } })
-const validatedBody = ref(''), publishKey = ref(uuid())
-const base = computed(() => `/api/admin/video/models/${encodeURIComponent(model.value)}/pricing`)
-const body = computed(() => ({ expected_config_version: pricing.value?.config_version ?? '', config_version: configVersion.value, pricing_version: priceVersion.value, evidence_hash: evidenceHash.value, cells: pricing.value?.cells ?? [] }))
-const canPublish = computed(() => canEdit.value && validatedBody.value !== '' && validatedBody.value === JSON.stringify(body.value) && !busy.value)
-watch(body, () => { publishKey.value = uuid() }, { deep: true })
+function clear() {
+  ++operationGeneration; busy.value = false; error.value = ''; notice.value = ''; pricing.value = null; initialPricing.value = null; initialCells.value = ''; invalidate()
+  selectedRevision.value = null; revisions.value = []; minimums.value = []; minimumJSON.value = ''; candidates.value = null; referenceError.value = ''; selectedEvidence.value = null; showMinimum.value = false
+  selectedKeys.value = []; bulkValue.value = ''; bulkChanges.value = []; bulkError.value = ''; tab.value = 'retail'
+}
 async function load() {
   const generation = ++loadGeneration
-  ++operationGeneration; busy.value = false
-  loading.value = true; error.value = ''; notice.value = ''; pricing.value = null; previews.value = []; validatedBody.value = ''; selectedRevision.value = null; revisions.value = []; minimums.value = []; minimumJSON.value = ''; configVersion.value = ''; priceVersion.value = ''; evidenceHash.value = ''; candidates.value = null; referenceError.value = ''; prefilled.value = 0; selectedEvidence.value = null; showMinimum.value = false
-  if (!auth.isSuperadmin || !['seedance-2.0', 'seedance-2.5'].includes(model.value)) { loading.value = false; return }
+  clear(); loading.value = true
+  if (!auth.isSuperadmin || !supported.value) { loading.value = false; return }
   const endpoint = base.value
   try {
     const [data, history, minimum, reference] = await Promise.allSettled([api<Pricing>('GET', endpoint), api<{ items: Revision[] }>('GET', `${endpoint}/revisions`), api<{ items: Minimum[] }>('GET', `${endpoint}/minimum-rules`), api<ReferenceCandidates>('GET', `${endpoint}/reference-candidates`)])
     if (generation !== loadGeneration) return
     if (reference.status === 'fulfilled' && reference.value.model === model.value) candidates.value = reference.value
-    else referenceError.value = '官方候选暂不可用，本次不会自动填充成本。'
+    else referenceError.value = t('referenceFailed')
     if (history.status === 'fulfilled') revisions.value = history.value.items
     if (minimum.status === 'fulfilled') minimums.value = minimum.value.items
     if (data.status !== 'fulfilled') throw data.reason
-    if (data.value.model !== model.value) throw new Error('返回的模型与当前选择不一致')
-    pricing.value = data.value
-    if (candidates.value && bindingMatches.value && candidates.value.config?.config_version === data.value.config_version) {
-      prefilled.value = fillMissingOfficialCosts(data.value.cells, candidates.value)
-    }
-  } catch (e) { if (generation === loadGeneration) error.value = errorMessage(e, '无法加载已核验的视频配置') } finally { if (generation === loadGeneration) loading.value = false }
+    if (data.value.model !== model.value) throw new Error(t('loadFailed'))
+    initialPricing.value = clone(data.value); initialCells.value = JSON.stringify(data.value.cells); pricing.value = clone(data.value)
+  } catch (e) { if (generation === loadGeneration) error.value = errorMessage(e, t('loadFailed')) }
+  finally { if (generation === loadGeneration) loading.value = false }
+}
+function discardChanges() {
+  if (busy.value) return
+  pricing.value = initialPricing.value ? clone(initialPricing.value) : null
+  minimumJSON.value = ''; selectedKeys.value = []; bulkChanges.value = []; bulkError.value = ''; error.value = ''; notice.value = ''; invalidate()
+}
+function selectCell(key: string, value: boolean) { selectedKeys.value = value ? [...new Set([...selectedKeys.value, key])] : selectedKeys.value.filter(k => k !== key) }
+function previewBulk() {
+  bulkError.value = ''; bulkChanges.value = []
+  try {
+    if (!canEdit.value || busy.value || !selectedKeys.value.length) throw new Error()
+    const rows = selectedKeys.value.map(key => pricing.value?.cells.find(c => cellKey(c) === key))
+    if (rows.some(c => !c || !editableCell(c))) throw new Error()
+    bulkChanges.value = rows.map(c => ({ key: cellKey(c!), before: c!.retail_usd_per_1m, after: bulkMode.value === 'same' ? exactRate(bulkValue.value) : adjustRate(c!.retail_usd_per_1m, bulkValue.value) }))
+  } catch { bulkError.value = t('bulkError') }
+}
+function applyBulk() {
+  if (!canEdit.value || busy.value || !bulkChanges.value.length) return
+  const changes = clone(bulkChanges.value)
+  if (changes.some(change => pricing.value?.cells.find(c => cellKey(c) === change.key)?.retail_usd_per_1m !== change.before)) { bulkChanges.value = []; return }
+  for (const change of changes) { const cell = pricing.value!.cells.find(c => cellKey(c) === change.key)!; cell.retail_usd_per_1m = change.after }
+  bulkChanges.value = []
 }
 async function validate() {
-  if (!canEdit.value || busy.value) return
-  const generation = loadGeneration, operation = ++operationGeneration
-  const endpoint = base.value, snapshot = JSON.stringify(body.value)
+  if (!canEdit.value || busy.value || !priceDirty.value) return
+  const generation = loadGeneration, operation = ++operationGeneration, endpoint = base.value, snapshot = JSON.stringify(body.value)
   const current = () => generation === loadGeneration && operation === operationGeneration
-  busy.value = true; error.value = ''; notice.value = ''; validatedBody.value = ''
+  busy.value = true; error.value = ''; notice.value = ''; invalidate()
+  const edit = editGeneration
+  const unchanged = () => edit === editGeneration && snapshot === JSON.stringify(body.value)
   try {
-    const result = await api<{ preview: Preview[] }>('POST', `${endpoint}/validate`, JSON.parse(snapshot))
-    if (!current() || snapshot !== JSON.stringify(body.value)) return
-    previews.value = result.preview; validatedBody.value = snapshot; notice.value = '校验通过。预览使用已核验上界，未发起生成请求。'
-  } catch (e) { if (current()) error.value = errorMessage(e, '校验失败，请检查版本、金额和最低量覆盖') }
+    const result = await api<Prepared>('POST', `${endpoint}/prepare`, JSON.parse(snapshot))
+    if (!current() || !unchanged()) return
+    const request = JSON.stringify(result.request)
+    if (!result.request || !Array.isArray(result.request.cells) || !Array.isArray(result.diff)) throw new Error(t('prepareFailed'))
+    // Forward the complete server-prepared request, including typed source evidence.
+    const checked = await api<{ preview: Preview[] }>('POST', `${endpoint}/validate`, JSON.parse(request))
+    if (!current() || !unchanged()) return
+    prepared.value = result; previews.value = checked.preview; validatedBody.value = request; validatedDraft.value = snapshot; previewOpen.value = true; notice.value = t('previewSuccess')
+  } catch (e) { if (current() && unchanged()) error.value = errorMessage(e, t('prepareFailed')) }
   finally { if (current()) busy.value = false }
 }
 async function publish() {
   if (!canPublish.value) return
-  const generation = loadGeneration, operation = ++operationGeneration
-  const endpoint = base.value, snapshot = JSON.stringify(body.value), idempotencyKey = publishKey.value
+  const generation = loadGeneration, operation = ++operationGeneration, endpoint = base.value, snapshot = validatedBody.value, idempotencyKey = publishKey.value
   const current = () => generation === loadGeneration && operation === operationGeneration
   busy.value = true; error.value = ''
   try {
@@ -84,16 +138,15 @@ async function publish() {
     if (!current()) return
     const refreshedGeneration = loadGeneration + 1
     await load()
-    if (loadGeneration === refreshedGeneration) notice.value = '新价格版本已发布。历史任务仍使用创建时快照。'
-  } catch (e) { if (current()) error.value = errorMessage(e, '发布失败；版本冲突时请刷新后重新编辑') }
+    if (loadGeneration === refreshedGeneration) { notice.value = t('publishedNotice'); emit('published') }
+  } catch (e) { if (current()) error.value = errorMessage(e, t('publishFailed')) }
   finally { if (current()) busy.value = false }
 }
 async function importMinimum() {
   if (!canEdit.value || busy.value) return
-  const generation = loadGeneration, operation = ++operationGeneration
-  const endpoint = base.value, snapshot = minimumJSON.value
+  const generation = loadGeneration, operation = ++operationGeneration, endpoint = base.value, snapshot = minimumJSON.value
   const current = () => generation === loadGeneration && operation === operationGeneration
-  busy.value = true; error.value = ''; notice.value = ''
+  busy.value = true; error.value = ''; notice.value = ''; invalidate()
   try {
     await api('POST', `${endpoint}/minimum-rules`, JSON.parse(snapshot))
     if (!current()) return
@@ -101,66 +154,91 @@ async function importMinimum() {
     if (!current()) return
     minimums.value = result.items
     if (minimumJSON.value === snapshot) minimumJSON.value = ''
-    validatedBody.value = ''; notice.value = '最低量证据版本已登记。发布价格前仍需校验完整覆盖。'
-  } catch (e) { if (current()) error.value = errorMessage(e, '最低量 JSON 或证据字段无效') }
+    notice.value = t('importSuccess')
+  } catch (e) { if (current()) error.value = errorMessage(e, t('importFailed')) }
   finally { if (current()) busy.value = false }
 }
+function referenceCost(cell: Cell) { const matches = candidates.value?.prices.filter(c => cellKey(c) === cellKey(cell)); return matches?.length === 1 ? matches[0]!.supplier_cny_per_1m : undefined }
 function revisionText(r: Revision) { try { return JSON.stringify(JSON.parse(r.snapshot_json), null, 2) } catch { return r.snapshot_json } }
-watch(() => [auth.orgId, auth.token, auth.role, props.selectedModel, props.selectedChannelId, props.contextKey], () => {
-  ++loadGeneration; ++operationGeneration; busy.value = false; error.value = ''; notice.value = ''; selectedRevision.value = null; revisions.value = []; minimums.value = []; pricing.value = null; previews.value = []; minimumJSON.value = ''; validatedBody.value = ''
-  configVersion.value = ''; priceVersion.value = ''; evidenceHash.value = ''; candidates.value = null; referenceError.value = ''; prefilled.value = 0; selectedEvidence.value = null; showMinimum.value = false
+function changeLabel(change: Diff['change']) { return t(change === 'disabled' ? 'turnedOff' : change) }
+function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value || busy.value) { event.preventDefault(); event.returnValue = '' } }
+function tabKeydown(event: KeyboardEvent) {
+  const index = tabs.indexOf(tab.value)
+  const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1
+  if (next < 0) return
+  event.preventDefault(); tab.value = tabs[next]!
+  ;((event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('button')[next])?.focus()
+}
+watch(() => [auth.orgId, auth.token, auth.role, auth.isSuperadmin, props.selectedModel, props.selectedChannelId, props.contextKey], () => {
+  ++loadGeneration; clear()
   if (props.selectedModel && model.value !== props.selectedModel) { model.value = props.selectedModel; return }
   if (auth.isAuthed) void load()
 }, { flush: 'sync' })
 watch(model, () => { void load() }, { flush: 'sync' })
-onDeactivated(() => { ++loadGeneration; ++operationGeneration; loading.value = false; busy.value = false; error.value = ''; notice.value = ''; referenceError.value = ''; selectedRevision.value = null; selectedEvidence.value = null; showMinimum.value = false; pricing.value = null; candidates.value = null; revisions.value = []; minimums.value = []; previews.value = []; minimumJSON.value = ''; validatedBody.value = ''; configVersion.value = ''; priceVersion.value = ''; evidenceHash.value = '' })
-onBeforeUnmount(() => { ++loadGeneration; ++operationGeneration; selectedRevision.value = null })
-onMounted(load)
+onDeactivated(() => { ++loadGeneration; clear(); loading.value = false })
+onBeforeUnmount(() => { ++loadGeneration; ++operationGeneration; if (typeof window !== 'undefined') window.removeEventListener('beforeunload', beforeUnload) })
+onMounted(() => { if (typeof window !== 'undefined') window.addEventListener('beforeunload', beforeUnload); return load() })
 onActivated(() => { if (!pricing.value && !loading.value) void load() })
+defineExpose({ hasUnsavedChanges: () => dirty.value, discardChanges })
 </script>
 
 <template>
   <section class="video-pricing-page" :class="{ embedded }">
-    <header class="page-heading"><div><h1>视频定价<span v-if="embedded"> · {{ model }}</span></h1><p>创建时冻结上限，成功后按官方实际计费 Token 结算；参考视频按对应价格组合计费。</p></div><label v-if="!embedded">收费配置模型 <select v-model="model" :disabled="busy || loading"><option>seedance-2.0</option><option>seedance-2.5</option></select></label></header>
-    <p v-if="!auth.isSuperadmin" class="message">官方成本与价格发布需要有效的个人超管会话。</p>
-    <section v-if="candidates" class="panel reference-summary">
-      <h2>官方成本候选 · {{ candidates.catalog_version }}</h2>
-      <p>仅预填标准生成、默认服务层级的缺失 CNY 成本；USD 售价、启用状态、冻结系数和已配置成本保持现值。{{ prefilled ? `本次草稿已预填 ${prefilled} 个成本单元格。` : '当前没有需要自动填充的成本单元格。' }}</p>
-      <p v-if="!bindingMatches" class="message error">此模型的官方配置绑定了其他渠道，当前仅查看参考数据，不能在此选择下发布价格。</p>
-      <p v-if="!candidates.config">尚未绑定已核验配置。以下只是参考候选，不能代替模型开通或价格发布。</p>
-      <div class="table-scroll"><table><thead><tr><th>分辨率</th><th>参考视频</th><th>成本 CNY / 百万 Token</th><th>当前能力</th><th>来源</th></tr></thead><tbody><tr v-for="c in candidates.prices" :key="c.key"><td>{{ c.resolution }}</td><td>{{ c.input_video ? '有' : '无' }}</td><td>{{ c.supplier_cny_per_1m }}</td><td>{{ c.available ? '已核验' : '待核验，不能启用' }}</td><td><button @click="selectedEvidence = c.source_rows">引用规则详情</button></td></tr></tbody></table></div>
-      <p>最低量：官方估算参考，仅用于冻结估算候选，仍需人工核验与完整维度覆盖。</p><p v-if="candidates.minimum.issues.includes('fps_not_in_source')">原表未列帧率，不能借用当前配置猜填 FPS 或自动登记为已核验规则。</p>
-      <div class="actions"><button @click="showMinimum = true">查看最低量参考（{{ candidates.minimum.cells.length }} 项）</button></div>
-    </section>
-    <p v-if="referenceError" class="message" role="status">{{ referenceError }}</p>
-    <details v-if="auth.isSuperadmin" class="panel"><summary>查看本次支持系列的官方原始目录</summary><OfficialVideoPriceCatalog :allowed-series="[model === 'seedance-2.5' ? '2.5' : '2.0']" /></details>
+    <header class="page-heading"><div><h1>{{ model }}</h1><p>{{ t('unit') }}</p></div><span class="state" :class="{ dirty }">{{ dirty ? t('dirty') : t('clean') }}</span><label v-if="!embedded">{{ t('title') }} <select v-model="model" :disabled="busy || loading || dirty"><option>seedance-2.0</option><option>seedance-2.5</option></select></label></header>
+    <p v-if="!auth.isSuperadmin" class="message">{{ t('unauthorized') }}</p><p v-else-if="!supported" class="message">{{ t('unsupported') }}</p>
     <p v-if="error" class="message error" role="alert">{{ error }}</p><p v-if="notice" class="message success" role="status">{{ notice }}</p>
-    <p v-if="loading" aria-live="polite">正在读取价格和证据版本…</p>
-    <template v-else-if="pricing && bindingMatches">
-      <section class="panel metadata"><div><small>当前价格 / 配置</small><strong>{{ pricing.pricing_version }} / {{ pricing.config_version }}</strong></div><div><small>能力版本</small><strong>{{ pricing.capability_version }}</strong></div><div><small>USD / CNY 汇率快照</small><strong>{{ pricing.fx_usd_per_cny }} · {{ pricing.fx_version }}</strong><small>{{ pricing.fx_observed_at }}</small></div><div><small>模型状态</small><strong>{{ pricing.enabled ? '已启用' : '已停用' }}</strong></div></section>
-      <section class="panel"><h2>价格矩阵</h2><p>仅已核验能力可启用。商业售价由管理员填写；没有默认售价。缺少官方最低量覆盖的参考视频组合将被拒绝发布。</p>
-        <div class="table-scroll"><table><thead><tr><th>启用</th><th>任务 / 分辨率</th><th>参考视频</th><th>草稿</th><th>售价 USD / 百万 Token</th><th>成本 CNY / 百万 Token</th><th>预冻结系数</th><th>最低量版本</th></tr></thead><tbody><tr v-for="(cell, i) in pricing.cells" :key="i" :class="{ unavailable: !cell.available }"><td><input v-model="cell.enabled" type="checkbox" :aria-label="`启用价格 ${i + 1}`" :disabled="!canEdit || !cell.available || busy"></td><td>{{ cell.mode }} · {{ cell.resolution }}<small v-if="!cell.available">能力尚未核验</small></td><td>{{ cell.input_video ? '有' : '无' }}</td><td>{{ cell.draft ? '是' : '否' }}</td><td><input v-model="cell.retail_usd_per_1m" inputmode="decimal" :aria-label="`售价 ${i + 1}`" :disabled="!canEdit || !cell.available || busy" placeholder="待管理员确定"></td><td><input v-model="cell.supplier_cny_per_1m" inputmode="decimal" :aria-label="`成本 ${i + 1}`" :disabled="!canEdit || !cell.available || busy" placeholder="官方核验值"></td><td><input v-model="cell.risk_multiplier" inputmode="decimal" :aria-label="`系数 ${i + 1}`" :disabled="!canEdit || !cell.available || busy" placeholder="≥ 1"></td><td><select v-if="cell.input_video" v-model="cell.minimum_rule_version" :disabled="!canEdit || !cell.available || busy" :aria-label="`最低量 ${i + 1}`"><option value="">请选择证据版本</option><option v-for="item in minimums" :key="item.id" :value="item.version">{{ item.version }}</option></select><span v-else>不适用</span></td></tr></tbody></table></div>
-        <div class="fields"><label>新配置版本<input v-model="configVersion" placeholder="不可复用旧版本" :disabled="!canEdit || busy"></label><label>新价格版本<input v-model="priceVersion" placeholder="不可复用旧版本" :disabled="!canEdit || busy"></label><label class="wide">价格证据 SHA-256<input v-model="evidenceHash" placeholder="64 位十六进制原文件摘要" :disabled="!canEdit || busy"></label></div>
-        <div class="actions"><button :disabled="busy || !canEdit" @click="validate">校验并预览</button><button class="primary" :disabled="!canPublish" @click="publish">发布已校验版本</button><span>启用范围：{{ pricing.ratios.join('、') }}，{{ pricing.min_duration }}–{{ pricing.max_duration }} 秒</span></div>
-      </section>
-      <section v-if="previews.length" class="panel"><h2>预冻结上界预览</h2><p>按有效倍率 1 计算，覆盖当前能力全部比例和时长；实际组织倍率与请求参数以任务快照为准。冻结金额不是最终扣费。</p><div class="table-scroll"><table><thead><tr><th>组合</th><th>估算 Token 上界</th><th>客户冻结上界 USD</th><th>供应商预留 CNY</th></tr></thead><tbody><tr v-for="p in previews" :key="p.key"><td>{{ p.key }}</td><td>{{ p.maximum_estimated_tokens }}</td><td>{{ p.maximum_hold_usd }}</td><td>{{ p.supplier_reserved_cny }}</td></tr></tbody></table></div></section>
-      <section class="panel"><h2>官方最低量证据</h2><p>按分辨率、比例、输出时长及帧率登记，不能使用单个最小 Token 值替代整张表。登记代表当前实名管理员已人工核验来源，不代表系统自动证明真实性。上方参考目录中的估算下界不可直接作为本入口的已核验收费规则。</p><details><summary>导入新证据版本</summary><p>JSON 字段：version、source_url、evidence_hash、observed_at，以及 cells 数组；每项包含 resolution、ratio、output_duration_ms、fps、minimum_tokens。仅接受官方来源 HTTPS 地址，禁止填写未核验数值。</p><textarea :disabled="!canEdit || busy" v-model="minimumJSON" rows="8" aria-label="官方最低量 JSON" spellcheck="false" placeholder="粘贴经过核验的结构化最低量表"></textarea><button :disabled="!canEdit || busy || !minimumJSON.trim()" @click="importMinimum">确认已人工核验并登记</button></details><ul v-if="minimums.length"><li v-for="m in minimums" :key="m.id"><strong>{{ m.version }}</strong> · <a :href="m.source_url" target="_blank" rel="noopener noreferrer">官方来源</a> · 核验人 #{{ m.verified_by }} · {{ m.verified_at }}<small>{{ m.evidence_hash }}</small></li></ul><p v-else>尚无已核验最低量表。参考视频组合不可发布。</p></section>
-      <section class="panel"><h2>发布历史</h2><p v-if="!revisions.length">尚无通过本页发布的版本。当前价格仍显示在上方。</p><div class="history"><button v-for="r in revisions" :key="r.id" @click="selectedRevision = r">{{ r.version }} · #{{ r.created_by }} · {{ r.created_at }}</button></div></section>
+    <p v-if="loading" aria-live="polite">{{ t('loading') }}</p><p v-else-if="!bindingMatches" class="message error">{{ t('wrongBinding') }}</p>
+    <template v-else-if="pricing">
+      <nav class="tabs" role="tablist" :aria-label="t('title')"><button v-for="name in tabs" :id="`${tabsId}-${name}`" :key="name" type="button" role="tab" :class="{ active: tab === name }" :aria-selected="tab === name" :tabindex="tab === name ? 0 : -1" :aria-controls="`${tabsId}-panel`" @keydown="tabKeydown" @click="tab = name">{{ t(name) }}</button></nav>
+      <div v-if="tab === 'retail'" class="tab-body" :id="`${tabsId}-panel`" role="tabpanel" :aria-labelledby="`${tabsId}-${tab}`">
+        <p class="intro">{{ t('subtitle') }}</p>
+        <div class="matrix" role="group" :aria-label="t('retail')"><div class="matrix-heading"><strong>{{ t('resolution') }}</strong><strong>{{ t('noVideo') }}</strong><strong>{{ t('withVideo') }}</strong></div>
+          <div v-for="resolution in resolutions" :key="resolution" class="matrix-row"><strong class="resolution">{{ resolution }}</strong><div v-for="input in [false, true]" :key="String(input)" class="matrix-value"><template v-for="cell in primaryCells.filter(c => c.resolution === resolution && c.input_video === input)" :key="cellKey(cell)"><SimpleVideoPriceCell :cell="cell" :original="originalByKey.get(cellKey(cell))" :reference="referenceCost(cell)" :selected="selectedKeys.includes(cellKey(cell))" :disabled="!canEdit || busy" @select="selectCell" @rules="tab = 'rules'" /></template><span v-if="!primaryCells.some(c => c.resolution === resolution && c.input_video === input)" class="empty-cell">{{ t('unavailable') }}</span></div></div>
+        </div>
+        <details v-if="pendingCells.length" class="panel"><summary>{{ t('candidates') }} · {{ pendingCells.length }}</summary><div class="extra-grid"><article v-for="cell in pendingCells" :key="cellKey(cell)"><h3>{{ cell.resolution }} · {{ cell.input_video ? t('withVideo') : t('noVideo') }}</h3><SimpleVideoPriceCell :cell="cell" :original="originalByKey.get(cellKey(cell))" :reference="referenceCost(cell)" :selected="selectedKeys.includes(cellKey(cell))" :disabled="!canEdit || busy" @select="selectCell" @rules="tab = 'rules'" /></article></div></details>
+        <section v-if="otherPublished.length" class="panel"><h2>{{ t('otherModes') }} · {{ t('published') }}</h2><div class="extra-grid"><article v-for="cell in otherPublished" :key="cellKey(cell)"><h3>{{ cellKey(cell) }}</h3><SimpleVideoPriceCell :cell="cell" :original="originalByKey.get(cellKey(cell))" :selected="selectedKeys.includes(cellKey(cell))" :disabled="!canEdit || busy" @select="selectCell" @rules="tab = 'rules'" /></article></div></section>
+        <details v-if="otherPending.length" class="panel"><summary>{{ t('otherModes') }} · {{ otherPending.length }}</summary><div class="extra-grid"><article v-for="cell in otherPending" :key="cellKey(cell)"><h3>{{ cellKey(cell) }}</h3><SimpleVideoPriceCell :cell="cell" :original="originalByKey.get(cellKey(cell))" :selected="selectedKeys.includes(cellKey(cell))" :disabled="!canEdit || busy" @select="selectCell" @rules="tab = 'rules'" /></article></div></details>
+        <section class="panel bulk"><div class="section-title"><h2>{{ t('bulk') }}</h2><span>{{ t('selected', { count: selectedKeys.length }) }}</span></div><div class="bulk-controls"><select v-model="bulkMode" :disabled="busy" :aria-label="t('bulk')"><option value="same">{{ t('samePrice') }}</option><option value="percentage">{{ t('percentage') }}</option></select><input v-model="bulkValue" :disabled="busy" inputmode="decimal" :aria-label="t('value')" :placeholder="bulkMode === 'percentage' ? '10 / -5 (%)' : 'USD / 1M'"><button :disabled="busy || !canEdit || !selectedKeys.length" @click="previewBulk">{{ t('bulkPreview') }}</button></div><p>{{ t('bulkHelp') }}</p><p v-if="bulkError" role="alert" class="message error">{{ bulkError }}</p><div v-if="bulkChanges.length"><div class="table-scroll"><table><thead><tr><th>{{ t('key') }}</th><th>{{ t('before') }}</th><th>{{ t('after') }}</th></tr></thead><tbody><tr v-for="change in bulkChanges" :key="change.key"><td>{{ change.key }}</td><td>{{ change.before || '—' }}</td><td>{{ change.after }}</td></tr></tbody></table></div><button class="primary" :disabled="busy" @click="applyBulk">{{ t('apply') }}</button></div></section>
+        <p class="preserved">{{ t('allPreserved') }}</p>
+      </div>
+      <div v-else-if="tab === 'rules'" class="tab-body" :id="`${tabsId}-panel`" role="tabpanel" :aria-labelledby="`${tabsId}-${tab}`">
+        <p>{{ t('rulesHelp') }}</p><p>{{ t('reserveHelp') }}</p>
+        <section class="panel metadata"><div><small>{{ t('version') }}</small><strong>{{ pricing.pricing_version }}</strong></div><div><small>{{ t('config') }}</small><strong>{{ pricing.config_version }}</strong></div><div><small>{{ t('capability') }}</small><strong>{{ pricing.capability_version }}</strong></div><div><small>{{ t('fx') }}</small><strong>{{ pricing.fx_usd_per_cny }} · {{ pricing.fx_version }}</strong><small>{{ pricing.fx_observed_at }}</small></div><div><small>{{ t('status') }}</small><strong>{{ pricing.enabled ? t('published') : t('inactive') }}</strong></div><div><small>{{ t('scope') }}</small><strong>{{ pricing.ratios?.join(' / ') }} · {{ pricing.min_duration }}–{{ pricing.max_duration }} s</strong></div></section>
+        <details class="panel"><summary>{{ t('advanced') }}</summary><div class="table-scroll"><table><thead><tr><th>{{ t('key') }}</th><th>{{ t('cost') }}</th><th>{{ t('risk') }}</th><th>{{ t('minimum') }}</th></tr></thead><tbody><tr v-for="cell in pricing.cells" :key="cellKey(cell)"><td>{{ cellKey(cell) }}</td><td><input v-model="cell.supplier_cny_per_1m" inputmode="decimal" :disabled="!canEdit || busy || !editableCell(cell)" :aria-label="`${t('cost')} ${cellKey(cell)}`"></td><td><input v-model="cell.risk_multiplier" inputmode="decimal" :disabled="!canEdit || busy || !editableCell(cell)" :aria-label="`${t('risk')} ${cellKey(cell)}`"></td><td><select v-if="cell.input_video" v-model="cell.minimum_rule_version" :disabled="!canEdit || busy || !editableCell(cell)" :aria-label="`${t('minimum')} ${cellKey(cell)}`"><option value="">{{ t('chooseEvidence') }}</option><option v-if="cell.minimum_rule_version && !minimums.some(m => m.version === cell.minimum_rule_version)" :value="cell.minimum_rule_version">{{ cell.minimum_rule_version }}</option><option v-for="item in minimums" :key="item.id" :value="item.version">{{ item.version }}</option></select><span v-else>{{ t('notApplicable') }}</span></td></tr></tbody></table></div></details>
+      </div>
+      <div v-else-if="tab === 'reference'" class="tab-body" :id="`${tabsId}-panel`" role="tabpanel" :aria-labelledby="`${tabsId}-${tab}`">
+        <p>{{ t('referenceHelp') }}</p><p v-if="referenceError" class="message" role="status">{{ referenceError }}</p>
+        <section v-if="candidates" class="panel"><h2>{{ t('reference') }} · {{ candidates.catalog_version }}</h2><div class="table-scroll"><table><thead><tr><th>{{ t('resolution') }}</th><th>{{ t('key') }}</th><th>{{ t('official') }}</th><th>{{ t('status') }}</th><th>{{ t('sources') }}</th></tr></thead><tbody><tr v-for="cell in candidates.prices" :key="cell.key"><td>{{ cell.resolution }}</td><td>{{ cell.input_video ? t('withVideo') : t('noVideo') }}</td><td>{{ cell.supplier_cny_per_1m }}</td><td>{{ cell.available ? t('verified') : t('unavailable') }}</td><td><button @click="selectedEvidence = cell.source_rows">{{ t('details') }}</button></td></tr></tbody></table></div><p v-if="candidates.minimum.issues.includes('fps_not_in_source')">{{ t('fpsWarning') }}</p><button @click="showMinimum = true">{{ t('minimumReference') }} · {{ candidates.minimum.cells.length }}</button></section>
+        <details class="panel"><summary>{{ t('reference') }} · {{ t('details') }}</summary><OfficialVideoPriceCatalog :allowed-series="[model === 'seedance-2.5' ? '2.5' : '2.0']" /></details>
+        <section class="panel"><h2>{{ t('minimum') }}</h2><ul v-if="minimums.length"><li v-for="m in minimums" :key="m.id"><strong>{{ m.version }}</strong> · <a :href="m.source_url" target="_blank" rel="noopener noreferrer">{{ t('original') }}</a> · #{{ m.verified_by }} · {{ m.verified_at }}</li></ul><p v-else>{{ t('noMinimum') }}</p><details><summary>{{ t('importTitle') }}</summary><p>{{ t('importHelp') }}</p><textarea v-model="minimumJSON" :disabled="!canEdit || busy" rows="8" :aria-label="t('importTitle')" spellcheck="false"></textarea><button :disabled="!canEdit || busy || !minimumJSON.trim()" @click="importMinimum">{{ t('importAction') }}</button></details></section>
+      </div>
+      <div v-else class="tab-body" :id="`${tabsId}-panel`" role="tabpanel" :aria-labelledby="`${tabsId}-${tab}`"><p v-if="!revisions.length">{{ t('historyEmpty') }}</p><button v-for="r in revisions" :key="r.id" class="revision" @click="selectedRevision = r"><strong>{{ r.version }}</strong><span>{{ t('author') }} #{{ r.created_by }} · {{ r.created_at }}</span><span>{{ t('details') }} →</span></button></div>
+      <footer class="pricing-footer"><span>{{ busy ? t('busy') : dirty ? t('dirty') : t('noChanges') }}</span><div class="footer-actions"><button v-if="dirty" :disabled="busy" @click="discardChanges">{{ t('discard') }}</button><button :disabled="busy || !canEdit || !priceDirty" @click="validate">{{ t('preview') }}</button><button class="primary" :disabled="!canPublish" :title="canPublish ? '' : t('validateFirst')" @click="publish">{{ t('publish') }}</button></div></footer>
     </template>
-    <section v-else-if="!loading" class="panel"><p>模型尚未配置或缺少实名超管权限。请先完成渠道与能力核验。</p><button @click="load">重新加载</button></section>
-    <DetailDrawer v-model:open="revisionOpen" title="价格发布详情" size="lg" description="历史发布快照，只读查看；不修改当前价格。"><template v-if="selectedRevision"><p>{{ selectedRevision.version }} · 配置 {{ selectedRevision.config_version }} · #{{ selectedRevision.created_by }} · {{ selectedRevision.created_at }}</p><pre>{{ revisionText(selectedRevision) }}</pre></template></DetailDrawer>
-    <DetailDrawer v-model:open="referenceOpen" :title="showMinimum ? '最低量参考详情' : '引用规则详情'" size="lg" description="固化的官方参考证据；查看不会登记最低量或发布价格。">
-      <template v-if="candidates"><p>目录 {{ candidates.catalog_version }}</p><p class="evidence-hash">清单 SHA-256：{{ candidates.manifest_sha256 }}</p>
-        <label class="reference-search">搜索参考行<input v-model="evidenceQuery" type="search" placeholder="分辨率、比例、Token 或原文"></label>
-        <template v-if="showMinimum"><p>官方估算 · 待人工核验。未列 FPS 的值保持未知；不会从示例视频金额倒推 Token。</p><div class="table-scroll"><table><thead><tr><th>分辨率</th><th>比例</th><th>输出时长 ms</th><th>FPS</th><th>最低 Token 参考</th><th>来源</th></tr></thead><tbody><tr v-for="(c, i) in minimumEvidence" :key="i"><td>{{ c.resolution }}</td><td>{{ c.ratio }}</td><td>{{ c.output_duration_ms }}</td><td>{{ c.fps ?? '未单列' }}</td><td>{{ c.minimum_tokens }}</td><td><button @click="showMinimum = false; selectedEvidence = c.source_rows">原始行</button></td></tr></tbody></table></div></template>
-        <template v-else><article v-for="row in sourceEvidence" :key="`${row.source_id}:${row.row}`" class="source-row"><template v-if="row.source"><p><a :href="row.source.source_url" target="_blank" rel="noopener noreferrer">官方来源 ↗</a> · 原始行 {{ row.row }}</p><p>{{ row.source.table_id }} / {{ row.source.view_id }} · {{ row.source.captured_at }}</p><p class="evidence-hash">{{ row.source.raw_sha256 }}</p><div class="table-scroll"><table><thead><tr><th v-for="(header, i) in row.source.headers" :key="i">{{ header }}<small>{{ row.source.columns[i]?.unit }} · {{ row.source.columns[i]?.precision }}</small></th></tr></thead><tbody><tr><td v-for="(cell, i) in row.source.raw_rows[row.row - 1]" :key="i">{{ cell === '' ? '（原表空白）' : cell }}</td></tr></tbody></table></div></template></article></template>
-        <p v-if="!evidenceCount">没有匹配的参考行。</p><nav class="actions" aria-label="参考行分页"><button :disabled="evidencePage <= 1" @click="evidencePage--">上一页</button><span>{{ evidencePage }} / {{ evidencePages }} 页 · {{ evidenceCount }} 项</span><button :disabled="evidencePage >= evidencePages" @click="evidencePage++">下一页</button></nav>
+    <section v-else-if="!loading && auth.isSuperadmin && supported" class="panel"><p>{{ t('noConfig') }}</p><button @click="load">{{ t('reload') }}</button></section>
+    <DetailDrawer v-model:open="previewOpen" :title="t('previewTitle')" size="lg" :close-disabled="busy" :description="t('allPreserved')"><template v-if="prepared"><div class="table-scroll"><table><thead><tr><th>{{ t('key') }}</th><th>{{ t('change') }}</th><th>{{ t('before') }}</th><th>{{ t('after') }}</th></tr></thead><tbody><tr v-for="row in prepared.diff" :key="row.key"><td>{{ row.key }}</td><td>{{ changeLabel(row.change) }}</td><td>{{ row.before?.retail_usd_per_1m || '—' }}<small>{{ row.before?.enabled ? t('published') : t('disabled') }}</small><small v-if="row.before && row.before.supplier_cny_per_1m !== row.after?.supplier_cny_per_1m">{{ t('cost') }}: {{ row.before.supplier_cny_per_1m || '—' }}</small><small v-if="row.before && row.before.risk_multiplier !== row.after?.risk_multiplier">{{ t('risk') }}: {{ row.before.risk_multiplier || '—' }}</small><small v-if="row.before && row.before.minimum_rule_version !== row.after?.minimum_rule_version">{{ t('minimum') }}: {{ row.before.minimum_rule_version || '—' }}</small></td><td>{{ row.after?.retail_usd_per_1m || '—' }}<small>{{ row.after?.enabled ? t('published') : t('disabled') }}</small><small v-if="row.after && row.after.supplier_cny_per_1m !== row.before?.supplier_cny_per_1m">{{ t('cost') }}: {{ row.after.supplier_cny_per_1m || '—' }}</small><small v-if="row.after && row.after.risk_multiplier !== row.before?.risk_multiplier">{{ t('risk') }}: {{ row.after.risk_multiplier || '—' }}</small><small v-if="row.after && row.after.minimum_rule_version !== row.before?.minimum_rule_version">{{ t('minimum') }}: {{ row.after.minimum_rule_version || '—' }}</small></td></tr></tbody></table></div><h2>{{ t('holdPreview') }}</h2><p>{{ t('reserveHelp') }}</p><div class="table-scroll"><table><thead><tr><th>{{ t('key') }}</th><th>{{ t('estimatedTokens') }}</th><th>{{ t('holdUSD') }}</th><th>{{ t('reserveCNY') }}</th></tr></thead><tbody><tr v-for="p in previews" :key="p.key"><td>{{ p.key }}</td><td>{{ p.maximum_estimated_tokens }}</td><td>{{ p.maximum_hold_usd }}</td><td>{{ p.supplier_reserved_cny }}</td></tr></tbody></table></div><details><summary>{{ t('sources') }}</summary><pre>{{ JSON.stringify(prepared.sources, null, 2) }}</pre></details><p v-if="error" role="alert" class="message error">{{ error }}</p></template><template #footer><button :disabled="busy" @click="previewOpen = false">{{ t('previous') }}</button><button class="primary" :disabled="!canPublish" @click="publish">{{ t('publish') }}</button></template></DetailDrawer>
+    <DetailDrawer v-model:open="revisionOpen" :title="t('revisionTitle')" size="lg" :description="t('revisionReadOnly')"><template v-if="selectedRevision"><p>{{ selectedRevision.version }} · {{ selectedRevision.config_version }} · #{{ selectedRevision.created_by }} · {{ selectedRevision.created_at }}</p><pre>{{ revisionText(selectedRevision) }}</pre></template></DetailDrawer>
+    <DetailDrawer v-model:open="referenceOpen" :title="showMinimum ? t('minimumReference') : t('sourceTitle')" size="lg" :description="t('referenceHelp')">
+      <template v-if="candidates"><p>{{ candidates.catalog_version }}</p><p class="evidence-hash">{{ candidates.manifest_sha256 }}</p><label>{{ t('evidenceSearch') }}<input v-model="evidenceQuery" type="search"></label>
+        <template v-if="showMinimum"><p>{{ t('fpsWarning') }}</p><div class="table-scroll"><table><thead><tr><th>{{ t('resolution') }}</th><th>Ratio</th><th>ms</th><th>FPS</th><th>Token</th><th>{{ t('sources') }}</th></tr></thead><tbody><tr v-for="(c, i) in minimumEvidence" :key="i"><td>{{ c.resolution }}</td><td>{{ c.ratio }}</td><td>{{ c.output_duration_ms }}</td><td>{{ c.fps ?? t('unknown') }}</td><td>{{ c.minimum_tokens }}</td><td><button @click="showMinimum = false; selectedEvidence = c.source_rows">{{ t('details') }}</button></td></tr></tbody></table></div></template>
+        <template v-else><article v-for="row in sourceEvidence" :key="`${row.source_id}:${row.row}`" class="source-row"><template v-if="row.source"><p><a :href="row.source.source_url" target="_blank" rel="noopener noreferrer">{{ t('original') }} ↗</a> · {{ row.row }}</p><p>{{ row.source.table_id }} / {{ row.source.view_id }} · {{ row.source.captured_at }}</p><p class="evidence-hash">{{ row.source.raw_sha256 }}</p><div class="table-scroll"><table><thead><tr><th v-for="(header, i) in row.source.headers" :key="i">{{ header }}<small>{{ row.source.columns[i]?.unit }} · {{ row.source.columns[i]?.precision }}</small></th></tr></thead><tbody><tr><td v-for="(cell, i) in row.source.raw_rows[row.row - 1]" :key="i">{{ cell || '—' }}</td></tr></tbody></table></div></template></article></template>
+        <p v-if="!evidenceCount">{{ t('noEvidence') }}</p><nav class="actions"><button :disabled="evidencePage <= 1" @click="evidencePage--">{{ t('previous') }}</button><span>{{ evidencePage }} / {{ evidencePages }} · {{ evidenceCount }}</span><button :disabled="evidencePage >= evidencePages" @click="evidencePage++">{{ t('next') }}</button></nav>
       </template>
     </DetailDrawer>
   </section>
 </template>
 
 <style scoped>
-.video-pricing-page.embedded{padding:0;max-width:none;width:100%}.evidence-hash{overflow-wrap:anywhere;font-family:monospace;font-size:12px}.source-row{padding:16px 0;border-bottom:1px solid rgb(var(--c-line))}.reference-summary{border-left:3px solid rgb(var(--c-accent))}
-.video-pricing-page{max-width:1500px;margin:0 auto;padding:28px;display:grid;gap:20px;color:rgb(var(--c-ink))}.page-heading{display:flex;justify-content:space-between;gap:24px;align-items:center}h1{font-size:26px;margin:0 0 8px}h2{font-size:18px;margin:0 0 12px}p,small{color:rgb(var(--c-muted));line-height:1.6}small{display:block;font-size:12px}.panel{padding:22px;border:1px solid rgb(var(--c-line));border-radius:12px;background:rgb(var(--c-panel));min-width:0}.metadata{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px}.metadata strong{display:block;overflow-wrap:anywhere}.table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;border-bottom:1px solid rgb(var(--c-line));padding:12px 8px}th{white-space:nowrap;color:rgb(var(--c-muted))}input,select,textarea,button{font:inherit;color:inherit;border:1px solid rgb(var(--c-line));border-radius:6px;background:rgb(var(--c-bg));padding:9px}td input:not([type=checkbox]){min-width:105px;width:135px}td select{max-width:180px}button{cursor:pointer}button:disabled,input:disabled,select:disabled{opacity:.48;cursor:not-allowed}.primary{background:#355fe5;border-color:#355fe5;color:white}.fields{display:flex;flex-wrap:wrap;gap:18px;margin-top:22px}.fields label{display:grid;gap:8px;flex:1;min-width:200px}.fields .wide{flex:2}.actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:20px}.actions span{font-size:12px;color:rgb(var(--c-muted))}.unavailable{opacity:.6}.message{padding:14px;border-radius:8px;margin:0}.error{background:#52202a;color:#ffd9e0}.success{background:#153f34;color:#b7f2db}textarea{width:100%;box-sizing:border-box;margin:12px 0;font-family:monospace}.history{display:flex;gap:10px;flex-wrap:wrap}pre{overflow:auto;max-height:500px;padding:16px;background:rgb(var(--c-bg))}li{padding:8px 0;overflow-wrap:anywhere}a{color:rgb(var(--c-ink))}summary{cursor:pointer;padding:8px 0}@media(max-width:800px){.video-pricing-page{padding:16px}.metadata{grid-template-columns:1fr 1fr}.page-heading{align-items:flex-start;flex-direction:column}.panel{padding:16px}}@media(max-width:480px){.metadata{grid-template-columns:1fr}}
+.video-pricing-page{max-width:1120px;margin:auto;padding:24px;display:flex;flex-direction:column;gap:18px;color:rgb(var(--c-ink));min-width:0}
+.video-pricing-page.embedded{padding:0;max-width:none;width:100%;min-height:100%}
+.embedded .pricing-footer{bottom:-20px}
+.page-heading,.section-title{display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.page-heading h1{font-size:22px;margin:0}.page-heading p{margin:6px 0 0}.state{border-radius:20px;background:rgb(var(--c-bg));padding:7px 10px;font-size:12px;color:rgb(var(--c-muted))}.state.dirty{color:#a65b00;background:#fef3c7}
+.tabs{display:flex;gap:22px;border-bottom:1px solid rgb(var(--c-line));overflow:auto;flex-shrink:0}.tabs button{border:0;border-radius:0;padding:12px 0;background:none;white-space:nowrap;color:rgb(var(--c-muted));border-bottom:2px solid transparent}.tabs .active{border-bottom-color:rgb(var(--c-accent));color:rgb(var(--c-accent));font-weight:600}
+.tab-body{display:grid;gap:18px;min-width:0;flex:1}.intro{margin:0}.matrix{border:1px solid rgb(var(--c-line));border-radius:12px;overflow:hidden}.matrix-heading,.matrix-row{display:grid;grid-template-columns:90px minmax(0,1fr) minmax(0,1fr)}.matrix-heading{background:rgb(var(--c-bg));padding:12px 0;font-size:12px;color:rgb(var(--c-muted))}.matrix-heading strong{padding:0 12px}.matrix-row{border-top:1px solid rgb(var(--c-line))}.resolution{padding:20px 12px;font-size:14px}.matrix-value{border-left:1px solid rgb(var(--c-line));min-width:0}.empty-cell{display:block;padding:20px;color:rgb(var(--c-muted));font-size:12px}
+.panel{padding:18px;border:1px solid rgb(var(--c-line));border-radius:12px;background:rgb(var(--c-panel));min-width:0}.extra-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:12px}.extra-grid article{border:1px solid rgb(var(--c-line));border-radius:8px;overflow:hidden}.extra-grid h3{font-size:12px;margin:12px 14px 0;overflow-wrap:anywhere}.section-title span,.bulk p,.preserved{font-size:12px;color:rgb(var(--c-muted))}.bulk-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px}.bulk-controls input{min-width:100px;flex:1}.metadata{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.metadata strong{display:block;font-size:13px;overflow-wrap:anywhere}
+.pricing-footer{position:sticky;bottom:-24px;z-index:2;margin-top:auto;background:rgb(var(--c-panel));border-top:1px solid rgb(var(--c-line));padding:16px 0;display:flex;justify-content:space-between;align-items:center;gap:14px;box-shadow:0 -8px 20px rgb(0 0 0/.025)}.pricing-footer>span{font-size:12px;color:rgb(var(--c-muted))}.footer-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.revision{display:flex;align-items:center;gap:14px;text-align:left;padding:18px}.revision span{font-size:12px;color:rgb(var(--c-muted))}.revision span:last-child{margin-left:auto}
+h2{font-size:16px;margin:0}p,small{color:rgb(var(--c-muted));line-height:1.6}small{display:block;font-size:12px}.table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px;margin:12px 0}th,td{text-align:left;border-bottom:1px solid rgb(var(--c-line));padding:10px 8px;vertical-align:top}th{color:rgb(var(--c-muted))}td input{width:120px}input,select,textarea,button{font:inherit;color:inherit;border:1px solid rgb(var(--c-line));border-radius:7px;background:rgb(var(--c-bg));padding:9px;box-sizing:border-box}button{cursor:pointer}button:disabled,input:disabled,select:disabled{opacity:.5;cursor:not-allowed}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid rgb(var(--c-accent));outline-offset:2px}.primary{background:rgb(var(--c-accent));border-color:rgb(var(--c-accent));color:white}.actions{display:flex;gap:12px;align-items:center;margin-top:16px}.message{padding:12px;border-radius:8px;margin:0;font-size:13px}.error{background:#fff0f0;color:#a12a2a}.success{background:#ecfdf5;color:#16634c}textarea{width:100%;margin:12px 0;font-family:monospace}pre{overflow:auto;max-height:500px;padding:16px;background:rgb(var(--c-bg));font-size:12px}li{padding:8px 0;overflow-wrap:anywhere}a{color:rgb(var(--c-accent))}summary{cursor:pointer;font-size:13px}.evidence-hash{overflow-wrap:anywhere;font-family:monospace;font-size:12px}.source-row{padding:16px 0;border-bottom:1px solid rgb(var(--c-line))}
+@media(max-width:600px){.video-pricing-page{padding:16px}.matrix-heading,.matrix-row{grid-template-columns:62px minmax(0,1fr) minmax(0,1fr)}.matrix-heading strong,.resolution{padding-left:8px;padding-right:8px}.matrix-heading{font-size:11px}.panel{padding:12px}.extra-grid,.metadata{grid-template-columns:1fr}.pricing-footer{bottom:-16px;align-items:flex-start;flex-direction:column}.footer-actions{width:100%;justify-content:flex-end}.tabs{gap:16px}.revision{flex-wrap:wrap}}
+@media(max-width:640px){.embedded .pricing-footer{bottom:-16px}}
 </style>
