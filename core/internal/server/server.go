@@ -325,7 +325,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		// 客户端可观测性头透传（DevEx 承诺）：x-trace-id / x-user-id / x-agent-name 原样回显到响应头，
 		// 客户端据此把自己的 trace 与我方 X-Request-Id 对齐。中间件挂在 relay 路由组，不动各 handler。
 		rg := r.Group("", echoTraceHeaders())
-		rg.GET("/v1/models", rl.HandleListModels)
+		rg.GET("/v1/models", s.listPricedModels)
 		rg.POST("/v1/chat/completions", rl.HandleChatCompletions)
 		// Anthropic 原生入站（Claude Code / Anthropic SDK 把 base 指到 /anthropic 即用）：
 		// ingress 转 OpenAI canonical → 复用未改动的 HandleChatCompletions 全套计费/路由 → egress 转回 Anthropic。
