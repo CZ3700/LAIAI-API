@@ -47,6 +47,24 @@ const built = await build({
 const { default: VideoPricing } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`)
 const decimalBuild = await build({ entryPoints: [fileURLToPath(new URL('../components/pricing/videoPriceDecimal.ts', import.meta.url))], bundle: true, format: 'esm', write: false })
 const {exactRate, adjustRate} = await import(`data:text/javascript;base64,${Buffer.from(decimalBuild.outputFiles[0].text).toString('base64')}`)
+const legacyBuild = await build({ entryPoints: [fileURLToPath(new URL('../components/pricing/legacyVideoPricing.ts', import.meta.url))], bundle: true, format: 'esm', write: false })
+const { legacyVideoPricingTarget } = await import(`data:text/javascript;base64,${Buffer.from(legacyBuild.outputFiles[0].text).toString('base64')}`)
+const simpleFilename = fileURLToPath(new URL('../components/pricing/SimpleVideoPriceCell.vue', import.meta.url))
+const simpleScript = compileScript(parse(await readFile(simpleFilename, 'utf8'), {filename: simpleFilename}).descriptor, {id: 'simple-price-cell-guard'})
+const simpleBuild = await build({
+  stdin: {contents: simpleScript.content, loader: 'ts', sourcefile: simpleFilename}, bundle: true, format: 'esm', write: false,
+  plugins: [{name: 'simple-price-boundaries', setup(b) {
+    b.onResolve({filter: /.*/}, args => ({path: args.path, namespace: 'simple'}))
+    b.onLoad({filter: /.*/, namespace: 'simple'}, args => {
+      if (args.path === 'vue') return {contents: 'export const defineComponent = v => v; export const computed = (...args) => globalThis.__pricingHarness.vue.computed(...args);'}
+      if (args.path === 'vue-i18n') return {contents: 'export const useI18n = () => ({t: key => key});'}
+      if (args.path === '@/i18n/pricingRedesignVideo') return {contents: 'export default {};'}
+      if (args.path === './types' || args.path === './videoPriceDecimal') return readFile(new URL(`../components/pricing/${args.path.slice(2)}.ts`, import.meta.url), 'utf8').then(contents => ({contents, loader: 'ts'}))
+      throw new Error(`Unexpected simple cell dependency: ${args.path}`)
+    })
+  }}],
+})
+const {default: SimpleVideoPriceCell} = await import(`data:text/javascript;base64,${Buffer.from(simpleBuild.outputFiles[0].text).toString('base64')}`)
 
 function deferred() {
   let resolve, reject
@@ -399,4 +417,68 @@ test('publication failure leaves edits intact and preserves idempotency for retr
   await h.vm.publish()
   assert.deepEqual(writes(h).at(-1).options, first.options)
   assert.deepEqual(writes(h).at(-1).body, first.body)
+})
+
+const legacyRows = [
+  {key: '10:upstream-2', model: 'doubao-seedance-2-0-260128', video_model: 'seedance-2.0', channel_id: 10, video_configuration: {channel_id: 10}},
+  {key: '11:alias-2', model: 'other-channel-2', video_model: 'seedance-2.0', channel_id: 11, video_configuration: {channel_id: 10}},
+  {key: '10:upstream-25', model: 'doubao-seedance-2-5-260628', video_model: 'seedance-2.5', channel_id: 10, video_configuration: {channel_id: 10}},
+  {key: '10:fast', model: 'seedance-2.0-fast', video_model: null, channel_id: 10, video_configuration: null},
+]
+
+test('legacy video links resolve canonical models to the actual bound catalog row and retain other query state', () => {
+  const defaults = legacyVideoPricingTarget({trace: 'keep', filters: ['a','b'], tab: 'old'}, legacyRows)
+  assert.equal(defaults.path, '/app/admin')
+  assert.deepEqual(defaults.query, {trace: 'keep', filters: ['a','b'], tab: 'prices', pricing_type: 'video', pricing_model: '10:upstream-2'})
+  const chosen = legacyVideoPricingTarget({model: 'seedance-2.5', channel_id: '10', trace: 'keep'}, legacyRows)
+  assert.equal(chosen.query.pricing_model, '10:upstream-25')
+  assert.equal(chosen.query.model, undefined)
+  assert.equal(chosen.query.channel_id, undefined)
+  assert.equal(chosen.query.trace, 'keep')
+  const explicit = legacyVideoPricingTarget({model: 'seedance-2.0', channel_id: '11'}, legacyRows)
+  assert.equal(explicit.query.pricing_model, '11:alias-2', 'an explicit known channel must not be silently replaced by a different binding')
+})
+
+test('legacy missing, unsupported, invalid-channel and ambiguous links keep search without opening any price editor', () => {
+  for (const query of [
+    {model: 'unknown'}, {model: 'seedance-1.5'}, {model: 'seedance-2.0-fast'},
+    {model: 'seedance-2.0', channel_id: '999'}, {model: 'seedance-2.0', channel_id: ['10','11']},
+    {model: 'seedance-2.0', channel_id: '1e1'}, {model: 'seedance-2.0', channel_id: '9007199254740993'},
+  ]) {
+    const result = legacyVideoPricingTarget({...query, pricing_model: 'stale-row', keep: 'yes'}, legacyRows)
+    assert.equal(result.query.pricing_model, undefined)
+    assert.equal(result.query.pricing_legacy, 'missing')
+    assert.equal(result.query.pricing_search, query.model)
+    assert.equal(result.query.keep, 'yes')
+  }
+  const ambiguous = legacyVideoPricingTarget({model: 'seedance-2.0'}, [...legacyRows, {...legacyRows[0], key: '10:second-alias', model: 'second-alias'}])
+  assert.equal(ambiguous.query.pricing_model, undefined)
+  assert.equal(ambiguous.query.pricing_legacy, 'ambiguous')
+  assert.equal(ambiguous.query.pricing_search, 'seedance-2.0')
+})
+
+test('capability-blocked active prices may be disabled but cannot be enabled again', async t => {
+  await harness(t)
+  const props = vue.reactive({cell: {...pricing(1).cells[0], available: false, enabled: true, unavailable_reason: 'capability_not_verified', supplier_cny_per_1m: '46'}, selected: false, disabled: false})
+  const vm = SimpleVideoPriceCell.setup(props, {expose() {}, emit() {}})
+  assert.equal(vm.editable.value, false)
+  assert.equal(vm.canEnable.value, true, 'allow only switching an existing enabled row off')
+  props.cell.enabled = false
+  assert.equal(vm.canEnable.value, false)
+  assert.ok(vm.reasons.value.includes('unavailable'))
+  props.cell.available = true
+  assert.equal(vm.canEnable.value, true)
+})
+
+test('minimum-coverage gaps remain repairable while capability blocks stay read-only', async t => {
+  await harness(t)
+  const props = vue.reactive({cell: {...pricing(1).cells[0], input_video: true, available: false, enabled: false, unavailable_reason: 'verified_minimum_coverage_missing', minimum_rule_version: '', supplier_cny_per_1m: '46'}, selected: false, disabled: false})
+  const vm = SimpleVideoPriceCell.setup(props, {expose() {}, emit() {}})
+  assert.equal(vm.editable.value, true)
+  assert.equal(vm.canEnable.value, false)
+  props.cell.minimum_rule_version = 'manually-verified-version'
+  assert.equal(vm.canEnable.value, true, 'server validation still verifies the complete coverage before publishing')
+  props.cell.unavailable_reason = 'capability_not_verified'
+  assert.equal(vm.editable.value, false)
+  assert.equal(vm.canEnable.value, false)
 })

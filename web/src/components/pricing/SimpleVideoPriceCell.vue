@@ -16,6 +16,8 @@ const reasons = computed(() => [
   !validRate(props.cell.risk_multiplier) ? t('missingRisk') : '',
   props.cell.input_video && !props.cell.minimum_rule_version ? t('missingMinimum') : '',
 ].filter(Boolean))
+// An existing unsupported price must still be switchable off. Once off, its
+// capability reason blocks re-enabling; do not disable this control wholesale.
 const canEnable = computed(() => props.cell.enabled || reasons.value.length === 0)
 </script>
 <template>
