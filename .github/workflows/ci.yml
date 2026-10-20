@@ -45,6 +45,8 @@ jobs:
         run: npm --prefix web run test:pricing-editor
       - name: Public API documentation contracts
         run: npm --prefix web run test:api-docs
+      - name: Asset management configuration context regressions
+        run: npm --prefix web run test:video-assets
 
   ark-mysql:
     runs-on: ubuntu-latest

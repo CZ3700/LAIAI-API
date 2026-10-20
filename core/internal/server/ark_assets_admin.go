@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 )
 
 func (s *Server) registerArkAssetAdmin(su *gin.RouterGroup) {
+	// Diagnose a disabled gateway too; mutation routes below still fail closed.
+	su.GET("/video/asset-setup", s.getArkAssetSetup)
 	g := su.Group("/video", func(c *gin.Context) {
 		actor, ok := s.videoAdminActor(c)
 		if !ok {
@@ -96,6 +99,34 @@ func (s *Server) registerArkAssetAdmin(su *gin.RouterGroup) {
 	}
 	g.POST("/orgs/:org_id/portrait-authorizations/:session_id/license", s.reviewArkLicense)
 	g.POST("/orgs/:org_id/portrait-authorizations/:session_id/license/revoke", s.revokeArkLicense)
+}
+
+func (s *Server) getArkAssetSetup(c *gin.Context) {
+	actor, ok := s.videoAdminActor(c)
+	if !ok {
+		return
+	}
+	org, err := strconv.ParseUint(c.Query("org_id"), 10, 64)
+	if err != nil || org == 0 || len(c.QueryArray("org_id")) != 1 {
+		fail(c, 422, "invalid organization")
+		return
+	}
+	service := s.video
+	if service == nil {
+		// This read-only Service needs no secrets or runtime registration.
+		service = &video.Service{DB: s.db}
+	}
+	out, err := service.AssetSetup(c.Request.Context(), actor, org)
+	if err != nil {
+		if errors.Is(err, video.ErrNotFound) {
+			fail(c, 404, "organization not found")
+		} else {
+			fail(c, 503, "asset setup unavailable")
+		}
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(200, out)
 }
 
 type arkLicenseReview struct {

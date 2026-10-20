@@ -150,7 +150,7 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		if err = videoSvc.Assets.ConfigureConsole(videoasset.ConsoleOptions{CallbackURL: cfg.VideoPortraitCallbackURL, Media: mediaStore}); err != nil {
+		if err = videoSvc.Assets.ConfigureConsole(videoasset.ConsoleOptions{CallbackURL: cfg.VideoPortraitReturnURL, Media: mediaStore}); err != nil {
 			log.Error("video asset console configuration invalid")
 			os.Exit(1)
 		}

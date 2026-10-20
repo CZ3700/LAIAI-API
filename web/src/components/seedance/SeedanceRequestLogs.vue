@@ -142,9 +142,22 @@ onBeforeUnmount(() => { listVersion++; close() })
               <div v-if="detail.billing" class="grid grid-cols-2 gap-3 rounded border border-line p-4 text-sm">
                 <p>{{ t('seedance.reserved') }}: {{ detail.billing.reserved_amount }} USD</p><p>{{ t('seedance.settled') }}: {{ detail.billing.settled_amount ?? t('seedance.pending') }} USD</p><p>{{ t('seedance.released') }}: {{ detail.billing.released_amount }} USD</p><p>{{ t('seedance.net') }}: {{ detail.billing.net_charged_amount ?? t('seedance.pending') }} USD</p>
                 <p>{{ t('seedance.videoTokens') }}: {{ detail.billing.billable_tokens ?? t('seedance.pending') }}</p><p>{{ t('seedance.inputTokens') }}</p><p class="break-all">{{ t('seedance.priceVersion') }}: {{ detail.billing.pricing_version }}</p><p class="break-all">{{ t('seedance.ruleVersion') }}: {{ detail.billing.billing_rule_version }}</p>
-                <p>{{ t('seedance.estimatedTokens') }}: {{ detail.billing.estimated_tokens ?? '—' }}</p><p>{{ t('seedance.unitPrice') }}: {{ detail.billing.unit_price_usd_per_1m ?? '—' }}</p>
+                <p>{{ t('seedance.reservedTokens') }}: {{ detail.billing.estimated_tokens ?? '—' }}</p><p>{{ t('seedance.unitPrice') }}: {{ detail.billing.unit_price_usd_per_1m ?? '—' }}</p>
                 <p v-for="entry in detail.billing.entries" :key="entry.entry_id" class="col-span-2">{{ entry.type }} · {{ entry.amount }} USD · {{ time(entry.created_at) }}</p>
               </div>
+              <div v-if="detail.billing?.hold_breakdown" class="space-y-2 rounded border border-line p-4 text-sm">
+                <h3 class="font-medium">{{ t('seedance.holdBreakdown') }}</h3>
+                <div class="grid gap-2 sm:grid-cols-2">
+                  <p>{{ t('seedance.formulaTokens') }}: {{ detail.billing.hold_breakdown.formula_tokens }}</p>
+                  <p>{{ t('seedance.minimumTokens') }}: {{ detail.billing.hold_breakdown.minimum_tokens }}</p>
+                  <p>{{ t('seedance.baseTokens') }}: {{ detail.billing.hold_breakdown.base_tokens }}</p>
+                  <p>{{ t('seedance.baseAmount') }}: {{ detail.billing.hold_breakdown.base_amount_usd }} USD</p>
+                  <p>{{ t('seedance.reservationFactor') }}: {{ detail.billing.hold_breakdown.reservation_factor }}×</p>
+                  <p>{{ t('seedance.reservedTokens') }}: {{ detail.billing.hold_breakdown.reserved_tokens }}</p>
+                </div>
+                <p class="text-xs text-muted">{{ t('seedance.holdBreakdownNotice') }}</p>
+              </div>
+              <p v-else-if="detail.billing" class="text-xs text-muted">{{ t('seedance.holdBreakdownUnavailable') }}</p>
               <p v-if="detail.billing?.actual_usage" class="text-xs">{{ t('seedance.reportedUsage') }}: completion_tokens={{ detail.billing.actual_usage.completion_tokens ?? '—' }}, total_tokens={{ detail.billing.actual_usage.total_tokens ?? '—' }}</p>
               <MeteringFacts v-if="detail.billing?.metering" :value="detail.billing.metering" />
               <HistoryJSON v-if="detail.task" :body="detail.task" :name="`${selected}-current-task`" />

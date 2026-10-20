@@ -200,6 +200,7 @@ type RequestBilling struct {
 	ActualUsage            *UsageView            `json:"actual_usage"`
 	InputTokensExplanation string                `json:"input_tokens_explanation"`
 	Metering               *RequestMetering      `json:"metering"`
+	HoldBreakdown          *RequestHoldBreakdown `json:"hold_breakdown"`
 	Entries                []RequestBillingEntry `json:"entries"`
 }
 type RequestLogDetail struct {
@@ -257,7 +258,7 @@ func requestBilling(tx *gorm.DB, org uint64, st State) (*RequestBilling, error) 
 	if e := tx.Where("org_id = ? AND task_id = ?", org, st.TaskID).Take(&snap).Error; e != nil {
 		return nil, e
 	}
-	b := &RequestBilling{Currency: "USD", State: st.BillingState, ReservedAmount: snap.HoldUSD.StringFixed(8), ReleasedAmount: "0.00000000", PricingVersion: snap.RuleVersion, BillingRuleVersion: snap.FormulaVersion, UnitPriceUSD: snap.RetailUSDPer1M.Mul(snap.EffectiveRatio).StringFixed(8), EstimatedTokens: snap.EstimatedTokens, ActualUsage: &UsageView{CompletionTokens: st.ObservedCompletionTokens, TotalTokens: st.TotalTokens}, InputTokensExplanation: "not_separately_metered", Entries: []RequestBillingEntry{{ID: fmt.Sprintf("reserve_%d", snap.ID), Type: "reserve", Amount: snap.HoldUSD.StringFixed(8), CreatedAt: snap.CreatedAt}}}
+	b := &RequestBilling{Currency: "USD", State: st.BillingState, ReservedAmount: snap.HoldUSD.StringFixed(8), ReleasedAmount: "0.00000000", PricingVersion: snap.RuleVersion, BillingRuleVersion: snap.FormulaVersion, UnitPriceUSD: snap.RetailUSDPer1M.Mul(snap.EffectiveRatio).String(), EstimatedTokens: snap.EstimatedTokens, ActualUsage: &UsageView{CompletionTokens: st.ObservedCompletionTokens, TotalTokens: st.TotalTokens}, InputTokensExplanation: "not_separately_metered", HoldBreakdown: requestHoldBreakdown(snap), Entries: []RequestBillingEntry{{ID: fmt.Sprintf("reserve_%d", snap.ID), Type: "reserve", Amount: snap.HoldUSD.StringFixed(8), CreatedAt: snap.CreatedAt}}}
 	var parameters TaskParameters
 	if e := tx.Select("parameters_json").Where("org_id = ? AND task_id = ?", org, st.TaskID).Take(&parameters).Error; e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
 		return nil, e

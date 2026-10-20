@@ -26,6 +26,7 @@ type Config struct {
 	VideoArtifactTemp        string
 	VideoArtifactHosts       []string
 	VideoPortraitCallbackURL string
+	VideoPortraitReturnURL   string
 	VideoMediaRoot           string
 	VideoMediaPublicBaseURL  string
 	VideoMediaSigningKey     []byte
@@ -154,6 +155,7 @@ func Load() (*Config, error) {
 	c.VideoArtifactRoot = os.Getenv("LAIAI_VIDEO_ARTIFACT_ROOT")
 	c.VideoArtifactTemp = os.Getenv("LAIAI_VIDEO_ARTIFACT_TEMP")
 	c.VideoPortraitCallbackURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_CALLBACK_URL")
+	c.VideoPortraitReturnURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_RETURN_URL")
 	if err := c.loadVideoMedia(); err != nil {
 		return nil, err
 	}

@@ -63,6 +63,7 @@ services:
       LAIAI_VIDEO_ARTIFACT_TEMP: ${LAIAI_VIDEO_ARTIFACT_TEMP:-}
       LAIAI_VIDEO_ARTIFACT_HOSTS: ${LAIAI_VIDEO_ARTIFACT_HOSTS:-}
       LAIAI_VIDEO_PORTRAIT_CALLBACK_URL: ${LAIAI_VIDEO_PORTRAIT_CALLBACK_URL:-}
+      LAIAI_VIDEO_PORTRAIT_RETURN_URL: ${LAIAI_VIDEO_PORTRAIT_RETURN_URL:-}
       # Enabling private media also requires operator-provided writable storage,
       # ffprobe and a real scanner in the runtime image; all empty keeps it off.
       LAIAI_VIDEO_MEDIA_ROOT: ${LAIAI_VIDEO_MEDIA_ROOT:-}

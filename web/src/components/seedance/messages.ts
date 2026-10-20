@@ -1,6 +1,7 @@
 import { useI18n } from 'vue-i18n'
 
 const en = {
+  holdBreakdown: 'Why the reserve differs from the charge', formulaTokens: 'Formula estimate (tokens)', baseTokens: 'Base estimate after minimum usage', baseAmount: 'Base estimated amount', reservationFactor: 'Reserve factor', reservedTokens: 'Reserved tokens including buffer', holdBreakdownNotice: 'The factor is reserved tokens divided by the base estimate from this task’s snapshot. It is not a provider billing multiplier or the original policy value. Final charges use confirmed provider usage; unused reserves are released.', holdBreakdownUnavailable: 'This historical snapshot cannot reliably explain the reserve calculation. The recorded reserve, charge and release remain authoritative.',
   tab: 'Seedance video', general: 'General models', received: 'Request received', result: 'Task result', response: 'API response',
   request: 'Request ID', task: 'Task ID', model: 'Model', operation: 'Operation', http: 'HTTP status', taskStatus: 'Task status', billing: 'Billing', artifact: 'Artifact', amount: 'Related task charge (USD)', time: 'Time', key: 'Platform Key ID',
   search: 'Search', all: 'All operations', create_task: 'Create', get_task: 'Query', cancel_task: 'Cancel', delete_task: 'Delete', estimate: 'Estimate', asset_operation: 'Asset operation',
@@ -22,6 +23,7 @@ const en = {
   reportedUsage: 'Provider-reported usage', metering: 'Creation-time estimate', meteringNotice: 'These are pricing inputs saved at creation. Final billable tokens come from confirmed provider usage.', estimatedTokens: 'Estimated tokens', unitPrice: 'USD per million tokens', inputVideoCount: 'Reference videos', inputDuration: 'Input video duration', outputDuration: 'Output duration', frames: 'Frames', dimensions: 'Dimensions', minimumTokens: 'Minimum billable tokens', unknown: 'Unknown', none: 'None', verified_media: 'Verified media', configured_upper_bound: 'Configured upper bound', draft_inherited: 'Inherited from Draft',
 }
 const zh = {
+  holdBreakdown: '冻结与实扣差额说明', formulaTokens: '公式估算 Token', baseTokens: '基础估算 Token（已考虑最低用量）', baseAmount: '基础估算金额', reservationFactor: '预留倍数', reservedTokens: '预冻结 Token（含预留余量）', holdBreakdownNotice: '预留倍数 = 本任务快照中的预冻结 Token ÷ 基础估算 Token。这是快照推导值，不是官方收费倍率，也不是未留存的原始策略系数。最终按官方确认的实际用量结算，未使用的冻结金额释放。', holdBreakdownUnavailable: '此历史快照无法可靠还原预冻结计算明细，以已记录的冻结、实扣和释放金额为准。',
   tab: 'Seedance 视频', general: '通用模型', received: '请求接收', result: '任务结果', response: '接口响应',
   request: '请求 ID', task: '任务 ID', model: '模型', operation: '操作', http: 'HTTP 状态', taskStatus: '任务状态', billing: '账务状态', artifact: '产物状态', amount: '关联任务金额（USD）', time: '时间', key: '平台 Key ID',
   search: '查询', all: '全部操作', create_task: '创建', get_task: '查询', cancel_task: '取消', delete_task: '删除', estimate: '预估', asset_operation: '素材操作',

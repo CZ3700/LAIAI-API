@@ -298,14 +298,15 @@ body::before {
     focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60;
   min-height: 2.25rem;
   border-radius: 8px;
-  background: rgb(var(--c-panel) / 0.72);
+  /* Keep select chevron images and their positioning across input states. */
+  background-color: rgb(var(--c-panel) / 0.72);
   border-color: rgb(var(--c-line));
 }
 .input:hover {
   border-color: rgb(var(--c-muted) / 0.45);
 }
 .input:focus {
-  background: rgb(var(--c-panel) / 0.95);
+  background-color: rgb(var(--c-panel) / 0.95);
 }
 
 .label {
@@ -1746,7 +1747,7 @@ select:focus-visible,
   @apply mt-1 block text-xs text-danger;
 }
 .input:disabled {
-  background: rgb(var(--c-elev) / 0.5);
+  background-color: rgb(var(--c-elev) / 0.5);
   border-style: dashed;
 }
 .input-sm {

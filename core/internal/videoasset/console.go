@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -15,13 +16,19 @@ import (
 // credentials or URLs. Missing dependencies leave the respective feature closed.
 type ConsoleOptions struct {
 	enabled     bool
-	CallbackURL string
+	CallbackURL string // Verified console return page, never the provider callback receiver.
 	Media       *MediaStore
 }
 
 func (s *Service) ConfigureConsole(o ConsoleOptions) error {
 	if o.CallbackURL != "" && !validHTTPS(o.CallbackURL, 2048) {
 		return ErrInvalid
+	}
+	if o.CallbackURL != "" {
+		u, _ := url.Parse(o.CallbackURL)
+		if u.Path == PortraitCallbackPath {
+			return ErrInvalid
+		}
 	}
 	o.enabled = true
 	s.console = o
@@ -93,7 +100,7 @@ func (s *Service) ConsoleCapabilities(ctx context.Context, org uint64) Capabilit
 	out.ScopeID = r.Scope.ID
 	out.Project = r.Scope.Project
 	out.Virtual = r.Capabilities.VirtualGroups
-	out.Portrait = r.Capabilities.Portrait && s.console.CallbackURL != ""
+	out.Portrait = r.Capabilities.Portrait && s.consolePortraitReady(ctx, org)
 	out.Sync = r.Capabilities.Sync
 	out.Update = r.Capabilities.Update
 	out.Delete = r.Capabilities.DeleteAssets
@@ -107,11 +114,23 @@ func (s *Service) ConsoleCapabilities(ctx context.Context, org uint64) Capabilit
 	return out
 }
 func (s *Service) CreateConsolePortrait(ctx context.Context, c CreateContext, in PortraitCreate) (PortraitDTO, bool, error) {
-	if s.console.CallbackURL == "" {
+	if !s.consolePortraitReady(ctx, c.OrgID) {
 		return PortraitDTO{}, false, ErrUnsupported
 	}
 	in.CallbackURL = s.console.CallbackURL
 	return s.CreatePortrait(ctx, c, in)
+}
+
+func (s *Service) consolePortraitReady(ctx context.Context, org uint64) bool {
+	if s.console.CallbackURL == "" || !validPlatformCallback(s.options.PlatformCallbackURL) || s.options.ResolveCallback == nil || s.options.ResolveCallbackByID == nil {
+		return false
+	}
+	target, err := s.options.ResolveCallback(ctx, org, s.console.CallbackURL)
+	if err != nil || !validID(target.ID) || target.URL != s.console.CallbackURL {
+		return false
+	}
+	current, err := s.options.ResolveCallbackByID(ctx, org, target.ID)
+	return err == nil && current.ID == target.ID && current.URL == target.URL
 }
 
 type ListFilter struct {
