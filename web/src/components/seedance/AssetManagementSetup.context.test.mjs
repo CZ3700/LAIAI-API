@@ -140,3 +140,203 @@ test('disabled versions, identity mismatch and superadmin loss cannot bind or re
   await h.vm.load(); await h.vm.bind(); await h.vm.register()
   assert.equal(writes(h).length, 0)
 })
+
+test('required fields explain disabled actions and version suggestions remain editable', async t => {
+  const h = await harness(t)
+  assert.equal(h.vm.version.value, '1')
+  assert.ok(h.vm.registerBlockers.value.some(reason => reason === 'Access Key 必填。'))
+  assert.ok(h.vm.registerBlockers.value.some(reason => reason === 'Secret Key 必填。'))
+  assert.ok(h.vm.registerBlockers.value.some(reason => reason.includes('请勾选')))
+  assert.ok(h.vm.bindBlockers.value.some(reason => reason.includes('先完成第 1 步保存')))
+  h.data.scope_configs = [saved(1), saved(4)]
+  await h.vm.load()
+  assert.equal(h.vm.version.value, '5')
+  h.vm.version.value = '9'
+  await h.vm.load()
+  assert.equal(h.vm.version.value, '9', 'refresh preserves an unused custom version')
+  h.vm.version.value = '4'
+  assert.ok(h.vm.registerBlockers.value.some(reason => reason.includes('该版本号已使用')))
+  h.vm.version.value = '0'
+  assert.ok(h.vm.registerBlockers.value.some(reason => reason.includes('请填写正整数')))
+})
+
+test('existing versions select the sole usable choice or organization route without granting confirmation', async t => {
+  const data = setup(); data.scope_configs = [saved(3), {...saved(4), enabled: false}]
+  const h = await harness(t, data)
+  assert.equal(h.vm.selectedVersion.value, 3)
+  assert.equal(h.vm.bindingConfirmed.value, false)
+  assert.equal(h.vm.canBind.value, false)
+  h.data.scope_configs.push(saved(5)); h.vm.selectedVersion.value = 0
+  await h.vm.load()
+  assert.equal(h.vm.selectedVersion.value, 0, 'multiple usable versions require a choice')
+  h.data.org_routes = [{org_id: 1, provider_scope_id: 7, scope_version: 5, enabled: true, default_route: true}]
+  await h.vm.load()
+  assert.equal(h.vm.selectedVersion.value, 5)
+  assert.equal(h.vm.bindingConfirmed.value, false)
+  assert.equal(h.vm.enableConfirmed.value, false)
+  assert.equal(writes(h).length, 0)
+})
+
+test('acknowledged registration stays blocked until the exact saved version appears in readback', async t => {
+  const h = await harness(t)
+  fillRegistration(h)
+  await h.vm.register()
+  assert.equal(writes(h).length, 1)
+  assert.equal(h.vm.refreshRequired.value, true)
+  assert.equal(h.vm.notice.value, '')
+  assert.equal(h.vm.selectedVersion.value, 0)
+  await h.vm.load()
+  assert.equal(h.vm.refreshRequired.value, true, 'an empty refresh does not release the write guard')
+  await h.vm.register()
+  assert.equal(writes(h).length, 1)
+  h.data.scope_configs = [saved()]
+  await h.vm.load()
+  assert.equal(h.vm.refreshRequired.value, false)
+  assert.equal(h.vm.selectedVersion.value, 1)
+  assert.equal(h.vm.bindingConfirmed.value, false)
+  assert.equal(h.vm.accessKey.value + h.vm.secretKey.value + h.vm.sessionToken.value, '')
+})
+
+test('enabling a disabled saved version needs its own confirmation and never binds an organization', async t => {
+  const data = setup(); data.scope_configs = [{...saved(4), enabled: false}]
+  const h = await harness(t, data)
+  assert.equal(h.vm.selectedVersion.value, 0, 'disabled versions are not automatically chosen')
+  h.vm.selectedVersion.value = 4
+  await h.vm.enableSavedVersion()
+  assert.equal(writes(h).length, 0)
+  assert.ok(h.vm.bindBlockers.value.some(reason => reason.includes('已停用')))
+  h.vm.enableConfirmed.value = true
+  h.vm.secretKey.value = 'fixture-secret'
+  h.respond = call => {
+    assert.deepEqual(call, {method: 'PUT', path: '/api/admin/video/asset-scopes/7/4', body: {enabled: true}})
+    assert.equal(h.vm.secretKey.value, '', 'enabling never sends registration secrets')
+    h.data.scope_configs[0].enabled = true
+  }
+  await h.vm.enableSavedVersion()
+  assert.equal(writes(h).length, 1)
+  assert.equal(h.vm.savedVersion.value.enabled, true)
+  assert.equal(h.vm.refreshRequired.value, false)
+  assert.equal(h.vm.enableConfirmed.value, false)
+  assert.equal(h.vm.bindingConfirmed.value, false)
+  assert.equal(h.vm.canBind.value, false)
+  assert.equal(h.events.some(([event]) => event === 'bound'), false)
+})
+
+test('unconfirmed enable readback remains blocked and changed selection prevents an enable write', async t => {
+  const data = setup(); data.scope_configs = [{...saved(1), enabled: false}, {...saved(2), enabled: false}]
+  const h = await harness(t, data)
+  h.vm.selectedVersion.value = 1; h.vm.enableConfirmed.value = true
+  const late = deferred(); h.read = () => late.promise
+  const pending = h.vm.enableSavedVersion(); h.vm.selectedVersion.value = 2
+  late.resolve(structuredClone(h.data)); await pending
+  assert.equal(writes(h).length, 0)
+  h.read = () => structuredClone(h.data); h.vm.enableConfirmed.value = true
+  await h.vm.enableSavedVersion()
+  assert.equal(writes(h).length, 1)
+  assert.equal(h.vm.refreshRequired.value, true)
+  assert.equal(h.vm.notice.value, '')
+  await h.vm.load()
+  assert.equal(h.vm.refreshRequired.value, true)
+  h.vm.enableConfirmed.value = true; await h.vm.enableSavedVersion()
+  assert.equal(writes(h).length, 1, 'a missing enabled readback never automatically retries PUT')
+  h.data.scope_configs[1].enabled = true; await h.vm.load()
+  assert.equal(h.vm.refreshRequired.value, false)
+  assert.equal(h.vm.selectedVersion.value, 2)
+  assert.equal(h.vm.bindingConfirmed.value, false)
+})
+
+test('project names use the exact backend character rule and project creation clears secrets without copying settings', async t => {
+  const h = await harness(t)
+  for (const invalid of ['', ' default', 'default ', '_name', '中文项目', 'a'.repeat(65)]) {
+    h.vm.projectName.value = invalid
+    assert.equal(h.vm.canAddProject.value, false, invalid)
+    await h.vm.addProject()
+  }
+  assert.equal(writes(h).length, 0)
+  fillRegistration(h); h.vm.projectName.value = 'LAIAI-Gateway'
+  const added = {...h.data.provider_scopes[0], id: 8, project_name: 'LAIAI-Gateway'}
+  h.respond = call => {
+    assert.deepEqual(call, {method: 'POST', path: '/api/admin/video/asset-projects', body: {source_provider_scope_id: 7, project_name: 'LAIAI-Gateway'}})
+    assert.equal(h.vm.accessKey.value + h.vm.secretKey.value + h.vm.sessionToken.value, '')
+    h.data.provider_scopes.push(added)
+    return {provider_scope: added}
+  }
+  await h.vm.addProject()
+  assert.equal(writes(h).length, 1)
+  assert.equal(h.vm.scopeId.value, 8)
+  assert.equal(h.vm.provider.value.project_name, 'LAIAI-Gateway')
+  assert.ok(h.vm.setup.value.provider_scopes.some(item => item.project_name === 'default'))
+  assert.equal(h.vm.version.value, '1')
+  assert.equal(h.vm.selectedVersion.value, 0)
+  assert.ok(Object.values(h.vm.capabilities.value).every(value => value === false))
+  assert.equal(h.vm.enabled.value, false)
+  assert.equal(h.vm.registrationConfirmed.value, false)
+  assert.equal(h.vm.bindingConfirmed.value, false)
+  assert.equal(h.vm.refreshRequired.value, false)
+  assert.equal(h.events.some(([event]) => event === 'bound'), false)
+})
+
+test('project readback requires the exact safe identity and can recover through refresh without another POST', async t => {
+  const h = await harness(t)
+  h.vm.projectName.value = 'LAIAI-Gateway'
+  const added = {...h.data.provider_scopes[0], id: 8, project_name: 'LAIAI-Gateway'}
+  h.respond = () => ({provider_scope: added})
+  await h.vm.addProject()
+  assert.equal(h.vm.refreshRequired.value, true)
+  assert.equal(h.vm.scopeId.value, 7)
+  assert.equal(h.vm.notice.value, '')
+  for (const mismatch of [{account_ref: 'other-account'}, {region: 'other-region'}, {project_name: 'other-project'}]) {
+    h.data.provider_scopes = [h.data.provider_scopes[0], {...added, ...mismatch}]
+    await h.vm.load()
+    assert.equal(h.vm.refreshRequired.value, true)
+    assert.equal(h.vm.scopeId.value, 7, 'same id with a different identity must not be selected')
+  }
+  h.data.provider_scopes[1] = added
+  await h.vm.load()
+  assert.equal(h.vm.refreshRequired.value, false)
+  assert.equal(h.vm.scopeId.value, 8)
+  assert.equal(h.vm.bindingConfirmed.value, false)
+  assert.equal(writes(h).length, 1)
+})
+
+test('reusing a disabled project selects it without enabling or copying its source registration draft', async t => {
+  const data = setup(), added = {...data.provider_scopes[0], id: 8, project_name: 'existing', enabled: false}
+  data.provider_scopes.push(added)
+  const h = await harness(t, data)
+  h.vm.scopeId.value = 7
+  fillRegistration(h); h.vm.projectName.value = 'existing'
+  h.respond = () => ({provider_scope: added})
+  await h.vm.addProject()
+  assert.equal(h.vm.scopeId.value, 8)
+  assert.equal(h.vm.provider.value.enabled, false)
+  assert.equal(h.vm.canRegister.value, false)
+  assert.equal(h.vm.canBind.value, false)
+  assert.equal(writes(h).length, 1)
+  assert.equal(h.vm.secretKey.value, '')
+  assert.match(h.vm.notice.value, /已停用/)
+})
+
+test('project preflight stops changed names and late project responses cannot cross organization or session boundaries', async t => {
+  const h = await harness(t)
+  h.vm.projectName.value = 'LAIAI-Gateway'
+  const preflight = deferred(); h.read = () => preflight.promise
+  const abandoned = h.vm.addProject(); h.vm.projectName.value = 'different'
+  preflight.resolve(structuredClone(h.data)); await abandoned
+  assert.equal(writes(h).length, 0)
+  h.read = () => structuredClone(h.data)
+  for (const change of ['organization', 'session']) {
+    const added = {...h.data.provider_scopes[0], id: 8, project_name: 'LAIAI-Gateway'}, late = deferred()
+    h.vm.projectName.value = 'LAIAI-Gateway'; h.respond = () => late.promise
+    const pending = h.vm.addProject(), priorWrites = writes(h).length
+    await until(() => writes(h).length > priorWrites)
+    if (change === 'organization') { h.data = setup(2); h.props.orgId = 2; h.auth.orgId = 2 }
+    else h.auth.token = 'fixture-replacement-session'
+    await until(() => !h.vm.loading.value && h.vm.setup.value?.org_id === h.auth.orgId)
+    late.resolve({provider_scope: added}); await pending
+    assert.equal(h.vm.scopeId.value, 7)
+    assert.equal(h.vm.pendingReadback.value, null)
+    assert.equal(h.vm.notice.value, '')
+    assert.equal(h.vm.busy.value, false)
+    assert.equal(h.vm.secretKey.value, '')
+  }
+})

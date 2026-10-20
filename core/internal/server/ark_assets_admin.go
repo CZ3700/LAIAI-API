@@ -18,6 +18,8 @@ import (
 func (s *Server) registerArkAssetAdmin(su *gin.RouterGroup) {
 	// Diagnose a disabled gateway too; mutation routes below still fail closed.
 	su.GET("/video/asset-setup", s.getArkAssetSetup)
+	// Local project identity registration does not call the official gateway.
+	su.POST("/video/asset-projects", s.registerArkAssetProject)
 	g := su.Group("/video", func(c *gin.Context) {
 		actor, ok := s.videoAdminActor(c)
 		if !ok {
