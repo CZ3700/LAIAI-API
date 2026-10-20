@@ -53,6 +53,26 @@ func (s *Service) GetGroup(ctx context.Context, org uint64, id string) (GroupDTO
 		dto.AuthorizationLastVerifiedAt = p.LastVerifiedAt
 		dto.AuthorizationValidUntil = p.ValidUntil
 	}
+	mode, reason, latest, err := s.groupDeletionState(s.db.WithContext(ctx), row)
+	if err != nil {
+		return GroupDTO{}, err
+	}
+	dto.DeletionMode, dto.DeletionBlockReason = mode, reason
+	if latest != nil {
+		value := operationDTO(*latest)
+		dto.DeleteOperation = &value
+	}
+	if mode == "official" {
+		r, err := s.resolve(ctx, org, groupScope(row))
+		switch {
+		case err != nil:
+			dto.DeletionMode, dto.DeletionBlockReason = "blocked", "scope_unavailable"
+		case !r.Capabilities.DeleteVirtualEmptyGroups:
+			dto.DeletionMode, dto.DeletionBlockReason = "blocked", "delete_capability_disabled"
+		case !r.Capabilities.ExclusiveProjectWrites:
+			dto.DeletionMode, dto.DeletionBlockReason = "blocked", "exclusive_project_required"
+		}
+	}
 	return dto, nil
 }
 func (s *Service) GetAsset(ctx context.Context, org uint64, id string) (AssetDTO, error) {
@@ -104,12 +124,12 @@ func (s *Service) GetOperation(ctx context.Context, org uint64, id string) (Oper
 	return operationDTO(row), nil
 }
 func operationDTO(row Operation) OperationDTO {
-	dto := OperationDTO{ID: row.ID, Kind: row.Action, ResourceID: row.ResourceID, Status: row.Status, PollURL: "/v1/video/operations/" + row.ID, CreatedAt: row.CreatedAt}
+	dto := OperationDTO{ID: row.ID, RequestID: row.RequestID, Kind: row.Action, ResourceID: row.ResourceID, Status: row.Status, PollURL: "/v1/video/operations/" + row.ID, CreatedAt: row.CreatedAt}
 	if row.Status == "confirmed" || row.Status == "rejected" {
 		dto.CompletedAt = &row.UpdatedAt
 	}
 	if row.SafeErrorCode != "" {
-		dto.Error = &SafeError{Code: "provider_unavailable", Message: "Provider operation requires verification.", Retryable: false}
+		dto.Error = safeOperationError(row.SafeErrorCode)
 	}
 	return dto
 }
@@ -223,16 +243,32 @@ func (s *Service) DeleteGroup(ctx context.Context, c CreateContext, id string, c
 	if cascade {
 		return OperationDTO{}, false, ErrUnsupported
 	}
-	if !validID(id) {
+	if c.IdempotencyKey == "" {
+		c.IdempotencyKey = "delete:" + id + ":" + c.RequestID
+	}
+	if !validID(id) || !validCreate(c) {
 		return OperationDTO{}, false, ErrInvalid
 	}
 	var group Group
 	if err := s.db.WithContext(ctx).Where("org_id = ? AND group_id = ?", c.OrgID, id).Take(&group).Error; err != nil {
 		return OperationDTO{}, false, ErrNotFound
 	}
-	if group.DeleteOperationID != "" {
-		dto, err := s.GetOperation(ctx, c.OrgID, group.DeleteOperationID)
-		return dto, group.DeletedAt != nil, err
+	if group.DeletedAt != nil {
+		return OperationDTO{}, true, nil
+	}
+	mode, reason, latest, err := s.groupDeletionState(s.db.WithContext(ctx), group)
+	if err != nil {
+		return OperationDTO{}, false, err
+	}
+	if latest != nil && (latest.Status == "pending" || latest.Status == "in_flight" || latest.Status == "unknown") {
+		return operationDTO(*latest), false, nil
+	}
+	if mode == "local_failed" {
+		err := s.deleteFailedGroup(ctx, c, id)
+		return OperationDTO{}, err == nil, err
+	}
+	if mode != "official" {
+		return OperationDTO{}, false, deletionBlockError(reason)
 	}
 	r, err := s.resolve(ctx, c.OrgID, groupScope(group))
 	if err != nil {
@@ -244,29 +280,20 @@ func (s *Service) DeleteGroup(ctx context.Context, c CreateContext, id string, c
 	if group.ProviderID == nil {
 		return OperationDTO{}, false, ErrConflict
 	}
-	if c.IdempotencyKey == "" {
-		c.IdempotencyKey = "delete:" + id + ":" + c.RequestID
-	}
 	op, _, err := s.accept(ctx, c, r, "/v1/video/asset-groups/"+id, "DeleteAssetGroup", "asset_group", id, bodyJSON(map[string]any{"id": id, "cascade": false}), bodyJSON(map[string]any{"Id": *group.ProviderID, "ProjectName": r.Scope.Project}), func(tx *gorm.DB, op Operation) error {
 		var current Group
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", c.OrgID, id).Take(&current).Error; err != nil {
 			return ErrNotFound
 		}
-		if current.Status != StatusActive || current.ReviewState != ReviewClear {
+		if !sameScope(groupScope(current), r.Scope) || current.ProviderID == nil || *current.ProviderID != *group.ProviderID {
 			return ErrConflict
 		}
-		var count int64
-		if err := tx.Model(&Asset{}).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", c.OrgID, id).Count(&count).Error; err != nil {
-			return ErrStorage
+		mode, reason, _, err := s.groupDeletionState(tx, current)
+		if err != nil {
+			return err
 		}
-		if count > 0 {
-			return ErrNotEmpty
-		}
-		if err := tx.Model(&TaskReference{}).Where("org_id = ? AND group_id = ? AND released_at IS NULL", c.OrgID, id).Count(&count).Error; err != nil {
-			return ErrStorage
-		}
-		if count > 0 {
-			return ErrInUse
+		if mode != "official" {
+			return deletionBlockError(reason)
 		}
 		if err := tx.Model(&Group{}).Where("org_id = ? AND group_id = ?", c.OrgID, id).Updates(map[string]any{"status": StatusDeleting, "delete_operation_id": op.ID, "row_version": gorm.Expr("row_version + 1"), "updated_at": nowMillis(s)}).Error; err != nil {
 			return ErrStorage

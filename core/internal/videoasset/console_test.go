@@ -408,7 +408,7 @@ func TestRejectedDeleteRestoresFailedState(t *testing.T) {
 	a := readyAsset(t, s, now, g.ID, "delete-reject")
 	db.Model(&Asset{}).Where("asset_id = ?", a.ID).Update("status", StatusFailed)
 	s.options.Client = NewManagementClient(&http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
-		raw := bodyJSON(map[string]any{"ResponseMetadata": map[string]any{"RequestId": "reject", "Error": map[string]string{"Code": "AccessDenied", "Message": "blocked"}}})
+		raw := bodyJSON(map[string]any{"ResponseMetadata": map[string]any{"RequestId": "reject", "Action": req.URL.Query().Get("Action"), "Version": managementVersion, "Service": "ark", "Region": "cn-beijing", "Error": map[string]string{"Code": "AccessDenied", "Message": "blocked"}}})
 		return &http.Response{StatusCode: 403, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(raw)), Request: req}, nil
 	})})
 	if _, _, err := s.DeleteAsset(context.Background(), createContext("reject-delete"), a.ID); err != nil {

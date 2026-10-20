@@ -243,17 +243,20 @@ type TenantLock struct {
 func (TenantLock) TableName() string { return "video_asset_tenant_locks" }
 
 type GroupDTO struct {
-	ID                          string     `json:"id"`
-	Version                     uint64     `json:"version"`
-	Kind                        string     `json:"kind"`
-	Name                        string     `json:"name"`
-	Status                      string     `json:"status"`
-	AssetCount                  int64      `json:"asset_count"`
-	AuthorizationStatus         string     `json:"authorization_status"`
-	AuthorizationLastVerifiedAt *time.Time `json:"authorization_last_verified_at,omitempty"`
-	AuthorizationValidUntil     *time.Time `json:"authorization_valid_until,omitempty"`
-	CreatedAt                   time.Time  `json:"created_at"`
-	UpdatedAt                   time.Time  `json:"updated_at"`
+	ID                          string        `json:"id"`
+	Version                     uint64        `json:"version"`
+	Kind                        string        `json:"kind"`
+	Name                        string        `json:"name"`
+	Status                      string        `json:"status"`
+	AssetCount                  int64         `json:"asset_count"`
+	DeletionMode                string        `json:"deletion_mode"`
+	DeletionBlockReason         string        `json:"deletion_block_reason"`
+	DeleteOperation             *OperationDTO `json:"delete_operation,omitempty"`
+	AuthorizationStatus         string        `json:"authorization_status"`
+	AuthorizationLastVerifiedAt *time.Time    `json:"authorization_last_verified_at,omitempty"`
+	AuthorizationValidUntil     *time.Time    `json:"authorization_valid_until,omitempty"`
+	CreatedAt                   time.Time     `json:"created_at"`
+	UpdatedAt                   time.Time     `json:"updated_at"`
 }
 type AssetDTO struct {
 	ID        string    `json:"id"`
@@ -281,6 +284,7 @@ type SafeError struct {
 }
 type OperationDTO struct {
 	ID          string     `json:"operation_id"`
+	RequestID   string     `json:"request_id"`
 	Kind        string     `json:"kind"`
 	ResourceID  string     `json:"resource_id"`
 	Status      string     `json:"status"`

@@ -67,6 +67,31 @@ sets a barrier before external dispatch; unknown outcomes keep that barrier.
 Deletion confirmation preserves evidence and task references. A definite
 rejection restores the prior group and permits a new explicit delete request.
 
+Group DTOs expose `deletion_mode` (`official`, `local_failed`, or `blocked`), a
+safe `deletion_block_reason`, and the latest `delete_operation`, including its
+platform `request_id`. Rejected deletion receipts remain visible after reopening
+the page. Reusing an idempotency key returns its receipt; a new explicit request
+may retry a definite rejection. Pending or unknown operations are not replayed.
+
+A virtual group with no provider ID may be soft-deleted locally only when its
+creation was definitely rejected, its original operation matches the same
+organization/resource/account/region/project/version, review state is clear,
+and there are no assets (including historical assets), live references, or
+pending/unknown operations. Cleanup and its audit event share the tenant-locked
+transaction, preserve history, and never resolve credentials or call Ark.
+
+Official `DeleteAssetGroup` HTTP 404 is not deletion proof. Only the exact
+`NotFound.group_id` code with verified RequestId/Action/Version/Service/Region
+permits a same-scope `GetAssetGroup` query with the original `Id` and `ProjectName`.
+Only a second fully verified exact not-found response confirms absence. A
+present group, permission failure, generic 404, malformed response, or timeout
+leaves the deletion unknown and its barrier intact. No automatic retry is added.
+The original DELETE response retains its real HTTP status. The empty-group
+precheck, DELETE, and follow-up query have distinct Invocation Store correlations;
+their safe events link to redacted encrypted responses when history is enabled,
+or capture-disabled metadata when disabled. Raw provider error text is never
+exposed through operation DTOs.
+
 H5 session creation is independent of business portrait permission. BytedToken
 and H5Link are stored only in a separate encrypted short-lived secret table;
 tenant/session/scope/expiry are checked inside the decrypted sealed structure.
@@ -99,6 +124,7 @@ timeouts/responses, and never exposes raw transport errors.
 - [CreateAsset](https://docs.volcengine.com/docs/ark/create-asset-api?lang=zh)
 - [GetAsset](https://docs.volcengine.com/docs/ark/get-asset-api?lang=zh)
 - [GetAssetGroup](https://docs.volcengine.com/docs/ark/get-asset-group-api?lang=zh)
+- [DeleteAssetGroup](https://docs.volcengine.com/docs/ark/delete-asset-group-api?lang=zh)
 - [CreateVisualValidateSession](https://docs.volcengine.com/docs/ark/h5-create-visual-validate-session-api?lang=zh)
 - [GetVisualValidateResult](https://docs.volcengine.com/docs/ark/asset-group-id-get-visual-validate-result-api?lang=zh)
 

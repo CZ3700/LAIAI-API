@@ -145,17 +145,7 @@ func (s *Service) process(ctx context.Context, op Operation) error {
 		return nil
 	}
 	if op.Action == "DeleteAssetGroup" {
-		check := s.options.Client.Call(ctx, runtime.Scope, runtime.Credentials, "ListAssets", bodyJSON(map[string]any{"Filter": map[string]any{"GroupType": "AIGC", "GroupIds": []string{extractProviderID(body)}}, "MaxResults": 1, "ProjectName": runtime.Scope.Project}), s.now())
-		var page struct {
-			Items     []json.RawMessage
-			NextToken string
-		}
-		valid := check.Outcome == "accepted" && json.Unmarshal(check.Data, &page) == nil && page.Items != nil && len(page.Items) == 0 && page.NextToken == ""
-		clear(check.Body)
-		clear(check.Data)
-		if !valid {
-			return s.finish(ctx, op, runtime, Result{Outcome: "not_sent", SafeErrorCode: "group_not_empty_or_unverified"}, body)
-		}
+		return s.processGroupDeletion(ctx, op, runtime, body)
 	}
 	result := s.options.Client.Call(ctx, runtime.Scope, runtime.Credentials, op.Action, body, s.now())
 	defer clear(result.Body)
@@ -218,9 +208,13 @@ func (s *Service) revalidateDispatch(ctx context.Context, op Operation, r Runtim
 
 type safeReceipt struct{ ID, GroupID, ProjectName, AssetType, Status string }
 
-func (s *Service) finish(ctx context.Context, op Operation, r RuntimeScope, result Result, request []byte) error {
+func (s *Service) finish(ctx context.Context, op Operation, r RuntimeScope, result Result, request []byte, checks ...deletionEvidence) error {
+	checkPayloads, err := s.prepareDeletionEvidence(op, r, checks)
+	if err != nil {
+		return err
+	}
 	var prepared *invocation.PreparedVideoPayload
-	if r.CaptureHistory && len(result.Body) > 0 {
+	if (r.CaptureHistory || op.Action == "DeleteAssetGroup") && len(result.Body) > 0 {
 		var err error
 		secrets := []string{r.Credentials.AccessKey, r.Credentials.SecretKey, r.Credentials.SessionToken}
 		if op.Action == "CreateVisualValidateSession" {
@@ -232,11 +226,16 @@ func (s *Service) finish(ctx context.Context, op Operation, r RuntimeScope, resu
 				}
 			}
 		}
-		prepared, err = s.evidence.Prepare(invocation.VideoPayloadInput{OrgID: op.OrgID, RequestID: op.RequestID, AttemptID: op.ID, Direction: invocation.VideoUpstreamResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: result.Body, ExpiresAt: nowMillis(s).Add(30 * 24 * time.Hour), CaptureEnabled: true, SecretValues: secrets})
+		prepared, err = s.evidence.Prepare(invocation.VideoPayloadInput{OrgID: op.OrgID, RequestID: op.RequestID, AttemptID: op.ID, Direction: invocation.VideoUpstreamResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: result.Body, ExpiresAt: nowMillis(s).Add(30 * 24 * time.Hour), CaptureEnabled: r.CaptureHistory, SecretValues: secrets})
 		// HTTP facts remain authoritative even if optional body capture cannot be
 		// prepared. The safe event records capture absence, never raw parser errors.
 		if err != nil {
 			prepared = nil
+			// Do not commit a deletion whose promised response evidence could
+			// not be prepared. Lease expiry preserves the unknown barrier.
+			if op.Action == "DeleteAssetGroup" {
+				return ErrStorage
+			}
 		}
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -250,6 +249,23 @@ func (s *Service) finish(ctx context.Context, op Operation, r RuntimeScope, resu
 		if current.Fence != op.Fence || current.LeaseOwner != op.LeaseOwner || (current.Status != "in_flight" && current.Status != "unknown") {
 			return nil
 		}
+		for i, check := range checks {
+			ref := ""
+			if checkPayloads[i] != nil {
+				if _, err := s.evidence.StageTx(tx, checkPayloads[i]); err != nil {
+					return ErrStorage
+				}
+				ref = checkPayloads[i].PayloadID()
+			}
+			if err := s.event(tx, op.OrgID, op.ResourceType, op.ResourceID, op.ID, "delete_"+check.stage, ref, op.LeaseOwner); err != nil {
+				return err
+			}
+			if !r.CaptureHistory && ref != "" {
+				if err := s.event(tx, op.OrgID, op.ResourceType, op.ResourceID, op.ID, "delete_"+check.stage+"_capture_disabled", ref, op.LeaseOwner); err != nil {
+					return err
+				}
+			}
+		}
 		status := "unknown"
 		code := result.SafeErrorCode
 		if prepared != nil {
@@ -257,6 +273,11 @@ func (s *Service) finish(ctx context.Context, op Operation, r RuntimeScope, resu
 				return ErrStorage
 			}
 			op.ResponsePayloadID = prepared.PayloadID()
+			if !r.CaptureHistory {
+				if err := s.event(tx, op.OrgID, op.ResourceType, op.ResourceID, op.ID, "response_capture_disabled", op.ResponsePayloadID, op.LeaseOwner); err != nil {
+					return err
+				}
+			}
 		}
 		if r.CaptureHistory && len(result.Body) > 0 && prepared == nil {
 			if err := s.event(tx, op.OrgID, op.ResourceType, op.ResourceID, op.ID, "response_capture_unavailable", "", op.LeaseOwner); err != nil {
@@ -311,6 +332,12 @@ func (s *Service) finish(ctx context.Context, op Operation, r RuntimeScope, resu
 		if status == "unknown" && op.Action == "DeleteAsset" {
 			receipt = op.Receipt
 		}
+		if result.AbsenceConfirmed && status == "confirmed" {
+			receipt = `{"absence_confirmed":true}`
+			if err := s.event(tx, op.OrgID, op.ResourceType, op.ResourceID, op.ID, "delete_absence_confirmed", op.ResponsePayloadID, op.LeaseOwner); err != nil {
+				return err
+			}
+		}
 		updates := map[string]any{"status": status, "http_status": result.HTTPStatus, "upstream_request_id": result.RequestID, "safe_error_code": code, "response_payload_id": op.ResponsePayloadID, "receipt": receipt, "updated_at": nowMillis(s), "lease_expires_at": nil}
 		if err := tx.Model(&Operation{}).Where("operation_id = ? AND fence = ?", op.ID, op.Fence).Updates(updates).Error; err != nil {
 			return ErrStorage
@@ -361,7 +388,7 @@ func (s *Service) markRejected(tx *gorm.DB, op Operation) error {
 			return ErrStorage
 		}
 	case "DeleteAssetGroup":
-		if err := tx.Model(&Group{}).Where("org_id = ? AND group_id = ?", op.OrgID, op.ResourceID).Updates(map[string]any{"status": StatusActive, "delete_operation_id": "", "review_state": ReviewClear, "updated_at": nowMillis(s)}).Error; err != nil {
+		if err := tx.Model(&Group{}).Where("org_id = ? AND group_id = ? AND delete_operation_id = ?", op.OrgID, op.ResourceID, op.ID).Updates(map[string]any{"status": StatusActive, "review_state": ReviewClear, "updated_at": nowMillis(s)}).Error; err != nil {
 			return ErrStorage
 		}
 	case "DeleteAsset":
@@ -446,8 +473,12 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 		if json.Unmarshal(result.Data, &empty) != nil || empty == nil {
 			return ErrInvalid
 		}
-		if err := tx.Model(&Group{}).Where("org_id = ? AND group_id = ? AND status = ?", op.OrgID, op.ResourceID, StatusDeleting).Updates(map[string]any{"status": StatusDeleted, "review_state": ReviewClear, "deleted_at": now, "row_version": gorm.Expr("row_version + 1"), "updated_at": now}).Error; err != nil {
+		res := tx.Model(&Group{}).Where("org_id = ? AND group_id = ? AND status = ? AND delete_operation_id = ? AND deleted_at IS NULL", op.OrgID, op.ResourceID, StatusDeleting, op.ID).Updates(map[string]any{"status": StatusDeleted, "review_state": ReviewClear, "deleted_at": now, "row_version": gorm.Expr("row_version + 1"), "updated_at": now})
+		if res.Error != nil {
 			return ErrStorage
+		}
+		if res.RowsAffected != 1 {
+			return ErrConflict
 		}
 		return nil
 	case "CreateVisualValidateSession":

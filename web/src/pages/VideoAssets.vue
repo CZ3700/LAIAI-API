@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { api, copyText, errorMessage } from '@/lib/api'
+import { api, ApiError, copyText, errorMessage } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
 import QrCode from '@/components/QrCode.vue'
 import DetailDrawer from '@/components/DetailDrawer.vue'
 import AssetManagementSetup from '@/components/seedance/AssetManagementSetup.vue'
-import { assetQuery, assetWrite, assetPreview, uploadAssetFile, type AssetCapabilities, type AssetGroup, type VideoAsset, type Page, type Portrait, type SyncJob, type AssetDiscovery, type MediaUpload } from '@/lib/videoAssets'
+import { assetQuery, assetWrite, assetDelete, assetPreview, uploadAssetFile, type AssetCapabilities, type AssetGroup, type AssetOperation, type VideoAsset, type Page, type Portrait, type SyncJob, type AssetDiscovery, type MediaUpload } from '@/lib/videoAssets'
 
 const auth=useAuth()
 const setupOpen=ref(false),setupBusy=ref(false)
@@ -16,7 +16,11 @@ const groups=ref<AssetGroup[]>([]), assets=ref<VideoAsset[]>([]), selected=ref('
 const groupStatus=ref(''), groupName=ref(''), assetName=ref(''), mediaType=ref(''), status=ref(''), nextGroup=ref(''), nextAsset=ref('')
 const busy=ref(false), error=ref(''), notice=ref(''), modal=ref<'group'|'upload'|'rename'|'delete'|'portrait'|'discovery'|'assign'|'license'|'register'|''>('')
 const name=ref(''), description=ref(''), sourceURL=ref(''), file=ref<File>(), uploadType=ref('image'), target=ref<AssetGroup|VideoAsset>(), targetGroup=ref(false)
-const uploadID=ref(''), uploadPhase=ref(''), pendingOperations=ref<string[]>([])
+const uploadID=ref(''), uploadPhase=ref(''), pendingOperations=ref<AssetOperation[]>([])
+const deleteLocks=ref<Record<string,'pending'|'unknown'|'refreshing'>>({})
+const completedDeletions=ref<{id:string;local:boolean;isGroup:boolean}[]>([])
+const settledOperations=new Set<string>()
+let pollRunning=false,pollSequence=0,runSequence=0
 const portrait=ref<Portrait>(), sync=ref<SyncJob>(), previewURL=ref(''), previewType=ref('image')
 const previewAsset=ref<VideoAsset>(), previewLoading=ref(false), previewError=ref('')
 let previewEpoch=0,scopeEpoch=0,groupsEpoch=0,assetsEpoch=0,uploadsEpoch=0
@@ -25,22 +29,87 @@ const uploads=ref<MediaUpload[]>([]), uploadStatus=ref(''), uploadMediaType=ref(
 const discoveryCursor=ref(''), discoveryTotal=ref(0)
 const discoveries=ref<AssetDiscovery[]>([]), discoveryJob=ref<SyncJob>(), assignment=ref<AssetDiscovery>(), organizations=ref<{id:number;name:string}[]>([]), targetOrg=ref(0), evidence=ref(''), assignmentConfirmed=ref(false), licenseUntil=ref(''), reverifyAt=ref('')
 const activeGroup=computed(()=>groups.value.find(g=>g.id===selected.value))
-const labels:Record<string,string>={ready:'可用',active:'可用',creating:'创建中',pending:'等待处理',processing:'注册中',registering:'注册中',uploading:'上传中',verifying:'核验中',failed:'失败',needs_review:'待核验',deleting:'删除中',deleted:'已删除',expired:'已过期',authorized:'已授权',not_required:'无需真人授权',revoked:'已撤销',unknown:'待核验',succeeded:'已完成',running:'同步中',imported_pending:'待核验授权',imported_verified:'已核验导入',submission_unknown:'待确认'}
+const labels:Record<string,string>={ready:'可用',active:'可用',creating:'创建中',pending:'等待处理',processing:'注册中',registering:'注册中',uploading:'上传中',verifying:'核验中',failed:'失败',needs_review:'待核验',deleting:'删除中',deleted:'已删除',expired:'已过期',authorized:'已授权',not_required:'无需真人授权',revoked:'已撤销',unknown:'待核验',succeeded:'已完成',confirmed:'已完成',rejected:'未成功',sending:'提交中',in_flight:'处理中',running:'同步中',imported_pending:'待核验授权',imported_verified:'已核验导入',submission_unknown:'待确认'}
 const text=(value:string)=>labels[value]??value
 const errors:Record<string,string>={management_scope_not_configured:'尚未配置可用的素材管理账号与项目。请由管理员配置 AK/SK、权益与组织路由。',unsupported_capability:'该能力尚未配置或开通，请查看项目能力设置。',invalid_state:'资源状态已变化，请刷新后重试。',resource_in_use:'素材仍被进行中的视频任务引用，暂时不能删除。',group_not_empty:'素材组非空，请先处理组内素材。',authorization_required:'尚未取得有效的真人使用许可。',invalid_request:'参数或媒体校验不通过，请核对类型、大小和素材要求。',not_found:'资源不存在或无权查看。',storage_unavailable:'暂时无法保存数据，请稍后重试。',SourceDownloadFailed:'源文件无法下载，请检查地址是否可访问或已过期。',provider_sync_failed:'官方同步失败，请检查管理权限后重试。',pagination_cycle:'官方分页游标重复，已停止同步。',provider_response_invalid:'官方返回信息不完整，已保留待核验状态。',provider_unavailable:'官方处理暂未确认，请刷新状态。',media_verification_failed:'媒体安全检测或格式校验未通过。',checkpoint_expired:'同步断点已过期，请重新发起同步。',source_unavailable:'源文件无法下载，请检查地址是否可访问或已过期。',source_not_allowed:'源地址不符合安全要求，请使用公开可访问的 HTTPS 地址。',upload_expired:'上传会话已过期，请重新上传。',empty_upload:'上传内容为空，请重新选择文件。'}
-function report(e:unknown){const message=e instanceof Error?e.message:errorMessage(e,'操作失败');error.value=errors[message]??message}
-async function run(fn:()=>Promise<void>){if(busy.value)return;busy.value=true;error.value='';try{await fn()}catch(e){report(e)}finally{busy.value=false}}
-async function loadGroups(append=false){const epoch=++groupsEpoch,org=auth.orgId;const p=await api<Page<AssetGroup>>('GET','/api/video/asset-groups?'+assetQuery({kind:kind.value,name:groupName.value,status:groupStatus.value,limit:30,cursor:append?nextGroup.value:undefined}));if(epoch!==groupsEpoch||org!==auth.orgId)return;groups.value=append?[...groups.value,...p.data]:p.data;groupTotal.value=p.total;nextGroup.value=p.next_cursor??'';if(!groups.value.some(g=>g.id===selected.value)){selected.value=groups.value[0]?.id??'';await loadAssets()}}
-async function loadAssets(append=false){const epoch=++assetsEpoch,org=auth.orgId,group=selected.value;if(!selected.value){assets.value=[];assetTotal.value=0;return};const p=await api<Page<VideoAsset>>('GET','/api/video/assets?'+assetQuery({group_id:selected.value,name:assetName.value,media_type:mediaType.value,status:status.value,limit:30,cursor:append?nextAsset.value:undefined}));if(epoch!==assetsEpoch||org!==auth.orgId||group!==selected.value)return;assets.value=append?[...assets.value,...p.data]:p.data;assetTotal.value=p.total;nextAsset.value=p.next_cursor??''}
-async function refresh(){await loadGroups();await loadAssets();await loadUploads()}
+const deletionReasons:Record<string,string>={
+ real_group_not_supported:'真人素材组暂不支持删除。',group_not_empty:'素材组仍有素材，请先处理组内素材。',
+ resource_in_use:'素材组仍被进行中的视频任务引用。',operation_pending:'删除处理中，请等待状态确认。',
+ submission_uncertain:'官方提交结果待核验，请刷新或查看请求日志，不能再次删除。',
+ creation_not_rejected:'创建结果尚未确认失败，不能清理该记录。',group_not_ready:'素材组尚未就绪，请先确认创建结果。',
+ scope_unavailable:'素材组所属账号项目配置不可用，请先核对管理配置。',
+ delete_capability_disabled:'当前项目未启用官方空组删除能力。',
+ exclusive_project_required:'需先确认该项目仅由本平台写入，才能删除官方空组。',
+}
+const safeMessages=new Set(['请选择文件或填写 HTTPS 地址'])
+function requestSuffix(id:unknown){return typeof id==='string'&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(id)?`（请求 ID：${id}）`:''}
+function report(e:unknown){
+ const message=e instanceof Error?e.message:'',code=e instanceof ApiError?(e.code||message):message
+ error.value=(errors[code]??(safeMessages.has(message)?message:'操作未完成，请刷新状态或查看请求日志。'))+requestSuffix(e instanceof ApiError?e.requestId:undefined)
+}
+function context(){const epoch=scopeEpoch,org=auth.orgId,token=auth.token;return()=>epoch===scopeEpoch&&org===auth.orgId&&token===auth.token}
+async function run(fn:()=>Promise<unknown>){if(busy.value)return;const sequence=++runSequence;busy.value=true;error.value='';try{await fn()}catch(e){if(sequence===runSequence)report(e)}finally{if(sequence===runSequence)busy.value=false}}
+function trackOperation(op:AssetOperation){
+ if(!op.operation_id||settledOperations.has(op.operation_id))return
+ const index=pendingOperations.value.findIndex(item=>item.operation_id===op.operation_id)
+ if(index<0)pendingOperations.value.push(op);else pendingOperations.value[index]={...op,request_id:op.request_id||pendingOperations.value[index]?.request_id}
+ if(op.kind==='DeleteAssetGroup'||op.kind==='DeleteAsset')deleteLocks.value[op.resource_id]=op.status==='unknown'?'unknown':'pending'
+}
+function groupDeleteReason(row:AssetGroup){
+ if(deleteLocks.value[row.id])return deleteLocks.value[row.id]==='unknown'?'删除结果待核验，不能重复提交。':'删除已提交，正在确认结果与刷新列表。'
+ if(row.delete_operation&&['pending','sending','in_flight','unknown','confirmed'].includes(row.delete_operation.status))return row.delete_operation.status==='unknown'?'删除结果待核验，不能重复提交。':'删除正在确认，请等待列表刷新。'
+ if(row.kind!=='virtual')return '真人素材组暂不支持删除。'
+ if(row.asset_count>0)return '素材组仍有素材，请先处理组内素材。'
+ if(row.deletion_mode==='local_failed'&&row.status==='failed')return ''
+ // Eligibility belongs to the group's fixed provider scope, not the current default route.
+ if(row.deletion_mode==='official'&&row.status==='ready')return ''
+ return deletionReasons[row.deletion_block_reason??'']??'当前记录暂不可删除，请刷新配置或查看请求日志。'
+}
+function assetDeleteReason(row:VideoAsset){return deleteLocks.value[row.id]||row.stage==='deleting'?'删除已提交，请等待确认，不能重复提交。':!caps.value?.delete?'当前项目未启用素材删除能力。':''}
+const deleteTarget=computed(()=>targetGroup.value?groups.value.find(row=>row.id===target.value?.id):assets.value.find(row=>row.id===target.value?.id))
+const deleteBlocked=computed(()=>!deleteTarget.value?'记录已变化，请关闭后刷新列表。':targetGroup.value?groupDeleteReason(deleteTarget.value as AssetGroup):assetDeleteReason(deleteTarget.value as VideoAsset))
+const localCleanup=computed(()=>targetGroup.value&&(deleteTarget.value as AssetGroup|undefined)?.deletion_mode==='local_failed')
+async function loadGroups(append=false){const epoch=++groupsEpoch,org=auth.orgId;const p=await api<Page<AssetGroup>>('GET','/api/video/asset-groups?'+assetQuery({kind:kind.value,name:groupName.value,status:groupStatus.value,limit:30,cursor:append?nextGroup.value:undefined}));if(epoch!==groupsEpoch||org!==auth.orgId)return false;groups.value=append?[...groups.value,...p.data]:p.data;for(const group of p.data){if(group.delete_operation?.kind==='DeleteAssetGroup'&&group.delete_operation.resource_id===group.id)trackOperation(group.delete_operation)};groupTotal.value=p.total;nextGroup.value=p.next_cursor??'';if(!groups.value.some(g=>g.id===selected.value)){selected.value=groups.value[0]?.id??'';await loadAssets()};return epoch===groupsEpoch&&org===auth.orgId}
+async function loadAssets(append=false){const epoch=++assetsEpoch,org=auth.orgId,group=selected.value;if(!selected.value){assets.value=[];assetTotal.value=0;return true};const p=await api<Page<VideoAsset>>('GET','/api/video/assets?'+assetQuery({group_id:selected.value,name:assetName.value,media_type:mediaType.value,status:status.value,limit:30,cursor:append?nextAsset.value:undefined}));if(epoch!==assetsEpoch||org!==auth.orgId||group!==selected.value)return false;assets.value=append?[...assets.value,...p.data]:p.data;assetTotal.value=p.total;nextAsset.value=p.next_cursor??'';return true}
+async function refresh(){const current=context();if(!await loadGroups()||!current())return false;if(!await loadAssets()||!current())return false;await loadUploads();return current()}
 function close(){uploadID.value='';uploadPhase.value='';modal.value='';portrait.value=undefined;if(previewURL.value)URL.revokeObjectURL(previewURL.value);previewURL.value='';file.value=undefined;sourceURL.value=''}
 function openGroup(){name.value='';description.value='';modal.value='group'}
 function openRename(row:AssetGroup|VideoAsset,isGroup:boolean){target.value=row;targetGroup.value=isGroup;name.value=row.name;description.value=isGroup?(row as AssetGroup).description:'';modal.value='rename'}
-function openDelete(row:AssetGroup|VideoAsset,isGroup:boolean){target.value=row;targetGroup.value=isGroup;modal.value='delete'}
+function openDelete(row:AssetGroup|VideoAsset,isGroup:boolean){if(isGroup?groupDeleteReason(row as AssetGroup):assetDeleteReason(row as VideoAsset))return;target.value=row;targetGroup.value=isGroup;error.value='';modal.value='delete'}
 async function createGroup(){await run(async()=>{if(kind.value==='virtual'){await assetWrite('POST','/api/video/asset-groups',{kind:'virtual',name:name.value,description:description.value});close();notice.value='已受理创建素材组，等待官方确认。';await refresh()}else{portrait.value=await assetWrite<Portrait>('POST','/api/video/portrait-authorizations',{name:name.value,description:description.value});modal.value='portrait';await checkPortrait()}})}
-async function checkPortrait(){if(!portrait.value)return;const out=await api<Portrait>('GET',`/api/video/portrait-authorizations/${portrait.value.session_id}`);if(out.status==='pending'){const withLink=await api<Portrait>('POST',`/api/video/portrait-authorizations/${out.session_id}/link-reads`,{});portrait.value=withLink}else{portrait.value=out;if(out.status==='succeeded'){await refresh();if(out.group_id)selected.value=out.group_id}}}
-async function rename(){await run(async()=>{if(!target.value)return;const body:Record<string,unknown>={name:name.value,expected_version:target.value.version};if(targetGroup.value)body.description=description.value;const operation=await assetWrite<{operation_id:string}>('PATCH',`/api/video/${targetGroup.value?'asset-groups':'assets'}/${target.value.id}`,body);pendingOperations.value.push(operation.operation_id);close();notice.value='名称变更已提交，官方确认后更新。';await refresh()})}
-async function remove(){await run(async()=>{if(!target.value)return;const operation=await assetWrite<{operation_id?:string}|undefined>('DELETE',`/api/video/${targetGroup.value?'asset-groups':'assets'}/${target.value.id}`);if(operation?.operation_id)pendingOperations.value.push(operation.operation_id);close();notice.value='删除请求已受理。状态未知时将保留引用屏障。';await refresh()})}
+async function checkPortrait(){if(!portrait.value)return;const current=context(),id=portrait.value.session_id;const out=await api<Portrait>('GET',`/api/video/portrait-authorizations/${id}`);if(!current()||portrait.value?.session_id!==id)return;if(out.status==='pending'){const withLink=await api<Portrait>('POST',`/api/video/portrait-authorizations/${out.session_id}/link-reads`,{});if(current()&&portrait.value?.session_id===id)portrait.value=withLink}else{portrait.value=out;if(out.status==='succeeded'){await refresh();if(current()&&out.group_id)selected.value=out.group_id}}}
+async function rename(){await run(async()=>{if(!target.value)return;const current=context();const body:Record<string,unknown>={name:name.value,expected_version:target.value.version};if(targetGroup.value)body.description=description.value;const operation=await assetWrite<AssetOperation>('PATCH',`/api/video/${targetGroup.value?'asset-groups':'assets'}/${target.value.id}`,body);if(!current())return;trackOperation(operation);close();notice.value='名称变更已提交，官方确认后更新。';await refresh()})}
+async function remove(){await run(async()=>{
+ if(!deleteTarget.value||deleteBlocked.value)return
+ const row=deleteTarget.value,id=row.id,isGroup=targetGroup.value,local=localCleanup.value,current=context()
+ deleteLocks.value[id]='pending'
+ let accepted=false
+ try{
+  const result=await assetDelete(`/api/video/${isGroup?'asset-groups':'assets'}/${id}`),operation=result.operation
+  if(!current())return
+  accepted=true
+  if(operation?.operation_id){
+   if(operation.resource_id!==id||operation.kind!==(isGroup?'DeleteAssetGroup':'DeleteAsset'))throw new Error('invalid_delete_receipt')
+   trackOperation(operation)
+  }else if(result.completed){completedDeletions.value.push({id,local,isGroup});deleteLocks.value[id]='refreshing'}
+  else throw new Error('invalid_delete_receipt')
+  close();notice.value=local?'清理已受理，正在刷新列表。':'删除请求已受理，正在查询官方处理结果。'
+  if(await refresh()&&current())finishCompletedDeletions()
+ }catch(e){
+  if(!current())return
+  if(!accepted&&e instanceof ApiError&&[400,401,403,404,409,422,429].includes(e.status)){delete deleteLocks.value[id];report(e)}
+  else{if(!accepted||!pendingOperations.value.some(op=>op.resource_id===id)&&!completedDeletions.value.some(item=>item.id===id))deleteLocks.value[id]='unknown';report(e);notice.value=accepted?'请求已受理，但列表刷新尚未完成；系统将继续查询，不会重复发送删除。':'删除是否受理尚未确认，请刷新状态或查看请求日志；不会自动重发删除。'}
+ }
+})}
+function finishCompletedDeletions(){
+ const remaining:typeof completedDeletions.value=[]
+ for(const item of completedDeletions.value){
+  if((item.isGroup?groups.value:assets.value).some(row=>row.id===item.id)){remaining.push(item);continue}
+  delete deleteLocks.value[item.id];error.value='';notice.value=item.local?'失败记录已清理，未调用官方删除；历史日志与账务记录仍保留。':'删除已完成，列表已刷新。'
+ }
+ completedDeletions.value=remaining
+ if(remaining.length)notice.value='删除已受理，但列表仍包含该记录；正在继续刷新确认，不会重复发送删除。'
+}
 async function upload(){await run(async()=>{if(!file.value&&!sourceURL.value)throw new Error('请选择文件或填写 HTTPS 地址');const started=await assetWrite<{id:string}>('POST','/api/video/media-uploads',{media_type:uploadType.value});uploadID.value=started.id;uploadPhase.value='uploading';if(file.value)await uploadAssetFile(started.id,file.value);else await assetWrite('POST',`/api/video/media-uploads/${started.id}/complete`,{url:sourceURL.value});uploadPhase.value='registering';await assetWrite('POST','/api/video/assets',{group_id:selected.value,media_ref:started.id,name:name.value||file.value?.name?.slice(0,64)||'素材'});close();notice.value='文件核验通过，已提交官方注册。';await refresh()})}
 async function startSync(){await run(async()=>{sync.value=await assetWrite<SyncJob>('POST','/api/video/asset-sync-jobs',{kind:kind.value});notice.value='正在同步当前组织已归属的官方资源。'})}
 async function showPreview(row:VideoAsset){
@@ -69,15 +138,77 @@ watch(modal,async(value,old)=>{if(value&&!old){previousOverflow=document.body.st
 function modalKeyboard(event:KeyboardEvent){if(!modal.value)return;if(event.key==='Escape'&&!busy.value){close();return};if(event.key!=='Tab')return;const items=Array.from(document.querySelectorAll<HTMLElement>('.va-dialog button:not(:disabled),.va-dialog input:not(:disabled),.va-dialog textarea,.va-dialog select,.va-dialog a[href]'));if(!items.length)return;const first=items[0],last=items[items.length-1];if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus()}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus()}}
 
 async function loadScope(){
- const epoch=++scopeEpoch,org=auth.orgId;closePreview();close();groupsEpoch++;assetsEpoch++;uploadsEpoch++
- pendingOperations.value=[];groups.value=[];assets.value=[];uploads.value=[];groupTotal.value=assetTotal.value=uploadTotal.value=0;nextGroup.value=nextAsset.value=uploadCursor.value='';discoveries.value=[];discoveryCursor.value='';discoveryJob.value=undefined;sync.value=undefined;selected.value='';caps.value=undefined;error.value=notice.value=''
+ const epoch=++scopeEpoch,org=auth.orgId;++runSequence;++pollSequence;pollRunning=false;busy.value=true;closePreview();close();groupsEpoch++;assetsEpoch++;uploadsEpoch++
+ pendingOperations.value=[];deleteLocks.value={};completedDeletions.value=[];settledOperations.clear();target.value=undefined;groups.value=[];assets.value=[];uploads.value=[];groupTotal.value=assetTotal.value=uploadTotal.value=0;nextGroup.value=nextAsset.value=uploadCursor.value='';discoveries.value=[];discoveryCursor.value='';discoveryJob.value=undefined;sync.value=undefined;selected.value='';caps.value=undefined;error.value=notice.value=''
  try{const value=await api<AssetCapabilities>('GET','/api/video/asset-capabilities');if(epoch!==scopeEpoch||org!==auth.orgId)return;caps.value=value;await refresh()}
  catch(e){if(epoch===scopeEpoch&&org===auth.orgId)report(e)}
+ finally{if(epoch===scopeEpoch&&org===auth.orgId)busy.value=false}
 }
-watch(kind,()=>{closePreview();void run(refresh)});watch(selected,()=>{closePreview();void run(()=>loadAssets())});watch(()=>auth.orgId,()=>void loadScope(),{flush:'sync'})
+const operationMessages:Record<string,string>={
+ provider_unavailable:'Provider operation requires verification.',
+ provider_rejected:'The provider rejected this operation.',
+ provider_group_not_found:'The provider reported that the group was not found.',
+ group_not_empty:'The official group contains assets and cannot be deleted.',
+ group_empty_check_failed:'The official empty-group check could not be verified.',
+ group_absence_unverified:'The provider reported a missing group, but the follow-up check could not confirm it.',
+ group_identity_mismatch:"The deletion request does not match the group's fixed provider identity.",
+ provider_response_invalid:'The provider response could not be verified.',
+ submission_uncertain:'The operation outcome is uncertain. Do not submit it again.',
+ unsupported_capability:'The configured scope no longer permits this operation.',
+ execution_payload_unavailable:'The retained execution request is unavailable.',
+ group_not_empty_or_unverified:'The official empty-group check could not be verified.',
+}
+function operationFeedback(op:AssetOperation){
+ const deletion=op.kind==='DeleteAssetGroup'||op.kind==='DeleteAsset'
+ const detail=op.error?.message&&operationMessages[op.error.code]===op.error.message?` ${op.error.message}`:op.error?.code&&errors[op.error.code]?` ${errors[op.error.code]}`:''
+ const request=requestSuffix(op.request_id)
+ if(op.status==='confirmed'){error.value='';notice.value=(deletion?'删除已完成，列表已刷新。':'变更已完成，列表已刷新。')+request}
+ else if(op.status==='rejected'){notice.value='';error.value=(deletion?'删除未成功。':'变更未成功。')+detail+request+' 请核对请求日志和当前状态。'}
+ else if(op.status==='unknown'){notice.value='';error.value=(deletion?'删除结果待核验，不能重复提交。':'变更结果待核验。')+detail+request+' 系统只查询状态，不会重复发送操作。'}
+}
+async function poll(){
+ if(document.hidden||pollRunning)return
+ const current=context(),sequence=++pollSequence
+ pollRunning=true
+ try{
+  if(busy.value){if(uploadID.value){const id=uploadID.value;try{const out=await api<{status:string}>('GET',`/api/video/media-uploads/${id}`);if(current()&&uploadID.value===id)uploadPhase.value=out.status}catch{}}return}
+  for(const pending of [...pendingOperations.value]){
+   const op=['confirmed','rejected'].includes(pending.status)?pending:await api<AssetOperation>('GET',`/api/video/asset-operations/${pending.operation_id}`)
+   if(!current())return
+   if(op.operation_id!==pending.operation_id||op.resource_id!==pending.resource_id||op.kind!==pending.kind)throw new Error('invalid_operation_receipt')
+   if(!op.request_id&&pending.request_id)op.request_id=pending.request_id
+   trackOperation(op)
+   if(['confirmed','rejected','unknown'].includes(op.status)){
+    // Keep the operation until its list readback succeeds, including after a failed refresh.
+    if(!await refresh()||!current())return
+    if(op.status==='confirmed'&&(op.kind==='DeleteAssetGroup'?groups.value:op.kind==='DeleteAsset'?assets.value:[]).some(row=>row.id===op.resource_id)){notice.value='删除已确认，列表仍在更新；正在继续刷新，不会重复发送删除。';continue}
+    if(op.status!=='unknown'){settledOperations.add(op.operation_id);pendingOperations.value=pendingOperations.value.filter(item=>item.operation_id!==op.operation_id);delete deleteLocks.value[op.resource_id]}
+    operationFeedback(op)
+   }
+  }
+  if(completedDeletions.value.length){if(!await refresh()||!current())return;finishCompletedDeletions()}
+  if(modal.value==='portrait'&&portrait.value&&!['succeeded','failed','expired'].includes(portrait.value.status)){await checkPortrait();if(!current())return}
+  if(discoveryJob.value&&['pending','running'].includes(discoveryJob.value.status)){
+   const id=discoveryJob.value.id,out=await api<SyncJob>('GET',`/api/admin/video/asset-discovery-jobs/${id}?org_id=${auth.orgId}`)
+   if(!current())return
+   if(discoveryJob.value?.id===id){discoveryJob.value=out;if(out.status==='succeeded')await loadDiscoveries()}
+   if(!current())return
+  }
+  if(sync.value&&['pending','running'].includes(sync.value.status)){
+   const id=sync.value.id,out=await api<SyncJob>('GET',`/api/video/asset-sync-jobs/${id}`)
+   if(!current())return
+   if(sync.value?.id===id){sync.value=out;if(out.status==='succeeded')await refresh()}
+   if(!current())return
+  }
+  if(uploadsOpen.value&&uploads.value.some(u=>['uploading','verifying'].includes(u.status))){await loadUploads();if(!current())return}
+  if(groups.value.some(g=>['creating','deleting'].includes(g.status))||assets.value.some(a=>['registering','deleting'].includes(a.stage)))await refresh()
+ }catch(e){if(current())report(e)}
+ finally{if(sequence===pollSequence)pollRunning=false}
+}
+watch(kind,()=>{closePreview();void run(refresh)});watch(selected,()=>{closePreview();void run(()=>loadAssets())});watch(()=>[auth.orgId,auth.token],()=>void loadScope(),{flush:'sync'})
 watch(()=>[auth.orgId,auth.token,auth.isSuperadmin],closeSetup,{flush:'sync'})
-onMounted(()=>{window.addEventListener('keydown',modalKeyboard);run(loadScope);timer=setInterval(async()=>{if(document.hidden)return;if(busy.value){if(uploadID.value){try{uploadPhase.value=(await api<{status:string}>('GET',`/api/video/media-uploads/${uploadID.value}`)).status}catch{}}return};try{for(const id of [...pendingOperations.value]){const op=await api<{status:string}>('GET',`/api/video/asset-operations/${id}`);if(['confirmed','rejected','unknown'].includes(op.status)){pendingOperations.value=pendingOperations.value.filter(v=>v!==id);if(op.status==='rejected')error.value='官方拒绝本次变更，请查看请求日志后重试。';if(op.status==='unknown')notice.value='官方变更结果待核验，系统已停止自动重试。';await refresh()}}if(modal.value==='portrait'&&portrait.value&&!['succeeded','failed','expired'].includes(portrait.value.status))await checkPortrait();if(discoveryJob.value&&['pending','running'].includes(discoveryJob.value.status)){discoveryJob.value=await api('GET',`/api/admin/video/asset-discovery-jobs/${discoveryJob.value.id}?org_id=${auth.orgId}`);if(discoveryJob.value?.status==='succeeded')await loadDiscoveries()}if(sync.value&&['pending','running'].includes(sync.value.status)){sync.value=await api('GET',`/api/video/asset-sync-jobs/${sync.value.id}`);if(sync.value?.status==='succeeded')await refresh()}if(uploadsOpen.value&&uploads.value.some(u=>['uploading','verifying'].includes(u.status)))await loadUploads();if(groups.value.some(g=>g.status==='creating')||assets.value.some(a=>['registering','deleting'].includes(a.stage)))await refresh()}catch(e){report(e)}},5000)})
-onUnmounted(()=>{scopeEpoch++;groupsEpoch++;assetsEpoch++;uploadsEpoch++;closePreview();window.removeEventListener('keydown',modalKeyboard);if(modal.value)document.body.style.overflow=previousOverflow;if(timer)clearInterval(timer);if(previewURL.value)URL.revokeObjectURL(previewURL.value)})
+onMounted(()=>{window.addEventListener('keydown',modalKeyboard);void loadScope();timer=setInterval(poll,5000)})
+onUnmounted(()=>{scopeEpoch++;groupsEpoch++;assetsEpoch++;uploadsEpoch++;++runSequence;++pollSequence;closePreview();window.removeEventListener('keydown',modalKeyboard);if(modal.value)document.body.style.overflow=previousOverflow;if(timer)clearInterval(timer);if(previewURL.value)URL.revokeObjectURL(previewURL.value)})
 </script>
 
 <template>
@@ -92,22 +223,22 @@ onUnmounted(()=>{scopeEpoch++;groupsEpoch++;assetsEpoch++;uploadsEpoch++;closePr
    <aside class="va-groups"><div class="va-row"><h2>素材组 <span>{{ groupTotal }}</span></h2><button class="va-primary" :disabled="busy || !(kind==='virtual'?caps?.virtual:caps?.portrait)" @click="openGroup">＋ 创建</button></div><form class="va-search" @submit.prevent="run(()=>loadGroups())"><input v-model="groupName" placeholder="搜索素材组名称" aria-label="搜索素材组名称"><button>搜索</button></form><select v-model="groupStatus" class="va-sync" aria-label="素材组状态" @change="run(()=>loadGroups())"><option value="">全部组状态</option><option value="ready">可用</option><option value="creating">创建中</option><option value="failed">失败</option><option value="deleting">删除中</option></select><button v-if="auth.isSuperadmin" class="va-sync" :disabled="busy || !caps?.sync" @click="openDiscover">官方发现与归属管理</button><button class="va-sync" :disabled="busy || !caps?.sync" @click="startSync">↻ 同步官方资源</button><p v-if="sync" class="va-help">{{ text(sync.status) }} · {{ sync.items??0 }} 条 · {{ sync.pages??0 }} 页 <span v-if="sync.error_code">{{ sync.error_code }}</span></p>
     <div v-if="!groups.length" class="va-empty">暂无素材组</div><button v-for="g in groups" :key="g.id" class="va-group" :disabled="busy" :class="{selected:selected===g.id}" @click="selected=g.id"><div class="va-row"><strong>{{ g.name||'未命名素材组' }}</strong><span class="va-badge" :data-state="g.status">{{ text(g.status) }}</span></div><p>{{ g.description||'暂无描述' }}</p><small>{{ g.asset_count }} 个素材 · {{ text(g.authorization_status) }}</small></button><button v-if="nextGroup" :disabled="busy" @click="run(()=>loadGroups(true))">加载更多素材组</button>
    </aside>
-   <section class="va-assets"><template v-if="activeGroup"><div class="va-row va-title"><div><h2>{{ activeGroup.name||'未命名素材组' }} <span class="va-badge" :data-state="activeGroup.status">{{ text(activeGroup.status) }}</span></h2><p>{{ activeGroup.description }}</p><p v-if="kind==='real_person'" class="va-help">使用授权：{{ text(activeGroup.authorization_status) }}。真人认证与使用许可分别核验。</p></div><div class="va-actions"><button v-if="auth.isSuperadmin && kind==='real_person'" :disabled="busy || !activeGroup.portrait_session_id" @click="openLicense">核验使用许可</button><button :disabled="busy || !caps?.update" @click="openRename(activeGroup,true)">编辑组</button><button :disabled="busy || !caps?.delete_empty_group || kind==='real_person'" @click="openDelete(activeGroup,true)">删除空组</button><button class="va-primary" :disabled="busy || !caps?.upload || activeGroup.status!=='ready' || (kind==='real_person'&&activeGroup.authorization_status!=='authorized')" @click="name='';sourceURL='';file=undefined;modal='upload'">＋ 上传素材</button></div></div>
+   <section class="va-assets"><template v-if="activeGroup"><div class="va-row va-title"><div><h2>{{ activeGroup.name||'未命名素材组' }} <span class="va-badge" :data-state="activeGroup.status">{{ text(activeGroup.status) }}</span></h2><p>{{ activeGroup.description }}</p><p v-if="kind==='real_person'" class="va-help">使用授权：{{ text(activeGroup.authorization_status) }}。真人认证与使用许可分别核验。</p></div><div class="va-actions"><button v-if="auth.isSuperadmin && kind==='real_person'" :disabled="busy || !activeGroup.portrait_session_id" @click="openLicense">核验使用许可</button><button :disabled="busy || !caps?.update" @click="openRename(activeGroup,true)">编辑组</button><div><button :disabled="busy || !!groupDeleteReason(activeGroup)" :title="groupDeleteReason(activeGroup)" @click="openDelete(activeGroup,true)">{{ activeGroup.deletion_mode==='local_failed'?'清理失败记录':'删除空组' }}</button><p v-if="groupDeleteReason(activeGroup)" class="va-help max-w-xs" role="status">{{ groupDeleteReason(activeGroup) }}</p><p v-if="activeGroup.delete_operation" class="va-help">操作 {{ activeGroup.delete_operation.operation_id }} · {{ text(activeGroup.delete_operation.status) }}</p></div><button class="va-primary" :disabled="busy || !caps?.upload || activeGroup.status!=='ready' || (kind==='real_person'&&activeGroup.authorization_status!=='authorized')" @click="name='';sourceURL='';file=undefined;modal='upload'">＋ 上传素材</button></div></div>
     <form class="va-filters" @submit.prevent="run(()=>loadAssets())"><input v-model="assetName" placeholder="搜索素材名称" aria-label="素材名称"><select v-model="mediaType" aria-label="素材类型"><option value="">全部类型</option><option value="image">图片</option><option value="video">视频</option><option value="audio">音频</option></select><select v-model="status" aria-label="素材状态"><option value="">全部状态</option><option value="ready">可用</option><option value="verifying">核验中</option><option value="registering">注册中</option><option value="failed">失败</option><option value="deleting">删除中</option></select><button :disabled="busy">搜索</button><button type="button" :disabled="busy" @click="run(refresh)">刷新</button></form>
     <div class="va-count">筛选结果 {{ assetTotal }} 个素材 <span v-if="!caps?.upload">· 上传服务尚未就绪</span></div>
-    <div class="va-table-wrap"><table><thead><tr><th>素材</th><th>素材 ID</th><th>状态</th><th>上传时间</th><th>操作</th></tr></thead><tbody><tr v-for="a in assets" :key="a.id"><td><button class="va-link" @click="showPreview(a)">{{ a.name||'未命名素材' }}</button><small>来源：{{ a.source==='imported'?'官方同步':'平台上传' }}</small><small>{{ ({image:'图片',video:'视频',audio:'音频'} as Record<string,string>)[a.media_type] }} · {{ (a.bytes/1000000).toFixed(2) }} MB<span v-if="a.duration_ms"> · {{ (a.duration_ms/1000).toFixed(2) }}s</span></small></td><td><button class="va-id" @click="copyText(a.reference??a.id)">{{ a.id.slice(0,19) }}… ⧉</button></td><td><span class="va-badge" :data-state="a.stage">{{ text(a.stage) }}</span><small v-if="a.error_code" :title="a.error_code">{{ errors[a.error_code]??'官方处理失败，请查看日志详情。' }}</small></td><td>{{ new Date(a.created_at).toLocaleString() }}</td><td><div class="va-actions"><button @click="showPreview(a)">详情</button><button v-if="a.stage==='needs_review'" :disabled="busy || !caps?.upload" @click="verify(a)">核验</button><button :disabled="busy || !caps?.update" @click="openRename(a,false)">编辑</button><button :disabled="busy || !caps?.delete" @click="openDelete(a,false)">删除</button></div></td></tr></tbody></table><div v-if="!assets.length" class="va-empty">暂无符合条件的素材</div></div><button v-if="nextAsset" :disabled="busy" @click="run(()=>loadAssets(true))">加载更多素材</button>
+    <div class="va-table-wrap"><table><thead><tr><th>素材</th><th>素材 ID</th><th>状态</th><th>上传时间</th><th>操作</th></tr></thead><tbody><tr v-for="a in assets" :key="a.id"><td><button class="va-link" @click="showPreview(a)">{{ a.name||'未命名素材' }}</button><small>来源：{{ a.source==='imported'?'官方同步':'平台上传' }}</small><small>{{ ({image:'图片',video:'视频',audio:'音频'} as Record<string,string>)[a.media_type] }} · {{ (a.bytes/1000000).toFixed(2) }} MB<span v-if="a.duration_ms"> · {{ (a.duration_ms/1000).toFixed(2) }}s</span></small></td><td><button class="va-id" @click="copyText(a.reference??a.id)">{{ a.id.slice(0,19) }}… ⧉</button></td><td><span class="va-badge" :data-state="a.stage">{{ text(a.stage) }}</span><small v-if="a.error_code" :title="a.error_code">{{ errors[a.error_code]??'官方处理失败，请查看日志详情。' }}</small></td><td>{{ new Date(a.created_at).toLocaleString() }}</td><td><div class="va-actions"><button @click="showPreview(a)">详情</button><button v-if="a.stage==='needs_review'" :disabled="busy || !caps?.upload" @click="verify(a)">核验</button><button :disabled="busy || !caps?.update" @click="openRename(a,false)">编辑</button><button :disabled="busy || !!assetDeleteReason(a)" :title="assetDeleteReason(a)" @click="openDelete(a,false)">删除</button></div></td></tr></tbody></table><div v-if="!assets.length" class="va-empty">暂无符合条件的素材</div></div><button v-if="nextAsset" :disabled="busy" @click="run(()=>loadAssets(true))">加载更多素材</button>
    </template><div v-else class="va-empty va-welcome">从左侧选择一个素材组查看素材</div></section>
   </div>
-  <Teleport to="body"><div v-if="modal" class="va-overlay" @click.self="!busy && close()"><section class="va-dialog" role="dialog" aria-modal="true" aria-labelledby="va-dialog-title"><header><h2 id="va-dialog-title">{{ ({group:kind==='virtual'?'创建虚拟素材组':'创建真人素材组',upload:'上传素材',rename:'编辑名称',delete:'确认删除',portrait:'真人认证',discovery:'官方资源发现与归属',assign:'确认资源归属',license:'核验真人使用许可',register:'将已核验上传注册到素材组'} as Record<string,string>)[modal] }}</h2><button :disabled="busy" @click="close" aria-label="关闭弹框">×</button></header><div class="va-dialog-body">
+  <Teleport to="body"><div v-if="modal" class="va-overlay" @click.self="!busy && close()"><section class="va-dialog" role="dialog" aria-modal="true" aria-labelledby="va-dialog-title"><header><h2 id="va-dialog-title">{{ ({group:kind==='virtual'?'创建虚拟素材组':'创建真人素材组',upload:'上传素材',rename:'编辑名称',delete:localCleanup?'清理失败记录':'确认删除',portrait:'真人认证',discovery:'官方资源发现与归属',assign:'确认资源归属',license:'核验真人使用许可',register:'将已核验上传注册到素材组'} as Record<string,string>)[modal] }}</h2><button :disabled="busy" @click="close" aria-label="关闭弹框">×</button></header><div class="va-dialog-body">
    <div v-if="modal==='group' || modal==='rename'"><div v-if="modal==='group'&&kind==='real_person'" class="va-steps"><strong>1 创建认证任务</strong><span>2 完成真人认证</span><span>3 生成素材组</span></div><label>素材{{ modal==='group'||targetGroup?'组':'' }}名称<input v-model="name" maxlength="64" autofocus></label><label v-if="modal==='group'||targetGroup">描述（可选）<textarea v-model="description" maxlength="300" rows="3" /></label></div>
    <div v-if="modal==='upload'"><p v-if="uploadPhase" role="status" class="va-notice">{{ text(uploadPhase) }}<span v-if="uploadID"> · {{ uploadID }}</span></p><label>素材名称<input v-model="name" maxlength="64"></label><label>素材类型<select v-model="uploadType"><option v-for="m in caps?.media_types" :value="m">{{ ({image:'图片',video:'视频',audio:'音频'} as Record<string,string>)[m] }}</option></select></label><label>选择文件<input type="file" @change="onFile"></label><p class="va-help">或填写 HTTPS URL。文件会先经过安全检测与媒体核验，再提交官方注册。</p><label>HTTPS URL<input v-model="sourceURL" :disabled="!!file" placeholder="https://"></label><p class="va-help">图片小于 30 MB；视频不超过 200 MB；音频不超过 15 MB。视频、音频时长为 2–30 秒，生成时还需符合所选模型限制。</p></div>
-   <div v-if="modal==='delete'"><p>将删除“{{ target?.name }}”。官方删除不可恢复。</p><p class="va-help">存在进行中的任务引用、同步不完整或上游内容变化时，服务端会拒绝删除。不会清除历史任务、日志或账务记录。</p></div>
+   <div v-if="modal==='delete'"><template v-if="localCleanup"><p>确认清理“{{ target?.name }}”的失败记录？</p><p class="va-help">仅清理本平台中已确认创建失败、未生成官方素材组的空记录。不会调用官方删除，历史任务、请求日志和账务记录仍保留。</p></template><template v-else><p>将删除“{{ target?.name }}”。官方删除不可恢复。</p><p class="va-help">存在进行中的任务引用、同步不完整或上游内容变化时，服务端会拒绝删除。不会清除历史任务、日志或账务记录。</p></template><p v-if="deleteBlocked" class="va-alert" role="alert">{{ deleteBlocked }}</p></div>
    <div v-if="modal==='portrait'" class="va-portrait"><div class="va-steps"><span>1 创建认证任务</span><strong>2 完成真人认证</strong><span>3 生成素材组</span></div><p>{{ text(portrait?.status??'creating') }}</p><template v-if="portrait?.authorization_url"><QrCode :value="portrait.authorization_url" :size="220" /><a :href="portrait.authorization_url" target="_blank" rel="noopener noreferrer" class="va-primary">打开官方认证页</a></template><p v-if="portrait?.expires_at" class="va-help">有效期至 {{ new Date(portrait.expires_at).toLocaleString() }}</p><p class="va-help">由真人本人完成官方认证。认证成功后会同步素材组，并单独核验使用许可。</p><button :disabled="busy" @click="run(checkPortrait)">刷新认证状态</button></div>
    <div v-if="modal==='discovery'"><p class="va-help">项目 {{ caps?.project }} · {{ caps?.scope_id }}。仅实名超级管理员可查看未归属资源。官方 default 项目不会自动分配给当前组织。</p><div class="va-actions"><button class="va-primary" :disabled="busy || !caps?.sync" @click="discover">发现{{ kind==='virtual'?'虚拟':'真人' }}素材组</button><button :disabled="busy" @click="run(()=>loadDiscoveries())">刷新待归属列表</button></div><p v-if="discoveryJob" class="va-help">{{ text(discoveryJob.status) }} · {{ discoveryJob.items }} 个组 · {{ discoveryJob.pages }} 页 {{ errors[discoveryJob.error_code??'']??discoveryJob.error_code }}</p><div class="va-table-wrap"><table><thead><tr><th>官方素材组</th><th>类别</th><th>操作</th></tr></thead><tbody><tr v-for="d in discoveries" :key="d.id"><td>{{ d.name }}<small>{{ d.description }}</small><small>{{ d.provider_id }}</small></td><td>{{ d.kind==='real_person' || d.kind==='real'?'真人':'虚拟' }}</td><td><button :disabled="busy" @click="openAssign(d)">分配归属</button></td></tr></tbody></table><p class="va-help">已显示 {{ discoveries.length }} / {{ discoveryTotal }} 个待归属组</p><button v-if="discoveryCursor" :disabled="busy" @click="run(()=>loadDiscoveries(true))">加载更多待归属组</button><p v-if="!discoveries.length" class="va-empty">暂无待归属素材组，可先发起官方发现。</p></div></div>
    <div v-if="modal==='assign'"><p>素材组：{{ assignment?.name }}</p><label>目标组织<select v-model="targetOrg"><option :value="0">请选择目标组织</option><option v-for="o in organizations" :key="o.id" :value="o.id">{{ o.name }}（{{ o.id }}）</option></select></label><label>归属核验依据<textarea v-model="evidence" rows="4" maxlength="3000" placeholder="记录归属依据、凭据编号或已审核合同；不要填写 API Key、身份证号或密码。" /></label><label class="va-check"><input v-model="assignmentConfirmed" type="checkbox">已核验归属，确认只将此组分配给选定组织。目标组织须已配置相同官方项目路由。</label><p class="va-help">真人素材组分配不代表真人认证完成或使用许可通过。</p></div>
    <div v-if="modal==='register'"><p>目标素材组：{{ activeGroup?.name }}</p><p class="va-help">上传会话：{{ selectedUpload?.id }}。只有已核验且未过期的媒体可注册；真人组仍需有效许可。</p><label>素材名称<input v-model="name" maxlength="64"></label></div><div v-if="modal==='license'"><p class="va-help">由实名超级管理员核对真人使用许可。官方认证成功或导入成功均不自动代表许可有效。</p><label>有效期截止（UTC）<input v-model="licenseUntil" type="datetime-local"></label><label>下次复核时间（UTC，最长 24 小时）<input v-model="reverifyAt" type="datetime-local"></label><label>许可核验依据<textarea v-model="evidence" rows="5" maxlength="3000" placeholder="记录经审核的许可范围和凭据编号，不要填写身份证号或密码。" /></label></div>
    <div v-if="error" class="va-alert" role="alert">{{ error }}</div>
-  </div><footer><button :disabled="busy" @click="close">{{ modal==='portrait'?'关闭':'取消' }}</button><button v-if="modal==='group'" class="va-primary" :disabled="busy || !name.trim()" @click="createGroup">{{ busy?'提交中…':kind==='real_person'?'生成认证二维码':'创建素材组' }}</button><button v-if="modal==='rename'" class="va-primary" :disabled="busy || !name.trim()" @click="rename">保存</button><button v-if="modal==='upload'" class="va-primary" :disabled="busy || (!file&&!sourceURL)" @click="upload">{{ busy?'上传与核验中…':'上传并注册' }}</button><button v-if="modal==='assign'" class="va-primary" :disabled="busy || !targetOrg || !assignmentConfirmed || !evidence.trim()" @click="assign">确认分配</button><button v-if="modal==='register'" class="va-primary" :disabled="busy || !name.trim() || !selected" @click="registerUpload">确认注册</button><button v-if="modal==='license'" class="va-primary" :disabled="busy || !evidence.trim() || !licenseUntil || !reverifyAt" @click="reviewLicense">保存核验结果</button><button v-if="modal==='delete'" class="va-danger" :disabled="busy" @click="remove">确认删除</button></footer></section></div></Teleport>
+  </div><footer><button :disabled="busy" @click="close">{{ modal==='portrait'?'关闭':'取消' }}</button><button v-if="modal==='group'" class="va-primary" :disabled="busy || !name.trim()" @click="createGroup">{{ busy?'提交中…':kind==='real_person'?'生成认证二维码':'创建素材组' }}</button><button v-if="modal==='rename'" class="va-primary" :disabled="busy || !name.trim()" @click="rename">保存</button><button v-if="modal==='upload'" class="va-primary" :disabled="busy || (!file&&!sourceURL)" @click="upload">{{ busy?'上传与核验中…':'上传并注册' }}</button><button v-if="modal==='assign'" class="va-primary" :disabled="busy || !targetOrg || !assignmentConfirmed || !evidence.trim()" @click="assign">确认分配</button><button v-if="modal==='register'" class="va-primary" :disabled="busy || !name.trim() || !selected" @click="registerUpload">确认注册</button><button v-if="modal==='license'" class="va-primary" :disabled="busy || !evidence.trim() || !licenseUntil || !reverifyAt" @click="reviewLicense">保存核验结果</button><button v-if="modal==='delete'" class="va-danger" :disabled="busy || !!deleteBlocked" @click="remove">{{ busy?'处理中…':localCleanup?'确认清理失败记录':'确认删除' }}</button></footer></section></div></Teleport>
   <DetailDrawer v-model:open="setupOpen" title="素材管理配置" size="lg" :close-disabled="setupBusy" description="登记管理凭据与明确授权能力，再单独绑定当前组织。">
    <AssetManagementSetup v-if="setupOpen && auth.isSuperadmin" :org-id="auth.orgId" @busy-change="setupBusy=$event" @bound="setupBound" />
   </DetailDrawer>

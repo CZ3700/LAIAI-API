@@ -40,6 +40,9 @@ type Result struct {
 	RequestID, SafeErrorCode string
 	Body                     []byte          `json:"-"`
 	Data                     json.RawMessage `json:"-"`
+	// Set only after the complete official envelope identity is verified.
+	GroupNotFound    bool `json:"-"`
+	AbsenceConfirmed bool `json:"-"`
 }
 
 func (r Result) LogValue() slog.Value {
@@ -145,13 +148,27 @@ func (c *ManagementClient) Call(ctx context.Context, scope Scope, credentials Cr
 	if identifier.MatchString(envelope.ResponseMetadata.RequestID) {
 		result.RequestID = envelope.ResponseMetadata.RequestID
 	}
+	identityValid := envelope.ResponseMetadata.Action == action &&
+		envelope.ResponseMetadata.Version == managementVersion &&
+		envelope.ResponseMetadata.Service == "ark" &&
+		envelope.ResponseMetadata.Region == scope.Region && result.RequestID != ""
 	if response.StatusCode >= 400 && response.StatusCode < 500 && envelope.ResponseMetadata.Error != nil {
+		if !identityValid {
+			result.SafeErrorCode = "provider_response_invalid"
+			return result
+		}
 		result.Outcome = "rejected"
 		result.SafeErrorCode = "provider_rejected"
+		if response.StatusCode == http.StatusNotFound &&
+			(action == "DeleteAssetGroup" || action == "GetAssetGroup") &&
+			envelope.ResponseMetadata.Error.Code == "NotFound.group_id" {
+			result.GroupNotFound = true
+			result.SafeErrorCode = "provider_group_not_found"
+		}
 		return result
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 || envelope.ResponseMetadata.Error != nil ||
-		envelope.ResponseMetadata.Action != action || envelope.ResponseMetadata.Version != managementVersion || envelope.ResponseMetadata.Service != "ark" || envelope.ResponseMetadata.Region != scope.Region ||
+		!identityValid ||
 		result.RequestID == "" || len(envelope.Result) == 0 || string(envelope.Result) == "null" {
 		return result
 	}
