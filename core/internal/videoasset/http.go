@@ -295,10 +295,6 @@ func (s *Service) deleteAssetHTTP(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := s.GetAsset(c.Request.Context(), auth.OrgID, c.Param("asset_id")); err != nil {
-		s.httpError(c, err)
-		return
-	}
 	dto, done, err := s.DeleteAsset(c.Request.Context(), auth, c.Param("asset_id"))
 	if err != nil {
 		s.httpError(c, err)

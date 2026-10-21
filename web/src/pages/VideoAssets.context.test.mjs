@@ -18,7 +18,7 @@ const built = await build({
       if (args.path === 'vue') return { contents: `export const defineComponent = v => v; export const ref = (...a) => globalThis.__videoAssets.vue.ref(...a); export const computed = (...a) => globalThis.__videoAssets.vue.computed(...a); export const watch = (...a) => globalThis.__videoAssets.vue.watch(...a); export const nextTick = (...a) => globalThis.__videoAssets.vue.nextTick(...a); export const onMounted = f => globalThis.__videoAssets.mounted.push(f); export const onUnmounted = f => globalThis.__videoAssets.unmounted.push(f);` }
       if (args.path === '@/stores/auth') return { contents: 'export const useAuth = () => globalThis.__videoAssets.auth;' }
       if (args.path === '@/lib/api') return { contents: `export class ApiError extends Error { constructor(status, message, requestId = null, code = null) { super(message); Object.assign(this,{status,requestId,code}); } } export const api = (...a) => { globalThis.__videoAssets.ApiError = ApiError; return globalThis.__videoAssets.api(...a); }; export const copyText = () => {}; export const errorMessage = (e,f) => e?.message ?? f;` }
-      if (args.path === '@/lib/videoAssets') return { contents: `export const assetWrite = (...a) => globalThis.__videoAssets.api(...a); export const assetDelete = path => globalThis.__videoAssets.delete(path); export const assetQuery = v => new URLSearchParams(Object.entries(v).filter(([,x])=>x!==undefined&&x!=='')).toString(); export const assetPreview = () => ''; export const uploadAssetFile = () => {};` }
+      if (args.path === '@/lib/videoAssets') return { contents: `export const assetWrite = (...a) => globalThis.__videoAssets.api(...a); export const assetDelete = path => globalThis.__videoAssets.delete(path); export const assetQuery = v => new URLSearchParams(Object.entries(v).filter(([,x])=>x!==undefined&&x!=='')).toString(); export const assetPreview = () => ''; export const uploadAssetFile = (...a) => globalThis.__videoAssets.upload(...a);` }
       if (args.path.endsWith('.vue')) return { contents: 'export default {};' }
       throw new Error(`Unexpected import: ${args.path}`)
     })
@@ -46,21 +46,23 @@ async function until(predicate) { const end = performance.now() + 3000; while (p
 async function harness(t, rows = [group()]) {
   const keys = ['__videoAssets', 'window', 'document', 'setInterval', 'clearInterval']
   const previous = new Map(keys.map(key => [key, globalThis[key]]))
-  const h = { vue, auth: vue.reactive({ orgId: 1, token: 'fixture-session', isSuperadmin: true }), mounted: [], unmounted: [], calls: [], groups: rows, op: operation(), failGroupReads: 0 }
+  const h = { vue, auth: vue.reactive({ orgId: 1, token: 'fixture-session', isSuperadmin: true }), mounted: [], unmounted: [], calls: [], groups: rows, assets: [], op: operation(), failGroupReads: 0 }
   h.respond = async call => {
     if (call.method === 'DELETE') {
       h.groups = h.groups.map(row => ({ ...row, status: 'deleting', deletion_mode: 'blocked', deletion_block_reason: 'operation_pending', delete_operation: operation() }))
       return structuredClone(h.op)
     }
-    if (call.path === '/api/video/asset-capabilities') return { ready: true, virtual: true, delete_empty_group: true, delete: true, update: true }
+    if (call.path === '/api/video/asset-capabilities') return { ready: true, virtual: true, delete_empty_group: true, delete: true, update: true, upload: true, media_types: ['image','video','audio'] }
     if (call.path.startsWith('/api/video/asset-operations/')) return structuredClone(h.op)
     if (call.path.startsWith('/api/video/asset-groups?')) {
       if (h.failGroupReads > 0) { h.failGroupReads--; throw new Error('sensitive raw upstream fixture') }
       return { data: structuredClone(h.groups), total: h.groups.length }
     }
+    if (call.path.startsWith('/api/video/assets?')) return { data: structuredClone(h.assets), total: h.assets.length }
     return { data: [], total: 0 }
   }
   h.api = async (method, path, body) => { const call = { method, path, body }; h.calls.push(call); return h.respond(call) }
+  h.upload = async (id, file) => h.api('POST', `/api/video/media-uploads/${id}/complete`, file)
   h.delete = async path => { const response = await h.api('DELETE', path); return response?.operation_id ? {completed: false, operation: response} : {completed: true} }
   globalThis.__videoAssets = h
   globalThis.window = { addEventListener() {}, removeEventListener() {} }
@@ -192,7 +194,7 @@ test('rejected deletion releases its lock after readback while unknown outcomes 
   assert.equal(h.vm.pendingOperations.value.length, 0)
   assert.equal(h.vm.groupDeleteReason(h.vm.groups.value[0]), '')
   assert.match(h.vm.error.value, /删除未成功/)
-  assert.match(h.vm.error.value, /Provider operation requires verification\./)
+  assert.match(h.vm.error.value, /官方处理暂未确认/)
   assert.match(h.vm.error.value, /req-safe-1/)
   h.groups = [group({ status: 'deleting', deletion_mode: 'blocked', deletion_block_reason: 'submission_uncertain', delete_operation: operation('unknown') })]
   await h.vm.loadScope()
@@ -333,4 +335,163 @@ test('management setup readback refreshes capabilities without closing the drawe
   assert.match(h.vm.error.value, /第 3 步/)
   assert.match(h.vm.error.value, /req-policy/)
   assert.equal(h.vm.error.value.includes('sensitive'), false)
+})
+
+const asset = (overrides = {}) => ({ id:'asset_fixture',group_id:'grp_fixture',media_type:'image',name:'asset',status:'ready',stage:'ready',version:1,bytes:20,duration_ms:0,created_at:'2026-10-21T00:00:00Z',source:'platform',deletion_mode:'official',deletion_block_reason:'',...overrides })
+
+test('upload prerequisites have actionable explanations and never create an upload while disabled', async t => {
+  const h=await harness(t)
+  h.vm.caps.value.upload=false
+  assert.match(h.vm.uploadBlockedReason.value,/媒体存储与安全核验服务尚未配置/)
+  h.vm.openUpload(); assert.equal(h.vm.modal.value,'')
+  h.vm.sourceURL.value='https://example.com/media.png'; await h.vm.upload()
+  assert.equal(writes(h).length,0)
+  h.vm.caps.value.upload=true; h.vm.caps.value.media_types=[]
+  assert.match(h.vm.uploadBlockedReason.value,/未启用图片、视频或音频/)
+  h.vm.caps.value.media_types=['video']; h.vm.openUpload()
+  assert.equal(h.vm.modal.value,'upload'); assert.equal(h.vm.uploadType.value,'video')
+  h.vm.groups.value=[group({status:'needs_review'})]
+  assert.match(h.vm.uploadBlockedReason.value,/创建结果待核验/)
+  h.vm.groups.value=[group({kind:'real_person',authorization_status:'needs_review'})]
+  assert.match(h.vm.uploadBlockedReason.value,/有效使用许可/)
+})
+
+test('unknown group creation exposes its receipt and safe error without enabling deletion or resubmitting', async t => {
+  const created=operation('unknown',{operation_id:'create_group',kind:'CreateAssetGroup',request_id:'req-create',error:{code:'provider_unavailable',message:'private upstream body',retryable:false}})
+  const h=await harness(t,[group({status:'needs_review',deletion_mode:'blocked',deletion_block_reason:'submission_uncertain',create_operation:created})])
+  h.op=created
+  assert.equal(h.vm.text(h.vm.groups.value[0].status),'待核验')
+  h.vm.showGroupDetails(h.vm.groups.value[0])
+  assert.equal(h.vm.resourceOperations(h.vm.shownGroup.value)[0].request_id,'req-create')
+  assert.match(h.vm.operationError(created),/官方处理暂未确认/)
+  assert.equal(h.vm.operationError(created).includes('private'),false)
+  assert.match(h.vm.groupDeleteReason(h.vm.groups.value[0]),/待核验/)
+  await h.tick()
+  assert.match(h.vm.error.value,/req-create/)
+  assert.equal(writes(h).length,0)
+  assert.equal(h.vm.pendingOperations.value[0].operation_id,'create_group')
+  h.auth.orgId=2; await until(()=>!h.vm.busy.value)
+  assert.equal(h.vm.detailGroup.value,undefined)
+})
+
+test('asset deletion uses the fixed resource eligibility and restores unknown operations after refresh', async t => {
+  const h=await harness(t)
+  h.vm.caps.value.delete=false
+  assert.equal(h.vm.assetDeleteReason(asset()),'','current default route does not govern a historic resource')
+  assert.notEqual(h.vm.assetDeleteReason(asset({deletion_mode:undefined})),'','missing server permission fails closed')
+  assert.match(h.vm.assetDeleteReason(asset({deletion_mode:'blocked',deletion_block_reason:'asset_not_ready'})),/尚未就绪/)
+  const op=operation('unknown',{resource_id:'asset_fixture',kind:'DeleteAsset',request_id:'req-delete-asset'})
+  h.assets=[asset({status:'deleting',stage:'needs_review',deletion_mode:'blocked',deletion_block_reason:'submission_uncertain',delete_operation:op})]
+  await h.vm.loadScope(); h.op=op
+  assert.equal(h.vm.pendingOperations.value[0].operation_id,op.operation_id)
+  assert.match(h.vm.assetDeleteReason(h.vm.assets.value[0]),/待核验/)
+  h.vm.openDelete(h.vm.assets.value[0],false); await h.vm.remove()
+  await h.tick()
+  assert.equal(writes(h).length,0)
+  assert.match(h.vm.error.value,/req-delete-asset/)
+  h.op={...op,status:'confirmed'}; h.assets=[]; await h.tick()
+  assert.equal(h.vm.pendingOperations.value.length,0)
+  assert.equal(h.vm.deleteLocks.value.asset_fixture,undefined)
+  assert.match(h.vm.notice.value,/删除已完成/)
+})
+
+test('confirmed failed asset registration can be cleaned locally with 204 and refreshed lists', async t => {
+  const h=await harness(t); h.assets=[asset({status:'failed',stage:'failed',deletion_mode:'local_failed'})]
+  await h.vm.loadAssets(); h.vm.caps.value.delete=false
+  h.vm.openDelete(h.vm.assets.value[0],false)
+  assert.equal(h.vm.localCleanup.value,true)
+  const respond=h.respond
+  h.respond=call=>{if(call.method==='DELETE'){h.assets=[];return {}};return respond(call)}
+  await h.vm.remove()
+  assert.equal(writes(h).length,1); assert.equal(writes(h)[0].path,'/api/video/assets/asset_fixture')
+  assert.equal(h.vm.assets.value.length,0); assert.match(h.vm.notice.value,/未调用官方删除/)
+})
+
+test('late group creation and registration cannot mutate replacement organization or session views', async t => {
+  for(const action of ['create','register'])for(const change of ['org','session'])await t.test(`${action}-${change}`,async t=>{
+    const h=await harness(t),late=deferred(),respond=h.respond
+    h.respond=call=>call.method==='POST'?late.promise:respond(call)
+    h.vm.name.value='new'; h.vm.selectedUpload.value={id:'upload_fixture'}
+    const pending=action==='create'?h.vm.createGroup():h.vm.registerUpload()
+    await until(()=>writes(h).length===1)
+    if(change==='org')h.auth.orgId=2;else h.auth.token='replacement-session'
+    await until(()=>!h.vm.busy.value); h.vm.modal.value='rename'
+    late.resolve(action==='create'?group():asset()); await pending
+    assert.equal(h.vm.modal.value,'rename'); assert.equal(h.vm.notice.value,''); assert.equal(h.vm.pendingOperations.value.length,0)
+    assert.equal(writes(h).length,1)
+  })
+})
+
+test('multi-step upload stops after context changes at every network boundary', async t => {
+  for(const boundary of ['start','complete','register'])for(const change of ['org','session'])await t.test(`${boundary}-${change}`,async t=>{
+    const h=await harness(t),late=deferred(),respond=h.respond
+    h.respond=call=>{
+      if(call.method!=='POST')return respond(call)
+      if(call.path==='/api/video/media-uploads')return boundary==='start'?late.promise:{id:'upload_fixture'}
+      if(call.path.endsWith('/complete'))return boundary==='complete'?late.promise:{id:'upload_fixture',status:'ready'}
+      if(call.path==='/api/video/assets')return boundary==='register'?late.promise:asset()
+      throw new Error('unexpected write')
+    }
+    h.vm.sourceURL.value='https://example.com/media.png'; h.vm.name.value='new'
+    const pending=h.vm.upload(),expected={start:1,complete:2,register:3}[boundary]
+    await until(()=>writes(h).length===expected)
+    if(change==='org')h.auth.orgId=2;else h.auth.token='replacement-session'
+    await until(()=>!h.vm.busy.value); h.vm.modal.value='rename'
+    late.resolve(boundary==='register'?asset():{id:'upload_fixture',status:'ready'}); await pending
+    assert.equal(writes(h).length,expected,'never continue a previous scope upload')
+    assert.equal(h.vm.modal.value,'rename'); assert.equal(h.vm.notice.value,''); assert.equal(h.vm.uploadID.value,'')
+  })
+})
+
+test('upload registration keeps the original group and media inputs across asynchronous steps', async t => {
+  const h=await harness(t),late=deferred(),respond=h.respond
+  h.groups=[group(),group({id:'grp_other'})]; await h.vm.loadScope()
+  h.respond=call=>{
+    if(call.path==='/api/video/media-uploads')return late.promise
+    if(call.path.endsWith('/complete'))return {status:'ready'}
+    if(call.path==='/api/video/assets')return asset()
+    return respond(call)
+  }
+  h.vm.sourceURL.value='https://example.com/original.png'; h.vm.name.value='original'
+  const pending=h.vm.upload(); await until(()=>writes(h).length===1)
+  h.vm.selected.value='grp_other'; h.vm.sourceURL.value='https://example.com/replacement.png'; h.vm.name.value='replacement'
+  late.resolve({id:'upload_fixture'}); await pending
+  assert.deepEqual(writes(h)[1].body,{url:'https://example.com/original.png'})
+  assert.deepEqual(writes(h)[2].body,{group_id:'grp_fixture',media_ref:'upload_fixture',name:'original'})
+})
+
+test('file upload errors preserve safe codes and request IDs without exposing object payloads or expiring replacement sessions', async t => {
+  const h=await harness(t),previousFetch=globalThis.fetch,late=deferred()
+  t.after(()=>{globalThis.fetch=previousFetch})
+  globalThis.fetch=async()=>new Response(JSON.stringify({error:{message:'private payload'}}),{status:500,headers:{'X-Request-Id':'req-upload'}})
+  await assert.rejects(client.uploadAssetFile('upload_fixture',new Blob(['fixture'])),e=>e.code==='upload_failed'&&e.requestId==='req-upload'&&!e.message.includes('private'))
+  let loggedOut=false;h.auth.logout=()=>{loggedOut=true};globalThis.fetch=()=>late.promise
+  const pending=client.uploadAssetFile('upload_fixture',new Blob(['fixture']))
+  h.auth.token='replacement-session';late.resolve(new Response(JSON.stringify({code:'unauthorized'}),{status:401}))
+  await assert.rejects(pending,e=>e.status===401);assert.equal(loggedOut,false)
+})
+
+
+test('late discovery lists never reveal another organization project or reopen its drawer', async t=>{
+  const h=await harness(t),late=deferred(),respond=h.respond
+  h.vm.caps.value.scope_id='scope_old'
+  h.respond=call=>call.path==='/api/admin/orgs'?{orgs:[{id:1,name:'old organization'}]}:call.path.startsWith('/api/admin/video/asset-discoveries?')?late.promise:respond(call)
+  const pending=h.vm.openDiscover();await until(()=>h.calls.some(c=>c.path.startsWith('/api/admin/video/asset-discoveries?')))
+  h.auth.orgId=2;await until(()=>!h.vm.busy.value);h.vm.modal.value='rename'
+  late.resolve({data:[{id:'private_discovery',name:'old project resource'}],total:1});await pending
+  assert.deepEqual(h.vm.discoveries.value,[]);assert.deepEqual(h.vm.organizations.value,[]);assert.equal(h.vm.modal.value,'rename')
+})
+
+test('late sync and verification responses cannot overwrite a replacement session',async t=>{
+  for(const action of ['sync','verify','discover','assign','license'])await t.test(action,async t=>{
+    const h=await harness(t),late=deferred(),respond=h.respond
+    h.vm.caps.value.scope_id='scope_old';h.vm.assignment.value={id:'discovery_fixture',version:1};h.vm.targetOrg.value=1;h.vm.assignmentConfirmed.value=true;h.vm.evidence.value='reviewed'
+    h.vm.groups.value=[group({portrait_session_id:'portrait_fixture'})];h.vm.licenseUntil.value='2026-10-22T00:00';h.vm.reverifyAt.value='2026-10-21T12:00'
+    h.respond=call=>call.method==='POST'?late.promise:respond(call)
+    const pending=action==='sync'?h.vm.startSync():action==='verify'?h.vm.verify(asset()):action==='discover'?h.vm.discover():action==='assign'?h.vm.assign():h.vm.reviewLicense()
+    await until(()=>writes(h).length===1);h.auth.token='replacement-session';await until(()=>!h.vm.busy.value);h.vm.modal.value='rename'
+    late.resolve({id:'old_job'});await pending
+    assert.equal(h.vm.modal.value,'rename');assert.equal(h.vm.notice.value,'');assert.equal(h.vm.sync.value,undefined);assert.equal(h.vm.discoveryJob.value,undefined)
+    assert.equal(writes(h).length,1)
+  })
 })

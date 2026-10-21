@@ -195,8 +195,28 @@
       "Asset": {
         "additionalProperties": false,
         "properties": {
+          "create_operation": {
+            "$ref": "#/components/schemas/Operation"
+          },
           "created_at": {
             "format": "date-time",
+            "type": "string"
+          },
+          "delete_operation": {
+            "$ref": "#/components/schemas/Operation",
+            "description": "已受理删除的安全回执；刷新页面仍保留，unknown 不允许再次派发删除。"
+          },
+          "deletion_block_reason": {
+            "description": "当前删除受限的安全原因码；提交时重新检查状态、权限及任务引用。",
+            "type": "string"
+          },
+          "deletion_mode": {
+            "description": "依据素材固定所属项目计算，不能用当前默认项目权限替代。",
+            "enum": [
+              "official",
+              "local_failed",
+              "blocked"
+            ],
             "type": "string"
           },
           "group_id": {
@@ -278,8 +298,27 @@
             "format": "date-time",
             "type": "string"
           },
+          "create_operation": {
+            "$ref": "#/components/schemas/Operation",
+            "description": "本地创建操作的安全回执；导入组或无本地创建操作时省略。unknown 表示结果待核验，不能视为失败或再次提交。"
+          },
           "created_at": {
             "format": "date-time",
+            "type": "string"
+          },
+          "delete_operation": {
+            "$ref": "#/components/schemas/Operation"
+          },
+          "deletion_block_reason": {
+            "description": "当前删除受限的安全原因码；正式提交时仍重新校验。空字符串表示投影无阻塞。",
+            "type": "string"
+          },
+          "deletion_mode": {
+            "enum": [
+              "official",
+              "local_failed",
+              "blocked"
+            ],
             "type": "string"
           },
           "id": {
@@ -299,6 +338,7 @@
             "enum": [
               "creating",
               "ready",
+              "needs_review",
               "failed",
               "deleting"
             ],
@@ -1182,6 +1222,10 @@
           "poll_url": {
             "description": "统一操作查询路径，资源删除后仍可查。操作或原资源 404 均不表示成功。",
             "pattern": "^/v1/video/operations/op_[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "request_id": {
+            "description": "素材操作的原始平台请求 ID，用于关联请求日志；不包含上游凭据或请求正文。",
             "type": "string"
           },
           "resource_id": {
@@ -2918,7 +2962,7 @@
     },
     "/v1/video/assets/{asset_id}": {
       "delete": {
-        "description": "需要有效 Idempotency-Key 与显式启用的 DeleteAssets 能力。素材必须属于本组织，\n已有上游映射且处于允许删除的 ready/failed 状态；未启用返回 422 unsupported_capability。\n存在在途任务引用为 409 resource_in_use；在途修改/删除或状态冲突为 409 invalid_state。\n受理返回 202 操作，按 poll_url 确认完成；未知结果不能盲重发。\n不存在、跨组织或已删除可能返回 404，因此重复请求的 404 不是删除成功证据。\n",
+        "description": "需要有效 Idempotency-Key。正式删除需要资源原属项目显式启用 DeleteAssets 能力，\n已有上游映射且处于允许删除的 ready/failed 状态；未启用返回 422 unsupported_capability。\n明确创建被拒、从未取得官方 ID 且无未决操作或任务引用的本地失败记录，可清理并返回 204；不会调用官方删除。\n存在在途任务引用为 409 resource_in_use；在途修改/删除或状态冲突为 409 invalid_state。\n受理返回 202 操作，按 poll_url 确认完成；已受理删除回读原操作，未知结果不能盲重发。\n不存在、跨组织或已删除可能返回 404，因此重复请求的 404 不是删除成功证据。\n",
         "operationId": "deleteVideoAsset",
         "parameters": [
           {
@@ -3754,5 +3798,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "baf30be89e9213ff7aeef12c6dacee5fae8e2bb60fcfc7b9b3e64229246db78c"
+  "x-seedance-source-sha256": "60ad87ad03a35187953f84fe589c7fd5d1e6f713724748f3a9da833d0ffe1412"
 }

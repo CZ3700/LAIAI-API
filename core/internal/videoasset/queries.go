@@ -39,6 +39,22 @@ func (s *Service) GetGroup(ctx context.Context, org uint64, id string) (GroupDTO
 		return GroupDTO{}, ErrStorage
 	}
 	dto := GroupDTO{ID: row.ID, Version: row.RowVersion, Kind: row.Kind, Name: row.Name, Status: publicStatus(row.Status), AuthorizationStatus: "not_required", CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	if row.Status == StatusPending && row.ReviewState == ReviewRequired {
+		dto.Status = "needs_review"
+	}
+	if row.CreateOperationID != "" {
+		created, err := resourceOperation(s.db.WithContext(ctx), org, "asset_group", row.ID, "CreateAssetGroup", row.CreateOperationID, groupScope(row))
+		if err != nil {
+			return GroupDTO{}, err
+		}
+		if created != nil {
+			value := operationDTO(*created)
+			dto.CreateOperation = &value
+			if created.Status == "unknown" {
+				dto.Status = "needs_review"
+			}
+		}
+	}
 	if err := s.db.WithContext(ctx).Model(&Asset{}).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", org, id).Count(&dto.AssetCount).Error; err != nil {
 		return GroupDTO{}, ErrStorage
 	}
@@ -87,13 +103,44 @@ func (s *Service) GetAsset(ctx context.Context, org uint64, id string) (AssetDTO
 		return AssetDTO{}, ErrStorage
 	}
 	dto := AssetDTO{ID: row.ID, Version: row.RowVersion, GroupID: row.GroupID, MediaType: row.MediaType, Name: row.Name, Status: publicStatus(row.Status), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	var group Group
+	if err := s.db.WithContext(ctx).Where("org_id = ? AND group_id = ?", org, row.GroupID).Take(&group).Error; err != nil {
+		return AssetDTO{}, ErrStorage
+	}
+	if row.CreateOperationID != "" && row.ScopeID == group.ScopeID && row.ScopeVersion == group.ScopeVersion {
+		created, err := resourceOperation(s.db.WithContext(ctx), org, "asset", row.ID, "CreateAsset", row.CreateOperationID, groupScope(group))
+		if err != nil {
+			return AssetDTO{}, err
+		}
+		if created != nil {
+			value := operationDTO(*created)
+			dto.CreateOperation = &value
+			if created.Status == "unknown" {
+				dto.Status = "needs_review"
+			}
+		}
+	}
+	mode, reason, latest, err := s.assetDeletionState(s.db.WithContext(ctx), row, group)
+	if err != nil {
+		return AssetDTO{}, err
+	}
+	dto.DeletionMode, dto.DeletionBlockReason = mode, reason
+	if latest != nil {
+		value := operationDTO(*latest)
+		dto.DeleteOperation = &value
+	}
+	if mode == "official" {
+		r, err := s.resolve(ctx, org, groupScope(group))
+		switch {
+		case err != nil || !r.ExecutionRetentionConsent:
+			dto.DeletionMode, dto.DeletionBlockReason = "blocked", "scope_unavailable"
+		case !r.Capabilities.DeleteAssets:
+			dto.DeletionMode, dto.DeletionBlockReason = "blocked", "delete_capability_disabled"
+		}
+	}
 	if row.Status == StatusActive {
 		usable := row.ReviewState == ReviewClear && hasMediaFacts(row) && row.ProviderID != nil
-		var group Group
-		if err := s.db.WithContext(ctx).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", org, row.GroupID).Take(&group).Error; err != nil {
-			return AssetDTO{}, ErrStorage
-		}
-		usable = usable && group.Status == StatusActive && group.ReviewState == ReviewClear && row.ScopeID == group.ScopeID && row.ScopeVersion == group.ScopeVersion
+		usable = usable && group.DeletedAt == nil && group.Status == StatusActive && group.ReviewState == ReviewClear && row.ScopeID == group.ScopeID && row.ScopeVersion == group.ScopeVersion
 		if group.Kind == KindReal {
 			var p Portrait
 			if s.db.WithContext(ctx).Where("org_id = ? AND session_id = ?", org, group.PortraitID).Take(&p).Error != nil {

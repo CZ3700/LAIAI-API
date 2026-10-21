@@ -299,8 +299,13 @@ func TestUnknownCreateNeverResubmitsAndMetadataIsSafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(dto)
-	if bytes.Contains(raw, []byte("provider")) || bytes.Contains(raw, []byte("scope")) {
-		t.Fatal("internal routing disclosed")
+	for _, private := range []string{`"provider_id"`, `"scope_id"`, `"scope_version"`, `"account_id"`, `"project"`, `"payload_id"`, "AKTEST", "test-secret"} {
+		if bytes.Contains(raw, []byte(private)) {
+			t.Fatal("internal routing disclosed", private)
+		}
+	}
+	if dto.CreateOperation == nil || dto.CreateOperation.Status != "unknown" || dto.CreateOperation.Error == nil || dto.CreateOperation.Error.Code != "provider_unavailable" {
+		t.Fatal("safe operation diagnostic missing", dto)
 	}
 }
 
