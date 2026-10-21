@@ -2,9 +2,9 @@ package video
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,24 +15,15 @@ import (
 	"gorm.io/gorm"
 )
 
-func (s *Service) afterObservationTx(tx *gorm.DB, t *task.Task, st *State, hasVideo, hasLastFrame bool, now time.Time) error {
-	if t.Status == "succeeded" {
-		repo := videoartifact.Repository{DB: s.DB}
-		for _, output := range []struct {
-			kind    videoartifact.Kind
-			present bool
-		}{{videoartifact.Video, hasVideo}, {videoartifact.LastFrame, hasLastFrame}} {
-			if !output.present {
-				continue
-			}
-			if _, e := repo.RegisterTx(tx, videoartifact.Spec{OrgID: t.OrgID, TaskID: t.TaskID, Kind: output.kind, ExpiresAt: now.Add(time.Duration(st.RetentionDays) * 24 * time.Hour)}, now); e != nil {
-				return e
-			}
-		}
-	}
+// Generated media stays with the provider. Even an accidentally installed
+// legacy worker cannot re-enable downloads through these hooks.
+func (s *Service) afterObservationTx(*gorm.DB, *task.Task, *State, bool, bool, time.Time) error {
 	return nil
 }
+func (s *Service) ProcessArtifacts(context.Context) error { return nil }
+
 func (s *Service) afterDeletionTx(tx *gorm.DB, t *task.Task, st *State, now time.Time) error {
+	// Hide old metadata without reading or deleting legacy media files.
 	repo := videoartifact.Repository{DB: s.DB}
 	if e := repo.HideTaskTx(tx, t.OrgID, t.TaskID, now); e != nil {
 		return e
@@ -43,29 +34,78 @@ func (s *Service) afterDeletionTx(tx *gorm.DB, t *task.Task, st *State, now time
 	return nil
 }
 
-// ResolveSource only returns a signed URL to the private transfer worker. It
-// authenticates to the pinned account and keeps every upstream query audited.
-func (s *Service) ResolveSource(ctx context.Context, org uint64, id string, kind videoartifact.Kind) (string, error) {
-	if kind != videoartifact.Video && kind != videoartifact.LastFrame {
-		return "", ErrInvalid
+func (s *Service) prepareDelivery(org uint64, attempt string, st State, o *ark.Observation, credential string, now time.Time) (*invocation.PreparedVideoPayload, error) {
+	if o == nil || o.Status != ark.StatusSucceeded || (o.VideoURL == "" && o.LastFrameURL == "") {
+		return nil, nil
 	}
-	t, st, e := loadTask(s.DB.WithContext(ctx), org, id, false)
+	body, e := json.Marshal(invocation.VideoDelivery{VideoURL: o.VideoURL, LastFrameURL: o.LastFrameURL})
 	if e != nil {
-		return "", e
+		return nil, e
 	}
-	if t.Status != "succeeded" {
-		return "", ErrState
+	expires := now.Add(24 * time.Hour)
+	boundary := st.CreatedAt.Add(time.Duration(st.RetentionDays) * 24 * time.Hour)
+	if boundary.Before(expires) {
+		expires = boundary
 	}
-	var registered videoartifact.Record
-	if e = s.DB.WithContext(ctx).Where("org_id = ? AND task_id = ? AND kind = ? AND deleted_at IS NULL", org, id, kind).First(&registered).Error; e != nil {
-		return "", e
+	if !expires.After(now) {
+		return nil, nil
+	}
+	p, e := s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: org, RequestID: attempt, AttemptID: attempt, Direction: invocation.VideoUpstreamResponse, Purpose: invocation.VideoPurposeDelivery, SchemaVersion: 1, Body: body, ExpiresAt: expires, CaptureEnabled: true, SecretValues: []string{credential}})
+	// An unusable link must not block settlement of confirmed generation usage.
+	if errors.Is(e, invocation.ErrVideoInvalid) {
+		return nil, nil
+	}
+	return p, e
+}
+
+func (s *Service) readDelivery(ctx context.Context, t task.Task, st State, actor string) (*invocation.VideoDelivery, error) {
+	if t.Status != "succeeded" || st.DeletedAt != nil || st.ResultPayloadRef == "" {
+		return nil, invocation.ErrVideoNotFound
+	}
+	body, e := s.Evidence.ReadForDelivery(ctx, t.OrgID, st.ResultPayloadRef, invocation.VideoAccess{ActorRole: invocation.VideoRoleOrgReader, ActorID: actor, ReasonCode: "task_delivery"})
+	if e != nil {
+		return nil, e
+	}
+	defer clear(body)
+	var links invocation.VideoDelivery
+	if e = json.Unmarshal(body, &links); e != nil {
+		return nil, invocation.ErrVideoCorrupt
+	}
+	for _, link := range []string{links.VideoURL, links.LastFrameURL} {
+		if link != "" && !invocation.ValidVideoDeliveryURL(link, nil) {
+			return nil, invocation.ErrVideoCorrupt
+		}
+	}
+	// A slow encrypted-store read may overlap task deletion. Never release the
+	// link if the live tenant-scoped resource disappeared in the meantime.
+	if _, _, e = loadTask(s.DB.WithContext(ctx), t.OrgID, t.TaskID, false); e != nil {
+		return nil, e
+	}
+	return &links, nil
+}
+
+// refreshDelivery performs only a rate-limited official GET for one owned task.
+// It cannot create a task, change accounting, or access legacy media bytes.
+func (s *Service) refreshDelivery(ctx context.Context, t task.Task, st State) error {
+	if t.Status != "succeeded" || t.UpstreamTaskID == "" || st.DeletedAt != nil {
+		return ErrState
+	}
+	now := s.Now().UTC()
+	if !st.CreatedAt.Add(time.Duration(st.RetentionDays) * 24 * time.Hour).After(now) {
+		return invocation.ErrVideoExpired
 	}
 	attempt, e := randomID("att_")
 	if e != nil {
-		return "", e
+		return e
 	}
-	now := s.Now().UTC()
 	e = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		_, current, e := loadTask(tx, t.OrgID, t.TaskID, true)
+		if e != nil {
+			return e
+		}
+		if current.ResultPayloadRef != st.ResultPayloadRef {
+			return ErrConflict
+		}
 		allowed, e := s.rateTx(tx, st.ProviderScopeID, "query", now)
 		if e != nil {
 			return e
@@ -73,145 +113,144 @@ func (s *Service) ResolveSource(ctx context.Context, org uint64, id string, kind
 		if !allowed {
 			return videoartifact.ErrSourceDeferred
 		}
-		return tx.Create(&Attempt{OrgID: org, TaskID: id, AttemptID: attempt, RequestID: attempt, Phase: "artifact_query_sending", ObservedAt: now}).Error
+		return tx.Create(&Attempt{OrgID: t.OrgID, TaskID: t.TaskID, AttemptID: attempt, RequestID: attempt, Phase: "delivery_query_sending", ObservedAt: now}).Error
 	})
 	if e != nil {
-		return "", e
+		return e
 	}
 	client, e := s.clientFor(ctx, t, st)
 	if e != nil {
-		return "", e
+		return e
 	}
 	response := client.Query(ctx, t.UpstreamTaskID)
 	body := response.Body
 	if len(body) == 0 {
 		body = []byte(`{}`)
 	}
-	prepared, e := s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: org, RequestID: attempt, AttemptID: attempt, Direction: invocation.VideoUpstreamResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: body, ExpiresAt: now.Add(time.Duration(st.RetentionDays) * 24 * time.Hour), CaptureEnabled: st.CaptureHistory, SecretValues: []string{client.Credential}})
+	history, e := s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: t.OrgID, RequestID: attempt, AttemptID: attempt, Direction: invocation.VideoUpstreamResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: body, ExpiresAt: now.Add(time.Duration(st.RetentionDays) * 24 * time.Hour), CaptureEnabled: st.CaptureHistory, SecretValues: []string{client.Credential}})
 	if e != nil {
-		return "", e
+		return e
 	}
-	e = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		ref, e := s.Evidence.StageTx(tx, prepared)
+	var delivery *invocation.PreparedVideoPayload
+	o := response.Observation
+	if response.Outcome == ark.OutcomeAccepted && o != nil && o.TaskID == t.UpstreamTaskID && o.Status == ark.StatusSucceeded && (o.Model == "" || o.Model == st.UpstreamModel) {
+		delivery, e = s.prepareDelivery(t.OrgID, attempt, st, o, client.Credential, s.Now().UTC())
 		if e != nil {
 			return e
 		}
-		return tx.Create(&Attempt{OrgID: org, TaskID: id, AttemptID: attempt, RequestID: attempt, Phase: "artifact_query_response", HTTPStatus: response.HTTPStatus, UpstreamRequestID: response.RequestID, EvidenceRef: ref, ObservedAt: now}).Error
-	})
-	if e != nil {
-		return "", e
 	}
-	if response.Outcome != ark.OutcomeAccepted || response.Observation == nil || response.Observation.TaskID != t.UpstreamTaskID || response.Observation.Status != ark.StatusSucceeded {
-		return "", ErrUnavailable
-	}
-	if response.Observation.Model != "" && response.Observation.Model != st.UpstreamModel {
-		return "", ErrUnavailable
-	}
-	if kind == videoartifact.LastFrame {
-		if response.Observation.LastFrameURL == "" {
-			return "", ErrState
-		}
-		return response.Observation.LastFrameURL, nil
-	}
-	if response.Observation.VideoURL == "" {
-		return "", ErrState
-	}
-	return response.Observation.VideoURL, nil
-}
-
-func (s *Service) ProcessArtifacts(ctx context.Context) error {
-	if s.ArtifactWorker == nil || s.ArtifactService == nil {
-		return nil
-	}
-	now := s.Now().UTC()
-	var rows []videoartifact.Record
-	candidates := s.artifactCandidates(ctx, now)
-	if e := s.DB.WithContext(ctx).Table("(?) AS eligible", candidates).Where("scope_rank = 1").Order("updated_at, task_id, kind").Limit(10).Find(&rows).Error; e != nil {
-		return e
-	}
-	for _, r := range rows {
-		_, _ = s.ArtifactWorker.Transfer(ctx, r.OrgID, r.TaskID, r.Kind, r.Attempts > 0)
-		if r.Kind == videoartifact.Video {
-			if e := s.syncArtifactProjection(ctx, r.OrgID, r.TaskID, s.Now().UTC()); e != nil {
-				return e
-			}
-		}
-	}
-	var stale []videoartifact.Record
-	if e := s.DB.WithContext(ctx).Where("cleaned_at IS NULL AND (deleted_at IS NOT NULL OR expires_at <= ?)", now).Limit(20).Find(&stale).Error; e != nil {
-		return e
-	}
-	for _, r := range stale {
-		if e := s.ArtifactService.Cleanup(ctx, r.OrgID, r.TaskID, r.Kind, now); e != nil {
+	e = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// A deletion or a newer capsule can win while the HTTP call runs.
+		_, current, e := loadTask(tx, t.OrgID, t.TaskID, true)
+		if e != nil {
 			return e
 		}
-		if r.Kind == videoartifact.Video {
-			if e := s.syncArtifactProjection(ctx, r.OrgID, r.TaskID, now); e != nil {
-				return e
-			}
+		ref, e := s.Evidence.StageTx(tx, history)
+		if e != nil {
+			return e
 		}
+		if e = tx.Create(&Attempt{OrgID: t.OrgID, TaskID: t.TaskID, AttemptID: attempt, RequestID: attempt, Phase: "delivery_query_response", HTTPStatus: response.HTTPStatus, UpstreamRequestID: response.RequestID, EvidenceRef: ref, ObservedAt: s.Now().UTC()}).Error; e != nil {
+			return e
+		}
+		if delivery == nil || current.ResultPayloadRef != st.ResultPayloadRef {
+			return nil
+		}
+		ref, e = s.Evidence.StageTx(tx, delivery)
+		if e != nil {
+			return e
+		}
+		status := "pending"
+		if o.VideoURL != "" {
+			status = "ready"
+		}
+		return tx.Model(&State{}).Where("org_id = ? AND task_id = ? AND deleted_at IS NULL", t.OrgID, t.TaskID).Updates(map[string]any{"result_payload_ref": ref, "artifact_status": status, "updated_at": s.Now().UTC()}).Error
+	})
+	if e != nil {
+		return e
+	}
+	if delivery == nil {
+		return ErrUnavailable
 	}
 	return nil
 }
 
-func (s *Service) artifactCandidates(ctx context.Context, now time.Time) *gorm.DB {
-	return s.DB.WithContext(ctx).Table("video_artifacts AS a").Select("a.*, ROW_NUMBER() OVER (PARTITION BY v.provider_scope_id ORDER BY a.updated_at, a.task_id, a.kind) AS scope_rank").Joins("JOIN video_task_states v ON v.org_id = a.org_id AND v.task_id = a.task_id").Where("v.deleted_at IS NULL AND a.deleted_at IS NULL AND a.expires_at > ? AND a.status IN ? AND a.attempts < ? AND (a.lease_until IS NULL OR a.lease_until <= ?) AND (a.attempts = 0 OR a.updated_at < ?)", now, []string{"pending", "failed"}, s.ArtifactWorker.MaxAttempts, now, now.Add(-time.Minute))
+func (s *Service) deliveryView(ctx context.Context, t task.Task, st State, actor string, refresh bool) (TaskView, error) {
+	v := taskView(t, st)
+	if t.Status != "succeeded" || st.DeletedAt != nil {
+		return v, nil
+	}
+	links, e := s.readDelivery(ctx, t, st, actor)
+	missing := func(err error) bool {
+		return errors.Is(err, invocation.ErrVideoNotFound) || errors.Is(err, invocation.ErrVideoAccessDenied) || errors.Is(err, invocation.ErrVideoExpired) || errors.Is(err, invocation.ErrVideoRetentionDenied)
+	}
+	if e != nil && !missing(e) {
+		return TaskView{}, e
+	}
+	if e != nil && refresh {
+		if refreshErr := s.refreshDelivery(ctx, t, st); refreshErr == nil {
+			freshTask, freshState, err := loadTask(s.DB.WithContext(ctx), t.OrgID, t.TaskID, false)
+			if err != nil {
+				return TaskView{}, err
+			}
+			links, e = s.readDelivery(ctx, freshTask, freshState, actor)
+			if e != nil && !missing(e) {
+				return TaskView{}, e
+			}
+		} else if errors.Is(refreshErr, invocation.ErrVideoExpired) {
+			e = refreshErr
+		} else if !errors.Is(refreshErr, videoartifact.ErrSourceDeferred) && !errors.Is(refreshErr, ErrConflict) && !errors.Is(refreshErr, ErrState) {
+			return TaskView{}, refreshErr
+		}
+	}
+	if e != nil {
+		v.ArtifactStatus = "pending"
+		if errors.Is(e, invocation.ErrVideoExpired) {
+			v.ArtifactStatus = "expired"
+		}
+		return v, nil
+	}
+	v.Content = links
+	v.ContentURL = links.VideoURL
+	if links.VideoURL != "" {
+		v.ArtifactStatus = "ready"
+	} else {
+		v.ArtifactStatus = "pending"
+	}
+	return v, nil
 }
 
-// Transfer errors describe one attempt, not the current record. Re-read under
-// task/state then artifact locks, the same order as registration/deletion, so
-// a late busy/error result can never overwrite another worker's Ready state.
-func (s *Service) syncArtifactProjection(ctx context.Context, org uint64, id string, now time.Time) error {
-	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		_, _, e := loadTask(tx, org, id, true)
-		if isNotFound(e) {
-			return nil
-		}
-		if e != nil {
-			return e
-		}
-		var current videoartifact.Record
-		if e = locked(tx).Where("org_id = ? AND task_id = ? AND kind = ?", org, id, videoartifact.Video).First(&current).Error; e != nil {
-			return e
-		}
-		if current.DeletedAt != nil {
-			return nil
-		}
-		status := string(current.Status)
-		if !current.ExpiresAt.After(now) {
-			status = "expired"
-		}
-		return tx.Model(&State{}).Where("org_id = ? AND task_id = ? AND deleted_at IS NULL", org, id).Updates(map[string]any{"artifact_status": status, "updated_at": now}).Error
-	})
-}
 func (s *Service) HandleContent(c *gin.Context) {
 	key := requestKey(c)
-	if _, _, e := loadTask(s.DB, key.OrgID, c.Param("id"), false); e != nil {
+	kind := c.DefaultQuery("kind", "video")
+	if kind != "video" && kind != "last_frame" {
+		respondError(c, ErrInvalid)
+		return
+	}
+	t, st, e := loadTask(s.DB.WithContext(c.Request.Context()), key.OrgID, c.Param("id"), false)
+	if e != nil {
 		respondError(c, e)
 		return
 	}
-	if s.ArtifactService == nil {
-		apiError(c, 503, "artifact_storage_unavailable")
+	v, e := s.deliveryView(c.Request.Context(), t, st, fmt.Sprint(key.ID), true)
+	if e != nil {
+		respondError(c, e)
 		return
 	}
-	content, e := s.ArtifactService.Open(c.Request.Context(), key.OrgID, c.Param("id"), videoartifact.Kind(c.DefaultQuery("kind", "video")), s.Now().UTC())
-	if e != nil {
-		var ae *videoartifact.Error
-		if errors.As(e, &ae) {
-			apiError(c, ae.HTTPStatus, ae.Code)
+	link := v.ContentURL
+	if kind == "last_frame" {
+		link = ""
+		if v.Content != nil {
+			link = v.Content.LastFrameURL
+		}
+	}
+	if link == "" {
+		if v.ArtifactStatus == "expired" {
+			apiError(c, 410, "content_expired")
 		} else {
-			respondError(c, e)
+			apiError(c, 409, "content_not_ready")
 		}
 		return
 	}
-	defer content.Body.Close()
 	c.Header("Cache-Control", "private, no-store")
-	c.Header("Content-Type", content.Metadata.MediaType)
-	c.Header("Content-Length", fmt.Sprint(content.Metadata.Size))
-	c.Status(200)
-	if n, e := io.Copy(c.Writer, content.Body); e != nil || n != content.Metadata.Size {
-		c.Set("video_stream_incomplete", true)
-		c.Set("video_error", "content_stream_interrupted")
-		s.Log.Warn("video content interrupted", "task_id", c.Param("id"))
-	}
+	c.JSON(200, gin.H{"url": link, "kind": kind, "source": "upstream"})
 }

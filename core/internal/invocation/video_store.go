@@ -71,6 +71,12 @@ func (s *VideoStore) ReadForHistory(ctx context.Context, orgID uint64, payloadID
 	return s.read(ctx, orgID, payloadID, VideoPurposeHistory, false, access)
 }
 
+// ReadForDelivery exposes only the separately validated result-link capsule.
+// It cannot read history or execution data, including when history is disabled.
+func (s *VideoStore) ReadForDelivery(ctx context.Context, orgID uint64, payloadID string, access VideoAccess) ([]byte, error) {
+	return s.read(ctx, orgID, payloadID, VideoPurposeDelivery, false, access)
+}
+
 // ReadForRecovery is limited to upstream responses. It does not grant workers
 // historical client requests, responses, or execution payloads.
 func (s *VideoStore) ReadForRecovery(ctx context.Context, orgID uint64, payloadID string, access VideoAccess) ([]byte, error) {
@@ -109,7 +115,7 @@ func (s *VideoStore) read(ctx context.Context, orgID uint64, payloadID, purpose 
 		return nil, err
 	}
 	roleOK := (purpose == VideoPurposeExecution || recovery) && access.ActorRole == VideoRoleWorker ||
-		purpose == VideoPurposeHistory && !recovery && (access.ActorRole == VideoRoleOrgReader || access.ActorRole == VideoRoleRoot)
+		(purpose == VideoPurposeHistory || purpose == VideoPurposeDelivery) && !recovery && (access.ActorRole == VideoRoleOrgReader || access.ActorRole == VideoRoleRoot)
 	if !roleOK {
 		return deny(ErrVideoAccessDenied, "ROLE_DENIED")
 	}
@@ -120,7 +126,7 @@ func (s *VideoStore) read(ctx context.Context, orgID uint64, payloadID, purpose 
 		}
 		return deny(ErrVideoStorage, "STORAGE_UNAVAILABLE")
 	}
-	if meta.Purpose != purpose || purpose == VideoPurposeExecution && meta.Direction != VideoEffectiveRequest || recovery && meta.Direction != VideoUpstreamResponse {
+	if meta.Purpose != purpose || purpose == VideoPurposeExecution && meta.Direction != VideoEffectiveRequest || (recovery || purpose == VideoPurposeDelivery) && meta.Direction != VideoUpstreamResponse {
 		return deny(ErrVideoAccessDenied, "PURPOSE_DENIED")
 	}
 	if meta.CaptureStatus == VideoCaptureExpired || !meta.ExpiresAt.After(s.now()) {

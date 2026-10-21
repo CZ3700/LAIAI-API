@@ -83,7 +83,7 @@ func TestVariantPricePlansExactPreviewSaveReplayAndIsolation(t *testing.T) {
 			t.Fatal("wrong preview identity", preview)
 		}
 		p := preview.Proposal
-		if p.MinimumStatus != "unverified" || p.RiskSource != "existing_standard_2_0_policy" || len(p.RiskSourceRules) != 1 || p.RiskSourceRules[0].RuleID != "rule-current" || len(p.Sources) != 2 || len(p.Prices) != 4 || p.FXUSDPerCNY != "0.140000000000" {
+		if p.MinimumStatus != "unverified" || p.RiskSource != "default" || len(p.RiskSourceRules) != 0 || len(p.Sources) != 2 || len(p.Prices) != 4 || p.FXUSDPerCNY != "0.140000000000" {
 			t.Fatal("source metadata incomplete", p)
 		}
 		for _, price := range p.Prices {
@@ -91,7 +91,7 @@ func TestVariantPricePlansExactPreviewSaveReplayAndIsolation(t *testing.T) {
 			if price.InputVideo {
 				want = tc.input
 			}
-			if price.RetailUSDPer1M != want || price.RiskMultiplier != "4" || price.SupplierCNYPer1M == "999" {
+			if price.RetailUSDPer1M != want || price.RiskMultiplier != "1" || price.SupplierCNYPer1M == "999" {
 				t.Fatal("wrong conversion/risk", price)
 			}
 		}
@@ -150,6 +150,50 @@ func TestVariantPricePlansPermissionsAndStrictRequests(t *testing.T) {
 	}
 	variantCall(t, f.engine, "POST", path, tokens[1], "", map[string]string{"expected_context_sha256": preview.ContextSHA256}, 422)
 	variantCall(t, f.engine, "GET", "/api/admin/video/variant-price-plans/0/x", tokens[1], "", nil, 422)
+}
+
+func TestVariantPricePlansPreserveSavedFactorsWhenRefreshing(t *testing.T) {
+	f, db, tokens := variantPlanFixture(t)
+	path := "/api/admin/video/variant-price-plans/99/seedance-2.0-fast"
+	preview := variantCall(t, f.engine, "GET", path, tokens[1], "", nil, 200)
+	variantCall(t, f.engine, "POST", path, tokens[1], "saved-policy", map[string]string{"expected_context_sha256": preview.ContextSHA256}, 200)
+	var saved variantPricePlan
+	arkBillMust(t, db.First(&saved).Error)
+	var proposal variantPriceProposal
+	arkBillMust(t, json.Unmarshal([]byte(saved.ProposalJSON), &proposal))
+	proposal.RiskSource = "existing_standard_2_0_policy"
+	proposal.RiskSourceRules = []variantRiskSource{{RuleID: "old-standard", Version: "old-version", SourceHash: strings.Repeat("a", 64), RiskMultiplier: "4"}}
+	for i := range proposal.Prices {
+		proposal.Prices[i].RiskMultiplier = "4"
+		if proposal.Prices[i].InputVideo {
+			proposal.Prices[i].RiskMultiplier = "2.5"
+		}
+	}
+	raw, _ := json.Marshal(proposal)
+	arkBillMust(t, db.Model(&saved).Update("proposal_json", string(raw)).Error)
+	arkBillMust(t, db.Model(&video.ProviderScope{}).Where("id = ?", 1).Updates(map[string]any{"fx_usd_per_cny": "0.15", "fx_version": "new-fx"}).Error)
+	before := verificationSnapshot(t, db, "video_variant_price_plans")
+	refreshed := variantCall(t, f.engine, "GET", path, tokens[1], "", nil, 200)
+	if refreshed.Proposal.RiskSource != proposal.RiskSource || verificationDigest(refreshed.Proposal.RiskSourceRules) != verificationDigest(proposal.RiskSourceRules) {
+		t.Fatal("saved factor provenance replaced")
+	}
+	for _, price := range refreshed.Proposal.Prices {
+		want := "4"
+		if price.InputVideo {
+			want = "2.5"
+		}
+		if price.RiskMultiplier != want {
+			t.Fatal("saved factor overwritten", price)
+		}
+	}
+	if before != verificationSnapshot(t, db, "video_variant_price_plans") {
+		t.Fatal("reading refreshed proposal changed saved policy")
+	}
+	variantCall(t, f.engine, "POST", path, tokens[1], "refreshed-policy", map[string]string{"expected_context_sha256": refreshed.ContextSHA256}, 200)
+	read := variantCall(t, f.engine, "GET", path, tokens[1], "", nil, 200)
+	if !read.SavedMatchesProposal {
+		t.Fatal("saved factor preservation made a fresh plan stale")
+	}
 }
 
 func TestVariantPricePlansSourceChangesRejectStalePreview(t *testing.T) {
@@ -235,7 +279,20 @@ func TestVariantPricePlansRejectUnverifiedIdentityAndPolicy(t *testing.T) {
 			case "source_hash":
 				arkBillMust(t, db.Model(&videobilling.PricingRule{}).Where("rule_id=?", "rule-current").Update("source_hash", "unverified").Error)
 			}
-			variantCall(t, f.engine, "GET", "/api/admin/video/variant-price-plans/99/seedance-2.0-fast", tokens[1], "", nil, 409)
+			want := 409
+			switch change {
+			case "risk_zero", "risk_overflow", "risk_inconsistent", "expired", "future_rule", "disabled_rule", "source_hash":
+				// New variant policy is independent of standard-model prices.
+				want = 200
+			}
+			out := variantCall(t, f.engine, "GET", "/api/admin/video/variant-price-plans/99/seedance-2.0-fast", tokens[1], "", nil, want)
+			if want == 200 {
+				for _, price := range out.Proposal.Prices {
+					if price.RiskMultiplier != "1" {
+						t.Fatal("inherited unrelated standard-model policy")
+					}
+				}
+			}
 		})
 	}
 }

@@ -9,6 +9,47 @@ falls back to `Assets.GetOperation` when a video operation is not found.
 The callback verifies its one-use HMAC state internally. The platform callback
 URL must be HTTPS, have exactly `/v1/video/portrait-callback` and have no query.
 
+## Seedance generated-result delivery (2026-10-21)
+
+Official Seedance results use direct upstream HTTPS URLs. The gateway does not
+download, store, copy or proxy generated video or last-frame bytes. It does not
+require an artifact downloader, artifact root/temp/host configuration or a shared
+artifact volume. Existing historical files are not automatically removed or read
+to serve this path. This change does not alter trusted input-media storage,
+asset-management verification or other providers' delivery contracts below.
+
+Authenticated task reads return `content_url` as the video URL and preserve
+`content.video_url` / `content.last_frame_url` when available. `artifact_status`
+is retained for compatibility: `ready` means a result URL was obtained, not that
+the platform hosts a permanent object. The upstream controls signature validity.
+`GET /v1/video/generations/{id}/content` remains an authenticated JSON endpoint
+returning `{ "url": "https://…", "kind": "video", "source": "upstream" }`;
+`kind=last_frame` selects the optional last-frame link. It returns neither a
+binary stream nor a redirect. Clients use the URL directly as the media source
+or download destination and must not send a Gateway Bearer token to that host.
+
+Invocation Store retains a separate, minimal encrypted `delivery` capsule with
+validated result URLs only. Each capsule lives for at most 24 hours and expires
+no later than task creation plus the task's recorded `RetentionDays`. This is
+separate from the execution-request capsule's 24-hour lifetime after acceptance.
+It contains no media bytes, complete request/response payloads
+or provider credentials. Signed query parameters remain intact for delivery;
+known provider credentials, non-HTTPS URLs, userinfo and unsafe destinations are
+rejected. Tenant/purpose binding and audited decryption are mandatory. Ordinary
+state and receipt records contain references, never the signed URL. This purpose
+is independent of optional original-payload history and must not become a way
+to retain that history when it is disabled.
+
+Task lists only read cached delivery capsules. Single-task detail and `/content`
+may recover missing or expired links, including historical tasks, from the pinned
+provider account through a rate-limited, audited query with task identity checks.
+Within the task's recorded retention boundary, a new query may establish a new
+capsule; reading an existing capsule never extends its expiry. A deletion barrier must
+prevent both reading and backfilling a deleted task. Recovery neither creates a
+generation nor changes billing, and never reads or migrates old video files.
+Missing or expired links are reported as unavailable; no automatic signature
+renewal or permanent download availability is promised.
+
 ## Administrator functions
 
 All functions check the caller-provided **already authenticated** `*identity.User`

@@ -139,6 +139,168 @@ async function harness(t, props = {}) {
 const changePrice = (h, value = '20.000000000001') => { h.vm.pricing.value.cells[0].retail_usd_per_1m = value }
 const writes = h => h.calls.filter(c => c.method !== 'GET')
 
+function useFreshPricing(h, customize = () => {}) {
+  const fallback = h.defaultGet
+  h.defaultGet = call => {
+    const data = fallback(call)
+    if (call.path.endsWith('/pricing')) {
+      data.fx_usd_per_cny = '0.148765248438'
+      Object.assign(data.cells[0], {available: false, unavailable_reason: 'capability_not_verified', retail_usd_per_1m: '', supplier_cny_per_1m: '', risk_multiplier: '', minimum_rule_version: ''})
+    }
+    if (call.path.endsWith('/reference-candidates')) data.prices[0].available = false
+    customize(call, data)
+    return data
+  }
+}
+
+test('new pricing inherits captured costs and exact target-FX retail without manual verification or publication', async t => {
+  const h = await harness(t)
+  useFreshPricing(h)
+  await h.vm.load()
+  const cell = h.vm.pricing.value.cells[0]
+  assert.equal(h.vm.verification.value.verified, false)
+  assert.equal(cell.available, false)
+  assert.equal(cell.supplier_cny_per_1m, '46')
+  assert.equal(cell.retail_usd_per_1m, '6.843201428148')
+  assert.equal(cell.risk_multiplier, '1')
+  assert.equal(cell.minimum_rule_version, '')
+  assert.equal(cell.enabled, false)
+  assert.equal(h.vm.initialPricing.value.cells[0].retail_usd_per_1m, '', 'the saved baseline remains unchanged')
+  assert.equal(h.vm.dirty.value, true)
+  assert.equal(h.vm.canPublish.value, false)
+  assert.equal(writes(h).length, 0)
+  h.respond = () => ({preview: []})
+  await h.vm.validate()
+  assert.equal(h.vm.canPublish.value, true)
+  assert.deepEqual(writes(h).map(call => call.path.split('/').at(-1)), ['prepare', 'validate'])
+  await h.vm.publish()
+  const published = writes(h).find(call => call.path.endsWith('/publications'))
+  assert.equal(published.body.cells[0].risk_multiplier, '1')
+  assert.equal(published.body.cells[0].retail_usd_per_1m, '6.843201428148')
+  assert.equal(published.body.cells[0].enabled, false)
+  assert.equal(writes(h).some(call => call.path.endsWith('/verification')), false)
+})
+
+test('official conversion rounds decimal half-up at 12 places and does not require a verification response', async t => {
+  const h = await harness(t)
+  useFreshPricing(h, (call, data) => {
+    if (call.path.endsWith('/pricing')) data.fx_usd_per_cny = '0.5'
+    if (call.path.endsWith('/reference-candidates')) data.prices[0].supplier_cny_per_1m = '1.000000000001'
+    if (call.path.endsWith('/verification')) throw new Error('verification service unavailable')
+  })
+  await h.vm.load()
+  assert.equal(h.vm.pricing.value.cells[0].retail_usd_per_1m, '0.500000000001')
+  assert.equal(h.vm.pricing.value.cells[0].supplier_cny_per_1m, '1.000000000001')
+  assert.equal(h.vm.verification.value, null)
+  assert.equal(h.vm.dirty.value, true)
+  assert.equal(writes(h).length, 0)
+})
+
+for (const model of ['seedance-2.0-fast', 'seedance-2.0-mini', 'seedance-2.5']) {
+  test(`${model} automatically inherits only its own official pricing`, async t => {
+    const h = await harness(t, {selectedModel: model, selectedChannelId: 10})
+    const cost = model === 'seedance-2.0-fast' ? '22' : model === 'seedance-2.0-mini' ? '11' : '37'
+    useFreshPricing(h, (call, data) => {
+      if (call.path.endsWith('/pricing')) data.fx_usd_per_cny = '0.125'
+      if (call.path.endsWith('/reference-candidates')) data.prices[0].supplier_cny_per_1m = cost
+    })
+    await h.vm.load()
+    const cell = h.vm.pricing.value.cells[0]
+    assert.equal(cell.supplier_cny_per_1m, cost)
+    assert.equal(cell.retail_usd_per_1m, model === 'seedance-2.0-fast' ? '2.75' : model === 'seedance-2.0-mini' ? '1.375' : '4.625')
+    assert.equal(cell.risk_multiplier, '1')
+    assert.equal(cell.enabled, false)
+    assert.equal(writes(h).length, 0)
+    assert.ok(h.calls.every(call => call.path.startsWith(`/api/admin/video/models/${model}/`) || call.path === `/api/admin/video/pricing-templates?model=${model}`))
+  })
+}
+
+test('automatic inheritance preserves configured, enabled, nonstandard and explicitly customized fields', async t => {
+  const cases = [
+    {retail_usd_per_1m: '9.123456789012'},
+    {supplier_cny_per_1m: '40'},
+    {enabled: true},
+    {mode: 'extend'},
+    {draft: true},
+    {service_tier: 'flex'},
+  ]
+  for (const fields of cases) {
+    await t.test(JSON.stringify(fields), async t => {
+      const h = await harness(t)
+      useFreshPricing(h, (call, data) => { if (call.path.endsWith('/pricing')) Object.assign(data.cells[0], fields) })
+      await h.vm.load()
+      assert.deepEqual(JSON.parse(JSON.stringify(h.vm.pricing.value)), JSON.parse(JSON.stringify(h.vm.initialPricing.value)))
+      assert.equal(h.vm.dirty.value, false)
+      assert.equal(writes(h).length, 0)
+    })
+  }
+  await t.test('explicit risk and minimum survive filling missing prices', async t => {
+    const h = await harness(t)
+    useFreshPricing(h, (call, data) => { if (call.path.endsWith('/pricing')) Object.assign(data.cells[0], {risk_multiplier: '4', minimum_rule_version: 'custom-minimum'}) })
+    await h.vm.load()
+    assert.equal(h.vm.pricing.value.cells[0].risk_multiplier, '4')
+    assert.equal(h.vm.pricing.value.cells[0].minimum_rule_version, 'custom-minimum')
+    assert.equal(h.vm.pricing.value.cells[0].retail_usd_per_1m, '6.843201428148')
+  })
+})
+
+test('automatic inheritance leaves drafts untouched when FX or official candidate context is unusable', async t => {
+  const cases = [
+    ['missing FX', (call, data) => { if (call.path.endsWith('/pricing')) delete data.fx_usd_per_cny }],
+    ['zero FX', (call, data) => { if (call.path.endsWith('/pricing')) data.fx_usd_per_cny = '0' }],
+    ['invalid FX', (call, data) => { if (call.path.endsWith('/pricing')) data.fx_usd_per_cny = '1e-1' }],
+    ['overflow', (call, data) => { if (call.path.endsWith('/pricing')) data.fx_usd_per_cny = '999999999999' }],
+    ['rounded source', (call, data) => { if (call.path.endsWith('/reference-candidates')) data.prices[0].precision = 'rounded' }],
+    ['wrong unit', (call, data) => { if (call.path.endsWith('/reference-candidates')) data.prices[0].unit = 'USD/1M_tokens' }],
+    ['invalid cost', (call, data) => { if (call.path.endsWith('/reference-candidates')) data.prices[0].supplier_cny_per_1m = '-46' }],
+    ['ambiguous candidates', (call, data) => { if (call.path.endsWith('/reference-candidates')) data.prices.push({...data.prices[0], supplier_cny_per_1m: '47'}) }],
+    ['other model', (call, data) => { if (call.path.endsWith('/reference-candidates')) data.model = 'seedance-2.5' }],
+    ['missing binding', (call, data) => { if (call.path.endsWith('/reference-candidates')) data.config = null }],
+    ['other channel', (call, data) => { if (call.path.endsWith('/reference-candidates')) data.config.channel_id = 20 }],
+    ['stale version', (call, data) => { if (call.path.endsWith('/reference-candidates')) data.config.config_version = 'cfg-old' }],
+    ['source request failure', call => { if (call.path.endsWith('/reference-candidates')) throw new Error('source unavailable') }],
+  ]
+  for (const [label, customize] of cases) {
+    await t.test(label, async t => {
+      const h = await harness(t)
+      useFreshPricing(h, customize)
+      await h.vm.load()
+      assert.deepEqual(JSON.parse(JSON.stringify(h.vm.pricing.value)), JSON.parse(JSON.stringify(h.vm.initialPricing.value)))
+      assert.equal(h.vm.dirty.value, false)
+      assert.equal(writes(h).length, 0)
+    })
+  }
+  await t.test('selected channel differs from the configured binding', async t => {
+    const h = await harness(t, {selectedChannelId: 20})
+    useFreshPricing(h)
+    await h.vm.load()
+    assert.equal(h.vm.canEdit.value, false)
+    assert.equal(h.vm.pricing.value.cells[0].retail_usd_per_1m, '')
+    assert.equal(h.vm.pricing.value.cells[0].risk_multiplier, '')
+  })
+})
+
+test('reference-video price inheritance associates only a synchronized minimum rule', async t => {
+  for (const [verified, installed] of [[false, false], [false, true], [true, false], [true, true]]) {
+    await t.test(`verified=${verified}, installed=${installed}`, async t => {
+      const h = await harness(t)
+      useFreshPricing(h, (call, data) => {
+        if (call.path.endsWith('/pricing')) data.cells[0].input_video = true
+        if (call.path.endsWith('/reference-candidates')) Object.assign(data.prices[0], {input_video: true, key: 'generate/720p/true/default/false'})
+        if (call.path.endsWith('/verification')) data.verified = verified
+        if (call.path.endsWith('/minimum-rules')) data.items = [{id: 1, version: installed ? 'official-minimum-fixture' : 'unrelated-minimum'}]
+      })
+      await h.vm.load()
+      const cell = h.vm.pricing.value.cells[0]
+      assert.equal(cell.retail_usd_per_1m, '6.843201428148')
+      assert.equal(cell.risk_multiplier, '1')
+      assert.equal(cell.minimum_rule_version, verified && installed ? 'official-minimum-fixture' : '')
+      assert.equal(cell.enabled, false)
+      assert.equal(writes(h).length, 0)
+    })
+  }
+})
+
 test('installed templates are read-only on load, and unavailable templates do not block manual pricing', async t => {
   const h = await harness(t), fallback = h.defaultGet
   assert.equal(h.vm.templates.value[0].version, 'seedance-20261019-v1')
@@ -273,7 +435,7 @@ test('template preview refuses missing hidden cells, changed enablement and mism
   }
 })
 
-test('loading preserves every price, cost, flag and rule; references never edit the draft', async t => {
+test('loading preserves an existing selling price, cost, flag and rule', async t => {
   const h = await harness(t)
   assert.deepEqual(JSON.parse(JSON.stringify(h.vm.pricing.value)), pricing(1))
   assert.equal(h.vm.dirty.value, false)
@@ -747,27 +909,27 @@ test('adopting costs explicitly fills only selected empty fields and never enabl
   }
   await h.vm.load()
   const [existing, fresh] = h.vm.pricing.value.cells
-  assert.equal(fresh.risk_multiplier, '', 'reading references must not silently adopt risk or costs')
+  assert.equal(fresh.risk_multiplier, '', 'without target FX the automatic pricing draft remains empty')
   assert.equal(fresh.minimum_rule_version, '')
   h.vm.selectCell('generate/720p/false/default/false', true)
   h.vm.selectCell('generate/720p/true/default/false', true)
   fresh.retail_usd_per_1m = '9'
   h.vm.previewOfficialAdoption()
-  assert.equal(h.vm.adoptionRisk.value, '4')
+  assert.equal(h.vm.adoptionRisk.value, '1', 'new pricing must not inherit an existing row reserve multiplier')
   assert.equal(fresh.supplier_cny_per_1m, '', 'opening preview does not change prices')
   assert.equal(h.vm.adoptionChanges.value.length, 1)
   h.vm.applyOfficialAdoption()
   assert.equal(existing.supplier_cny_per_1m, '40')
   assert.equal(existing.retail_usd_per_1m, '10.00000000')
   assert.equal(fresh.supplier_cny_per_1m, '22')
-  assert.equal(fresh.risk_multiplier, '4')
+  assert.equal(fresh.risk_multiplier, '1')
   assert.equal(fresh.minimum_rule_version, 'official-minimum-fixture')
   assert.equal(fresh.retail_usd_per_1m, '9')
   assert.equal(fresh.enabled, false)
   assert.equal(writes(h).length, 0)
 })
 
-test('cost adoption rejects stale selections and requires an explicit valid reserve multiplier for new cells', async t => {
+test('cost adoption defaults to one and rejects stale selections or invalid custom reserve multipliers', async t => {
   const h = await harness(t), fallback = h.defaultGet
   h.defaultGet = call => {
     const data = fallback(call)
@@ -778,7 +940,7 @@ test('cost adoption rejects stale selections and requires an explicit valid rese
   const cell = h.vm.pricing.value.cells[0]
   h.vm.selectCell('generate/720p/false/default/false', true)
   h.vm.previewOfficialAdoption()
-  assert.equal(h.vm.adoptionRisk.value, '')
+  assert.equal(h.vm.adoptionRisk.value, '1')
   for (const risk of ['', '0.99', '101', '1e2']) {
     h.vm.adoptionRisk.value = risk; h.vm.applyOfficialAdoption()
     assert.equal(h.vm.adoptionError.value, 'adoptionRiskRequired')

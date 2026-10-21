@@ -1,7 +1,10 @@
 // Package video coordinates Ark tasks and their shared financial transaction.
 package video
 
-import "time"
+import (
+	"github.com/laiai/laiai-next/core/internal/invocation"
+	"time"
+)
 
 const Provider = "ark_official"
 
@@ -239,18 +242,19 @@ type QueryReceipt struct {
 func (QueryReceipt) TableName() string { return "video_query_receipts" }
 
 type TaskView struct {
-	ID             string     `json:"id"`
-	Model          string     `json:"model"`
-	Status         string     `json:"status"`
-	BillingState   string     `json:"billing_state"`
-	Usage          *UsageView `json:"usage"`
-	SyncState      string     `json:"sync_state"`
-	ArtifactStatus string     `json:"artifact_status"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	LastSyncedAt   *time.Time `json:"last_synced_at"`
-	DeletionState  string     `json:"deletion_state"`
-	ContentURL     string     `json:"content_url,omitempty"`
+	ID             string                    `json:"id"`
+	Model          string                    `json:"model"`
+	Status         string                    `json:"status"`
+	BillingState   string                    `json:"billing_state"`
+	Usage          *UsageView                `json:"usage"`
+	SyncState      string                    `json:"sync_state"`
+	ArtifactStatus string                    `json:"artifact_status"`
+	CreatedAt      time.Time                 `json:"created_at"`
+	UpdatedAt      time.Time                 `json:"updated_at"`
+	LastSyncedAt   *time.Time                `json:"last_synced_at"`
+	DeletionState  string                    `json:"deletion_state"`
+	ContentURL     string                    `json:"content_url,omitempty"`
+	Content        *invocation.VideoDelivery `json:"content,omitempty"`
 }
 type UsageView struct {
 	CompletionTokens *int64 `json:"completion_tokens"`

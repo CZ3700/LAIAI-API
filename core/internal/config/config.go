@@ -22,9 +22,6 @@ type Config struct {
 	AdminToken               []byte          // LAIAI_ADMIN_TOKEN，可选；设置则须 >= 32 字符，未设置 admin API 整组禁用
 	Keyring                  *crypto.Keyring // LAIAI_DATA_KEYS + LAIAI_DATA_KEY_ACTIVE，可选；未设置则渠道管理/relay 禁用
 	VideoHMACSecret          []byte
-	VideoArtifactRoot        string
-	VideoArtifactTemp        string
-	VideoArtifactHosts       []string
 	VideoPortraitCallbackURL string
 	VideoPortraitReturnURL   string
 	VideoMediaRoot           string
@@ -152,20 +149,10 @@ func Load() (*Config, error) {
 		}
 		c.VideoHMACSecret = []byte(v)
 	}
-	c.VideoArtifactRoot = os.Getenv("LAIAI_VIDEO_ARTIFACT_ROOT")
-	c.VideoArtifactTemp = os.Getenv("LAIAI_VIDEO_ARTIFACT_TEMP")
 	c.VideoPortraitCallbackURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_CALLBACK_URL")
 	c.VideoPortraitReturnURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_RETURN_URL")
 	if err := c.loadVideoMedia(); err != nil {
 		return nil, err
-	}
-	for _, host := range strings.Split(os.Getenv("LAIAI_VIDEO_ARTIFACT_HOSTS"), ",") {
-		if h := strings.TrimSpace(host); h != "" {
-			c.VideoArtifactHosts = append(c.VideoArtifactHosts, h)
-		}
-	}
-	if len(c.VideoHMACSecret) > 0 && (!filepath.IsAbs(c.VideoArtifactRoot) || !filepath.IsAbs(c.VideoArtifactTemp) || len(c.VideoArtifactHosts) == 0) {
-		return nil, fmt.Errorf("config: video gateway requires private artifact root/temp paths and verified exact output hosts")
 	}
 	c.SMTPPort = 587
 	if v := os.Getenv("LAIAI_SMTP_PORT"); v != "" {

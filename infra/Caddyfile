@@ -49,7 +49,7 @@
 		Strict-Transport-Security "max-age=63072000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "SAMEORIGIN"
-		Referrer-Policy "strict-origin-when-cross-origin"
+		Referrer-Policy "no-referrer"
 		# CSP（审查 L6）：token 存于 JS storage，CSP 是 XSS 的关键兜底。
 		# Vite 产物无内联脚本；style 'unsafe-inline' 因 Tailwind 运行时注入需要。
 		# img-src 含 https:：体验场生图结果可能是上游 CDN 的 https 图片 URL（非 base64），需允许内联显示；

@@ -74,6 +74,24 @@ func requireCompletePricingMatrix(cells []pricingCell, current []videobilling.Pr
 func cellFromRule(p videobilling.PricingRule) pricingCell {
 	return pricingCell{Mode: p.Mode, Resolution: p.Resolution, InputVideo: p.InputVideo, ServiceTier: p.ServiceTier, Draft: p.Draft, Enabled: p.Enabled, RetailUSDPer1M: p.RetailUSDPer1M.String(), SupplierCNYPer1M: p.SupplierCNYPer1M.String(), RiskMultiplier: p.RiskMultiplier.String(), MinimumRuleVersion: p.MinimumRuleVersion}
 }
+
+func defaultPricingRisk(cells []pricingCell, current []videobilling.PricingRule) []pricingCell {
+	out := append([]pricingCell(nil), cells...)
+	existing := make(map[string]string, len(current))
+	for _, rule := range current {
+		existing[priceCellKey(cellFromRule(rule))] = rule.RiskMultiplier.String()
+	}
+	for i := range out {
+		if out[i].RiskMultiplier != "" {
+			continue
+		}
+		out[i].RiskMultiplier = existing[priceCellKey(out[i])]
+		if out[i].RiskMultiplier == "" {
+			out[i].RiskMultiplier = "1"
+		}
+	}
+	return out
+}
 func validatePricingBinding(tx *gorm.DB, cfg video.ModelConfig) error {
 	var scope video.ProviderScope
 	if e := tx.Where("id = ? AND enabled = ?", cfg.ProviderScopeID, true).Take(&scope).Error; e != nil {
@@ -229,6 +247,7 @@ func (s *Server) prepareArkPricingConsole(c *gin.Context) {
 		if e != nil {
 			return e
 		}
+		in.Cells = defaultPricingRisk(in.Cells, current)
 		if e := requireCompletePricingMatrix(in.Cells, current); e != nil {
 			return e
 		}

@@ -7,7 +7,7 @@ import DetailDrawer from '@/components/DetailDrawer.vue'
 import SimpleVideoPriceCell from '@/components/pricing/SimpleVideoPriceCell.vue'
 import { useAuth } from '@/stores/auth'
 import { cellKey, isOfficialVideoModel, officialVideoModels, officialVideoSeries, type PriceCell as Cell, type ReferenceCandidates, type SourceRow } from '@/components/pricing/types'
-import { exactRate, adjustRate } from '@/components/pricing/videoPriceDecimal'
+import { exactRate, adjustRate, convertOfficialRate } from '@/components/pricing/videoPriceDecimal'
 import messages from '@/i18n/pricingRedesignVideo'
 const props = defineProps<{ selectedModel?: string; selectedChannelId?: number; embedded?: boolean; contextKey?: string }>()
 const emit = defineEmits<{ 'dirty-change': [dirty: boolean]; 'busy-change': [busy: boolean]; published: []; 'verification-synced': [] }>()
@@ -36,7 +36,7 @@ const selectedEvidence = ref<SourceRow[] | null>(null), showMinimum = ref(false)
 const evidenceQuery = ref(''), evidencePage = ref(1), evidencePageSize = 20
 const selectedKeys = ref<string[]>([]), bulkMode = ref('same'), bulkValue = ref(''), bulkChanges = ref<BulkChange[]>([]), bulkError = ref('')
 const verification = ref<Verification | null>(null), verificationError = ref(''), verificationOpen = ref(false), verificationReloadRequired = ref(false)
-const adoptionOpen = ref(false), adoptionRisk = ref(''), adoptionError = ref(''), adoptionSnapshot = ref('')
+const adoptionOpen = ref(false), adoptionRisk = ref('1'), adoptionError = ref(''), adoptionSnapshot = ref('')
 const templates = ref<PricingTemplate[]>([]), templatesLoading = ref(false), templateError = ref(''), templateOpen = ref(false)
 const templateVersion = ref(''), templateMode = ref<TemplateMode>('fill_missing'), templatePreview = ref<TemplatePreview | null>(null), templateSnapshot = ref(''), templateRef = ref<TemplateRef | null>(null)
 const prepared = ref<Prepared | null>(null), validatedBody = ref(''), validatedDraft = ref(''), previewOpen = ref(false), publishKey = ref(uuid())
@@ -58,7 +58,7 @@ const originalByKey = computed(() => new Map((initialPricing.value?.cells ?? [])
 const incompleteNewPrices = computed(() => (pricing.value?.cells ?? []).filter(cell => {
   const original = originalByKey.value.get(cellKey(cell))
   return !original?.retail_usd_per_1m && !original?.supplier_cny_per_1m && !original?.enabled
-    && !cell.retail_usd_per_1m && !!(cell.supplier_cny_per_1m || cell.risk_multiplier || cell.minimum_rule_version)
+    && !cell.retail_usd_per_1m && !!(cell.supplier_cny_per_1m || cell.minimum_rule_version)
     && JSON.stringify(cell) !== JSON.stringify(original)
 }).map(cellKey))
 const defaultCells = computed(() => (pricing.value?.cells ?? []).filter(c => c.mode === 'generate' && c.service_tier === 'default' && !c.draft))
@@ -113,7 +113,7 @@ function clear() {
   ++operationGeneration; busy.value = false; error.value = ''; notice.value = ''; pricing.value = null; initialPricing.value = null; initialCells.value = ''; invalidate()
   selectedRevision.value = null; revisions.value = []; minimums.value = []; minimumJSON.value = ''; candidates.value = null; referenceError.value = ''; selectedEvidence.value = null; showMinimum.value = false
   selectedKeys.value = []; bulkValue.value = ''; bulkChanges.value = []; bulkError.value = ''; tab.value = 'retail'
-  verification.value = null; verificationError.value = ''; verificationOpen.value = false; verificationReloadRequired.value = false; adoptionOpen.value = false; adoptionRisk.value = ''; adoptionError.value = ''; adoptionSnapshot.value = ''
+  verification.value = null; verificationError.value = ''; verificationOpen.value = false; verificationReloadRequired.value = false; adoptionOpen.value = false; adoptionRisk.value = '1'; adoptionError.value = ''; adoptionSnapshot.value = ''
   templates.value = []; templatesLoading.value = false; templateError.value = ''; templateOpen.value = false; templateVersion.value = ''; templateMode.value = 'fill_missing'; templatePreview.value = null; templateSnapshot.value = ''; templateRef.value = null
 }
 async function load() {
@@ -134,8 +134,33 @@ async function load() {
     if (data.status !== 'fulfilled') throw data.reason
     if (data.value.model !== model.value) throw new Error(t('loadFailed'))
     initialPricing.value = clone(data.value); initialCells.value = JSON.stringify(data.value.cells); pricing.value = clone(data.value)
+    inheritOfficialPricing()
   } catch (e) { if (generation === loadGeneration) error.value = errorMessage(e, t('loadFailed')) }
   finally { if (generation === loadGeneration) loading.value = false }
+}
+function inheritOfficialPricing() {
+  if (!canEdit.value || !pricing.value || !candidates.value || candidates.value.model !== model.value) return
+  const context = candidates.value.config
+  if (!context || context.channel_id !== pricing.value.channel_id || context.config_version !== pricing.value.config_version) return
+  let inherited = 0
+  for (const cell of pricing.value.cells) {
+    if (cell.mode !== 'generate' || cell.service_tier !== 'default' || cell.draft || cell.enabled || cell.retail_usd_per_1m || cell.supplier_cny_per_1m) continue
+    const cost = referenceCost(cell)
+    if (cost === undefined) continue
+    try {
+      // Collected exact prices are usable without a manual capability review.
+      // Monetary values always use the target scope's existing FX snapshot.
+      const retail = convertOfficialRate(cost, pricing.value.fx_usd_per_cny ?? '')
+      cell.supplier_cny_per_1m = cost
+      cell.retail_usd_per_1m = retail
+      cell.risk_multiplier ||= '1'
+      if (cell.input_video && !cell.minimum_rule_version && verification.value?.verified && minimums.value.some(item => item.version === verification.value?.minimum_version)) {
+        cell.minimum_rule_version = verification.value.minimum_version
+      }
+      inherited++
+    } catch { /* A missing FX snapshot cannot produce a USD selling price. */ }
+  }
+  if (inherited) notice.value = t('officialInherited', { count: inherited })
 }
 function discardChanges() {
   if (busy.value) return
@@ -266,7 +291,7 @@ function exactRisk(value: string): string {
 function adoptionFingerprint() { return JSON.stringify({ body: body.value, keys: selectedKeys.value, profile: verification.value?.profile_version, verified: verification.value?.verified, minimum: minimums.value.map(item => item.version) }) }
 function previewOfficialAdoption() {
   if (!canEdit.value || busy.value || !selectedKeys.value.length) return
-  adoptionError.value = ''; adoptionRisk.value = currentRisk.value; adoptionSnapshot.value = adoptionFingerprint(); adoptionOpen.value = true
+  adoptionError.value = ''; adoptionRisk.value = '1'; adoptionSnapshot.value = adoptionFingerprint(); adoptionOpen.value = true
 }
 function applyOfficialAdoption() {
   if (!canEdit.value || busy.value || !adoptionOpen.value || !adoptionSnapshot.value) return
@@ -347,7 +372,7 @@ defineExpose({ hasUnsavedChanges: () => dirty.value, discardChanges })
     <template v-else-if="pricing">
       <nav class="tabs" role="tablist" :aria-label="t('title')"><button v-for="name in tabs" :id="`${tabsId}-${name}`" :key="name" type="button" role="tab" :class="{ active: tab === name }" :aria-selected="tab === name" :tabindex="tab === name ? 0 : -1" :aria-controls="`${tabsId}-panel`" @keydown="tabKeydown" @click="tab = name">{{ t(name) }}</button></nav>
       <div v-if="tab === 'retail'" class="tab-body" :id="`${tabsId}-panel`" role="tabpanel" :aria-labelledby="`${tabsId}-${tab}`">
-        <p class="intro">{{ t('subtitle') }}</p>
+        <p class="intro">{{ t('subtitle') }}</p><p class="intro">{{ t('automaticPricingHelp') }}</p>
         <section class="panel adoption-action"><div><h2>{{ t('templateTitle') }}</h2><p>{{ t('templateSummary') }}</p><p v-if="templateRef" class="evidence-hash">{{ t('templateDraftSource') }} · {{ templateRef.version }}</p><p v-if="templateError && !templateOpen" role="status">{{ t('templateLoadFailed') }}</p></div><button :disabled="busy || loading || !canEdit" @click="openTemplate">{{ t('templateAction') }}</button></section>
         <div class="matrix" role="group" :aria-label="t('retail')"><div class="matrix-heading"><strong>{{ t('resolution') }}</strong><strong>{{ t('noVideo') }}</strong><strong>{{ t('withVideo') }}</strong></div>
           <div v-for="resolution in resolutions" :key="resolution" class="matrix-row"><strong class="resolution">{{ resolution }}</strong><div v-for="input in [false, true]" :key="String(input)" class="matrix-value"><template v-for="cell in primaryCells.filter(c => c.resolution === resolution && c.input_video === input)" :key="cellKey(cell)"><SimpleVideoPriceCell :cell="cell" :original="originalByKey.get(cellKey(cell))" :reference="referenceCost(cell)" :selected="selectedKeys.includes(cellKey(cell))" :disabled="!canEdit || busy" @select="selectCell" @rules="tab = 'rules'" /></template><span v-if="!primaryCells.some(c => c.resolution === resolution && c.input_video === input)" class="empty-cell">{{ t('unavailable') }}</span></div></div>

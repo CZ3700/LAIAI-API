@@ -4,7 +4,7 @@ import { uuid } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
 import DetailDrawer from '@/components/DetailDrawer.vue'
 import { useSeedanceI18n } from './messages'
-import { authorizedRequest, canDelete, createBody, generationActive, safeContentPath, shouldPoll } from './workflow'
+import { authorizedRequest, canDelete, createBody, generationActive, safeMediaURL, shouldPoll } from './workflow'
 import HistoryJSON from './HistoryJSON.vue'
 import type { Billing } from './types'
 
@@ -12,7 +12,7 @@ const props = defineProps<{ model: string; apiKey: string }>()
 const emit = defineEmits<{ locked: [value: boolean] }>()
 const { t } = useSeedanceI18n()
 const auth = useAuth()
-interface Task { id: string; model: string; status: string; billing_state: string; artifact_status: string; content_url?: string; usage?: { completion_tokens: number | null; total_tokens: number | null }; deletion_state?: string }
+interface Task { id: string; model: string; status: string; billing_state: string; artifact_status: string; content_url?: string; content?: { video_url?: string; last_frame_url?: string }; usage?: { completion_tokens: number | null; total_tokens: number | null }; deletion_state?: string }
 interface Quote { reserved_amount: string; estimated_tokens: number; pricing_version: string; billing_rule_version: string; capability_version: string }
 interface Model { id: string; enabled: boolean; verified: boolean; capabilities: { resolutions: string[]; max_duration_seconds: number; automatic_duration: boolean; input_video: boolean; input_audio: boolean } }
 const prompt = ref('')
@@ -35,7 +35,10 @@ const requestID = ref('')
 const submitted = ref<unknown>(null)
 const received = ref<unknown>(null)
 const responseStatus = ref<number | null>(null)
-const src = ref('')
+const mediaReady = computed(() => task.value?.status === 'succeeded' && task.value.artifact_status === 'ready' && task.value.deletion_state !== 'deleted')
+const src = computed(() => mediaReady.value ? safeMediaURL(task.value?.content?.video_url ?? task.value?.content_url) : '')
+const lastFrameURL = computed(() => mediaReady.value ? safeMediaURL(task.value?.content?.last_frame_url) : '')
+const copiedURL = ref(false)
 const showDetails = ref(false)
 function closeDetails() { showDetails.value = false }
 const cancelKey = ref('')
@@ -43,9 +46,9 @@ const cancelOperation = ref<{ operation_id: string; status: string } | null>(nul
 const mutationKind = ref<'cancel' | 'delete'>('cancel')
 const currentTab = ref<'received' | 'result' | 'response'>('received')
 let timer: number | undefined
-let polling = false
 let epoch = 0
-let contentLoading = false
+type ObservationRequest = { epoch: number; controller: AbortController }
+let pollingRequest: ObservationRequest | null = null
 const active = computed(() => task.value ? generationActive(task.value.status) : false)
 const locked = computed(() => busy.value || active.value || uncertain.value)
 watch(locked, value => emit('locked', value), { immediate: true })
@@ -61,8 +64,12 @@ function body() {
   return createBody({ model: props.model, prompt: prompt.value, image: image.value, video: video.value, audio: audio.value, duration: duration.value, resolution: resolution.value, ratio: ratio.value })
 }
 function stop() { if (timer) window.clearInterval(timer); timer = undefined }
-function clearMedia() { if (src.value) URL.revokeObjectURL(src.value); src.value = '' }
-function clearPrivate() { epoch++; stop(); clearMedia(); busy.value = false; quote.value = null; quotedBody.value = null; submitted.value = null; received.value = null; responseStatus.value = null; pending.value = null; uncertain.value = false; task.value = null; billing.value = null; requestID.value = ''; error.value = ''; cancelKey.value = ''; cancelOperation.value = null; capabilities.value = null; prompt.value = ''; image.value = ''; video.value = ''; audio.value = ''; duration.value = 'default'; resolution.value = 'default'; ratio.value = 'default'; showDetails.value = false; emit('locked', false) }
+function resetObservation() {
+  epoch++; stop()
+  pollingRequest?.controller.abort()
+  pollingRequest = null
+}
+function clearPrivate() { resetObservation(); busy.value = false; quote.value = null; quotedBody.value = null; submitted.value = null; received.value = null; responseStatus.value = null; pending.value = null; uncertain.value = false; task.value = null; billing.value = null; requestID.value = ''; error.value = ''; cancelKey.value = ''; cancelOperation.value = null; capabilities.value = null; prompt.value = ''; image.value = ''; video.value = ''; audio.value = ''; duration.value = 'default'; resolution.value = 'default'; ratio.value = 'default'; showDetails.value = false; emit('locked', false) }
 async function loadModels() {
   const current = epoch
   if (!props.apiKey) return
@@ -93,7 +100,8 @@ async function submit() {
   if (!pending.value) {
     if (!quote.value || !quotedBody.value) { error.value = t('seedance.noQuote'); return }
     pending.value = { key: uuid(), body: authorizedRequest(quotedBody.value, quote.value) }
-    clearMedia(); task.value = null; billing.value = null; received.value = null; requestID.value = ''; cancelOperation.value = null; cancelKey.value = ''
+    resetObservation()
+    task.value = null; billing.value = null; received.value = null; requestID.value = ''; cancelOperation.value = null; cancelKey.value = ''
   }
   const current = epoch
   const attempt = pending.value
@@ -118,45 +126,42 @@ async function submit() {
 }
 function start() { stop(); timer = window.setInterval(() => void poll(), 5000); void poll() }
 async function poll() {
-  if (!task.value || polling || !props.apiKey) return
-  const current = epoch; const id = task.value.id
-  polling = true
+  if (!task.value || pollingRequest || !props.apiKey) return
+  const request: ObservationRequest = { epoch, controller: new AbortController() }
+  const current = request.epoch; const id = task.value.id
+  pollingRequest = request
+  const options = { headers: headers(), cache: 'no-store' as const, signal: request.controller.signal }
   try {
     if (cancelOperation.value && !['confirmed', 'rejected'].includes(cancelOperation.value.status)) {
-      const op = await fetch(`/v1/video/operations/${encodeURIComponent(cancelOperation.value.operation_id)}`, { headers: headers(), cache: 'no-store' })
+      const op = await fetch(`/v1/video/operations/${encodeURIComponent(cancelOperation.value.operation_id)}`, options)
       if (op.ok) { const value = await op.json(); if (current === epoch) cancelOperation.value = value }
     }
     if (current !== epoch) return
     if (mutationKind.value === 'delete' && cancelOperation.value?.status === 'confirmed') {
-      stop(); clearMedia(); task.value = { ...task.value!, deletion_state: 'deleted' }; sessionStorage.removeItem(storeKey.value); return
+      stop(); task.value = { ...task.value!, deletion_state: 'deleted' }; sessionStorage.removeItem(storeKey.value); return
     }
-    const r = await fetch(`/v1/video/generations/${encodeURIComponent(id)}`, { headers: headers(), cache: 'no-store' })
+    const r = await fetch(`/v1/video/generations/${encodeURIComponent(id)}`, options)
     const data = await r.json().catch(() => ({}))
     if (current !== epoch) return
     if (!r.ok) { if ([401,403,404].includes(r.status)) stop(); throw new Error(errorText(data, r.status)) }
+    if (data.id !== id) throw new Error(t('seedance.unexpectedTask'))
     task.value = data
-    const b = await fetch(`/v1/video/generations/${encodeURIComponent(id)}/billing`, { headers: headers(), cache: 'no-store' })
+    const b = await fetch(`/v1/video/generations/${encodeURIComponent(id)}/billing`, options)
     const bill = await b.json().catch(() => ({}))
     if (current !== epoch) return
     if (b.ok) billing.value = bill
-    if (current !== epoch) return
-    if (data.artifact_status === 'ready' && !src.value) await loadContent(data)
     const mutationPending = cancelOperation.value && !['confirmed', 'rejected'].includes(cancelOperation.value.status)
     if (!shouldPoll(data) && !mutationPending) { stop(); sessionStorage.removeItem(storeKey.value) }
   } catch (e) { if (current === epoch) error.value = (e as Error).message }
-  finally { polling = false }
+  finally { if (pollingRequest === request) pollingRequest = null }
 }
-async function loadContent(value: Task) {
-  if (contentLoading) return
-  const current = epoch; contentLoading = true
+async function copyMediaURL() {
+  const value = src.value; const current = epoch
+  if (!value) return
   try {
-    const r = await fetch(safeContentPath(value.id, value.content_url), { headers: { Authorization: `Bearer ${props.apiKey}` }, cache: 'no-store' })
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
-    const blob = await r.blob()
-    if (current !== epoch) return
-    clearMedia(); src.value = URL.createObjectURL(blob)
-  } catch (e) { if (current === epoch) error.value = (e as Error).message }
-  finally { contentLoading = false }
+    await navigator.clipboard.writeText(value)
+    if (current === epoch && value === src.value) copiedURL.value = true
+  } catch { if (current === epoch && value === src.value) error.value = t('seedance.copyURLFailed') }
 }
 async function mutate(kind: 'cancel' | 'delete') {
   if (!task.value || busy.value) return
@@ -169,7 +174,7 @@ async function mutate(kind: 'cancel' | 'delete') {
     if (current !== epoch) return
     if (!r.ok) throw new Error(errorText(data, r.status))
     mutationKind.value = kind
-    if (kind === 'delete' && (r.status === 204 || data.status === 'confirmed')) { stop(); clearMedia(); task.value = { ...task.value!, deletion_state: 'deleted' }; sessionStorage.removeItem(storeKey.value) }
+    if (kind === 'delete' && (r.status === 204 || data.status === 'confirmed')) { stop(); task.value = { ...task.value!, deletion_state: 'deleted' }; sessionStorage.removeItem(storeKey.value) }
     else { cancelOperation.value = data; start() }
   } catch (e) { if (current === epoch) error.value = (e as Error).message }
   finally { if (current === epoch) busy.value = false }
@@ -183,6 +188,7 @@ function restore() {
   } catch { sessionStorage.removeItem(storeKey.value) }
 }
 watch([prompt, image, video, audio, duration, resolution, ratio], () => { quote.value = null; quotedBody.value = null })
+watch(src, () => { copiedURL.value = false })
 watch(() => [auth.orgId, props.model, props.apiKey], () => { clearPrivate(); void loadModels(); restore() })
 onMounted(() => { void loadModels(); restore() })
 onActivated(() => { if (task.value && shouldPoll(task.value)) start() })
@@ -208,8 +214,13 @@ onBeforeUnmount(clearPrivate)
     <div v-if="quote" class="space-y-2 rounded border border-line p-4 text-sm"><p>{{ t('seedance.quoteAmount') }}: <strong class="font-mono">{{ quote.reserved_amount }}</strong></p><p>{{ t('seedance.priceVersion') }}: {{ quote.pricing_version }}</p><p>{{ t('seedance.quoteNotice') }}</p><button type="button" class="btn-primary" :disabled="locked" @click="submit">{{ t('seedance.confirm') }}</button></div>
     <div class="flex flex-wrap gap-2"><button v-if="uncertain" type="button" class="btn-primary" :disabled="busy" @click="submit">{{ t('seedance.retry') }}</button><button v-else type="button" class="btn-primary" :disabled="locked || !prompt.trim() || !apiKey || !capabilities?.enabled || !capabilities.verified" @click="estimate">{{ t(busy ? 'seedance.loading' : 'seedance.quote') }}</button><button v-if="task" type="button" class="btn-ghost" :disabled="busy" @click="poll">{{ t('seedance.refresh') }}</button><button v-if="active" type="button" class="btn-ghost" :disabled="busy || !!cancelOperation" @click="mutate('cancel')">{{ t('seedance.cancel') }}</button><button v-if="task && canDelete(task)" type="button" class="btn-ghost" :disabled="busy || !!cancelOperation && !['confirmed', 'rejected'].includes(cancelOperation.status)" @click="mutate('delete')">{{ t('seedance.remove') }}</button></div>
     <div v-if="task" class="space-y-2 rounded border border-line p-4 text-sm"><p class="break-all font-mono">{{ task.id }}</p><p>{{ t('seedance.generationState') }}: {{ task.status }} · {{ t('seedance.billing') }}: {{ task.billing_state }} · {{ t('seedance.artifact') }}: {{ task.artifact_status }}</p><p v-if="cancelOperation" class="break-all">{{ cancelOperation.operation_id }} · {{ cancelOperation.status }}</p><p v-if="task.status === 'succeeded' && task.artifact_status === 'pending'">{{ t('seedance.artifactWaiting') }}</p><p v-if="task.billing_state === 'pending_usage'">{{ t('seedance.billingWaiting') }}</p><p>{{ t('seedance.videoTokens') }}: {{ billing?.billable_tokens ?? t('seedance.pending') }}</p><p>{{ t('seedance.inputTokens') }}</p><p v-if="billing">{{ t('seedance.reserved') }}: {{ billing.reserved_amount }} · {{ t('seedance.settled') }}: {{ billing.settled_amount ?? t('seedance.pending') }} · {{ t('seedance.released') }}: {{ billing.released_amount }} USD</p></div>
-    <video v-if="src" :src="src" controls playsinline class="w-full rounded border border-line bg-black" />
-    <a v-if="src" class="table-link" :href="src" :download="`${task?.id ?? 'video'}.mp4`">{{ t('play.videoDownload') }}</a>
+    <div v-if="src" class="space-y-3 rounded border border-line p-4 text-sm">
+      <p class="text-muted">{{ t('seedance.directMediaNotice') }}</p>
+      <video :key="`${task?.id}:${src}`" :src="src" controls playsinline preload="metadata" class="w-full rounded border border-line bg-black" />
+      <p>{{ t('seedance.mediaURL') }}: <a class="table-link break-all" :href="src" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">{{ src }}</a></p>
+      <div class="flex flex-wrap gap-3"><button type="button" class="table-link" @click="copyMediaURL">{{ t(copiedURL ? 'seedance.copied' : 'seedance.copyURL') }}</button><a class="table-link" :href="src" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">{{ t('seedance.openMedia') }}</a><a v-if="lastFrameURL" class="table-link" :href="lastFrameURL" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">{{ t('seedance.openLastFrame') }}</a></div>
+    </div>
+    <p v-else-if="mediaReady" role="status" class="text-sm text-warn">{{ t('seedance.invalidMediaURL') }}</p>
     <div class="flex flex-wrap gap-3"><router-link v-if="requestID" class="table-link" :to="{ path: '/app/request-logs', query: { tab: 'seedance', request_id: requestID } }">{{ t('seedance.logs') }} · {{ requestID }}</router-link><button v-if="submitted || task" type="button" class="table-link" @click="showDetails = true">{{ t('reqlog.btnDetail') }}</button></div>
     <DetailDrawer v-model:open="showDetails" :title="t('reqlog.btnDetail')" :description="task?.id || requestID" :close-label="t('seedance.close')" size="lg">
       <div class="space-y-3"><div class="segmented-control"><button v-for="item in ['received','result','response'] as const" :key="item" type="button" :class="{ active: currentTab === item }" @click="currentTab = item">{{ t(`seedance.${item}`) }}</button></div><HistoryJSON v-if="currentTab === 'received' && submitted" :body="submitted" name="client-request" /><HistoryJSON v-if="currentTab === 'result' && task" :body="{ task, billing }" name="current-task" /><template v-if="currentTab === 'response'"><p>HTTP {{ responseStatus ?? '—' }}</p><HistoryJSON v-if="received" :body="received" name="client-response" /></template></div>

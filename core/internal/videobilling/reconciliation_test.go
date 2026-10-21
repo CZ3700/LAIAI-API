@@ -302,6 +302,50 @@ func TestSupplierOnlyCorrectionNeverChangesCustomer(t *testing.T) {
 	}
 }
 
+func TestReviewedVarianceOnlyBlocksAtAggregateBudgetLimit(t *testing.T) {
+	for _, exhausted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "headroom", true: "aggregate_exhausted"}[exhausted], func(t *testing.T) {
+			db, q := setupReconciliation(t, "100")
+			limit := d("100")
+			units := int64(1000000)
+			if exhausted {
+				limit = q.SupplierReservedCNY.Mul(d("2"))
+				units = q.EstimatedTokens * 2
+			}
+			policy(t, db, QuotaPolicy{Scope: ScopeProvider, OwnerID: 11, Metric: MetricCNY, LimitAmount: &limit})
+			policy(t, db, QuotaPolicy{OrgID: 10, Scope: ScopeOrg, OwnerID: 10, Metric: MetricTokens, LimitUnits: &units})
+			reserve(t, db, q, "task_1")
+			reserve(t, db, q, "task_other")
+			settle(t, db, "task_1", token(q.EstimatedTokens), "initial")
+			actual := q.EstimatedTokens + 1
+			cny := q.SupplierReservedCNY.Add(d("0.000046"))
+			line := importLine(t, db, lineFixture("corrected", 1, &actual, cny.String()), bindingFixture())
+			proposal := propose(t, db, line.Line.ID, "variance", false)
+			approve(t, db, proposal)
+			result := apply(t, db, proposal)
+			if !result.QuotaOverrun || !result.Application.AbsorbedUSD.IsPositive() || !result.Application.NetUSD.Equal(q.HoldUSD) {
+				t.Fatal("reviewed variance or customer hold cap lost", result)
+			}
+			var buckets []QuotaBucket
+			if err := db.Find(&buckets).Error; err != nil {
+				t.Fatal(err)
+			}
+			for _, b := range buckets {
+				if b.Blocked != exhausted {
+					t.Fatal("correction ignored aggregate budget", b)
+				}
+				if (b.LimitAmount != nil && (!b.ConsumedAmount.Equal(cny) || !b.ReservedAmount.Equal(q.SupplierReservedCNY))) ||
+					(b.LimitUnits != nil && (b.ConsumedUnits != actual || b.ReservedUnits != q.EstimatedTokens)) {
+					t.Fatal("correction lost actuals or another task reservation", b)
+				}
+			}
+			if !exhausted {
+				reserve(t, db, q, "task_after_correction")
+			}
+		})
+	}
+}
+
 func TestAdjustmentRequiresFreshReviewedBasisAndTenant(t *testing.T) {
 	db, q := setupReconciliation(t, "10")
 	reserve(t, db, q, "task_1")

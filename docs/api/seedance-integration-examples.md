@@ -2,7 +2,7 @@
 
 本文与 [OpenAPI 实现契约](seedance-v1.openapi.yaml) 对应，描述当前代码可提供的接口，不代表生产环境已开通或完成官方账号真机验收。示例域名、Key、ID、时间和参数均为占位值；本地 mock 与 MySQL 测试只能证明相应协议处理和事务行为。
 
-模型、价格、供应商预算、渠道、产物存储与租户策略未配置时默认禁用。`seedance-2.0` 和 `seedance-2.5` 是平台模型别名，不是账号权限承诺。管理员必须根据实际官方账号、项目、模型版本、价格和能力证据发布配置；不能用示例价格或未经核实的时长上界启用生产。
+模型、价格、供应商预算、渠道与租户策略未配置时默认禁用。Seedance 生成结果直接返回火山 HTTPS 签名 URL，平台不下载、转存或代理视频及尾帧，不要求配置生成产物存储。`seedance-2.0` 和 `seedance-2.5` 是平台模型别名，不是账号权限承诺。管理员必须根据实际官方账号、项目、模型版本、价格和能力证据发布配置；不能用示例价格或未经核实的时长上界启用生产。
 
 ## 准备
 
@@ -77,7 +77,7 @@ export TASK_ID="$(jq -r '.id // empty' create-response.json)"
 }
 ```
 
-`usage: null` 表示没有核实实际用量。获得部分官方用量后可能为 `{"completion_tokens": 123, "total_tokens": null}`，不能把缺失值当作零，也不能假定两个 Token 字段相等。任务、账单、同步和产物状态独立；`succeeded` 不保证产物已经转存就绪。
+`usage: null` 表示没有核实实际用量。获得部分官方用量后可能为 `{"completion_tokens": 123, "total_tokens": null}`，不能把缺失值当作零，也不能假定两个 Token 字段相等。任务、账单、同步和产物状态独立；`artifact_status=ready` 只表示已取得上游结果链接，不代表平台托管或链接永久有效。
 
 ## 查询、列表、事件和账单
 
@@ -96,7 +96,7 @@ curl -fsS "$BASE_URL/v1/video/generations/$TASK_ID/billing" \
   -H "Authorization: Bearer $GATEWAY_KEY"
 ```
 
-列表返回 `data` 与 `next_cursor`，末页为 `next_cursor: null`。继续读取时使用 `--data-urlencode "cursor=$NEXT_CURSOR"`，保留原过滤条件，不跨组织或接口复用游标。任务列表支持 `model`、`status`；素材列表支持 `group_id`。这些列表读取本组织的平台数据库，不枚举火山账户全局资源。
+列表返回 `data` 与 `next_cursor`，末页为 `next_cursor: null`。继续读取时使用 `--data-urlencode "cursor=$NEXT_CURSOR"`，保留原过滤条件，不跨组织或接口复用游标。任务列表支持 `model`、`status`；素材列表支持 `group_id`。这些列表读取本组织的平台数据库，不枚举火山账户全局资源。任务列表只读取已缓存的加密交付信息，不逐条请求火山；旧任务详情或 `/content` 可经限速和审计查询原供应商账户，回填结果链接，不重新创建任务或收取生成费。
 
 `billing.actual_usage` 可以为 null，`settled_amount` 和 `billable_tokens` 在未知时也为 null。金额是十进制字符串。账单包含创建时计价快照、冻结 `reserve`、扣费 `capture`、未消费冻结释放 `release`，以及经审计的 `adjustment_credit` / `adjustment_debit`。
 
@@ -106,20 +106,25 @@ curl -fsS "$BASE_URL/v1/video/generations/$TASK_ID/billing" \
 
 调整分录的 `amount` 均为非负数：credit 减少净费用，debit 增加净费用；`settled_amount` 是调整后的净额。不要覆盖历史 capture，也不要把 release 等同于退回已扣费用。人工调整可能独立于原 Token 计价公式，应结合 entries 与净额核对。单价可能超过 8 位小数，最终 USD 账款使用 8 位小数；无需把供应商汇率、采购折扣再次乘入客户账单。
 
-任务 DTO 当前不返回 `effective_parameters`、原始错误、上游 ID、内嵌取消/删除操作或尾帧 URL。事件不返回 prompt、媒体 URL、H5 URL 或供应商成本。软删除任务后，账单与安全事件仍按账务保留策略查询。
+成功任务可返回 `content_url`（视频直链）及 `content.video_url`、`content.last_frame_url`（后者仅在官方提供时存在）。任务 DTO 不返回 `effective_parameters`、原始错误、上游 ID 或内嵌取消/删除操作。事件不返回 prompt、媒体 URL、H5 URL 或供应商成本。软删除任务后，账单与安全事件仍按账务保留策略查询，任务链接不能再通过详情回填。
 
 ## 取消、删除和产物
 
-产物读取、取消和删除是按任务状态选择的独立示例，不应对同一个任务依次执行所有命令。成功任务需在删除前读取产物：
+产物读取、取消和删除是按任务状态选择的独立示例，不应对同一个任务依次执行所有命令。成功任务需在删除前取得结果链接。`/content` 是需要 Gateway Key 的链接 JSON 接口，返回 `{"url":"https://…","kind":"video","source":"upstream"}`，不返回媒体二进制，也不通过 302 跳转到火山。随后直接访问结果 URL，**不得附带 Gateway Bearer Key**：
 
 ```bash
-# 成功且 artifact_status=ready 时读取；按响应媒体类型保存文件。
-curl -fS "$BASE_URL/v1/video/generations/$TASK_ID/content" \
-  -H "Authorization: Bearer $GATEWAY_KEY" --output generated-video.mp4
+# 成功且 artifact_status=ready 时读取链接 JSON。
+curl -fsS "$BASE_URL/v1/video/generations/$TASK_ID/content" \
+  -H "Authorization: Bearer $GATEWAY_KEY" > video-link.json
+VIDEO_URL="$(jq -er '.url' video-link.json)"
+# 由客户端直接下载到自己的文件；不设置 Authorization。
+curl -fSL --proto '=https' --proto-redir '=https' -- "$VIDEO_URL" > generated-video.mp4
 
 # 仅创建时启用 return_last_frame 且尾帧已就绪时有效。
-curl -fS "$BASE_URL/v1/video/generations/$TASK_ID/content?kind=last_frame" \
-  -H "Authorization: Bearer $GATEWAY_KEY" --output last-frame.jpg
+curl -fsS "$BASE_URL/v1/video/generations/$TASK_ID/content?kind=last_frame" \
+  -H "Authorization: Bearer $GATEWAY_KEY" > last-frame-link.json
+LAST_FRAME_URL="$(jq -er '.url' last-frame-link.json)"
+curl -fSL --proto '=https' --proto-redir '=https' -- "$LAST_FRAME_URL" > last-frame.jpg
 
 # 取消请求不带 JSON body；为该取消业务生成独立且稳定的幂等键。
 curl -sS -X POST "$BASE_URL/v1/video/generations/$TASK_ID/cancel" \
@@ -140,7 +145,11 @@ curl -sS -X DELETE "$BASE_URL/v1/video/generations/$TASK_ID" \
 
 任务取消/删除操作状态为 `pending/in_flight/unknown/confirmed/rejected`；素材操作发送态使用 `sending`。只有 confirmed 表示确认完成。任务操作响应不提供 `completed_at` 和 `error`；素材操作可提供。素材 `kind` 为 `UpdateAsset`、`UpdateAssetGroup`、`DeleteAsset`、`DeleteAssetGroup` 等动作名；任务为 `cancel_task/delete_task`。没有公开的创建操作列表。
 
-首次任务删除返回 `202` 操作，已经完成的重复删除返回 `204`。本地 cancelled 或未取得上游 ID 的可删除终态仅软删除；其他允许终态按官方删除结果确认。删除不退款，任务 GET 随后为 404，不抹除账单。产物未就绪返回 409，已过保留期返回 410；字节流通过平台鉴权读取，不返回上游签名 URL。
+首次任务删除返回 `202` 操作，已经完成的重复删除返回 `204`。本地 cancelled 或未取得上游 ID 的可删除终态仅软删除；其他允许终态按官方删除结果确认。删除不退款，任务 GET 随后为 404，不抹除账单。交付链接未就绪返回 409，已过交付保留期返回 410。签名链接的实际有效期由火山控制，可能早于平台交付信息过期；平台不承诺刷新签名或永久可下载，客户端应及时保存需要保留的结果。
+
+浏览器可将 `content_url` 直接用于 `<video src>` 和打开／下载链接；不要携带平台 Key `fetch` 外站后转成 Blob。跨域下载的文件名、是否打开新标签及播放能力由浏览器和火山响应决定。签名 URL 具有临时访问能力，不应写入普通日志、公开分享或存进业务状态表。
+
+平台仅在 Invocation Store 保存最小加密 `delivery` 胶囊，包含经过安全校验的结果 URL，不包含视频字节、完整请求或上游响应。每份胶囊最多保留 24 小时，且不超过任务创建时记录的 `RetentionDays` 边界；这与受理后 24 小时的执行正文边界分别计算。单任务详情或 `/content` 可在该任务保留边界内，通过受限官方 GET 重新取得结果链接并建立新的胶囊，读取已有胶囊不会延长其期限。胶囊受组织隔离及解密审计约束，与可关闭的原文历史用途分离。无法取得有效链接时不伪装成平台已托管的媒体，也不保证官方重新查询能续签地址。
 
 ## 原始媒体 URL 与素材库
 

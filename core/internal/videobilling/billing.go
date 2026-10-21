@@ -98,7 +98,10 @@ func loadLockedSnapshot(tx *gorm.DB, org uint64, task string) (Snapshot, error) 
 
 func initialEntry(tx *gorm.DB, org uint64, task string) (*BillingEntry, error) {
 	var e BillingEntry
-	err := tx.Where("org_id = ? AND task_id = ? AND settlement_key = ?", org, task, "initial").Take(&e).Error
+	// The identity read before acquiring the key lock may have opened an older
+	// MySQL repeatable-read snapshot. Read committed facts under the existing
+	// lock order so a waiting settlement observes the winner, not that snapshot.
+	err := locked(tx).Where("org_id = ? AND task_id = ? AND settlement_key = ?", org, task, "initial").Take(&e).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -126,7 +129,9 @@ func recordEvidence(tx *gorm.DB, s Snapshot, e UsageEvidence) (UsageEvidence, er
 	}
 	e.OrgID, e.TaskID = s.OrgID, s.TaskID
 	var old UsageEvidence
-	err := tx.Where("org_id = ? AND task_id = ? AND source = ? AND source_record_id = ? AND source_version = ?", s.OrgID, s.TaskID, e.Source, e.SourceRecordID, e.SourceVersion).Take(&old).Error
+	// Missing-usage observations have no initial entry yet, but their evidence
+	// must still be deduplicated against the latest committed transaction.
+	err := locked(tx).Where("org_id = ? AND task_id = ? AND source = ? AND source_record_id = ? AND source_version = ?", s.OrgID, s.TaskID, e.Source, e.SourceRecordID, e.SourceVersion).Take(&old).Error
 	if err == nil {
 		if !equalTokens(old.CompletionTokens, e.CompletionTokens) {
 			return e, ErrConflict

@@ -24,7 +24,6 @@ import (
 	"github.com/laiai/laiai-next/core/internal/server"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/video"
-	"github.com/laiai/laiai-next/core/internal/videoartifact"
 	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
@@ -121,20 +120,8 @@ func main() {
 			log.Error("official video initialization failed")
 			os.Exit(1)
 		}
-		blobs, berr := videoartifact.NewFilesystemBlobStore(cfg.VideoArtifactRoot)
-		if berr != nil {
-			log.Error("private video artifact storage unavailable")
-			os.Exit(1)
-		}
-		defer blobs.Close()
-		downloader, derr := videoartifact.NewDownloader(videoartifact.DownloadConfig{AllowedHosts: cfg.VideoArtifactHosts, MaxBytes: 2 << 30, Timeout: 2 * time.Minute, TempDir: cfg.VideoArtifactTemp})
-		if derr != nil {
-			log.Error("video output download configuration invalid")
-			os.Exit(1)
-		}
-		repo := videoartifact.Repository{DB: db}
-		videoSvc.ArtifactWorker = &videoartifact.Worker{Repo: repo, Resolver: videoSvc, Downloader: downloader, Blobs: blobs, LeaseDuration: 4 * time.Minute, TransferTimeout: 3 * time.Minute, MaxAttempts: 3}
-		videoSvc.ArtifactService = &videoartifact.Service{Repo: repo, Blobs: blobs}
+		// Seedance delivers the provider's signed result URLs. Generated media
+		// never passes through platform storage or a background transfer worker.
 		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL}); err != nil {
 			log.Error("video asset configuration invalid")
 			os.Exit(1)
@@ -160,7 +147,6 @@ func main() {
 			run      func(context.Context) error
 		}{
 			{"task", 2 * time.Second, videoSvc.ProcessOnce},
-			{"artifacts", 10 * time.Second, videoSvc.ProcessArtifacts},
 			{"assets", 5 * time.Second, videoSvc.Assets.ProcessOnce},
 			{"events", 5 * time.Second, videoSvc.ProcessOutbox},
 			{"evidence_retention", time.Minute, func(ctx context.Context) error {

@@ -428,7 +428,7 @@ func TestArkReferenceCandidatesPermissionsPreservationAndNoWrites(t *testing.T) 
 					t.Fatalf("current tariff lost: %#v", p)
 				}
 			} else {
-				if p.Configured || p.RetailUSDPer1M != "" || p.Enabled || p.RiskMultiplier != "" || p.MinimumRuleVersion != "" {
+				if p.Configured || p.RetailUSDPer1M != "" || p.Enabled || p.RiskMultiplier != "1" || p.MinimumRuleVersion != "" {
 					t.Fatalf("invented retail %#v", p)
 				}
 			}
@@ -480,6 +480,48 @@ func TestArkReferenceCandidatesRejectBindingMismatchAndCurrentDuplicate(t *testi
 			catalogGET(t, f, "/api/admin/video/models/seedance-2.0/pricing/reference-candidates", tokens[1], "", 503)
 		})
 	}
+}
+
+func TestArkReferenceCandidatesTargetChannelDefaultsAndFXIsolation(t *testing.T) {
+	f, db, tokens := pricingCatalogFixture(t)
+	base := "/api/admin/video/models/seedance-2.0/pricing/reference-candidates"
+	before := verificationSnapshot(t, db, "video_model_configs", "video_pricing_rules", "video_provider_scopes", "channels", "audit_logs")
+	for _, channel := range []string{"99", "100"} {
+		response := catalogGET(t, f, base+"?channel_id="+channel, tokens[1], "", 200)
+		var out struct {
+			Config      *catalogVideoConfiguration `json:"config"`
+			Prices      []arkPriceCandidate        `json:"prices"`
+			FXUSDPerCNY *string                    `json:"fx_usd_per_cny"`
+		}
+		arkBillMust(t, json.Unmarshal(response.Body.Bytes(), &out))
+		if channel == "99" {
+			if out.Config == nil || out.FXUSDPerCNY == nil || *out.FXUSDPerCNY != "0.14" {
+				t.Fatal("bound channel lost its own FX")
+			}
+			continue
+		}
+		if out.Config != nil || out.FXUSDPerCNY != nil {
+			t.Fatal("another channel's configuration or FX leaked into defaults")
+		}
+		for _, price := range out.Prices {
+			if price.Configured || price.Enabled || price.Available || price.RetailUSDPer1M != "" || price.RiskMultiplier != "1" || price.SupplierCNYPer1M == "" {
+				t.Fatalf("unbound channel inherited configured policy: %#v", price)
+			}
+		}
+	}
+	for _, channel := range []string{"0", "no-id", ""} {
+		catalogGET(t, f, base+"?channel_id="+channel, tokens[1], "", 422)
+	}
+	for _, channel := range []string{"101", "999999"} {
+		catalogGET(t, f, base+"?channel_id="+channel, tokens[1], "", 503)
+	}
+	if before != verificationSnapshot(t, db, "video_model_configs", "video_pricing_rules", "video_provider_scopes", "channels", "audit_logs") {
+		t.Fatal("reading channel defaults changed configuration")
+	}
+	arkBillMust(t, db.Model(&relay.Channel{}).Where("id = ?", 100).Updates(map[string]any{"models": "new-seedance-alias", "model_mapping": `{"new-seedance-alias":"doubao-seedance-2-0-260128"}`}).Error)
+	catalogGET(t, f, base+"?channel_id=100", tokens[1], "", 200)
+	arkBillMust(t, db.Model(&relay.Channel{}).Where("id = ?", 100).Updates(map[string]any{"models": "seedance-2.5", "model_mapping": `{"seedance-2.5":"doubao-seedance-2-0-260128"}`}).Error)
+	catalogGET(t, f, base+"?channel_id=100", tokens[1], "", 503)
 }
 
 func TestPricingCatalogConflictingStandardAliasIsNotEditable(t *testing.T) {

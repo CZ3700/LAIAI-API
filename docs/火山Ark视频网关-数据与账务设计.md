@@ -2,6 +2,8 @@
 
 > 设计基线为 2026-10-15；2026-10-16 已按此边界实施。下文保留逻辑设计，实际物理列名、索引和精度以 `migrations/0049` 至 `0101` 及代码为准；已在专用 MySQL 8.4 测试库应用，未对生产执行。已实现与剩余灰度项见[阶段记录](ark-delivery-status.md)、[架构事实源](整体架构设计.md)和[运维说明](ark-operations.md)，公开契约见[OpenAPI 3.1](api/seedance-v1.openapi.yaml)。
 
+2026-10-21 交付契约更新：官方 Seedance 生成视频／尾帧直接返回火山 HTTPS 签名地址，平台不下载、不转存、不代理媒体字节。以下交付状态与最小加密元数据约束覆盖此前私有产物实现；任务、账务、输入素材与其他厂商存储契约分别保留。既有本地生产验收记录是当时版本的证据，不作为新交付方式已完成部署的证明。
+
 ## 1. 复用范围与当前差距
 
 | 当前已有 | 具体依据 | 本次拟议增量 |
@@ -88,7 +90,7 @@
 | `accepted_at/upstream_submitted_at/last_synced_at/finished_at` | 时间；未知不能填造成功时间 |
 | `execution_deadline_at` / `review_due_at` | 官方有效请求期限与本地升级时间；本地 deadline 不证明官方 expired |
 | `deleted_at` / `deletion_operation_id` | 软删除与操作引用；财务记录保留 |
-| `artifact_status/artifact_ref` | `pending/ready/failed/expired` 和私有产物引用，与 OpenAPI 一致；生成结果与转存状态分开；业务删除由 `deleted_at` 独立表达 |
+| `artifact_status/artifact_ref` | 兼容的 `pending/ready/failed/expired` 交付状态与内部引用；Seedance 的 `ready` 只表示取得结果链接，不表示转存或平台托管；签名 URL 仅通过最小加密交付胶囊引用，普通状态表不保存明文；业务删除由 `deleted_at` 独立表达 |
 
 索引：保留 `UNIQUE(task_id)`；增加 `UNIQUE(org_id,id)`、`UNIQUE(idempotency_record_id)`、`UNIQUE(provider_scope_id,upstream_task_key_hmac)`（未获官方 ID 时为 NULL，不用空串）、`INDEX(org_id,status,id)`、`INDEX(billing_status,review_due_at,id)`、`INDEX(status,last_synced_at,id)`、`INDEX(org_id,parent_draft_task_id)`。
 
@@ -285,6 +287,16 @@ zero-retention 客户不写 prompt 原文日志，只保留必要财务元数据
 
 请求原文和常规请求日志到期清理，任务状态/规范化用量、价格/汇率快照、journal、必要财务事件及账单对账按独立财务保留策略保存。客户业务删除不绕过争议保留/财务义务；同时不能以财务留存为由永久保存 prompt 或真人资料。
 
+### 6.4 Seedance 最小交付胶囊与上游直链
+
+生成结果的 `content_url` 是视频直链，`content.video_url` 与 `content.last_frame_url` 保持官方字段语义，仅在所属组织鉴权后读取返回。平台保留 `/v1/video/generations/{id}/content` 作为鉴权的链接 JSON 兼容入口，响应 `{url, kind, source: "upstream"}`，不返回媒体二进制、不执行 302。浏览器直接使用 URL 播放或下载，Gateway Bearer Key 只发送给网关，不能发送给上游 CDN。
+
+为支持进程重启和关闭原文历史的组织，Invocation Store 使用独立 `delivery` 用途保存最小结果链接胶囊。内容只允许经验证的 video／last-frame URL，不允许完整请求、完整上游响应、供应商凭据或媒体字节；签名参数原样保留，已知渠道凭据、非 HTTPS、userinfo 和不安全地址拒绝。普通任务／回执表仅保存引用。密文及解密审计沿用组织、用途与关联资源绑定。每份胶囊期限为 `min(本次取得链接时间 + 24 小时, task.created_at + task.RetentionDays)`，与受理后 24 小时的执行正文期限分别计算；读取已有胶囊不延长其期限，也不能借此绕过 `capture_history=false` 保存任意业务原文。
+
+列表只读取已缓存交付信息，不批量请求上游。旧任务只有旧响应引用、胶囊缺失或已过期时，详情及 `/content` 可在该任务记录的保留边界内，通过任务钉住的供应商账户进行受限 GET，核对任务身份、遵守查询限速并记录审计后重新取得链接、建立新的最小胶囊；删除后的任务不得读取或回填，超出任务保留边界也不得新建胶囊。该动作不创建视频、不重新结算、不收取生成费，也不访问或迁移历史视频文件。生成费用及用量仍由原有账务状态机确定，交付失败不伪造退款。
+
+`ready` 不承诺 URL 永久可用。签名可能在本地胶囊保留期内失效，实际有效期由上游决定；无法取得或已过期的链接明确不可用，不伪装成已托管媒体，也不承诺刷新签名。平台不再要求生成产物 root/temp/hosts、下载器或共享产物卷，历史文件不自动删除。输入素材可信存储及其他厂商的存储流程不受本节变更影响。
+
 ## 7. 官方用量、账单导入与差异
 
 ### 7.1 provider_bill_imports
@@ -359,7 +371,7 @@ T3 写库失败时原 operation 仍是潜在已发送；恢复查回执或人工
 
 ### 8.4 业务删除与补账
 
-删除只能在账务落定、取证完成且无争议时对外软删并创建独立删除 operation。未结算任务不主动删除官方取证入口。官方 DELETE 与对象清理可分别恢复；客户不可见性和物理清除状态分开，删除不退款、不删 journal/价格/用量证据。
+删除只能在账务落定、取证完成且无争议时对外软删并创建独立删除 operation。未结算任务不主动删除官方取证入口。官方 DELETE 与交付元数据清理可分别恢复；客户不可见性和物理清除状态分开，删除不退款、不删 journal/价格/用量证据。新的 Seedance 任务没有平台媒体对象需要清理，既有历史对象及输入素材按各自生命周期处理。
 
 更正按 `adjustment_id UNIQUE` 插入账务事实、授权证据及 `ledger.Post` journal，和 quota/事件同事务。现金客户退款是 credit；补扣必须满足合同依据、授权及余额校验，不能走未经授权的 AllowNegative。供应商更正只影响成本分录和对账，不自动改客户销售价。
 
@@ -379,6 +391,6 @@ T3 写库失败时原 operation 仍是潜在已发送；恢复查回执或人工
 4. 素材/真人按独立权益开关启用，作用域与授权检查作为硬前置。
 5. 导入真实脱敏用量/账单样本验证字段、分页、修订和精确关联可得性；只有聚合字段时交付聚合对账能力。
 
-必须测试：同键并发只一份冻结和一次派单；跨 Org 所有引用不可访问；上游受理后断连/DB 写失败不再 POST/退款；缺 usage 待结算；零值与缺失不同；actual 大于 hold 保全量用量与差额；CAS 重复只一次实扣；cancel 与 queued→running 竞态；跨日月 quota 仍有预留；真人伪造回跳不能授权；重复文件/重复页/相同行内容/更正版本均不误去重；payload staging 与对象上传任一崩溃可恢复；所有日志无 Key/正文/敏感 URL 明文；30 天日志清理后账单仍可复算。
+必须测试：同键并发只一份冻结和一次派单；跨 Org 所有引用不可访问；上游受理后断连/DB 写失败不再 POST/退款；缺 usage 待结算；零值与缺失不同；actual 大于 hold 保全量用量与差额；CAS 重复只一次实扣；cancel 与 queued→running 竞态；跨日月 quota 仍有预留；真人伪造回跳不能授权；重复文件/重复页/相同行内容/更正版本均不误去重；Invocation payload staging 与密文对象上传任一崩溃可恢复；交付链接安全校验、关闭历史后的最小胶囊、解密审计、列表无上游请求、受限详情回填、删除屏障、到期不可用以及无媒体落盘；所有日志无 Key/正文/敏感 URL 明文；30 天日志清理后账单仍可复算。
 
 以上新增能力均是设计目标，不是本次已实现声明。真实官方验收需使用自有授权素材与最小合法任务，保存脱敏 fixture；不能拿本文示例或既有 2026-07 单一 Seedance 2.0 成功样本证明全部模型、费用分支、素材认证及取消状态已经验证。

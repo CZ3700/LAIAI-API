@@ -249,9 +249,11 @@ func settleQuotas(tx *gorm.DB, s Snapshot, e BillingEntry, at time.Time) (bool, 
 		if reservedUnits > math.MaxInt64-consumedUnits {
 			return false, ErrInvariant
 		}
-		exceeds := amount.GreaterThan(r.ReservedAmount) || units > r.ReservedUnits ||
-			(b.LimitAmount != nil && consumed.Add(reserved).GreaterThan(*b.LimitAmount)) || (b.LimitUnits != nil && consumedUnits+reservedUnits > *b.LimitUnits)
-		overrun = overrun || exceeds
+		exceeds := (b.LimitAmount != nil && consumed.Add(reserved).GreaterThan(*b.LimitAmount)) ||
+			(b.LimitUnits != nil && consumedUnits+reservedUnits > *b.LimitUnits)
+		// Estimation variance remains a financial fact, but only exhausting the
+		// shared budget blocks other tasks. Never clear an existing block here.
+		overrun = overrun || amount.GreaterThan(r.ReservedAmount) || units > r.ReservedUnits || exceeds
 		if err := tx.Model(&b).Updates(map[string]any{"reserved_amount": reserved, "consumed_amount": consumed, "reserved_units": reservedUnits, "consumed_units": consumedUnits, "blocked": b.Blocked || exceeds}).Error; err != nil {
 			return false, err
 		}

@@ -24,7 +24,15 @@ export function authorizedRequest(body: Record<string, unknown>, quote: { reserv
   if (!/^(0|[1-9]\d*)(\.\d{1,8})?$/.test(quote.reserved_amount) || !quote.pricing_version) throw new Error('Invalid quote')
   return { ...body, max_charge_usd: quote.reserved_amount, expected_pricing_version: quote.pricing_version }
 }
-export function safeContentPath(id: string, path?: string) {
-  const expected = `/v1/video/generations/${encodeURIComponent(id)}/content`
-  return path === expected ? path : expected
+export function safeMediaURL(value?: unknown): string {
+  if (typeof value !== 'string' || !/^https:\/\//i.test(value) || /[\s\\]/.test(value)) return ''
+  try {
+    const url = new URL(value)
+    const host = url.hostname.toLowerCase().replace(/\.$/, '')
+    if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.port && url.port !== '443') return ''
+    if (!host.includes('.') || host.startsWith('[') || /^(\d+\.){3}\d+$/.test(host) || /\.(localhost|local|internal)$/.test(host)) return ''
+    // Preserve the exact signed URL. Only the task API gets the platform Key;
+    // browsers load this URL directly with no fetch or authorization header.
+    return value
+  } catch { return '' }
 }

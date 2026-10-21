@@ -430,11 +430,18 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 		return err
 	}
 	receipt := QueryReceipt{OrgID: org, TaskID: id, AttemptID: attempt, Sequence: st.QuerySequence, TaskRowVersion: st.RowVersion, HTTPStatus: response.HTTPStatus, Outcome: string(response.Outcome), ProviderRequestID: response.RequestID, ReceivedAt: received}
+	var delivery *invocation.PreparedVideoPayload
 	if response.Observation != nil {
 		o := response.Observation
+		if response.Outcome == ark.OutcomeAccepted && o.TaskID == t.UpstreamTaskID && (o.Model == "" || o.Model == st.UpstreamModel) {
+			delivery, err = s.prepareDelivery(org, attempt, st, o, client.Credential, received)
+			if err != nil {
+				return err
+			}
+		}
 		// This typed whitelist is the only unencrypted response projection. URLs,
 		// raw provider errors and arbitrary fields remain in Invocation Store.
-		meta, e := json.Marshal(queryObservation{TaskID: o.TaskID, Model: o.Model, Status: o.Status, CompletionTokens: o.Usage.CompletionTokens, TotalTokens: o.Usage.TotalTokens, HasError: o.HasError})
+		meta, e := json.Marshal(queryObservation{TaskID: o.TaskID, Model: o.Model, Status: o.Status, CompletionTokens: o.Usage.CompletionTokens, TotalTokens: o.Usage.TotalTokens, HasError: o.HasError, DeliveryPayloadRef: delivery.PayloadID()})
 		if e != nil {
 			return e
 		}
@@ -447,6 +454,11 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 			return e
 		}
 		receipt.PayloadRef = ref
+		if delivery != nil {
+			if _, e = s.Evidence.StageTx(tx, delivery); e != nil {
+				return e
+			}
+		}
 		if e = tx.Create(&Attempt{OrgID: org, TaskID: id, AttemptID: attempt, RequestID: attempt, Phase: "query_response", HTTPStatus: response.HTTPStatus, UpstreamRequestID: response.RequestID, EvidenceRef: ref, ObservedAt: received}).Error; e != nil {
 			return e
 		}
@@ -459,12 +471,13 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 }
 
 type queryObservation struct {
-	TaskID           string     `json:"task_id"`
-	Model            string     `json:"model"`
-	Status           ark.Status `json:"status"`
-	CompletionTokens *int64     `json:"completion_tokens"`
-	TotalTokens      *int64     `json:"total_tokens"`
-	HasError         bool       `json:"has_error"`
+	TaskID             string     `json:"task_id"`
+	Model              string     `json:"model"`
+	Status             ark.Status `json:"status"`
+	CompletionTokens   *int64     `json:"completion_tokens"`
+	TotalTokens        *int64     `json:"total_tokens"`
+	HasError           bool       `json:"has_error"`
+	DeliveryPayloadRef string     `json:"delivery_payload_ref,omitempty"`
 }
 
 func (s *Service) recoverQueryReceipts(ctx context.Context) error {
@@ -506,12 +519,14 @@ func (s *Service) applyQueryReceipt(ctx context.Context, receipt QueryReceipt) e
 			return finish("stale_query_response")
 		}
 		response := ark.Result{Action: ark.ActionQuery, Outcome: ark.Outcome(receipt.Outcome), HTTPStatus: receipt.HTTPStatus, RequestID: receipt.ProviderRequestID}
+		deliveryRef := ""
 		if receipt.ObservationJSON != "" {
 			var o queryObservation
 			if e = json.Unmarshal([]byte(receipt.ObservationJSON), &o); e != nil {
 				return e
 			}
 			response.Observation = &ark.Observation{TaskID: o.TaskID, Model: o.Model, Status: o.Status, Usage: ark.Usage{CompletionTokens: o.CompletionTokens, TotalTokens: o.TotalTokens}, HasError: o.HasError}
+			deliveryRef = o.DeliveryPayloadRef
 		}
 		org, id, attempt, ref := t.OrgID, t.TaskID, receipt.AttemptID, receipt.PayloadRef
 		transition := ark.ApplyObservation(ark.Status(t.Status), response)
@@ -571,9 +586,11 @@ func (s *Service) applyQueryReceipt(ctx context.Context, receipt QueryReceipt) e
 						}
 					}
 				}
-				if receipt.HasVideo && st.ArtifactStatus != "ready" {
-					st.ResultPayloadRef = ref
-					st.ArtifactStatus = "pending"
+				if deliveryRef != "" {
+					st.ResultPayloadRef = deliveryRef
+					if receipt.HasVideo {
+						st.ArtifactStatus = "ready"
+					}
 				}
 			case "failed", "cancelled", "expired":
 				if t.Status == "cancelled" {

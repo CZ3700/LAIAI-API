@@ -138,6 +138,7 @@ func priceMatrix(cap ark.Capability, prices []videobilling.PricingRule) []pricin
 	}
 	for i := range cells {
 		c := &cells[i]
+		c.RiskMultiplier = "1"
 		c.Available = priceCellSupported(*c, cap)
 		if !c.Available {
 			c.UnavailableReason = "capability_not_verified"
@@ -177,10 +178,15 @@ func validatePricingRequest(tx *gorm.DB, model string, in pricingRequest, now ti
 	if e != nil {
 		return cfg, nil, nil, e
 	}
+	return validatePricingRequestWithContext(tx, model, in, now, cfg, cap, scope, bounds)
+}
+
+func validatePricingRequestWithContext(tx *gorm.DB, model string, in pricingRequest, now time.Time, cfg video.ModelConfig, cap ark.Capability, scope video.ProviderScope, bounds map[string]video.Dimensions) (video.ModelConfig, []videobilling.PricingRule, []gin.H, error) {
 	current, e := currentPricingRules(tx, cfg)
 	if e != nil {
 		return cfg, nil, nil, e
 	}
+	in.Cells = defaultPricingRisk(in.Cells, current)
 	if e = requireCompletePricingMatrix(in.Cells, current); e != nil {
 		return cfg, nil, nil, e
 	}
@@ -228,7 +234,7 @@ func validatePricingRequest(tx *gorm.DB, model string, in pricingRequest, now ti
 				retail, re := parsePrice(c.RetailUSDPer1M)
 				supplier, se := parsePrice(c.SupplierCNYPer1M)
 				risk, ke := parsePrice(c.RiskMultiplier)
-				if re != nil || se != nil || ke != nil {
+				if re != nil || se != nil || ke != nil || risk.LessThan(decimal.NewFromInt(1)) || risk.GreaterThan(decimal.NewFromInt(100)) {
 					return cfg, nil, nil, videobilling.ErrInvalid
 				}
 				rules = append(rules, videobilling.PricingRule{RuleID: fmt.Sprintf("%s-%d", in.PricingVersion, i), Version: in.PricingVersion, PricingKey: videobilling.PricingKey{ProviderScopeID: cfg.ProviderScopeID, Model: model, Mode: c.Mode, Resolution: c.Resolution, InputVideo: c.InputVideo, ServiceTier: c.ServiceTier, Draft: c.Draft}, RetailUSDPer1M: retail, SupplierCNYPer1M: supplier, RiskMultiplier: risk, MinimumRuleVersion: c.MinimumRuleVersion, FormulaVersion: "ark-video-token-v1", SourceHash: in.EvidenceHash, EffectiveFrom: now, Enabled: false})
@@ -296,6 +302,8 @@ func (s *Server) registerArkPricingConsole(su *gin.RouterGroup) {
 	su.POST(base+"/prepare", s.prepareArkPricingConsole)
 	su.POST(base+"/validate", s.validateArkPricingConsole)
 	su.POST(base+"/publications", s.publishArkPricingConsole)
+	su.GET(base+"/rebind-preview", s.previewArkPricingRebind)
+	su.POST(base+"/rebind-publications", s.publishArkPricingRebind)
 	su.GET(base+"/revisions", func(c *gin.Context) {
 		if _, ok := s.videoAdminActor(c); !ok {
 			return
@@ -450,7 +458,11 @@ func (s *Server) publishArkPricingConsole(c *gin.Context) {
 		if e = tx.Model(&cfg).Updates(map[string]any{"version": in.ConfigVersion, "pricing_version": in.PricingVersion, "updated_at": now}).Error; e != nil {
 			return e
 		}
-		receipt = pricingPublication{Model: cfg.PublicModel, Version: in.PricingVersion, ConfigVersion: in.ConfigVersion, IdempotencyKey: key, BodyHash: hash, SnapshotJSON: string(raw), CreatedBy: actor.ID, CreatedAt: now}
+		// Keep the request hash for replay, but record the effective defaults
+		// used by the published rules in the immutable snapshot.
+		in.Cells = defaultPricingRisk(in.Cells, rules)
+		snapshot, _ := json.Marshal(in)
+		receipt = pricingPublication{Model: cfg.PublicModel, Version: in.PricingVersion, ConfigVersion: in.ConfigVersion, IdempotencyKey: key, BodyHash: hash, SnapshotJSON: string(snapshot), CreatedBy: actor.ID, CreatedAt: now}
 		if e = tx.Create(&receipt).Error; e != nil {
 			return e
 		}

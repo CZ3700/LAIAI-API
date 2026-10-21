@@ -8,7 +8,9 @@ info:
     素材、授权会话 ID 均由平台管理；客户端不得提交火山 Key、上游任务/素材/组 ID 或任意 provider_params。
     所有资源读取与引用强制 org_id 隔离，资源 ID 不构成授权。一个下游客户应有独立组织边界；
     同组织 Key 的访问权限由组织资源策略控制。GET 列表仅查询本组织平台库，不开放上游全账户枚举。
-    网关、产物存储、模型能力、客户价格、供应商预算、路由与租户执行保留策略均须显式配置。
+    网关、模型能力、客户价格、供应商预算、路由与租户执行保留策略均须显式配置。
+    Seedance 视频及尾帧直接返回官方 HTTPS 签名地址，平台不存储或代理媒体字节。
+    结果链接有效期由上游决定；读取任务时使用平台 Key，访问结果链接时不得附带平台 Key。
     未配置默认禁用；标准 2.0/2.5 与 2.0 Fast/Mini 出现在契约中不代表账号已取得官方能力或模型已上线。
     GET 要求 video:read，POST/PATCH/DELETE（含预估）要求 video:write；video:* 或 * 覆盖二者。
     POST 创建、取消、素材创建、授权创建、素材 PATCH 和单素材 DELETE 要求 Idempotency-Key；唯一作用域为
@@ -262,11 +264,13 @@ paths:
     get:
       tags: [Tasks]
       operationId: getVideoContent
-      summary: 读取成功任务的视频或尾帧产物
+      summary: 获取成功任务的视频或尾帧直链
       description: |
-        经过平台鉴权及组织归属校验的代理读取；客户端不获得含内部凭证的上游地址。
-        无额外生成收费。未成功或产物暂未就绪返回 409，产物已过保留期返回 410。
-        kind=last_frame 仅请求过 return_last_frame 且确认产物就绪时可用；按实际产物返回匹配的媒体类型。
+        经过平台鉴权及组织归属校验后返回链接 JSON，不再返回媒体流或重定向。
+        优先使用任务详情的 content.video_url / content.last_frame_url。
+        客户自行访问 url，不向外站发送 Gateway Bearer。签名参数须原样保留，有效期由上游决定。
+        无额外生成收费；链接未取得返回 409，链接结果已失效返回 410，官方查询失败可能返回 503。
+        kind=last_frame 仅请求过 return_last_frame 且官方返回尾帧时可用。链接失败不应重新创建任务。
       parameters:
         - name: kind
           in: query
@@ -276,29 +280,29 @@ paths:
             default: video
       responses:
         '200':
-          description: 视频字节流
+          description: 官方产物链接；平台不持久化媒体文件。
           headers:
             Cache-Control:
               schema:
                 type: string
                 const: private, no-store
           content:
-            video/mp4:
+            application/json:
               schema:
-                type: string
-                format: binary
-            video/quicktime:
-              schema:
-                type: string
-                format: binary
-            image/jpeg:
-              schema:
-                type: string
-                format: binary
-            image/png:
-              schema:
-                type: string
-                format: binary
+                type: object
+                additionalProperties: false
+                required: [url, kind, source]
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                    pattern: '^https://'
+                  kind:
+                    type: string
+                    enum: [video, last_frame]
+                  source:
+                    type: string
+                    const: upstream
         default:
           $ref: '#/components/responses/Error'
   /v1/video/generations/{task_id}/billing:
@@ -1025,7 +1029,7 @@ components:
         omni_reference_task_type:
           type: string
           enum: [auto, reference, edit, extend]
-          description: 已核实的 Seedance 2.5 字段名；仅 2.5 且能力已验证时可用，不接受 task_type 别名。
+          description: 仅 Seedance 2.5 已验证的多模态参考场景可用（参考图片、视频或音频）；纯文本及首帧/首尾帧请求须省略，显式传入返回 422。仅开放 reference 的能力在多模态参考请求省略本字段时补 reference，防止自动选择未开放模式。Draft 转正式片不得重传。不接受 task_type 别名。
         output_format:
           type: string
           enum: [mp4, mov]
@@ -1216,7 +1220,7 @@ components:
         artifact_status:
           type: string
           enum: [pending, ready, failed, expired]
-          description: 产物可用性独立于生成与账务状态；取件失败不改变已核实生成成功事实。
+          description: 结果链接状态独立于生成与账务状态；ready 表示已取得官方链接，不承诺永久有效或平台托管。取件失败不改变已核实生成成功事实。
         created_at:
           type: string
           format: date-time
@@ -1228,8 +1232,22 @@ components:
           format: date-time
         content_url:
           type: string
-          pattern: '^/v1/video/generations/task_[A-Za-z0-9_-]+/content$'
-          description: 平台鉴权产物路径，仅产物就绪时出现。
+          format: uri
+          pattern: '^https://'
+          description: 官方视频直链，与 content.video_url 相同；保留签名参数，不附带 Gateway Key 访问。列表只返回已缓存的有效交付记录，单任务详情可受限查询上游更新。
+        content:
+          type: object
+          additionalProperties: false
+          properties:
+            video_url:
+              type: string
+              format: uri
+              pattern: '^https://'
+            last_frame_url:
+              type: string
+              format: uri
+              pattern: '^https://'
+          description: 官方原始结果地址；仅包含实际返回的类型，平台不转存视频或尾帧。地址过期时可查询任务，不能保证官方重新签发。
         usage:
           oneOf:
             - $ref: '#/components/schemas/ActualUsage'

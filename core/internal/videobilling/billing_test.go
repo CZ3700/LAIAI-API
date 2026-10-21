@@ -271,9 +271,161 @@ func TestOverHoldPreservesUsageAndSupplierCost(t *testing.T) {
 	checkBalance(t, db, "0.136", "0")
 	var bs []QuotaBucket
 	db.Find(&bs)
-	if len(bs) != 2 || !bs[0].Blocked || !bs[1].Blocked {
+	if len(bs) != 2 {
 		t.Fatal(bs)
 	}
+	for _, b := range bs {
+		if b.Blocked != (b.LimitUnits != nil) {
+			t.Fatal("only the exhausted token budget should block", b)
+		}
+	}
+}
+
+func TestOverReservationWithinBudgetAllowsFurtherTasks(t *testing.T) {
+	db, q := setup(t, "100")
+	policy(t, db, QuotaPolicy{Scope: ScopeProvider, OwnerID: 11, Metric: MetricCNY, LimitAmount: amount("100")})
+	policy(t, db, QuotaPolicy{OrgID: 10, Scope: ScopeOrg, OwnerID: 10, Metric: MetricTokens, LimitUnits: token(1000000)})
+	reserve(t, db, q, "task_variance")
+	reserve(t, db, q, "task_waiting")
+	actual := q.EstimatedTokens + 1
+	result := settle(t, db, "task_variance", &actual, "1")
+	if !result.QuotaOverrun || !result.Entry.AbsorbedUSD.IsPositive() || !result.Entry.CapturedUSD.Equal(q.HoldUSD) {
+		t.Fatal("estimation variance or capped capture was lost", result)
+	}
+	var buckets []QuotaBucket
+	if err := db.Find(&buckets).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range buckets {
+		if b.Blocked {
+			t.Fatal("available shared budget was blocked", b)
+		}
+		if b.LimitAmount != nil && (!b.ConsumedAmount.Equal(result.Entry.SupplierCNY) || !b.ReservedAmount.Equal(q.SupplierReservedCNY)) {
+			t.Fatal("supplier actual or remaining reservation lost", b)
+		}
+		if b.LimitUnits != nil && (b.ConsumedUnits != actual || b.ReservedUnits != q.EstimatedTokens) {
+			t.Fatal("actual tokens or remaining reservation lost", b)
+		}
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error { return ValidateDispatchBudgetTx(tx, 10, "task_waiting") }); err != nil {
+		t.Fatal("accepted work should still dispatch", err)
+	}
+	reserve(t, db, q, "task_after_variance")
+	checkBalance(t, db, d("100").Sub(q.HoldUSD).String(), q.HoldUSD.Mul(d("2")).String())
+}
+
+func TestAggregateOverrunBlocksAndRollbackPreservesReservations(t *testing.T) {
+	for _, metric := range []string{MetricCNY, MetricTokens} {
+		t.Run(metric, func(t *testing.T) {
+			db, q := setup(t, "100")
+			p := QuotaPolicy{Scope: ScopeProvider, OwnerID: 11, Metric: metric}
+			if metric == MetricCNY {
+				limit := q.SupplierReservedCNY.Mul(d("2"))
+				p.LimitAmount = &limit
+			} else {
+				p.LimitUnits = token(q.EstimatedTokens * 2)
+			}
+			policy(t, db, p)
+			reserve(t, db, q, "task_total_first")
+			reserve(t, db, q, "task_total_waiting")
+			actual := q.EstimatedTokens + 1
+			if err := db.Exec("CREATE TRIGGER fail_budget_settle BEFORE INSERT ON video_billing_entries BEGIN SELECT RAISE(ABORT,'injected billing failure'); END").Error; err != nil {
+				t.Fatal(err)
+			}
+			err := db.Transaction(func(tx *gorm.DB) error {
+				_, e := SettleUsageTx(tx, SettlementInput{OrgID: 10, TaskID: "task_total_first", Now: testAt, Evidence: UsageEvidence{EvidenceID: "total-evidence", Source: "task_get", SourceRecordID: "upstream-total", SourceVersion: "1", CompletionTokens: &actual, ObservedAt: testAt}})
+				return e
+			})
+			if err == nil {
+				t.Fatal("injected settlement failure was ignored")
+			}
+			var b QuotaBucket
+			if err := db.Take(&b).Error; err != nil {
+				t.Fatal(err)
+			}
+			if b.Blocked || !b.ConsumedAmount.IsZero() || b.ConsumedUnits != 0 || count(t, db, "video_usage_evidence") != 0 || count(t, db, "video_billing_entries") != 0 {
+				t.Fatal("failed settlement partially changed budget or evidence", b)
+			}
+			checkBalance(t, db, "100", q.HoldUSD.Mul(d("2")).String())
+			if err := db.Exec("DROP TRIGGER fail_budget_settle").Error; err != nil {
+				t.Fatal(err)
+			}
+			result := settle(t, db, "task_total_first", &actual, "1")
+			if err := db.First(&b, b.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if !b.Blocked || !result.QuotaOverrun {
+				t.Fatal("actual plus remaining reservations must enforce total limit", b)
+			}
+			err = db.Transaction(func(tx *gorm.DB) error {
+				_, e := ReserveTx(tx, ReserveInput{OrgID: 10, APIKeyID: 1, TaskID: "task_total_denied", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
+				return e
+			})
+			if !errors.Is(err, ErrQuotaExceeded) {
+				t.Fatal("exhausted bucket admitted a new task", err)
+			}
+			if err := db.Transaction(func(tx *gorm.DB) error {
+				_, e := ReleaseConfirmedTx(tx, ReleaseInput{OrgID: 10, TaskID: "task_total_waiting", EvidenceID: "release-total", Reason: ReleaseNotDispatched, Confirmed: true, Now: testAt})
+				return e
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.First(&b, b.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if !b.Blocked || !b.ReservedAmount.IsZero() || b.ReservedUnits != 0 {
+				t.Fatal("release must retain existing block", b)
+			}
+		})
+	}
+}
+
+func TestConcurrentSettlementsPreserveSharedBudgetActuals(t *testing.T) {
+	db, q := setup(t, "100")
+	policy(t, db, QuotaPolicy{Scope: ScopeProvider, OwnerID: 11, Metric: MetricCNY, LimitAmount: amount("100")})
+	policy(t, db, QuotaPolicy{OrgID: 10, Scope: ScopeOrg, OwnerID: 10, Metric: MetricTokens, LimitUnits: token(1000000)})
+	const tasks = 8
+	for i := 0; i < tasks; i++ {
+		reserve(t, db, q, fmt.Sprintf("task_parallel_%d", i))
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, tasks*2)
+	actual := q.EstimatedTokens + 1
+	for i := 0; i < tasks*2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("task_parallel_%d", i%tasks)
+			errs <- db.Transaction(func(tx *gorm.DB) error {
+				_, e := SettleUsageTx(tx, SettlementInput{OrgID: 10, TaskID: id, Now: testAt, Evidence: UsageEvidence{EvidenceID: "e-" + id, Source: "task_get", SourceRecordID: id, SourceVersion: "1", CompletionTokens: &actual, ObservedAt: testAt}})
+				return e
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buckets []QuotaBucket
+	if err := db.Find(&buckets).Error; err != nil {
+		t.Fatal(err)
+	}
+	cny := q.Rule.SupplierCNYPer1M.Mul(decimal.NewFromInt(actual)).Shift(-6).Round(8).Mul(decimal.NewFromInt(tasks))
+	for _, b := range buckets {
+		if b.Blocked || !b.ReservedAmount.IsZero() || b.ReservedUnits != 0 {
+			t.Fatal("concurrent settlement lost reservations or blocked available budget", b)
+		}
+		if (b.LimitAmount != nil && !b.ConsumedAmount.Equal(cny)) || (b.LimitUnits != nil && b.ConsumedUnits != actual*tasks) {
+			t.Fatal("concurrent actuals were lost or counted twice", b)
+		}
+	}
+	if count(t, db, "video_billing_entries") != tasks || count(t, db, "video_usage_evidence") != tasks {
+		t.Fatal("concurrent replay created duplicate financial facts")
+	}
+	checkBalance(t, db, d("100").Sub(q.HoldUSD.Mul(decimal.NewFromInt(tasks))).String(), "0")
 }
 func TestZeroUsageIsNotMissing(t *testing.T) {
 	db, q := setup(t, "10")

@@ -327,7 +327,7 @@ func (s *Service) Get(org uint64, id string) (TaskView, error) {
 	if err != nil {
 		return TaskView{}, err
 	}
-	return taskView(t, st), nil
+	return s.deliveryView(context.Background(), t, st, "service", false)
 }
 
 func (s *Service) clientFor(ctx context.Context, t task.Task, st State) (*ark.Client, error) {

@@ -10,8 +10,9 @@ import GenericPriceEditor from './GenericPriceEditor.vue'
 import AdminPriceSummary from './AdminPriceSummary.vue'
 import OfficialPriceEvidence from './OfficialPriceEvidence.vue'
 import VariantPricePlan from './VariantPricePlan.vue'
+import OfficialVideoPricingDefaults from './OfficialVideoPricingDefaults.vue'
 import { configuredOfficialVideo, evidenceOnlyVariant, modelType, modelTypes, officialPriceEvidence, pricingStatus, pricingStatuses, type ModelTypeFilter } from './catalogPresentation'
-import type { PricingCatalog, PricingModel, PricingStatus } from './types'
+import { isOfficialVideoModel, type PricingCatalog, type PricingModel, type PricingStatus } from './types'
 
 const props = defineProps<{ refreshKey?: number }>()
 const emit = defineEmits<{ 'edit-metadata': [row: { model: string; meta?: PricingModel['meta'] }]; 'dirty-change': [value: boolean]; 'busy-change': [value: boolean] }>()
@@ -34,7 +35,16 @@ const selected = computed(() => catalog.value?.models.find(row => row.key === mo
 const selectedOfficialEvidence = computed(() => officialPriceEvidence(selected.value))
 const selectedEvidenceOnly = computed(() => evidenceOnlyVariant(selected.value))
 const selectedVideoConfigured = computed(() => configuredOfficialVideo(selected.value))
-const drawerTabs = computed(() => selectedEvidenceOnly.value ? ['overview'] as const : ['pricing', 'overview'] as const)
+function officialModel(row: PricingModel | null) {
+  if (!row) return ''
+  if (isOfficialVideoModel(row.video_model)) return row.video_model!
+  const exactUpstream: Record<string, string> = { 'doubao-seedance-2-0-260128': 'seedance-2.0', 'doubao-seedance-2-0-fast-260128': 'seedance-2.0-fast', 'doubao-seedance-2-0-mini-260615': 'seedance-2.0-mini', 'doubao-seedance-2-5-260628': 'seedance-2.5' }
+  return ['volcengine', 'modelark'].includes(row.provider) ? exactUpstream[row.upstream_model] ?? '' : ''
+}
+const selectedDefaultsModel = computed(() => selectedVideoConfigured.value ? '' : officialModel(selected.value))
+const selectedVariantPlanAvailable = computed(() => selectedEvidenceOnly.value && !selected.value?.video_configuration && selected.value?.unsupported_reason === 'official_video_configuration_missing'
+  && !!catalog.value?.models.some(row => row.channel_id === selected.value?.channel_id && row.video_model === 'seedance-2.0' && configuredOfficialVideo(row) && row.video_configuration?.enabled))
+const drawerTabs = computed(() => selectedEvidenceOnly.value && !selectedDefaultsModel.value ? ['overview'] as const : ['pricing', 'overview'] as const)
 const videoAllowed = computed(() => auth.isSuperadmin && !!catalog.value?.permissions.video_details)
 const summary = computed(() => ({ total: catalog.value?.models.length ?? 0, published: catalog.value?.models.filter(row => ['published', 'partial'].includes(pricingStatus(row, catalog.value))).length ?? 0, attention: catalog.value?.models.filter(row => ['missing', 'blocked', 'partial'].includes(pricingStatus(row, catalog.value))).length ?? 0 }))
 const impact = computed(() => catalog.value?.models.filter(row => row.model === selected.value?.model).length ?? 0)
@@ -71,7 +81,7 @@ function readQuery() {
   query.value = read('search'); view.value = read('view') === 'list' ? 'list' : 'cards'
   const wanted = catalog.value?.models.find(m => m.key === read('model'))
   modelKey.value = wanted?.key ?? ''; detailsOpen.value = !!wanted
-  if (evidenceOnlyVariant(wanted ?? null)) drawerTab.value = 'overview'
+  if (evidenceOnlyVariant(wanted ?? null) && !officialModel(wanted ?? null)) drawerTab.value = 'overview'
   applyingQuery = false
 }
 watch([provider, channel, kind, status, query, view, modelKey, detailsOpen], syncURL, { flush: 'post' })
@@ -107,6 +117,10 @@ async function saved(rowKey: string, sourceContext: string) {
   if (expected === generation && !error.value) notice.value = t('pricingx.saved')
 }
 function videoPublished() { if (selected.value) void saved(selected.value.key, contextKey.value) }
+async function defaultsPublished(model: string, channelId: number, sourceContext: string) {
+  if (!selected.value || selectedDefaultsModel.value !== model || selected.value.channel_id !== channelId || contextKey.value !== sourceContext) return
+  await saved(selected.value.key, sourceContext)
+}
 function verificationSynced() { void load(true) }
 async function variantPlanSaved(rowKey: string, sourceContext: string) {
   if (rowKey !== modelKey.value || sourceContext !== contextKey.value) return
@@ -115,7 +129,7 @@ async function variantPlanSaved(rowKey: string, sourceContext: string) {
   await load(true)
   if (expected === generation && !error.value) notice.value = t('pricingAdmin.variantPlanSavedNotice')
 }
-function openModel(row: PricingModel, tab: 'pricing' | 'overview' = 'pricing') { modelKey.value = row.key; drawerTab.value = evidenceOnlyVariant(row) ? 'overview' : tab; detailsOpen.value = true; notice.value = '' }
+function openModel(row: PricingModel, tab: 'pricing' | 'overview' = 'pricing') { modelKey.value = row.key; drawerTab.value = evidenceOnlyVariant(row) && !officialModel(row) ? 'overview' : tab; detailsOpen.value = true; notice.value = '' }
 async function requestClose(open = false) {
   if (open) { detailsOpen.value = true; return }
   if (editorBusy.value) return
@@ -128,7 +142,7 @@ function editMetadata() { if (selected.value && confirmLeave()) { const row = se
 function tabKeydown(event: KeyboardEvent) {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
   event.preventDefault()
-  if (selectedEvidenceOnly.value) return
+  if (selectedEvidenceOnly.value && !selectedDefaultsModel.value) return
   drawerTab.value = event.key === 'Home' ? 'pricing' : event.key === 'End' ? 'overview' : drawerTab.value === 'pricing' ? 'overview' : 'pricing'
   const container = (event.currentTarget as HTMLElement).parentElement
   void nextTick(() => container?.querySelector<HTMLButtonElement>(`#pricing-drawer-tab-${drawerTab.value}`)?.focus())
@@ -174,18 +188,19 @@ defineExpose({ hasUnsavedChanges: () => dirty.value, isBusy: () => editorBusy.va
         <section v-if="confirmDiscard" class="discard-banner" role="alert"><strong>{{ t('pricingAdmin.discardTitle') }}</strong><p>{{ t('pricingAdmin.discardBody') }}</p><div><button ref="keepEditingButton" class="btn-primary" @click="confirmDiscard = false">{{ t('pricingAdmin.keepEditing') }}</button><button class="btn-ghost" @click="closeImmediately">{{ t('pricingAdmin.discard') }}</button></div></section>
         <div class="drawer-status"><span class="status-badge" :class="`status-${pricingStatus(selected, catalog)}`">{{ statusLabel(selected) }}</span><span v-if="dirty" class="dirty-indicator">{{ t('pricingAdmin.dirty') }}</span><span v-if="editorBusy" role="status">{{ t('pricingAdmin.busyNote') }}</span></div>
         <div class="drawer-tabs" role="tablist"><button v-for="tab in drawerTabs" :key="tab" :id="`pricing-drawer-tab-${tab}`" role="tab" :aria-selected="drawerTab === tab" :aria-controls="`pricing-drawer-panel-${tab}`" :tabindex="drawerTab === tab ? 0 : -1" :class="{ active: drawerTab === tab }" @click="drawerTab = tab" @keydown="tabKeydown">{{ t(`pricingAdmin.${tab}`) }}</button></div>
-        <div v-if="!selectedEvidenceOnly" v-show="drawerTab === 'pricing'" id="pricing-drawer-panel-pricing" role="tabpanel" aria-labelledby="pricing-drawer-tab-pricing" class="drawer-editor">
-          <template v-if="selected.pricing_kind === 'video' || selected.video_model">
-            <p v-if="selected.video_model && selected.unsupported_reason" class="pricing-note">{{ reason(selected.unsupported_reason) }}</p><p v-if="!videoAllowed" class="pricing-note">{{ t('pricingx.superadmin') }}</p>
+        <div v-if="!selectedEvidenceOnly || selectedDefaultsModel" v-show="drawerTab === 'pricing'" id="pricing-drawer-panel-pricing" role="tabpanel" aria-labelledby="pricing-drawer-tab-pricing" class="drawer-editor">
+          <template v-if="selected.pricing_kind === 'video' || selected.video_model || selectedDefaultsModel">
+            <p v-if="selected.video_model && selected.unsupported_reason && !selectedDefaultsModel" class="pricing-note">{{ reason(selected.unsupported_reason) }}</p><p v-if="!videoAllowed" class="pricing-note">{{ t('pricingx.superadmin') }}</p>
             <VideoPricing v-else-if="selectedVideoConfigured && selected.video_model" :key="selected.key" embedded :selected-model="selected.video_model" :selected-channel-id="selected.channel_id" :context-key="contextKey" @dirty-change="dirty = $event" @busy-change="editorBusy = $event" @published="videoPublished" @verification-synced="verificationSynced" />
+            <OfficialVideoPricingDefaults v-else-if="selectedDefaultsModel" :key="selected.key" :model="selectedDefaultsModel" :channel-id="selected.channel_id" :context-key="contextKey" @busy-change="editorBusy = $event" @published="defaultsPublished" />
             <p v-else class="pricing-note">{{ reason(selected.unsupported_reason) }}</p>
           </template>
           <p v-else-if="selected.unsupported_reason && selected.unsupported_reason !== 'pricing_kind_unknown'" class="pricing-note">{{ reason(selected.unsupported_reason) }}</p>
           <template v-else><p class="scope-note">{{ t('pricingAdmin.sharedScope', { count: impact }) }}</p><GenericPriceEditor :key="selected.key" :row="selected" :context-key="contextKey" @saved="saved" @dirty-change="dirty = $event" @busy-change="editorBusy = $event" /></template>
         </div>
         <div v-show="drawerTab === 'overview'" id="pricing-drawer-panel-overview" role="tabpanel" aria-labelledby="pricing-drawer-tab-overview" class="drawer-overview">
-          <p v-if="selectedEvidenceOnly && selected.unsupported_reason" class="pricing-note">{{ reason(selected.unsupported_reason) }}</p><AdminPriceSummary :row="selected" expanded /><VariantPricePlan v-if="selectedEvidenceOnly && videoAllowed && !selected.video_configuration && selected.unsupported_reason === 'official_video_configuration_missing'" :key="selected.key" :row="selected" :context-key="contextKey" @busy-change="editorBusy = $event" @saved="variantPlanSaved" /><OfficialPriceEvidence v-if="selectedOfficialEvidence" :evidence="selectedOfficialEvidence" /><dl class="pricing-detail"><dt>{{ t('pricingx.publicModel') }}</dt><dd>{{ selected.model }}</dd><dt>{{ t('pricingx.upstreamModel') }}</dt><dd>{{ selected.upstream_model }}</dd><dt>{{ t('pricingx.provider') }}</dt><dd>{{ providerLabel(selected.provider) }} ({{ selected.provider }})</dd><dt>{{ t('pricingx.channel') }}</dt><dd>{{ channelLabel(selected.channel_id) }}</dd><dt>{{ t('pricingx.billingModes') }}</dt><dd>{{ t(`pricingx.${selected.pricing_kind}`) }} · {{ selected.billing_modes.join(', ') || '—' }}</dd></dl>
-          <p v-if="!selectedEvidenceOnly">{{ t(selected.video_model ? 'pricingAdmin.boundScope' : 'pricingx.globalScope') }}</p><p>{{ t('pricingAdmin.unitNote') }}</p><p>{{ t('pricingx.noAutomaticPrice') }}</p><button class="btn-ghost" :disabled="editorBusy" @click="editMetadata">{{ t('pricingAdmin.editMetadata') }}</button>
+          <p v-if="selectedEvidenceOnly && selected.unsupported_reason" class="pricing-note">{{ reason(selected.unsupported_reason) }}</p><AdminPriceSummary :row="selected" expanded /><VariantPricePlan v-if="selectedVariantPlanAvailable && videoAllowed" :key="selected.key" :row="selected" :context-key="contextKey" @busy-change="editorBusy = $event" @saved="variantPlanSaved" /><OfficialPriceEvidence v-if="selectedOfficialEvidence" :evidence="selectedOfficialEvidence" /><dl class="pricing-detail"><dt>{{ t('pricingx.publicModel') }}</dt><dd>{{ selected.model }}</dd><dt>{{ t('pricingx.upstreamModel') }}</dt><dd>{{ selected.upstream_model }}</dd><dt>{{ t('pricingx.provider') }}</dt><dd>{{ providerLabel(selected.provider) }} ({{ selected.provider }})</dd><dt>{{ t('pricingx.channel') }}</dt><dd>{{ channelLabel(selected.channel_id) }}</dd><dt>{{ t('pricingx.billingModes') }}</dt><dd>{{ t(`pricingx.${selected.pricing_kind}`) }} · {{ selected.billing_modes.join(', ') || '—' }}</dd></dl>
+          <p v-if="!selectedEvidenceOnly && !selectedDefaultsModel">{{ t(selectedVideoConfigured ? 'pricingAdmin.boundScope' : 'pricingx.globalScope') }}</p><p>{{ t('pricingAdmin.unitNote') }}</p><p v-if="!selectedDefaultsModel">{{ t('pricingx.noAutomaticPrice') }}</p><button class="btn-ghost" :disabled="editorBusy" @click="editMetadata">{{ t('pricingAdmin.editMetadata') }}</button>
         </div>
       </template>
     </DetailDrawer>

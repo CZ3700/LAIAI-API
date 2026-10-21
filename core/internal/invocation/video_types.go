@@ -28,6 +28,7 @@ var (
 const (
 	VideoPurposeExecution = "execution"
 	VideoPurposeHistory   = "history"
+	VideoPurposeDelivery  = "delivery"
 	VideoClientRequest    = "client_request"
 	VideoEffectiveRequest = "effective_request"
 	VideoUpstreamResponse = "upstream_response"

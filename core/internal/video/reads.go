@@ -93,8 +93,14 @@ func (s *Service) HandleList(c *gin.Context) {
 			respondError(c, e)
 			return
 		}
-		data = append(data, taskView(t, st))
+		view, err := s.deliveryView(c.Request.Context(), t, st, fmt.Sprint(requestKey(c).ID), false)
+		if err != nil {
+			respondError(c, err)
+			return
+		}
+		data = append(data, view)
 	}
+	c.Header("Cache-Control", "private, no-store")
 	c.JSON(200, gin.H{"data": data, "next_cursor": next})
 }
 

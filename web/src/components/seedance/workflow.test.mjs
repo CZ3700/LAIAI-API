@@ -25,12 +25,12 @@ test('accepted quote is copied into the request without floating point conversio
   assert.throws(() => flow.authorizedRequest(input, { reserved_amount: '1', pricing_version: '' }))
 })
 
-test('official credentials are never sent to a provider content URL supplied in a task', () => {
-  const expected = '/v1/video/generations/task_test/content'
-  assert.equal(flow.safeContentPath('task_test', 'https://untrusted.example/video'), expected)
-  assert.equal(flow.safeContentPath('task_test', '//untrusted.example/video'), expected)
-  assert.equal(flow.safeContentPath('task_test', '/v1/video/generations/task_other/content'), expected)
-  assert.equal(flow.safeContentPath('task_test', expected), expected)
+test('direct media URLs preserve provider signatures and reject unsafe URLs', () => {
+  const signed = 'https://media.volcengine.example/video.mp4?signature=a%2Fb%2Bc&expires=123'
+  assert.equal(flow.safeMediaURL(signed), signed)
+  for (const value of [undefined, null, {}, '', 'javascript:alert(1)', 'data:video/mp4;base64,AA', 'blob:fixture', 'https:media.example/video', 'http://media.example/video', '//media.example/video', '/v1/video/generations/task_test/content', 'https://user:pass@media.example/video', 'https://localhost/video', 'https://localhost./video', 'https://127.0.0.1/video', 'https://10.0.0.1/video', 'https://[::1]/video', 'https://api.local/video', 'https://api.local./video', 'https://api.internal/video', 'https://media.example:8443/video', 'https://media.example/video#fragment', 'https://media.example/\nvideo', 'https://media.example\\video']) {
+    assert.equal(flow.safeMediaURL(value), '', String(value))
+  }
 })
 
 test('Ark UI selection preserves unrelated and earlier legacy models', () => {

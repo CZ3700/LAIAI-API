@@ -1,26 +1,107 @@
 {
   "components": {
+    "headers": {
+      "IdempotencyReplayed": {
+        "description": "true 表示幂等重放已有结果，没有重复创建或冻结。",
+        "schema": {
+          "type": "boolean"
+        }
+      }
+    },
+    "parameters": {
+      "AssetId": {
+        "in": "path",
+        "name": "asset_id",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/AssetId"
+        }
+      },
+      "AssetIdempotencyKey": {
+        "description": "素材组、素材、H5 会话创建的幂等键；1–128 字符且不得含控制字符。同组织同路径同键同请求重放，内容冲突为 409 invalid_state。建议统一使用至少 8 位随机业务键。",
+        "in": "header",
+        "name": "Idempotency-Key",
+        "required": true,
+        "schema": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "Cursor": {
+        "description": "平台签发的不透明游标，绑定组织和列表过滤条件；任务/事件最长 512 字符，素材/会话最长 1024 字符。原样使用，不跨列表复用。",
+        "in": "query",
+        "name": "cursor",
+        "schema": {
+          "maxLength": 1024,
+          "type": "string"
+        }
+      },
+      "GroupId": {
+        "in": "path",
+        "name": "group_id",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/GroupId"
+        }
+      },
+      "IdempotencyKey": {
+        "description": "8–128 字符，由调用方为一次业务操作生成。唯一范围是组织、方法、包含资源 ID 的规范化路径、\n幂等键哈希；与 Gateway Key ID 无关。同请求重放同一任务/操作，不同请求 409。\n幂等键及规范化请求分别使用服务端 HMAC-SHA256 和不同的域标签，不保存明文摘要密钥；\n服务端 HMAC 密钥轮换需显式迁移；现有任务幂等版本不允许原位换密钥后静默再次创建。\n不得将同一个键用于不同业务请求。\n",
+        "in": "header",
+        "name": "Idempotency-Key",
+        "required": true,
+        "schema": {
+          "maxLength": 128,
+          "minLength": 8,
+          "pattern": "^[!-~]+$",
+          "type": "string"
+        }
+      },
+      "Limit": {
+        "in": "query",
+        "name": "limit",
+        "schema": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "TaskId": {
+        "in": "path",
+        "name": "task_id",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/TaskId"
+        }
+      }
+    },
+    "requestBodies": {
+      "TaskCreate": {
+        "content": {
+          "application/json": {
+            "example": {
+              "content": [
+                {
+                  "text": "一只纸质小船漂过平静湖面，柔和晨光。",
+                  "type": "text"
+                }
+              ],
+              "duration": 5,
+              "generate_audio": false,
+              "model": "seedance-2.0",
+              "ratio": "16:9",
+              "resolution": "720p"
+            },
+            "schema": {
+              "$ref": "#/components/schemas/CreateTaskRequest"
+            }
+          }
+        },
+        "required": true
+      }
+    },
     "responses": {
-      "PaymentRequired": {
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/Error"
-            }
-          }
-        },
-        "description": "Insufficient balance or key quota exhausted"
-      },
-      "RateLimited": {
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/Error"
-            }
-          }
-        },
-        "description": "Rate limit exceeded (see Retry-After header)"
-      },
       "Conflict": {
         "content": {
           "application/json": {
@@ -63,25 +144,29 @@
             "$ref": "#/components/headers/IdempotencyReplayed"
           }
         }
+      },
+      "PaymentRequired": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Insufficient balance or key quota exhausted"
+      },
+      "RateLimited": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Rate limit exceeded (see Retry-After header)"
       }
     },
     "schemas": {
-      "Error": {
-        "properties": {
-          "error": {
-            "properties": {
-              "message": {
-                "type": "string"
-              },
-              "type": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          }
-        },
-        "type": "object"
-      },
       "ActualUsage": {
         "additionalProperties": false,
         "description": "官方实际返回的用量；字段缺失为 null，不以零或估算代填。不能假设 total_tokens 永远等于 completion_tokens。",
@@ -555,12 +640,14 @@
               }
             },
             "then": {
+              "not": {
+                "required": [
+                  "frames"
+                ]
+              },
               "properties": {
-                "resolution": {
-                  "enum": [
-                    "480p",
-                    "720p"
-                  ]
+                "draft": {
+                  "const": false
                 },
                 "duration": {
                   "oneOf": [
@@ -568,13 +655,10 @@
                       "const": -1
                     },
                     {
-                      "minimum": 4,
-                      "maximum": 15
+                      "maximum": 15,
+                      "minimum": 4
                     }
                   ]
-                },
-                "draft": {
-                  "const": false
                 },
                 "ratio": {
                   "enum": [
@@ -585,12 +669,13 @@
                     "9:16",
                     "21:9"
                   ]
+                },
+                "resolution": {
+                  "enum": [
+                    "480p",
+                    "720p"
+                  ]
                 }
-              },
-              "not": {
-                "required": [
-                  "frames"
-                ]
               }
             }
           },
@@ -679,7 +764,7 @@
             "type": "boolean"
           },
           "duration": {
-            "description": "Seconds: 2.0, Fast and Mini allow 4-15; 2.5 allows 4-30. Automatic duration requires the published capability.",
+            "description": "秒。2.0、Fast、Mini 为 4–15 秒；2.5 为 4–30 秒；自动时长还受已发布能力限制。",
             "oneOf": [
               {
                 "const": -1
@@ -718,7 +803,7 @@
             "$ref": "#/components/schemas/PublicModel"
           },
           "omni_reference_task_type": {
-            "description": "已核实的 Seedance 2.5 字段名；仅 2.5 且能力已验证时可用，不接受 task_type 别名。",
+            "description": "仅 Seedance 2.5 已验证的多模态参考场景可用（参考图片、视频或音频）；纯文本及首帧/首尾帧请求须省略，显式传入返回 422。仅开放 reference 的能力在多模态参考请求省略本字段时补 reference，防止自动选择未开放模式。Draft 转正式片不得重传。不接受 task_type 别名。",
             "enum": [
               "auto",
               "reference",
@@ -805,6 +890,22 @@
           "type",
           "draft_task"
         ],
+        "type": "object"
+      },
+      "Error": {
+        "properties": {
+          "error": {
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
         "type": "object"
       },
       "ErrorResponse": {
@@ -1277,7 +1378,7 @@
         "type": "string"
       },
       "PublicModel": {
-        "description": "Platform aliases. Fast maps to doubao-seedance-2-0-fast-260128; Mini maps to doubao-seedance-2-0-mini-260615. Availability requires an enabled and verified configuration returned by /v1/video/models.",
+        "description": "平台公开别名；Fast 对应 doubao-seedance-2-0-fast-260128，Mini 对应 doubao-seedance-2-0-mini-260615。是否可用以 models 返回 enabled 与 verified 为准。",
         "enum": [
           "seedance-2.0",
           "seedance-2.5",
@@ -1428,7 +1529,7 @@
         "additionalProperties": false,
         "properties": {
           "artifact_status": {
-            "description": "产物可用性独立于生成与账务状态；取件失败不改变已核实生成成功事实。",
+            "description": "结果链接状态独立于生成与账务状态；ready 表示已取得官方链接，不承诺永久有效或平台托管。取件失败不改变已核实生成成功事实。",
             "enum": [
               "pending",
               "ready",
@@ -1440,9 +1541,27 @@
           "billing_state": {
             "$ref": "#/components/schemas/BillingState"
           },
+          "content": {
+            "additionalProperties": false,
+            "description": "官方原始结果地址；仅包含实际返回的类型，平台不转存视频或尾帧。地址过期时可查询任务，不能保证官方重新签发。",
+            "properties": {
+              "last_frame_url": {
+                "format": "uri",
+                "pattern": "^https://",
+                "type": "string"
+              },
+              "video_url": {
+                "format": "uri",
+                "pattern": "^https://",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "content_url": {
-            "description": "平台鉴权产物路径，仅产物就绪时出现。",
-            "pattern": "^/v1/video/generations/task_[A-Za-z0-9_-]+/content$",
+            "description": "官方视频直链，与 content.video_url 相同；保留签名参数，不附带 Gateway Key 访问。列表只返回已缓存的有效交付记录，单任务详情可受限查询上游更新。",
+            "format": "uri",
+            "pattern": "^https://",
             "type": "string"
           },
           "created_at": {
@@ -1690,6 +1809,12 @@
       }
     },
     "securitySchemes": {
+      "GatewayKey": {
+        "bearerFormat": "LAIAI Gateway API Key",
+        "description": "平台签发的下游 Key，绝不使用或返回火山官方 Key。",
+        "scheme": "bearer",
+        "type": "http"
+      },
       "bearerAuth": {
         "description": "LAIAI API key (sk-laiai-…)",
         "scheme": "bearer",
@@ -1700,113 +1825,6 @@
         "in": "header",
         "name": "mj-api-secret",
         "type": "apiKey"
-      },
-      "GatewayKey": {
-        "bearerFormat": "LAIAI Gateway API Key",
-        "description": "平台签发的下游 Key，绝不使用或返回火山官方 Key。",
-        "scheme": "bearer",
-        "type": "http"
-      }
-    },
-    "headers": {
-      "IdempotencyReplayed": {
-        "description": "true 表示幂等重放已有结果，没有重复创建或冻结。",
-        "schema": {
-          "type": "boolean"
-        }
-      }
-    },
-    "parameters": {
-      "AssetId": {
-        "in": "path",
-        "name": "asset_id",
-        "required": true,
-        "schema": {
-          "$ref": "#/components/schemas/AssetId"
-        }
-      },
-      "AssetIdempotencyKey": {
-        "description": "素材组、素材、H5 会话创建的幂等键；1–128 字符且不得含控制字符。同组织同路径同键同请求重放，内容冲突为 409 invalid_state。建议统一使用至少 8 位随机业务键。",
-        "in": "header",
-        "name": "Idempotency-Key",
-        "required": true,
-        "schema": {
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "Cursor": {
-        "description": "平台签发的不透明游标，绑定组织和列表过滤条件；任务/事件最长 512 字符，素材/会话最长 1024 字符。原样使用，不跨列表复用。",
-        "in": "query",
-        "name": "cursor",
-        "schema": {
-          "maxLength": 1024,
-          "type": "string"
-        }
-      },
-      "GroupId": {
-        "in": "path",
-        "name": "group_id",
-        "required": true,
-        "schema": {
-          "$ref": "#/components/schemas/GroupId"
-        }
-      },
-      "IdempotencyKey": {
-        "description": "8–128 字符，由调用方为一次业务操作生成。唯一范围是组织、方法、包含资源 ID 的规范化路径、\n幂等键哈希；与 Gateway Key ID 无关。同请求重放同一任务/操作，不同请求 409。\n幂等键及规范化请求分别使用服务端 HMAC-SHA256 和不同的域标签，不保存明文摘要密钥；\n服务端 HMAC 密钥轮换需显式迁移；现有任务幂等版本不允许原位换密钥后静默再次创建。\n不得将同一个键用于不同业务请求。\n",
-        "in": "header",
-        "name": "Idempotency-Key",
-        "required": true,
-        "schema": {
-          "maxLength": 128,
-          "minLength": 8,
-          "pattern": "^[!-~]+$",
-          "type": "string"
-        }
-      },
-      "Limit": {
-        "in": "query",
-        "name": "limit",
-        "schema": {
-          "default": 20,
-          "maximum": 100,
-          "minimum": 1,
-          "type": "integer"
-        }
-      },
-      "TaskId": {
-        "in": "path",
-        "name": "task_id",
-        "required": true,
-        "schema": {
-          "$ref": "#/components/schemas/TaskId"
-        }
-      }
-    },
-    "requestBodies": {
-      "TaskCreate": {
-        "content": {
-          "application/json": {
-            "example": {
-              "content": [
-                {
-                  "text": "一只纸质小船漂过平静湖面，柔和晨光。",
-                  "type": "text"
-                }
-              ],
-              "duration": 5,
-              "generate_audio": false,
-              "model": "seedance-2.0",
-              "ratio": "16:9",
-              "resolution": "720p"
-            },
-            "schema": {
-              "$ref": "#/components/schemas/CreateTaskRequest"
-            }
-          }
-        },
-        "required": true
       }
     }
   },
@@ -1911,7 +1929,7 @@
         },
         "responses": {
           "200": {
-            "description": "`{code: 1, description, result: <platform task id>}`; non-1 codes = failure with description"
+            "description": "`{code: 1, description, result: \u003cplatform task id\u003e}`; non-1 codes = failure with description"
           }
         },
         "security": [
@@ -2482,36 +2500,36 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "required": [
-                  "model",
-                  "input"
-                ],
+                "additionalProperties": true,
                 "properties": {
-                  "model": {
-                    "type": "string"
-                  },
                   "input": {
                     "oneOf": [
                       {
                         "type": "string"
                       },
                       {
-                        "type": "array",
                         "items": {
                           "type": "object"
-                        }
+                        },
+                        "type": "array"
                       }
                     ]
                   },
                   "instructions": {
                     "type": "string"
                   },
+                  "model": {
+                    "type": "string"
+                  },
                   "stream": {
                     "type": "boolean"
                   }
                 },
-                "additionalProperties": true
+                "required": [
+                  "model",
+                  "input"
+                ],
+                "type": "object"
               }
             }
           },
@@ -2577,11 +2595,6 @@
         "summary": "列出当前组织的素材组",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "post": {
@@ -2648,11 +2661,6 @@
         "summary": "创建虚拟素材组",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -2688,11 +2696,6 @@
         "summary": "删除素材组",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "get": {
@@ -2715,11 +2718,6 @@
         "summary": "查询素材组",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -2784,11 +2782,6 @@
         "summary": "异步编辑素材组名称与说明",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -2848,11 +2841,6 @@
         "summary": "列出当前组织的素材",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "post": {
@@ -2925,11 +2913,6 @@
         "summary": "提交素材入库及校验",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -2965,11 +2948,6 @@
         "summary": "异步删除单个素材（能力门控）",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "get": {
@@ -2992,11 +2970,6 @@
         "summary": "查询素材状态",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3056,11 +3029,6 @@
         "summary": "异步编辑素材名称",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -3089,11 +3057,6 @@
         "summary": "预估任务 Token、客户费用与冻结额",
         "tags": [
           "Models"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -3160,11 +3123,6 @@
         "summary": "列出当前组织的视频任务",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "post": {
@@ -3223,11 +3181,6 @@
         "summary": "创建视频任务",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -3252,11 +3205,6 @@
         "summary": "删除已结束且账务已落定的视频任务",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "get": {
@@ -3280,11 +3228,6 @@
         "summary": "查询视频任务",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3315,11 +3258,6 @@
         "summary": "查询单任务客户账单",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3356,17 +3294,12 @@
         "summary": "请求取消视频任务",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
     "/v1/video/generations/{task_id}/content": {
       "get": {
-        "description": "经过平台鉴权及组织归属校验的代理读取；客户端不获得含内部凭证的上游地址。\n无额外生成收费。未成功或产物暂未就绪返回 409，产物已过保留期返回 410。\nkind=last_frame 仅请求过 return_last_frame 且确认产物就绪时可用；按实际产物返回匹配的媒体类型。\n",
+        "description": "经过平台鉴权及组织归属校验后返回链接 JSON，不再返回媒体流或重定向。\n优先使用任务详情的 content.video_url / content.last_frame_url。\n客户自行访问 url，不向外站发送 Gateway Bearer。签名参数须原样保留，有效期由上游决定。\n无额外生成收费；链接未取得返回 409，链接结果已失效返回 410，官方查询失败可能返回 503。\nkind=last_frame 仅请求过 return_last_frame 且官方返回尾帧时可用。链接失败不应重新创建任务。\n",
         "operationId": "getVideoContent",
         "parameters": [
           {
@@ -3385,32 +3318,37 @@
         "responses": {
           "200": {
             "content": {
-              "image/jpeg": {
+              "application/json": {
                 "schema": {
-                  "format": "binary",
-                  "type": "string"
-                }
-              },
-              "image/png": {
-                "schema": {
-                  "format": "binary",
-                  "type": "string"
-                }
-              },
-              "video/mp4": {
-                "schema": {
-                  "format": "binary",
-                  "type": "string"
-                }
-              },
-              "video/quicktime": {
-                "schema": {
-                  "format": "binary",
-                  "type": "string"
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "video",
+                        "last_frame"
+                      ],
+                      "type": "string"
+                    },
+                    "source": {
+                      "const": "upstream",
+                      "type": "string"
+                    },
+                    "url": {
+                      "format": "uri",
+                      "pattern": "^https://",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "url",
+                    "kind",
+                    "source"
+                  ],
+                  "type": "object"
                 }
               }
             },
-            "description": "视频字节流",
+            "description": "官方产物链接；平台不持久化媒体文件。",
             "headers": {
               "Cache-Control": {
                 "schema": {
@@ -3424,14 +3362,9 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "读取成功任务的视频或尾帧产物",
+        "summary": "获取成功任务的视频或尾帧直链",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3489,11 +3422,6 @@
         "summary": "查询任务安全事件",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3536,11 +3464,6 @@
         "summary": "查询当前组织可见的视频模型及能力版本",
         "tags": [
           "Models"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -3566,11 +3489,6 @@
         "summary": "查询取消或删除操作",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3634,11 +3552,6 @@
         "summary": "列出当前组织的授权会话摘要",
         "tags": [
           "PortraitAuthorization"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "post": {
@@ -3708,11 +3621,6 @@
         "summary": "创建真人 H5 授权会话",
         "tags": [
           "PortraitAuthorization"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -3738,11 +3646,6 @@
         "summary": "查询真人授权会话",
         "tags": [
           "PortraitAuthorization"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3796,11 +3699,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "security": [
-          {
-            "GatewayKey": []
-          }
-        ],
+        "security": [],
         "summary": "官方 H5 浏览器回跳入口（不供客户主动构造调用）",
         "tags": [
           "PortraitAuthorization"
@@ -3855,5 +3754,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "c3e4f1361f086f412a0a011aa358c556e84a7ac83acf1ab6106acd94aeb50361"
+  "x-seedance-source-sha256": "baf30be89e9213ff7aeef12c6dacee5fae8e2bb60fcfc7b9b3e64229246db78c"
 }

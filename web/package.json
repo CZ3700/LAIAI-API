@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "test:models": "node --test src/lib/modelCatalog.test.mjs",
-    "test:playground": "node --test src/pages/Playground.context.test.mjs",
+    "test:playground": "node --test src/pages/Playground.context.test.mjs src/components/seedance/ArkVideoPlayground.context.test.mjs src/components/seedance/workflow.test.mjs",
     "test:video-pricing": "node --test src/pages/VideoPricing.context.test.mjs",
     "test:pricing-editor": "node --test src/components/pricing/PricingEditor.context.test.mjs",
     "test:api-docs": "node --test src/docs/apiDocs.test.mjs",

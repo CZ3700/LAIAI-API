@@ -170,9 +170,6 @@ func taskView(t task.Task, st State) TaskView {
 	if st.ObservedCompletionTokens != nil || st.TotalTokens != nil {
 		v.Usage = &UsageView{CompletionTokens: st.ObservedCompletionTokens, TotalTokens: st.TotalTokens}
 	}
-	if st.ArtifactStatus == "ready" {
-		v.ContentURL = "/v1/video/generations/" + t.TaskID + "/content"
-	}
 	if st.DeletionOperationID != "" {
 		v.DeletionState = "pending"
 	}

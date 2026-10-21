@@ -96,11 +96,6 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	}
 	if in.OmniReferenceTaskType != nil {
 		p.OmniReferenceTaskType = *in.OmniReferenceTaskType
-	} else if in.Model == Model25 && contains(cap.OmniReferenceTaskTypes, "reference") &&
-		!contains(cap.OmniReferenceTaskTypes, "auto") && !contains(cap.OmniReferenceTaskTypes, "edit") && !contains(cap.OmniReferenceTaskTypes, "extend") {
-		// Omitting this field lets Ark infer edit/extend from the prompt. A
-		// reference-only capability must also constrain the outgoing request.
-		p.OmniReferenceTaskType = "reference"
 	}
 	if in.OutputFormat != nil {
 		p.OutputFormat = *in.OutputFormat
@@ -235,6 +230,17 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if (first+last) > 0 && in.Model == Model25 && p.Ratio != "adaptive" {
 		return bad("content", "2.5 frame mode requires adaptive ratio")
 	}
+	referenceScenario := drafts == 0 && first+last == 0 && images+videos+audios > 0
+	if drafts == 0 && in.OmniReferenceTaskType != nil && !referenceScenario {
+		return bad("omni_reference_task_type", "task type is only supported with reference media, not text or frame generation")
+	}
+	if referenceScenario && in.Model == Model25 && in.OmniReferenceTaskType == nil &&
+		contains(cap.OmniReferenceTaskTypes, "reference") && !contains(cap.OmniReferenceTaskTypes, "auto") &&
+		!contains(cap.OmniReferenceTaskTypes, "edit") && !contains(cap.OmniReferenceTaskTypes, "extend") {
+		// Only reference media supports this field. Within that scenario,
+		// constrain reference-only capabilities so Ark cannot infer edit/extend.
+		p.OmniReferenceTaskType = "reference"
+	}
 	if drafts == 0 && p.OmniReferenceTaskType == "edit" && (videos != 1 || p.Ratio != "adaptive" || p.Duration != -1) {
 		return bad("omni_reference_task_type", "edit mode requires one video, adaptive ratio and duration -1")
 	}
@@ -258,7 +264,7 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 		} else {
 			payload["duration"] = p.Duration
 		}
-		if p.OmniReferenceTaskType != "" {
+		if referenceScenario && p.OmniReferenceTaskType != "" {
 			payload["omni_reference_task_type"] = p.OmniReferenceTaskType
 		}
 	}

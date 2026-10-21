@@ -32,6 +32,7 @@ async function component(relative) {
         if (args.path === '@/lib/api') return { contents: 'export class ApiError extends Error { constructor(status,message) { super(message); this.status = status; } } export const adminApi = (...args) => globalThis.__editorHarness.api(...args); export const api = (...args) => { globalThis.__editorHarness.ApiError = ApiError; return adminApi(...args); }; export const errorMessage = (e,fallback) => e instanceof ApiError ? e.message : fallback; export const uuid = () => "fixture-key-" + ++globalThis.__editorHarness.id;' }
         if (args.path === './types') return { contents: await readFile(new URL('./types.ts', import.meta.url), 'utf8'), loader: 'ts' }
         if (args.path === './catalogPresentation') return { contents: await readFile(new URL('./catalogPresentation.ts', import.meta.url), 'utf8'), loader: 'ts' }
+        if (args.path === './videoPriceDecimal') return { contents: await readFile(new URL('./videoPriceDecimal.ts', import.meta.url), 'utf8'), loader: 'ts' }
         if (args.path.endsWith('.vue')) return { contents: 'export default {};' }
         throw new Error(`Unexpected dependency ${args.path}`)
       })
@@ -45,6 +46,7 @@ const Official = await component('../OfficialVideoPriceCatalog.vue')
 const Summary = await component('./AdminPriceSummary.vue')
 const VariantEvidence = await component('./OfficialPriceEvidence.vue')
 const VariantPlan = await component('./VariantPricePlan.vue')
+const OfficialDefaults = await component('./OfficialVideoPricingDefaults.vue')
 const presentationBuild = await build({ entryPoints: [fileURLToPath(new URL('./catalogPresentation.ts', import.meta.url))], bundle: true, format: 'esm', write: false })
 const presentation = await import(`data:text/javascript;base64,${Buffer.from(presentationBuild.outputFiles[0].text).toString('base64')}`)
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
@@ -282,7 +284,7 @@ function variantRow(variant = 'fast') {
   }}
 }
 
-test('unconfigured Fast and Mini retain reference-only details even when canonical identity is recognized', async t => {
+test('unconfigured Fast and Mini open official defaults while keeping their reference-only status', async t => {
   const data = {...catalog(), models: [variantRow('fast'),variantRow('mini')]}
   const h = await harness(t, Panel, {}, () => data)
   for (const item of h.vm.catalog.value.models) {
@@ -291,8 +293,10 @@ test('unconfigured Fast and Mini retain reference-only details even when canonic
     assert.deepEqual(presentation.displayRates(item), [])
     assert.equal(presentation.videoPriceRange(item), null)
     h.vm.openModel(item, 'pricing')
-    assert.equal(h.vm.drawerTab.value, 'overview')
-    assert.deepEqual([...h.vm.drawerTabs.value], ['overview'])
+    assert.equal(h.vm.drawerTab.value, 'pricing')
+    assert.deepEqual([...h.vm.drawerTabs.value], ['pricing', 'overview'])
+    assert.equal(h.vm.selectedDefaultsModel.value, item.model)
+    assert.equal(h.vm.selectedVariantPlanAvailable.value, false)
     assert.equal(h.vm.selectedOfficialEvidence.value.model, item.model)
     assert.equal(h.vm.selectedOfficialEvidence.value.prices.length, 4)
     assert.equal(h.vm.selectedOfficialEvidence.value.unit, 'CNY/1M_tokens')
@@ -300,7 +304,7 @@ test('unconfigured Fast and Mini retain reference-only details even when canonic
   }
   h.route.query = {tab: 'prices', pricing_model: '1:seedance-2.0-fast'}
   await vue.nextTick()
-  assert.equal(h.vm.drawerTab.value, 'overview')
+  assert.equal(h.vm.drawerTab.value, 'pricing')
   assert.equal(h.vm.selectedOfficialEvidence.value.model, 'seedance-2.0-fast')
   assert.equal(h.vm.summary.value.published, 0)
   assert.ok(h.calls.every(call => call.method === 'GET'))
@@ -321,6 +325,318 @@ test('official cost summaries preserve exact CNY evidence and never invent USD p
   assert.equal(h.calls.length, 0)
 })
 
+test('standard unconfigured and mismatched channels show official defaults; unknown upstream variants do not', async t => {
+  const data = {...catalog(), models: [
+    {...variantRow(), key: '1:standard', video_model: 'seedance-2.0', official_price_evidence: undefined},
+    {...variantRow(), key: '1:2.5', video_model: 'seedance-2.5', official_price_evidence: undefined},
+    {...variantRow(), key: '1:mismatch', unsupported_reason: 'official_video_channel_mismatch', video_configuration: {channel_id: 99, provider_scope_id: 7, config_version: 'foreign', pricing_version: 'foreign', enabled: true}},
+  ]}
+  const h = await harness(t, Panel, {}, () => data)
+  for (const item of data.models) {
+    h.vm.openModel(item)
+    assert.equal(h.vm.selectedDefaultsModel.value, item.video_model)
+    assert.equal(h.vm.selectedVideoConfigured.value, false)
+    assert.equal(h.vm.selectedVariantPlanAvailable.value, false)
+    assert.equal(h.vm.drawerTab.value, 'pricing')
+  }
+  assert.equal(h.vm.officialModel({...row(), provider: 'modelark', upstream_model: 'doubao-seedance-2-0-260128'}), 'seedance-2.0')
+  assert.equal(h.vm.officialModel({...row(), provider: 'volcengine', upstream_model: 'doubao-seedance-2-5-260628'}), 'seedance-2.5')
+  assert.equal(h.vm.officialModel({...row(), provider: 'modelark', upstream_model: 'doubao-seedance-2-0-fast-unknown'}), '')
+  assert.equal(h.vm.officialModel({...row(), upstream_model: 'doubao-seedance-2-0-260128'}), '')
+  assert.ok(h.calls.every(call => call.method === 'GET'))
+})
+
+test('variant plan entry requires an enabled standard configuration on the same channel', async t => {
+  const fast = variantRow()
+  const standard = {...configuredVariant(), key: '1:standard', video_model: 'seedance-2.0', official_price_evidence: undefined}
+  const h = await harness(t, Panel, {}, () => ({...catalog(), models: [fast, standard]}))
+  h.vm.openModel(fast)
+  assert.equal(h.vm.selectedVariantPlanAvailable.value, true)
+  const bound = h.vm.catalog.value.models[1]
+  bound.channel_id = 2
+  assert.equal(h.vm.selectedVariantPlanAvailable.value, false)
+  bound.channel_id = 1; bound.video_configuration.enabled = false
+  assert.equal(h.vm.selectedVariantPlanAvailable.value, false)
+  bound.video_configuration.enabled = true; bound.unsupported_reason = 'official_video_channel_mismatch'
+  assert.equal(h.vm.selectedVariantPlanAvailable.value, false)
+  assert.ok(h.calls.every(call => call.method === 'GET'))
+})
+
+function defaultCandidates(model = 'seedance-2.0', channelId = 1) {
+  return {model, channel_id: channelId, catalog_version: 'captured-v1', config: null, prices: [false, true].map(input_video => ({
+    mode: 'generate', resolution: '720p', input_video, service_tier: 'default', draft: false,
+    key: `generate/720p/${input_video}/default/false`, unit: 'CNY/1M_tokens', precision: 'exact',
+    supplier_cny_per_1m: input_video ? '22.123456789012' : '46', retail_usd_per_1m: '99', risk_multiplier: '4', enabled: true, configured: true,
+  }))}
+}
+
+for (const model of ['seedance-2.0', 'seedance-2.5', 'seedance-2.0-fast', 'seedance-2.0-mini']) {
+  test(`${model} defaults request the selected channel and display only captured CNY plus multiplier one`, async t => {
+    const result = defaultCandidates(model, 3)
+    // Even stale joined commercial values cannot become this channel's defaults.
+    result.config = {channel_id: 99, provider_scope_id: 9, pricing_version: 'another-account'}
+    const h = await harness(t, OfficialDefaults, {model, channelId: 3, contextKey: 'A'}, () => result)
+    assert.equal(h.vm.error.value, '')
+    assert.equal(h.vm.loading.value, false)
+    assert.equal(h.vm.catalogVersion.value, 'captured-v1')
+    assert.deepEqual(h.calls.map(call => [call.method, call.path]), [['GET', `/api/admin/video/models/${model}/pricing/reference-candidates?channel_id=3`]])
+    assert.deepEqual(JSON.parse(JSON.stringify(h.vm.prices.value)), [
+      {key: 'generate/720p/false/default/false', resolution: '720p', input_video: false, supplier_cny_per_1m: '46', risk_multiplier: '1'},
+      {key: 'generate/720p/true/default/false', resolution: '720p', input_video: true, supplier_cny_per_1m: '22.123456789012', risk_multiplier: '1'},
+    ])
+    assert.equal(h.events.length, 0, 'loading defaults must not report a saved or published result')
+  })
+}
+
+test('official defaults filter nonstandard references and reject malformed or ambiguous amounts', async t => {
+  const h = await harness(t, OfficialDefaults, {model: 'seedance-2.0', channelId: 1, contextKey: 'A'}, () => defaultCandidates())
+  const source = defaultCandidates()
+  for (const fields of [{mode: 'extend'}, {draft: true}, {service_tier: 'flex'}, {unit: 'USD/1M_tokens'}, {precision: 'rounded'}, {resolution: 'unknown'}]) source.prices.push({...source.prices[0], ...fields})
+  h.respond = () => source
+  await h.vm.load()
+  assert.equal(h.vm.prices.value.length, 2)
+  for (const change of [
+    value => { value.model = 'seedance-2.5' },
+    value => { value.channel_id = 2 },
+    value => { value.prices.push({...value.prices[0]}) },
+    value => { value.prices[0].supplier_cny_per_1m = '1e2' },
+  ]) {
+    const invalid = defaultCandidates(); change(invalid)
+    h.respond = () => invalid
+    await h.vm.load()
+    assert.equal(h.vm.error.value, 'pricingAdmin.officialDefaultsFailed')
+    assert.deepEqual(h.vm.prices.value, [])
+    assert.equal(h.vm.catalogVersion.value, '')
+  }
+  h.respond = () => ({...defaultCandidates(), prices: []})
+  await h.vm.load()
+  assert.equal(h.vm.error.value, '')
+  assert.deepEqual(h.vm.prices.value, [])
+  assert.ok(h.calls.every(call => call.method === 'GET'))
+})
+
+test('late official defaults cannot replace the currently selected model or channel', async t => {
+  const h = await harness(t, OfficialDefaults, {model: 'seedance-2.0-fast', channelId: 1, contextKey: 'A'}, () => defaultCandidates('seedance-2.0-fast'))
+  const late = deferred()
+  h.respond = call => call.path.includes('seedance-2.0-mini') ? defaultCandidates('seedance-2.0-mini', 2) : late.promise
+  const pending = h.vm.load()
+  assert.equal(h.vm.loading.value, true)
+  assert.deepEqual(h.vm.prices.value, [])
+  h.props.channelId = 2
+  h.props.model = 'seedance-2.0-mini'
+  await until(() => !h.vm.loading.value)
+  late.resolve(defaultCandidates('seedance-2.0-fast')); await pending
+  assert.equal(h.vm.catalogVersion.value, 'captured-v1')
+  assert.equal(h.vm.error.value, '')
+  assert.equal(h.calls.at(-1).path, '/api/admin/video/models/seedance-2.0-mini/pricing/reference-candidates?channel_id=2')
+  assert.equal(h.vm.prices.value.length, 2)
+  assert.ok(h.calls.every(call => call.method === 'GET'))
+})
+
+test('official defaults clear on access loss and deactivation and ignore late failures', async t => {
+  const h = await harness(t, OfficialDefaults, {model: 'seedance-2.0', channelId: 1, contextKey: 'A'}, () => defaultCandidates())
+  const late = deferred()
+  h.respond = () => late.promise
+  const pending = h.vm.load()
+  h.auth.isSuperadmin = false
+  late.reject(new Error('old context failed')); await pending
+  assert.equal(h.vm.allowed.value, false)
+  assert.equal(h.vm.loading.value, false)
+  assert.equal(h.vm.error.value, '')
+  assert.deepEqual(h.vm.prices.value, [])
+  const before = h.calls.length
+  await h.vm.load()
+  assert.equal(h.calls.length, before)
+  h.respond = () => defaultCandidates()
+  h.auth.isSuperadmin = true
+  await until(() => !h.vm.loading.value)
+  assert.equal(h.vm.prices.value.length, 2)
+  h.deactivated.forEach(fn => fn())
+  assert.deepEqual(h.vm.prices.value, [])
+  await h.vm.load()
+  assert.equal(h.calls.length, before + 1)
+  assert.ok(h.calls.every(call => call.method === 'GET'))
+})
+
+function rebindPreview(model = 'seedance-2.0', channelId = 1, context = 'a'.repeat(64)) {
+  const cells = defaultCandidates(model, channelId).prices.map(cell => ({...cell, retail_usd_per_1m: cell.input_video ? '3.5' : '7', risk_multiplier: '1', minimum_rule_version: cell.input_video ? 'minimum-existing' : '', available: true}))
+  return {model, current_channel_id: 2, target_channel_id: channelId, target_channel_name: 'new-channel', provider_scope_id: 4,
+    config_version: 'old-config', pricing_version: 'old-prices', capability_version: 'kept-capability', fx_usd_per_cny: '0.14', fx_version: 'kept-fx',
+    context_sha256: context, catalog_version: 'captured-v1', has_active_credential: true, publishable: true, live_tested: false,
+    cells, diff: cells.map(cell => ({key: cell.key, change: 'changed', before: {...cell, risk_multiplier: '4'}, after: cell})), sources: []}
+}
+function rebindResult(model = 'seedance-2.0', channelId = 1) {
+  return {model, channel_id: channelId, publication: {id: 42, model, version: 'new-prices', config_version: 'new-config'}}
+}
+async function rebindHarness(t) {
+  return harness(t, OfficialDefaults, {model: 'seedance-2.0', channelId: 1, contextKey: 'A'}, call => call.path.includes('/reference-candidates') ? defaultCandidates() : call.method === 'GET' ? rebindPreview() : rebindResult())
+}
+
+test('inherited publication requires a server preview then posts only its target and context with an idempotency key', async t => {
+  const h = await rebindHarness(t)
+  await h.vm.publish()
+  assert.equal(h.calls.length, 1, 'loading official defaults cannot publish')
+  await h.vm.previewPublication()
+  assert.equal(h.calls.at(-1).method, 'GET')
+  assert.equal(h.calls.at(-1).path, '/api/admin/video/models/seedance-2.0/pricing/rebind-preview?channel_id=1')
+  assert.equal(h.vm.preview.value.current_channel_id, 2)
+  assert.deepEqual([...h.vm.minimumVersions.value], ['minimum-existing'])
+  assert.equal(h.vm.preview.value.diff[0].before.risk_multiplier, '4')
+  assert.equal(h.vm.preview.value.diff[0].after.risk_multiplier, '1')
+  assert.equal(h.vm.canPublish.value, true)
+  assert.equal(h.calls.filter(call => call.method === 'POST').length, 0)
+  await h.vm.publish()
+  const publication = h.calls.at(-1)
+  assert.equal(publication.path, '/api/admin/video/models/seedance-2.0/pricing/rebind-publications')
+  assert.deepEqual(publication.body, {channel_id: 1, expected_context_sha256: 'a'.repeat(64)})
+  assert.ok(publication.options.headers['Idempotency-Key'])
+  assert.equal(h.vm.canPublish.value, false)
+  assert.deepEqual(h.events.filter(event => event[0] === 'published'), [['published', 'seedance-2.0', 1, 'A']])
+  assert.equal(h.vm.notice.value, 'pricingAdmin.rebindPublished')
+  assert.equal(h.events.at(-1)[1], false)
+})
+
+test('channel-only repair accepts empty or entirely unchanged price diffs and still publishes', async t => {
+  const h = await rebindHarness(t)
+  for (const unchangedRows of [false, true]) {
+    const preview = rebindPreview()
+    preview.diff = unchangedRows ? preview.diff.map(diff => ({...diff, change: 'unchanged', before: {...diff.after}})) : []
+    h.respond = call => call.method === 'GET' ? preview : rebindResult()
+    await h.vm.previewPublication()
+    assert.equal(h.vm.publicationError.value, '')
+    assert.equal(h.vm.priceChanges.value.length, 0)
+    assert.equal(h.vm.canPublish.value, true)
+    await h.vm.publish()
+    assert.equal(h.vm.notice.value, 'pricingAdmin.rebindPublished')
+  }
+  assert.equal(h.calls.filter(call => call.method === 'POST').length, 2)
+  assert.equal(h.events.filter(event => event[0] === 'published').length, 2)
+})
+
+test('unconfirmed inherited publication retries the identical request and prevents a second concurrent operation', async t => {
+  const h = await rebindHarness(t), response = deferred()
+  await h.vm.previewPublication()
+  h.respond = () => response.promise
+  const pending = h.vm.publish()
+  const first = h.calls.at(-1)
+  await h.vm.publish(); await h.vm.previewPublication(); await h.vm.load()
+  assert.equal(h.calls.at(-1), first)
+  response.reject(new Error('response lost')); await pending
+  assert.equal(h.vm.retryPending.value, true)
+  assert.equal(h.vm.canPreview.value, false)
+  assert.equal(h.vm.canPublish.value, true)
+  await h.vm.previewPublication(); await h.vm.load()
+  assert.equal(h.calls.at(-1), first)
+  h.respond = () => rebindResult()
+  await h.vm.publish()
+  const retry = h.calls.at(-1)
+  assert.deepEqual(retry.body, first.body)
+  assert.deepEqual(retry.options, first.options)
+  assert.equal(h.vm.retryPending.value, false)
+  assert.equal(h.events.filter(event => event[0] === 'published').length, 1)
+})
+
+test('a rebind conflict requires a fresh preview and new operation key', async t => {
+  const h = await rebindHarness(t)
+  await h.vm.previewPublication()
+  const previousKey = h.vm.idempotencyKey.value
+  h.respond = () => { throw new h.ApiError(409, 'stale context') }
+  await h.vm.publish()
+  assert.equal(h.vm.publicationError.value, 'pricingAdmin.rebindConflict')
+  assert.equal(h.vm.requiresReload.value, true)
+  assert.equal(h.vm.canPublish.value, false)
+  const count = h.calls.length
+  await h.vm.publish()
+  assert.equal(h.calls.length, count)
+  h.respond = () => rebindPreview('seedance-2.0', 1, 'b'.repeat(64))
+  await h.vm.previewPublication()
+  assert.equal(h.vm.canPublish.value, true)
+  assert.notEqual(h.vm.idempotencyKey.value, previousKey)
+  assert.equal(h.vm.requestSnapshot.value.expected_context_sha256, 'b'.repeat(64))
+})
+
+test('inherited publication refuses mismatched previews and treats mismatched success as unconfirmed', async t => {
+  const h = await rebindHarness(t)
+  for (const fields of [{model: 'seedance-2.5'}, {target_channel_id: 9}, {context_sha256: 'invalid'}, {publishable: false}, {has_active_credential: false}, {cells: []}]) {
+    h.respond = () => ({...rebindPreview(), ...fields})
+    await h.vm.previewPublication()
+    assert.equal(h.vm.preview.value, null)
+    assert.equal(h.vm.canPublish.value, false)
+    assert.equal(h.vm.publicationError.value, 'pricingAdmin.rebindPreviewFailed')
+  }
+  h.respond = () => rebindPreview()
+  await h.vm.previewPublication()
+  h.respond = () => rebindResult('seedance-2.5')
+  await h.vm.publish()
+  assert.equal(h.vm.retryPending.value, true)
+  assert.equal(h.events.filter(event => event[0] === 'published').length, 0)
+})
+
+test('late rebind previews cannot populate a different channel or organization', async t => {
+  const h = await rebindHarness(t), late = deferred()
+  h.respond = call => call.path.includes('/rebind-preview') ? late.promise : defaultCandidates('seedance-2.0', h.props.channelId)
+  const pending = h.vm.previewPublication()
+  h.props.channelId = 3
+  await until(() => !h.vm.loading.value)
+  h.auth.orgId = 2
+  await until(() => !h.vm.loading.value)
+  late.resolve(rebindPreview()); await pending
+  assert.equal(h.vm.preview.value, null)
+  assert.equal(h.vm.requestSnapshot.value, null)
+  assert.equal(h.vm.canPublish.value, false)
+  assert.equal(h.vm.busy.value, false)
+  assert.equal(h.events.filter(event => event[0] === 'published').length, 0)
+})
+
+test('late rebind publication cannot report success or unlock another channel operation', async t => {
+  const h = await rebindHarness(t), oldResponse = deferred(), currentResponse = deferred()
+  await h.vm.previewPublication()
+  h.respond = call => call.method === 'POST' ? oldResponse.promise : defaultCandidates('seedance-2.0', 3)
+  const old = h.vm.publish()
+  h.props.channelId = 3; h.props.contextKey = 'B'
+  await until(() => !h.vm.loading.value)
+  h.respond = call => call.method === 'GET' ? rebindPreview('seedance-2.0', 3) : currentResponse.promise
+  await h.vm.previewPublication()
+  const current = h.vm.publish()
+  oldResponse.resolve(rebindResult()); await old
+  assert.equal(h.vm.busy.value, true)
+  assert.equal(h.events.filter(event => event[0] === 'published').length, 0)
+  currentResponse.resolve(rebindResult('seedance-2.0', 3)); await current
+  assert.deepEqual(h.events.filter(event => event[0] === 'published'), [['published', 'seedance-2.0', 3, 'B']])
+})
+
+test('deactivation invalidates a pending publication without a success event', async t => {
+  const h = await rebindHarness(t), late = deferred()
+  await h.vm.previewPublication()
+  h.respond = () => late.promise
+  const pending = h.vm.publish()
+  h.deactivated.forEach(fn => fn())
+  late.resolve(rebindResult()); await pending
+  assert.equal(h.vm.busy.value, false)
+  assert.equal(h.vm.preview.value, null)
+  assert.equal(h.vm.requestSnapshot.value, null)
+  assert.equal(h.events.filter(event => event[0] === 'published').length, 0)
+})
+
+test('confirmed inherited publication refreshes its catalog row into the normal configured editor', async t => {
+  const missing = {...variantRow(), unsupported_reason: 'official_video_channel_mismatch'}
+  const h = await harness(t, Panel, {}, () => ({...catalog(), models: [missing]}))
+  h.vm.openModel(missing)
+  const context = h.vm.contextKey.value
+  const published = {...configuredVariant(), pricing: {...configuredVariant().pricing, status: 'published'}}
+  h.respond = () => ({...catalog(), models: [published]})
+  await h.vm.defaultsPublished('seedance-2.0-fast', 99, context)
+  await h.vm.defaultsPublished('seedance-2.0-mini', 1, context)
+  await h.vm.defaultsPublished('seedance-2.0-fast', 1, 'old-context')
+  assert.equal(h.calls.length, 1)
+  await h.vm.defaultsPublished('seedance-2.0-fast', 1, context)
+  assert.equal(h.calls.length, 2)
+  assert.equal(h.vm.selectedVideoConfigured.value, true)
+  assert.equal(h.vm.selectedDefaultsModel.value, '')
+  assert.equal(h.vm.statusLabel(h.vm.selected.value), 'pricingAdmin.published')
+  assert.equal(h.vm.summary.value.published, 1)
+})
+
 function configuredVariant(variant = 'fast') {
   const item = variantRow(variant)
   return {...item, unsupported_reason: '', video_configuration: {channel_id: item.channel_id, provider_scope_id: 4, config_version: `${variant}-cfg`, pricing_version: `${variant}-prices`, enabled: true}, pricing: {...item.pricing, status: 'partial', combinations: [{key: 'generate/720p/false/default/false', mode: 'generate', resolution: '720p', input_video: false, service_tier: 'default', draft: false, amount: '5.238900001234'}]}}
@@ -333,6 +649,7 @@ test('configured Fast and Mini use their bound normal price editor and preserve 
     h.vm.openModel(item, 'pricing')
     assert.equal(h.vm.selectedEvidenceOnly.value, false)
     assert.equal(h.vm.selectedVideoConfigured.value, true)
+    assert.equal(h.vm.selectedDefaultsModel.value, '')
     assert.equal(h.vm.drawerTab.value, 'pricing')
     assert.deepEqual([...h.vm.drawerTabs.value], ['pricing','overview'])
     assert.equal(h.vm.selectedOfficialEvidence.value.model, item.video_model)
@@ -371,6 +688,18 @@ function variantPlan(row = variantRow(), saved = false, context = 'b'.repeat(64)
   }
   return {channel_id: row.channel_id, model: row.model, upstream_model: row.upstream_model, canonical_model: row.official_price_evidence.model, context_sha256: context, adapter_status: 'supported_configuration_required', invocable: false, proposal, saved: saved ? {id: 8, version: 'plan-v1', created_at: '2026-10-19T02:00:00Z', created_by: 1, proposal: structuredClone(proposal)} : null, saved_matches_proposal: saved}
 }
+
+test('new variant plans accept the default multiplier while preserving historical policies', async t => {
+  const row = variantRow(), preview = variantPlan(row)
+  preview.proposal.risk_source = 'default'
+  preview.proposal.prices.forEach(price => { price.risk_multiplier = '1' })
+  const h = await harness(t, VariantPlan, {row, contextKey: 'A'}, () => preview)
+  assert.equal(h.vm.canSave.value, true)
+  assert.ok(h.vm.data.value.proposal.prices.every(price => price.risk_multiplier === '1'))
+  assert.equal(h.vm.validProposal(variantPlan(row, true).saved.proposal), true)
+  assert.equal(h.vm.validProposal({...preview.proposal, risk_source: 'unknown'}), false)
+  assert.equal(h.calls.filter(call => call.method !== 'GET').length, 0)
+})
 
 test('variant plan GET is the exact server proposal and saving sends only the reviewed context with idempotency', async t => {
   const row = {...variantRow(), key: '1:public/video fast', model: 'public/video fast'}, preview = variantPlan(row), saved = variantPlan(row, true)

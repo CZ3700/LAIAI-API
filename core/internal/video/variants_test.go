@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/ark"
+	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/relay"
@@ -247,6 +249,15 @@ func TestMySQLVariantModelsShareSupplierBudget(t *testing.T) {
 
 func TestMySQLDispatchBudgetBlockStopsAcceptedButNeverReinterpretsSent(t *testing.T) {
 	f, scope, _ := variantVideoFixture(t)
+	must(t, f.s.DB.Model(&videobilling.PricingRule{}).Where("provider_scope_id = ?", scope.ID).Update("risk_multiplier", 1).Error)
+	fastQuote, err := f.s.Estimate(f.key.OrgID, variantInput(ark.Model20Fast, "480p", ""))
+	must(t, err)
+	miniQuote, err := f.s.Estimate(f.key.OrgID, variantInput(ark.Model20Mini, "480p", ""))
+	must(t, err)
+	// Both tasks fit exactly. One extra billed token then exceeds the shared
+	// total including the second task's still-owned reservation.
+	limit := fastQuote.SupplierReservedCNY.Add(miniQuote.SupplierReservedCNY)
+	must(t, f.s.DB.Model(&videobilling.QuotaPolicy{}).Where("scope = ? AND owner_id = ?", videobilling.ScopeProvider, scope.ID).Update("limit_amount", limit).Error)
 	fast, _, err := f.s.Create(context.Background(), f.key, f.requestID("overrun"), "overrun-variant-first", variantInput(ark.Model20Fast, "480p", ""))
 	must(t, err)
 	mini, _, err := f.s.Create(context.Background(), f.key, f.requestID("queued"), "overrun-variant-second", variantInput(ark.Model20Mini, "480p", ""))
@@ -262,7 +273,11 @@ func TestMySQLDispatchBudgetBlockStopsAcceptedButNeverReinterpretsSent(t *testin
 	var bucket videobilling.QuotaBucket
 	must(t, f.s.DB.Table("video_quota_buckets b").Select("b.*").Joins("JOIN video_quota_policies p ON p.id=b.policy_id").Where("p.scope = ? AND p.owner_id = ?", videobilling.ScopeProvider, scope.ID).First(&bucket).Error)
 	if !bucket.Blocked {
-		t.Fatal("actual provider overrun did not block shared scope")
+		t.Fatal("actual plus outstanding reservation exceeded the budget without blocking")
+	}
+	_, _, err = f.s.Create(context.Background(), f.key, f.requestID("blocked-admission"), "overrun-variant-denied", variantInput(ark.Model20Mini, "480p", ""))
+	if !errors.Is(err, videobilling.ErrQuotaExceeded) {
+		t.Fatal("exhausted supplier budget admitted a new task", err)
 	}
 	f.dispatch(t, mini.ID)
 	f.dispatch(t, mini.ID)
@@ -281,6 +296,94 @@ func TestMySQLDispatchBudgetBlockStopsAcceptedButNeverReinterpretsSent(t *testin
 	f.dispatch(t, fast.ID)
 	if f.posts.Load() != 1 || f.hold(t, fast.ID).Status != ledger.HoldCaptured {
 		t.Fatal("sent task was retried or refunded")
+	}
+}
+
+func TestMySQLRiskOneVarianceKeepsSharedBudgetAvailable(t *testing.T) {
+	f, scope, _ := variantVideoFixture(t)
+	must(t, f.s.DB.Model(&videobilling.PricingRule{}).Where("provider_scope_id = ?", scope.ID).Update("risk_multiplier", 1).Error)
+	fast, _, err := f.s.Create(context.Background(), f.key, f.requestID("variance"), "variance-first", variantInput(ark.Model20Fast, "480p", ""))
+	must(t, err)
+	mini, _, err := f.s.Create(context.Background(), f.key, f.requestID("variance-waiting"), "variance-waiting", variantInput(ark.Model20Mini, "480p", ""))
+	must(t, err)
+	f.dispatch(t, fast.ID)
+	upstream := f.upstream(t, fast.ID)
+	var snap videobilling.Snapshot
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, fast.ID).First(&snap).Error)
+	actual := snap.EstimatedTokens + 1
+	f.response = func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPost {
+			return reply(200, fmt.Sprintf(`{"id":%q}`, "up_"+mini.ID)), nil
+		}
+		return reply(200, fmt.Sprintf(`{"id":%q,"status":"succeeded","usage":{"completion_tokens":%d}}`, upstream, actual)), nil
+	}
+	must(t, f.s.pollTask(context.Background(), f.key.OrgID, fast.ID))
+	var bucket videobilling.QuotaBucket
+	must(t, f.s.DB.Table("video_quota_buckets b").Select("b.*").Joins("JOIN video_quota_policies p ON p.id=b.policy_id").Where("p.scope = ? AND p.owner_id = ?", videobilling.ScopeProvider, scope.ID).First(&bucket).Error)
+	var entry videobilling.BillingEntry
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, fast.ID).First(&entry).Error)
+	if bucket.Blocked || !entry.AbsorbedUSD.IsPositive() || !entry.CapturedUSD.Equal(snap.HoldUSD) || !bucket.ConsumedAmount.Equal(entry.SupplierCNY) {
+		t.Fatal("variance blocked available budget or lost capped billing", bucket, entry)
+	}
+	f.now = f.now.Add(2 * time.Second)
+	f.dispatch(t, mini.ID)
+	view, err := f.s.Get(f.key.OrgID, mini.ID)
+	must(t, err)
+	if f.posts.Load() != 2 || view.Status != "queued" || f.hold(t, mini.ID).Status != ledger.HoldActive {
+		t.Fatal("small variance stopped previously accepted work")
+	}
+	_, _, err = f.s.Create(context.Background(), f.key, f.requestID("variance-new"), "variance-new", variantInput(ark.Model20Mini, "480p", ""))
+	must(t, err)
+}
+
+func TestMySQLConcurrentRiskOneSettlementPreservesSharedActuals(t *testing.T) {
+	f, scope, _ := variantVideoFixture(t)
+	must(t, f.s.DB.Model(&videobilling.PricingRule{}).Where("provider_scope_id = ?", scope.ID).Update("risk_multiplier", 1).Error)
+	const taskCount = 4
+	tasks := make([]TaskView, taskCount)
+	var snap videobilling.Snapshot
+	for i := range tasks {
+		var key *identity.APIKey
+		must(t, f.s.DB.Transaction(func(tx *gorm.DB) error {
+			var err error
+			_, key, err = identity.IssueKey(tx, identity.IssueKeyInput{OrgID: f.key.OrgID, Name: fmt.Sprintf("settlement-%d", i), Scopes: "video:*"})
+			return err
+		}))
+		var err error
+		tasks[i], _, err = f.s.Create(context.Background(), key, f.requestID(fmt.Sprintf("concurrent-settlement-%d", i)), fmt.Sprintf("settlement-%d", i), variantInput(ark.Model20Mini, "480p", ""))
+		must(t, err)
+	}
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, tasks[0].ID).First(&snap).Error)
+	actual := snap.EstimatedTokens + 1
+	var wg sync.WaitGroup
+	errs := make(chan error, taskCount*2)
+	for i := 0; i < taskCount*2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := tasks[i%taskCount].ID
+			errs <- retryMySQLDeadlockedTransaction(f.s.DB, func(tx *gorm.DB) error {
+				_, err := videobilling.SettleUsageTx(tx, videobilling.SettlementInput{OrgID: f.key.OrgID, TaskID: id, Now: f.now, Evidence: videobilling.UsageEvidence{EvidenceID: "ev_" + id, Source: "task_get", SourceRecordID: id, SourceVersion: "concurrent-v1", CompletionTokens: &actual, ObservedAt: f.now}})
+				return err
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		must(t, err)
+	}
+	var bucket videobilling.QuotaBucket
+	must(t, f.s.DB.Table("video_quota_buckets b").Select("b.*").Joins("JOIN video_quota_policies p ON p.id=b.policy_id").Where("p.scope = ? AND p.owner_id = ?", videobilling.ScopeProvider, scope.ID).First(&bucket).Error)
+	want := snap.SupplierCNYPer1M.Mul(decimal.NewFromInt(actual)).Shift(-6).Round(8).Mul(decimal.NewFromInt(taskCount))
+	var entries, evidence int64
+	must(t, f.s.DB.Model(&videobilling.BillingEntry{}).Where("org_id = ?", f.key.OrgID).Count(&entries).Error)
+	must(t, f.s.DB.Model(&videobilling.UsageEvidence{}).Where("org_id = ?", f.key.OrgID).Count(&evidence).Error)
+	if bucket.Blocked || !bucket.ReservedAmount.IsZero() || !bucket.ConsumedAmount.Equal(want) || entries != taskCount || evidence != taskCount || f.posts.Load() != 0 {
+		t.Fatal("parallel keys lost or duplicated shared supplier actuals", bucket, entries, evidence)
+	}
+	if drift, err := ledger.CheckDrift(f.s.DB); err != nil || len(drift) != 0 {
+		t.Fatal("concurrent settlement introduced ledger drift", drift, err)
 	}
 }
 

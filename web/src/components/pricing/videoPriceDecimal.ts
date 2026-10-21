@@ -17,6 +17,11 @@ function formatted(amount: bigint): string {
   return `${amount / scale}${fraction ? `.${fraction}` : ''}`
 }
 export function exactRate(value: string): string { return formatted(scaled(value.trim())) }
+export function convertOfficialRate(cny: string, usdPerCny: string): string {
+  const cost = scaled(cny.trim()), fx = scaled(usdPerCny.trim())
+  if (cost <= 0n || fx <= 0n) throw new Error('invalid_decimal')
+  return formatted((cost * fx + scale / 2n) / scale)
+}
 export function adjustRate(value: string, percentage: string): string {
   const rate = scaled(value.trim()), multiplier = 100n * scale + scaled(percentage.trim(), true)
   if (rate <= 0n || multiplier <= 0n) throw new Error('invalid_decimal')

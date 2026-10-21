@@ -124,12 +124,47 @@ func TestPricingMatrixEnumeratesWithoutEnabling(t *testing.T) {
 			if c.Mode == "generate" && !c.Draft {
 				n++
 			}
-			if c.Enabled || c.Available || c.RetailUSDPer1M != "" {
+			if c.Enabled || c.Available || c.RetailUSDPer1M != "" || c.RiskMultiplier != "1" {
 				t.Fatal("invented capability or commercial price")
 			}
 		}
 		if n != tc.base {
 			t.Fatal(tc.model, n)
 		}
+	}
+}
+
+func TestPricingConsoleDefaultsOnlyMissingRiskAndKeepsEmptyCells(t *testing.T) {
+	for _, value := range []string{"", "2.5"} {
+		t.Run("risk_"+value, func(t *testing.T) {
+			r, db, in := pricingFixture(t)
+			in.Cells[0].RiskMultiplier = value
+			in.Cells = append(in.Cells, pricingCell{Mode: "generate", Resolution: "720p", ServiceTier: "default", RiskMultiplier: "1"})
+			base := "/api/admin/video/models/seedance-2.0/pricing"
+			pricingCall(t, r, base+"/validate", in, "", "1", 200)
+			pricingCall(t, r, base+"/publications", in, "default-risk", "1", 200)
+			var rules []videobilling.PricingRule
+			if err := db.Find(&rules).Error; err != nil {
+				t.Fatal(err)
+			}
+			want := value
+			if want == "" {
+				want = "1"
+			}
+			if len(rules) != 1 || rules[0].RiskMultiplier.String() != want {
+				t.Fatalf("empty cell materialized or explicit factor changed: %#v", rules)
+			}
+			var receipt pricingPublication
+			if err := db.First(&receipt).Error; err != nil {
+				t.Fatal(err)
+			}
+			var snapshot pricingRequest
+			if err := json.Unmarshal([]byte(receipt.SnapshotJSON), &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.Cells[0].RiskMultiplier != want {
+				t.Fatal("snapshot omitted effective factor")
+			}
+		})
 	}
 }

@@ -179,6 +179,40 @@ func TestPricingPreparePublishRetainsHiddenDisabledRowsAndSnapshot(t *testing.T)
 	}
 }
 
+func TestPricingPrepareDefaultsNewRiskAndPreservesConfiguredFactor(t *testing.T) {
+	f, db, tokens, in := prepareFixture(t)
+	base := "/api/admin/video/models/seedance-2.0/pricing"
+	cells := in["cells"].([]pricingCell)
+	for i := range cells {
+		cells[i].RiskMultiplier = ""
+	}
+	in["cells"] = cells
+	var prepared struct {
+		Request pricingRequest `json:"request"`
+	}
+	if err := json.Unmarshal(templateCall(t, f, base+"/prepare", tokens[1], "", in, 200), &prepared); err != nil {
+		t.Fatal(err)
+	}
+	for _, cell := range prepared.Request.Cells {
+		want := "1"
+		if cell.Enabled {
+			want = "4"
+		}
+		if cell.RiskMultiplier != want {
+			t.Fatalf("wrong factor for %s: %s", priceCellKey(cell), cell.RiskMultiplier)
+		}
+	}
+	templateCall(t, f, base+"/publications", tokens[1], "defaults-preserve-existing", prepared.Request, 200)
+	var cfg video.ModelConfig
+	if err := db.First(&cfg).Error; err != nil {
+		t.Fatal(err)
+	}
+	rules, err := currentPricingRules(db, cfg)
+	if err != nil || len(rules) != 1 || rules[0].RiskMultiplier.String() != "4" {
+		t.Fatal("existing factor changed or blank defaults created price rules", rules, err)
+	}
+}
+
 func TestPublicVideoPricingOnlyCanonicalSellableAndNoInternalFields(t *testing.T) {
 	f, db, _ := pricingCatalogFixture(t)
 	f.srv.video = &video.Service{}

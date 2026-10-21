@@ -27,7 +27,7 @@ export interface OfficialPriceEvidence {
 export interface VariantPriceProposal {
   fx_usd_per_cny: string; fx_version: string; fx_observed_at: string
   source_config_version: string; source_pricing_version: string
-  risk_source: 'existing_standard_2_0_policy'; minimum_status: 'unverified'
+  risk_source: 'existing_standard_2_0_policy' | 'default'; minimum_status: 'unverified'
   prices: { resolution: '480p' | '720p'; input_video: boolean; retail_usd_per_1m: string; supplier_cny_per_1m: string; risk_multiplier: string }[]
   sources: { id: string; url: string; sha256: string }[]; evidence_sha256: string
 }

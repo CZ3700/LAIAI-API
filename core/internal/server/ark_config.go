@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/ark"
+	"github.com/laiai/laiai-next/core/internal/arkpricecatalog"
 	"github.com/laiai/laiai-next/core/internal/arkpricetemplate"
 	"github.com/laiai/laiai-next/core/internal/arkverification"
 	"github.com/laiai/laiai-next/core/internal/identity"
@@ -196,6 +197,8 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 	var template arkpricetemplate.Template
 	var templateProfile arkverification.Profile
 	var templateBodyHash string
+	inheritOfficialPricing := in.PricingTemplate == nil && len(in.Prices) == 0
+	var inheritedCatalog arkpricecatalog.Candidates
 	templateReplayed := false
 	templateKey := c.GetHeader("Idempotency-Key")
 	if in.PricingTemplate != nil {
@@ -213,7 +216,7 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			return
 		}
 	}
-	if len(in.EvidenceHash) != 64 || len(in.Prices) == 0 {
+	if len(in.EvidenceHash) != 64 || len(in.Prices) == 0 && !inheritOfficialPricing {
 		fail(c, 422, "verified evidence and prices required")
 		return
 	}
@@ -279,7 +282,7 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 		if prior == nil && oldConfig.Version == cfg.Version {
 			return video.ErrConflict
 		}
-		if prior == nil && in.PricingTemplate != nil {
+		if prior == nil && (in.PricingTemplate != nil || inheritOfficialPricing) {
 			// Existing prices must use the version-checked template preview and
 			// normal pricing publication flow, never the first-admission route.
 			return video.ErrConflict
@@ -334,12 +337,12 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			if parseErr != nil || old.ScopeKey != scope.ScopeKey || old.AccountRef != scope.AccountRef || old.Region != scope.Region || old.ProjectName != scope.ProjectName || !old.Enabled || (old.FXVersion == scope.FXVersion && !oldFX.Equal(fx)) {
 				return video.ErrConflict
 			}
-			if in.PricingTemplate != nil && (old.FXVersion != scope.FXVersion || !oldFX.Equal(fx) || !old.FXObservedAt.Equal(scope.FXObservedAt)) {
+			if (in.PricingTemplate != nil || inheritOfficialPricing) && (old.FXVersion != scope.FXVersion || !oldFX.Equal(fx) || !old.FXObservedAt.Equal(scope.FXObservedAt)) {
 				return video.ErrConflict
 			}
 			// FX revisions do not create a new financial scope or reset its quota
 			// buckets. Accepted tasks already own immutable FX snapshots.
-			if in.PricingTemplate == nil {
+			if in.PricingTemplate == nil && !inheritOfficialPricing {
 				if e := tx.Model(&old).Updates(map[string]any{"fx_usd_per_cny": fx.StringFixed(12), "fx_version": scope.FXVersion, "fx_observed_at": scope.FXObservedAt}).Error; e != nil {
 					return e
 				}
@@ -350,6 +353,13 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			scope = old
 		}
 		cfg.ProviderScopeID = scope.ID
+		if inheritOfficialPricing {
+			var err error
+			in.Prices, inheritedCatalog, err = initialOfficialPricing(tx, cfg, cap, scope, now)
+			if err != nil || len(in.Prices) == 0 {
+				return video.ErrInvalid
+			}
+		}
 		var existingPrice int64
 		if e := tx.Model(&videobilling.PricingRule{}).Where("model = ? AND version = ?", cfg.PublicModel, cfg.PricingVersion).Count(&existingPrice).Error; e != nil {
 			return e
@@ -406,8 +416,17 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 				return video.ErrInvalid
 			}
 			p.ProviderScopeID = scope.ID
-			p.SourceHash = in.EvidenceHash
-			p.Enabled = true
+			if !inheritOfficialPricing {
+				p.SourceHash = in.EvidenceHash
+				p.Enabled = true
+			} else if !p.Enabled {
+				// Inheriting prices does not enable unsupported combinations or
+				// manufacture missing minimum-token evidence.
+				if e := tx.Create(&p).Error; e != nil {
+					return e
+				}
+				continue
+			}
 			if p.EffectiveFrom.IsZero() || p.EffectiveFrom.After(now) || (p.EffectiveUntil != nil && !p.EffectiveUntil.After(now)) || !priceCellSupported(pricingCell{Mode: p.Mode, Resolution: p.Resolution, InputVideo: p.InputVideo, ServiceTier: p.ServiceTier, Draft: p.Draft}, cap) || (p.InputVideo && cfg.MaxInputVideoDurationMS <= 0) {
 				return video.ErrInvalid
 			}
@@ -442,6 +461,9 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			return e
 		}
 		detail := "version=" + cfg.Version + ";evidence_sha256=" + in.EvidenceHash
+		if inheritOfficialPricing {
+			detail += ";official_catalog=" + inheritedCatalog.CatalogVersion + ";catalog_sha256=" + inheritedCatalog.ManifestSHA256
+		}
 		if in.PricingTemplate != nil {
 			cells := make([]pricingCell, 0, len(in.Prices))
 			for _, p := range in.Prices {

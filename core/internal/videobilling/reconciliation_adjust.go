@@ -348,13 +348,14 @@ func adjustQuotas(tx *gorm.DB, s Snapshot, a AdjustmentApplication) (bool, error
 		}
 		exceeds := (b.LimitAmount != nil && amount.Add(b.ReservedAmount).GreaterThan(*b.LimitAmount)) || (b.LimitUnits != nil && used+b.ReservedUnits > *b.LimitUnits)
 		// Monetary customer limits remain hard after initial settlement. True
-		// supplier/token corrections remain factual and block new admissions.
+		// supplier/token corrections remain factual; only a total budget overrun
+		// blocks new admissions.
 		if !r.Supplier && r.Metric == MetricUSD && delta.IsPositive() && (b.Blocked || exceeds) {
 			return false, ErrQuotaExceeded
 		}
 		factOverrun := exceeds || (r.Metric == MetricTokens && a.CompletionTokens != nil && *a.CompletionTokens > r.ReservedUnits) || (r.Supplier && ((r.Metric == MetricCNY && a.SupplierCNY.GreaterThan(r.ReservedAmount)) || (r.Metric == MetricUSD && a.SupplierUSD.GreaterThan(r.ReservedAmount))))
 		overrun = overrun || factOverrun
-		if err := tx.Model(&b).Updates(map[string]any{"consumed_amount": amount, "consumed_units": used, "blocked": b.Blocked || factOverrun}).Error; err != nil {
+		if err := tx.Model(&b).Updates(map[string]any{"consumed_amount": amount, "consumed_units": used, "blocked": b.Blocked || exceeds}).Error; err != nil {
 			return false, err
 		}
 	}

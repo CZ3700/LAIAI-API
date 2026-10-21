@@ -213,6 +213,26 @@ test('video creation and cancellation preserve required idempotency and empty ca
   assert.ok(!Object.hasOwn(byID('task-get').response, 'cost_usd'))
 })
 
+test('video result examples return upstream URLs and do not send platform credentials to the media download', () => {
+  const queried = byID('task-get').response
+  assert.match(queried.content_url, /^https:\/\//)
+  assert.equal(queried.content.video_url, queried.content_url)
+  for (const [id, kind] of [['content-video', 'video'], ['content-last-frame', 'last_frame']]) {
+    const example = byID(id)
+    assert.deepEqual(example.response, {url: queried.content[kind === 'video' ? 'video_url' : 'last_frame_url'], kind, source: 'upstream'})
+    assert.match(curlFor(example), /Authorization: Bearer \$LAIAI_KEY/)
+    assert.equal(example.responseText, undefined)
+  }
+  const download = curlFor(byID('direct-video-download'))
+  assert.match(download, /TASK_JSON=\$\(curl[^\n]+\$BASE_URL\/v1\/video\/generations\/\$TASK_ID/)
+  const mediaRequest = download.slice(download.lastIndexOf('curl '))
+  assert.match(mediaRequest, /--proto '=https' "\$VIDEO_URL" --output generated-video\.mp4/)
+  assert.doesNotMatch(mediaRequest, /Authorization|LAIAI_KEY|--location-trusted/)
+  const description = docPages.find(p => p.id === 'video-query').sections.find(s => s.id === 'query-content').paragraphs.join('\n')
+  assert.match(description, /平台不下载、转存或代理/)
+  assert.match(description, /可能过期/)
+})
+
 test('asset examples obtain versions, use platform IDs and submit guarded mutations', () => {
   for (const [read, edit] of [['asset-get', 'asset-rename'], ['group-get', 'group-rename']]) {
     assert.equal(byID(edit).request.expected_version, byID(read).response.version)

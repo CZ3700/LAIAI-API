@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -80,8 +81,8 @@ func respondError(c *gin.Context, err error) {
 	}
 }
 
-// Buffered JSON responses become visible only after the finish record commits.
-// Content streams retain durable start intent and an eventual finished record.
+// JSON, including result-link delivery, becomes visible only after the finish
+// audit commits. Generated media bytes never pass through this middleware.
 type auditWriter struct {
 	gin.ResponseWriter
 	body   bytes.Buffer
@@ -173,7 +174,7 @@ func (s *Service) Middleware() gin.HandlerFunc {
 		}
 		original := c.Writer
 		buffered := &auditWriter{ResponseWriter: original}
-		stream := strings.HasSuffix(c.FullPath(), "/content")
+		stream := false // The official /content route now returns audited JSON.
 		if !stream {
 			c.Writer = buffered
 		}
@@ -335,11 +336,18 @@ func (s *Service) HandleCreate(c *gin.Context) {
 	c.JSON(202, result)
 }
 func (s *Service) HandleGet(c *gin.Context) {
-	v, e := s.Get(requestKey(c).OrgID, c.Param("id"))
+	key := requestKey(c)
+	t, st, e := loadTask(s.DB.WithContext(c.Request.Context()), key.OrgID, c.Param("id"), false)
 	if e != nil {
 		respondError(c, e)
 		return
 	}
+	v, e := s.deliveryView(c.Request.Context(), t, st, fmt.Sprint(key.ID), true)
+	if e != nil {
+		respondError(c, e)
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
 	c.JSON(200, v)
 }
 func (s *Service) HandleCancel(c *gin.Context) {

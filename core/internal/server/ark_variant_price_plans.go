@@ -186,28 +186,10 @@ func loadVariantPricePlan(tx *gorm.DB, channelID uint64, model string, now time.
 	if e != nil {
 		return out, "", 0, e
 	}
-	proposal := variantPriceProposal{FXUSDPerCNY: fx.StringFixed(12), FXVersion: scope.FXVersion, FXObservedAt: scope.FXObservedAt.UTC(), SourceConfigVersion: cfg.Version, SourcePricingVersion: cfg.PricingVersion, RiskSource: "existing_standard_2_0_policy", MinimumStatus: "unverified", Prices: []variantPlanPrice{}, RiskSourceRules: []variantRiskSource{}}
-	var risk decimal.Decimal
-	for _, rule := range rules {
-		if !rule.Enabled || rule.EffectiveFrom.After(now) || rule.EffectiveUntil != nil && !rule.EffectiveUntil.After(now) || rule.Mode != "generate" || rule.ServiceTier != "default" || rule.Draft {
-			continue
-		}
-		value, err := parsePrice(rule.RiskMultiplier.String())
-		_, retailErr := parsePrice(rule.RetailUSDPer1M.String())
-		_, costErr := parsePrice(rule.SupplierCNYPer1M.String())
-		sourceHash, hashErr := hex.DecodeString(rule.SourceHash)
-		if err != nil || value.LessThan(decimal.NewFromInt(1)) || value.GreaterThan(decimal.NewFromInt(100)) || !priceCellSupported(cellFromRule(rule), cap) || retailErr != nil || costErr != nil || rule.RuleID == "" || hashErr != nil || len(sourceHash) != 32 {
-			return out, "", 0, videobilling.ErrConflict
-		}
-		if len(proposal.RiskSourceRules) > 0 && !risk.Equal(value) {
-			return out, "", 0, videobilling.ErrConflict
-		}
-		risk = value
-		proposal.RiskSourceRules = append(proposal.RiskSourceRules, variantRiskSource{rule.RuleID, rule.Version, rule.SourceHash, risk.String()})
-	}
-	if len(proposal.RiskSourceRules) == 0 {
-		return out, "", 0, videobilling.ErrConflict
-	}
+	proposal := variantPriceProposal{FXUSDPerCNY: fx.StringFixed(12), FXVersion: scope.FXVersion, FXObservedAt: scope.FXObservedAt.UTC(), SourceConfigVersion: cfg.Version, SourcePricingVersion: cfg.PricingVersion, RiskSource: "default", MinimumStatus: "unverified", Prices: []variantPlanPrice{}, RiskSourceRules: []variantRiskSource{}}
+	// A new variant starts with the default hold factor; the standard model's
+	// explicitly configured factor belongs to that model only.
+	risk := decimal.NewFromInt(1)
 	tariff, e := arkverification.LoadTariff(out.CanonicalModel)
 	if e != nil || tariff.VerifiedAt.After(now) {
 		return out, "", 0, videobilling.ErrConflict
@@ -218,11 +200,43 @@ func loadVariantPricePlan(tx *gorm.DB, channelID uint64, model string, now time.
 		if err != nil {
 			return out, "", 0, err
 		}
-		retail := cost.Mul(fx)
+		retail := cost.Mul(fx).Round(12)
 		if _, err := parsePrice(retail.String()); err != nil {
 			return out, "", 0, err
 		}
 		proposal.Prices = append(proposal.Prices, variantPlanPrice{price.Resolution, price.InputVideo, retail.StringFixed(12), cost.String(), risk.String()})
+	}
+	var latest variantPricePlan
+	e = query().Where("channel_id = ? AND model = ?", channelID, model).Order("id DESC").Take(&latest).Error
+	if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
+		return out, "", 0, e
+	}
+	if e == nil {
+		out.Saved, e = variantSavedPlan(latest)
+		if e != nil {
+			return out, "", 0, e
+		}
+	}
+	if out.Saved != nil && latest.UpstreamModel == out.UpstreamModel && latest.CanonicalModel == out.CanonicalModel {
+		// Saved factors are explicit policy. Preserve both their values and
+		// provenance when refreshing the official cost or FX proposal.
+		proposal.RiskSource = out.Saved.Proposal.RiskSource
+		proposal.RiskSourceRules = out.Saved.Proposal.RiskSourceRules
+		savedRisk := map[string]string{}
+		for _, price := range out.Saved.Proposal.Prices {
+			key := fmt.Sprintf("%s/%t", price.Resolution, price.InputVideo)
+			value, err := parsePrice(price.RiskMultiplier)
+			if _, duplicate := savedRisk[key]; duplicate || err != nil || value.LessThan(decimal.NewFromInt(1)) || value.GreaterThan(decimal.NewFromInt(100)) {
+				return out, "", 0, videobilling.ErrConflict
+			}
+			savedRisk[key] = price.RiskMultiplier
+		}
+		for i := range proposal.Prices {
+			key := fmt.Sprintf("%s/%t", proposal.Prices[i].Resolution, proposal.Prices[i].InputVideo)
+			if value, exists := savedRisk[key]; exists {
+				proposal.Prices[i].RiskMultiplier = value
+			}
+		}
 	}
 	out.Proposal = proposal
 	// Include the entire source configuration and rule set, not just their
@@ -240,16 +254,7 @@ func loadVariantPricePlan(tx *gorm.DB, channelID uint64, model string, now time.
 	if e != nil {
 		return out, "", 0, e
 	}
-	var latest variantPricePlan
-	e = query().Where("channel_id = ? AND model = ?", channelID, model).Order("id DESC").Take(&latest).Error
-	if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
-		return out, "", 0, e
-	}
-	if e == nil {
-		out.Saved, e = variantSavedPlan(latest)
-		if e != nil {
-			return out, "", 0, e
-		}
+	if out.Saved != nil {
 		out.SavedMatchesProposal = latest.UpstreamModel == out.UpstreamModel && latest.ContextJSON == string(contextRaw) && verificationDigest(out.Saved.Proposal) == verificationDigest(proposal)
 	}
 	out.ContextSHA256 = variantPlanContextHash(string(contextRaw), latest.ID)

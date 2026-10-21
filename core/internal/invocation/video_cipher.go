@@ -73,10 +73,13 @@ func (s *VideoStore) Prepare(input VideoPayloadInput) (*PreparedVideoPayload, er
 	default:
 		return nil, ErrVideoInvalid
 	}
-	if input.Purpose != VideoPurposeExecution && input.Purpose != VideoPurposeHistory {
+	if input.Purpose != VideoPurposeExecution && input.Purpose != VideoPurposeHistory && input.Purpose != VideoPurposeDelivery {
 		return nil, ErrVideoInvalid
 	}
 	if input.Purpose == VideoPurposeExecution && (!input.CaptureEnabled || input.Direction != VideoEffectiveRequest) {
+		return nil, ErrVideoRetentionDenied
+	}
+	if input.Purpose == VideoPurposeDelivery && (!input.CaptureEnabled || input.Direction != VideoUpstreamResponse || expires.After(now.Add(24*time.Hour))) {
 		return nil, ErrVideoRetentionDenied
 	}
 	if len(input.Body) > s.maxBytes {
@@ -95,6 +98,9 @@ func (s *VideoStore) Prepare(input VideoPayloadInput) (*PreparedVideoPayload, er
 		return p, nil
 	}
 	plain, err := videoRedactJSON(input.Body, input.SecretValues)
+	if input.Purpose == VideoPurposeDelivery {
+		plain, err = videoDeliveryJSON(input.Body, input.SecretValues)
+	}
 	if err != nil {
 		if input.Purpose != VideoPurposeHistory || input.Direction != VideoUpstreamResponse {
 			return nil, err

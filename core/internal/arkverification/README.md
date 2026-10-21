@@ -21,8 +21,12 @@ from the official create API table; larger non-16:9 areas are not overlooked.
 The package intentionally excludes arbitrary-ratio 2.5 edit/extend/first-frame
 and Draft workflows until their input-derived dimensions can be bounded safely.
 For 2.5, reference-only capabilities explicitly send `omni_reference_task_type`
-as `reference` rather than allowing the upstream default `auto` to choose an
-unpublished editing mode. Standard 2.0 first/last frame uses enumerated ratios.
+as `reference` only when the content contains reference images, videos or audio,
+so the upstream default `auto` cannot choose an unpublished editing mode.
+Text-only and first/last-frame generation omit this field; explicitly supplying
+it in those scenarios is rejected locally. An image with no role remains a
+first frame, not reference media. Draft conversion retains inherited context
+without resending this field. Standard 2.0 first/last frame uses enumerated ratios.
 Frames, flex and 1.x are not granted. Fast and Mini use independent variant
 profiles rather than receiving capabilities through a standard profile.
 
