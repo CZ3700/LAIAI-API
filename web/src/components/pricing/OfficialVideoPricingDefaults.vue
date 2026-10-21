@@ -3,11 +3,12 @@ import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, 
 import { useI18n } from 'vue-i18n'
 import { api, ApiError, errorMessage, uuid } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
-import { cellKey, isOfficialVideoModel, type PriceCell, type ReferenceCandidates } from './types'
+import { cellKey, isOfficialVideoModel, type PriceCell, type ReferenceCandidates, type InitialPricingSetup } from './types'
 import { exactRate } from './videoPriceDecimal'
+import InitialVideoPricingSetup from './InitialVideoPricingSetup.vue'
 
 const props = defineProps<{ model: string; channelId: number; contextKey: string }>()
-const emit = defineEmits<{ published: [model: string, channelId: number, contextKey: string]; 'busy-change': [value: boolean] }>()
+const emit = defineEmits<{ published: [model: string, channelId: number, contextKey: string]; 'busy-change': [value: boolean]; 'dirty-change': [value: boolean] }>()
 const { t } = useI18n(), auth = useAuth()
 type DefaultPrice = { key: string; resolution: string; input_video: boolean; supplier_cny_per_1m: string; risk_multiplier: '1' }
 interface PublicationPreview {
@@ -18,17 +19,19 @@ interface PublicationPreview {
 }
 interface PublicationResult { model: string; channel_id: number; publication: { id: number; model: string; version: string; config_version: string } }
 const prices = ref<DefaultPrice[]>([]), loading = ref(false), error = ref(''), catalogVersion = ref('')
+const initialSetup = ref<InitialPricingSetup | null>(null)
 const preview = ref<PublicationPreview | null>(null), busy = ref(false), preparing = ref(false), publicationError = ref(''), notice = ref('')
 const retryPending = ref(false), requiresReload = ref(false), idempotencyKey = ref('')
 const requestSnapshot = ref<{ channel_id: number; expected_context_sha256: string } | null>(null)
 const allowed = computed(() => auth.isSuperadmin && !!auth.token && isOfficialVideoModel(props.model) && Number.isSafeInteger(props.channelId) && props.channelId > 0)
-const canPreview = computed(() => allowed.value && prices.value.length > 0 && !loading.value && !busy.value && !retryPending.value)
+const canPreview = computed(() => allowed.value && !initialSetup.value && prices.value.length > 0 && !loading.value && !busy.value && !retryPending.value)
 const canPublish = computed(() => allowed.value && !!preview.value && !!requestSnapshot.value && preview.value.model === props.model && preview.value.target_channel_id === props.channelId && !busy.value && !loading.value && !requiresReload.value)
 const minimumVersions = computed(() => [...new Set(preview.value?.cells.map(cell => cell.minimum_rule_version).filter(Boolean) ?? [])])
 const priceChanges = computed(() => preview.value?.diff.filter(diff => diff.change !== 'unchanged') ?? [])
 let generation = 0, active = true
 function reset() {
   ++generation; prices.value = []; loading.value = false; error.value = ''; catalogVersion.value = ''
+  initialSetup.value = null
   preview.value = null; busy.value = false; preparing.value = false; publicationError.value = ''; notice.value = ''
   retryPending.value = false; requiresReload.value = false; idempotencyKey.value = ''; requestSnapshot.value = null
 }
@@ -55,7 +58,14 @@ async function load() {
   try {
     const result = await api<ReferenceCandidates & { channel_id: number }>('GET', `/api/admin/video/models/${encodeURIComponent(model)}/pricing/reference-candidates?channel_id=${props.channelId}`)
     if (!active || current !== generation) return
-    prices.value = collectedPrices(result); catalogVersion.value = result.catalog_version
+    const collected = collectedPrices(result)
+    if (result.config === null) {
+      const setup = await api<InitialPricingSetup>('GET', `/api/admin/video/models/${encodeURIComponent(model)}/pricing/initial-setup?channel_id=${props.channelId}`)
+      if (!active || current !== generation) return
+      if (setup.model !== model || setup.channel_id !== props.channelId || typeof setup.configuration_exists !== 'boolean' || !Array.isArray(setup.templates) || !Array.isArray(setup.provider_scopes) || !Array.isArray(setup.blockers)) throw new Error('initial_setup_response_mismatch')
+      if (!setup.configuration_exists) initialSetup.value = setup
+    }
+    prices.value = collected; catalogVersion.value = result.catalog_version
   } catch (e) { if (active && current === generation) error.value = errorMessage(e, t('pricingAdmin.officialDefaultsFailed')) }
   finally { if (active && current === generation) loading.value = false }
 }
@@ -108,7 +118,8 @@ onBeforeUnmount(() => { active = false; reset() })
 </script>
 
 <template>
-  <section class="official-defaults" :aria-busy="loading || busy">
+  <InitialVideoPricingSetup v-if="initialSetup" :setup="initialSetup" :model="model" :channel-id="channelId" :context-key="contextKey" @busy-change="emit('busy-change', $event)" @dirty-change="emit('dirty-change', $event)" @published="(model, channelId, contextKey) => emit('published', model, channelId, contextKey)" @reload="load" />
+  <section v-else class="official-defaults" :aria-busy="loading || busy">
     <header><h3>{{ t('pricingAdmin.officialDefaultsTitle') }}</h3><span v-if="prices.length">{{ t('pricingAdmin.officialDefaultsCaptured') }}</span></header>
     <p>{{ t('pricingAdmin.officialDefaultsUnbound') }}</p>
     <p v-if="loading" role="status">{{ t('pricingAdmin.officialDefaultsLoading') }}</p>

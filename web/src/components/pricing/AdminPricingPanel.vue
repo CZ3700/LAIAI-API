@@ -192,7 +192,7 @@ defineExpose({ hasUnsavedChanges: () => dirty.value, isBusy: () => editorBusy.va
           <template v-if="selected.pricing_kind === 'video' || selected.video_model || selectedDefaultsModel">
             <p v-if="selected.video_model && selected.unsupported_reason && !selectedDefaultsModel" class="pricing-note">{{ reason(selected.unsupported_reason) }}</p><p v-if="!videoAllowed" class="pricing-note">{{ t('pricingx.superadmin') }}</p>
             <VideoPricing v-else-if="selectedVideoConfigured && selected.video_model" :key="selected.key" embedded :selected-model="selected.video_model" :selected-channel-id="selected.channel_id" :context-key="contextKey" @dirty-change="dirty = $event" @busy-change="editorBusy = $event" @published="videoPublished" @verification-synced="verificationSynced" />
-            <OfficialVideoPricingDefaults v-else-if="selectedDefaultsModel" :key="selected.key" :model="selectedDefaultsModel" :channel-id="selected.channel_id" :context-key="contextKey" @busy-change="editorBusy = $event" @published="defaultsPublished" />
+            <OfficialVideoPricingDefaults v-else-if="selectedDefaultsModel" :key="selected.key" :model="selectedDefaultsModel" :channel-id="selected.channel_id" :context-key="contextKey" @busy-change="editorBusy = $event" @dirty-change="dirty = $event" @published="defaultsPublished" />
             <p v-else class="pricing-note">{{ reason(selected.unsupported_reason) }}</p>
           </template>
           <p v-else-if="selected.unsupported_reason && selected.unsupported_reason !== 'pricing_kind_unknown'" class="pricing-note">{{ reason(selected.unsupported_reason) }}</p>

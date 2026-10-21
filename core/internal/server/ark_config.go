@@ -115,6 +115,7 @@ type videoPublication struct {
 	SupplierBudgets []videobilling.QuotaPolicy  `json:"supplier_budgets"`
 	EvidenceHash    string                      `json:"evidence_hash"`
 	PricingTemplate *arkpricetemplate.Reference `json:"pricing_template,omitempty"`
+	InitialSetup    *initialPricingIntent       `json:"initial_setup,omitempty"`
 }
 
 type videoConfigurationRevision struct {
@@ -196,6 +197,10 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 		fail(c, 422, "versioned verified configuration, prices and supplier budgets required")
 		return
 	}
+	if err := s.validateInitialPublication(in, actor.ID); err != nil {
+		initialPricingFail(c, 422, err)
+		return
+	}
 	var template arkpricetemplate.Template
 	var templateProfile arkverification.Profile
 	var templateBodyHash string
@@ -216,6 +221,12 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 		if err != nil {
 			fail(c, 422, "installed pricing template or verified profile unavailable")
 			return
+		}
+		if in.InitialSetup != nil && in.InitialSetup.PricingMode == "official" {
+			if err := officialInitialPrices(&in); err != nil {
+				initialPricingFail(c, 422, err)
+				return
+			}
 		}
 	}
 	if len(in.EvidenceHash) != 64 || len(in.Prices) == 0 && !inheritOfficialPricing {
@@ -288,6 +299,9 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			// Existing prices must use the version-checked template preview and
 			// normal pricing publication flow, never the first-admission route.
 			return video.ErrConflict
+		}
+		if err := s.validateInitialPublicationContext(tx, in, template, templateProfile, now); err != nil {
+			return err
 		}
 		capBytes, _ := json.Marshal(cap)
 		capDigest := sha256.Sum256(capBytes)
@@ -369,9 +383,15 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 		if existingPrice > 0 {
 			return video.ErrConflict
 		}
+		preserveBudgets := in.InitialSetup != nil && in.Scope.ID != 0
 		day, month := false, false
 		budgetKeys := map[string]bool{}
 		for _, p := range in.SupplierBudgets {
+			if preserveBudgets {
+				// The signed preview and locked context above require an exact
+				// match. Do not revise policies or their existing quota buckets.
+				continue
+			}
 			if p.ID != 0 || p.Scope != videobilling.ScopeProvider || p.OrgID != 0 || p.Version == "" || p.Model != "" || (p.Metric != videobilling.MetricCNY && p.Metric != videobilling.MetricUSD) || p.LimitAmount == nil || !p.LimitAmount.IsPositive() || p.LimitUnits != nil {
 				return video.ErrInvalid
 			}
@@ -399,7 +419,7 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 				return e
 			}
 		}
-		if !day || !month {
+		if !preserveBudgets && (!day || !month) {
 			return video.ErrInvalid
 		}
 		if in.PricingTemplate != nil {
@@ -463,6 +483,7 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 			return e
 		}
 		detail := "version=" + cfg.Version + ";evidence_sha256=" + in.EvidenceHash
+		detail += initialPricingAudit(in)
 		if inheritOfficialPricing {
 			detail += ";official_catalog=" + inheritedCatalog.CatalogVersion + ";catalog_sha256=" + inheritedCatalog.ManifestSHA256
 		}
@@ -487,6 +508,10 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 		return tx.Create(&AuditLog{Actor: fmt.Sprintf("user#%d", actor.ID), Action: "video.configuration.publish", Target: cfg.PublicModel, Detail: detail, CreatedAt: s.now().UnixMilli()}).Error
 	})
 	if e != nil {
+		if in.InitialSetup != nil {
+			initialPricingFail(c, 422, e)
+			return
+		}
 		s.videoAdminReply(c, e)
 		return
 	}

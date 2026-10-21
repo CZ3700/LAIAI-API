@@ -303,6 +303,8 @@ func (s *Server) registerArkPricingConsole(su *gin.RouterGroup) {
 	su.POST(base+"/validate", s.validateArkPricingConsole)
 	su.POST(base+"/publications", s.publishArkPricingConsole)
 	su.GET(base+"/rebind-preview", s.previewArkPricingRebind)
+	su.GET(base+"/initial-setup", s.getArkInitialPricingSetup)
+	su.POST(base+"/initial-preview", s.previewArkInitialPricing)
 	su.POST(base+"/rebind-publications", s.publishArkPricingRebind)
 	su.GET(base+"/revisions", func(c *gin.Context) {
 		if _, ok := s.videoAdminActor(c); !ok {

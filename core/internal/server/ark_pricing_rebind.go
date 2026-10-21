@@ -265,7 +265,12 @@ func (s *Server) previewArkPricingRebind(c *gin.Context) {
 		return err
 	})
 	if err != nil {
-		fail(c, 409, "channel repair unavailable: existing capability, exact target identity, credentials, budgets or minimum coverage required")
+		var count int64
+		if errors.Is(err, gorm.ErrRecordNotFound) && s.db.Model(&video.ModelConfig{}).Where("public_model = ?", c.Param("model")).Count(&count).Error == nil && count == 0 {
+			initialPricingFail(c, 409, initialPricingError("initial_setup_required"))
+		} else {
+			c.AbortWithStatusJSON(409, gin.H{"error": "暂不能继承发布，请核对已有配置、精确模型映射、启用凭据、日/月预算及最低用量覆盖。", "code": "channel_rebind_unavailable"})
+		}
 		return
 	}
 	c.Header("Cache-Control", "private, no-store")
