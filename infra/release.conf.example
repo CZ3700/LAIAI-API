@@ -1,0 +1,37 @@
+# LAIAI 生产发布配置。复制到 /etc/laiai/release.conf 后设为 root:root 0600。
+# 这是受信任的 Bash 配置，由 infra/release.sh 加载；不要允许普通用户写入。
+# 不放 API Key、数据库口令或 Git Token；业务秘密继续留在现有 .env / video.env。
+# 运行环境要求 Linux/root、Docker Compose >=2.24.4；目标只使用正式 main。
+
+LIVE_DIR=/opt/laiai-next
+STATE_DIR=/var/lib/laiai-release
+# STATE_DIR 将保存 0600 的真实运行配置快照（含秘密），并纳入加密备份；勿公开同步。
+SOURCE_REPOSITORY=https://github.com/CZ3700/LAIAI-API.git
+COMPOSE_PROJECT=infra
+LIVE_ENV=/opt/laiai-next/infra/.env
+# 如新增视频变量均已写在 LIVE_ENV，可设 VIDEO_ENV=；指定文件则必须存在且为受限文件。
+VIDEO_ENV=/etc/laiai/video.env
+CADDYFILE=/opt/laiai-next/infra/Caddyfile
+PUBLIC_ORIGIN=https://laiai.ai
+BACKUP_KEY_FILE=/root/.laiai-release-backup.key
+
+# 必须填写经核验的 repository@sha256:<64 位十六进制 digest>。
+# 留空会阻止构建；本示例不提供猜测值，也不自动追踪 latest/tag。
+# 当前 Dockerfile 对应 golang:1.26-alpine、alpine:3.21、node:22-alpine、caddy:2-alpine；
+# 以目标 main 提交的 Dockerfile 为准核对版本及 linux/amd64 平台。
+GO_IMAGE=
+ALPINE_IMAGE=
+NODE_IMAGE=
+CADDY_BASE_IMAGE=
+
+# 只是发布前最低门槛，不能代替针对备份体积/构建峰值的容量评估。
+# 不自动清理 Docker 缓存、镜像、旧发布目录或任何业务卷。
+MIN_FREE_MB=8192
+MIN_AVAILABLE_MB=1024
+
+# 默认使用入口同目录下的 release/check-approval.sh、release/check-github-ci.sh。
+# 前者校验 approve 登记的阶段验收证据，后者用服务器已有 gh 授权核验目标 SHA。
+# 无需登录 GHCR；不能用永远 exit 0 的占位程序代替验收。
+# 只有已实现并审查了自动验收程序时，才取消下列注释，填写绝对路径覆盖默认值。
+# CHECK_HOOK=/etc/laiai/release-check
+# CI_CHECK_HOOK=/etc/laiai/release-ci-check

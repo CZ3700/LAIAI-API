@@ -1,5 +1,7 @@
 # 服务器拉取源码、本地构建与固定镜像部署
 
+上述步骤已有统一执行入口 [`infra/release.sh`](../infra/release.sh)，见[生产发布脚本手册](production-release-cli.md)。脚本额外移除运行 Compose 的 build 配置，并对四个服务使用已验证本地 image ID；以下保留的是人工操作模板，不应与脚本的阶段状态混用。
+
 本文是**待执行模板**，不表示已清理缓存、构建镜像或部署。沿用 2026-10-21 已核对的现网：`/opt/laiai-next` 为旧 `main@e4eb84f`，Compose 项目名 `infra`，只加载 `infra/docker-compose.yml`；MySQL、Redis、core、Caddy 同属该项目。执行前再次核实，现场变化时先更新发布单。
 
 core 使用 `infra/core.Dockerfile`。`infra/caddy.Dockerfile` 以 Node 22 执行 `npm ci`、`npm run build`，将 `dist` 复制到运行镜像 `/srv/console`。现网只挂载 Caddyfile 和证书卷，**不挂载 dist，不新增独立前端服务**。本流程不依赖 GHCR；仍需能够取得 Git 源码、已固定的官方基础镜像及 Go/npm 依赖。

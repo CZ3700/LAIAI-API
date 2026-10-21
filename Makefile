@@ -3,6 +3,7 @@ GOPROXY ?= https://goproxy.cn,direct
 export GOPROXY
 
 .PHONY: ci test vet build migrate-lint migrate-smoke help
+.PHONY: release-check
 
 ci: vet migrate-lint test build ## 完整本地 CI gate（提交前必跑）
 
@@ -28,6 +29,13 @@ web: ## Console 类型检查 + 构建（需要 Node 20+）
 	cd web && npm run build
 
 ci-all: ci web ## 全栈门禁（Go + Console）
+
+release-check: ## Linux 隔离发布脚本测试；外部 git/docker/HTTP 使用测试替身，不访问生产
+	bash -n infra/release.sh
+	find infra/release -name '*.sh' -exec bash -n {} +
+	bash infra/release/tests/test_backup.sh
+	bash infra/release/tests/test_data.sh
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s infra/release/tests -p 'test_*.py' -v
 
 help:
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/'

@@ -68,6 +68,8 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
 
 ## 2. 部署纪律（既有约定的操作面）
 
+当前生产发布入口为 [`infra/release.sh`](../infra/release.sh)，支持 `compare/preflight/backup/build/deploy/open/release/verify/status/rollback`，使用方法见[脚本手册](production-release-cli.md)。旧 `deploy.sh` 不用于本次受控升级。脚本针对已有单 core/Caddy 的 Compose 项目执行升级，不负责从空服务器创建业务库；配置、main 审核与现场验收先准备齐。
+
 - **镜像内容锁定**：常规生产叠加 `docker-compose.prod.yml`，`MYSQL_IMAGE`/`REDIS_IMAGE` 填 RepoDigest 形式（.env.example 有取值命令）。2026-10-21 已核对的服务器源码构建方案使用明确锁住四个服务的 `local-images.yml` 替代该 overlay：core/Caddy 为已验收本地 image ID，MySQL/Redis 为现有 RepoDigest，均不自动拉取。按[服务器构建流程](server-source-build.md)保存并核对实际清单；`infra/release-manifest.sh generate/diff` 仅辅助，还需补项目过滤、完整配置与未跟踪文件检查。
 - **迁移**：容器 entrypoint 自动跑 `/app/migrate`（重试 ~60s，失败容器退出）；大版本前先跑
   `make migrate-smoke`（真 MySQL apply×2 幂等 + schema-doctor 漂移体检）。
