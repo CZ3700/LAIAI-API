@@ -17,6 +17,7 @@ type Capabilities = Record<Capability, boolean>
 interface ProviderScope { id: number; account_ref: string; region: string; project_name: string; enabled: boolean }
 interface ScopeConfig { provider_scope_id: number; version: number; enabled: boolean; credential_present: boolean; capabilities: Capabilities; capabilities_valid: boolean; identity_matches_provider: boolean }
 interface OrgRoute { org_id: number; provider_scope_id: number; scope_version: number; enabled: boolean; default_route: boolean }
+interface PolicyDraft { async_execution_allowed: boolean; capture_history: boolean; retention_days: number }
 interface Setup {
   org_id: number; org_active: boolean; configuration_ready: boolean; official_access: 'not_checked'; provider_scopes: ProviderScope[]; scope_configs: ScopeConfig[]; org_routes: OrgRoute[]
   policy: { present: boolean; async_execution_allowed: boolean; capture_history: boolean; retention_days: number }
@@ -28,7 +29,8 @@ const setup = ref<Setup | null>(null), loading = ref(false), busy = ref(false), 
 const scopeId = ref(0), selectedVersion = ref(0), version = ref(''), enabled = ref(false), capabilities = ref(emptyCapabilities())
 const accessKey = ref(''), secretKey = ref(''), sessionToken = ref(''), registrationConfirmed = ref(false), bindingConfirmed = ref(false), refreshRequired = ref(false)
 const enableConfirmed = ref(false), projectName = ref('')
-const pendingReadback = ref<{ kind: 'registration' | 'enable' | 'project'; scopeId: number; version?: number; project?: { account_ref: string; region: string; project_name: string } } | null>(null)
+const asyncExecutionAllowed = ref(false), captureHistory = ref(false), retentionDays = ref('1'), policyConfirmed = ref(false)
+const pendingReadback = ref<{ kind: 'registration' | 'enable' | 'project' | 'binding'; scopeId: number; version?: number; project?: { account_ref: string; region: string; project_name: string } } | { kind: 'policy'; policy: PolicyDraft } | null>(null)
 let generation = 0, operation = 0, installing = false
 const allowed = computed(() => auth.isSuperadmin && !!auth.token && props.orgId > 0 && props.orgId === auth.orgId)
 const provider = computed(() => setup.value?.provider_scopes.find(item => item.id === scopeId.value))
@@ -86,6 +88,28 @@ const projectBlockers = computed(() => {
   return reasons
 })
 const canAddProject = computed(() => projectBlockers.value.length === 0)
+const retentionNumber = computed(() => /^[1-9]\d*$/.test(retentionDays.value) && Number(retentionDays.value) <= 30 ? Number(retentionDays.value) : 0)
+const policyBlockers = computed(() => {
+  const reasons: string[] = []
+  if (!allowed.value) reasons.push('需要当前组织的有效超级管理员会话。')
+  if (!setup.value) reasons.push('请先读取素材管理配置。')
+  else if (!setup.value.org_active) reasons.push('当前组织已停用。')
+  if (loading.value || busy.value) reasons.push('正在处理操作，请稍候。')
+  if (refreshRequired.value) reasons.push('请先刷新并确认上次操作结果。')
+  if (!retentionNumber.value) reasons.push('历史留存天数需为 1–30 的整数。')
+  if (!policyConfirmed.value) reasons.push('请核对组织执行许可和历史留存设置，并勾选保存确认。')
+  return reasons
+})
+const canSavePolicy = computed(() => policyBlockers.value.length === 0)
+function installPolicy(policy: Setup['policy']) {
+  asyncExecutionAllowed.value = policy.present ? policy.async_execution_allowed : false
+  captureHistory.value = policy.present ? policy.capture_history : false
+  retentionDays.value = policy.present ? String(policy.retention_days) : '1'
+  policyConfirmed.value = false
+}
+function policySnapshot(policy: Setup['policy']): Setup['policy'] {
+  return policy.present ? { present: true, async_execution_allowed: policy.async_execution_allowed, capture_history: policy.capture_history, retention_days: policy.retention_days } : { present: false, async_execution_allowed: false, capture_history: false, retention_days: 0 }
+}
 function suggestedVersion() {
   const occupied = new Set(versions.value.map(item => item.version))
   const highest = versions.value.reduce((max, item) => Number.isSafeInteger(item.version) ? Math.max(max, item.version) : max, 0)
@@ -105,6 +129,7 @@ function resetRegistration() { clearSecrets(); enabled.value = false; capabiliti
 function reset() {
   ++generation; ++operation; clearSecrets(); resetRegistration(); setup.value = null; scopeId.value = 0; selectedVersion.value = 0
   bindingConfirmed.value = false; enableConfirmed.value = false; projectName.value = ''; pendingReadback.value = null; refreshRequired.value = false; error.value = ''; notice.value = ''; loading.value = false; busy.value = false
+  installPolicy({ present: false, async_execution_allowed: false, capture_history: false, retention_days: 1 })
 }
 function safeError(e: unknown, fallback: string) {
   if (!(e instanceof ApiError)) return fallback
@@ -120,6 +145,7 @@ async function readSetup(org: number) {
 }
 function install(data: Setup, desiredScope = scopeId.value, desiredVersion = selectedVersion.value) {
   setup.value = data
+  installPolicy(data.policy)
   const preferred = data.provider_scopes.some(item => item.id === desiredScope) ? desiredScope : data.org_routes.find(item => item.default_route && item.enabled)?.provider_scope_id ?? (data.provider_scopes.length === 1 ? data.provider_scopes[0]!.id : 0)
   installing = true
   try { scopeId.value = preferred } finally { installing = false }
@@ -129,21 +155,37 @@ function install(data: Setup, desiredScope = scopeId.value, desiredVersion = sel
 function confirmReadback(data: Setup) {
   const expected = pendingReadback.value
   if (!expected) return true
+  if (expected.kind === 'policy') {
+    pendingReadback.value = null
+    const matched = data.policy.present && data.policy.async_execution_allowed === expected.policy.async_execution_allowed && data.policy.capture_history === expected.policy.capture_history && data.policy.retention_days === expected.policy.retention_days
+    install(data)
+    if (matched) {
+      error.value = ''; notice.value = '组织执行与历史留存设置已保存并回读确认。仍需分别完成账号项目、组织路由和服务端部署配置；此处未验证火山官方权限。'
+      emit('bound')
+    } else {
+      notice.value = ''; error.value = '当前组织策略与提交内容不一致，未确认保存成功；已读取现有设置，请重新核对后单独确认，不会自动重发。'
+    }
+    return true
+  }
   const config = data.scope_configs.find(item => item.provider_scope_id === expected.scopeId && item.version === expected.version)
-  const found = expected.kind === 'project' ? data.provider_scopes.some(item => item.id === expected.scopeId && item.account_ref === expected.project?.account_ref && item.region === expected.project?.region && item.project_name === expected.project?.project_name) : !!config && (expected.kind !== 'enable' || config.enabled)
+  const found = expected.kind === 'binding' ? data.org_routes.some(item => item.org_id === data.org_id && item.provider_scope_id === expected.scopeId && item.scope_version === expected.version && item.enabled && item.default_route) : expected.kind === 'project' ? data.provider_scopes.some(item => item.id === expected.scopeId && item.account_ref === expected.project?.account_ref && item.region === expected.project?.region && item.project_name === expected.project?.project_name) : !!config && (expected.kind !== 'enable' || config.enabled)
   if (!found) {
     refreshRequired.value = true; notice.value = ''
-    error.value = '服务端已受理，但刷新结果尚未确认所选项目或管理版本。请继续刷新核对，不要重复提交。'
+    error.value = '刷新结果尚未确认所选项目、管理版本或组织路由。请继续刷新核对，不要重复提交。'
     return false
   }
   pendingReadback.value = null
   install(data, expected.scopeId, expected.version ?? 0)
+  if (expected.kind === 'binding') {
+    error.value = ''; notice.value = '当前组织默认素材路由已绑定并回读确认。请继续核对第 3 步的执行许可与历史留存设置；未实际验证官方权限。'
+    emit('bound')
+  }
   return true
 }
 async function load() {
   if (!allowed.value || busy.value || loading.value) return
   const epoch = ++generation, org = props.orgId
-  clearSecrets(); registrationConfirmed.value = false; bindingConfirmed.value = false; enableConfirmed.value = false; error.value = ''; loading.value = true
+  clearSecrets(); registrationConfirmed.value = false; bindingConfirmed.value = false; enableConfirmed.value = false; policyConfirmed.value = false; error.value = ''; loading.value = true
   try { const data = await readSetup(org); if (epoch !== generation || !allowed.value) return; install(data); if (confirmReadback(data)) refreshRequired.value = false }
   catch (e) { if (epoch === generation) { refreshRequired.value = true; error.value = safeError(e, '无法读取素材管理配置，请稍后刷新。') } }
   finally { if (epoch === generation) loading.value = false }
@@ -198,11 +240,60 @@ async function bind() {
   busy.value = true; error.value = ''; notice.value = ''; clearSecrets()
   try {
     if (!await preflight(epoch, op, org, id, before) || !current() || selectedVersion.value !== targetVersion || !bindingConfirmed.value) return
+    pendingReadback.value = { kind: 'binding', scopeId: id, version: targetVersion }
     await api('PUT', '/api/admin/video/asset-org-routes', { org_id: org, provider_scope_id: id, scope_version: targetVersion, enabled: true, default_route: true })
     if (!current() || selectedVersion.value !== targetVersion) return
-    bindingConfirmed.value = false; clearSecrets(); emit('bound')
-  } catch (e) { if (current()) { refreshRequired.value = true; error.value = safeError(e, '无法确认组织绑定结果，请刷新当前路由后决定是否继续。已保存管理版本无需重复登记。') } }
+    bindingConfirmed.value = false; clearSecrets(); refreshRequired.value = true
+    const data = await readSetup(org)
+    if (!current()) return
+    install(data, id, targetVersion)
+    if (confirmReadback(data)) refreshRequired.value = false
+  } catch (e) { if (current()) {
+    if (e instanceof ApiError && [400, 401, 403, 404, 409, 422, 429].includes(e.status)) pendingReadback.value = null
+    refreshRequired.value = true; error.value = safeError(e, '无法确认组织绑定结果，请刷新当前路由后决定是否继续。已保存管理版本无需重复登记。')
+  } }
   finally { if (current()) busy.value = false }
+}
+async function savePolicy() {
+  if (!canSavePolicy.value || !setup.value) return
+  const epoch = generation, op = ++operation, org = props.orgId
+  const expectedPolicy = policySnapshot(setup.value.policy)
+  const before = JSON.stringify({ active: setup.value.org_active, policy: expectedPolicy })
+  const body: PolicyDraft = { async_execution_allowed: asyncExecutionAllowed.value, capture_history: captureHistory.value, retention_days: retentionNumber.value }
+  const current = () => epoch === generation && op === operation && allowed.value && props.orgId === org
+  const unchanged = () => policyConfirmed.value && asyncExecutionAllowed.value === body.async_execution_allowed && captureHistory.value === body.capture_history && retentionNumber.value === body.retention_days
+  busy.value = true; error.value = ''; notice.value = ''; clearSecrets()
+  let sent = false
+  try {
+    const latest = await readSetup(org)
+    if (!current()) return
+    if (JSON.stringify({ active: latest.org_active, policy: policySnapshot(latest.policy) }) !== before) {
+      install(latest); error.value = '组织执行策略已变化，已读取现有设置；请重新核对并确认，未覆盖其他管理员的修改。'; return
+    }
+    if (!unchanged()) { error.value = '执行或留存设置已变化，请重新核对并确认。'; return }
+    pendingReadback.value = { kind: 'policy', policy: body }; sent = true
+    await api('PUT', `/api/admin/video/org-policies/${org}`, { ...body, expected_policy: expectedPolicy })
+    if (!current()) return
+    policyConfirmed.value = false; refreshRequired.value = true
+    const data = await readSetup(org)
+    if (!current()) return
+    install(data)
+    if (confirmReadback(data)) refreshRequired.value = false
+  } catch (e) {
+    if (current()) {
+      refreshRequired.value = true
+      if (sent && e instanceof ApiError && [400, 401, 403, 404, 422, 429].includes(e.status)) pendingReadback.value = null
+      if (sent && e instanceof ApiError && e.status === 409) {
+        pendingReadback.value = null
+        error.value = '组织执行策略已被其他管理员修改，本次保存未生效。请重新核对最新设置并确认，不会自动覆盖或重发。'
+        try {
+          const data = await readSetup(org)
+          if (!current()) return
+          install(data); refreshRequired.value = false
+        } catch { /* The next explicit refresh must succeed before saving again. */ }
+      } else error.value = e instanceof ApiError && e.status === 422 ? '组织策略字段不符合要求，请刷新后核对执行许可、历史留存开关与 1–30 天的留存设置。' : safeError(e, sent ? '无法确认组织策略保存结果，请刷新配置状态回读核对；不会自动重发或开启历史留存。' : '保存前无法读取最新组织策略，请刷新后再操作。')
+    }
+  } finally { if (current()) { policyConfirmed.value = false; busy.value = false } }
 }
 async function enableSavedVersion() {
   if (!canEnable.value || !setup.value) return
@@ -251,6 +342,7 @@ watch(busy, value => emit('busy-change', value), { flush: 'sync' })
 watch(scopeId, () => { if (!installing) { ++generation; ++operation; busy.value = false; pendingReadback.value = null; refreshRequired.value = false }; resetRegistration(); version.value = provider.value ? suggestedVersion() : ''; selectedVersion.value = preferredVersion(); bindingConfirmed.value = false; enableConfirmed.value = false; projectName.value = ''; error.value = ''; notice.value = '' }, { flush: 'sync' })
 watch(selectedVersion, () => { bindingConfirmed.value = false; enableConfirmed.value = false; clearSecrets() }, { flush: 'sync' })
 watch([version, enabled, capabilities], () => { registrationConfirmed.value = false }, { deep: true, flush: 'sync' })
+watch([asyncExecutionAllowed, captureHistory, retentionDays], () => { policyConfirmed.value = false }, { flush: 'sync' })
 watch(() => [props.orgId, auth.orgId, auth.token, auth.isSuperadmin], () => { reset(); if (allowed.value) void load() }, { flush: 'sync' })
 onMounted(load)
 onBeforeUnmount(reset)
@@ -264,7 +356,7 @@ onBeforeUnmount(reset)
     <p v-if="error" class="inline-alert" role="alert">{{ error }}</p><p v-if="notice" class="inline-success" role="status">{{ notice }}</p>
     <div class="flex items-center justify-between gap-3"><strong class="text-sm">当前组织 #{{ orgId }}</strong><button type="button" class="btn-ghost" :disabled="loading || busy || !allowed" @click="load">{{ loading ? '读取中…' : '刷新配置状态' }}</button></div>
     <template v-if="setup">
-      <section class="rounded border border-line p-4 text-sm space-y-2"><p>当前默认路由：{{ currentRoute ? `账号项目 #${currentRoute.provider_scope_id} · 管理版本 ${currentRoute.scope_version}` : '尚未绑定' }}</p><p>本地配置：{{ setup.configuration_ready ? '已就绪' : '仍有未完成项' }}；官方权限：尚未实际验证。</p><p v-if="!setup.org_active" class="text-danger">当前组织已停用，不能保存或绑定。</p><p v-if="!setup.policy.present || !setup.policy.async_execution_allowed" class="text-warn">当前组织尚未获得异步执行许可，绑定后仍需管理员完成执行策略配置。</p><p v-if="!setup.deployment.console_configured" class="text-warn">服务端尚未配置火山素材管理接口，请由部署管理员补齐。</p><p v-if="!setup.deployment.media_configured" class="text-warn">媒体存储与核验服务尚未就绪，上传功能仍不可用。</p><p v-if="!setup.deployment.portrait_target_ready" class="text-muted">真人认证返回地址尚未就绪，真人功能还需完成服务端配置。</p></section>
+      <section class="rounded border border-line p-4 text-sm space-y-2"><p>当前默认路由：{{ currentRoute ? `账号项目 #${currentRoute.provider_scope_id} · 管理版本 ${currentRoute.scope_version}` : '尚未绑定' }}</p><p>本地配置：{{ setup.configuration_ready ? '已就绪' : '仍有未完成项' }}；官方权限：尚未实际验证。</p><p v-if="!setup.org_active" class="text-danger">当前组织已停用，不能保存或绑定。</p><p v-if="!setup.policy.present || !setup.policy.async_execution_allowed" class="text-warn">当前组织尚未开启异步执行许可。已保存并绑定管理版本后，请继续完成下方第 3 步。</p><p v-else class="text-sm">组织异步执行许可：已开启；历史留存：{{ setup.policy.capture_history ? `已开启，${setup.policy.retention_days} 天` : '已关闭' }}。</p><p v-if="!setup.deployment.console_configured" class="text-warn">服务端尚未配置火山素材管理接口，请由部署管理员补齐。</p><p v-if="!setup.deployment.media_configured" class="text-warn">媒体存储与核验服务尚未就绪，上传功能仍不可用。</p><p v-if="!setup.deployment.portrait_target_ready" class="text-muted">真人认证返回地址尚未就绪，真人功能还需完成服务端配置。</p></section>
       <label class="block text-sm">已有火山账号项目<select v-model.number="scopeId" class="input mt-1" :disabled="busy || loading"><option :value="0">请选择账号项目</option><option v-for="item in setup.provider_scopes" :key="item.id" :value="item.id" :disabled="!item.enabled">{{ item.account_ref }} · {{ item.region }} · {{ item.project_name }}{{ item.enabled ? '' : '（已停用）' }}</option></select></label>
       <p v-if="!setup.provider_scopes.length" class="text-sm text-muted">尚无已登记的火山账号项目，请先完成视频渠道的账号项目绑定。</p>
       <template v-if="provider">
@@ -292,7 +384,20 @@ onBeforeUnmount(reset)
           <button type="button" class="btn-primary" :disabled="!canBind" @click="bind">{{ busy ? '处理中…' : '绑定当前组织并启用' }}</button>
         </section>
       </template>
-      <p v-if="refreshRequired" class="text-sm text-warn" role="status">请先刷新配置状态，再核对已保存版本与当前组织路由；不会自动重发任何写入。</p>
+      <section class="rounded border border-line p-4 space-y-4"><h3 class="font-medium">3. 组织执行与历史留存</h3>
+        <p class="text-sm text-muted">保存管理版本和绑定项目不会自动开启执行许可。此策略属于组织 #{{ orgId }}，由视频异步任务与素材操作共用；已有策略会按当前保存值显示，请核对后修改。</p>
+        <fieldset :disabled="busy || loading || refreshRequired || !allowed || !setup.org_active" class="space-y-4">
+          <label class="flex items-start gap-2 text-sm"><input v-model="asyncExecutionAllowed" type="checkbox" class="mt-1 shrink-0"><span>允许本组织执行视频与素材异步任务</span></label>
+          <label class="flex items-start gap-2 text-sm"><input v-model="captureHistory" type="checkbox" class="mt-1 shrink-0"><span>保存本组织视频与素材请求的历史内容</span></label>
+          <label class="block text-sm">历史留存天数（1–30 天）<input v-model="retentionDays" class="input mt-1" inputmode="numeric" required pattern="[1-9]|[12][0-9]|30" aria-label="历史留存天数" autocomplete="off"><small class="text-muted">仅在开启历史留存时生效；关闭时不会自动改动已保存的天数。</small></label>
+          <p class="text-xs text-muted">历史留存与任务执行所需的临时数据分开控制。关闭历史留存后，仍会按执行需要保存最长 24 小时的加密执行胶囊；不会因此删除已有历史日志或账务记录。</p>
+          <label class="flex items-start gap-2 text-sm"><input v-model="policyConfirmed" type="checkbox" class="mt-1 shrink-0"><span>我已核对组织 #{{ orgId }} 的执行许可、历史留存开关和天数，确认保存这些设置。</span></label>
+        </fieldset>
+        <div v-if="policyBlockers.length" class="rounded border border-line p-3 text-sm" aria-live="polite"><strong>保存前还需完成：</strong><ul class="mt-2 list-disc pl-5 text-muted"><li v-for="reason in policyBlockers" :key="reason">{{ reason }}</li></ul></div>
+        <button type="button" class="btn-primary" :disabled="!canSavePolicy" @click="savePolicy">{{ busy ? '处理中…' : '保存组织执行与留存设置' }}</button>
+        <p class="text-xs text-muted">此操作不更换 AK/SK 或组织项目，不调整视频价格与预算。上传存储、媒体核验、真人认证的服务端缺项仍需分别配置；保存成功不代表火山官方权限验证通过。</p>
+      </section>
+      <p v-if="refreshRequired" class="text-sm text-warn" role="status">请先刷新配置状态，再核对已保存版本、当前组织路由与执行策略；不会自动重发任何写入。</p>
     </template>
   </div>
 </template>

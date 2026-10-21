@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"time"
 
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"gorm.io/gorm"
@@ -165,10 +164,10 @@ func (s *Service) prepareDeletionEvidence(op Operation, r RuntimeScope, evidence
 		if len(entry.result.Body) == 0 {
 			continue
 		}
-		p, err := s.evidence.Prepare(invocation.VideoPayloadInput{
+		p, err := s.prepareHistoryEvidence(r, invocation.VideoPayloadInput{
 			OrgID: op.OrgID, RequestID: op.RequestID, AttemptID: op.ID + "_" + entry.stage,
-			Direction: invocation.VideoUpstreamResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1,
-			Body: entry.result.Body, ExpiresAt: nowMillis(s).Add(30 * 24 * time.Hour), CaptureEnabled: r.CaptureHistory,
+			Direction: invocation.VideoUpstreamResponse, SchemaVersion: 1,
+			Body:                  entry.result.Body,
 			SecretValues:          []string{r.Credentials.AccessKey, r.Credentials.SecretKey, r.Credentials.SessionToken},
 			CaptureRepresentation: "response_json_redacted",
 		})

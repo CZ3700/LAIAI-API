@@ -131,41 +131,7 @@ func (videoConfigurationRevision) TableName() string { return "video_configurati
 func (s *Server) registerVideoConfiguration(su *gin.RouterGroup) {
 	su.POST("/video/configurations", s.publishVideoConfiguration)
 	su.PUT("/video/orgs/:org_id/quota-policies", s.publishVideoQuota)
-	su.PUT("/video/org-policies/:org_id", func(c *gin.Context) {
-		actor, ok := s.videoAdminActor(c)
-		if !ok {
-			return
-		}
-		if s.video == nil {
-			fail(c, 503, "video gateway unavailable")
-			return
-		}
-		org, e := strconv.ParseUint(c.Param("org_id"), 10, 64)
-		if e != nil || org == 0 {
-			fail(c, 422, "invalid organization")
-			return
-		}
-		var body struct {
-			Async   bool `json:"async_execution_allowed"`
-			History bool `json:"capture_history"`
-			Days    int  `json:"retention_days"`
-		}
-		if e = videoAdminDecode(c, &body); e != nil || body.Days < 1 || body.Days > 30 {
-			fail(c, 422, "invalid retention policy")
-			return
-		}
-		e = s.db.Transaction(func(tx *gorm.DB) error {
-			if e := identity.VerifyOrgActive(tx, org); e != nil {
-				return e
-			}
-			policy := video.Policy{OrgID: org, AsyncExecutionAllowed: body.Async, CaptureHistory: body.History, RetentionDays: body.Days, UpdatedAt: s.now().UTC()}
-			if e := tx.Save(&policy).Error; e != nil {
-				return e
-			}
-			return tx.Create(&AuditLog{Actor: fmt.Sprintf("user#%d", actor.ID), Action: "video.policy.publish", Target: fmt.Sprint(org), Detail: "explicit_async_and_history_policy", CreatedAt: s.now().UnixMilli()}).Error
-		})
-		s.videoAdminReply(c, e)
-	})
+	su.PUT("/video/org-policies/:org_id", s.publishVideoOrgPolicy)
 	su.POST("/video/model-configs/:model/disable", func(c *gin.Context) {
 		actor, ok := s.videoAdminActor(c)
 		if !ok {

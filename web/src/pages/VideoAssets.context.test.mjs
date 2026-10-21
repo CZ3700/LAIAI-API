@@ -315,3 +315,22 @@ test('a delayed DELETE 401 cannot sign out a replacement session', async t => {
   assert.equal(loggedOut, false)
   assert.equal(h.auth.token, 'fixture-replacement-session')
 })
+
+test('management setup readback refreshes capabilities without closing the drawer before organization policy completion', async t => {
+  const h = await harness(t)
+  h.vm.setupOpen.value = true
+  const respond = h.respond
+  h.respond = call => call.path === '/api/video/asset-capabilities' ? {ready: false, reason: 'execution_policy_required', virtual: false} : respond(call)
+  const before = h.calls.filter(call => call.path === '/api/video/asset-capabilities').length
+  await h.vm.setupBound()
+  assert.equal(h.vm.setupOpen.value, true)
+  assert.equal(h.calls.filter(call => call.path === '/api/video/asset-capabilities').length, before + 1)
+  assert.equal(h.vm.caps.value.reason, 'execution_policy_required')
+  assert.match(h.vm.errors.execution_policy_required, /第 3 步/)
+  assert.match(h.vm.errors.execution_policy_required, /异步执行许可/)
+  assert.equal(h.vm.errors.execution_policy_required.includes('AK/SK'), false, 'execution policy is distinct from missing credentials')
+  h.vm.report(new h.ApiError(403, 'sensitive details', 'req-policy', 'execution_policy_required'))
+  assert.match(h.vm.error.value, /第 3 步/)
+  assert.match(h.vm.error.value, /req-policy/)
+  assert.equal(h.vm.error.value.includes('sensitive'), false)
+})

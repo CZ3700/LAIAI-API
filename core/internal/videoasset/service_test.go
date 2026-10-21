@@ -129,7 +129,7 @@ func setup(t *testing.T) (*Service, *gorm.DB, *time.Time, *fakeProvider) {
 			if scope.ID != "" && !sameScope(scope, testScope()) {
 				return RuntimeScope{}, ErrUnsupported
 			}
-			return RuntimeScope{Scope: testScope(), Credentials: Credentials{AccessKey: "AKTEST", SecretKey: "test-secret"}, Capabilities: Capabilities{VirtualGroups: true, Images: true, Videos: true, Audio: true, Portrait: true, DeleteVirtualEmptyGroups: true, Sync: true, Update: true, DeleteAssets: true, ExclusiveProjectWrites: true}, ExecutionRetentionConsent: true, CaptureHistory: true}, nil
+			return RuntimeScope{Scope: testScope(), Credentials: Credentials{AccessKey: "AKTEST", SecretKey: "test-secret"}, Capabilities: Capabilities{VirtualGroups: true, Images: true, Videos: true, Audio: true, Portrait: true, DeleteVirtualEmptyGroups: true, Sync: true, Update: true, DeleteAssets: true, ExclusiveProjectWrites: true}, ExecutionRetentionConsent: true, CaptureHistory: true, RetentionDays: 30}, nil
 		},
 		VerifyMedia: func(_ context.Context, _ uint64, _ string, _ string) (MediaEvidence, error) {
 			return MediaEvidence{ImmutableObjectRef: "immutable1", FetchURL: "https://media.example/immutable.png", ObjectSHA256: strings.Repeat("a", 64), MIME: "image/png", ByteSize: 4096, Width: 640, Height: 480, Version: 1, VerifiedAt: now}, nil
