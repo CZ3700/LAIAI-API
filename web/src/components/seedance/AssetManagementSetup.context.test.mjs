@@ -24,6 +24,7 @@ const built = await build({ stdin: { contents: compiled.content, loader: 'ts', s
 const Component = (await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`)).default
 function setup(org = 1) { return {org_id: org, org_active: true, configuration_ready: false, official_access: 'not_checked', provider_scopes: [{id: 7, account_ref: 'fixture-account', region: 'cn-beijing', project_name: 'default', enabled: true}], scope_configs: [], org_routes: [], policy: {present: true, async_execution_allowed: true, capture_history: true, retention_days: 30}, deployment: {console_configured: true, media_configured: true, platform_callback_configured: false, portrait_return_configured: false, portrait_target_ready: false}, issues: []} }
 function saved(version = 1) { return {provider_scope_id: 7, version, enabled: true, credential_present: true, capabilities: {VirtualGroups: true, Images: true}, capabilities_valid: true, identity_matches_provider: true} }
+function publishedPolicy(body) { return {present: true, async_execution_allowed: body.async_execution_allowed, capture_history: body.capture_history, retention_days: body.retention_days} }
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => {resolve = yes; reject = no}); return {promise, resolve, reject} }
 async function until(predicate) { const end = performance.now() + 3000; while (performance.now() < end) { if (predicate()) return; await delay(5) }; assert.fail('condition not reached') }
 async function harness(t, data = setup()) {
@@ -57,7 +58,7 @@ test('setup starts with all capabilities off, then saves and explicitly binds an
   assert.equal(h.vm.accessKey.value + h.vm.secretKey.value + h.vm.sessionToken.value, '')
   assert.equal(h.vm.canBind.value, false, 'saving never automatically binds')
   h.vm.bindingConfirmed.value = true
-  h.respond = call => { assert.deepEqual(call.body, {org_id: 1, provider_scope_id: 7, scope_version: 1, enabled: true, default_route: true}); assert.equal(call.path, '/api/admin/video/asset-org-routes') }
+  h.respond = call => { assert.deepEqual(call.body, {org_id: 1, provider_scope_id: 7, scope_version: 1, enabled: true, default_route: true}); assert.equal(call.path, '/api/admin/video/asset-org-routes'); h.data.org_routes = [structuredClone(call.body)] }
   await h.vm.bind()
   assert.equal(writes(h).length, 2)
   assert.ok(h.events.some(([event]) => event === 'bound'))
@@ -338,5 +339,209 @@ test('project preflight stops changed names and late project responses cannot cr
     assert.equal(h.vm.notice.value, '')
     assert.equal(h.vm.busy.value, false)
     assert.equal(h.vm.secretKey.value, '')
+  }
+})
+
+test('a missing organization policy starts disabled and saving execution never implicitly grants history capture', async t => {
+  const data = setup(); data.policy = {present: false, async_execution_allowed: false, capture_history: false, retention_days: 0}
+  data.scope_configs = [saved()]; data.org_routes = [{org_id: 1, provider_scope_id: 7, scope_version: 1, enabled: true, default_route: true}]
+  const h = await harness(t, data)
+  assert.equal(h.vm.asyncExecutionAllowed.value, false)
+  assert.equal(h.vm.captureHistory.value, false)
+  assert.equal(h.vm.policyConfirmed.value, false)
+  assert.equal(h.vm.retentionDays.value, '1')
+  assert.equal(writes(h).length, 0)
+  h.vm.asyncExecutionAllowed.value = true
+  await h.vm.savePolicy()
+  assert.equal(writes(h).length, 0, 'the execution checkbox does not replace save confirmation')
+  h.vm.policyConfirmed.value = true
+  h.respond = call => {
+    assert.deepEqual(call, {method: 'PUT', path: '/api/admin/video/org-policies/1', body: {async_execution_allowed: true, capture_history: false, retention_days: 1, expected_policy: {present: false, async_execution_allowed: false, capture_history: false, retention_days: 0}}})
+    assert.equal(h.events.some(([event]) => event === 'bound'), false, 'wait for server readback before refreshing capabilities')
+    h.data.policy = publishedPolicy(call.body)
+  }
+  await h.vm.savePolicy()
+  assert.equal(writes(h).length, 1)
+  assert.equal(h.vm.policyConfirmed.value, false)
+  assert.equal(h.vm.captureHistory.value, false)
+  assert.equal(h.vm.refreshRequired.value, false)
+  assert.equal(h.events.filter(([event]) => event === 'bound').length, 1)
+  assert.match(h.vm.notice.value, /未验证火山官方权限/)
+})
+
+test('existing policy fields load exactly and every draft change requires a fresh explicit confirmation', async t => {
+  const data = setup(); data.policy = {present: true, async_execution_allowed: true, capture_history: false, retention_days: 7}
+  const h = await harness(t, data)
+  assert.equal(h.vm.asyncExecutionAllowed.value, true)
+  assert.equal(h.vm.captureHistory.value, false)
+  assert.equal(h.vm.retentionDays.value, '7')
+  assert.equal(writes(h).length, 0)
+  for (const [field, value] of [['captureHistory', true], ['asyncExecutionAllowed', false], ['retentionDays', '14']]) {
+    h.vm.policyConfirmed.value = true; h.vm[field].value = value
+    assert.equal(h.vm.policyConfirmed.value, false, field)
+    await h.vm.savePolicy()
+  }
+  for (const days of ['0', '31', '1.5', '-1', '01', '1e1', '']) {
+    h.vm.retentionDays.value = days; h.vm.policyConfirmed.value = true
+    assert.equal(h.vm.canSavePolicy.value, false, days)
+    await h.vm.savePolicy()
+  }
+  assert.equal(writes(h).length, 0)
+  await h.vm.load()
+  assert.equal(h.vm.retentionDays.value, '7')
+  assert.equal(h.vm.asyncExecutionAllowed.value, true)
+  assert.equal(h.vm.captureHistory.value, false)
+  assert.equal(h.vm.policyConfirmed.value, false)
+})
+
+test('organization policy preflight detects another administrator edit and will not overwrite saved values', async t => {
+  const h = await harness(t)
+  h.vm.captureHistory.value = false; h.vm.policyConfirmed.value = true
+  h.data.policy = {present: true, async_execution_allowed: false, capture_history: true, retention_days: 3}
+  await h.vm.savePolicy()
+  assert.equal(writes(h).length, 0)
+  assert.equal(h.vm.asyncExecutionAllowed.value, false)
+  assert.equal(h.vm.captureHistory.value, true)
+  assert.equal(h.vm.retentionDays.value, '3')
+  assert.equal(h.vm.policyConfirmed.value, false)
+  assert.match(h.vm.error.value, /未覆盖其他管理员/)
+  const late = deferred(); h.read = () => late.promise
+  h.vm.policyConfirmed.value = true
+  const pending = h.vm.savePolicy(); h.vm.retentionDays.value = '5'
+  late.resolve(structuredClone(h.data)); await pending
+  assert.equal(writes(h).length, 0, 'draft edits during preflight cannot save stale policy')
+})
+
+test('unknown policy writes require readback, do not retry, and only matching saved values refresh capabilities', async t => {
+  const h = await harness(t)
+  h.vm.captureHistory.value = false; h.vm.retentionDays.value = '9'; h.vm.policyConfirmed.value = true
+  h.respond = call => { h.data.policy = publishedPolicy(call.body); throw new h.ApiError(503, 'sensitive upstream fixture') }
+  await h.vm.savePolicy()
+  assert.equal(h.vm.refreshRequired.value, true)
+  assert.equal(h.vm.pendingReadback.value.kind, 'policy')
+  assert.equal(h.vm.error.value.includes('sensitive'), false)
+  assert.equal(h.events.some(([event]) => event === 'bound'), false)
+  h.vm.policyConfirmed.value = true; await h.vm.savePolicy()
+  assert.equal(writes(h).length, 1)
+  await h.vm.load()
+  assert.equal(h.vm.refreshRequired.value, false)
+  assert.equal(h.vm.pendingReadback.value, null)
+  assert.equal(h.vm.captureHistory.value, false)
+  assert.equal(h.vm.retentionDays.value, '9')
+  assert.equal(h.events.filter(([event]) => event === 'bound').length, 1)
+  assert.equal(writes(h).length, 1)
+})
+
+test('a nonmatching policy readback reports unconfirmed state and requires reconfirmation rather than locking the form forever', async t => {
+  const h = await harness(t)
+  h.vm.captureHistory.value = false; h.vm.policyConfirmed.value = true
+  h.respond = () => { throw new h.ApiError(503, 'private failure details') }
+  await h.vm.savePolicy()
+  assert.equal(h.vm.refreshRequired.value, true)
+  await h.vm.load()
+  assert.equal(h.vm.refreshRequired.value, false)
+  assert.equal(h.vm.pendingReadback.value, null)
+  assert.equal(h.vm.captureHistory.value, true, 'the actual saved state is shown')
+  assert.equal(h.vm.policyConfirmed.value, false)
+  assert.equal(h.vm.canSavePolicy.value, false)
+  assert.match(h.vm.error.value, /未确认保存成功/)
+  assert.equal(h.events.some(([event]) => event === 'bound'), false)
+  assert.equal(writes(h).length, 1)
+})
+
+test('late policy responses cannot apply to a replacement organization, session, or superadmin role', async t => {
+  const h = await harness(t)
+  for (const change of ['organization', 'session', 'role']) {
+    const late = deferred(); h.respond = () => late.promise
+    h.vm.captureHistory.value = false; h.vm.policyConfirmed.value = true
+    const count = writes(h).length, pending = h.vm.savePolicy()
+    await until(() => writes(h).length > count)
+    if (change === 'organization') { h.data = setup(2); h.props.orgId = 2; h.auth.orgId = 2 }
+    else if (change === 'session') h.auth.token = 'fixture-session-replaced'
+    else h.auth.isSuperadmin = false
+    await until(() => !h.vm.loading.value)
+    late.resolve(); await pending
+    assert.equal(h.vm.notice.value, '')
+    assert.equal(h.vm.pendingReadback.value, null)
+    assert.equal(h.vm.policyConfirmed.value, false)
+    assert.equal(h.vm.busy.value, false)
+    assert.equal(h.events.some(([event]) => event === 'bound'), false)
+  }
+})
+
+test('binding waits for the exact default route and leaves policy settings unchanged for the third step', async t => {
+  const data = setup(); data.scope_configs = [saved()]; data.policy = {present: false, async_execution_allowed: false, capture_history: false, retention_days: 0}
+  const h = await harness(t, data)
+  h.vm.bindingConfirmed.value = true
+  await h.vm.bind()
+  assert.equal(h.vm.refreshRequired.value, true)
+  assert.equal(h.events.some(([event]) => event === 'bound'), false)
+  h.data.org_routes = [{org_id: 1, provider_scope_id: 7, scope_version: 1, enabled: true, default_route: true}]
+  await h.vm.load()
+  assert.equal(h.vm.refreshRequired.value, false)
+  assert.equal(h.events.filter(([event]) => event === 'bound').length, 1)
+  assert.equal(h.vm.asyncExecutionAllowed.value, false)
+  assert.equal(h.vm.captureHistory.value, false)
+  assert.equal(h.vm.policyConfirmed.value, false)
+  assert.match(h.vm.notice.value, /第 3 步/)
+  assert.equal(writes(h).length, 1, 'binding does not automatically publish an execution policy')
+})
+
+test('policy conflict between preflight and PUT refreshes existing values, clears confirmation and never retries', async t => {
+  const h = await harness(t), previousPolicy = structuredClone(h.data.policy)
+  h.vm.captureHistory.value = false; h.vm.retentionDays.value = '5'; h.vm.policyConfirmed.value = true
+  h.respond = call => {
+    assert.deepEqual(call.body.expected_policy, previousPolicy, 'compare-and-swap uses the acknowledged old policy, not the requested draft')
+    h.data.policy = {present: true, async_execution_allowed: false, capture_history: true, retention_days: 2}
+    throw new h.ApiError(409, 'execution_policy_conflict')
+  }
+  await h.vm.savePolicy()
+  assert.equal(writes(h).length, 1)
+  assert.equal(h.vm.refreshRequired.value, false)
+  assert.equal(h.vm.pendingReadback.value, null)
+  assert.equal(h.vm.asyncExecutionAllowed.value, false)
+  assert.equal(h.vm.captureHistory.value, true)
+  assert.equal(h.vm.retentionDays.value, '2')
+  assert.equal(h.vm.policyConfirmed.value, false)
+  assert.match(h.vm.error.value, /其他管理员修改/)
+  assert.equal(h.events.some(([event]) => event === 'bound'), false)
+  await h.vm.savePolicy()
+  assert.equal(writes(h).length, 1)
+})
+
+test('a definitively rejected route update refreshes without waiting forever for an uncommitted route', async t => {
+  const data = setup(); data.scope_configs = [saved()]
+  const h = await harness(t, data)
+  h.vm.bindingConfirmed.value = true
+  h.respond = () => { throw new h.ApiError(409, 'route conflict') }
+  await h.vm.bind()
+  assert.equal(h.vm.refreshRequired.value, true)
+  assert.equal(h.vm.pendingReadback.value, null)
+  await h.vm.load()
+  assert.equal(h.vm.refreshRequired.value, false)
+  assert.equal(h.vm.bindingConfirmed.value, false)
+  assert.equal(h.events.some(([event]) => event === 'bound'), false)
+  assert.equal(writes(h).length, 1)
+})
+
+test('definitive policy rejections never turn an unchanged stored policy into a successful save receipt', async t => {
+  for (const status of [400, 401, 403, 404, 422, 429]) {
+    await t.test(String(status), async t => {
+      const h = await harness(t)
+      h.vm.policyConfirmed.value = true // The requested settings already equal the saved values.
+      h.respond = () => { throw new h.ApiError(status, 'private failure details') }
+      await h.vm.savePolicy()
+      assert.equal(h.vm.refreshRequired.value, true)
+      assert.equal(h.vm.pendingReadback.value, null, 'a definite rejection must not retain an unknown-write receipt')
+      assert.equal(h.vm.notice.value, '')
+      assert.equal(h.vm.error.value.includes('private'), false)
+      assert.equal(h.vm.policyConfirmed.value, false)
+      await h.vm.load()
+      assert.equal(h.vm.refreshRequired.value, false)
+      assert.equal(h.vm.notice.value, '')
+      assert.equal(h.events.some(([event]) => event === 'bound'), false, 'matching pre-existing values cannot acknowledge a rejected write')
+      assert.equal(writes(h).length, 1)
+      assert.equal(h.vm.canSavePolicy.value, false)
+    })
   }
 })

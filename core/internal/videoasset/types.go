@@ -22,6 +22,10 @@ var (
 	ErrNotEmpty      = errors.New("video asset: group not empty")
 	ErrStorage       = errors.New("video asset: storage unavailable")
 	ErrSecret        = errors.New("video asset: secret unavailable")
+	// ErrExecutionPolicy is a local configuration classification, never an
+	// upstream credential or permission error. Console diagnostics may expose
+	// the corresponding safe action without revealing account configuration.
+	ErrExecutionPolicy = errors.New("video asset: explicit execution policy required")
 )
 
 const (
@@ -62,6 +66,7 @@ type RuntimeScope struct {
 	Credentials                               Credentials
 	Capabilities                              Capabilities
 	ExecutionRetentionConsent, CaptureHistory bool
+	RetentionDays                             int
 }
 
 // An empty requested scope selects the configured route; otherwise resolution

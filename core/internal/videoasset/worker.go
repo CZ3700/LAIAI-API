@@ -226,7 +226,7 @@ func (s *Service) finish(ctx context.Context, op Operation, r RuntimeScope, resu
 				}
 			}
 		}
-		prepared, err = s.evidence.Prepare(invocation.VideoPayloadInput{OrgID: op.OrgID, RequestID: op.RequestID, AttemptID: op.ID, Direction: invocation.VideoUpstreamResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: result.Body, ExpiresAt: nowMillis(s).Add(30 * 24 * time.Hour), CaptureEnabled: r.CaptureHistory, SecretValues: secrets})
+		prepared, err = s.prepareHistoryEvidence(r, invocation.VideoPayloadInput{OrgID: op.OrgID, RequestID: op.RequestID, AttemptID: op.ID, Direction: invocation.VideoUpstreamResponse, SchemaVersion: 1, Body: result.Body, SecretValues: secrets})
 		// HTTP facts remain authoritative even if optional body capture cannot be
 		// prepared. The safe event records capture absence, never raw parser errors.
 		if err != nil {

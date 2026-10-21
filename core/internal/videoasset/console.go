@@ -91,9 +91,16 @@ type CapabilityView struct {
 
 func (s *Service) ConsoleCapabilities(ctx context.Context, org uint64) CapabilityView {
 	out := CapabilityView{MediaTypes: []string{}}
-	r, err := s.resolve(ctx, org, Scope{})
+	r, err := s.resolveConfiguredScope(ctx, org, Scope{})
 	if err != nil {
 		out.Reason = "management_scope_not_configured"
+		if errors.Is(err, ErrExecutionPolicy) {
+			out.Reason = "execution_policy_required"
+		}
+		return out
+	}
+	if !r.ExecutionRetentionConsent {
+		out.Reason = "execution_policy_required"
 		return out
 	}
 	out.Ready = true

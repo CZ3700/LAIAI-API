@@ -45,9 +45,19 @@ func opScope(o Operation) Scope {
 func sameScope(a, b Scope) bool { return a == b }
 func bodyJSON(v any) []byte     { raw, _ := json.Marshal(v); return raw }
 func (s *Service) resolve(ctx context.Context, org uint64, requested Scope) (RuntimeScope, error) {
-	r, err := s.options.ResolveScope(ctx, org, requested)
+	r, err := s.resolveConfiguredScope(ctx, org, requested)
 	if err != nil {
 		return RuntimeScope{}, ErrUnsupported
+	}
+	return r, nil
+}
+
+// Retain trusted configuration classifications for local diagnostics only.
+// Existing operation paths keep their fail-closed unsupported response above.
+func (s *Service) resolveConfiguredScope(ctx context.Context, org uint64, requested Scope) (RuntimeScope, error) {
+	r, err := s.options.ResolveScope(ctx, org, requested)
+	if err != nil {
+		return RuntimeScope{}, err
 	}
 	if !validScope(r.Scope) || requested.ID != "" && !sameScope(requested, r.Scope) {
 		return RuntimeScope{}, ErrUnsupported

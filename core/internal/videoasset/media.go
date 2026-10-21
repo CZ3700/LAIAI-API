@@ -580,7 +580,10 @@ func (s *Service) VerifyImportedAsset(ctx context.Context, org uint64, id string
 	if e != nil {
 		return e
 	}
-	prepared, e := s.evidence.Prepare(invocation.VideoPayloadInput{OrgID: org, RequestID: requestID, AttemptID: requestID, Direction: invocation.VideoUpstreamResponse, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: result.Body, ExpiresAt: now.Add(30 * 24 * time.Hour), CaptureEnabled: true, SecretValues: []string{r.Credentials.AccessKey, r.Credentials.SecretKey, r.Credentials.SessionToken}})
+	// Verification uses the fresh scoped official response and immutable media
+	// facts above. Its optional history is not execution evidence: disabling
+	// capture preserves a correlation record without the provider response body.
+	prepared, e := s.prepareHistoryEvidence(r, invocation.VideoPayloadInput{OrgID: org, RequestID: requestID, AttemptID: requestID, Direction: invocation.VideoUpstreamResponse, SchemaVersion: 1, Body: result.Body, SecretValues: []string{r.Credentials.AccessKey, r.Credentials.SecretKey, r.Credentials.SessionToken}})
 	if e != nil {
 		return ErrStorage
 	}

@@ -372,11 +372,20 @@ func (s *Service) assetScopeTx(tx *gorm.DB, org uint64, providerID uint64, reque
 		return out, ErrCapability
 	}
 	var policy Policy
-	if tx.Where("org_id = ?", org).First(&policy).Error != nil {
+	if err := tx.Where("org_id = ?", org).First(&policy).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Preserve the admission error while letting local setup diagnostics
+			// distinguish missing consent from unusable management credentials.
+			return out, errors.Join(ErrForbidden, videoasset.ErrExecutionPolicy)
+		}
 		return out, ErrForbidden
 	}
 	out.ExecutionRetentionConsent = policy.AsyncExecutionAllowed
 	out.CaptureHistory = policy.CaptureHistory
+	if policy.RetentionDays < 1 || policy.RetentionDays > 30 {
+		return out, errors.Join(ErrForbidden, videoasset.ErrExecutionPolicy)
+	}
+	out.RetentionDays = policy.RetentionDays
 	if credentials {
 		var c struct{ Account, Region, Project, AccessKey, SecretKey, SessionToken string }
 		if err := s.assetOpen("management", 0, strconv.FormatUint(provider.ID, 10), config.Version, config.CredentialCipher, &c); err != nil {
