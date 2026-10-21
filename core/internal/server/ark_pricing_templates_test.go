@@ -16,7 +16,6 @@ import (
 	"github.com/laiai/laiai-next/core/internal/arkpricetemplate"
 	"github.com/laiai/laiai-next/core/internal/arkverification"
 	"github.com/laiai/laiai-next/core/internal/video"
-	"github.com/laiai/laiai-next/core/internal/videoartifact"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -224,7 +223,7 @@ func TestInitialPricingTemplatePublicationUsesTargetScopeAndAtomicEvidence(t *te
 					t.Fatal(err)
 				}
 			}
-			f.srv.video = &video.Service{ArtifactService: &videoartifact.Service{}}
+			configureDirectVideoRuntime(t, f.srv)
 			if err := db.Exec(`CREATE TABLE video_quota_policies(id INTEGER PRIMARY KEY AUTOINCREMENT,org_id INTEGER NOT NULL,scope TEXT NOT NULL,owner_id INTEGER NOT NULL,model TEXT NOT NULL,metric TEXT NOT NULL,period TEXT NOT NULL,timezone TEXT NOT NULL,limit_amount NUMERIC,limit_units INTEGER,version TEXT NOT NULL,enabled INTEGER NOT NULL);`).Error; err != nil {
 				t.Fatal(err)
 			}

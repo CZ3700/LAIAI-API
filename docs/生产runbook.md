@@ -4,6 +4,8 @@
 > 本文回答"生产上怎么配、怎么验证、出事怎么查"，不重复架构决策。
 > 创建于 2026-07-04（商用迭代指令 P1-2）；每次部署拓扑变化必须同步更新。
 
+2026-10-21 Seedance 发版准备请先读[当前线上发版方案](production-release-plan-20261021.md)：包含最新 PR 边界、0049–0121 升级评估、固定镜像切换、价格模板与新默认值区别、停写/恢复和未完成的放行门禁。该方案尚未执行远程部署，旧主机记录不能替代现场盘点。
+
 ## 1. 边缘 IP 信任链（P1-2，上线门禁）
 
 `c.ClientIP()` 是三处安全判定的共同口径：**API Key IP 白名单（keyGate）**、**认证端点限流**、
@@ -134,10 +136,10 @@ chmod +x /opt/laiai-next/infra/backup.sh /opt/laiai-next/infra/backup-verify.sh
 crontab -l   # 确认
 ```
 
-生产必开加密：把 `LAIAI_BACKUP_PASSPHRASE=<强口令>` 写入 root 只读文件（如
+生产必开加密：把 `export LAIAI_BACKUP_PASSPHRASE='<强口令>'` 写入 root 只读文件（如
 `/root/.laiai-backup-env`，0600），cron 行改为
 `10 4 * * * . /root/.laiai-backup-env && /opt/laiai-next/infra/backup.sh >> /var/log/laiai-backup.log 2>&1`。
-**口令丢失 = 备份不可解，务必另处保管**（与 .env 同级纪律）。
+必须 export，让备份子进程收到口令；仅 source 普通赋值不能保证导出。检查最终生成 `.enc` 文件并验证解密退出码，不能只看 `backup ok`。**口令丢失 = 备份不可解，务必另处保管**（与 .env 同级纪律）。
 
 ### 5.2 监控口径
 
@@ -151,7 +153,7 @@ crontab -l   # 确认
 /opt/laiai-next/infra/backup-verify.sh   # 恢复进一次性临时容器并断言，绝不碰生产
 ```
 
-通过标准：输出 `PASS：恢复演练通过（N 张表）` 且 `max_migration` 与当前部署一致。
+脚本的 PASS 和 `max_migration` 仅作辅助：其解密/解压管道未完整传播失败，且表数下限不能证明全量恢复。正式放行还需分别校验解密、gzip、导入退出码，并比对完整迁移清单、关键表与账务/任务基线；见[发版方案恢复门禁](production-release-plan-20261021.md#4-镜像配置与恢复准备)。
 
 **演练记录**：
 - **2026-07-10（首次，DMIT 调试机，部署 97e5311 后）**：`PASS：恢复演练通过（25 张表）` — tables=25 / journal_rows=45 / users_rows=3 / max_migration=0044_channel_owner_org。备份文件 laiai-20260710-015731.sql.gz（20K），恢复进一次性 mysql:8.4 容器断言通过，与生产迁移号一致。灾备链路（备份 → 恢复 → 断言）首次端到端验证可用。cron 已装（04:10 UTC 每日）。

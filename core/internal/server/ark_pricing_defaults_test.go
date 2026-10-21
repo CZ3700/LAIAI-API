@@ -10,7 +10,6 @@ import (
 	"github.com/laiai/laiai-next/core/internal/arkpricecatalog"
 	"github.com/laiai/laiai-next/core/internal/arkverification"
 	"github.com/laiai/laiai-next/core/internal/video"
-	"github.com/laiai/laiai-next/core/internal/videoartifact"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -21,7 +20,7 @@ func initialOfficialPricingFixture(t *testing.T, model string) (*gin999, *gorm.D
 	f, db, tokens := pricingCatalogFixture(t)
 	arkBillMust(t, db.Where("public_model = ?", model).Delete(&video.ModelConfig{}).Error)
 	arkBillMust(t, db.Where("model = ?", model).Delete(&videobilling.PricingRule{}).Error)
-	f.srv.video = &video.Service{ArtifactService: &videoartifact.Service{}}
+	configureDirectVideoRuntime(t, f.srv)
 	arkBillMust(t, db.Exec(`CREATE TABLE video_quota_policies(id INTEGER PRIMARY KEY AUTOINCREMENT,org_id INTEGER NOT NULL,scope TEXT NOT NULL,owner_id INTEGER NOT NULL,model TEXT NOT NULL,metric TEXT NOT NULL,period TEXT NOT NULL,timezone TEXT NOT NULL,limit_amount NUMERIC,limit_units INTEGER,version TEXT NOT NULL,enabled INTEGER NOT NULL);`).Error)
 	arkBillMust(t, db.Model(&video.ProviderScope{}).Where("id = ?", 1).Update("fx_usd_per_cny", "0.125").Error)
 	var scope video.ProviderScope

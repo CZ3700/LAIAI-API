@@ -16,7 +16,6 @@ import (
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/video"
-	"github.com/laiai/laiai-next/core/internal/videoartifact"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -64,7 +63,6 @@ func testMySQLArkConfigurationPublicationAndPublicRoutes(t *testing.T, model, up
 	svc.Now = func() time.Time { return f.now }
 	svc.Gate = arkConfigGate{}
 	svc.Client = &http.Client{Transport: configNoNetwork{t}}
-	svc.ArtifactService = &videoartifact.Service{}
 	arkBillMust(t, svc.ConfigureAssets(video.AssetIntegrationOptions{}))
 	f.s.video = svc
 	su := f.r.Group("/api/admin", f.s.adminRequired(identity.PlatRoleAdmin), f.s.requireSuperadmin())

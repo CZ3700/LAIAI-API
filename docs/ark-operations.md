@@ -17,7 +17,7 @@
 
 按顺序完成：
 
-1. 应用正式迁移至 `0118`，重复执行应显示 up-to-date，运行 schema-doctor。`0073` 仅扩大旧任务 ID、状态及价格字段；先检查备份、空间和锁窗口，应用回滚不得缩窄列或删除新增账务数据。`0101` 对账户/区域/项目加唯一索引，已有重复scope时应停止并人工核对历史账务，不能自动合并或删除历史行。`0102`–`0118` 增加后台查询上下文、素材同步/上传、最低量证据与资金活动表；不重置余额、预算或任务快照。资金活动表缺失时新版 core 拒绝启动。
+1. 应用正式迁移至 `0121`，重复执行应显示 up-to-date，运行 schema-doctor。`0073` 仅扩大旧任务 ID、状态及价格字段；先检查备份、空间和锁窗口，应用回滚不得缩窄列或删除新增账务数据。`0101` 对账户/区域/项目加唯一索引，已有重复scope时应停止并人工核对历史账务，不能自动合并或删除历史行。`0102`–`0118` 增加后台查询上下文、素材同步/上传、最低量证据与资金活动表；`0119`–`0121` 增加价目预配置和版本化价格模板，不重置余额、预算或任务快照。资金活动表缺失时新版 core 拒绝启动。历史模板的固定 USD 售价和 4 倍冻结系数不等于当前新建官方默认策略，生产发布前按[发版方案](production-release-plan-20261021.md)核对 22 格与目标 FX。
 2. `POST /api/admin/video/configurations` 原子发布 `configuration`、`provider_scope`、`prices`、`supplier_budgets`、`evidence_hash`。嵌套字段当前使用对应 Go 结构的字段名（ModelConfig / ProviderScope / PricingRule / QuotaPolicy），不是公开客户 DTO。能力及维度为已核验 JSON 字符串；范围必须覆盖所有启用分辨率/比例，不能用客户声称的尺寸作为保守上界。至少提供供应商日/月金额上限。
 3. 价格版本必须新建，模型跨 scope 切换也不能重用价格版本；旧任务继续按自己的快照。更改能力语义必须变更 capability version。已有账户/区域/项目复用同一 scope ID，FX升版更新其最新汇率，不能借新 ScopeKey 重置供应商预算；旧任务的 FX 快照不变。配置发布历史保留 SHA-256 及操作者；`evidence_hash` 是运营核验材料的摘要，并不自行证明官方能力。
    每次配置发布携带的供应商预算也必须使用新的政策版本；两款模型共用 scope 时，第二次发布不能重复第一次的预算版本。预算窗口身份不含版本号，因此正常升版不重置已用量。组织 quota 发布同样不能用原版本重放。批量配置脚本应记录每步成功结果，从已完成步骤续行，不能因后一步失败而重新创建账户 scope。
@@ -25,7 +25,7 @@
 5. `PUT /api/admin/video/orgs/{org_id}/quota-policies` 发布 org/key/org_model 的 USD、Token 或任务次数日/月/累计限制；新版本切换不重置稳定窗口已用和预留量。Key 的既有预算及模型权限仍检查。渠道限制在途任务数，供应商作用域共享数据库限速。
 6. 使用客户 `GET /v1/video/models` 与 `POST /v1/video/estimates` 核对实际配置、报价版本与最大冻结额；随后才在指定测试预算内灰度。请求 `expected_pricing_version` 或 `max_charge_usd` 可约束接受条件，估算不作为最终收费 usage。
 
-停新流量使用 `POST /api/admin/video/model-configs/{model}/disable`，保留 worker 查询/结算。未知任务不得用删除 hold、修改状态或切换模型的方式“解锁”。
+短时停新流量优先演练专用渠道的 `POST /api/admin/channels/{id}/disable` / `enable`，记录原状态并只恢复原本启用的渠道；共享渠道的文本/图片也会受影响。`POST /api/admin/video/model-configs/{model}/disable` 同样能停止新准入，但无对称直接 enable 接口，恢复需重新发布完整配置，普通价格发布不会启用模型。保留 worker 查询/结算，未知任务不得用删除 hold、修改状态或切换模型的方式“解锁”。
 
 ## 素材与真人授权
 

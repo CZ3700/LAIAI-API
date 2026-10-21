@@ -185,7 +185,9 @@ func (s *Server) publishVideoConfiguration(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if s.video == nil || s.video.ArtifactService == nil {
+	// Direct delivery needs the video runtime and encrypted evidence store;
+	// generated media is no longer copied into a platform artifact service.
+	if s.video == nil || s.video.Evidence == nil {
 		fail(c, 503, "video runtime must be configured first")
 		return
 	}
