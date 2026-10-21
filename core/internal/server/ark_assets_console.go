@@ -62,7 +62,7 @@ func assetConsoleError(c *gin.Context, e error) {
 }
 func assetConsoleFilter(c *gin.Context) videoasset.ListFilter {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	return videoasset.ListFilter{Kind: c.Query("kind"), GroupID: c.Query("group_id"), Name: c.Query("name"), MediaType: c.Query("media_type"), Status: c.Query("status"), Cursor: c.Query("cursor"), Limit: limit}
+	return videoasset.ListFilter{Kind: c.Query("kind"), GroupID: c.Query("group_id"), Name: c.Query("name"), MediaType: c.Query("media_type"), Status: c.Query("status"), ProviderStatus: c.Query("provider_status"), Cursor: c.Query("cursor"), Limit: limit}
 }
 
 // org must already authenticate a live user and active organization membership.
@@ -357,6 +357,24 @@ func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 			return
 		}
 		c.JSON(202, out)
+	})
+	g.GET("/asset-sync-jobs/latest", func(c *gin.Context) {
+		a, ok := s.assetConsoleCaller(c, false)
+		if !ok {
+			return
+		}
+		kinds, present := c.GetQueryArray("kind")
+		if !present || len(kinds) != 1 {
+			assetConsoleError(c, videoasset.ErrInvalid)
+			return
+		}
+		out, e := s.video.Assets.LatestSyncJob(c.Request.Context(), a.OrgID, kinds[0])
+		if e != nil {
+			assetConsoleError(c, e)
+			return
+		}
+		c.Header("Cache-Control", "private, no-store")
+		c.JSON(200, gin.H{"job": out})
 	})
 	g.GET("/asset-sync-jobs/:id", func(c *gin.Context) {
 		a, ok := s.assetConsoleCaller(c, false)

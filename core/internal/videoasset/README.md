@@ -169,7 +169,7 @@ CREATE TABLE video_assets (
  status VARCHAR(16) NOT NULL, review_state VARCHAR(16) NOT NULL, source_payload_id VARCHAR(64) NOT NULL,
  immutable_object_ref VARCHAR(64) NOT NULL, object_sha256 CHAR(64) NOT NULL, mime VARCHAR(64) NOT NULL,
  byte_size BIGINT NOT NULL, duration_ms BIGINT NOT NULL, width INT NOT NULL, height INT NOT NULL,
- fps_num INT NOT NULL, fps_den INT NOT NULL, metadata_version BIGINT UNSIGNED NOT NULL, verified_at DATETIME(3) NOT NULL,
+ fps_num INT NOT NULL, fps_den INT NOT NULL, metadata_version BIGINT UNSIGNED NOT NULL, verified_at DATETIME(3) NULL,
  create_operation_id VARCHAR(64) NOT NULL, safe_error_code VARCHAR(64) NOT NULL,
  row_version BIGINT UNSIGNED NOT NULL, deleted_at DATETIME(3) NULL, created_at DATETIME(3) NOT NULL, updated_at DATETIME(3) NOT NULL,
  UNIQUE KEY uk_video_asset_org(org_id,asset_id), UNIQUE KEY uk_video_asset_provider(scope_id,provider_id),
@@ -285,3 +285,23 @@ from official asset registration state. Fetch URL expiry is fixed at the upload
 session expiry: retrying registration, including after expiry, replays the same
 idempotency result; expired media cannot start a new registration. Administrative
 discovery pagination binds its cursor to the exact configured scope.
+
+## Sync recovery (2026-10-22)
+
+Console `GET /api/video/asset-sync-jobs/latest?kind=virtual|real_person`
+returns `{ "job": null }` or the latest owned job for the current organization
+and exact default account/region/project/scope/version. It never returns an
+admin discovery or another organization's job. All states remain readable.
+The job exposes request_id, http_status, upstream_request_id, attempts,
+retry_count and next_attempt_at; these are safe summaries, not raw provider data.
+
+Official imports without local media evidence store verified_at as SQL NULL
+(migration 0122). They remain visible and independently deletable when authorized,
+but cannot be bound to a generation task. Migration 0123 adds safe sync summaries
+and durable read-only backoff. Each List attempt retains policy-bound encrypted
+history in Invocation Store, including failed responses; absent network responses
+are not fabricated. Capture-disabled jobs retain metadata only. Only temporary
+read failures, 429 and 5xx stop after three recorded failures per page. A worker
+lost before recording its result may replay a read-only claim after lease expiry;
+this is not a hard cap on network dispatches. Mutating creates and deletes keep
+their existing no-replay behavior. See production runbook 6.3.

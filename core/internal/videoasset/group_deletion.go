@@ -132,17 +132,21 @@ func (s *Service) deleteFailedGroup(ctx context.Context, c CreateContext, id str
 
 func safeOperationError(code string) *SafeError {
 	messages := map[string]string{
-		"provider_rejected":             "The provider rejected this operation.",
-		"provider_group_not_found":      "The provider reported that the group was not found.",
-		"group_not_empty":               "The official group contains assets and cannot be deleted.",
-		"group_empty_check_failed":      "The official empty-group check could not be verified.",
-		"group_absence_unverified":      "The provider reported a missing group, but the follow-up check could not confirm it.",
-		"group_identity_mismatch":       "The deletion request does not match the group's fixed provider identity.",
-		"provider_response_invalid":     "The provider response could not be verified.",
-		"submission_uncertain":          "The operation outcome is uncertain. Do not submit it again.",
-		"unsupported_capability":        "The configured scope no longer permits this operation.",
-		"execution_payload_unavailable": "The retained execution request is unavailable.",
-		"group_not_empty_or_unverified": "The official empty-group check could not be verified.",
+		"provider_timeout":               "The provider request timed out; the operation result needs verification.",
+		"provider_rate_limited":          "The provider rate limit was reached.",
+		"provider_authentication_failed": "The provider rejected the management credentials.",
+		"provider_permission_denied":     "The management account cannot access this project or action.",
+		"provider_rejected":              "The provider rejected this operation.",
+		"provider_group_not_found":       "The provider reported that the group was not found.",
+		"group_not_empty":                "The official group contains assets and cannot be deleted.",
+		"group_empty_check_failed":       "The official empty-group check could not be verified.",
+		"group_absence_unverified":       "The provider reported a missing group, but the follow-up check could not confirm it.",
+		"group_identity_mismatch":        "The deletion request does not match the group's fixed provider identity.",
+		"provider_response_invalid":      "The provider response could not be verified.",
+		"submission_uncertain":           "The operation outcome is uncertain. Do not submit it again.",
+		"unsupported_capability":         "The configured scope no longer permits this operation.",
+		"execution_payload_unavailable":  "The retained execution request is unavailable.",
+		"group_not_empty_or_unverified":  "The official empty-group check could not be verified.",
 	}
 	message, ok := messages[code]
 	if !ok {

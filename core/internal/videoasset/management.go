@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -43,6 +45,7 @@ type Result struct {
 	// Set only after the complete official envelope identity is verified.
 	GroupNotFound    bool `json:"-"`
 	AbsenceConfirmed bool `json:"-"`
+	Retryable        bool `json:"-"` // Only read-only sync callers may use this hint.
 }
 
 func (r Result) LogValue() slog.Value {
@@ -124,13 +127,33 @@ func (c *ManagementClient) Call(ctx context.Context, scope Scope, credentials Cr
 	result.SafeErrorCode = "provider_unavailable"
 	response, err := c.http.Do(req)
 	if err != nil {
+		result.Retryable = true
+		var networkError net.Error
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			result.SafeErrorCode = "provider_timeout"
+		}
+		if ctx.Err() != nil {
+			result.Retryable = false
+		}
 		return result
 	}
 	defer response.Body.Close()
 	result.HTTPStatus = response.StatusCode
+	result.Retryable = response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500
 	raw, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
-	if err != nil || len(raw) > 2<<20 {
+	if len(raw) > 2<<20 {
 		result.SafeErrorCode = "provider_response_invalid"
+		result.Retryable = false
+		return result
+	}
+	if err != nil {
+		result.Body = raw // Retain partial response only as encrypted, explicitly unparsed evidence.
+		// A truncated body must not turn a permanent HTTP rejection into a retry.
+		result.Retryable = ctx.Err() == nil && (result.Retryable || (response.StatusCode >= 200 && response.StatusCode < 300))
+		var networkError net.Error
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			result.SafeErrorCode = "provider_timeout"
+		}
 		return result
 	}
 	result.Body = raw
@@ -143,6 +166,9 @@ func (c *ManagementClient) Call(ctx context.Context, scope Scope, credentials Cr
 		Result json.RawMessage
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
+		if !result.Retryable {
+			result.SafeErrorCode = "provider_response_invalid"
+		}
 		return result
 	}
 	if identifier.MatchString(envelope.ResponseMetadata.RequestID) {
@@ -155,10 +181,19 @@ func (c *ManagementClient) Call(ctx context.Context, scope Scope, credentials Cr
 	if response.StatusCode >= 400 && response.StatusCode < 500 && envelope.ResponseMetadata.Error != nil {
 		if !identityValid {
 			result.SafeErrorCode = "provider_response_invalid"
+			result.Retryable = false
 			return result
 		}
 		result.Outcome = "rejected"
 		result.SafeErrorCode = "provider_rejected"
+		switch response.StatusCode {
+		case http.StatusTooManyRequests:
+			result.SafeErrorCode = "provider_rate_limited"
+		case http.StatusUnauthorized:
+			result.SafeErrorCode = "provider_authentication_failed"
+		case http.StatusForbidden:
+			result.SafeErrorCode = "provider_permission_denied"
+		}
 		if response.StatusCode == http.StatusNotFound &&
 			(action == "DeleteAssetGroup" || action == "GetAssetGroup") &&
 			envelope.ResponseMetadata.Error.Code == "NotFound.group_id" {
@@ -170,6 +205,9 @@ func (c *ManagementClient) Call(ctx context.Context, scope Scope, credentials Cr
 	if response.StatusCode < 200 || response.StatusCode >= 300 || envelope.ResponseMetadata.Error != nil ||
 		!identityValid ||
 		result.RequestID == "" || len(envelope.Result) == 0 || string(envelope.Result) == "null" {
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			result.SafeErrorCode = "provider_response_invalid"
+		}
 		return result
 	}
 	result.Outcome = "accepted"

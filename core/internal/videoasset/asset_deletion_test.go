@@ -222,6 +222,14 @@ func TestUnknownCreationProjectionAndFiltersHaveScopedSafeReceipts(t *testing.T)
 	if err != nil || assets.Total != 1 || assets.Data[0].ID != a.ID {
 		t.Fatal(assets, err)
 	}
+	view := assets.Data[0]
+	if view.ProviderStatus != "unknown" || view.MediaVerificationStatus != "verified" || view.GenerationStatus != "blocked" || view.GenerationBlockReason != "submission_uncertain" {
+		t.Fatal("uncertain create was confused with unverified media or official processing", view)
+	}
+	unknownAssets, err := s.ConsoleAssets(ctx, 1, ListFilter{ProviderStatus: "unknown", Limit: 20})
+	if err != nil || unknownAssets.Total != 1 || unknownAssets.Data[0].ID != a.ID {
+		t.Fatal("uncertain create absent from official unknown filter", unknownAssets, err)
+	}
 	for _, view := range []any{g, a} {
 		raw, _ := json.Marshal(view)
 		for _, secret := range []string{"AKTEST", "test-secret", "account1", "project1", "immutable.png", "payload_id", "receipt"} {

@@ -7,6 +7,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -51,6 +52,13 @@ type SyncJob struct {
 	Fence                                           uint64     `json:"-"`
 	LeaseUntil                                      *time.Time `json:"-"`
 	ErrorCode                                       string     `json:"error_code,omitempty"`
+	RequestID                                       string     `json:"request_id,omitempty"`
+	HTTPStatus                                      int        `json:"http_status"`
+	UpstreamRequestID                               string     `json:"upstream_request_id,omitempty"`
+	Attempts                                        uint64     `json:"attempts"`
+	RetryCount                                      uint64     `json:"retry_count"`
+	NextAttemptAt                                   *time.Time `json:"next_attempt_at,omitempty"`
+	LastRequestPayloadID, LastResponsePayloadID     string     `json:"-"`
 	CreatedAt, UpdatedAt                            time.Time
 }
 
@@ -124,7 +132,7 @@ func (s *Service) CreateSyncJob(ctx context.Context, c CreateContext, kind, mode
 			return ErrConflict
 		}
 		now := nowMillis(s)
-		out = SyncJob{ID: id, OrgID: c.OrgID, ScopeID: r.Scope.ID, ScopeVersion: r.Scope.Version, AccountID: r.Scope.AccountID, Region: r.Scope.Region, Project: r.Scope.Project, Mode: mode, Kind: kind, Phase: "groups", Status: "pending", IdempotencyHash: key, CreatedAt: now, UpdatedAt: now}
+		out = SyncJob{ID: id, OrgID: c.OrgID, RequestID: c.RequestID, ScopeID: r.Scope.ID, ScopeVersion: r.Scope.Version, AccountID: r.Scope.AccountID, Region: r.Scope.Region, Project: r.Scope.Project, Mode: mode, Kind: kind, Phase: "groups", Status: "pending", IdempotencyHash: key, CreatedAt: now, UpdatedAt: now}
 		if tx.Create(&out).Error != nil {
 			return ErrStorage
 		}
@@ -244,7 +252,7 @@ func (s *Service) processSyncJobs(ctx context.Context) error {
 	// Read-only jobs may safely retry their checkpoint after a lost worker. The
 	// fenced apply prevents that worker from overwriting a newer committed page.
 	var jobs []SyncJob
-	if s.db.WithContext(ctx).Where("status = ? OR (status = ? AND lease_until <= ?)", "pending", "running", s.now()).Order("created_at").Limit(2).Find(&jobs).Error != nil {
+	if s.db.WithContext(ctx).Where("(status = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) OR (status = ? AND lease_until <= ?)", "pending", s.now(), "running", s.now()).Order("created_at").Limit(2).Find(&jobs).Error != nil {
 		return ErrStorage
 	}
 	for _, job := range jobs {
@@ -266,7 +274,7 @@ func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 		if gate.NextDispatchAt != nil && gate.NextDispatchAt.After(now) {
 			return nil
 		}
-		claim := tx.Model(&SyncJob{}).Where("id = ? AND fence = ? AND (status = ? OR (status = ? AND lease_until <= ?))", job.ID, job.Fence, "pending", "running", now).Updates(map[string]any{"status": "running", "fence": job.Fence + 1, "lease_until": lease, "updated_at": now})
+		claim := tx.Model(&SyncJob{}).Where("id = ? AND org_id = ? AND fence = ? AND ((status = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) OR (status = ? AND lease_until <= ?))", job.ID, job.OrgID, job.Fence, "pending", now, "running", now).Updates(map[string]any{"status": "running", "fence": job.Fence + 1, "lease_until": lease, "updated_at": now})
 		if claim.Error != nil {
 			return ErrStorage
 		}
@@ -287,7 +295,7 @@ func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 	}
 	job.Fence++
 	fail := func(code string) error {
-		return s.db.WithContext(ctx).Model(&SyncJob{}).Where("id = ? AND fence = ?", job.ID, job.Fence).Updates(map[string]any{"status": "failed", "error_code": code, "lease_until": nil, "updated_at": nowMillis(s)}).Error
+		return s.db.WithContext(ctx).Model(&SyncJob{}).Where("id = ? AND org_id = ? AND fence = ? AND status = ?", job.ID, job.OrgID, job.Fence, "running").Updates(map[string]any{"status": "failed", "error_code": code, "lease_until": nil, "next_attempt_at": nil, "updated_at": nowMillis(s)}).Error
 	}
 	r, e := s.resolve(ctx, job.OrgID, Scope{job.ScopeID, job.ScopeVersion, job.AccountID, job.Region, job.Project})
 	if e != nil || !r.Capabilities.Sync {
@@ -303,7 +311,7 @@ func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 	action := "ListAssetGroups"
 	var group Group
 	if job.Phase == "assets" {
-		q := s.db.WithContext(ctx).Where("org_id = ? AND scope_id = ? AND kind = ? AND deleted_at IS NULL AND provider_id IS NOT NULL", job.OrgID, job.ScopeID, kind)
+		q := s.db.WithContext(ctx).Where("org_id = ? AND scope_id = ? AND scope_version = ? AND account_id = ? AND region = ? AND project = ? AND kind = ? AND deleted_at IS NULL AND provider_id IS NOT NULL", job.OrgID, job.ScopeID, job.ScopeVersion, job.AccountID, job.Region, job.Project, kind)
 		if job.GroupID != "" {
 			q = q.Where("group_id = ?", job.GroupID)
 		} else {
@@ -315,6 +323,9 @@ func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 		}
 		if e != nil {
 			return fail("resource_query_failed")
+		}
+		if !sameScope(groupScope(group), Scope{job.ScopeID, job.ScopeVersion, job.AccountID, job.Region, job.Project}) {
+			return fail("resource_identity_mismatch")
 		}
 		if group.Status == StatusDeleting {
 			return fail("resource_mutation_in_progress")
@@ -337,11 +348,16 @@ func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 		}
 		body["NextToken"] = checkpoint.NextToken
 	}
-	result := s.options.Client.Call(ctx, r.Scope, r.Credentials, action, bodyJSON(body), s.now())
+	request := bodyJSON(body)
+	defer clear(request)
+	result := s.options.Client.Call(ctx, r.Scope, r.Credentials, action, request, s.now())
 	defer clear(result.Body)
 	defer clear(result.Data)
+	if err := s.recordSyncAttempt(ctx, job, r, action, request, result); err != nil {
+		return fail("sync_evidence_unavailable")
+	}
 	if result.Outcome != "accepted" {
-		return fail("provider_sync_failed")
+		return s.deferSyncFailure(ctx, job, result)
 	}
 	var page struct {
 		Items     []json.RawMessage
@@ -360,12 +376,19 @@ func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 	checkpointID := ""
 	var checkpoint *invocation.PreparedVideoPayload
 	if page.NextToken != "" {
-		checkpoint, e = s.evidence.Prepare(invocation.VideoPayloadInput{OrgID: job.OrgID, RequestID: job.ID, AttemptID: job.ID + "_" + strings.TrimPrefix(nextHash[:12], ""), Direction: invocation.VideoEffectiveRequest, Purpose: invocation.VideoPurposeExecution, SchemaVersion: 1, Body: bodyJSON(map[string]string{"NextToken": page.NextToken}), ExpiresAt: now.Add(24 * time.Hour), CaptureEnabled: true})
+		// Providers may reuse the same cursor in different groups. Correlate the
+		// capsule to this fenced claim rather than globally to the cursor value.
+		checkpointAttemptID := job.ID + "_checkpoint_" + strconv.FormatUint(job.Fence, 10)
+		if len(checkpointAttemptID) > 64 {
+			return fail("checkpoint_unavailable")
+		}
+		checkpoint, e = s.evidence.Prepare(invocation.VideoPayloadInput{OrgID: job.OrgID, RequestID: job.ID, AttemptID: checkpointAttemptID, Direction: invocation.VideoEffectiveRequest, Purpose: invocation.VideoPurposeExecution, SchemaVersion: 1, Body: bodyJSON(map[string]string{"NextToken": page.NextToken}), ExpiresAt: now.Add(24 * time.Hour), CaptureEnabled: true})
 		if e != nil {
 			return fail("checkpoint_unavailable")
 		}
 		checkpointID = checkpoint.PayloadID()
 	}
+	applyErrorCode := "sync_storage_failed"
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if e := lockTenant(tx, job.OrgID); e != nil {
 			return e
@@ -373,6 +396,35 @@ func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 		var current SyncJob
 		if tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND fence = ? AND status = ?", job.ID, job.Fence, "running").Take(&current).Error != nil {
 			return nil
+		}
+		if job.Phase == "assets" {
+			// The provider call runs outside the tenant lock. Re-read the group
+			// before applying its page so a late response cannot populate a group
+			// which was deleted, mutated, or reassigned while the call was in flight.
+			var currentGroup Group
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND group_id = ?", job.OrgID, group.ID).Take(&currentGroup).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					applyErrorCode = "resource_identity_mismatch"
+				}
+				return ErrStorage
+			}
+			if currentGroup.Kind != kind || !sameScope(groupScope(currentGroup), r.Scope) || currentGroup.ProviderID == nil || *currentGroup.ProviderID != *group.ProviderID {
+				applyErrorCode = "resource_identity_mismatch"
+				return ErrConflict
+			}
+			if currentGroup.DeletedAt != nil || currentGroup.Status != StatusActive || currentGroup.ReviewState != ReviewClear {
+				applyErrorCode = "resource_mutation_in_progress"
+				return ErrConflict
+			}
+			var mutations int64
+			if err := tx.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND action IN ? AND status IN ?", job.OrgID, group.ID, []string{"UpdateAssetGroup", "DeleteAssetGroup"}, []string{"pending", "in_flight", "unknown"}).Count(&mutations).Error; err != nil {
+				return ErrStorage
+			}
+			if mutations > 0 {
+				applyErrorCode = "resource_mutation_in_progress"
+				return ErrConflict
+			}
+			group = currentGroup
 		}
 		if checkpoint != nil {
 			if _, e = s.evidence.StageTx(tx, checkpoint); e != nil {
@@ -402,7 +454,7 @@ func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 				count++
 			}
 		}
-		updates := map[string]any{"status": "pending", "pages": job.Pages + 1, "items": job.Items + count, "group_id": job.GroupID, "checkpoint_id": checkpointID, "lease_until": nil, "updated_at": nowMillis(s)}
+		updates := map[string]any{"status": "pending", "pages": job.Pages + 1, "items": job.Items + count, "group_id": job.GroupID, "checkpoint_id": checkpointID, "lease_until": nil, "retry_count": 0, "next_attempt_at": nil, "error_code": "", "updated_at": nowMillis(s)}
 		if page.NextToken != "" {
 			updates["seen_hashes"] = strings.Trim(job.SeenHashes+"|"+nextHash, "|")
 		} else {
@@ -426,7 +478,10 @@ func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 	if errors.Is(e, ErrInvalid) {
 		return fail("provider_response_invalid")
 	}
-	return e
+	if e != nil {
+		return fail(applyErrorCode)
+	}
+	return nil
 }
 
 func (s *Service) syncGroupTx(tx *gorm.DB, job SyncJob, item upstreamGroup, kind string) (int64, error) {
@@ -447,7 +502,7 @@ func (s *Service) syncGroupTx(tx *gorm.DB, job SyncJob, item upstreamGroup, kind
 	if e != nil {
 		return 0, ErrStorage
 	}
-	if g.OrgID != job.OrgID || g.DeletedAt != nil || g.Status != StatusActive {
+	if g.OrgID != job.OrgID || g.DeletedAt != nil || g.Status != StatusActive || !sameScope(groupScope(g), Scope{job.ScopeID, job.ScopeVersion, job.AccountID, job.Region, job.Project}) {
 		return 0, nil
 	}
 	var active int64
