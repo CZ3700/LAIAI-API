@@ -62,7 +62,7 @@ func assetConsoleError(c *gin.Context, e error) {
 }
 func assetConsoleFilter(c *gin.Context) videoasset.ListFilter {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	return videoasset.ListFilter{Kind: c.Query("kind"), GroupID: c.Query("group_id"), Name: c.Query("name"), MediaType: c.Query("media_type"), Status: c.Query("status"), Cursor: c.Query("cursor"), Limit: limit}
+	return videoasset.ListFilter{Kind: c.Query("kind"), GroupID: c.Query("group_id"), Name: c.Query("name"), MediaType: c.Query("media_type"), Status: c.Query("status"), ProviderStatus: c.Query("provider_status"), Cursor: c.Query("cursor"), Limit: limit}
 }
 
 // org must already authenticate a live user and active organization membership.

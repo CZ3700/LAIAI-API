@@ -130,6 +130,9 @@ func exerciseOwnedSync(t *testing.T, s *Service, db *gorm.DB, now *time.Time, sc
 		if asset.Stage != "needs_review" || asset.Reference != "" || asset.PreviewURL != "" || asset.Source != "imported" || asset.DeletionMode != "official" {
 			t.Fatal("sync either fabricated media verification or blocked deletion", asset.Stage, asset.Reference, asset.DeletionMode)
 		}
+		if asset.ProviderStatus != "active" || asset.MediaVerificationStatus != "unverified" || asset.GenerationStatus != "blocked" || asset.GenerationBlockReason != "media_unverified" {
+			t.Fatal("official import did not preserve independent availability and verification", asset.ProviderStatus, asset.MediaVerificationStatus, asset.GenerationStatus)
+		}
 		var row Asset
 		if err := db.Where("org_id = ? AND asset_id = ?", 1, asset.ID).Take(&row).Error; err != nil {
 			t.Fatal(err)

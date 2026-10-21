@@ -18,7 +18,7 @@ const built = await build({
       if (args.path === 'vue') return { contents: `export const defineComponent = v => v; export const ref = (...a) => globalThis.__videoAssets.vue.ref(...a); export const computed = (...a) => globalThis.__videoAssets.vue.computed(...a); export const watch = (...a) => globalThis.__videoAssets.vue.watch(...a); export const nextTick = (...a) => globalThis.__videoAssets.vue.nextTick(...a); export const onMounted = f => globalThis.__videoAssets.mounted.push(f); export const onUnmounted = f => globalThis.__videoAssets.unmounted.push(f);` }
       if (args.path === '@/stores/auth') return { contents: 'export const useAuth = () => globalThis.__videoAssets.auth;' }
       if (args.path === '@/lib/api') return { contents: `export class ApiError extends Error { constructor(status, message, requestId = null, code = null) { super(message); Object.assign(this,{status,requestId,code}); } } export const api = (...a) => { globalThis.__videoAssets.ApiError = ApiError; return globalThis.__videoAssets.api(...a); }; export const copyText = () => {}; export const errorMessage = (e,f) => e?.message ?? f;` }
-      if (args.path === '@/lib/videoAssets') return { contents: `export const assetWrite = (...a) => globalThis.__videoAssets.api(...a); export const assetDelete = path => globalThis.__videoAssets.delete(path); export const assetQuery = v => new URLSearchParams(Object.entries(v).filter(([,x])=>x!==undefined&&x!=='')).toString(); export const assetPreview = () => ''; export const uploadAssetFile = (...a) => globalThis.__videoAssets.upload(...a); export const syncIsRunning = (...a) => globalThis.__videoAssets.helpers.syncIsRunning(...a); export const syncIsTerminal = (...a) => globalThis.__videoAssets.helpers.syncIsTerminal(...a); export const validSyncJob = (...a) => globalThis.__videoAssets.helpers.validSyncJob(...a); export const syncPhaseText = (...a) => globalThis.__videoAssets.helpers.syncPhaseText(...a); export const syncErrorText = (...a) => globalThis.__videoAssets.helpers.syncErrorText(...a); export const syncSummary = (...a) => globalThis.__videoAssets.helpers.syncSummary(...a); export const groupStateText = (...a) => globalThis.__videoAssets.helpers.groupStateText(...a); export const assetStateText = (...a) => globalThis.__videoAssets.helpers.assetStateText(...a); export const assetReviewExplanation = (...a) => globalThis.__videoAssets.helpers.assetReviewExplanation(...a);` }
+      if (args.path === '@/lib/videoAssets') return { contents: `export const assetWrite = (...a) => globalThis.__videoAssets.api(...a); export const assetDelete = path => globalThis.__videoAssets.delete(path); export const assetQuery = v => new URLSearchParams(Object.entries(v).filter(([,x])=>x!==undefined&&x!=='')).toString(); export const assetPreview = () => ''; export const uploadAssetFile = (...a) => globalThis.__videoAssets.upload(...a); export const syncIsRunning = (...a) => globalThis.__videoAssets.helpers.syncIsRunning(...a); export const syncIsTerminal = (...a) => globalThis.__videoAssets.helpers.syncIsTerminal(...a); export const validSyncJob = (...a) => globalThis.__videoAssets.helpers.validSyncJob(...a); export const syncPhaseText = (...a) => globalThis.__videoAssets.helpers.syncPhaseText(...a); export const syncErrorText = (...a) => globalThis.__videoAssets.helpers.syncErrorText(...a); export const syncSummary = (...a) => globalThis.__videoAssets.helpers.syncSummary(...a); export const groupStateText = (...a) => globalThis.__videoAssets.helpers.groupStateText(...a); export const assetStateText = (...a) => globalThis.__videoAssets.helpers.assetStateText(...a); export const assetReviewExplanation = (...a) => globalThis.__videoAssets.helpers.assetReviewExplanation(...a); export const assetProviderState = (...a) => globalThis.__videoAssets.helpers.assetProviderState(...a); export const assetStateTone = (...a) => globalThis.__videoAssets.helpers.assetStateTone(...a); export const assetMediaStateText = (...a) => globalThis.__videoAssets.helpers.assetMediaStateText(...a); export const assetGenerationText = (...a) => globalThis.__videoAssets.helpers.assetGenerationText(...a); export const assetSizeText = (...a) => globalThis.__videoAssets.helpers.assetSizeText(...a); export const assetDurationText = (...a) => globalThis.__videoAssets.helpers.assetDurationText(...a); ` }
       if (args.path.endsWith('.vue')) return { contents: 'export default {};' }
       throw new Error(`Unexpected import: ${args.path}`)
     })
@@ -627,13 +627,66 @@ test('official discovery completion also retries failed list readback without a 
 })
 
 test('imported assets needing media verification remain visible and independently deletable while upload stays disabled',async t=>{
-  const h=await harness(t),row=asset({source:'imported',status:'needs_review',stage:'needs_review'})
+  const h=await harness(t),row=asset({source:'imported',status:'ready',stage:'needs_review',provider_status:'active',media_verification_status:'unverified',generation_status:'blocked',generation_block_reason:'media_unverified'})
   h.vm.caps.value.upload=false;h.assets=[row];await h.vm.loadAssets()
-  assert.equal(client.assetStateText(row),'媒体待核验');assert.match(client.assetReviewExplanation(row),/平台尚未完成媒体安全核验/)
+  assert.equal(client.assetStateText(row),'已入库');assert.equal(client.assetMediaStateText(row),'媒体待核验');assert.match(client.assetReviewExplanation(row),/平台尚未完成媒体安全核验/)
   assert.equal(h.vm.assetDeleteReason(row),'');assert.match(h.vm.uploadBlockedReason.value,/媒体存储与安全核验服务尚未配置/)
   assert.equal(client.groupStateText(group({create_operation:operation('unknown',{kind:'CreateAssetGroup'})})),'创建结果待核验')
-  assert.equal(client.assetStateText(asset({stage:'needs_review',status:'failed',source:'imported'})),'官方处理失败')
-  assert.equal(client.assetStateText(asset({stage:'needs_review',status:'processing',source:'imported'})),'官方处理中')
+  assert.equal(client.assetStateText(asset({stage:'needs_review',status:'failed',source:'imported'})),'失败')
+  assert.equal(client.assetStateText(asset({stage:'needs_review',status:'processing',source:'imported'})),'处理中')
+  assert.equal(writes(h).length,0)
+})
+
+test('official asset status stays independent of platform verification and reference readiness',()=>{
+  const row=asset({source:'imported',stage:'needs_review',provider_status:'active',media_verification_status:'unverified',generation_status:'blocked',generation_block_reason:'media_unverified'})
+  assert.equal(client.assetStateText(row),'已入库');assert.equal(client.assetStateTone(row),'active')
+  assert.equal(client.assetMediaStateText(row),'媒体待核验');assert.equal(client.assetGenerationText(row),'暂不可用于生成')
+  assert.match(client.assetReviewExplanation(row),/平台尚未完成媒体安全核验/)
+  const ready={...row,media_verification_status:'verified',generation_status:'ready',generation_block_reason:''}
+  assert.equal(client.assetGenerationText(ready),'素材引用就绪')
+  assert.match(client.assetReviewExplanation(ready),/任务接口核对模型、配额及授权/)
+  for(const [provider_status,label] of [['processing','处理中'],['failed','失败'],['unknown','官方状态待确认']]){
+    const other={...ready,provider_status}
+    assert.equal(client.assetStateText(other),label);assert.equal(client.assetGenerationText(other),'暂不可用于生成')
+  }
+  assert.equal(client.assetGenerationText({...ready,generation_status:'blocked',generation_block_reason:'resource_not_ready'}),'暂不可用于生成')
+  assert.match(client.assetReviewExplanation({...ready,generation_status:'blocked',generation_block_reason:'resource_not_ready'}),/素材组或使用许可/)
+})
+
+test('unknown operations override an Active projection without inventing a new official outcome',()=>{
+  const row=asset({provider_status:'active',media_verification_status:'verified',generation_status:'ready'})
+  for(const [field,kind,label] of [['create_operation','CreateAsset','注册结果待核验'],['delete_operation','DeleteAsset','删除结果待核验']]){
+    const unknown={...row,[field]:operation('unknown',{kind,resource_id:row.id})}
+    assert.equal(client.assetStateText(unknown),label);assert.equal(client.assetStateTone(unknown),'unknown')
+    assert.equal(client.assetProviderState(unknown),'active');assert.equal(client.assetGenerationText(unknown),'暂不可用于生成')
+  }
+  assert.equal(client.assetGenerationText({...row,delete_operation:operation('pending',{kind:'DeleteAsset',resource_id:row.id})}),'暂不可用于生成')
+})
+
+test('legacy or incomplete asset responses never claim verified media or infer Active from imported source',()=>{
+  const row=asset({source:'imported',status:'needs_review',stage:'needs_review',bytes:999999})
+  assert.equal(client.assetStateText(row),'官方状态待确认');assert.equal(client.assetMediaStateText(row),'媒体核验未确认')
+  assert.equal(client.assetGenerationText(row),'暂不可用于生成');assert.equal(client.assetSizeText(row),'大小未知')
+  assert.equal(client.assetStateText(asset()),'已入库');assert.equal(client.assetGenerationText(asset()),'暂不可用于生成')
+  assert.equal(client.assetStateText(asset({provider_status:'unknown'})),'官方状态待确认')
+  assert.equal(client.assetStateText(asset({provider_status:'private upstream text'})),'官方状态待确认')
+  assert.equal(client.assetReviewExplanation({...row,generation_status:'blocked',generation_block_reason:'private upstream text'}).includes('private'),false)
+})
+
+test('unverified or unavailable media facts display unknown instead of zero-sized files',()=>{
+  for(const bytes of [0,1200000])assert.equal(client.assetSizeText(asset({bytes,media_verification_status:'unverified'})),'大小未知')
+  for(const bytes of [0,-1,NaN,Infinity])assert.equal(client.assetSizeText(asset({bytes,media_verification_status:'verified'})),'大小未知')
+  assert.equal(client.assetSizeText(asset({bytes:20,media_verification_status:'verified'})),'20 B')
+  assert.equal(client.assetSizeText(asset({bytes:1200000,media_verification_status:'verified'})),'1.2 MB')
+  assert.equal(client.assetDurationText(asset({duration_ms:3000,media_verification_status:'unverified'})),'时长未知')
+  assert.equal(client.assetDurationText(asset({duration_ms:3000,media_verification_status:'verified'})),'3 秒')
+})
+
+test('official status filtering uses the provider parameter and does not reinterpret the old platform status filter',async t=>{
+  const h=await harness(t)
+  h.vm.providerStatus.value='active';await h.vm.loadAssets()
+  const request=h.calls.filter(c=>c.path.startsWith('/api/video/assets?')).at(-1),query=new URL(request.path,'http://fixture.invalid').searchParams
+  assert.equal(query.get('provider_status'),'active');assert.equal(query.has('status'),false);assert.equal(query.get('group_id'),'grp_fixture')
   assert.equal(writes(h).length,0)
 })
 

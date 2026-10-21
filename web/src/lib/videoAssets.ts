@@ -4,7 +4,7 @@ import { useAuth } from '@/stores/auth'
 export interface AssetCapabilities { ready:boolean; project?:string; scope_id?:string; virtual:boolean; portrait:boolean; media_types:string[]; sync:boolean; update:boolean; delete:boolean; delete_empty_group:boolean; upload:boolean; reason?:string }
 export interface AssetOperation { operation_id:string;kind:string;resource_id:string;status:string;poll_url?:string;request_id?:string;error?:{code:string;message:string;retryable:boolean};completed_at?:string|null }
 export interface AssetGroup { id:string;kind:string;name:string;description:string;status:string;asset_count:number;authorization_status:string;version:number;source:string;last_synced_at?:string;portrait_session_id?:string;deletion_mode?:'official'|'local_failed'|'blocked';deletion_block_reason?:string;create_operation?:AssetOperation;delete_operation?:AssetOperation }
-export interface VideoAsset { id:string;group_id:string;media_type:string;name:string;status:string;stage:string;version:number;bytes:number;duration_ms:number;error_code?:string;reference?:string;preview_url?:string;created_at:string;source:string;create_operation?:AssetOperation;delete_operation?:AssetOperation;deletion_mode?:'official'|'local_failed'|'blocked';deletion_block_reason?:string }
+export interface VideoAsset { id:string;group_id:string;media_type:string;name:string;status:string;stage:string;version:number;bytes:number;duration_ms:number;error_code?:string;reference?:string;preview_url?:string;created_at:string;source:string;create_operation?:AssetOperation;delete_operation?:AssetOperation;deletion_mode?:'official'|'local_failed'|'blocked';deletion_block_reason?:string;provider_status?:'active'|'processing'|'failed'|'unknown';media_verification_status?:'verified'|'unverified';generation_status?:'ready'|'blocked';generation_block_reason?:string }
 export interface Portrait { session_id:string;status:string;authorization_url?:string;expires_at?:string;group_id?:string }
 export interface Page<T> {data:T[];total:number;next_cursor?:string}
 export interface SyncJob {id:string;status:string;phase:string;pages:number;items:number;error_code?:string;scope_id?:string;project?:string;kind?:string;mode?:string;request_id?:string;http_status?:number;upstream_request_id?:string;attempts?:number;retry_count?:number;next_attempt_at?:string}
@@ -43,19 +43,43 @@ export function groupStateText(row:AssetGroup){
 export function assetStateText(row:VideoAsset){
  if(row.delete_operation?.status==='unknown')return '删除结果待核验'
  if(row.create_operation?.status==='unknown')return '注册结果待核验'
- if(row.stage==='needs_review'){
-  if(row.status==='failed')return '官方处理失败'
-  if(['processing','creating'].includes(row.status))return '官方处理中'
-  if(row.source==='imported')return '媒体待核验'
- }
- return ''
+ return ({active:'已入库',processing:'处理中',failed:'失败',unknown:'官方状态待确认'})[assetProviderState(row)]
+}
+export function assetProviderState(row:VideoAsset):'active'|'processing'|'failed'|'unknown'{
+ if(row.provider_status!==undefined)return ['active','processing','failed'].includes(row.provider_status)?row.provider_status:'unknown'
+ // Older responses lack the independent provider projection. Never infer Active from import source or local media stage.
+ if(['ready','active'].includes(row.status))return 'active'
+ if(row.status==='processing')return 'processing'
+ if(row.status==='failed')return 'failed'
+ return 'unknown'
+}
+export function assetStateTone(row:VideoAsset){return row.create_operation?.status==='unknown'||row.delete_operation?.status==='unknown'?'unknown':assetProviderState(row)}
+export function assetMediaStateText(row:VideoAsset){return row.media_verification_status==='verified'?'媒体已核验':row.media_verification_status==='unverified'?'媒体待核验':'媒体核验未确认'}
+function hasUnresolvedAssetOperation(row:VideoAsset){return [row.create_operation,row.delete_operation].some(op=>op&&['pending','sending','in_flight','unknown'].includes(op.status))}
+function assetReferenceReady(row:VideoAsset){return row.generation_status==='ready'&&row.media_verification_status==='verified'&&assetProviderState(row)==='active'&&!hasUnresolvedAssetOperation(row)}
+export function assetGenerationText(row:VideoAsset){return assetReferenceReady(row)?'素材引用就绪':'暂不可用于生成'}
+const generationReasons:Record<string,string>={
+ submission_uncertain:'官方操作结果尚未确认，暂时不能用于生成。',operation_pending:'资源操作正在处理，暂时不能用于生成。',
+ provider_not_ready:'官方素材尚未入库，暂时不能用于生成。',media_unverified:'平台尚未完成媒体安全核验，暂时不能用于生成。',
+ resource_not_ready:'所属素材组或使用许可尚未满足引用条件，暂时不能用于生成。',
 }
 export function assetReviewExplanation(row:VideoAsset){
  if(row.delete_operation?.status==='unknown')return '删除是否完成尚未确认，不能重复提交删除。'
  if(row.create_operation?.status==='unknown')return '官方注册结果尚未确认，暂时不能用于生成或按失败清理。'
- if(row.stage==='needs_review'&&row.source==='imported')return '此记录来自官方同步；平台尚未完成媒体安全核验，暂时不能用于生成。素材删除是否允许由独立的资源状态与权限决定。'
- return ''
+ if(hasUnresolvedAssetOperation(row))return generationReasons.operation_pending!
+ if(assetReferenceReady(row))return '素材引用条件已满足；实际生成仍由任务接口核对模型、配额及授权。'
+ if(row.generation_block_reason&&generationReasons[row.generation_block_reason])return generationReasons[row.generation_block_reason]!
+ if(row.media_verification_status==='unverified')return generationReasons.media_unverified!
+ if(row.media_verification_status!=='verified')return '平台媒体核验状态尚未确认，暂时不能用于生成。'
+ return '素材引用状态尚未就绪，请刷新状态或查看请求日志。'
 }
+export function assetSizeText(row:VideoAsset){
+ if(row.media_verification_status!=='verified'||!Number.isSafeInteger(row.bytes)||row.bytes<=0)return '大小未知'
+ const units=['B','KB','MB','GB'];let value=row.bytes,unit=0
+ while(value>=1000&&unit<units.length-1){value/=1000;unit++}
+ return new Intl.NumberFormat('zh-CN',{maximumFractionDigits:2}).format(value)+' '+units[unit]
+}
+export function assetDurationText(row:VideoAsset){return row.media_verification_status==='verified'&&Number.isSafeInteger(row.duration_ms)&&row.duration_ms>0?new Intl.NumberFormat('zh-CN',{maximumFractionDigits:2}).format(row.duration_ms/1000)+' 秒':'时长未知'}
 export function assetQuery(values:Record<string,string|number|undefined>) {const q=new URLSearchParams();for(const [k,v] of Object.entries(values)){if(v!==undefined&&v!=='')q.set(k,String(v))};return q.toString()}
 export function assetWrite<T>(method:string,path:string,body?:unknown,key=uuid()){return api<T>(method,path,body,{headers:{'Idempotency-Key':key}})}
 // A 202 response must carry an operation. Only HTTP 204 proves synchronous completion.

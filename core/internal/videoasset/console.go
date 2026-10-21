@@ -142,6 +142,7 @@ func (s *Service) consolePortraitReady(ctx context.Context, org uint64) bool {
 
 type ListFilter struct {
 	Kind, GroupID, Name, MediaType, Status, Cursor string
+	ProviderStatus                                 string `json:",omitempty"`
 	Limit                                          int
 }
 type ConsoleGroup struct {
@@ -154,15 +155,19 @@ type ConsoleGroup struct {
 }
 type ConsoleAsset struct {
 	AssetDTO
-	Version    uint64 `json:"version"`
-	Stage      string `json:"stage"`
-	Bytes      int64  `json:"bytes"`
-	DurationMS int64  `json:"duration_ms"`
-	Width      int    `json:"width"`
-	Height     int    `json:"height"`
-	ErrorCode  string `json:"error_code,omitempty"`
-	PreviewURL string `json:"preview_url,omitempty"`
-	Source     string `json:"source"`
+	ProviderStatus          string `json:"provider_status"`
+	MediaVerificationStatus string `json:"media_verification_status"`
+	GenerationStatus        string `json:"generation_status"`
+	GenerationBlockReason   string `json:"generation_block_reason,omitempty"`
+	Version                 uint64 `json:"version"`
+	Stage                   string `json:"stage"`
+	Bytes                   int64  `json:"bytes"`
+	DurationMS              int64  `json:"duration_ms"`
+	Width                   int    `json:"width"`
+	Height                  int    `json:"height"`
+	ErrorCode               string `json:"error_code,omitempty"`
+	PreviewURL              string `json:"preview_url,omitempty"`
+	Source                  string `json:"source"`
 }
 type GroupPage struct {
 	Data       []ConsoleGroup `json:"data"`
@@ -181,7 +186,7 @@ func filterIdentity(f ListFilter) string {
 	return "console:" + hash(bodyJSON(f))
 }
 func validFilter(f ListFilter) bool {
-	return f.Limit >= 1 && f.Limit <= 100 && safeName(f.Name, 100, false) && (f.Kind == "" || f.Kind == KindVirtual || f.Kind == "real_person") && (f.MediaType == "" || f.MediaType == "image" || f.MediaType == "video" || f.MediaType == "audio")
+	return f.Limit >= 1 && f.Limit <= 100 && safeName(f.Name, 100, false) && (f.Kind == "" || f.Kind == KindVirtual || f.Kind == "real_person") && (f.MediaType == "" || f.MediaType == "image" || f.MediaType == "video" || f.MediaType == "audio") && validProviderStatusFilter(f.ProviderStatus)
 }
 func applyName(q *gorm.DB, name string) *gorm.DB {
 	if name != "" {
@@ -212,7 +217,7 @@ func filterStatus(status string) (string, bool) {
 }
 func (s *Service) ConsoleGroups(ctx context.Context, org uint64, f ListFilter) (GroupPage, error) {
 	out := GroupPage{Data: []ConsoleGroup{}}
-	if org == 0 || !validFilter(f) {
+	if org == 0 || !validFilter(f) || f.ProviderStatus != "" {
 		return out, ErrInvalid
 	}
 	status, ok := filterStatus(f.Status)
@@ -286,6 +291,7 @@ func (s *Service) ConsoleAssets(ctx context.Context, org uint64, f ListFilter) (
 	if f.MediaType != "" {
 		q = q.Where("media_type = ?", f.MediaType)
 	}
+	q = applyProviderStatusFilter(q, f.ProviderStatus)
 	ready := `video_assets.review_state = ? AND video_assets.metadata_version > 0 AND video_assets.immutable_object_ref <> '' AND video_assets.provider_id IS NOT NULL AND EXISTS (SELECT 1 FROM video_asset_groups g WHERE g.org_id = video_assets.org_id AND g.group_id = video_assets.group_id AND g.deleted_at IS NULL AND g.status = ? AND g.review_state = ? AND g.scope_id = video_assets.scope_id AND g.scope_version = video_assets.scope_version AND (g.kind = ? OR EXISTS (SELECT 1 FROM video_portrait_authorizations p WHERE p.org_id = g.org_id AND p.session_id = g.portrait_id AND p.session_status IN ('succeeded','imported_verified') AND p.license_status = 'verified' AND p.license_scope = 'video_generation' AND p.license_evidence_ref <> '' AND p.revoked_at IS NULL AND p.valid_from <= ? AND p.valid_until > ? AND p.last_verified_at <= ? AND p.last_verified_at >= ? AND p.reverify_due_at > ?)))`
 	now := s.now()
 	args := []any{ReviewClear, StatusActive, ReviewClear, KindVirtual, now, now, now, now.Add(-s.options.MaxLicenseAge), now}
@@ -336,7 +342,15 @@ func (s *Service) ConsoleAssets(ctx context.Context, org uint64, f ListFilter) (
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return out, ErrStorage
 		}
-		out.Data = append(out.Data, ConsoleAsset{dto, row.RowVersion, stage, row.ByteSize, row.DurationMS, row.Width, row.Height, row.SafeErrorCode, preview, source})
+		providerStatus := consoleProviderStatus(row, dto)
+		mediaStatus := "unverified"
+		if hasMediaFacts(row) {
+			mediaStatus = "verified"
+		}
+		generationStatus, generationReason := consoleGenerationStatus(row, dto, providerStatus, mediaStatus)
+		out.Data = append(out.Data, ConsoleAsset{AssetDTO: dto, Version: row.RowVersion, Stage: stage,
+			ProviderStatus: providerStatus, MediaVerificationStatus: mediaStatus, GenerationStatus: generationStatus, GenerationBlockReason: generationReason,
+			Bytes: row.ByteSize, DurationMS: row.DurationMS, Width: row.Width, Height: row.Height, ErrorCode: row.SafeErrorCode, PreviewURL: preview, Source: source})
 	}
 	return out, nil
 }
