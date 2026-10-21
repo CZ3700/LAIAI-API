@@ -29,7 +29,7 @@ async function component(relative) {
         if (args.path === 'vue-i18n') return { contents: 'export const useI18n = () => ({t: key => key});' }
         if (args.path === 'vue-router') return { contents: 'export const useRoute = () => globalThis.__editorHarness.route; export const useRouter = () => globalThis.__editorHarness.router; export const onBeforeRouteLeave = fn => globalThis.__editorHarness.guards.push(fn);' }
         if (args.path === '@/stores/auth') return { contents: 'export const useAuth = () => globalThis.__editorHarness.auth;' }
-        if (args.path === '@/lib/api') return { contents: 'export class ApiError extends Error { constructor(status,message) { super(message); this.status = status; } } export const adminApi = (...args) => globalThis.__editorHarness.api(...args); export const api = (...args) => { globalThis.__editorHarness.ApiError = ApiError; return adminApi(...args); }; export const errorMessage = (e,fallback) => e instanceof ApiError ? e.message : fallback; export const uuid = () => "fixture-key-" + ++globalThis.__editorHarness.id;' }
+        if (args.path === '@/lib/api') return { contents: 'export class ApiError extends Error { constructor(status,message,requestId=null,code=null) { super(message); this.status = status; this.requestId = requestId; this.code = code; } } export const adminApi = (...args) => globalThis.__editorHarness.api(...args); export const api = (...args) => { globalThis.__editorHarness.ApiError = ApiError; return adminApi(...args); }; export const errorMessage = (e,fallback) => e instanceof ApiError ? e.message : fallback; export const uuid = () => "fixture-key-" + ++globalThis.__editorHarness.id;' }
         if (args.path === './types') return { contents: await readFile(new URL('./types.ts', import.meta.url), 'utf8'), loader: 'ts' }
         if (args.path === './catalogPresentation') return { contents: await readFile(new URL('./catalogPresentation.ts', import.meta.url), 'utf8'), loader: 'ts' }
         if (args.path === './videoPriceDecimal') return { contents: await readFile(new URL('./videoPriceDecimal.ts', import.meta.url), 'utf8'), loader: 'ts' }
@@ -47,6 +47,7 @@ const Summary = await component('./AdminPriceSummary.vue')
 const VariantEvidence = await component('./OfficialPriceEvidence.vue')
 const VariantPlan = await component('./VariantPricePlan.vue')
 const OfficialDefaults = await component('./OfficialVideoPricingDefaults.vue')
+const InitialSetup = await component('./InitialVideoPricingSetup.vue')
 const presentationBuild = await build({ entryPoints: [fileURLToPath(new URL('./catalogPresentation.ts', import.meta.url))], bundle: true, format: 'esm', write: false })
 const presentation = await import(`data:text/javascript;base64,${Buffer.from(presentationBuild.outputFiles[0].text).toString('base64')}`)
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
@@ -363,12 +364,162 @@ test('variant plan entry requires an enabled standard configuration on the same 
 })
 
 function defaultCandidates(model = 'seedance-2.0', channelId = 1) {
-  return {model, channel_id: channelId, catalog_version: 'captured-v1', config: null, prices: [false, true].map(input_video => ({
+  return {model, channel_id: channelId, catalog_version: 'captured-v1', config: {channel_id: 99, provider_scope_id: 7, config_version: 'existing-config'}, prices: [false, true].map(input_video => ({
     mode: 'generate', resolution: '720p', input_video, service_tier: 'default', draft: false,
     key: `generate/720p/${input_video}/default/false`, unit: 'CNY/1M_tokens', precision: 'exact',
     supplier_cny_per_1m: input_video ? '22.123456789012' : '46', retail_usd_per_1m: '99', risk_multiplier: '4', enabled: true, configured: true,
   }))}
 }
+
+function initialSetup(model = 'seedance-2.0', channel = 1) {
+  const cells = defaultCandidates(model, channel).prices.map(cell => ({...cell, minimum_rule_version: cell.input_video ? 'verified-minimum-v1' : '', available: true}))
+  return {model, channel_id: channel, channel_name: 'fixture-channel', configuration_exists: false, available: true, blockers: [], provider_scopes: [], templates: [{version: 'template-v1', model, label: 'Verified template', body_sha256: 'a'.repeat(64), fx_usd_per_cny: '0.15', fx_version: 'historical-fx', fx_observed_at: '2026-09-01T00:00:00Z', minimum_rule_version: 'verified-minimum-v1', minimum_cell_count: 56, cells}]}
+}
+function supplierBudgets() {
+  return ['day', 'month'].map((period, index) => ({id: index + 1, model: '', metric: 'cny', period, timezone: 'Asia/Shanghai', limit_amount: index ? '200' : '20', limit_units: null, version: 'budget-v1'}))
+}
+function supplierScope() { return {id: 7, account_ref: '111222333', project_name: 'production-project', region: 'cn-beijing', enabled: true, fx_usd_per_cny: '0.125', fx_version: 'scope-fx', fx_observed_at: '2026-10-01T00:00:00Z', supplier_budgets: supplierBudgets()} }
+function initialPreview(body, model = 'seedance-2.0') {
+  return {model, channel_id: body.channel_id, pricing_mode: body.pricing_mode, publishable: true, live_tested: false, config_version: `initial-config-${body.channel_id}`, pricing_version: `initial-pricing-${body.channel_id}`, template_ref: {version: body.template_version, model, sha256: 'a'.repeat(64)}, minimum_rule_version: 'verified-minimum-v1', minimum_cell_count: 56, provider_scope: body.provider_scope_id ? supplierScope() : {...supplierScope(), id: 0, account_ref: body.account_ref, project_name: body.project_name, fx_usd_per_cny: body.fx_usd_per_cny.replace(/0+$/, '')}, supplier_budgets: supplierBudgets(), enabled: body.enabled, cells: initialSetup(model).templates[0].cells.map(cell => ({...cell, retail_usd_per_1m: body.pricing_mode === 'official' ? '5.75' : cell.retail_usd_per_1m, risk_multiplier: body.pricing_mode === 'official' ? '1' : cell.risk_multiplier})), publication: {opaque: 'must-return-this-exactly', configuration: {Version: `initial-config-${body.channel_id}`}, proof: 'server-only-context'}}
+}
+function initialReadback(channel = 1) { return {model: 'seedance-2.0', channel_id: channel, config_version: `initial-config-${channel}`, pricing_version: `initial-pricing-${channel}`} }
+function initialResult(channel = 1) { return {public_model: 'seedance-2.0', version: `initial-config-${channel}`, pricing_version: `initial-pricing-${channel}`, provider_scope_id: 7} }
+function completeInitialForm(h) { Object.assign(h.vm.form.value, {account: '111222333', project: 'production-project', daily: '20', monthly: '200', fx: '0.1250', fxConfirmed: true, identityConfirmed: true}) }
+async function initialHarness(t, setup = initialSetup()) {
+  return harness(t, InitialSetup, {setup, model: setup.model, channelId: setup.channel_id, contextKey: 'A'}, call => call.path.endsWith('/initial-preview') ? initialPreview(call.body) : call.method === 'GET' ? initialReadback() : initialResult())
+}
+
+test('a genuinely unconfigured video channel opens first-time setup and never calls the rebind preview', async t => {
+  const setup = initialSetup()
+  const h = await harness(t, OfficialDefaults, {model: setup.model, channelId: 1, contextKey: 'A'}, call => call.path.includes('initial-setup') ? setup : {...defaultCandidates(), config: null})
+  assert.equal(h.vm.initialSetup.value.model, setup.model)
+  assert.equal(h.vm.canPreview.value, false)
+  await h.vm.previewPublication()
+  assert.deepEqual(h.calls.map(call => call.path), ['/api/admin/video/models/seedance-2.0/pricing/reference-candidates?channel_id=1', '/api/admin/video/models/seedance-2.0/pricing/initial-setup?channel_id=1'])
+  assert.ok(h.calls.every(call => call.method === 'GET'))
+})
+
+test('first-time fields stay empty, require explicit account/FX confirmation, and preview canonical decimal FX', async t => {
+  const h = await initialHarness(t)
+  assert.equal(h.vm.form.value.account, '')
+  assert.equal(h.vm.form.value.project, '')
+  assert.equal(h.vm.form.value.daily, '')
+  assert.equal(h.vm.form.value.monthly, '')
+  assert.equal(h.vm.form.value.enabled, false)
+  assert.equal(h.vm.form.value.fx, '0.15', 'only the labelled historical FX reference may be prefilled')
+  await h.vm.preparePreview(); assert.equal(h.calls.length, 0)
+  completeInitialForm(h)
+  h.vm.form.value.fxConfirmed = false
+  assert.equal(h.vm.canPreview.value, false)
+  h.vm.form.value.fxConfirmed = true
+  await h.vm.preparePreview()
+  assert.equal(h.calls.length, 1)
+  assert.deepEqual(h.calls[0].body, {channel_id: 1, template_version: 'template-v1', pricing_mode: 'official', provider_scope_id: 0, enabled: false, account_ref: '111222333', project_name: 'production-project', fx_usd_per_cny: '0.1250', daily_budget_cny: '20', monthly_budget_cny: '200'})
+  assert.equal(h.vm.error.value, '')
+  assert.equal(h.vm.preview.value.provider_scope.fx_usd_per_cny, '0.125')
+  assert.equal(h.vm.canPublish.value, false, 'a fresh preview still needs publication confirmation')
+  assert.ok(h.vm.preview.value.cells.every(cell => cell.risk_multiplier === '1'))
+})
+
+test('existing account scopes reuse saved policies without sending manual budgets, identity or FX fields', async t => {
+  const setup = initialSetup(); setup.provider_scopes = [supplierScope()]
+  const h = await initialHarness(t, setup)
+  completeInitialForm(h); h.vm.form.value.scopeId = 7; h.vm.form.value.fxConfirmed = false
+  await h.vm.preparePreview()
+  assert.deepEqual(h.calls[0].body, {channel_id: 1, template_version: 'template-v1', pricing_mode: 'official', provider_scope_id: 7, enabled: false})
+  assert.equal(h.vm.preview.value.provider_scope.id, 7)
+  assert.equal(h.vm.budgetAmount({...supplierBudgets()[0], metric: 'usd', limit_amount: '15'}), '15 USD')
+  assert.equal(h.vm.budgetAmount({...supplierBudgets()[0], metric: 'tokens', limit_amount: null, limit_units: 1000}), '1000 Token')
+  assert.equal(h.vm.budgetAmount({...supplierBudgets()[0], metric: 'tasks', limit_amount: null, limit_units: 5}), '5 pricingAdmin.initialTasks')
+})
+
+test('changing a first-time form invalidates its preview and template mode preserves historical reserve policy', async t => {
+  const h = await initialHarness(t); completeInitialForm(h)
+  await h.vm.preparePreview(); const firstKey = h.vm.idempotencyKey.value
+  h.vm.confirmed.value = true; h.vm.form.value.mode = 'template'
+  assert.equal(h.vm.preview.value, null); assert.equal(h.vm.confirmed.value, false)
+  assert.equal(h.vm.canPublish.value, false)
+  await h.vm.preparePreview()
+  assert.notEqual(h.vm.idempotencyKey.value, firstKey)
+  assert.ok(h.vm.preview.value.cells.every(cell => cell.risk_multiplier === '4' && cell.retail_usd_per_1m === '99'))
+  h.vm.form.value.enabled = true
+  assert.equal(h.vm.preview.value, null)
+})
+
+test('first-time publication posts the opaque preview unchanged and confirms versions by readback', async t => {
+  const h = await initialHarness(t); completeInitialForm(h)
+  await h.vm.preparePreview(); h.vm.confirmed.value = true
+  const expected = JSON.parse(h.vm.snapshot.value), key = h.vm.idempotencyKey.value, late = deferred()
+  h.respond = call => call.method === 'GET' ? late.promise : initialResult()
+  const pending = h.vm.publish()
+  await until(() => h.calls.some(call => call.path.endsWith('/pricing')))
+  assert.equal(h.events.filter(event => event[0] === 'published').length, 0)
+  const post = h.calls.find(call => call.path === '/api/admin/video/configurations')
+  assert.deepEqual(post.body, expected); assert.equal(post.options.headers['Idempotency-Key'], key)
+  late.resolve(initialReadback()); await pending
+  assert.deepEqual(h.events.filter(event => event[0] === 'published'), [['published', 'seedance-2.0', 1, 'A']])
+  assert.equal(h.vm.retryPending.value, false); assert.equal(h.vm.dirty.value, false)
+})
+
+test('a lost publication response is reconciled by exact readback without repeating the write', async t => {
+  const h = await initialHarness(t); completeInitialForm(h)
+  await h.vm.preparePreview(); h.vm.confirmed.value = true
+  h.respond = call => { if (call.method === 'POST') throw new Error('response lost'); return initialReadback() }
+  await h.vm.publish()
+  assert.equal(h.calls.filter(call => call.path === '/api/admin/video/configurations').length, 1)
+  assert.equal(h.events.filter(event => event[0] === 'published').length, 1)
+  assert.equal(h.vm.retryPending.value, false)
+})
+
+test('an unconfirmed initial publication locks edits and retries the identical body/key after checking saved versions', async t => {
+  const h = await initialHarness(t); completeInitialForm(h)
+  await h.vm.preparePreview(); h.vm.confirmed.value = true
+  h.respond = () => { throw new Error('network unavailable') }
+  await h.vm.publish()
+  assert.equal(h.vm.retryPending.value, true); assert.equal(h.vm.locked.value, true); assert.equal(h.vm.canPreview.value, false)
+  const first = h.calls.find(call => call.path === '/api/admin/video/configurations')
+  let reads = 0
+  h.respond = call => { if (call.method === 'GET') return ++reads === 1 ? {...initialReadback(), config_version: 'other-config'} : initialReadback(); return initialResult() }
+  const start = h.calls.length
+  await h.vm.publish()
+  assert.equal(h.calls[start].method, 'GET')
+  const posts = h.calls.filter(call => call.path === '/api/admin/video/configurations')
+  assert.equal(posts.length, 2); assert.deepEqual(posts[1].body, first.body); assert.deepEqual(posts[1].options, first.options)
+  assert.equal(h.events.filter(event => event[0] === 'published').length, 1)
+})
+
+test('initial publication conflicts explain the missing condition and require a fresh setup', async t => {
+  const h = await initialHarness(t); completeInitialForm(h)
+  await h.vm.preparePreview(); h.vm.confirmed.value = true
+  h.respond = call => { if (call.method === 'POST') throw new h.ApiError(422, 'opaque technical reason', null, 'initial_preview_expired'); return {...initialReadback(), config_version: 'not-this-operation'} }
+  await h.vm.publish()
+  assert.equal(h.vm.error.value, 'pricingAdmin.initialBlockExpired')
+  assert.equal(h.vm.requiresReload.value, true); assert.equal(h.vm.canPublish.value, false)
+  assert.equal(h.events.filter(event => event[0] === 'published').length, 0)
+})
+
+test('late first-time previews cannot populate another channel or authorization context', async t => {
+  const h = await initialHarness(t), late = deferred(); completeInitialForm(h)
+  h.respond = call => late.promise
+  const previous = h.vm.preparePreview(), body = h.calls[0].body
+  h.props.channelId = 2; h.props.setup = initialSetup('seedance-2.0', 2); h.props.contextKey = 'B'
+  late.resolve(initialPreview(body)); await previous
+  assert.equal(h.vm.preview.value, null); assert.equal(h.vm.busy.value, false); assert.equal(h.vm.form.value.account, '')
+  completeInitialForm(h); h.auth.isSuperadmin = false
+  await h.vm.preparePreview()
+  assert.equal(h.calls.length, 1)
+})
+
+test('late first-time publication and readback cannot report success after channel change or deactivation', async t => {
+  const h = await initialHarness(t), late = deferred(); completeInitialForm(h)
+  await h.vm.preparePreview(); h.vm.confirmed.value = true
+  h.respond = () => late.promise
+  const previous = h.vm.publish()
+  h.props.contextKey = 'B'; h.deactivated.forEach(fn => fn())
+  late.resolve(initialResult()); await previous
+  assert.equal(h.vm.preview.value, null); assert.equal(h.vm.busy.value, false)
+  assert.equal(h.events.filter(event => event[0] === 'published').length, 0)
+})
 
 for (const model of ['seedance-2.0', 'seedance-2.5', 'seedance-2.0-fast', 'seedance-2.0-mini']) {
   test(`${model} defaults request the selected channel and display only captured CNY plus multiplier one`, async t => {

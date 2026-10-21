@@ -62,6 +62,20 @@ export interface ReferenceCandidates {
   sources: ReferenceSource[]
 }
 
+export interface InitialPricingTemplate {
+  version: string; model: string; upstream_model: string; label: string; body_sha256: string; currency: string
+  fx_usd_per_cny: string; fx_version: string; fx_observed_at: string; minimum_rule_version: string; minimum_cell_count: number; cells: PriceCell[]
+}
+export interface SupplierBudget { id: number; model: string; metric: string; period: string; timezone: string; limit_amount: string | null; limit_units: number | null; version: string }
+export interface InitialProviderScope {
+  id: number; account_ref: string; project_name: string; region: string; enabled: boolean
+  fx_usd_per_cny: string; fx_version: string; fx_observed_at: string; supplier_budgets: SupplierBudget[]
+}
+export interface InitialPricingSetup {
+  model: string; channel_id: number; channel_name: string; configuration_exists: boolean; available: boolean
+  blockers: string[]; templates: InitialPricingTemplate[]; provider_scopes: InitialProviderScope[]
+}
+
 // The existing save API replaces every price column. Copy all fields even when
 // the current modality hides them; never round monetary strings in the browser.
 export function genericDraft(row: PricingModel): GenericPrice {
