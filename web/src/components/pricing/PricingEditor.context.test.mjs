@@ -384,7 +384,7 @@ function initialPreview(body, model = 'seedance-2.0') {
 }
 function initialReadback(channel = 1) { return {model: 'seedance-2.0', channel_id: channel, config_version: `initial-config-${channel}`, pricing_version: `initial-pricing-${channel}`} }
 function initialResult(channel = 1) { return {public_model: 'seedance-2.0', version: `initial-config-${channel}`, pricing_version: `initial-pricing-${channel}`, provider_scope_id: 7} }
-function completeInitialForm(h) { Object.assign(h.vm.form.value, {account: '111222333', project: 'production-project', daily: '20', monthly: '200', fx: '0.1250', fxConfirmed: true, identityConfirmed: true}) }
+function completeInitialForm(h, enabled = false) { Object.assign(h.vm.form.value, {account: '111222333', project: 'production-project', daily: '20', monthly: '200', fx: '0.1250', fxConfirmed: true, identityConfirmed: true, enabled}) }
 async function initialHarness(t, setup = initialSetup()) {
   return harness(t, InitialSetup, {setup, model: setup.model, channelId: setup.channel_id, contextKey: 'A'}, call => call.path.endsWith('/initial-preview') ? initialPreview(call.body) : call.method === 'GET' ? initialReadback() : initialResult())
 }
@@ -446,8 +446,27 @@ test('changing a first-time form invalidates its preview and template mode prese
   assert.equal(h.vm.preview.value, null)
 })
 
-test('first-time publication posts the opaque preview unchanged and confirms versions by readback', async t => {
+test('first publication requires explicitly enabling the model and reviewing a new enabled preview', async t => {
   const h = await initialHarness(t); completeInitialForm(h)
+  await h.vm.preparePreview(); h.vm.confirmed.value = true
+  assert.equal(h.vm.preview.value.enabled, false)
+  assert.equal(h.vm.canPublish.value, false)
+  await h.vm.publish()
+  assert.equal(h.calls.filter(call => call.path === '/api/admin/video/configurations').length, 0)
+  h.vm.form.value.enabled = true
+  assert.equal(h.vm.preview.value, null)
+  assert.equal(h.vm.confirmed.value, false)
+  assert.equal(h.vm.canPublish.value, false)
+  await h.vm.preparePreview()
+  assert.equal(h.calls.at(-1).body.enabled, true)
+  assert.equal(h.vm.preview.value.enabled, true)
+  assert.equal(h.vm.canPublish.value, false)
+  h.vm.confirmed.value = true
+  assert.equal(h.vm.canPublish.value, true)
+})
+
+test('first-time publication posts the opaque preview unchanged and confirms versions by readback', async t => {
+  const h = await initialHarness(t); completeInitialForm(h, true)
   await h.vm.preparePreview(); h.vm.confirmed.value = true
   const expected = JSON.parse(h.vm.snapshot.value), key = h.vm.idempotencyKey.value, late = deferred()
   h.respond = call => call.method === 'GET' ? late.promise : initialResult()
@@ -462,7 +481,7 @@ test('first-time publication posts the opaque preview unchanged and confirms ver
 })
 
 test('a lost publication response is reconciled by exact readback without repeating the write', async t => {
-  const h = await initialHarness(t); completeInitialForm(h)
+  const h = await initialHarness(t); completeInitialForm(h, true)
   await h.vm.preparePreview(); h.vm.confirmed.value = true
   h.respond = call => { if (call.method === 'POST') throw new Error('response lost'); return initialReadback() }
   await h.vm.publish()
@@ -472,7 +491,7 @@ test('a lost publication response is reconciled by exact readback without repeat
 })
 
 test('an unconfirmed initial publication locks edits and retries the identical body/key after checking saved versions', async t => {
-  const h = await initialHarness(t); completeInitialForm(h)
+  const h = await initialHarness(t); completeInitialForm(h, true)
   await h.vm.preparePreview(); h.vm.confirmed.value = true
   h.respond = () => { throw new Error('network unavailable') }
   await h.vm.publish()
@@ -489,7 +508,7 @@ test('an unconfirmed initial publication locks edits and retries the identical b
 })
 
 test('initial publication conflicts explain the missing condition and require a fresh setup', async t => {
-  const h = await initialHarness(t); completeInitialForm(h)
+  const h = await initialHarness(t); completeInitialForm(h, true)
   await h.vm.preparePreview(); h.vm.confirmed.value = true
   h.respond = call => { if (call.method === 'POST') throw new h.ApiError(422, 'opaque technical reason', null, 'initial_preview_expired'); return {...initialReadback(), config_version: 'not-this-operation'} }
   await h.vm.publish()
@@ -511,7 +530,7 @@ test('late first-time previews cannot populate another channel or authorization 
 })
 
 test('late first-time publication and readback cannot report success after channel change or deactivation', async t => {
-  const h = await initialHarness(t), late = deferred(); completeInitialForm(h)
+  const h = await initialHarness(t), late = deferred(); completeInitialForm(h, true)
   await h.vm.preparePreview(); h.vm.confirmed.value = true
   h.respond = () => late.promise
   const previous = h.vm.publish()

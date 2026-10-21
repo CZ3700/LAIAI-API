@@ -36,7 +36,7 @@ const formValid = computed(() => {
     && positive(form.value.fx, 12) && positive(form.value.daily, 8) && positive(form.value.monthly, 8) && form.value.fxConfirmed
 })
 const canPreview = computed(() => formValid.value && !locked.value && !requiresReload.value)
-const canPublish = computed(() => allowed.value && !!preview.value && confirmed.value && !!snapshot.value && !!idempotencyKey.value && !busy.value && !requiresReload.value)
+const canPublish = computed(() => allowed.value && preview.value?.enabled === true && confirmed.value && !!snapshot.value && !!idempotencyKey.value && !busy.value && !requiresReload.value)
 const blockerKeys: Record<string, string> = {
   configuration_exists: 'initialBlockExists', channel_unavailable: 'initialBlockChannel', channel_model_mismatch: 'initialBlockIdentity', channel_credential_required: 'initialBlockCredential',
   provider_scope_required: 'initialBlockScope', provider_scope_exists: 'initialBlockScopeExists', provider_scope_unavailable: 'initialBlockScopeUnavailable', supplier_budgets_required: 'initialBlockBudgets', scope_fields_conflict: 'initialBlockScopeConflict',
@@ -175,6 +175,7 @@ onBeforeUnmount(() => { active = false; reset(); emit('busy-change', false); emi
       <p class="setup-note">{{ t(form.mode === 'official' ? 'pricingAdmin.initialOfficialHelp' : 'pricingAdmin.initialTemplateHelp') }}</p>
       <p>{{ t('pricingAdmin.initialMinimum', { version: selectedTemplate?.minimum_rule_version || '—', count: selectedTemplate?.minimum_cell_count || 0 }) }}</p>
       <label class="check"><input v-model="form.enabled" type="checkbox">{{ t('pricingAdmin.initialEnable') }}</label>
+      <p v-if="!form.enabled" class="setup-note" role="status">{{ t('pricingAdmin.initialEnableRequired') }}</p>
       <p>{{ t('pricingAdmin.initialNotTested') }}</p>
     </fieldset>
     <section v-if="preview" class="setup-preview">

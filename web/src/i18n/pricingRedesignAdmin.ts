@@ -1,4 +1,5 @@
 const en = {
+  initialEnableRequired: 'You can preview before enabling. First publication requires “Enable this model” and a fresh preview; this page does not provide later activation for a disabled configuration.',
   initialTitle: 'First-time video setup', initialHelp: 'Enter the supplier account, project and production budgets here. The channel’s saved API key is reused. Previewing does not publish prices or call the model.',
   initialAccountTitle: 'Supplier account and shared budget', initialScope: 'Account and project', initialNewScope: 'Register a new account and project', initialSharedScope: 'Reuse the saved exchange rate and policies for this account and project. Each policy’s model scope is shown below; account-wide limits are shared. No new budget is created.',
   initialAccount: 'Volcengine account UID', initialProject: 'Video project name', initialAccountPlaceholder: 'Enter the account UID from Volcengine', initialProjectPlaceholder: 'Enter the project authorized for this channel', initialDailyBudget: 'Supplier daily budget', initialMonthlyBudget: 'Supplier monthly budget', initialOtherBudget: 'Supplier budget', initialLifetimeBudget: 'Supplier lifetime budget', initialTasks: 'tasks', initialAllModels: 'All models in this scope',
@@ -66,6 +67,7 @@ const en = {
   noChanges: 'Change a price to preview and publish.', unpriced: 'Not configured', loading: 'Loading model directory…',
 }
 const zhCN: typeof en = {
+  initialEnableRequired: '未勾选启用时仍可预览。首次发布需要勾选“发布后启用”并重新预览；当前页面不提供停用配置的后续启用入口。',
   initialTitle: '首次接入配置', initialHelp: '在这里填写供应商账户、项目和生产预算，复用渠道中已保存的 API Key。预览不会发布价格或调用模型。',
   initialAccountTitle: '供应商账户与共享预算', initialScope: '账户与项目', initialNewScope: '登记新的账户与项目', initialSharedScope: '复用此账户与项目已保存的汇率和限额，以下逐项展示适用模型；账户级限额由各模型共同使用，不会另建预算。',
   initialAccount: '火山账户 UID', initialProject: '视频项目名称', initialAccountPlaceholder: '填写火山账号中心的 UID', initialProjectPlaceholder: '填写当前渠道已授权的项目名称', initialDailyBudget: '供应商日预算', initialMonthlyBudget: '供应商月预算', initialOtherBudget: '供应商预算', initialLifetimeBudget: '供应商累计预算', initialTasks: '个任务', initialAllModels: '该账户范围下所有模型',
