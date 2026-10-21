@@ -349,7 +349,14 @@ build_stage() {
   images_present "$CORE_IMAGE" "$CADDY_IMAGE"
   state images "$RUN_DIR/images.json" "$CORE_IMAGE" "$CADDY_IMAGE"
   docker run --rm --pull never --network none --read-only --entrypoint sh "$CORE_IMAGE" \
-    -ec 'test -x /app/core; test -x /app/migrate; test -x /app/schema-doctor; test -x /app/backfill-funds'
+    -ec '
+      test "$(id -u)" = 10001
+      test -x /app/core; test -x /app/migrate; test -x /app/schema-doctor; test -x /app/backfill-funds
+      test -x /app/entrypoint.sh; sh -n /app/entrypoint.sh
+      set -- /app/migrations/*.sql
+      test -f "$1"
+      for migration do cat "$migration" >/dev/null; done
+    ' > "$RUN_DIR/check-core-image.log" 2>&1 || die 'Core image is not readable/executable by its runtime user; inspect check-core-image.log.'
   docker run --rm --pull never --network none --read-only --entrypoint sh "$CADDY_IMAGE" \
     -ec 'test -s /srv/console/index.html; test -d /srv/console/assets'
   docker image save -o "$RUN_DIR/candidate-images.tar" "$CORE_IMAGE" "$CADDY_IMAGE"
@@ -367,8 +374,18 @@ maintenance_enter() {
   maintenance_visible || die 'Maintenance response is not visible at the public entry.'
 }
 run_tool() {
-  local name=$1; shift
-  "${DC[@]}" run --rm --no-deps --pull never --entrypoint "/app/$name" core "$@" 2>/dev/null
+  local name=$1 code; shift
+  local diagnostics="$RUN_DIR/$name.stderr.log"
+  # Keep database/tool diagnostics private, including when stdout is captured.
+  # Never echo their contents: an upstream error may include sensitive data.
+  touch "$diagnostics"; chmod 0600 "$diagnostics"
+  if "${DC[@]}" run --rm --no-deps --pull never --entrypoint "/app/$name" core "$@" 2>> "$diagnostics"; then
+    return 0
+  else
+    code=$?
+    printf '%s failed; inspect private diagnostics: %s\n' "$name" "$diagnostics" >&2
+    return "$code"
+  fi
 }
 verify_stage() {
   PHASE=verify

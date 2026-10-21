@@ -106,6 +106,8 @@ jobs:
           persist-credentials: false
       - name: Production release syntax and isolated failure-path tests
         run: sudo make release-check
+      - name: Private checkout image permissions and real MySQL migration
+        run: bash infra/release/tests/test_image_permissions.sh
 
   redline:
     # CLAUDE.md 平台红线中可机检项

@@ -155,6 +155,8 @@ CI 验收绑定完整 SHA，并验证该提交所需的代码、迁移与前端�
 
 失败时先查看发布状态和受限记录，确认失败发生在构建前、进入维护后、迁移期间还是应用切换后。脚本不会自动把数据库恢复到旧备份，因为那可能覆盖发布期间已经产生的新任务或资金记录。
 
+构建阶段会以镜像自带的非 root 用户实际读取入口脚本和全部迁移 SQL，读取失败即阻止进入维护。发布 checkout 和密钥仍保持私有权限；仅镜像内运行所需的代码设置可读权限。迁移、schema-doctor 和回填的标准错误分别追加到该发布目录的 `migrate.stderr.log`、`schema-doctor.stderr.log` 和 `backfill-funds.stderr.log`，权限为 `0600`；控制台只显示文件路径，排障时不要将这些可能含敏感信息的原始日志公开粘贴。
+
 ```bash
 bash infra/release.sh --config /etc/laiai/release.conf status --release "$RELEASE_ID"
 bash infra/release.sh --config /etc/laiai/release.conf rollback --release "$RELEASE_ID"
