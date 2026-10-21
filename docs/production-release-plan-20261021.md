@@ -10,7 +10,7 @@
 
 本次准备分支在 #42 之上修复一个上线阻断：首次视频配置发布仍检查已停止装配的 `ArtifactService`，会使真正的直链运行环境返回 503。移除此废弃依赖并以真实构造服务的测试验证；修复的检查结果以本分支 CI 为准，不能借用 #42 的绿色状态。
 
-该修复已提交至 [PR #43](https://github.com/CZ3700/LAIAI-API/pull/43)，`cb7507f` 的 [四项 CI](https://github.com/CZ3700/LAIAI-API/actions/runs/39544055975) 均通过。当前 GHCR 准备分支在其之上补充同提交构建与镜像清单；生产副本演练已完成迁移和历史动账回填重放，既有数据问题仍阻挡正式放行，详见[演练记录](release-rehearsal-20261021.md)。
+该修复已提交至 [PR #43](https://github.com/CZ3700/LAIAI-API/pull/43)，`cb7507f` 的 [四项 CI](https://github.com/CZ3700/LAIAI-API/actions/runs/39544055975) 均通过。当前准备分支在其之上补充服务器固定源码构建与本地镜像清单；生产副本演练已完成迁移和历史动账回填重放，既有数据问题仍阻挡正式放行，详见[演练记录](release-rehearsal-20261021.md)。
 
 建议选择**短维护窗口、原数据库原地版本迁移、同批 core/Caddy 镜像切换、先指定组织放行**。当前不承诺零停机或直接蓝绿混跑 worker；新旧任务交付契约和迁移兼容性需要先演练。
 
@@ -36,7 +36,7 @@
 | P1 | 现场系统盘采样仅余约 2.4 GB，Docker 构建缓存可回收约 6.745 GB | 发版前单独核准清理不用的构建缓存或扩容，核对双版本镜像、备份/恢复和迁移临时空间的峰值；不用 `docker system prune --volumes`，不删除任何业务卷 |
 | P1 | 现场每日备份实际为未加密 gzip，标准备份口令文件不存在 | 配好独立受保护口令、导出到备份进程，生成加密备份并完成恢复；本轮新增加密备份并隔离恢复，原每日备份任务仍待改造；未删除或搬走既有备份 |
 | P1 | `deploy.sh` 健康超时仅警告且会打印管理 token | 本次不用该一键脚本；按第 6 节显式失败停止，凭据不进入普通日志。后续独立修脚本退出码、全部副本/Caddy 检查和敏感输出 |
-| P1 | `--prod` 只锁 MySQL/Redis，core/Caddy 仍现场构建 | 预先构建、验收、推送 core/Caddy；记录并锁定当前运行 MySQL/Redis 的内容摘要。生产使用 `@sha256:` 与 `--no-build`，不升级数据库基础版本 |
+| P1 | `--prod` 只锁 MySQL/Redis，core/Caddy 仍随启动现场构建 | 预先在服务器构建并验收 core/Caddy，锁定本地 image ID；MySQL/Redis 沿用当前 RepoDigest。应用禁止 pull，切换使用 `--no-build`，不升级数据库基础版本 |
 | P1 | 现有恢复脚本不足以证明完整恢复 | `backup-verify.sh` 管道不能完整传递解密/解压失败，仅“至少 20 表”不足；另行逐步检查解密、gzip、导入退出码和业务基线，不以脚本 PASS 单独放行 |
 | 条件门禁 | 私域文件上传/真人认证依赖不齐 | 空组同步与上传/认证分开验收；未安装媒体工具、未挂卷、回调或权益缺失时相应能力保持关闭 |
 | P2 | 运行清单缺少项目过滤、未跟踪文件检查 | `release-manifest.sh` 只作为辅助；额外按 Compose 项目采集所有副本镜像、服务配置摘要、未跟踪文件和卷映射 |
@@ -76,10 +76,10 @@
 
 ## 4. 镜像、配置与恢复准备
 
-候选镜像采用同仓库 GHCR，构建与清单门禁见[GHCR 候选镜像流程](ghcr-candidate-images.md)。工作流只产出镜像，不自动部署；后续执行使用同一次成功运行清单里的 core/Caddy digest。
+按最新确认，本次采用服务器拉取固定源码并本地构建，不依赖 GHCR；具体流程见[服务器源码构建方案](server-source-build.md)。线上前端由 caddy.Dockerfile 打包进 Caddy 镜像，没有独立前端容器或 dist 挂载。构建与应用切换分开；本地应用使用完整提交标签检索、实际 sha256 image ID 锁定，禁止拉取覆盖。本地 image ID 与 registry manifest digest 是不同标识，不伪造 RepoDigest。
 
-1. 锁定完成审查的最终 commit，工作树包括未跟踪文件均干净。仅从该树构建 core 和 Caddy；Caddy 内包含同版本静态页面及 OpenAPI。保存构建来源、依赖锁文件、基础镜像 digest 和最终 registry digest。
-2. 将同一批镜像用于预发布和生产，不在生产重新构建。保留上一个可用版本的两份镜像、配置、Caddyfile 与清单。MySQL/Redis 本次沿用已运行版本，基础设施升级另安排窗口。
+1. 锁定完成审查的最终 commit，工作树包括未跟踪文件均干净。仅从该树构建 core 和 Caddy；Caddy 内包含同版本静态页面及 OpenAPI。保存构建来源、依赖锁文件、基础镜像 digest、最终本地 image ID 及保存归档的 SHA256。
+2. 在服务器独立的干净源码目录串行构建，将这一次构建的同一批本地镜像用于验收和切换，不在正式切换时重新编译。保留上一个可用版本的两份镜像、配置、Caddyfile 与清单。MySQL/Redis 本次沿用已运行版本，基础设施升级另安排窗口。
 3. 生产稳定保留所有已配置秘密，包括 `LAIAI_AUTH_SECRET`、已有的 `LAIAI_VIDEO_HMAC_SECRET`、`LAIAI_DATA_KEYS` 全部历史解密 key 与 active key、DB/Redis 密码，不能用新生成值替换已有值。本生产环境首次启用视频时，只补充目前缺失的稳定 Video HMAC，并保存在受保护配置与备份中；有效 keyring 沿用现有值。新环境才初始化整套所需秘密，默认一键配置没有自动填好视频运行条件。
 4. 迁移前备份 MySQL；另行保全配置/密钥、Redis 状态、证书卷，以及仍需保留的历史媒体。备份口令须 export 给备份子进程，检查加密成功和实际输出文件，不让可选加密分支静默生成明文。加密备份保存到受限目录并保留异地副本，记录校验摘要。不要在迁移期间运行结构备份。
 5. 在隔离同版本 MySQL 恢复：先单独完成解密并检查退出码，再 `gzip -t`，再单独解压并检查，再导入并检查；不要用未启用 pipefail 的串联管道判定成功。比对备份基线中的迁移名称、核心表行数、余额/冻结、账本、任务与预算聚合值，并抽验旧凭据/请求证据可以用保留 keyring 解密，解密访问仍须审计。
@@ -107,49 +107,21 @@
 
 ### 6.1 预先准备固定镜像覆盖文件
 
-在生产受保护配置目录新增 `release-images.yml`（站点部署文件，不是声称仓库已有此文件）：
+统一使用[服务器源码构建方案第 2–4 节](server-source-build.md)的变量、`local-images.yml` 和 Bash `DC` 数组；以下命令在同一受控会话中继续执行。现场原本只加载 `docker-compose.yml`，本次新增明确锁住四个服务的 `local-images.yml`，不再叠加另一套未使用的生产 overlay。core/Caddy 固定本地 image ID，MySQL/Redis 固定当前 RepoDigest，全部 `pull_policy: never`。
 
-```yaml
-services:
-  core:
-    image: ${CORE_IMAGE:?must be an approved repository@sha256 digest}
-  caddy:
-    image: ${CADDY_IMAGE:?must be an approved repository@sha256 digest}
-    volumes:
-      - ${RELEASE_CADDYFILE:?approved absolute Caddyfile path}:/etc/caddy/Caddyfile:ro
-```
-
-与现有 `infra/docker-compose.yml`、`infra/docker-compose.prod.yml` 及现有站点配置合并。受限 `release.env` 设置四个 IMAGE 变量和已审查的 `RELEASE_CADDYFILE` 绝对路径，四个镜像值都必须人工/预检验证为 `repository@sha256:<64 hex>`；非空校验本身不验证 digest 格式。现有站点 overlay 的加载顺序必须保留，最后加载镜像覆盖文件。该 Caddyfile 应保留现场代理链及临时维护规则，其摘要随发布单记录；同一容器路径的绑定覆盖不得丢失证书卷。
-
-Linux/Bash 模板如下；所有变量先由现场填入真实值，不把密码写入 shell 历史：
+沿用 `infra` 项目及 `/opt/laiai-next/infra` 配置目录；新源码目录仅供绝对路径构建和读取新版 Compose，不能拿运行用 `DC` 数组执行 build。原配置/数据卷映射、Caddyfile、证书卷与副本数均按现场复核，不能因 project 名一致便忽略挂载路径。
 
 ```bash
-set -euo pipefail
-: "${RELEASE_DIR:?clean checkout of approved commit}"
-: "${CONFIG_DIR:?protected production configuration directory}"
-: "${COMPOSE_PROJECT:?existing compose project label}"
-: "${COMPOSE_PROJECT_DIR:?verified existing compose project directory}"
-: "${CORE_REPLICAS:?verified existing core replica count}"
+: "${CORE_REPLICAS:?verified existing core replica count; currently 1}"
 : "${PUBLIC_ORIGIN:?existing https origin}"
-
-DC=(docker compose --project-name "$COMPOSE_PROJECT"
-  --project-directory "$COMPOSE_PROJECT_DIR"
-  --env-file "$CONFIG_DIR/production.env"
-  --env-file "$CONFIG_DIR/release.env"
-  -f "$RELEASE_DIR/infra/docker-compose.yml"
-  -f "$RELEASE_DIR/infra/docker-compose.prod.yml"
-  -f "$CONFIG_DIR/release-images.yml")
-
-# 若线上原有站点 overlay，先按核验后的顺序加入 DC；否则不能继续。
 "${DC[@]}" config --quiet
-"${DC[@]}" pull core caddy
-"${DC[@]}" run --rm --no-deps --entrypoint caddy caddy \
-  validate --config /etc/caddy/Caddyfile --adapter caddyfile
-"${DC[@]}" run --rm --no-deps --entrypoint /app/migrate core \
+test "$(docker image inspect --format '{{.Id}}' "$CORE_IMAGE")" = "$CORE_IMAGE"
+test "$(docker image inspect --format '{{.Id}}' "$CADDY_IMAGE")" = "$CADDY_IMAGE"
+"${DC[@]}" run --rm --no-deps --pull never --entrypoint /app/migrate core \
   -status -dir /app/migrations
 ```
 
-`run` 覆盖入口后不会启动 core worker；状态查询与迁移依然会连接配置中的数据库，执行前必须再次核对目标。`config --quiet` 避免渲染带秘密的完整配置。模板明确设置 `--project-directory`，相对 bind/build 路径以该目录为基准；未设置时才默认以第一个 `-f` 的目录为基准。逐项核对解析后的 mysql/redis/Caddy 配置路径及卷映射，不能因 project 名一致便忽略挂载路径。
+静态页面及 Caddy 校验按配套方案完成；`run` 覆盖入口后不会启动 core worker，状态查询仍会连接配置中的数据库，执行前必须核对目标。`config --quiet` 避免渲染带秘密的完整配置。镜像缺失、配置不符或验收不通过就停止，不在正式切换时拉取或重建。
 
 ### 6.2 停新增、交接在途、最终备份
 
@@ -164,25 +136,30 @@ DC=(docker compose --project-name "$COMPOSE_PROJECT"
 
 ```bash
 # 此时已完成停写与最终备份；不重建 mysql/redis，不改变原卷。
-"${DC[@]}" run --rm --no-deps --entrypoint /app/migrate core -dir /app/migrations
-"${DC[@]}" run --rm --no-deps --entrypoint /app/migrate core -dir /app/migrations
-"${DC[@]}" run --rm --no-deps --entrypoint /app/migrate core -status -dir /app/migrations
-"${DC[@]}" run --rm --no-deps --entrypoint /app/schema-doctor core -dir /app/migrations
+test "${BASELINE_DATA_GATE:?resolved baseline}" = PASS
+test "${PRODUCTION_RELEASE_APPROVAL:?recorded release approval}" = APPROVED
+test "${FINAL_BACKUP_GATE:?verified final backup and baseline}" = PASS
+"${DC[@]}" run --rm --no-deps --pull never --entrypoint /app/migrate core -dir /app/migrations
+"${DC[@]}" run --rm --no-deps --pull never --entrypoint /app/migrate core -dir /app/migrations
+"${DC[@]}" run --rm --no-deps --pull never --entrypoint /app/migrate core -status -dir /app/migrations
+"${DC[@]}" run --rm --no-deps --pull never --entrypoint /app/schema-doctor core -dir /app/migrations
 ```
 
 同版本 doctor 和业务基线均通过、无 pending/unknown 后，显式回填历史动账投影。截止时间使用发布单中记录的同一过去 UTC 时间；回填只写活动投影，不改历史余额、journal、hold 或价格：
 
 ```bash
 : "${FUNDS_BACKFILL_CUTOFF:?recorded past RFC3339 UTC cutoff}"
-"${DC[@]}" run --rm --no-deps --entrypoint /app/backfill-funds core \
+test "${MIGRATION_DATA_GATE:?verified schema and unchanged existing data}" = PASS
+"${DC[@]}" run --rm --no-deps --pull never --entrypoint /app/backfill-funds core \
   -before "$FUNDS_BACKFILL_CUTOFF" -limit 100 -batches 10
 ```
 
 输出 `batch limit reached` 且退出码 0 仍未完成；保持同一截止时间继续分批至 `complete`，再执行一次验证无重复，并核对核心账务基线。只有回填和基线核验完成后才进入下面的应用切换；存在历史资金记录时，不能把尚未回填导致的空列表作为正常交付。
 
 ```bash
-"${DC[@]}" up -d --no-build --no-deps --wait --wait-timeout 180 --scale core="$CORE_REPLICAS" core
-"${DC[@]}" up -d --no-build --no-deps caddy
+test "${BACKFILL_DATA_GATE:?complete replay and verified invariants}" = PASS
+"${DC[@]}" up -d --no-build --no-deps --pull never --wait --wait-timeout 180 --scale core="$CORE_REPLICAS" core
+"${DC[@]}" up -d --no-build --no-deps --pull never caddy
 curl --fail --silent --show-error "$PUBLIC_ORIGIN/healthz" >/dev/null
 ```
 
@@ -215,7 +192,7 @@ curl --fail --silent --show-error "$PUBLIC_ORIGIN/healthz" >/dev/null
 - **迁移后、未接入新业务**：停止候选全部 worker；根据预演结果选择旧镜像兼容新库或恢复最终备份。若期间出现任何新任务、支付、审计/账务写入，不能假设“尚未开放新生成”就等于数据库无变化。
 - **已接入新业务**：先停新增并交接在途，优先前向修复；仅在兼容性已验证时换回旧镜像。禁止直接用旧备份覆盖已经产生的新账务，禁止手工改余额/冻结/幂等记录。
 - 旧版本媒体流与新版本官方直链契约不同，回退前核验旧产物依赖和新任务交付；保留历史媒体卷，但不恢复已经删除的秘密或过期数据。仅回滚 Caddy 或 core 一侧会造成版本不匹配。
-- 发布记录必须包含最终 commit、PR 与 CI、四服务镜像 digest/运行 ID、配置摘要、迁移前后版本、备份/恢复证据、范围/时间、验收结果、未开放能力、回退版本和负责人。记录存入受限运维位置，公开 PR 只写脱敏结论。
+- 发布记录必须包含最终 commit、PR 与 CI、应用本地 image ID、数据服务 RepoDigest/运行 ID、配置摘要、迁移前后版本、备份/恢复证据、范围/时间、验收结果、未开放能力、回退版本和负责人。记录存入受限运维位置，公开 PR 只写脱敏结论。
 - 发布后关注队列最长等待、未知提交、worker 租约、HTTP 错误、预算余量、冻结未结、对账差异、媒体 URL 失效和素材同步失败；确认次日备份/异地副本与恢复抽验。
 
 ## 9. 执行分工
@@ -227,4 +204,4 @@ curl --fail --silent --show-error "$PUBLIC_ORIGIN/healthz" >/dev/null
 | 维护 | 同一发布负责人串行停写、备份、迁移、切换 | 观察人员独立核对服务与账务 | 全部无费用验收通过 |
 | 放行 | 指定组织验收、分批放量、财务核对 | 观察日志/告警、次日对账 | 实际范围与交接记录一致 |
 
-下一阶段优先完成：历史数据门禁、镜像发布与拉取、空间和日常备份改造、生产 Video HMAC/渠道/价格/预算及回退验证，再安排维护窗口。不需要在聊天中提供数据库密码、API Key 或 AK/SK。本方案记录的现场数值是采样时点值，执行发布前须再核对。
+下一阶段优先完成：历史数据门禁、服务器构建与本地镜像锁定、空间和日常备份改造、生产 Video HMAC/渠道/价格/预算及回退验证，再安排维护窗口。不需要在聊天中提供数据库密码、API Key 或 AK/SK。本方案记录的现场数值是采样时点值，执行发布前须再核对。

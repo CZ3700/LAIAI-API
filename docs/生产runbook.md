@@ -68,8 +68,7 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
 
 ## 2. 部署纪律（既有约定的操作面）
 
-- **镜像 digest 锁定**：生产必须叠加 `docker-compose.prod.yml`，`MYSQL_IMAGE`/`REDIS_IMAGE`
-  填 digest 形式（.env.example 有取值命令）；部署前后跑 `infra/release-manifest.sh generate/diff` 留快照。
+- **镜像内容锁定**：常规生产叠加 `docker-compose.prod.yml`，`MYSQL_IMAGE`/`REDIS_IMAGE` 填 RepoDigest 形式（.env.example 有取值命令）。2026-10-21 已核对的服务器源码构建方案使用明确锁住四个服务的 `local-images.yml` 替代该 overlay：core/Caddy 为已验收本地 image ID，MySQL/Redis 为现有 RepoDigest，均不自动拉取。按[服务器构建流程](server-source-build.md)保存并核对实际清单；`infra/release-manifest.sh generate/diff` 仅辅助，还需补项目过滤、完整配置与未跟踪文件检查。
 - **迁移**：容器 entrypoint 自动跑 `/app/migrate`（重试 ~60s，失败容器退出）；大版本前先跑
   `make migrate-smoke`（真 MySQL apply×2 幂等 + schema-doctor 漂移体检）。
 - **多副本**：`docker compose up -d --scale core=N`；core 无 container_name，Caddy dynamic a 自动跟随。
@@ -114,7 +113,7 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
 - [ ] 未验真支付引擎确认处于禁用态
 
 **部署**
-- [ ] 叠加 docker-compose.prod.yml 且 MYSQL_IMAGE/REDIS_IMAGE 为 digest 形式
+- [ ] 叠加经审查的镜像锁定 overlay；MYSQL_IMAGE/REDIS_IMAGE 为现有 RepoDigest，core/Caddy 为已验收不可变引用；服务器构建使用 local-images.yml
 - [ ] `release-manifest.sh generate` 留档；对上一基线 `diff` 只有预期变化
 - [ ] 备份任务在跑（§5 cron 已装）+ 至少一次恢复演练记录（§5.3）
 - [ ] /status 状态页返回 operational；/healthz 200
@@ -211,7 +210,7 @@ LAIAI_VIDEO_PORTRAIT_RETURN_URL=https://<console-host>/app/video-assets
 
 ### 7.1 配置与升级准备
 
-- 使用完整提交构建 core 与 Caddy，生产部署固定镜像 digest，保留当前版本的发布清单、受保护环境配置和可恢复数据库备份。先通过 `make ci-all`、前端相关测试和真 MySQL 迁移检查，再按 §1.2b 校验 Caddy。
+- 使用完整提交构建 core 与 Caddy，部署锁定实际镜像内容，保留当前版本的发布清单、受保护环境配置和可恢复数据库备份。当前现场采用[服务器拉源码构建流程](server-source-build.md)：前端在 Caddy 多阶段构建中编译并装入 `/srv/console`，没有独立前端容器或 dist 挂载；应用用本地 image ID 切换，不依赖 GHCR。先通过 `make ci-all`、前端相关测试和真 MySQL 迁移检查，再按 §1.2b 校验 Caddy。
 - 本次定价、结算与直链修改不新增迁移；本分支迁移序列截至 `0121_seedance_pricing_template_20261019.sql`。必须执行仓库正式迁移并检查 schema，不能将其他开发分支的额外迁移作为本次依赖。应用回退不执行迁移降级，不用旧数据库覆盖新增账务。
 - Seedance 网关继续需要稳定的 `LAIAI_VIDEO_HMAC_SECRET`、Invocation Store 数据密钥与既有数据库；生产 Redis 按 §2 配置。组织权限、渠道凭据、精确模型映射、已发布能力及价格、最低量规则和供应商预算仍须就绪。
 - `LAIAI_VIDEO_ARTIFACT_ROOT`、`LAIAI_VIDEO_ARTIFACT_TEMP`、`LAIAI_VIDEO_ARTIFACT_HOSTS` 已退出配置，core 不再运行生成产物转存 worker。移除生成产物挂载即可；历史卷及文件留存，禁止随部署自动删除。
@@ -220,14 +219,7 @@ LAIAI_VIDEO_PORTRAIT_RETURN_URL=https://<console-host>/app/video-assets
 
 切换前停止新受理，记录在途任务、未知提交及未决费用；应用的持久化队列和数据库保留。若计划切换到不共享调度租约的运行方式，先停止旧 worker，避免两套实例重复消费。不能为获得“零在途”而重发、删除或强行退款未知提交。
 
-以下以运维准备好的、已锁定镜像 digest 的部署文件为例，路径须替换为本机真实受保护路径：
-
-```sh
-docker compose -f /opt/laiai-next/deploy/compose.production.yml config --quiet
-docker compose -f /opt/laiai-next/deploy/compose.production.yml up -d --wait --wait-timeout 60 core caddy
-docker compose -f /opt/laiai-next/deploy/compose.production.yml ps
-curl --fail --silent --show-error https://<gateway-host>/healthz
-```
+使用[本次发版方案](production-release-plan-20261021.md)和[服务器构建流程第 4–5 节](server-source-build.md)的同一套 Compose 参数、停写/备份/迁移/回填门禁及切换命令。现场目录为 `/opt/laiai-next`、项目 `infra`，原本只有 `infra/docker-compose.yml`；不能假定存在额外生产部署文件或省略原项目与配置目录参数。core/Caddy 切换显式使用 `--no-build --no-deps --pull never`，不重建数据服务。
 
 新部署须继续使用原数据库、数据密钥和预算域。核对容器运行镜像与发布清单一致、健康接口成功、Caddy 静态文件与构建摘要一致；页面不应包含 Vite 开发客户端。不能仅凭 compose 退出码判定业务验收完成。
 
