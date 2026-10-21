@@ -34,6 +34,9 @@ export const router = createRouter({
         { path: 'compare', component: () => import('@/pages/Compare.vue') },
         { path: 'diagnostics', component: () => import('@/pages/Diagnostics.vue') },
         { path: 'billing', component: () => import('@/pages/Billing.vue') },
+        { path: 'fund-activities', component: () => import('@/pages/FundActivities.vue') },
+        { path: 'video-assets', component: () => import('@/pages/VideoAssets.vue') },
+        { path: 'video-pricing', component: () => import('@/pages/LegacyVideoPricing.vue'), meta: { superadmin: true } },
         { path: 'recharges', component: () => import('@/pages/Recharges.vue') },
         { path: 'keys', component: () => import('@/pages/Keys.vue') },
         { path: 'usage', component: () => import('@/pages/Usage.vue') },
@@ -46,9 +49,13 @@ export const router = createRouter({
   ],
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const auth = useAuth()
   if (to.meta.auth && !auth.isAuthed) return { path: '/login', query: { to: to.fullPath } }
+  if (to.meta.superadmin) {
+    await auth.fetchMe()
+    if (!auth.isSuperadmin) return { path: '/app' }
+  }
   if ((to.path === '/login' || to.path === '/register') && auth.isAuthed) return { path: '/app' }
 })
 

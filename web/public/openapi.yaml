@@ -1,449 +1,3758 @@
-# LAIAI 网关数据面 OpenAPI 规范（批 D-3，手工维护——新增端点时同步更新）。
-# 客户端可直接导入 Postman/Insomnia/openapi-generator。鉴权一律 Bearer 平台 API Key。
-openapi: 3.0.3
-info:
-  title: LAIAI Gateway API
-  description: |
-    OpenAI-compatible AI gateway. Point any OpenAI SDK at `{origin}/v1` with your
-    LAIAI API key. Extra dialects: Anthropic-native ingress (`/anthropic/v1/messages`),
-    OpenAI Responses (`/v1/responses`), async video tasks (`/v1/video/generations`),
-    Midjourney proxy dialect (`/mj/*`), and a Realtime WebSocket bridge (`/v1/realtime`).
-
-    Billing: hold at request time, capture by actual usage. All prices USD.
-  version: "1.0"
-servers:
-  - url: /
-security:
-  - bearerAuth: []
-tags:
-  - name: chat
-  - name: images
-  - name: audio
-  - name: embeddings
-  - name: video-tasks
-  - name: midjourney
-  - name: misc
-
-paths:
-  /v1/models:
-    get:
-      tags: [misc]
-      summary: List models available to your key
-      responses:
-        "200":
-          description: OpenAI-shaped model list
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  object: { type: string, example: list }
-                  data:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id: { type: string, example: gpt-5.1 }
-                        object: { type: string, example: model }
-
-  /v1/chat/completions:
-    post:
-      tags: [chat]
-      summary: Chat completion (OpenAI-compatible, streaming supported)
-      description: |
-        Full OpenAI dialect: `messages`, `tools`/`tool_choice`, `response_format`
-        (json_object / json_schema — emulated on non-OpenAI upstreams), vision content
-        parts, `stream`, `stop`, `temperature`, `top_p`, `max_tokens` / `max_completion_tokens`.
-        Extensions: `models: [a, b, c]` fallback chain; `provider: {order|only|ignore}`
-        routing preference; upstream-native `thinking` / `thinkingConfig` passthrough;
-        `reasoning_content` returned for reasoning models.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [model, messages]
-              properties:
-                model: { type: string, example: gpt-5.1 }
-                messages:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      role: { type: string, enum: [system, user, assistant, tool] }
-                      content: {}
-                stream: { type: boolean, default: false }
-                max_tokens: { type: integer }
-                temperature: { type: number }
-                tools: { type: array, items: { type: object } }
-                response_format: { type: object }
-                models:
-                  type: array
-                  items: { type: string }
-                  description: Fallback chain — try each model in order on routable failures.
-                provider:
-                  type: object
-                  description: "Routing preference: {order: [p1, p2], only: [...], ignore: [...]}"
-              additionalProperties: true
-      responses:
-        "200":
-          description: Completion object, or `text/event-stream` when `stream=true`
-        "402": { $ref: "#/components/responses/PaymentRequired" }
-        "429": { $ref: "#/components/responses/RateLimited" }
-
-  /v1/responses:
-    post:
-      tags: [chat]
-      summary: OpenAI Responses API ingress
-      description: Responses-dialect requests are converted to canonical chat internally and answered in Responses shape (streaming supported).
-      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
-      responses:
-        "200": { description: Responses object / SSE stream }
-
-  /anthropic/v1/messages:
-    post:
-      tags: [chat]
-      summary: Anthropic Messages ingress
-      description: |
-        Anthropic SDK / Claude Code compatible — set base URL to `{origin}/anthropic`.
-        Accepts `x-api-key` or `Authorization: Bearer`. Thinking blocks and tool use
-        are converted bidirectionally; any upstream (not just Claude) can serve it.
-      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
-      responses:
-        "200": { description: Anthropic message object / SSE stream }
-
-  /v1/embeddings:
-    post:
-      tags: [embeddings]
-      summary: Embeddings (OpenAI-compatible)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [model, input]
-              properties:
-                model: { type: string }
-                input: {}
-      responses:
-        "200": { description: Embedding list with usage }
-
-  /v1/rerank:
-    post:
-      tags: [embeddings]
-      summary: Rerank documents (Jina/Cohere-compatible)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [model, query, documents]
-              properties:
-                model: { type: string }
-                query: { type: string }
-                documents: { type: array, items: {} }
-                top_n: { type: integer }
-      responses:
-        "200": { description: Ranked results with relevance scores }
-
-  /v1/images/generations:
-    post:
-      tags: [images]
-      summary: Generate images
-      description: |
-        OpenAI-compatible. Works with dall-e / gpt-image / flux (Replicate) / CogView
-        and other configured upstreams. For Replicate channels, extra native params
-        (seed, guidance, aspect_ratio, output_format, …) pass through; `n` is the
-        billable image count; `response_format: b64_json` returns bytes.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [model, prompt]
-              properties:
-                model: { type: string }
-                prompt: { type: string }
-                n: { type: integer, minimum: 1, maximum: 10, default: 1 }
-                size: { type: string, example: 1024x1024 }
-                response_format: { type: string, enum: [url, b64_json] }
-              additionalProperties: true
-      responses:
-        "200":
-          description: "`{created, data: [{url | b64_json}]}` — billed per returned image"
-        "402": { $ref: "#/components/responses/PaymentRequired" }
-
-  /v1/images/edits:
-    post:
-      tags: [images]
-      summary: Edit images (multipart)
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [model, image, prompt]
-              properties:
-                model: { type: string }
-                image: { type: string, format: binary }
-                mask: { type: string, format: binary }
-                prompt: { type: string }
-                n: { type: integer }
-      responses:
-        "200": { description: Same shape as generations }
-
-  /v1/images/variations:
-    post:
-      tags: [images]
-      summary: Image variations (multipart)
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [model, image]
-              properties:
-                model: { type: string }
-                image: { type: string, format: binary }
-                n: { type: integer, minimum: 1, maximum: 10, default: 1 }
-      responses:
-        "200": { description: Same shape as generations }
-
-  /v1/audio/speech:
-    post:
-      tags: [audio]
-      summary: Text-to-speech
-      description: Billed per character. Returns audio bytes (mp3/wav per `response_format`).
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [model, input, voice]
-              properties:
-                model: { type: string }
-                input: { type: string }
-                voice: { type: string }
-                response_format: { type: string }
-      responses:
-        "200": { description: Audio binary stream }
-
-  /v1/audio/transcriptions:
-    post:
-      tags: [audio]
-      summary: Speech-to-text (multipart)
-      description: Billed per call (model price `per-call`).
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [model, file]
-              properties:
-                model: { type: string }
-                file: { type: string, format: binary }
-      responses:
-        "200": { description: "`{text: ...}`" }
-
-  /v1/audio/translations:
-    post:
-      tags: [audio]
-      summary: Speech-to-English translation (multipart)
-      description: Billed per call (same pricing as transcriptions).
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [model, file]
-              properties:
-                model: { type: string }
-                file: { type: string, format: binary }
-      responses:
-        "200": { description: "`{text: ...}`" }
-
-  /v1/realtime:
-    get:
-      tags: [misc]
-      summary: Realtime WebSocket bridge
-      description: |
-        WebSocket upgrade endpoint (OpenAI Realtime dialect). Authenticate via
-        `Authorization: Bearer` header or `Sec-WebSocket-Protocol` token. Usage is
-        billed per `response.done` server event. Text and (if priced) audio tokens.
-      responses:
-        "101": { description: Switching Protocols }
-
-  /v1/video/generations:
-    post:
-      tags: [video-tasks]
-      summary: Submit async video generation task
-      description: |
-        Async task API (Seedance / Kling / Vidu / Hailuo / Wan / Sora / Veo / Suno …).
-        Funds are held at submit and settled on completion; failures refund in full.
-        Any extra top-level params (duration, resolution, ratio, generate_audio, …)
-        pass through to the vendor.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [model, content]
-              properties:
-                model: { type: string, example: doubao-seedance-pro }
-                content:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      type: { type: string, example: text }
-                      text: { type: string }
-              additionalProperties: true
-      responses:
-        "202":
-          description: Task accepted
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/VideoTask" }
-        "402": { $ref: "#/components/responses/PaymentRequired" }
-
-  /v1/video/generations/{id}:
-    get:
-      tags: [video-tasks]
-      summary: Poll task status
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        "200":
-          description: Task state (poll until succeeded/failed)
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/VideoTask" }
-
-  /v1/video/generations/{id}/content:
-    get:
-      tags: [video-tasks]
-      summary: Download/stream the task artifact via the platform proxy
-      description: Same-origin proxy for artifacts (fixes CORS / expiring vendor URLs / content-type quirks).
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        "200": { description: Video/audio binary stream }
-
-  /mj/submit/{action}:
-    post:
-      tags: [midjourney]
-      summary: Submit a Midjourney action (mjproxy dialect)
-      description: |
-        Actions: imagine | change | blend | describe | shorten | modal. Auth via
-        `mj-api-secret` header (standard MJ client convention) or Bearer — both take
-        your LAIAI API key. Billed per call (price of catalog model `mj_{action}`).
-        For change/modal pass the platform task id in `taskId`.
-      security:
-        - bearerAuth: []
-        - mjSecret: []
-      parameters:
-        - { name: action, in: path, required: true, schema: { type: string, enum: [imagine, change, blend, describe, shorten, modal] } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                prompt: { type: string }
-                taskId: { type: string, description: Platform task id of the referenced task (change/modal) }
-                index: { type: integer }
-              additionalProperties: true
-      responses:
-        "200":
-          description: "`{code: 1, description, result: <platform task id>}`; non-1 codes = failure with description"
-
-  /mj/task/{id}/fetch:
-    get:
-      tags: [midjourney]
-      summary: Fetch MJ task state (mjproxy task object)
-      security:
-        - bearerAuth: []
-        - mjSecret: []
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        "200": { description: "MJ task object (status/progress/imageUrl/buttons…), id = platform task id" }
-
-  /mj/task/list-by-condition:
-    post:
-      tags: [midjourney]
-      summary: Batch fetch MJ task states
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                ids: { type: array, items: { type: string }, maxItems: 30 }
-      responses:
-        "200": { description: Array of MJ task objects }
-
-  /mj/image/{id}:
-    get:
-      tags: [midjourney]
-      summary: Proxy the generated image via the platform (CDN-blocked regions)
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        "200": { description: Image binary }
-
-components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      description: LAIAI API key (sk-laiai-…)
-    mjSecret:
-      type: apiKey
-      in: header
-      name: mj-api-secret
-      description: Same LAIAI API key, MJ-client convention
-  schemas:
-    VideoTask:
-      type: object
-      properties:
-        id: { type: string, example: task_a1b2c3d4e5f6 }
-        model: { type: string }
-        status: { type: string, enum: [queued, running, succeeded, failed] }
-        fail_reason: { type: string }
-        result_url: { type: string, description: Artifact URL (may be a platform proxy path) }
-        cost_usd: { type: string }
-        completion_tokens: { type: integer }
-        submitted_at: { type: string, format: date-time }
-        finished_at: { type: string, format: date-time }
-    Error:
-      type: object
-      properties:
-        error:
-          type: object
-          properties:
-            message: { type: string }
-            type: { type: string }
-  responses:
-    PaymentRequired:
-      description: Insufficient balance or key quota exhausted
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/Error" }
-    RateLimited:
-      description: Rate limit exceeded (see Retry-After header)
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/Error" }
+{
+  "components": {
+    "headers": {
+      "IdempotencyReplayed": {
+        "description": "true 表示幂等重放已有结果，没有重复创建或冻结。",
+        "schema": {
+          "type": "boolean"
+        }
+      }
+    },
+    "parameters": {
+      "AssetId": {
+        "in": "path",
+        "name": "asset_id",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/AssetId"
+        }
+      },
+      "AssetIdempotencyKey": {
+        "description": "素材组、素材、H5 会话创建的幂等键；1–128 字符且不得含控制字符。同组织同路径同键同请求重放，内容冲突为 409 invalid_state。建议统一使用至少 8 位随机业务键。",
+        "in": "header",
+        "name": "Idempotency-Key",
+        "required": true,
+        "schema": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "Cursor": {
+        "description": "平台签发的不透明游标，绑定组织和列表过滤条件；任务/事件最长 512 字符，素材/会话最长 1024 字符。原样使用，不跨列表复用。",
+        "in": "query",
+        "name": "cursor",
+        "schema": {
+          "maxLength": 1024,
+          "type": "string"
+        }
+      },
+      "GroupId": {
+        "in": "path",
+        "name": "group_id",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/GroupId"
+        }
+      },
+      "IdempotencyKey": {
+        "description": "8–128 字符，由调用方为一次业务操作生成。唯一范围是组织、方法、包含资源 ID 的规范化路径、\n幂等键哈希；与 Gateway Key ID 无关。同请求重放同一任务/操作，不同请求 409。\n幂等键及规范化请求分别使用服务端 HMAC-SHA256 和不同的域标签，不保存明文摘要密钥；\n服务端 HMAC 密钥轮换需显式迁移；现有任务幂等版本不允许原位换密钥后静默再次创建。\n不得将同一个键用于不同业务请求。\n",
+        "in": "header",
+        "name": "Idempotency-Key",
+        "required": true,
+        "schema": {
+          "maxLength": 128,
+          "minLength": 8,
+          "pattern": "^[!-~]+$",
+          "type": "string"
+        }
+      },
+      "Limit": {
+        "in": "query",
+        "name": "limit",
+        "schema": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "TaskId": {
+        "in": "path",
+        "name": "task_id",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/TaskId"
+        }
+      }
+    },
+    "requestBodies": {
+      "TaskCreate": {
+        "content": {
+          "application/json": {
+            "example": {
+              "content": [
+                {
+                  "text": "一只纸质小船漂过平静湖面，柔和晨光。",
+                  "type": "text"
+                }
+              ],
+              "duration": 5,
+              "generate_audio": false,
+              "model": "seedance-2.0",
+              "ratio": "16:9",
+              "resolution": "720p"
+            },
+            "schema": {
+              "$ref": "#/components/schemas/CreateTaskRequest"
+            }
+          }
+        },
+        "required": true
+      }
+    },
+    "responses": {
+      "Conflict": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "description": "幂等键复用到不同请求，或任务/素材/授权/账务状态不允许当前操作。"
+      },
+      "Error": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "description": "安全错误。素材接口非法 JSON/缺少幂等键/媒体登记失败为 400；任务参数或幂等键非法通常为 422；\n401=Key 无效；403=权限或真人业务许可不足；\n任务接口的素材校验错误映射为 403 forbidden、409 invalid_state 或 422 unsupported_capability；\n素材接口独立返回 authorization_required、resource_in_use、group_not_empty 等安全错误码。\n404=资源不存在或跨组织；409=幂等冲突/状态冲突；410=产物已过期；\n413=请求体超限；422=未验证或不支持的模型参数/素材组合；429=Token 配额/限流/并发限制；\n402=余额不足；500=素材服务内部失败；502/503=服务不可用。已接受的提交结果未知通过任务状态表达，\n不使用误导性的失败结果允许客户任意重新创建。错误 message 不包含上游原文、凭证或 PII。\n",
+        "headers": {
+          "X-Request-Id": {
+            "description": "平台请求 ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "OperationAccepted": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Operation"
+            }
+          }
+        },
+        "description": "操作已持久化受理，非完成确认；按 poll_url 查询统一 operations 资源，不根据原资源 404 判断成功。",
+        "headers": {
+          "Idempotency-Replayed": {
+            "$ref": "#/components/headers/IdempotencyReplayed"
+          }
+        }
+      },
+      "PaymentRequired": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Insufficient balance or key quota exhausted"
+      },
+      "RateLimited": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Rate limit exceeded (see Retry-After header)"
+      }
+    },
+    "schemas": {
+      "ActualUsage": {
+        "additionalProperties": false,
+        "description": "官方实际返回的用量；字段缺失为 null，不以零或估算代填。不能假设 total_tokens 永远等于 completion_tokens。",
+        "properties": {
+          "completion_tokens": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total_tokens": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "completion_tokens",
+          "total_tokens"
+        ],
+        "type": "object"
+      },
+      "Asset": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "group_id": {
+            "$ref": "#/components/schemas/GroupId"
+          },
+          "id": {
+            "$ref": "#/components/schemas/AssetId"
+          },
+          "media_type": {
+            "$ref": "#/components/schemas/MediaType"
+          },
+          "name": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "reference": {
+            "description": "仅 ready 时提供的本平台素材引用。",
+            "pattern": "^asset://asset_[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "creating",
+              "processing",
+              "ready",
+              "needs_review",
+              "failed",
+              "deleting"
+            ],
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "version": {
+            "description": "当前资源版本；PATCH 时提交为 expected_version，版本过期返回 409。",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "group_id",
+          "media_type",
+          "name",
+          "status",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "AssetGroup": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "authorization_last_verified_at": {
+            "description": "最近核实业务许可的时间；未知时省略，与 H5 链接创建/到期时间不同。",
+            "format": "date-time",
+            "type": "string"
+          },
+          "authorization_status": {
+            "description": "本平台可审计业务许可记录或经核官方信号，只读。GetAssetGroup 的基本信息不能证明实时未撤销。\nH5 成功不等于永久业务许可；真人组上传和使用时重新验证，无法确认仍有效则拒绝引用。\n",
+            "enum": [
+              "not_required",
+              "authorized",
+              "expired",
+              "revoked",
+              "needs_review"
+            ],
+            "type": "string"
+          },
+          "authorization_valid_until": {
+            "description": "可审计业务许可截止时间；未知时省略，不能解读为永久授权。",
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/GroupId"
+          },
+          "kind": {
+            "enum": [
+              "virtual",
+              "real_person"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "creating",
+              "ready",
+              "failed",
+              "deleting"
+            ],
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "version": {
+            "description": "当前资源版本；PATCH 的 expected_version 必须来自最近 GET 或列表，不能自行递增猜测。",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "status",
+          "asset_count",
+          "authorization_status",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "AssetId": {
+        "description": "平台素材 ID。",
+        "pattern": "^asset_[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "AudioContent": {
+        "additionalProperties": false,
+        "properties": {
+          "audio_url": {
+            "$ref": "#/components/schemas/MediaReference"
+          },
+          "role": {
+            "enum": [
+              "",
+              "reference_audio"
+            ],
+            "type": "string"
+          },
+          "type": {
+            "const": "audio_url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "audio_url"
+        ],
+        "type": "object"
+      },
+      "Billing": {
+        "additionalProperties": false,
+        "properties": {
+          "actual_usage": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ActualUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "billable_tokens": {
+            "description": "已确认的客户计费用量；未知为 null，最低计费量和官方 usage 的区别由规则版本定义。",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "billing_rule_version": {
+            "type": "string"
+          },
+          "currency": {
+            "const": "USD",
+            "type": "string"
+          },
+          "entries": {
+            "description": "已持久化客户账务分录；不暴露供应商成本和内部科目。",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "amount": {
+                  "$ref": "#/components/schemas/MoneyAmount"
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "currency": {
+                  "const": "USD",
+                  "type": "string"
+                },
+                "entry_id": {
+                  "pattern": "^be_[A-Za-z0-9_-]+$",
+                  "type": "string"
+                },
+                "type": {
+                  "description": "amount 总为非负；adjustment_credit 减少净费用，adjustment_debit 增加净费用。释放未消费冻结额与退回已扣费用不是同一分录。",
+                  "enum": [
+                    "reserve",
+                    "capture",
+                    "release",
+                    "adjustment_credit",
+                    "adjustment_debit"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "entry_id",
+                "type",
+                "amount",
+                "currency",
+                "created_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "metering": {
+            "$ref": "#/components/schemas/ReservationMetering"
+          },
+          "pricing_snapshot": {
+            "additionalProperties": false,
+            "description": "创建时的客户销售计价快照。unit_price_usd_per_1m 已包含客户适用倍率/折扣，不能再次乘倍率；\n实际量计算金额=ROUND(completion_tokens / 1000000 × unit_price_usd_per_1m, rounding_scale)，\ncompletion_tokens 使用首次结算时已核实的实际用量，不能用 total_tokens 或预估量替代。\n首次实扣=MIN(实际量计算金额, reserved_amount)，不超过预冻结额，超出部分不自动追扣。\n后续人工调整以 entries 中 adjustment_credit/debit 独立反映，不覆盖快照。\nsettled_amount 为调整后的净额；不能把调整后 billable_tokens 再乘原单价当作所有人工调整的重建公式。\n不会返回火山成本、资源包或采购折扣。\n",
+            "properties": {
+              "currency": {
+                "const": "USD",
+                "type": "string"
+              },
+              "draft": {
+                "type": "boolean"
+              },
+              "generation_mode": {
+                "type": "string"
+              },
+              "input_video": {
+                "type": "boolean"
+              },
+              "minimum_rule_version": {
+                "type": "string"
+              },
+              "mode": {
+                "description": "客户销售价所选计费场景；判定依据规范化请求及实际计量规则。",
+                "enum": [
+                  "without_input_video",
+                  "with_input_video"
+                ],
+                "type": "string"
+              },
+              "price_rule_id": {
+                "type": "string"
+              },
+              "resolution": {
+                "type": "string"
+              },
+              "rounding_mode": {
+                "const": "half_up",
+                "type": "string"
+              },
+              "rounding_scale": {
+                "const": 8,
+                "type": "integer"
+              },
+              "service_tier": {
+                "type": "string"
+              },
+              "unit": {
+                "const": "million_video_tokens",
+                "type": "string"
+              },
+              "unit_price_usd_per_1m": {
+                "$ref": "#/components/schemas/PriceAmount"
+              }
+            },
+            "required": [
+              "price_rule_id",
+              "mode",
+              "unit",
+              "unit_price_usd_per_1m",
+              "currency",
+              "rounding_mode",
+              "rounding_scale"
+            ],
+            "type": "object"
+          },
+          "pricing_version": {
+            "type": "string"
+          },
+          "released_amount": {
+            "$ref": "#/components/schemas/MoneyAmount"
+          },
+          "reserved_amount": {
+            "$ref": "#/components/schemas/MoneyAmount"
+          },
+          "settled_amount": {
+            "$ref": "#/components/schemas/NullableMoneyAmount",
+            "description": "未结算为 null；首次返回实际扣款，不超过预冻结额，超出部分不自动追扣。后续经审核调整后返回累计净客户金额，历史 capture 与 adjustment 分录保留，详情见 entries。"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BillingState"
+          },
+          "task_id": {
+            "$ref": "#/components/schemas/TaskId"
+          }
+        },
+        "required": [
+          "task_id",
+          "state",
+          "currency",
+          "reserved_amount",
+          "settled_amount",
+          "released_amount",
+          "actual_usage",
+          "billable_tokens",
+          "pricing_version",
+          "billing_rule_version",
+          "pricing_snapshot",
+          "entries"
+        ],
+        "type": "object"
+      },
+      "BillingState": {
+        "description": "reserved=已冻结；pending_usage=待确定实际用量/费用；settled=已结算；released=已释放；adjusted=有后续调整。",
+        "enum": [
+          "reserved",
+          "pending_usage",
+          "settled",
+          "released",
+          "adjusted"
+        ],
+        "type": "string"
+      },
+      "ContentItem": {
+        "discriminator": {
+          "mapping": {
+            "audio_url": "#/components/schemas/AudioContent",
+            "draft_task": "#/components/schemas/DraftContent",
+            "image_url": "#/components/schemas/ImageContent",
+            "text": "#/components/schemas/TextContent",
+            "video_url": "#/components/schemas/VideoContent"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TextContent"
+          },
+          {
+            "$ref": "#/components/schemas/ImageContent"
+          },
+          {
+            "$ref": "#/components/schemas/VideoContent"
+          },
+          {
+            "$ref": "#/components/schemas/AudioContent"
+          },
+          {
+            "$ref": "#/components/schemas/DraftContent"
+          }
+        ]
+      },
+      "CreateTaskRequest": {
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "not": {
+              "required": [
+                "frames",
+                "duration"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "model": {
+                  "const": "seedance-2.5"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "resolution": {
+                  "not": {
+                    "const": "4k"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "model": {
+                  "enum": [
+                    "seedance-2.0",
+                    "seedance-2.0-fast",
+                    "seedance-2.0-mini"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "omni_reference_task_type"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "output_format"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "model": {
+                  "enum": [
+                    "seedance-2.0-fast",
+                    "seedance-2.0-mini"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "frames"
+                ]
+              },
+              "properties": {
+                "draft": {
+                  "const": false
+                },
+                "duration": {
+                  "oneOf": [
+                    {
+                      "const": -1
+                    },
+                    {
+                      "maximum": 15,
+                      "minimum": 4
+                    }
+                  ]
+                },
+                "ratio": {
+                  "enum": [
+                    "16:9",
+                    "4:3",
+                    "1:1",
+                    "3:4",
+                    "9:16",
+                    "21:9"
+                  ]
+                },
+                "resolution": {
+                  "enum": [
+                    "480p",
+                    "720p"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "content": {
+                  "contains": {
+                    "properties": {
+                      "type": {
+                        "const": "draft_task"
+                      }
+                    },
+                    "required": [
+                      "type"
+                    ],
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "duration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "frames"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "ratio"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "seed"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "generate_audio"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "omni_reference_task_type"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "content": {
+                  "maxItems": 1
+                },
+                "draft": {
+                  "const": false
+                },
+                "resolution": {
+                  "const": "1080p"
+                }
+              },
+              "required": [
+                "resolution"
+              ]
+            }
+          }
+        ],
+        "description": "仅开放已核实的 Ark 字段。模型级上限、支持分辨率/角色组合等由对应能力版本二次校验。\n平台禁止同时提交 frames 与 duration，二者同传返回 422；不依赖官方优先级静默改写用户意图。\nduration=-1 只有模型已验证支持自动时长时可用，冻结按该能力的最大可能产出评估。\nprompt 中旧式 --dur/--duration/--rs/--resolution/--frames 等计费参数指令及规范化变体须拒绝，\n有歧义也返回 422 并提示改用结构化字段。本版本不开放任意 provider_params。\n基于 draft_task 的正式生成只允许唯一 draft_task 内容项且 resolution 必须为 1080p；\nduration/frames/ratio/seed/generate_audio/omni_reference_task_type 不得重传，这些有效参数继承 Draft。\n转正式不能同时设置 draft:true。首尾帧模式各最多一张，尾帧须有首帧，ratio 必须为 adaptive，\n不能混入参考图片、视频或音频。2.5 edit 需要恰好一个视频、adaptive 与 duration=-1；\nextend 需要恰好一个视频与 adaptive；这些组合还受已发布能力约束。\nreturn_last_frame/output_format/watermark/service_tier/execution_expires_after 的省略不表示继承，\n按官方正式任务默认值及当前能力版本解释。未在本契约公开的回调/priority 等字段不允许透传。\n",
+        "properties": {
+          "content": {
+            "description": "契约的通用上界；每类数量、组合和总量还受当前模型能力版本的更小上限限制，不表示官方账号已支持全部组合。",
+            "items": {
+              "$ref": "#/components/schemas/ContentItem"
+            },
+            "maxItems": 51,
+            "minItems": 1,
+            "type": "array"
+          },
+          "draft": {
+            "type": "boolean"
+          },
+          "duration": {
+            "description": "秒。2.0、Fast、Mini 为 4–15 秒；2.5 为 4–30 秒；自动时长还受已发布能力限制。",
+            "oneOf": [
+              {
+                "const": -1
+              },
+              {
+                "maximum": 30,
+                "minimum": 4
+              }
+            ],
+            "type": "integer"
+          },
+          "execution_expires_after": {
+            "description": "官方执行期限秒数，支持范围按模型能力校验，不是平台 HTTP 超时。",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "expected_pricing_version": {
+            "description": "平台价格版本前置条件；与生效版本不符为 409，不冻结、不提交上游。仅平台消费，不透传上游。",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "frames": {
+            "description": "模型支持时指定帧数；范围和步长按能力版本校验，禁止与 duration 同传。",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "generate_audio": {
+            "type": "boolean"
+          },
+          "max_charge_usd": {
+            "$ref": "#/components/schemas/MoneyAmount",
+            "description": "平台创建时最大冻结额守卫；仅平台消费，不透传上游。所需冻结超出该值时 409，不创建任务。该字段不是之后人工账单调整的金额锁。"
+          },
+          "model": {
+            "$ref": "#/components/schemas/PublicModel"
+          },
+          "omni_reference_task_type": {
+            "description": "仅 Seedance 2.5 已验证的多模态参考场景可用（参考图片、视频或音频）；纯文本及首帧/首尾帧请求须省略，显式传入返回 422。仅开放 reference 的能力在多模态参考请求省略本字段时补 reference，防止自动选择未开放模式。Draft 转正式片不得重传。不接受 task_type 别名。",
+            "enum": [
+              "auto",
+              "reference",
+              "edit",
+              "extend"
+            ],
+            "type": "string"
+          },
+          "output_format": {
+            "description": "Seedance 2.5 可选格式；仅对应能力已核实并启用时可用。",
+            "enum": [
+              "mp4",
+              "mov"
+            ],
+            "type": "string"
+          },
+          "ratio": {
+            "enum": [
+              "16:9",
+              "4:3",
+              "1:1",
+              "3:4",
+              "9:16",
+              "21:9",
+              "adaptive"
+            ],
+            "type": "string"
+          },
+          "resolution": {
+            "enum": [
+              "480p",
+              "720p",
+              "1080p",
+              "4k"
+            ],
+            "type": "string"
+          },
+          "return_last_frame": {
+            "type": "boolean"
+          },
+          "seed": {
+            "maximum": 2147483647,
+            "minimum": -1,
+            "type": "integer"
+          },
+          "service_tier": {
+            "description": "本版公开契约仅开放 default，其他服务档未开放。",
+            "enum": [
+              "default"
+            ],
+            "type": "string"
+          },
+          "watermark": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "model",
+          "content"
+        ],
+        "type": "object"
+      },
+      "DraftContent": {
+        "additionalProperties": false,
+        "properties": {
+          "draft_task": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "$ref": "#/components/schemas/TaskId"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          },
+          "type": {
+            "const": "draft_task",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "draft_task"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "properties": {
+          "error": {
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/SafeError"
+          },
+          "request_id": {
+            "description": "平台请求 ID。",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "Estimate": {
+        "additionalProperties": false,
+        "properties": {
+          "billing_rule_version": {
+            "type": "string"
+          },
+          "capability_version": {
+            "type": "string"
+          },
+          "currency": {
+            "const": "USD",
+            "type": "string"
+          },
+          "estimated_amount": {
+            "$ref": "#/components/schemas/MoneyAmount"
+          },
+          "estimated_tokens": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "guaranteed_price": {
+            "const": false,
+            "type": "boolean"
+          },
+          "maximum_reserved_tokens": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "metering": {
+            "$ref": "#/components/schemas/ReservationMetering"
+          },
+          "model": {
+            "$ref": "#/components/schemas/PublicModel"
+          },
+          "price": {
+            "$ref": "#/components/schemas/VideoPrice"
+          },
+          "pricing_version": {
+            "type": "string"
+          },
+          "reserved_amount": {
+            "$ref": "#/components/schemas/MoneyAmount"
+          }
+        },
+        "required": [
+          "model",
+          "estimated_tokens",
+          "maximum_reserved_tokens",
+          "estimated_amount",
+          "reserved_amount",
+          "currency",
+          "capability_version",
+          "pricing_version",
+          "billing_rule_version",
+          "guaranteed_price"
+        ],
+        "type": "object"
+      },
+      "GroupId": {
+        "description": "平台素材组 ID。",
+        "pattern": "^ag_[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "ImageContent": {
+        "additionalProperties": false,
+        "properties": {
+          "image_url": {
+            "$ref": "#/components/schemas/MediaReference"
+          },
+          "role": {
+            "enum": [
+              "",
+              "first_frame",
+              "last_frame",
+              "reference_image"
+            ],
+            "type": "string"
+          },
+          "type": {
+            "const": "image_url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "image_url"
+        ],
+        "type": "object"
+      },
+      "MediaReference": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "$ref": "#/components/schemas/MediaUrl"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "MediaType": {
+        "description": "平台媒体类型；具体官方可用组合必须经能力验证，不以枚举出现即视作已支持。",
+        "enum": [
+          "image",
+          "video",
+          "audio"
+        ],
+        "type": "string"
+      },
+      "MediaUrl": {
+        "description": "HTTPS 资源或本组织 asset://asset_ 引用；不接受裸上游素材 ID 或上游 asset:// ID。",
+        "maxLength": 4096,
+        "pattern": "^(https://[^\\s]+|asset://asset_[A-Za-z0-9_-]+)$",
+        "type": "string"
+      },
+      "ModelInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "billing_rule_version": {
+            "type": "string"
+          },
+          "capabilities": {
+            "additionalProperties": false,
+            "properties": {
+              "automatic_duration": {
+                "type": "boolean"
+              },
+              "draft": {
+                "type": "boolean"
+              },
+              "frames": {
+                "type": "boolean"
+              },
+              "input_audio": {
+                "type": "boolean"
+              },
+              "input_video": {
+                "type": "boolean"
+              },
+              "max_duration_seconds": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "portrait_assets": {
+                "description": "当前组织、该模型官方 scope 的素材路由及 Portrait 能力已启用，且允许异步执行暂存；仅表示能力可用，不代表某会话已认证或某素材已获有效业务许可。",
+                "type": "boolean"
+              },
+              "resolutions": {
+                "items": {
+                  "enum": [
+                    "480p",
+                    "720p",
+                    "1080p",
+                    "4k"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "resolutions",
+              "max_duration_seconds",
+              "automatic_duration",
+              "frames",
+              "input_video",
+              "input_audio",
+              "draft",
+              "portrait_assets"
+            ],
+            "type": "object"
+          },
+          "capability_version": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/components/schemas/PublicModel"
+          },
+          "prices": {
+            "description": "本组织客户售价规则，不是火山账单价格或平台采购成本。",
+            "items": {
+              "$ref": "#/components/schemas/VideoPrice"
+            },
+            "type": "array"
+          },
+          "pricing_version": {
+            "type": "string"
+          },
+          "verified": {
+            "description": "平台管理员发布的能力已核验标记，不代表本文档示例或 mock 测试已经完成该账号的官方真机验收。创建仍检查当前能力、价格与租户策略。",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "enabled",
+          "verified",
+          "capability_version",
+          "pricing_version",
+          "billing_rule_version",
+          "capabilities",
+          "prices"
+        ],
+        "type": "object"
+      },
+      "MoneyAmount": {
+        "description": "非负 USD 十进制字符串，最多 8 位小数，禁止 JSON 浮点金额。",
+        "examples": [
+          "0.12500000"
+        ],
+        "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,8})?$",
+        "type": "string"
+      },
+      "NullableMoneyAmount": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/MoneyAmount"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "Operation": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_at": {
+            "description": "素材操作返回；pending/sending/unknown 为 null，confirmed/rejected 为完成时间。任务操作不返回此字段。",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error": {
+            "$ref": "#/components/schemas/SafeError",
+            "description": "素材操作有安全错误投影时出现；任务操作不返回该字段。"
+          },
+          "kind": {
+            "description": "任务为 cancel_task/delete_task；素材操作保留动作名，如 CreateAssetGroup、CreateAsset、UpdateAssetGroup、UpdateAsset、DeleteAssetGroup、DeleteAsset、CreateVisualValidateSession。",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^op_[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "poll_url": {
+            "description": "统一操作查询路径，资源删除后仍可查。操作或原资源 404 均不表示成功。",
+            "pattern": "^/v1/video/operations/op_[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "resource_id": {
+            "pattern": "^(task_|ag_|asset_|pas_)[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "status": {
+            "description": "任务发送态为 in_flight，素材操作发送态为 sending；只有 confirmed 证明完成，unknown 不凭响应超时或 404 推断完成。",
+            "enum": [
+              "pending",
+              "in_flight",
+              "sending",
+              "unknown",
+              "confirmed",
+              "rejected"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "kind",
+          "status",
+          "resource_id",
+          "poll_url",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "PortraitAuthorization": {
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "else": {
+              "not": {
+                "required": [
+                  "group_id"
+                ]
+              }
+            },
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "succeeded"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "group_id"
+              ]
+            }
+          },
+          {
+            "else": {
+              "not": {
+                "required": [
+                  "authorization_url"
+                ]
+              }
+            },
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "pending"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "expires_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "authorization_url"
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "authorization_url": {
+            "description": "仅 pending 返回的官方 H5 授权 URL，禁止写入普通日志或事件 DTO。",
+            "format": "uri",
+            "pattern": "^https://",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "H5 认证凭证到期时间；官方有效 30 分钟且单次认证，创建未完成为 null，与肖像授权期限独立。",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "$ref": "#/components/schemas/GroupId"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "status": {
+            "description": "创建结果未知不得盲重发官方请求；沿原会话意图核对并重放同一平台 session_id。",
+            "enum": [
+              "creating",
+              "submission_unknown",
+              "pending",
+              "succeeded",
+              "failed",
+              "expired"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "status",
+          "expires_at",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "PortraitAuthorizationSummary": {
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "else": {
+              "not": {
+                "required": [
+                  "group_id"
+                ]
+              }
+            },
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "succeeded"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "group_id"
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "H5 认证凭证到期时间；官方凭证有效 30 分钟且单次认证，未取得凭证时为 null，不是肖像业务许可期限。",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "$ref": "#/components/schemas/GroupId"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "status": {
+            "enum": [
+              "creating",
+              "submission_unknown",
+              "pending",
+              "succeeded",
+              "failed",
+              "expired"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "status",
+          "expires_at",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "PriceAmount": {
+        "description": "客户单价及倍率相乘后的非负十进制字符串；单价保留精度可高于最终 USD 账款的 8 位，禁止 JSON 浮点金额。",
+        "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,24})?$",
+        "type": "string"
+      },
+      "PublicModel": {
+        "description": "平台公开别名；Fast 对应 doubao-seedance-2-0-fast-260128，Mini 对应 doubao-seedance-2-0-mini-260615。是否可用以 models 返回 enabled 与 verified 为准。",
+        "enum": [
+          "seedance-2.0",
+          "seedance-2.5",
+          "seedance-2.0-fast",
+          "seedance-2.0-mini"
+        ],
+        "type": "string"
+      },
+      "ReservationMetering": {
+        "additionalProperties": false,
+        "description": "创建时预冻结的计量依据，不等于官方实际 usage。历史未记录的维度为空，时长来源 unknown，视频数量 null；不回填猜测值。",
+        "properties": {
+          "capability_version": {
+            "type": "string"
+          },
+          "draft": {
+            "type": "boolean"
+          },
+          "fps_denominator": {
+            "type": "integer"
+          },
+          "fps_numerator": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "input_duration_ms": {
+            "type": "integer"
+          },
+          "input_duration_source": {
+            "enum": [
+              "none",
+              "verified_media",
+              "configured_upper_bound",
+              "draft_inherited",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "input_token_semantics": {
+            "const": "not_projected_separately_completion_tokens_authoritative",
+            "description": "平台不单列输入 Token，按核实的 completion_tokens 结算；不声称官方输入用量为零。",
+            "type": "string"
+          },
+          "input_video": {
+            "type": "boolean"
+          },
+          "input_video_count": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "minimum_rule_version": {
+            "type": "string"
+          },
+          "minimum_tokens": {
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "output_duration_ms": {
+            "type": "integer"
+          },
+          "output_frames": {
+            "type": "integer"
+          },
+          "ratio": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "service_tier": {
+            "type": "string"
+          },
+          "usage_semantics": {
+            "const": "reservation_upper_bound",
+            "type": "string"
+          },
+          "width": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "SafeError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/SafeErrorCode"
+          },
+          "message": {
+            "description": "安全合成文案，不含 prompt、素材 URL、PII、上游凭证/ID/错误原文。",
+            "maxLength": 300,
+            "type": "string"
+          },
+          "retryable": {
+            "description": "是否可按既有幂等语义重试同一平台操作；true 也不允许改幂等键重建未知任务。\n操作结果 unknown 应查询 operations 或任务状态，不能据此盲重发上游请求。\n",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "type": "object"
+      },
+      "SafeErrorCode": {
+        "description": "平台白名单错误码，不透传上游自由文本或内部分类。",
+        "enum": [
+          "invalid_request",
+          "unauthenticated",
+          "forbidden",
+          "not_found",
+          "idempotency_conflict",
+          "invalid_state",
+          "insufficient_balance",
+          "quota_exceeded",
+          "rate_limited",
+          "unsupported_capability",
+          "invalid_asset",
+          "authorization_required",
+          "authorization_expired",
+          "group_not_empty",
+          "resource_in_use",
+          "content_expired",
+          "content_not_ready",
+          "provider_unavailable",
+          "submission_uncertain",
+          "generation_failed",
+          "cancellation_failed",
+          "deletion_failed",
+          "internal_error"
+        ],
+        "type": "string"
+      },
+      "SessionId": {
+        "description": "平台真人授权会话 ID，不暴露官方会话 ID。",
+        "pattern": "^pas_[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "Task": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_status": {
+            "description": "结果链接状态独立于生成与账务状态；ready 表示已取得官方链接，不承诺永久有效或平台托管。取件失败不改变已核实生成成功事实。",
+            "enum": [
+              "pending",
+              "ready",
+              "failed",
+              "expired"
+            ],
+            "type": "string"
+          },
+          "billing_state": {
+            "$ref": "#/components/schemas/BillingState"
+          },
+          "content": {
+            "additionalProperties": false,
+            "description": "官方原始结果地址；仅包含实际返回的类型，平台不转存视频或尾帧。地址过期时可查询任务，不能保证官方重新签发。",
+            "properties": {
+              "last_frame_url": {
+                "format": "uri",
+                "pattern": "^https://",
+                "type": "string"
+              },
+              "video_url": {
+                "format": "uri",
+                "pattern": "^https://",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "content_url": {
+            "description": "官方视频直链，与 content.video_url 相同；保留签名参数，不附带 Gateway Key 访问。列表只返回已缓存的有效交付记录，单任务详情可受限查询上游更新。",
+            "format": "uri",
+            "pattern": "^https://",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deletion_state": {
+            "description": "删除完成后资源 GET 为 404；删除失败/未知应查询对应 operation，不由此字段推断。任务 DTO 不内嵌取消或删除操作。",
+            "enum": [
+              "none",
+              "pending"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/TaskId"
+          },
+          "last_synced_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "$ref": "#/components/schemas/PublicModel"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "sync_state": {
+            "description": "平台观测状态，与生成终态和账单状态独立；needs_review 不等于任务失败。",
+            "enum": [
+              "fresh",
+              "stale",
+              "needs_review"
+            ],
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ActualUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "model",
+          "status",
+          "billing_state",
+          "usage",
+          "sync_state",
+          "artifact_status",
+          "created_at",
+          "updated_at",
+          "last_synced_at",
+          "deletion_state"
+        ],
+        "type": "object"
+      },
+      "TaskEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "from_status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "id": {
+            "pattern": "^evt_[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "request_id": {
+            "description": "平台请求或后台操作追踪 ID，不是火山 request ID。",
+            "type": "string"
+          },
+          "to_status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "type": {
+            "enum": [
+              "task.accepted",
+              "task.submitting",
+              "task.submission_unknown",
+              "task.status_changed",
+              "task.cancelled",
+              "task.deletion_requested",
+              "task.operation_updated",
+              "billing.settled",
+              "billing.released",
+              "billing.pending_usage",
+              "billing.adjusted"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created_at",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "TaskId": {
+        "description": "平台任务 ID，不接受 cgt- 等上游 ID。",
+        "pattern": "^task_[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "TaskStatus": {
+        "description": "accepted/submitting/submission_unknown 为平台提交状态；其余为已核实生成状态。\nexpired 只能来自已确认的官方执行过期，不是平台查询超时。\n",
+        "enum": [
+          "accepted",
+          "submitting",
+          "submission_unknown",
+          "queued",
+          "running",
+          "succeeded",
+          "failed",
+          "cancelled",
+          "expired"
+        ],
+        "type": "string"
+      },
+      "TextContent": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": {
+            "const": "text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "type": "object"
+      },
+      "VideoContent": {
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "enum": [
+              "",
+              "reference_video"
+            ],
+            "type": "string"
+          },
+          "type": {
+            "const": "video_url",
+            "type": "string"
+          },
+          "video_url": {
+            "$ref": "#/components/schemas/MediaReference"
+          }
+        },
+        "required": [
+          "type",
+          "video_url"
+        ],
+        "type": "object"
+      },
+      "VideoPrice": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/PriceAmount"
+          },
+          "currency": {
+            "const": "USD",
+            "type": "string"
+          },
+          "draft": {
+            "type": "boolean"
+          },
+          "input_video": {
+            "type": "boolean"
+          },
+          "label": {
+            "description": "仅用于展示。计价键使用结构化字段，完整请求先调用 estimates。",
+            "type": "string"
+          },
+          "minimum_rule_version": {
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "generate",
+              "edit",
+              "extend",
+              "draft_conversion"
+            ],
+            "type": "string"
+          },
+          "price_rule_id": {
+            "type": "string"
+          },
+          "resolution": {
+            "enum": [
+              "480p",
+              "720p",
+              "1080p",
+              "4k"
+            ],
+            "type": "string"
+          },
+          "service_tier": {
+            "type": "string"
+          },
+          "unit": {
+            "const": "million_video_tokens",
+            "type": "string"
+          }
+        },
+        "required": [
+          "price_rule_id",
+          "label",
+          "mode",
+          "resolution",
+          "input_video",
+          "service_tier",
+          "draft",
+          "unit",
+          "amount",
+          "currency",
+          "minimum_rule_version"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "GatewayKey": {
+        "bearerFormat": "LAIAI Gateway API Key",
+        "description": "平台签发的下游 Key，绝不使用或返回火山官方 Key。",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "bearerAuth": {
+        "description": "LAIAI API key (sk-laiai-…)",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "mjSecret": {
+        "description": "Same LAIAI API key, MJ-client convention",
+        "in": "header",
+        "name": "mj-api-secret",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "description": "LAIAI 平台数据面接口。使用平台 Bearer API Key；接口能力受模型、组织权限及部署配置约束。文本/图片请求使用相应兼容协议；官方 Seedance 使用本文件 /v1/video 下的严格异步任务契约，不能套用旧厂商参数透传和统一退款语义。模型列表与预估返回当前可用能力和客户价格；文档不代表生产账号已经开通。金额采用 USD 十进制字符串。",
+    "title": "LAIAI Gateway API",
+    "version": "1.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/anthropic/v1/messages": {
+      "post": {
+        "description": "Anthropic SDK / Claude Code compatible — set base URL to `{origin}/anthropic`.\nAccepts `x-api-key` or `Authorization: Bearer`. Thinking blocks and tool use\nare converted bidirectionally; any upstream (not just Claude) can serve it.\n",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Anthropic message object / SSE stream"
+          }
+        },
+        "summary": "Anthropic Messages ingress",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/mj/image/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Image binary"
+          }
+        },
+        "summary": "Proxy the generated image via the platform (CDN-blocked regions)",
+        "tags": [
+          "midjourney"
+        ]
+      }
+    },
+    "/mj/submit/{action}": {
+      "post": {
+        "description": "Actions: imagine | change | blend | describe | shorten | modal. Auth via\n`mj-api-secret` header (standard MJ client convention) or Bearer — both take\nyour LAIAI API key. Billed per call (price of catalog model `mj_{action}`).\nFor change/modal pass the platform task id in `taskId`.\n",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "enum": [
+                "imagine",
+                "change",
+                "blend",
+                "describe",
+                "shorten",
+                "modal"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "index": {
+                    "type": "integer"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "taskId": {
+                    "description": "Platform task id of the referenced task (change/modal)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "`{code: 1, description, result: \u003cplatform task id\u003e}`; non-1 codes = failure with description"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "mjSecret": []
+          }
+        ],
+        "summary": "Submit a Midjourney action (mjproxy dialect)",
+        "tags": [
+          "midjourney"
+        ]
+      }
+    },
+    "/mj/task/list-by-condition": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "ids": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 30,
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Array of MJ task objects"
+          }
+        },
+        "summary": "Batch fetch MJ task states",
+        "tags": [
+          "midjourney"
+        ]
+      }
+    },
+    "/mj/task/{id}/fetch": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MJ task object (status/progress/imageUrl/buttons…), id = platform task id"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "mjSecret": []
+          }
+        ],
+        "summary": "Fetch MJ task state (mjproxy task object)",
+        "tags": [
+          "midjourney"
+        ]
+      }
+    },
+    "/v1/audio/speech": {
+      "post": {
+        "description": "Billed per character. Returns audio bytes (mp3/wav per `response_format`).",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "input": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "response_format": {
+                    "type": "string"
+                  },
+                  "voice": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model",
+                  "input",
+                  "voice"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Audio binary stream"
+          }
+        },
+        "summary": "Text-to-speech",
+        "tags": [
+          "audio"
+        ]
+      }
+    },
+    "/v1/audio/transcriptions": {
+      "post": {
+        "description": "Billed per call (model price `per-call`).",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model",
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "`{text: ...}`"
+          }
+        },
+        "summary": "Speech-to-text (multipart)",
+        "tags": [
+          "audio"
+        ]
+      }
+    },
+    "/v1/audio/translations": {
+      "post": {
+        "description": "Billed per call (same pricing as transcriptions).",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model",
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "`{text: ...}`"
+          }
+        },
+        "summary": "Speech-to-English translation (multipart)",
+        "tags": [
+          "audio"
+        ]
+      }
+    },
+    "/v1/chat/completions": {
+      "post": {
+        "description": "Full OpenAI dialect: `messages`, `tools`/`tool_choice`, `response_format`\n(json_object / json_schema — emulated on non-OpenAI upstreams), vision content\nparts, `stream`, `stop`, `temperature`, `top_p`, `max_tokens` / `max_completion_tokens`.\nExtensions: `models: [a, b, c]` fallback chain; `provider: {order|only|ignore}`\nrouting preference; upstream-native `thinking` / `thinkingConfig` passthrough;\n`reasoning_content` returned for reasoning models.\n",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "max_tokens": {
+                    "type": "integer"
+                  },
+                  "messages": {
+                    "items": {
+                      "properties": {
+                        "content": {},
+                        "role": {
+                          "enum": [
+                            "system",
+                            "user",
+                            "assistant",
+                            "tool"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "model": {
+                    "example": "YOUR_TEXT_MODEL",
+                    "type": "string"
+                  },
+                  "models": {
+                    "description": "Fallback chain — try each model in order on routable failures.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "provider": {
+                    "description": "Routing preference: {order: [p1, p2], only: [...], ignore: [...]}",
+                    "type": "object"
+                  },
+                  "response_format": {
+                    "type": "object"
+                  },
+                  "stream": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "temperature": {
+                    "type": "number"
+                  },
+                  "tools": {
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "model",
+                  "messages"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Completion object, or `text/event-stream` when `stream=true`"
+          },
+          "402": {
+            "$ref": "#/components/responses/PaymentRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "summary": "Chat completion (OpenAI-compatible, streaming supported)",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/v1/embeddings": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "input": {},
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model",
+                  "input"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Embedding list with usage"
+          }
+        },
+        "summary": "Embeddings (OpenAI-compatible)",
+        "tags": [
+          "embeddings"
+        ]
+      }
+    },
+    "/v1/images/edits": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "image": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "mask": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "n": {
+                    "type": "integer"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model",
+                  "image",
+                  "prompt"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Same shape as generations"
+          }
+        },
+        "summary": "Edit images (multipart)",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/v1/images/generations": {
+      "post": {
+        "description": "OpenAI-compatible. Works with dall-e / gpt-image / flux (Replicate) / CogView\nand other configured upstreams. For Replicate channels, extra native params\n(seed, guidance, aspect_ratio, output_format, …) pass through; `n` is the\nbillable image count; `response_format: b64_json` returns bytes.\n",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "model": {
+                    "type": "string"
+                  },
+                  "n": {
+                    "default": 1,
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "response_format": {
+                    "enum": [
+                      "url",
+                      "b64_json"
+                    ],
+                    "type": "string"
+                  },
+                  "size": {
+                    "example": "1024x1024",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model",
+                  "prompt"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "`{created, data: [{url | b64_json}]}` — billed per returned image"
+          },
+          "402": {
+            "$ref": "#/components/responses/PaymentRequired"
+          }
+        },
+        "summary": "Generate images",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/v1/images/variations": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "image": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "n": {
+                    "default": 1,
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "model",
+                  "image"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Same shape as generations"
+          }
+        },
+        "summary": "Image variations (multipart)",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "properties": {
+                          "id": {
+                            "example": "YOUR_TEXT_MODEL",
+                            "type": "string"
+                          },
+                          "object": {
+                            "example": "model",
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "object": {
+                      "example": "list",
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OpenAI-shaped model list"
+          }
+        },
+        "summary": "List models available to your key",
+        "tags": [
+          "misc"
+        ]
+      }
+    },
+    "/v1/realtime": {
+      "get": {
+        "description": "WebSocket upgrade endpoint (OpenAI Realtime dialect). Authenticate via\n`Authorization: Bearer` header or `Sec-WebSocket-Protocol` token. Usage is\nbilled per `response.done` server event. Text and (if priced) audio tokens.\n",
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          }
+        },
+        "summary": "Realtime WebSocket bridge",
+        "tags": [
+          "misc"
+        ]
+      }
+    },
+    "/v1/rerank": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "documents": {
+                    "items": {},
+                    "type": "array"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "top_n": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "model",
+                  "query",
+                  "documents"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Ranked results with relevance scores"
+          }
+        },
+        "summary": "Rerank documents (Jina/Cohere-compatible)",
+        "tags": [
+          "embeddings"
+        ]
+      }
+    },
+    "/v1/responses": {
+      "post": {
+        "description": "无状态 Responses 入站兼容，转换为对话请求并返回 Responses JSON 或事件流。不支持 previous_response_id、conversation、prompt.id 模板、input item_reference 或响应 GET。每次需携带完整上下文；仅使用模型支持的 function 工具，不承诺托管内建工具。",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "input": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "items": {
+                          "type": "object"
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  },
+                  "instructions": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "stream": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "model",
+                  "input"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Responses object / SSE stream"
+          }
+        },
+        "summary": "OpenAI Responses API ingress",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/v1/video/asset-groups": {
+      "get": {
+        "description": "仅查询本组织平台库，不透传火山账户全局列表。",
+        "operationId": "listVideoAssetGroups",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/AssetGroup"
+                      },
+                      "type": "array"
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "next_cursor"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "素材组分页"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "列出当前组织的素材组",
+        "tags": [
+          "Assets"
+        ]
+      },
+      "post": {
+        "description": "此接口仅创建虚拟 AIGC 组；kind 只能为 virtual。\n真人组必须通过 portrait-authorizations 官方 H5 授权完成后由平台建立，不能客户端直接创建。\n",
+        "operationId": "createVideoAssetGroup",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AssetIdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "virtual",
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetGroup"
+                }
+              }
+            },
+            "description": "素材组已持久化受理",
+            "headers": {
+              "Idempotency-Replayed": {
+                "$ref": "#/components/headers/IdempotencyReplayed"
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "创建虚拟素材组",
+        "tags": [
+          "Assets"
+        ]
+      }
+    },
+    "/v1/video/asset-groups/{group_id}": {
+      "delete": {
+        "description": "当前只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。\ncascade=true、真人组或未启用删除能力均返回 422 unsupported_capability，不支持级联删除。\n有在途任务引用返回 409 resource_in_use。不会仅删除平台映射而留下未知上游结果。\n检查组内素材、在途引用并设置 deleting 屏障必须在同一事务锁内完成；\n素材新增和任务引用也检查该屏障，避免检查通过后新建素材或引用的竞态。\n首次接受 202，同一删除操作重复请求返回该操作，已确认删除后重复请求 204；跨组织 404。\n删除保留资源墓碑及审计证据，不删除历史任务或账务事实。\n",
+        "operationId": "deleteVideoAssetGroup",
+        "parameters": [
+          {
+            "description": "当前只能为 false；true 返回 422，不执行级联。",
+            "in": "query",
+            "name": "cascade",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "204": {
+            "description": "素材组删除已完成。"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "删除素材组",
+        "tags": [
+          "Assets"
+        ]
+      },
+      "get": {
+        "operationId": "getVideoAssetGroup",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetGroup"
+                }
+              }
+            },
+            "description": "素材组状态与素材数量"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "查询素材组",
+        "tags": [
+          "Assets"
+        ]
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/GroupId"
+        }
+      ],
+      "patch": {
+        "description": "先 GET 或列表读取 version，作为 expected_version 提交。需要 Update 能力及有效幂等键。\nname 必填，description 可选；版本过期、资源不就绪或已有在途操作为 409 invalid_state。\n不支持客户修改 kind、上游 ID 或业务许可。接受返回操作，轮询 confirmed 后重新读取资源版本。\n",
+        "operationId": "updateVideoAssetGroup",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AssetIdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "description": "更新说明",
+                "expected_version": 1,
+                "name": "示例素材组新版"
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "expected_version": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "name": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "expected_version"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "异步编辑素材组名称与说明",
+        "tags": [
+          "Assets"
+        ]
+      }
+    },
+    "/v1/video/assets": {
+      "get": {
+        "description": "仅查询本组织平台库；不回显原始上传 URL 或上游素材 ID。",
+        "operationId": "listVideoAssets",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "in": "query",
+            "name": "group_id",
+            "schema": {
+              "$ref": "#/components/schemas/GroupId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/Asset"
+                      },
+                      "type": "array"
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "next_cursor"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "素材分页"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "列出当前组织的素材",
+        "tags": [
+          "Assets"
+        ]
+      },
+      "post": {
+        "description": "group_id 必须属于本组织且就绪；真人素材组必须由服务端确认官方 H5 认证成功，\n并有经核验且仍有效、适用当前用途的业务肖像许可。H5 认证成功本身不等同于取得该许可。\nimage/video/audio 只有当前账号/项目对应能力显式启用时允许提交，不支持组合返回 422。\nurl 必须通过当前组织的可信媒体验证：可使用控制台上传/导入且已验证的媒体来源，\n或由可信管理员登记的有效不可变媒体。包含 SHA-256、大小/类型/尺寸/时长/FPS 与有效性证据。\n外部地址必须精确匹配有效可信登记项；未登记、已撤销、过期或校验不符拒绝，不信任客户自报信息。\n管理员登记有效期最长为核验后一小时；控制台媒体按自身 expires_at 校验。\n接受不等于审核通过；仅 status=ready 的资产可用于任务，平台 asset:// 引用会在内部转换。\n",
+        "operationId": "createVideoAsset",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AssetIdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "group_id": {
+                    "$ref": "#/components/schemas/GroupId"
+                  },
+                  "media_type": {
+                    "$ref": "#/components/schemas/MediaType"
+                  },
+                  "name": {
+                    "description": "可选素材名称；64 字符是平台契约限制。",
+                    "maxLength": 64,
+                    "type": "string"
+                  },
+                  "url": {
+                    "description": "本组织可通过可信媒体验证的 HTTPS 地址；支持已就绪控制台媒体或有效管理员登记，不能任意注册公网 URL。URL query 可能含签名，不得进入普通日志或安全事件。",
+                    "format": "uri",
+                    "maxLength": 4096,
+                    "pattern": "^https://",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "group_id",
+                  "url",
+                  "media_type"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Asset"
+                }
+              }
+            },
+            "description": "素材已持久化受理",
+            "headers": {
+              "Idempotency-Replayed": {
+                "$ref": "#/components/headers/IdempotencyReplayed"
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "提交素材入库及校验",
+        "tags": [
+          "Assets"
+        ]
+      }
+    },
+    "/v1/video/assets/{asset_id}": {
+      "delete": {
+        "description": "需要有效 Idempotency-Key 与显式启用的 DeleteAssets 能力。素材必须属于本组织，\n已有上游映射且处于允许删除的 ready/failed 状态；未启用返回 422 unsupported_capability。\n存在在途任务引用为 409 resource_in_use；在途修改/删除或状态冲突为 409 invalid_state。\n受理返回 202 操作，按 poll_url 确认完成；未知结果不能盲重发。\n不存在、跨组织或已删除可能返回 404，因此重复请求的 404 不是删除成功证据。\n",
+        "operationId": "deleteVideoAsset",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AssetIdempotencyKey"
+          }
+        ],
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "204": {
+            "description": "处理时已确认删除完成；后续请求也可能在资源预检时返回 404，应保留原操作 ID。"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "异步删除单个素材（能力门控）",
+        "tags": [
+          "Assets"
+        ]
+      },
+      "get": {
+        "operationId": "getVideoAsset",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Asset"
+                }
+              }
+            },
+            "description": "素材状态"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "查询素材状态",
+        "tags": [
+          "Assets"
+        ]
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AssetId"
+        }
+      ],
+      "patch": {
+        "description": "先 GET 或列表读取 version，作为 expected_version 提交。需要 Update 能力及有效幂等键。\n仅允许 name 与 expected_version；版本过期或有在途操作为 409 invalid_state。\n接受返回操作，轮询 confirmed 后重新读取；不接受 description、group_id 或媒体内容变更。\n",
+        "operationId": "updateVideoAsset",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AssetIdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "expected_version": 1,
+                "name": "示例素材新版"
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_version": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "name": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "expected_version"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "异步编辑素材名称",
+        "tags": [
+          "Assets"
+        ]
+      }
+    },
+    "/v1/video/estimates": {
+      "post": {
+        "description": "不提交上游、不冻结、不计生成费用。输入与创建请求一致。预估不是保证价或最终账单，\n也不是可复用的价格锁；创建时重新验证能力、参数、资产与价格并形成不可变快照。\nduration=-1、frames、输入视频和最低计费 Token 按返回的规则版本计算；frames 与 duration 同传为 422。\n无法确定安全上界或未验证的输入组合返回 422，不能静默采用任意固定上限。\n",
+        "operationId": "estimateVideoTask",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/TaskCreate"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Estimate"
+                }
+              }
+            },
+            "description": "当前配置下的预估结果，不锁价、不冻结。"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "预估任务 Token、客户费用与冻结额",
+        "tags": [
+          "Models"
+        ]
+      }
+    },
+    "/v1/video/generations": {
+      "get": {
+        "description": "仅查询本组织平台数据库；默认不包含已软删除任务。游标不可跨组织使用。",
+        "operationId": "listVideoTasks",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "$ref": "#/components/schemas/TaskStatus"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model",
+            "schema": {
+              "$ref": "#/components/schemas/PublicModel"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/Task"
+                      },
+                      "type": "array"
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "next_cursor"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "任务分页"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "列出当前组织的视频任务",
+        "tags": [
+          "Tasks"
+        ]
+      },
+      "post": {
+        "description": "首次受理返回 202 和平台 task_ ID。模型映射、素材引用和计费参数在受理前验证。\n不接受任意裸上游标识。asset://asset_ 引用须属于当前组织且已就绪；真人素材组须授权有效。\ndraft_task 只能引用本组织成功的 Draft，且模型、能力版本、官方账号/区域/项目一致，父任务未删除。\n原始 HTTPS 图片/音频地址直接透传官方；原始视频须有经验证的模型总输入视频时长上界，按聚合上界冻结。\n不声明外部 URL 不可变；已登记不可变素材或 asset:// 引用可使用可信测量时长。后续结算依官方用量证据。\n参数名沿 Ark 方言，平台严格按已验证模型能力允许的参数组合透传。\nHTTP 超时不等于生成失败；重试时必须复用同一 Idempotency-Key。\n",
+        "operationId": "createVideoTask",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/TaskCreate"
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "artifact_status": "pending",
+                  "billing_state": "reserved",
+                  "created_at": "2026-10-15T08:00:00Z",
+                  "deletion_state": "none",
+                  "id": "task_example001",
+                  "last_synced_at": null,
+                  "model": "seedance-2.0",
+                  "status": "accepted",
+                  "sync_state": "fresh",
+                  "updated_at": "2026-10-15T08:00:00Z",
+                  "usage": null
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            },
+            "description": "任务已持久化受理；可能尚未取得上游创建结果。",
+            "headers": {
+              "Idempotency-Replayed": {
+                "$ref": "#/components/headers/IdempotencyReplayed"
+              },
+              "Location": {
+                "description": "平台任务查询路径",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "创建视频任务",
+        "tags": [
+          "Tasks"
+        ]
+      }
+    },
+    "/v1/video/generations/{task_id}": {
+      "delete": {
+        "description": "仅允许 succeeded/failed/cancelled/expired 且 billing_state 为 settled/released/adjusted。\naccepted/submitting/submission_unknown/queued/running 或 pending_usage 均返回 409。\n首次接受返回 202 operation_id；删除过程中重复请求返回同一操作。\ncancelled 仅本地软删除，不再发上游 DELETE；其他终态按官方可删除状态执行并确认。\n上游删除失败或结果未知不能伪造完成。已完成重复删除返回 204；跨组织仍为 404。\n删除不退款，不物理删除账务或安全审计记录。完成后任务 GET 返回 404，账单和安全事件按保留策略可查。\n",
+        "operationId": "deleteVideoTask",
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "204": {
+            "description": "当前组织任务的删除已经完成，无响应体。"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "删除已结束且账务已落定的视频任务",
+        "tags": [
+          "Tasks"
+        ]
+      },
+      "get": {
+        "description": "返回平台最近同步状态，last_synced_at 表示最后一次成功上游同步时间。\n查询不产生新的生成任务，也不额外收生成费。不存在、跨组织或已完成软删除均返回 404。\n本地观察超时保持可核对状态，不凭观察超时将任务宣告 failed 或自动全退。\n",
+        "operationId": "getVideoTask",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            },
+            "description": "任务状态"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "查询视频任务",
+        "tags": [
+          "Tasks"
+        ]
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TaskId"
+        }
+      ]
+    },
+    "/v1/video/generations/{task_id}/billing": {
+      "get": {
+        "description": "同组织资源归属校验，不返回上游成本、内部对账明细或上游任务 ID。\n实际 usage 未知时必须为 null；不可用 0 或估算值冒充实际用量。\npending_usage 时最终金额为 null；历史扣款、退款或调整以不可覆盖的账务分录表示。\n任务软删除不抹除账单；本接口是否仍可读遵循平台账单保留策略。\n",
+        "operationId": "getVideoBilling",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Billing"
+                }
+              }
+            },
+            "description": "客户账单"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "查询单任务客户账单",
+        "tags": [
+          "Tasks"
+        ]
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TaskId"
+        }
+      ]
+    },
+    "/v1/video/generations/{task_id}/cancel": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TaskId"
+        }
+      ],
+      "post": {
+        "description": "accepted 且事务确认尚未派单可在同一事务内标 cancelled、释放冻结并确认取消操作。\nsubmitting/submission_unknown 可返回 202 记录取消意愿，查明前不得发上游 DELETE 或释放冻结。\n已确认 queued 时有条件调用官方 DELETE，running 返回 409 invalid_state。\n请求不得包含非空 body。接受操作不等于取消成功；按 operation.poll_url 查询统一操作资源。\nqueued 可能在 DELETE 前变成 succeeded；官方 DELETE 此时可能删除成功记录。\n因此 DELETE 返回 200 加随后 GET 404 不是取消成功或零费用证据，须进入 operation=unknown 待核对。\n仅本地未派单的原子取消或充分官方取消证据才能转 cancelled 并释放冻结。\n同 Idempotency-Key 重放原操作；不同幂等键对已 cancelled 的任务返回已确认操作且不重复退款。\n",
+        "operationId": "cancelVideoTask",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "请求取消视频任务",
+        "tags": [
+          "Tasks"
+        ]
+      }
+    },
+    "/v1/video/generations/{task_id}/content": {
+      "get": {
+        "description": "经过平台鉴权及组织归属校验后返回链接 JSON，不再返回媒体流或重定向。\n优先使用任务详情的 content.video_url / content.last_frame_url。\n客户自行访问 url，不向外站发送 Gateway Bearer。签名参数须原样保留，有效期由上游决定。\n无额外生成收费；链接未取得返回 409，链接结果已失效返回 410，官方查询失败可能返回 503。\nkind=last_frame 仅请求过 return_last_frame 且官方返回尾帧时可用。链接失败不应重新创建任务。\n",
+        "operationId": "getVideoContent",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "schema": {
+              "default": "video",
+              "enum": [
+                "video",
+                "last_frame"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "video",
+                        "last_frame"
+                      ],
+                      "type": "string"
+                    },
+                    "source": {
+                      "const": "upstream",
+                      "type": "string"
+                    },
+                    "url": {
+                      "format": "uri",
+                      "pattern": "^https://",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "url",
+                    "kind",
+                    "source"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "官方产物链接；平台不持久化媒体文件。",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "private, no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "获取成功任务的视频或尾帧直链",
+        "tags": [
+          "Tasks"
+        ]
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TaskId"
+        }
+      ]
+    },
+    "/v1/video/generations/{task_id}/events": {
+      "get": {
+        "description": "只提供事件类型、状态变化、平台 request_id 和时间；\n不包含 prompt、素材 URL、H5 授权 URL、上游原文、原始上游 ID、供应商成本或内部路由。\n任务软删除不抹除安全事件。列表仅来自本组织平台数据库。\n",
+        "operationId": "listVideoTaskEvents",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/TaskEvent"
+                      },
+                      "type": "array"
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "next_cursor"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "安全事件分页"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "查询任务安全事件",
+        "tags": [
+          "Tasks"
+        ]
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TaskId"
+        }
+      ]
+    },
+    "/v1/video/models": {
+      "get": {
+        "description": "返回平台配置与 Key 模型白名单的交集，可为空。enabled/verified 是必要条件，创建仍检查实时价格、预算、渠道和租户策略。价格是客户售价，不包含上游成本。",
+        "operationId": "listVideoModels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/ModelInfo"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "模型能力与公开价格"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "查询当前组织可见的视频模型及能力版本",
+        "tags": [
+          "Models"
+        ]
+      }
+    },
+    "/v1/video/operations/{operation_id}": {
+      "get": {
+        "description": "独立持久化操作资源，当前查询任务取消、任务删除和虚拟空素材组删除，强制组织隔离。\npending/in_flight/sending/unknown 均非成功；只有 confirmed 表示有充分证据确认该操作完成。\nrejected 表示操作被拒绝。任务操作不返回 error/completed_at；素材组操作可提供安全 error 和完成时间。\n创建任务/素材/会话请查询各自资源，不通过此接口枚举内部创建操作。原资源已删除后仍可查询删除操作。\n本接口或原资源 GET 返回 404 均不代表操作成功，不得据此退款或删除本地账务证据。\n",
+        "operationId": "getVideoOperation",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "持久化操作状态"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "查询取消或删除操作",
+        "tags": [
+          "Tasks"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "operation_id",
+          "required": true,
+          "schema": {
+            "pattern": "^op_[A-Za-z0-9_-]+$",
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/v1/video/portrait-authorizations": {
+      "get": {
+        "description": "仅读平台库；列表不返回 authorization_url。授权会话不提供客户端写状态或伪造授权接口。",
+        "operationId": "listPortraitAuthorizations",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/PortraitAuthorizationSummary"
+                      },
+                      "type": "array"
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "next_cursor"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "授权会话摘要分页"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "列出当前组织的授权会话摘要",
+        "tags": [
+          "PortraitAuthorization"
+        ]
+      },
+      "post": {
+        "description": "异步调用官方 CreateVisualValidateSession 建立流程，creating 阶段尚无 H5 地址；\n创建结果不确定时为 submission_unknown，不允许盲重发官方创建请求。\npending 时才返回 H5 地址，用户在该页面完成授权；\n平台通过 GetVisualValidateResult 核实结果，再把官方返回的组映射为本组织 ag_ ID。\ncallback_url 仅可为预登记 HTTPS 回跳地址，不是可信的授权结果通知来源；\nH5 回跳本身、客户端参数或截图均不能将授权状态改为成功。\n需要已启用的租户素材路由/Portrait 能力、平台固定回调入口及有效回跳登记。H5 成功仅确认身份流程；\n真人素材仍需独立审核且未过期/撤销的 video_generation 业务许可，才能上传或参与任务。\nauthorization_url 属敏感短期 URL，仅在授权会话响应返回，禁止写入普通日志。\n",
+        "operationId": "createPortraitAuthorization",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AssetIdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "callback_url": {
+                    "description": "必须精确匹配组织预登记的 HTTPS 回跳地址。",
+                    "format": "uri",
+                    "maxLength": 2048,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "可选会话说明。",
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "可选会话名称。",
+                    "maxLength": 64,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "callback_url"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortraitAuthorization"
+                }
+              }
+            },
+            "description": "会话创建已持久化受理；creating/submission_unknown 尚未获得可用 H5 地址，pending 等待本人完成授权。",
+            "headers": {
+              "Idempotency-Replayed": {
+                "$ref": "#/components/headers/IdempotencyReplayed"
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "创建真人 H5 授权会话",
+        "tags": [
+          "PortraitAuthorization"
+        ]
+      }
+    },
+    "/v1/video/portrait-authorizations/{session_id}": {
+      "get": {
+        "description": "状态只由平台核实官方结果后更新；succeeded 返回平台 group_id。\npending 会话仅创建该会话的原 Key 可经审计读取有效 authorization_url，其他 Key 返回 403。\n同一原 Key 在有效 pending 状态可再次 GET；官方认证凭证仍限一次认证。已失效或完成后不返回 URL。\n未核实官方撤销/删除会话能力前不开放 DELETE；素材组删除也不等于撤销本人授权。\n",
+        "operationId": "getPortraitAuthorization",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortraitAuthorization"
+                }
+              }
+            },
+            "description": "授权会话及已核实结果"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "查询真人授权会话",
+        "tags": [
+          "PortraitAuthorization"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "session_id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        }
+      ]
+    },
+    "/v1/video/portrait-callback": {
+      "get": {
+        "description": "只接受平台签发、绑定组织/会话/回跳登记且未消费的短期 state；不使用 Gateway Key。\n不信任 resultCode、GroupId 或任意 redirect 参数，不据此授予身份认证成功或业务许可。\n消费有效 state 后仅 303 到预登记 HTTPS 地址。客户业务代码应查询 portrait-authorizations 状态。\n",
+        "operationId": "consumePortraitBrowserCallback",
+        "parameters": [
+          {
+            "description": "平台与官方 H5 流程传递的敏感短期 opaque state；不得日志记录或自行生成。",
+            "in": "query",
+            "name": "state",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "已消费 state，跳转至预登记回跳地址。",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "format": "uri",
+                  "type": "string"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "const": "no-referrer",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "state/会话/回跳目标无效、过期或已消费；无响应体。"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [],
+        "summary": "官方 H5 浏览器回跳入口（不供客户主动构造调用）",
+        "tags": [
+          "PortraitAuthorization"
+        ]
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "tags": [
+    {
+      "name": "chat"
+    },
+    {
+      "name": "images"
+    },
+    {
+      "name": "audio"
+    },
+    {
+      "name": "embeddings"
+    },
+    {
+      "name": "midjourney"
+    },
+    {
+      "name": "misc"
+    },
+    {
+      "description": "视频任务、产物与客户账单",
+      "name": "Tasks"
+    },
+    {
+      "description": "已验证能力、客户价格与预估",
+      "name": "Models"
+    },
+    {
+      "description": "平台素材及素材组",
+      "name": "Assets"
+    },
+    {
+      "description": "真人 H5 授权流程",
+      "name": "PortraitAuthorization"
+    }
+  ],
+  "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
+  "x-seedance-source-sha256": "baf30be89e9213ff7aeef12c6dacee5fae8e2bb60fcfc7b9b3e64229246db78c"
+}

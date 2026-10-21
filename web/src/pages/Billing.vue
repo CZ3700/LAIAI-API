@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import DetailDrawer from '@/components/DetailDrawer.vue'
+import { useAuth } from '@/stores/auth'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/lib/api'
 import type { SummaryDay } from '@/components/DailyBarChart.vue'
@@ -21,6 +23,10 @@ interface Order {
 }
 
 const { t, n, d } = useI18n()
+const auth = useAuth()
+const detailKind = ref<'monthly' | 'ledger' | null>(null), selectedLedger = ref<LedgerEntry | null>(null)
+let loadEpoch = 0
+function closeDetail() { detailKind.value = null; selectedLedger.value = null }
 const activeTab = ref<'monthly' | 'ledger'>('monthly') // usage 明细并入请求日志页，此处不再重复
 const balance = ref('0')
 const held = ref('0')
@@ -47,7 +53,8 @@ const paidThisMonth = computed(() => monthRechargeUSD.value)
 const pendingOrders = computed(() => orders.value.filter((o) => o.status === 0).length)
 const monthLabel = computed(() => new Date().toISOString().slice(0, 7))
 
-onMounted(async () => {
+async function load() {
+  const epoch = ++loadEpoch, org = auth.orgId
   loading.value = true
   // 本月消耗按「本月至今」口径：summary 取当前 UTC 月已过天数（与 monthLabel 的 YYYY-MM 自然月一致），
   // 不再用滚动 31 天冒充自然月。本月充值用服务端 UTC 自然月聚合 month_usd。
@@ -59,6 +66,7 @@ onMounted(async () => {
     api<{ orders: Order[] }>('GET', '/api/payment/orders'),
     api<{ month_usd: string }>('GET', '/api/payment/recharge-stats'),
   ])
+  if (epoch !== loadEpoch || org !== auth.orgId) return
   if (bal.status === 'fulfilled') {
     balance.value = bal.value.balance
     held.value = bal.value.held
@@ -71,7 +79,11 @@ onMounted(async () => {
   if (ord.status === 'fulfilled') orders.value = ord.value.orders
   if (rs.status === 'fulfilled') monthRechargeUSD.value = num(rs.value.month_usd)
   loading.value = false
-})
+}
+watch(() => auth.orgId, () => { closeDetail(); summary.value = []; ledger.value = []; orders.value = []; balance.value = held.value = '0'; monthRechargeUSD.value = ledgerTotal.value = 0; void load() })
+watch(activeTab, closeDetail)
+onBeforeUnmount(() => { loadEpoch++; closeDetail() })
+onMounted(load)
 </script>
 
 <template>
@@ -133,7 +145,7 @@ onMounted(async () => {
               <th class="px-4 py-3 text-right">{{ t('billx.colTotalSpend') }}</th>
               <th class="px-4 py-3 text-right">{{ t('billx.colRequests') }}</th>
               <th class="px-4 py-3 text-right">{{ t('billx.colTokens') }}</th>
-              <th class="px-4 py-3">{{ t('billx.colStatus') }}</th>
+              <th class="px-4 py-3">{{ t('billx.colStatus') }}</th><th class="px-4 py-3">{{ t('reqlog.btnDetail') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -142,7 +154,7 @@ onMounted(async () => {
               <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(monthSpend) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(monthCalls) }}</td>
               <td class="px-4 py-2.5 text-right font-mono">{{ n(monthTokens) }}</td>
-              <td class="px-4 py-2.5"><span class="badge-ok">{{ t('billx.statusCounted') }}</span></td>
+              <td class="px-4 py-2.5"><span class="badge-ok">{{ t('billx.statusCounted') }}</span></td><td class="px-4 py-2.5"><button type="button" class="table-link" :disabled="loading" @click="detailKind = 'monthly'">{{ t('reqlog.btnDetail') }}</button></td>
             </tr>
           </tbody>
         </table>
@@ -158,21 +170,25 @@ onMounted(async () => {
               <th class="px-4 py-3">{{ t('billx.colTime') }}</th>
               <th class="px-4 py-3">{{ t('billx.colKind') }}</th>
               <th class="px-4 py-3 text-right">{{ t('billx.colUSDDelta') }}</th>
-              <th class="px-4 py-3 text-right">{{ t('billx.colBalanceAfter') }}</th>
+              <th class="px-4 py-3 text-right">{{ t('billx.colBalanceAfter') }}</th><th class="px-4 py-3">{{ t('reqlog.btnDetail') }}</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="ledger.length === 0"><td colspan="4" class="px-4 py-8 text-center text-muted">{{ t('billx.emptyData') }}</td></tr>
+            <tr v-if="ledger.length === 0"><td colspan="5" class="px-4 py-8 text-center text-muted">{{ t('billx.emptyData') }}</td></tr>
             <tr v-for="e in ledger" :key="e.id">
               <td class="px-4 py-2.5 text-muted">{{ d(new Date(e.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
               <td class="px-4 py-2.5"><span class="badge-muted">{{ e.kind }}</span></td>
               <td class="px-4 py-2.5 text-right font-mono" :class="num(e.delta) >= 0 ? 'text-ok' : 'text-danger'">{{ num(e.delta) >= 0 ? '+' : '-' }}{{ fmtMoney(Math.abs(num(e.delta))) }}</td>
-              <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(num(e.balance_after)) }}</td>
+              <td class="px-4 py-2.5 text-right font-mono">{{ fmtMoney(num(e.balance_after)) }}</td><td class="px-4 py-2.5"><button type="button" class="table-link" @click="selectedLedger = e; detailKind = 'ledger'">{{ t('reqlog.btnDetail') }}</button></td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
 
+    <DetailDrawer :open="!!detailKind" :title="t(detailKind === 'monthly' ? 'billx.tabMonthly' : 'billx.tabLedger')" @update:open="open => { if (!open) closeDetail() }">
+      <template v-if="detailKind === 'monthly'"><p class="mb-5 text-sm text-muted">{{ t('billx.monthlyHint') }}</p><dl class="detail-grid"><div><dt>{{ t('billx.colPeriod') }}</dt><dd>{{ monthLabel }}</dd></div><div><dt>{{ t('billx.colTotalSpend') }}</dt><dd>{{ fmtMoney(monthSpend) }}</dd></div><div><dt>{{ t('billx.colRequests') }}</dt><dd>{{ n(monthCalls) }}</dd></div><div><dt>{{ t('billx.colTokens') }}</dt><dd>{{ n(monthTokens) }}</dd></div></dl></template>
+      <dl v-else-if="selectedLedger" class="detail-grid"><div><dt>ID</dt><dd>{{ selectedLedger.id }}</dd></div><div><dt>{{ t('billx.colTime') }}</dt><dd>{{ d(new Date(selectedLedger.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</dd></div><div><dt>{{ t('billx.colKind') }}</dt><dd>{{ selectedLedger.kind }}</dd></div><div><dt>{{ t('billx.colUSDDelta') }}</dt><dd>{{ selectedLedger.delta }}</dd></div><div><dt>{{ t('billx.colBalanceAfter') }}</dt><dd>USD {{ selectedLedger.balance_after }}</dd></div><div class="col-span-2"><dt>{{ t('admin.crReason') }}</dt><dd>{{ selectedLedger.reason || '—' }}</dd></div></dl>
+    </DetailDrawer>
   </div>
 </template>

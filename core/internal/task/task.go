@@ -180,6 +180,9 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		}
 	}
 	ad, err := adaptorFor(ch.Provider)
+	if officialArkChannel(ch) {
+		return nil, relay.ErrNoChannel
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -219,8 +222,8 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		PriceOutUSDPer1M: price.OutputUSDPer1M,
 		PricePerCallUSD:  price.PerCallUSD, // 0048：按次计价快照（MJ 等），settle 与 hold 同口径
 
-		HoldAmountUSD:    holdAmount, GroupRatio: ratio,
-		CredentialID:     credID, // 钉住提交用的 key（0035），轮询固定用它
+		HoldAmountUSD: holdAmount, GroupRatio: ratio,
+		CredentialID: credID, // 钉住提交用的 key（0035），轮询固定用它
 	}
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
 		// 锁渠道行（MySQL FOR UPDATE；SQLite 测试靠单连接串行）
@@ -413,6 +416,10 @@ func (s *Service) nextSubmitCandidate(model string, attempt int, tried map[uint6
 		if err != nil {
 			return nil, nil, "", false // 无更多渠道
 		}
+		if officialArkChannel(ch) {
+			tried[ch.ID] = true
+			continue
+		}
 		ad, err := adaptorFor(ch.Provider)
 		if err != nil {
 			tried[ch.ID] = true
@@ -441,6 +448,17 @@ func (s *Service) nextSubmitCandidate(model string, attempt int, tried map[uint6
 }
 
 type repinResult int
+
+// Official Ark traffic must use the durable gateway even when an operator
+// configured a historical model alias on a legacy channel.
+func officialArkChannel(ch *relay.Channel) bool {
+	u, err := url.Parse(ch.BaseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return strings.HasPrefix(host, "ark.") && strings.HasSuffix(host, ".volces.com")
+}
 
 const (
 	repinOK repinResult = iota
@@ -505,7 +523,9 @@ func (s *Service) abortSubmit(t *Task, reason string) {
 // Get：org 隔离读取（红线 5）。
 func (s *Service) Get(orgID uint64, taskID string) (*Task, error) {
 	t := &Task{}
-	if err := s.DB.Where("task_id = ? AND org_id = ?", taskID, orgID).First(t).Error; err != nil {
+	// Official video owns its authorization, deletion and evidence semantics.
+	// This guard also applies when that runtime is deliberately disabled.
+	if err := s.DB.Where("task_id = ? AND org_id = ? AND provider <> ?", taskID, orgID, "ark_official").First(t).Error; err != nil {
 		return nil, err
 	}
 	return t, nil
@@ -520,7 +540,7 @@ func (s *Service) PollOnce(ctx context.Context) {
 	// 此前固定 `Order(id) LIMIT 50` 在总在途 >50 时让尾部较新任务永远轮不到、只能靠 30min
 	// 超时误判失败退款（用户拿不到已生成的产物）。游标保证每个在途任务轮流被处理。
 	var tasks []Task
-	if err := s.DB.Where("status IN ? AND id > ?", []string{StatusQueued, StatusRunning}, s.pollCursor).
+	if err := s.DB.Where("status IN ? AND id > ? AND provider <> ?", []string{StatusQueued, StatusRunning}, s.pollCursor, "ark_official").
 		Order("id").Limit(pollBatch).Find(&tasks).Error; err != nil {
 		s.Log.Error("task poll query failed", "err", err)
 		return
@@ -824,8 +844,8 @@ func clipReason(sv string, maxBytes int) string {
 func (s *Service) sweepTimedOut() {
 	cutoff := s.Now().Add(-s.TaskTimeout)
 	var tasks []Task
-	if err := s.DB.Where("status IN ? AND submitted_at < ?",
-		[]string{StatusQueued, StatusRunning}, cutoff).Limit(100).Find(&tasks).Error; err != nil {
+	if err := s.DB.Where("status IN ? AND submitted_at < ? AND provider <> ?",
+		[]string{StatusQueued, StatusRunning}, cutoff, "ark_official").Limit(100).Find(&tasks).Error; err != nil {
 		return
 	}
 	for i := range tasks {

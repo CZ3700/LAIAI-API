@@ -1,233 +1,90 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useI18n } from 'vue-i18n'
-import { api, copyText } from '@/lib/api'
-import { modelModality, type PricedModel } from '@/lib/modelCatalog'
-
-const { t } = useI18n()
-const copied = ref('')
-async function copy(id: string, text: string) {
-  if (await copyText(text)) {
-    copied.value = id
-    setTimeout(() => (copied.value = ''), 1200)
-  }
+import { computed, nextTick, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import DocExample from '@/components/docs/DocExample.vue'
+import { docGroups, docPages, searchPages } from '@/docs/apiDocs'
+const route = useRoute()
+const router = useRouter()
+const search = ref('')
+const mobileOpen = ref(false)
+const expanded = ref<Record<string, boolean>>({ text: true, image: false, video: true })
+const article = ref<HTMLElement | null>(null)
+const selected = computed(() => docPages.find(p => p.id === route.query.section) || docPages[0]!)
+const matches = computed(() => searchPages(search.value))
+const groups = computed(() => docGroups.map(g => ({ ...g, pages: matches.value.filter(p => p.group === g.id) })))
+const index = computed(() => docPages.indexOf(selected.value))
+const previous = computed(() => docPages[index.value - 1])
+const next = computed(() => docPages[index.value + 1])
+async function select(id: string) {
+  await router.push({ path: '/docs', query: { section: id } })
+  mobileOpen.value = false
+  await nextTick()
+  article.value?.focus({ preventScroll: true })
+  article.value?.scrollIntoView({ block: 'start', behavior: 'instant' })
 }
-
-// 示例模型取站点真实已上架的 chat 模型（与 Landing/TryIt 同规——绝不硬编码臆造名）；
-// 价目加载失败时用中性占位（不冒充真模型）。
-const models = ref<PricedModel[]>([])
-const demoModel = computed(() => models.value.find((m) => modelModality(m) === 'chat')?.model || 'your-model')
-onMounted(async () => {
-  try {
-    const r = await api<{ models: PricedModel[] }>('GET', '/api/pricing', undefined, { auth: false })
-    models.value = r.models
-  } catch {
-    // 文档页不因价目接口失败而崩
+watch(selected, async (page, old) => {
+  expanded.value[page.group] = true
+  if (old && page.id !== old.id) {
+    await nextTick()
+    article.value?.focus({ preventScroll: true })
+    article.value?.scrollIntoView({ block: 'start', behavior: 'instant' })
   }
-})
-
-const curlChat = computed(() => `curl https://your-domain/v1/chat/completions \\
-  -H "Authorization: Bearer $LAIAI_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "${demoModel.value}",
-    "messages": [{"role": "user", "content": "Hello"}],
-    "stream": true
-  }'`)
-
-const pySdk = computed(() => `from openai import OpenAI
-
-client = OpenAI(
-    base_url="https://your-domain/v1",
-    api_key="sk-laiai-...",
-)
-
-resp = client.chat.completions.create(
-    model="${demoModel.value}",
-    messages=[{"role": "user", "content": "Hello"}],
-)
-print(resp.choices[0].message.content)`)
-
-// 视频任务三步全流程（异步：提交 → 轮询 → 取产物）
-const curlVideo = `# 1) submit a video task
-curl -X POST https://your-domain/v1/video/generations \\
-  -H "Authorization: Bearer $LAIAI_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "doubao-seedance-2-0",
-    "content": [{"type": "text", "text": "A corgi surfing at sunset"}],
-    "duration": 5, "resolution": "720p"
-  }'
-# -> {"id": "task_...", "status": "queued", ...}
-
-# 2) poll until succeeded / failed
-curl -H "Authorization: Bearer $LAIAI_KEY" \\
-  https://your-domain/v1/video/generations/task_...
-# -> {"status": "succeeded", "result_url": "...", "cost_usd": "0.1746", ...}
-
-# 3) download (keep the Bearer header when result_url is a platform path)
-curl -L -H "Authorization: Bearer $LAIAI_KEY" -o out.mp4 "<result_url>"`
-
-const sections = [
-  { id: 'chat', path: '/v1/chat/completions', method: 'POST' },
-  { id: 'embeddings', path: '/v1/embeddings', method: 'POST' },
-  { id: 'images', path: '/v1/images/generations', method: 'POST' },
-  { id: 'video', path: '/v1/video/generations', method: 'POST' },
-  { id: 'videoQuery', path: '/v1/video/generations/{id}', method: 'GET' },
-  { id: 'models', path: '/v1/models', method: 'GET' },
-]
-
-// 错误码速查（描述走 i18n docs.err*）
-const errorCodes = ['400', '401', '402', '403', '404', '413', '429', '5xx'] as const
-
-const steps = ['step1', 'step2', 'step3']
+}, { immediate: true })
 </script>
 
 <template>
-  <div class="docs-page overflow-hidden">
-    <section class="docs-hero border-b border-line">
-      <div class="mx-auto grid max-w-7xl gap-10 px-4 py-16 sm:px-6 lg:grid-cols-[0.88fr_1.12fr] lg:items-center lg:px-8">
-        <div>
-          <p class="enter text-sm font-medium text-accent" style="animation-delay: 0ms">LAIAI API</p>
-          <h1 class="enter docs-hero-title mt-5" style="animation-delay: 70ms">
-            {{ t('docs.title') }}
-          </h1>
-          <p class="enter docs-hero-lead mt-5 max-w-2xl" style="animation-delay: 120ms">
-            {{ t('docs.lead') }}
-          </p>
-          <p class="enter mt-6 max-w-xl text-sm leading-6 text-muted" style="animation-delay: 170ms">
-            {{ t('docs.sdkBody') }}
-          </p>
-          <div class="enter mt-8 flex flex-wrap gap-3" style="animation-delay: 210ms">
-            <router-link to="/register" class="btn-primary px-5 !py-2.5">{{ t('landing.ctaStart') }}</router-link>
-            <router-link to="/models" class="btn-ghost px-5 !py-2.5">{{ t('nav.models') }}</router-link>
-            <!-- OpenAPI 规范（批 D-3）：静态下发，可导入 Postman/Insomnia/openapi-generator -->
-            <a href="/openapi.yaml" download class="btn-ghost px-5 !py-2.5">{{ t('docs.openapi') }}</a>
-          </div>
+  <div class="api-docs mx-auto w-full max-w-[1440px] px-4 pb-14 sm:px-6 lg:px-8" lang="zh-CN">
+    <div class="flex flex-wrap items-end justify-between gap-4 border-b border-line py-8">
+      <div><p class="text-xs font-semibold tracking-[0.16em] text-accent">LAIAI / API · 简体中文</p><h1 class="mt-2 text-3xl font-semibold">开发文档</h1><p class="mt-3 text-sm text-muted">从模型选择到请求、任务和账单，按实际接口接入。</p></div>
+      <div class="flex flex-wrap gap-3 text-sm"><router-link to="/models" class="btn-ghost">模型目录</router-link><a href="/openapi.yaml" download="laiai-openapi.yaml" class="btn-ghost">下载 OpenAPI 3.1</a></div>
+    </div>
+    <div class="grid items-start gap-8 lg:grid-cols-[240px_minmax(0,1fr)] xl:grid-cols-[250px_minmax(0,1fr)]">
+      <aside class="docs-sidebar border-b border-line py-5 lg:sticky lg:top-20 lg:max-h-[calc(100dvh-6rem)] lg:overflow-y-auto lg:border-b-0 lg:pr-3">
+        <button class="mb-4 flex w-full items-center justify-between rounded-lg border border-line p-3 text-sm lg:hidden" :aria-expanded="mobileOpen" aria-controls="docs-navigation" @click="mobileOpen = !mobileOpen">文档目录 <span aria-hidden="true">{{ mobileOpen ? '−' : '+' }}</span></button>
+        <div id="docs-navigation" :class="mobileOpen ? 'block' : 'hidden lg:block'">
+          <label for="docs-search" class="sr-only">搜索文档、接口或字段</label>
+          <input id="docs-search" v-model="search" type="search" placeholder="搜索文档、接口或字段…" class="input w-full text-sm" autocomplete="off" />
+          <p v-if="search" class="mt-3 text-xs text-muted" role="status">找到 {{ matches.length }} 篇文档</p>
+          <nav aria-label="模型文档" class="mt-5 space-y-4">
+            <section v-for="group in groups" :key="group.id">
+              <button class="flex w-full items-center justify-between py-2 text-left text-sm font-semibold" :aria-expanded="!!search || expanded[group.id]" :aria-controls="`docs-group-${group.id}`" @click="expanded[group.id] = !expanded[group.id]">
+                <span>{{ group.title }}</span><span class="text-muted" aria-hidden="true">{{ search || expanded[group.id] ? '−' : '+' }}</span>
+              </button>
+              <ul v-show="search || expanded[group.id]" :id="`docs-group-${group.id}`" class="space-y-1 border-l border-line pl-3">
+                <li v-for="page in group.pages" :key="page.id"><a :href="`/docs?section=${page.id}`" :aria-current="selected.id === page.id ? 'page' : undefined" class="block rounded-md px-3 py-2 text-sm leading-5 transition-colors hover:bg-panel" :class="selected.id === page.id ? 'bg-panel font-medium text-accent' : 'text-muted'" @click.prevent="select(page.id)">{{ page.title }}</a></li>
+                <li v-if="!group.pages.length" class="px-3 py-2 text-xs text-muted">无匹配内容</li>
+              </ul>
+            </section>
+          </nav>
         </div>
-
-        <div class="enter docs-command" style="animation-delay: 160ms">
-          <div class="flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs">
-            <span class="text-slate-500">{{ t('surface.docsBaseUrl') }}</span>
-            <span class="text-cyan-300">/v1</span>
-          </div>
-          <pre class="overflow-x-auto p-5 text-xs leading-relaxed"><code>client = OpenAI(
-  base_url="https://your-domain/v1",
-  api_key=os.environ["LAIAI_KEY"],
-)</code></pre>
-          <div class="grid grid-cols-3 gap-px bg-white/10 text-xs">
-            <div class="bg-[#05080d] p-4">
-              <p class="text-slate-500">{{ t('surface.docsAuth') }}</p>
-              <p class="mt-1 text-slate-100">Bearer</p>
-            </div>
-            <div class="bg-[#05080d] p-4">
-              <p class="text-slate-500">{{ t('surface.docsStream') }}</p>
-              <p class="mt-1 text-slate-100">SSE</p>
-            </div>
-            <div class="bg-[#05080d] p-4">
-              <p class="text-slate-500">{{ t('surface.docsFormat') }}</p>
-              <p class="mt-1 text-slate-100">OpenAI</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="mx-auto grid max-w-7xl gap-8 px-4 py-16 sm:px-6 lg:grid-cols-[0.46fr_0.54fr] lg:px-8">
-      <div class="docs-rail" v-reveal>
-        <p class="text-sm font-medium text-accent">{{ t('docs.quickstart') }}</p>
-        <ol class="mt-6 space-y-5">
-          <li v-for="(step, i) in steps" :key="step" class="docs-step">
-            <span>{{ i + 1 }}</span>
-            <p>{{ t(`docs.${step}`) }}</p>
-          </li>
-        </ol>
-        <div class="mt-8 border-t border-line pt-6">
-          <p class="text-sm font-medium">{{ t('docs.authTitle') }}</p>
-          <p class="mt-2 text-sm leading-6 text-muted">{{ t('docs.authBody') }}</p>
-          <div class="mt-4 overflow-x-auto rounded-lg border border-line bg-panel p-4 font-mono text-xs">
-            Authorization: Bearer sk-laiai-...
-          </div>
-        </div>
-      </div>
-
-      <div class="space-y-6">
-        <section v-reveal="80" class="docs-code-block">
-          <div class="flex items-center justify-between border-b border-line px-4 py-3 text-xs text-muted">
-            <span>curl · {{ t('docs.streaming') }}</span>
-            <button class="font-medium hover:text-accent" @click="copy('curl', curlChat)">
-              {{ copied === 'curl' ? t('common.copied') : t('common.copy') }}
-            </button>
-          </div>
-          <pre class="overflow-x-auto p-4 text-xs leading-relaxed"><code>{{ curlChat }}</code></pre>
+      </aside>
+      <main ref="article" tabindex="-1" class="docs-article min-w-0 py-6 outline-none lg:py-9">
+        <p class="text-xs font-medium text-accent">{{ docGroups.find(g => g.id === selected.group)?.title }}</p>
+        <h2 class="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">{{ selected.title }}</h2>
+        <p class="mt-4 max-w-4xl text-base leading-7 text-muted">{{ selected.summary }}</p>
+        <div class="mt-6 rounded-lg border border-line bg-panel px-4 py-3 text-xs leading-6 text-muted">以下示例为说明性数据，不是真实生成记录、业务账单或价格承诺。Base URL、模型权限和能力以当前部署为准；示例只展示请求，不会在本页面发起生成。</div>
+        <nav v-if="selected.sections.length > 1" aria-label="本页目录" class="mt-6 flex flex-wrap gap-x-5 gap-y-2 border-b border-line pb-5 text-sm"><a v-for="section in selected.sections" :key="section.id" :href="`#${section.id}`" class="text-muted hover:text-accent">{{ section.title }}</a></nav>
+        <section v-for="section in selected.sections" :id="section.id" :key="`${selected.id}-${section.id}`" class="docs-section mt-9">
+          <h3 class="text-xl font-semibold">{{ section.title }}</h3>
+          <p v-for="(p, i) in section.paragraphs" :key="i" class="mt-4 text-sm leading-7 text-muted">{{ p }}</p>
+          <ol v-if="section.steps" class="mt-5 list-decimal space-y-3 pl-5 text-sm leading-7 text-muted"><li v-for="step in section.steps" :key="step">{{ step }}</li></ol>
+          <div v-if="section.table" class="mt-5 overflow-x-auto rounded-lg border border-line"><table class="w-full min-w-[540px] text-left text-sm"><thead class="bg-panel text-xs"><tr><th v-for="heading in section.table.headers" :key="heading" scope="col" class="px-4 py-3 font-semibold">{{ heading }}</th></tr></thead><tbody><tr v-for="(row, i) in section.table.rows" :key="i" class="border-t border-line"><td v-for="(cell, j) in row" :key="j" class="px-4 py-3 align-top leading-6" :class="j === 0 ? 'font-mono text-xs' : 'text-muted'">{{ cell }}</td></tr></tbody></table></div>
+          <div v-if="section.note" class="mt-5 rounded-lg border-l-2 border-accent bg-panel px-4 py-3 text-sm leading-7">{{ section.note }}</div>
+          <DocExample v-for="example in section.examples" :key="example.id" :example="example" class="mt-6" />
+          <div v-if="section.links" class="mt-5 flex flex-wrap gap-4 text-sm"><router-link v-for="link in section.links" :key="link.to" :to="link.to" class="font-medium text-accent hover:underline">{{ link.label }} →</router-link></div>
         </section>
-
-        <section v-reveal="160" class="docs-code-block">
-          <div class="flex items-center justify-between border-b border-line px-4 py-3 text-xs text-muted">
-            <span>Python · openai</span>
-            <button class="font-medium hover:text-accent" @click="copy('py', pySdk)">
-              {{ copied === 'py' ? t('common.copied') : t('common.copy') }}
-            </button>
-          </div>
-          <pre class="overflow-x-auto p-4 text-xs leading-relaxed"><code>{{ pySdk }}</code></pre>
-        </section>
-
-        <section v-reveal="240" class="docs-code-block">
-          <div class="flex items-center justify-between border-b border-line px-4 py-3 text-xs text-muted">
-            <span>curl · {{ t('docs.videoFlowTitle') }}</span>
-            <button class="font-medium hover:text-accent" @click="copy('video', curlVideo)">
-              {{ copied === 'video' ? t('common.copied') : t('common.copy') }}
-            </button>
-          </div>
-          <pre class="overflow-x-auto p-4 text-xs leading-relaxed"><code>{{ curlVideo }}</code></pre>
-          <p class="border-t border-line px-4 py-3 text-xs text-muted">{{ t('docs.videoFlowNote') }}</p>
-        </section>
-      </div>
-    </section>
-
-    <section class="docs-endpoints border-t border-line">
-      <div class="mx-auto max-w-7xl px-4 py-14 sm:px-6 lg:px-8">
-        <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p class="text-sm font-medium text-accent">{{ t('docs.endpoints') }}</p>
-            <h2 class="mt-2 text-3xl font-semibold">{{ t('docs.endpoint') }}</h2>
-          </div>
-          <p class="text-sm text-muted">
-            {{ t('docs.moreModels') }}
-            <router-link class="text-accent hover:underline" to="/models">{{ t('nav.models') }}</router-link>
-          </p>
+        <div class="mt-12 grid gap-3 border-t border-line pt-6 sm:grid-cols-2">
+          <a v-if="previous" :href="`/docs?section=${previous.id}`" class="rounded-lg border border-line p-4 text-sm hover:bg-panel" @click.prevent="select(previous.id)"><span class="block text-xs text-muted">上一篇</span><span class="mt-2 block">← {{ previous.title }}</span></a><span v-else />
+          <a v-if="next" :href="`/docs?section=${next.id}`" class="rounded-lg border border-line p-4 text-right text-sm hover:bg-panel" @click.prevent="select(next.id)"><span class="block text-xs text-muted">下一篇</span><span class="mt-2 block">{{ next.title }} →</span></a>
         </div>
-        <div class="mt-8 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-2">
-          <div v-for="s in sections" :key="s.id" v-reveal class="docs-endpoint bg-panel p-5">
-            <div class="flex items-center justify-between gap-4">
-              <span class="badge-muted">{{ s.method }}</span>
-              <span class="font-mono text-xs text-muted">{{ s.path }}</span>
-            </div>
-            <p class="mt-6 text-sm leading-6 text-muted">{{ t(`docs.ep_${s.id}`) }}</p>
-          </div>
-        </div>
-
-        <!-- 错误码速查 + 限流说明 -->
-        <div class="mt-12 grid gap-8 lg:grid-cols-[1fr_0.6fr]">
-          <div v-reveal>
-            <h3 class="text-xl font-semibold">{{ t('docs.errorsTitle') }}</h3>
-            <div class="mt-5 overflow-hidden rounded-lg border border-line">
-              <table class="w-full text-sm">
-                <tbody>
-                  <tr v-for="code in errorCodes" :key="code" class="border-b border-line last:border-b-0">
-                    <td class="w-20 bg-panel px-4 py-2.5 font-mono text-xs font-semibold">{{ code }}</td>
-                    <td class="bg-panel px-4 py-2.5 text-xs leading-5 text-muted">{{ t(`docs.err${code}`) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div v-reveal="80">
-            <h3 class="text-xl font-semibold">{{ t('docs.rateTitle') }}</h3>
-            <p class="mt-5 text-sm leading-6 text-muted">{{ t('docs.rateBody') }}</p>
-          </div>
-        </div>
-      </div>
-    </section>
+      </main>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.docs-article, .docs-section { scroll-margin-top: 6rem; }
+.api-docs :deep(pre) { tab-size: 2; }
+.docs-sidebar { scrollbar-width: thin; }
+@media (prefers-reduced-motion: reduce) { .api-docs * { scroll-behavior: auto; transition: none; } }
+</style>

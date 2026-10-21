@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // Keep IANA quota timezones available in standalone deployments.
 
 	"github.com/laiai/laiai-next/core/internal/alert"
 	"github.com/laiai/laiai-next/core/internal/config"
@@ -22,6 +23,8 @@ import (
 	"github.com/laiai/laiai-next/core/internal/mailer"
 	"github.com/laiai/laiai-next/core/internal/server"
 	"github.com/laiai/laiai-next/core/internal/task"
+	"github.com/laiai/laiai-next/core/internal/video"
+	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -55,6 +58,13 @@ func main() {
 	sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns) // 规模化旋钮（env 可调）
 	sqlDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
+	// All live money paths must persist movements atomically with the journal.
+	// Missing activity migrations are a startup error, never a silent fallback.
+	db, err = ledger.EnableActivityTracking(db)
+	if err != nil {
+		log.Error("ledger activity initialization failed; apply formal migrations before startup")
+		os.Exit(1)
+	}
 
 	// 读副本（规模化）：把「非金钱、容延迟」的只读（分析/用量历史/排行/公开价目）路由到只读副本，
 	// 扩容读吞吐 = 加副本 + 改 LAIAI_DSN_REPLICAS，零代码。多物理副本置于读端 LB/云只读端点之后即一个 DSN。
@@ -100,8 +110,71 @@ func main() {
 	// 异步任务轮询循环（Seedance 类任务的状态同步与结算，设计 §4.4）。仅 leader 实例轮询，
 	// 避免 N 副本对同一批在途任务做 N 倍上游 query（终态结算本就 CAS 幂等，多跑只是浪费）。
 	var taskSvc *task.Service
+	var videoSvc *video.Service
+	var mediaStore *videoasset.MediaStore
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	defer pollerCancel()
+	if len(cfg.VideoHMACSecret) > 0 {
+		videoSvc, err = video.NewService(db, cfg.Keyring, cfg.VideoHMACSecret, log.With("component", "video"))
+		if err != nil {
+			log.Error("official video initialization failed")
+			os.Exit(1)
+		}
+		// Seedance delivers the provider's signed result URLs. Generated media
+		// never passes through platform storage or a background transfer worker.
+		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL}); err != nil {
+			log.Error("video asset configuration invalid")
+			os.Exit(1)
+		}
+		if cfg.VideoMediaRoot != "" {
+			mediaStore, err = videoasset.NewMediaStore(videoasset.MediaStoreConfig{
+				Root: cfg.VideoMediaRoot, PublicBaseURL: cfg.VideoMediaPublicBaseURL,
+				SigningKey: cfg.VideoMediaSigningKey, FFProbePath: cfg.VideoMediaFFProbePath,
+				ScanCommand: cfg.VideoMediaScanCommand,
+			})
+			if err != nil {
+				log.Error("private video media storage, probe or scanner unavailable")
+				os.Exit(1)
+			}
+		}
+		if err = videoSvc.Assets.ConfigureConsole(videoasset.ConsoleOptions{CallbackURL: cfg.VideoPortraitReturnURL, Media: mediaStore}); err != nil {
+			log.Error("video asset console configuration invalid")
+			os.Exit(1)
+		}
+		jobs := []struct {
+			name     string
+			interval time.Duration
+			run      func(context.Context) error
+		}{
+			{"task", 2 * time.Second, videoSvc.ProcessOnce},
+			{"assets", 5 * time.Second, videoSvc.Assets.ProcessOnce},
+			{"events", 5 * time.Second, videoSvc.ProcessOutbox},
+			{"evidence_retention", time.Minute, func(ctx context.Context) error {
+				if _, err := videoSvc.Evidence.PurgeExpired(ctx, 100); err != nil {
+					return err
+				}
+				return videoSvc.RecoverRequestLogs(time.Now().UTC())
+			}},
+		}
+		for _, job := range jobs {
+			go func() {
+				ticker := time.NewTicker(job.interval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						if leaderLease.IsLeader() {
+							if err := job.run(pollerCtx); err != nil && pollerCtx.Err() == nil {
+								log.Warn("video background job deferred", "job", job.name)
+							}
+						}
+					case <-pollerCtx.Done():
+						return
+					}
+				}
+			}()
+		}
+	}
 	if cfg.Keyring != nil {
 		taskSvc = task.NewService(db, cfg.Keyring, log.With("component", "task"))
 		go func() {
@@ -120,12 +193,18 @@ func main() {
 		}()
 	}
 
+	var mediaSource http.Handler
+	if mediaStore != nil {
+		mediaSource = mediaStore
+	}
 	handler, apiSrv := server.NewWithServer(db, server.Options{
-		AuthSecret:  cfg.AuthSecret,
-		AdminToken:  cfg.AdminToken,
-		Keyring:     cfg.Keyring,
-		Recorder:    rec,
-		TaskService: taskSvc,
+		AuthSecret:       cfg.AuthSecret,
+		AdminToken:       cfg.AdminToken,
+		Keyring:          cfg.Keyring,
+		Recorder:         rec,
+		TaskService:      taskSvc,
+		VideoService:     videoSvc,
+		VideoMediaSource: mediaSource,
 		Mailer: mailer.New(mailer.Config{
 			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 			Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
@@ -161,6 +240,7 @@ func main() {
 	//   + relay 卡死 hold 清扫（审查 H-1）。放在 apiSrv 构建后以复用 RunLogRetention（读 ext_settings）。
 	// maintCtx：可取消，shutdown 时 maintCancel 让在途长任务（SyncChannelModels 单趟最坏 ~小时级）能中断。
 	maintCtx, maintCancel := context.WithCancel(context.Background())
+	go apiSrv.RunFundExportJobs(maintCtx)
 	defer maintCancel()
 	go func() {
 		ticker := time.NewTicker(time.Hour)

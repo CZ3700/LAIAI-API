@@ -272,7 +272,6 @@ func (s *Server) paymentCallback(c *gin.Context) {
 	c.String(http.StatusOK, engine.AckBody())
 }
 
-
 // creditPaidOrder：把一笔已确认支付的订单入账——**callback 与 reconcile 共用的唯一资金路径**。
 // 红线集中：行锁取订单 → provider 匹配（防跨网关）→ 幂等(已 paid→already=true) →
 //
@@ -283,7 +282,7 @@ func (s *Server) paymentCallback(c *gin.Context) {
 // （P2-8：防"金额数字相同但币种更便宜"的隐性少付，如 73 CNY 单收到 73 USD 通知）。空=网关未报，跳过。
 func (s *Server) creditPaidOrder(provider, orderNo, tradeNo string, paidAmount decimal.Decimal, paidCurrency string) (already bool, err error) {
 	bonusTiersRaw := s.getSetting("recharge_bonus_tiers") // 事务外取配置：事务内读 ext_settings 会与持锁事务自死锁（单连接池）
-	err = s.db.Transaction(func(tx *gorm.DB) error {
+	applyCredit := func(tx *gorm.DB) error {
 		var order TopupOrder
 		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("order_no = ?", orderNo).First(&order).Error; e != nil {
@@ -324,6 +323,7 @@ func (s *Server) creditPaidOrder(provider, orderNo, tradeNo string, paidAmount d
 			Kind:           ledger.KindCredit,
 			Delta:          order.AmountUSD,
 			RefType:        "topup",
+			RefID:          order.OrderNo,
 			Reason:         "topup via " + provider,
 		}); e != nil {
 			return e
@@ -336,6 +336,7 @@ func (s *Server) creditPaidOrder(provider, orderNo, tradeNo string, paidAmount d
 				Kind:           ledger.KindGrant,
 				Delta:          bonus,
 				RefType:        "topup_bonus",
+				RefID:          order.OrderNo,
 				Reason:         "recharge bonus for topup " + order.OrderNo,
 			}); e != nil {
 				return e
@@ -344,7 +345,26 @@ func (s *Server) creditPaidOrder(provider, orderNo, tradeNo string, paidAmount d
 		return tx.Model(&order).Updates(map[string]any{
 			"status": topupPaid, "trade_no": tradeNo, "paid_at": s.now().Unix(),
 		}).Error
-	})
+	}
+	if ledger.ActivityTrackingEnabled(s.db) {
+		// The hint supplies only the intent's organization and requested USD.
+		// Eligibility, actual amount and deduplication are rechecked under lock.
+		var hint TopupOrder
+		if e := s.db.Where("order_no = ?", orderNo).Take(&hint).Error; e != nil {
+			return false, fmt.Errorf("order not found: %s", orderNo)
+		}
+		var attempt [16]byte
+		if _, e := rand.Read(attempt[:]); e != nil {
+			return false, e
+		}
+		_, err = ledger.RunOperation(s.db, ledger.OperationIntent{
+			OrgID: hint.OrgID, IdempotencyKey: "topup-attempt:" + hex.EncodeToString(attempt[:]),
+			Type: "topup", Direction: "credit", RequestedAmount: hint.AmountUSD,
+			RefType: "topup", RefID: orderNo,
+		}, applyCredit)
+	} else {
+		err = s.db.Transaction(applyCredit)
+	}
 	return already, err
 }
 
@@ -419,6 +439,7 @@ func (s *Server) ReconcileTopups(ctx context.Context, minAge time.Duration, limi
 //   - 网关侧已付 → 走统一入账，绝不标过期；
 //   - 网关查询失败 → 本轮跳过（留 pending 下轮再试），绝不盲标；
 //   - 网关确认未付/查无此单/引擎不可解析（渠道已删，callback 腿依旧有效）→ 标过期。
+//
 // 逐行 UPDATE 复核完整谓词（含 x402 锚点排除，对抗 review #4 TOCTOU）：选取间隙被支付/
 // 被落锚点的单不误标。
 func (s *Server) ExpireStaleTopups(ctx context.Context, maxAge time.Duration, limit int) (int, error) {
@@ -583,4 +604,3 @@ func init() {
 		settingDefaults[k] = ""
 	}
 }
-

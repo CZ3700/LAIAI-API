@@ -1,0 +1,1767 @@
+openapi: 3.1.0
+info:
+  title: LAIAI Seedance 视频 API 实现契约
+  version: 1.0.0-integration
+  description: |
+    按当前集成代码校正；不是上线公告。示例均为说明性示例，不是火山官方真机验证证据。
+    沿用平台 /v1/video/generations，使用平台 Gateway Bearer Key。平台模型、任务、素材组、
+    素材、授权会话 ID 均由平台管理；客户端不得提交火山 Key、上游任务/素材/组 ID 或任意 provider_params。
+    所有资源读取与引用强制 org_id 隔离，资源 ID 不构成授权。一个下游客户应有独立组织边界；
+    同组织 Key 的访问权限由组织资源策略控制。GET 列表仅查询本组织平台库，不开放上游全账户枚举。
+    网关、模型能力、客户价格、供应商预算、路由与租户执行保留策略均须显式配置。
+    Seedance 视频及尾帧直接返回官方 HTTPS 签名地址，平台不存储或代理媒体字节。
+    结果链接有效期由上游决定；读取任务时使用平台 Key，访问结果链接时不得附带平台 Key。
+    未配置默认禁用；标准 2.0/2.5 与 2.0 Fast/Mini 出现在契约中不代表账号已取得官方能力或模型已上线。
+    GET 要求 video:read，POST/PATCH/DELETE（含预估）要求 video:write；video:* 或 * 覆盖二者。
+    POST 创建、取消、素材创建、授权创建、素材 PATCH 和单素材 DELETE 要求 Idempotency-Key；唯一作用域为
+    (org_id, HTTP method, normalized canonical resource path, HMAC-SHA256(Idempotency-Key))。
+    路径包含实际资源 ID；哈希针对幂等键而非 Gateway Key。同组织 Key 轮换不会重新派单，
+    但 pending 真人会话的 H5 URL 仅创建该会话的原 Key 可读取；换 Key 重放可能返回 403。
+    同键同规范化请求返回原资源或操作；同键不同请求为 409。首次资源创建返回 202；重放返回原业务结果，
+    不重新提交上游或重复冻结。幂等键与请求体分别计算服务端 HMAC，并使用不同的域标签；
+    不落明文密钥，仅保存摘要及密钥版本引用。服务端 HMAC 密钥不能直接替换，需显式迁移，不能因换密钥再次派单。
+    平台先持久化请求意图、请求 HMAC 和幂等记录，再执行可能计费的操作。
+    上游提交结果不确定进入 submission_unknown，禁止自动跨渠道重发及按本地超时退款。
+    原始上游 ID、凭证、成本、内部路由和原始错误不对客户公开。金额采用十进制字符串，币种 USD。
+    billing 是客户账单，供应商成本和对账差异属于内部账。任务状态、账单状态和删除状态相互独立。
+    所有写入前校验错误均无生成提交；操作已被接受后发生的网络不确定性通过任务或操作状态查询。
+    核心请求元数据、状态事件和账务证据必须持久化；敏感 payload 按 Invocation Store 的加密、
+    保留期和解密审计边界保存。本文档不承诺将原文请求或账单成本直接暴露为 events。
+servers:
+  - url: https://api.example.invalid
+    description: 占位域名；调用时替换为已部署平台域名。
+security:
+  - GatewayKey: []
+tags:
+  - name: Tasks
+    description: 视频任务、产物与客户账单
+  - name: Models
+    description: 已验证能力、客户价格与预估
+  - name: Assets
+    description: 平台素材及素材组
+  - name: PortraitAuthorization
+    description: 真人 H5 授权流程
+paths:
+  /v1/video/models:
+    get:
+      tags: [Models]
+      operationId: listVideoModels
+      summary: 查询当前组织可见的视频模型及能力版本
+      description: 返回平台配置与 Key 模型白名单的交集，可为空。enabled/verified 是必要条件，创建仍检查实时价格、预算、渠道和租户策略。价格是客户售价，不包含上游成本。
+      responses:
+        '200':
+          description: 模型能力与公开价格
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelInfo'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/estimates:
+    post:
+      tags: [Models]
+      operationId: estimateVideoTask
+      summary: 预估任务 Token、客户费用与冻结额
+      description: |
+        不提交上游、不冻结、不计生成费用。输入与创建请求一致。预估不是保证价或最终账单，
+        也不是可复用的价格锁；创建时重新验证能力、参数、资产与价格并形成不可变快照。
+        duration=-1、frames、输入视频和最低计费 Token 按返回的规则版本计算；frames 与 duration 同传为 422。
+        无法确定安全上界或未验证的输入组合返回 422，不能静默采用任意固定上限。
+      requestBody:
+        $ref: '#/components/requestBodies/TaskCreate'
+      responses:
+        '200':
+          description: 当前配置下的预估结果，不锁价、不冻结。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Estimate'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/generations:
+    post:
+      tags: [Tasks]
+      operationId: createVideoTask
+      summary: 创建视频任务
+      description: |
+        首次受理返回 202 和平台 task_ ID。模型映射、素材引用和计费参数在受理前验证。
+        不接受任意裸上游标识。asset://asset_ 引用须属于当前组织且已就绪；真人素材组须授权有效。
+        draft_task 只能引用本组织成功的 Draft，且模型、能力版本、官方账号/区域/项目一致，父任务未删除。
+        原始 HTTPS 图片/音频地址直接透传官方；原始视频须有经验证的模型总输入视频时长上界，按聚合上界冻结。
+        不声明外部 URL 不可变；已登记不可变素材或 asset:// 引用可使用可信测量时长。后续结算依官方用量证据。
+        参数名沿 Ark 方言，平台严格按已验证模型能力允许的参数组合透传。
+        HTTP 超时不等于生成失败；重试时必须复用同一 Idempotency-Key。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/TaskCreate'
+      responses:
+        '202':
+          description: 任务已持久化受理；可能尚未取得上游创建结果。
+          headers:
+            Location:
+              description: 平台任务查询路径
+              schema:
+                type: string
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+              example:
+                id: task_example001
+                model: seedance-2.0
+                status: accepted
+                billing_state: reserved
+                created_at: '2026-10-15T08:00:00Z'
+                updated_at: '2026-10-15T08:00:00Z'
+                last_synced_at: null
+                usage: null
+                sync_state: fresh
+                artifact_status: pending
+                deletion_state: none
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Tasks]
+      operationId: listVideoTasks
+      summary: 列出当前组织的视频任务
+      description: 仅查询本组织平台数据库；默认不包含已软删除任务。游标不可跨组织使用。
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TaskStatus'
+        - name: model
+          in: query
+          schema:
+            $ref: '#/components/schemas/PublicModel'
+      responses:
+        '200':
+          description: 任务分页
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Task'
+                  next_cursor:
+                    type: [string, 'null']
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/generations/{task_id}:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      operationId: getVideoTask
+      summary: 查询视频任务
+      description: |
+        返回平台最近同步状态，last_synced_at 表示最后一次成功上游同步时间。
+        查询不产生新的生成任务，也不额外收生成费。不存在、跨组织或已完成软删除均返回 404。
+        本地观察超时保持可核对状态，不凭观察超时将任务宣告 failed 或自动全退。
+      responses:
+        '200':
+          description: 任务状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Tasks]
+      operationId: deleteVideoTask
+      summary: 删除已结束且账务已落定的视频任务
+      description: |
+        仅允许 succeeded/failed/cancelled/expired 且 billing_state 为 settled/released/adjusted。
+        accepted/submitting/submission_unknown/queued/running 或 pending_usage 均返回 409。
+        首次接受返回 202 operation_id；删除过程中重复请求返回同一操作。
+        cancelled 仅本地软删除，不再发上游 DELETE；其他终态按官方可删除状态执行并确认。
+        上游删除失败或结果未知不能伪造完成。已完成重复删除返回 204；跨组织仍为 404。
+        删除不退款，不物理删除账务或安全审计记录。完成后任务 GET 返回 404，账单和安全事件按保留策略可查。
+      responses:
+        '202':
+          $ref: '#/components/responses/OperationAccepted'
+        '204':
+          description: 当前组织任务的删除已经完成，无响应体。
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/generations/{task_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [Tasks]
+      operationId: cancelVideoTask
+      summary: 请求取消视频任务
+      description: |
+        accepted 且事务确认尚未派单可在同一事务内标 cancelled、释放冻结并确认取消操作。
+        submitting/submission_unknown 可返回 202 记录取消意愿，查明前不得发上游 DELETE 或释放冻结。
+        已确认 queued 时有条件调用官方 DELETE，running 返回 409 invalid_state。
+        请求不得包含非空 body。接受操作不等于取消成功；按 operation.poll_url 查询统一操作资源。
+        queued 可能在 DELETE 前变成 succeeded；官方 DELETE 此时可能删除成功记录。
+        因此 DELETE 返回 200 加随后 GET 404 不是取消成功或零费用证据，须进入 operation=unknown 待核对。
+        仅本地未派单的原子取消或充分官方取消证据才能转 cancelled 并释放冻结。
+        同 Idempotency-Key 重放原操作；不同幂等键对已 cancelled 的任务返回已确认操作且不重复退款。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          $ref: '#/components/responses/OperationAccepted'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/operations/{operation_id}:
+    parameters:
+      - name: operation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^op_[A-Za-z0-9_-]+$'
+    get:
+      tags: [Tasks]
+      operationId: getVideoOperation
+      summary: 查询取消或删除操作
+      description: |
+        独立持久化操作资源，当前查询任务取消、任务删除和虚拟空素材组删除，强制组织隔离。
+        pending/in_flight/sending/unknown 均非成功；只有 confirmed 表示有充分证据确认该操作完成。
+        rejected 表示操作被拒绝。任务操作不返回 error/completed_at；素材组操作可提供安全 error 和完成时间。
+        创建任务/素材/会话请查询各自资源，不通过此接口枚举内部创建操作。原资源已删除后仍可查询删除操作。
+        本接口或原资源 GET 返回 404 均不代表操作成功，不得据此退款或删除本地账务证据。
+      responses:
+        '200':
+          description: 持久化操作状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/generations/{task_id}/content:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      operationId: getVideoContent
+      summary: 获取成功任务的视频或尾帧直链
+      description: |
+        经过平台鉴权及组织归属校验后返回链接 JSON，不再返回媒体流或重定向。
+        优先使用任务详情的 content.video_url / content.last_frame_url。
+        客户自行访问 url，不向外站发送 Gateway Bearer。签名参数须原样保留，有效期由上游决定。
+        无额外生成收费；链接未取得返回 409，链接结果已失效返回 410，官方查询失败可能返回 503。
+        kind=last_frame 仅请求过 return_last_frame 且官方返回尾帧时可用。链接失败不应重新创建任务。
+      parameters:
+        - name: kind
+          in: query
+          schema:
+            type: string
+            enum: [video, last_frame]
+            default: video
+      responses:
+        '200':
+          description: 官方产物链接；平台不持久化媒体文件。
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: private, no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [url, kind, source]
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                    pattern: '^https://'
+                  kind:
+                    type: string
+                    enum: [video, last_frame]
+                  source:
+                    type: string
+                    const: upstream
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/generations/{task_id}/billing:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      operationId: getVideoBilling
+      summary: 查询单任务客户账单
+      description: |
+        同组织资源归属校验，不返回上游成本、内部对账明细或上游任务 ID。
+        实际 usage 未知时必须为 null；不可用 0 或估算值冒充实际用量。
+        pending_usage 时最终金额为 null；历史扣款、退款或调整以不可覆盖的账务分录表示。
+        任务软删除不抹除账单；本接口是否仍可读遵循平台账单保留策略。
+      responses:
+        '200':
+          description: 客户账单
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Billing'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/generations/{task_id}/events:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      operationId: listVideoTaskEvents
+      summary: 查询任务安全事件
+      description: |
+        只提供事件类型、状态变化、平台 request_id 和时间；
+        不包含 prompt、素材 URL、H5 授权 URL、上游原文、原始上游 ID、供应商成本或内部路由。
+        任务软删除不抹除安全事件。列表仅来自本组织平台数据库。
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: 安全事件分页
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TaskEvent'
+                  next_cursor:
+                    type: [string, 'null']
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/asset-groups:
+    post:
+      tags: [Assets]
+      operationId: createVideoAssetGroup
+      summary: 创建虚拟素材组
+      description: |
+        此接口仅创建虚拟 AIGC 组；kind 只能为 virtual。
+        真人组必须通过 portrait-authorizations 官方 H5 授权完成后由平台建立，不能客户端直接创建。
+      parameters:
+        - $ref: '#/components/parameters/AssetIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [kind, name]
+              properties:
+                kind:
+                  type: string
+                  const: virtual
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                description:
+                  type: string
+                  maxLength: 300
+      responses:
+        '202':
+          description: 素材组已持久化受理
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetGroup'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Assets]
+      operationId: listVideoAssetGroups
+      summary: 列出当前组织的素材组
+      description: 仅查询本组织平台库，不透传火山账户全局列表。
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: 素材组分页
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AssetGroup'
+                  next_cursor:
+                    type: [string, 'null']
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/asset-groups/{group_id}:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
+    patch:
+      tags: [Assets]
+      operationId: updateVideoAssetGroup
+      summary: 异步编辑素材组名称与说明
+      description: |
+        先 GET 或列表读取 version，作为 expected_version 提交。需要 Update 能力及有效幂等键。
+        name 必填，description 可选；版本过期、资源不就绪或已有在途操作为 409 invalid_state。
+        不支持客户修改 kind、上游 ID 或业务许可。接受返回操作，轮询 confirmed 后重新读取资源版本。
+      parameters:
+        - $ref: '#/components/parameters/AssetIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, expected_version]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+                description: { type: string, maxLength: 300 }
+                expected_version: { type: integer, minimum: 1 }
+            example: { name: 示例素材组新版, description: 更新说明, expected_version: 1 }
+      responses:
+        '202':
+          $ref: '#/components/responses/OperationAccepted'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Assets]
+      operationId: getVideoAssetGroup
+      summary: 查询素材组
+      responses:
+        '200':
+          description: 素材组状态与素材数量
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetGroup'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Assets]
+      operationId: deleteVideoAssetGroup
+      summary: 删除素材组
+      description: |
+        当前只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。
+        cascade=true、真人组或未启用删除能力均返回 422 unsupported_capability，不支持级联删除。
+        有在途任务引用返回 409 resource_in_use。不会仅删除平台映射而留下未知上游结果。
+        检查组内素材、在途引用并设置 deleting 屏障必须在同一事务锁内完成；
+        素材新增和任务引用也检查该屏障，避免检查通过后新建素材或引用的竞态。
+        首次接受 202，同一删除操作重复请求返回该操作，已确认删除后重复请求 204；跨组织 404。
+        删除保留资源墓碑及审计证据，不删除历史任务或账务事实。
+      parameters:
+        - name: cascade
+          in: query
+          description: 当前只能为 false；true 返回 422，不执行级联。
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '202':
+          $ref: '#/components/responses/OperationAccepted'
+        '204':
+          description: 素材组删除已完成。
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/assets:
+    post:
+      tags: [Assets]
+      operationId: createVideoAsset
+      summary: 提交素材入库及校验
+      description: |
+        group_id 必须属于本组织且就绪；真人素材组必须由服务端确认官方 H5 认证成功，
+        并有经核验且仍有效、适用当前用途的业务肖像许可。H5 认证成功本身不等同于取得该许可。
+        image/video/audio 只有当前账号/项目对应能力显式启用时允许提交，不支持组合返回 422。
+        url 必须通过当前组织的可信媒体验证：可使用控制台上传/导入且已验证的媒体来源，
+        或由可信管理员登记的有效不可变媒体。包含 SHA-256、大小/类型/尺寸/时长/FPS 与有效性证据。
+        外部地址必须精确匹配有效可信登记项；未登记、已撤销、过期或校验不符拒绝，不信任客户自报信息。
+        管理员登记有效期最长为核验后一小时；控制台媒体按自身 expires_at 校验。
+        接受不等于审核通过；仅 status=ready 的资产可用于任务，平台 asset:// 引用会在内部转换。
+      parameters:
+        - $ref: '#/components/parameters/AssetIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [group_id, url, media_type]
+              properties:
+                group_id:
+                  $ref: '#/components/schemas/GroupId'
+                url:
+                  type: string
+                  format: uri
+                  pattern: '^https://'
+                  maxLength: 4096
+                  description: 本组织可通过可信媒体验证的 HTTPS 地址；支持已就绪控制台媒体或有效管理员登记，不能任意注册公网 URL。URL query 可能含签名，不得进入普通日志或安全事件。
+                media_type:
+                  $ref: '#/components/schemas/MediaType'
+                name:
+                  type: string
+                  maxLength: 64
+                  description: 可选素材名称；64 字符是平台契约限制。
+      responses:
+        '202':
+          description: 素材已持久化受理
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Assets]
+      operationId: listVideoAssets
+      summary: 列出当前组织的素材
+      description: 仅查询本组织平台库；不回显原始上传 URL 或上游素材 ID。
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: group_id
+          in: query
+          schema:
+            $ref: '#/components/schemas/GroupId'
+      responses:
+        '200':
+          description: 素材分页
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Asset'
+                  next_cursor:
+                    type: [string, 'null']
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/assets/{asset_id}:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+    patch:
+      tags: [Assets]
+      operationId: updateVideoAsset
+      summary: 异步编辑素材名称
+      description: |
+        先 GET 或列表读取 version，作为 expected_version 提交。需要 Update 能力及有效幂等键。
+        仅允许 name 与 expected_version；版本过期或有在途操作为 409 invalid_state。
+        接受返回操作，轮询 confirmed 后重新读取；不接受 description、group_id 或媒体内容变更。
+      parameters:
+        - $ref: '#/components/parameters/AssetIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, expected_version]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+                expected_version: { type: integer, minimum: 1 }
+            example: { name: 示例素材新版, expected_version: 1 }
+      responses:
+        '202':
+          $ref: '#/components/responses/OperationAccepted'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Assets]
+      operationId: getVideoAsset
+      summary: 查询素材状态
+      responses:
+        '200':
+          description: 素材状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Assets]
+      operationId: deleteVideoAsset
+      summary: 异步删除单个素材（能力门控）
+      description: |
+        需要有效 Idempotency-Key 与显式启用的 DeleteAssets 能力。素材必须属于本组织，
+        已有上游映射且处于允许删除的 ready/failed 状态；未启用返回 422 unsupported_capability。
+        存在在途任务引用为 409 resource_in_use；在途修改/删除或状态冲突为 409 invalid_state。
+        受理返回 202 操作，按 poll_url 确认完成；未知结果不能盲重发。
+        不存在、跨组织或已删除可能返回 404，因此重复请求的 404 不是删除成功证据。
+      parameters:
+        - $ref: '#/components/parameters/AssetIdempotencyKey'
+      responses:
+        '202':
+          $ref: '#/components/responses/OperationAccepted'
+        '204':
+          description: 处理时已确认删除完成；后续请求也可能在资源预检时返回 404，应保留原操作 ID。
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/portrait-authorizations:
+    post:
+      tags: [PortraitAuthorization]
+      operationId: createPortraitAuthorization
+      summary: 创建真人 H5 授权会话
+      description: |
+        异步调用官方 CreateVisualValidateSession 建立流程，creating 阶段尚无 H5 地址；
+        创建结果不确定时为 submission_unknown，不允许盲重发官方创建请求。
+        pending 时才返回 H5 地址，用户在该页面完成授权；
+        平台通过 GetVisualValidateResult 核实结果，再把官方返回的组映射为本组织 ag_ ID。
+        callback_url 仅可为预登记 HTTPS 回跳地址，不是可信的授权结果通知来源；
+        H5 回跳本身、客户端参数或截图均不能将授权状态改为成功。
+        需要已启用的租户素材路由/Portrait 能力、平台固定回调入口及有效回跳登记。H5 成功仅确认身份流程；
+        真人素材仍需独立审核且未过期/撤销的 video_generation 业务许可，才能上传或参与任务。
+        authorization_url 属敏感短期 URL，仅在授权会话响应返回，禁止写入普通日志。
+      parameters:
+        - $ref: '#/components/parameters/AssetIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [callback_url]
+              properties:
+                name:
+                  type: string
+                  maxLength: 64
+                  description: 可选会话名称。
+                description:
+                  type: string
+                  maxLength: 300
+                  description: 可选会话说明。
+                callback_url:
+                  type: string
+                  format: uri
+                  pattern: '^https://'
+                  maxLength: 2048
+                  description: 必须精确匹配组织预登记的 HTTPS 回跳地址。
+      responses:
+        '202':
+          description: 会话创建已持久化受理；creating/submission_unknown 尚未获得可用 H5 地址，pending 等待本人完成授权。
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortraitAuthorization'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [PortraitAuthorization]
+      operationId: listPortraitAuthorizations
+      summary: 列出当前组织的授权会话摘要
+      description: 仅读平台库；列表不返回 authorization_url。授权会话不提供客户端写状态或伪造授权接口。
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: 授权会话摘要分页
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PortraitAuthorizationSummary'
+                  next_cursor:
+                    type: [string, 'null']
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/portrait-authorizations/{session_id}:
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+    get:
+      tags: [PortraitAuthorization]
+      operationId: getPortraitAuthorization
+      summary: 查询真人授权会话
+      description: |
+        状态只由平台核实官方结果后更新；succeeded 返回平台 group_id。
+        pending 会话仅创建该会话的原 Key 可经审计读取有效 authorization_url，其他 Key 返回 403。
+        同一原 Key 在有效 pending 状态可再次 GET；官方认证凭证仍限一次认证。已失效或完成后不返回 URL。
+        未核实官方撤销/删除会话能力前不开放 DELETE；素材组删除也不等于撤销本人授权。
+      responses:
+        '200':
+          description: 授权会话及已核实结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortraitAuthorization'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/video/portrait-callback:
+    get:
+      tags: [PortraitAuthorization]
+      operationId: consumePortraitBrowserCallback
+      summary: 官方 H5 浏览器回跳入口（不供客户主动构造调用）
+      security: []
+      description: |
+        只接受平台签发、绑定组织/会话/回跳登记且未消费的短期 state；不使用 Gateway Key。
+        不信任 resultCode、GroupId 或任意 redirect 参数，不据此授予身份认证成功或业务许可。
+        消费有效 state 后仅 303 到预登记 HTTPS 地址。客户业务代码应查询 portrait-authorizations 状态。
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 平台与官方 H5 流程传递的敏感短期 opaque state；不得日志记录或自行生成。
+      responses:
+        '303':
+          description: 已消费 state，跳转至预登记回跳地址。
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+            Referrer-Policy:
+              schema:
+                type: string
+                const: no-referrer
+        '400':
+          description: state/会话/回跳目标无效、过期或已消费；无响应体。
+        '503':
+          $ref: '#/components/responses/Error'
+components:
+  securitySchemes:
+    GatewayKey:
+      type: http
+      scheme: bearer
+      bearerFormat: LAIAI Gateway API Key
+      description: 平台签发的下游 Key，绝不使用或返回火山官方 Key。
+  headers:
+    IdempotencyReplayed:
+      description: true 表示幂等重放已有结果，没有重复创建或冻结。
+      schema:
+        type: boolean
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        8–128 字符，由调用方为一次业务操作生成。唯一范围是组织、方法、包含资源 ID 的规范化路径、
+        幂等键哈希；与 Gateway Key ID 无关。同请求重放同一任务/操作，不同请求 409。
+        幂等键及规范化请求分别使用服务端 HMAC-SHA256 和不同的域标签，不保存明文摘要密钥；
+        服务端 HMAC 密钥轮换需显式迁移；现有任务幂等版本不允许原位换密钥后静默再次创建。
+        不得将同一个键用于不同业务请求。
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+        pattern: '^[!-~]+$'
+    AssetIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 素材组、素材、H5 会话创建的幂等键；1–128 字符且不得含控制字符。同组织同路径同键同请求重放，内容冲突为 409 invalid_state。建议统一使用至少 8 位随机业务键。
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/TaskId'
+    GroupId:
+      name: group_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/GroupId'
+    AssetId:
+      name: asset_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/AssetId'
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Cursor:
+      name: cursor
+      in: query
+      description: 平台签发的不透明游标，绑定组织和列表过滤条件；任务/事件最长 512 字符，素材/会话最长 1024 字符。原样使用，不跨列表复用。
+      schema:
+        type: string
+        maxLength: 1024
+  requestBodies:
+    TaskCreate:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CreateTaskRequest'
+          example:
+            model: seedance-2.0
+            content:
+              - type: text
+                text: 一只纸质小船漂过平静湖面，柔和晨光。
+            duration: 5
+            resolution: 720p
+            ratio: '16:9'
+            generate_audio: false
+  responses:
+    Error:
+      description: |
+        安全错误。素材接口非法 JSON/缺少幂等键/媒体登记失败为 400；任务参数或幂等键非法通常为 422；
+        401=Key 无效；403=权限或真人业务许可不足；
+        任务接口的素材校验错误映射为 403 forbidden、409 invalid_state 或 422 unsupported_capability；
+        素材接口独立返回 authorization_required、resource_in_use、group_not_empty 等安全错误码。
+        404=资源不存在或跨组织；409=幂等冲突/状态冲突；410=产物已过期；
+        413=请求体超限；422=未验证或不支持的模型参数/素材组合；429=Token 配额/限流/并发限制；
+        402=余额不足；500=素材服务内部失败；502/503=服务不可用。已接受的提交结果未知通过任务状态表达，
+        不使用误导性的失败结果允许客户任意重新创建。错误 message 不包含上游原文、凭证或 PII。
+      headers:
+        X-Request-Id:
+          description: 平台请求 ID
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: 幂等键复用到不同请求，或任务/素材/授权/账务状态不允许当前操作。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    OperationAccepted:
+      description: 操作已持久化受理，非完成确认；按 poll_url 查询统一 operations 资源，不根据原资源 404 判断成功。
+      headers:
+        Idempotency-Replayed:
+          $ref: '#/components/headers/IdempotencyReplayed'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Operation'
+  schemas:
+    TaskId:
+      type: string
+      pattern: '^task_[A-Za-z0-9_-]+$'
+      description: 平台任务 ID，不接受 cgt- 等上游 ID。
+    GroupId:
+      type: string
+      pattern: '^ag_[A-Za-z0-9_-]+$'
+      description: 平台素材组 ID。
+    AssetId:
+      type: string
+      pattern: '^asset_[A-Za-z0-9_-]+$'
+      description: 平台素材 ID。
+    SessionId:
+      type: string
+      pattern: '^pas_[A-Za-z0-9_-]+$'
+      description: 平台真人授权会话 ID，不暴露官方会话 ID。
+    PublicModel:
+      type: string
+      enum: [seedance-2.0, seedance-2.5, seedance-2.0-fast, seedance-2.0-mini]
+      description: 平台公开别名；Fast 对应 doubao-seedance-2-0-fast-260128，Mini 对应 doubao-seedance-2-0-mini-260615。是否可用以 models 返回 enabled 与 verified 为准。
+    MoneyAmount:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,8})?$'
+      description: 非负 USD 十进制字符串，最多 8 位小数，禁止 JSON 浮点金额。
+      examples: ['0.12500000']
+    NullableMoneyAmount:
+      oneOf:
+        - $ref: '#/components/schemas/MoneyAmount'
+        - type: 'null'
+    PriceAmount:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,24})?$'
+      description: 客户单价及倍率相乘后的非负十进制字符串；单价保留精度可高于最终 USD 账款的 8 位，禁止 JSON 浮点金额。
+    TaskStatus:
+      type: string
+      enum: [accepted, submitting, submission_unknown, queued, running, succeeded, failed, cancelled, expired]
+      description: |
+        accepted/submitting/submission_unknown 为平台提交状态；其余为已核实生成状态。
+        expired 只能来自已确认的官方执行过期，不是平台查询超时。
+    BillingState:
+      type: string
+      enum: [reserved, pending_usage, settled, released, adjusted]
+      description: reserved=已冻结；pending_usage=待确定实际用量/费用；settled=已结算；released=已释放；adjusted=有后续调整。
+    MediaType:
+      type: string
+      enum: [image, video, audio]
+      description: 平台媒体类型；具体官方可用组合必须经能力验证，不以枚举出现即视作已支持。
+    MediaUrl:
+      type: string
+      maxLength: 4096
+      pattern: '^(https://[^\s]+|asset://asset_[A-Za-z0-9_-]+)$'
+      description: HTTPS 资源或本组织 asset://asset_ 引用；不接受裸上游素材 ID 或上游 asset:// ID。
+    CreateTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [model, content]
+      description: |
+        仅开放已核实的 Ark 字段。模型级上限、支持分辨率/角色组合等由对应能力版本二次校验。
+        平台禁止同时提交 frames 与 duration，二者同传返回 422；不依赖官方优先级静默改写用户意图。
+        duration=-1 只有模型已验证支持自动时长时可用，冻结按该能力的最大可能产出评估。
+        prompt 中旧式 --dur/--duration/--rs/--resolution/--frames 等计费参数指令及规范化变体须拒绝，
+        有歧义也返回 422 并提示改用结构化字段。本版本不开放任意 provider_params。
+        基于 draft_task 的正式生成只允许唯一 draft_task 内容项且 resolution 必须为 1080p；
+        duration/frames/ratio/seed/generate_audio/omni_reference_task_type 不得重传，这些有效参数继承 Draft。
+        转正式不能同时设置 draft:true。首尾帧模式各最多一张，尾帧须有首帧，ratio 必须为 adaptive，
+        不能混入参考图片、视频或音频。2.5 edit 需要恰好一个视频、adaptive 与 duration=-1；
+        extend 需要恰好一个视频与 adaptive；这些组合还受已发布能力约束。
+        return_last_frame/output_format/watermark/service_tier/execution_expires_after 的省略不表示继承，
+        按官方正式任务默认值及当前能力版本解释。未在本契约公开的回调/priority 等字段不允许透传。
+      properties:
+        model:
+          $ref: '#/components/schemas/PublicModel'
+        content:
+          type: array
+          minItems: 1
+          maxItems: 51
+          description: 契约的通用上界；每类数量、组合和总量还受当前模型能力版本的更小上限限制，不表示官方账号已支持全部组合。
+          items:
+            $ref: '#/components/schemas/ContentItem'
+        duration:
+          type: integer
+          oneOf:
+            - const: -1
+            - minimum: 4
+              maximum: 30
+          description: 秒。2.0、Fast、Mini 为 4–15 秒；2.5 为 4–30 秒；自动时长还受已发布能力限制。
+        frames:
+          type: integer
+          minimum: 1
+          description: 模型支持时指定帧数；范围和步长按能力版本校验，禁止与 duration 同传。
+        resolution:
+          type: string
+          enum: [480p, 720p, 1080p, 4k]
+        ratio:
+          type: string
+          enum: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', adaptive]
+        seed:
+          type: integer
+          minimum: -1
+          maximum: 2147483647
+        generate_audio:
+          type: boolean
+        watermark:
+          type: boolean
+        return_last_frame:
+          type: boolean
+        draft:
+          type: boolean
+        service_tier:
+          type: string
+          enum: [default]
+          description: 本版公开契约仅开放 default，其他服务档未开放。
+        omni_reference_task_type:
+          type: string
+          enum: [auto, reference, edit, extend]
+          description: 仅 Seedance 2.5 已验证的多模态参考场景可用（参考图片、视频或音频）；纯文本及首帧/首尾帧请求须省略，显式传入返回 422。仅开放 reference 的能力在多模态参考请求省略本字段时补 reference，防止自动选择未开放模式。Draft 转正式片不得重传。不接受 task_type 别名。
+        output_format:
+          type: string
+          enum: [mp4, mov]
+          description: Seedance 2.5 可选格式；仅对应能力已核实并启用时可用。
+        execution_expires_after:
+          type: integer
+          minimum: 1
+          description: 官方执行期限秒数，支持范围按模型能力校验，不是平台 HTTP 超时。
+        max_charge_usd:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: 平台创建时最大冻结额守卫；仅平台消费，不透传上游。所需冻结超出该值时 409，不创建任务。该字段不是之后人工账单调整的金额锁。
+        expected_pricing_version:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 平台价格版本前置条件；与生效版本不符为 409，不冻结、不提交上游。仅平台消费，不透传上游。
+      allOf:
+        - not:
+            required: [frames, duration]
+        - if:
+            properties:
+              model:
+                const: seedance-2.5
+          then:
+            properties:
+              resolution:
+                not:
+                  const: 4k
+        - if:
+            properties:
+              model:
+                enum: [seedance-2.0, seedance-2.0-fast, seedance-2.0-mini]
+          then:
+            not:
+              anyOf:
+                - required: [omni_reference_task_type]
+                - required: [output_format]
+        - if:
+            properties:
+              model:
+                enum: [seedance-2.0-fast, seedance-2.0-mini]
+          then:
+            properties:
+              resolution:
+                enum: [480p, 720p]
+              duration:
+                oneOf:
+                  - const: -1
+                  - minimum: 4
+                    maximum: 15
+              draft:
+                const: false
+              ratio:
+                enum: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9']
+            not:
+              required: [frames]
+        - if:
+            properties:
+              content:
+                contains:
+                  type: object
+                  required: [type]
+                  properties:
+                    type:
+                      const: draft_task
+          then:
+            required: [resolution]
+            properties:
+              content:
+                maxItems: 1
+              resolution:
+                const: 1080p
+              draft:
+                const: false
+            not:
+              anyOf:
+                - required: [duration]
+                - required: [frames]
+                - required: [ratio]
+                - required: [seed]
+                - required: [generate_audio]
+                - required: [omni_reference_task_type]
+    ContentItem:
+      oneOf:
+        - $ref: '#/components/schemas/TextContent'
+        - $ref: '#/components/schemas/ImageContent'
+        - $ref: '#/components/schemas/VideoContent'
+        - $ref: '#/components/schemas/AudioContent'
+        - $ref: '#/components/schemas/DraftContent'
+      discriminator:
+        propertyName: type
+        mapping:
+          text: '#/components/schemas/TextContent'
+          image_url: '#/components/schemas/ImageContent'
+          video_url: '#/components/schemas/VideoContent'
+          audio_url: '#/components/schemas/AudioContent'
+          draft_task: '#/components/schemas/DraftContent'
+    TextContent:
+      type: object
+      additionalProperties: false
+      required: [type, text]
+      properties:
+        type:
+          type: string
+          const: text
+        text:
+          type: string
+          minLength: 1
+          maxLength: 20000
+    MediaReference:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url:
+          $ref: '#/components/schemas/MediaUrl'
+    ImageContent:
+      type: object
+      additionalProperties: false
+      required: [type, image_url]
+      properties:
+        type:
+          type: string
+          const: image_url
+        image_url:
+          $ref: '#/components/schemas/MediaReference'
+        role:
+          type: string
+          enum: ['', first_frame, last_frame, reference_image]
+    VideoContent:
+      type: object
+      additionalProperties: false
+      required: [type, video_url]
+      properties:
+        type:
+          type: string
+          const: video_url
+        video_url:
+          $ref: '#/components/schemas/MediaReference'
+        role:
+          type: string
+          enum: ['', reference_video]
+    AudioContent:
+      type: object
+      additionalProperties: false
+      required: [type, audio_url]
+      properties:
+        type:
+          type: string
+          const: audio_url
+        audio_url:
+          $ref: '#/components/schemas/MediaReference'
+        role:
+          type: string
+          enum: ['', reference_audio]
+    DraftContent:
+      type: object
+      additionalProperties: false
+      required: [type, draft_task]
+      properties:
+        type:
+          type: string
+          const: draft_task
+        draft_task:
+          type: object
+          additionalProperties: false
+          required: [id]
+          properties:
+            id:
+              $ref: '#/components/schemas/TaskId'
+    Task:
+      type: object
+      additionalProperties: false
+      required: [id, model, status, billing_state, usage, sync_state, artifact_status, created_at, updated_at, last_synced_at, deletion_state]
+      properties:
+        id:
+          $ref: '#/components/schemas/TaskId'
+        model:
+          $ref: '#/components/schemas/PublicModel'
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        billing_state:
+          $ref: '#/components/schemas/BillingState'
+        sync_state:
+          type: string
+          enum: [fresh, stale, needs_review]
+          description: 平台观测状态，与生成终态和账单状态独立；needs_review 不等于任务失败。
+        artifact_status:
+          type: string
+          enum: [pending, ready, failed, expired]
+          description: 结果链接状态独立于生成与账务状态；ready 表示已取得官方链接，不承诺永久有效或平台托管。取件失败不改变已核实生成成功事实。
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_synced_at:
+          type: [string, 'null']
+          format: date-time
+        content_url:
+          type: string
+          format: uri
+          pattern: '^https://'
+          description: 官方视频直链，与 content.video_url 相同；保留签名参数，不附带 Gateway Key 访问。列表只返回已缓存的有效交付记录，单任务详情可受限查询上游更新。
+        content:
+          type: object
+          additionalProperties: false
+          properties:
+            video_url:
+              type: string
+              format: uri
+              pattern: '^https://'
+            last_frame_url:
+              type: string
+              format: uri
+              pattern: '^https://'
+          description: 官方原始结果地址；仅包含实际返回的类型，平台不转存视频或尾帧。地址过期时可查询任务，不能保证官方重新签发。
+        usage:
+          oneOf:
+            - $ref: '#/components/schemas/ActualUsage'
+            - type: 'null'
+        deletion_state:
+          type: string
+          enum: [none, pending]
+          description: 删除完成后资源 GET 为 404；删除失败/未知应查询对应 operation，不由此字段推断。任务 DTO 不内嵌取消或删除操作。
+    ActualUsage:
+      type: object
+      additionalProperties: false
+      required: [completion_tokens, total_tokens]
+      description: 官方实际返回的用量；字段缺失为 null，不以零或估算代填。不能假设 total_tokens 永远等于 completion_tokens。
+      properties:
+        completion_tokens:
+          type: [integer, 'null']
+          minimum: 0
+        total_tokens:
+          type: [integer, 'null']
+          minimum: 0
+    Operation:
+      type: object
+      additionalProperties: false
+      required: [operation_id, kind, status, resource_id, poll_url, created_at]
+      properties:
+        operation_id:
+          type: string
+          pattern: '^op_[A-Za-z0-9_-]+$'
+        kind:
+          type: string
+          description: 任务为 cancel_task/delete_task；素材操作保留动作名，如 CreateAssetGroup、CreateAsset、UpdateAssetGroup、UpdateAsset、DeleteAssetGroup、DeleteAsset、CreateVisualValidateSession。
+        status:
+          type: string
+          enum: [pending, in_flight, sending, unknown, confirmed, rejected]
+          description: 任务发送态为 in_flight，素材操作发送态为 sending；只有 confirmed 证明完成，unknown 不凭响应超时或 404 推断完成。
+        resource_id:
+          type: string
+          pattern: '^(task_|ag_|asset_|pas_)[A-Za-z0-9_-]+$'
+        poll_url:
+          type: string
+          pattern: '^/v1/video/operations/op_[A-Za-z0-9_-]+$'
+          description: 统一操作查询路径，资源删除后仍可查。操作或原资源 404 均不表示成功。
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: [string, 'null']
+          format: date-time
+          description: 素材操作返回；pending/sending/unknown 为 null，confirmed/rejected 为完成时间。任务操作不返回此字段。
+        error:
+          $ref: '#/components/schemas/SafeError'
+          description: 素材操作有安全错误投影时出现；任务操作不返回该字段。
+    Estimate:
+      type: object
+      additionalProperties: false
+      required: [model, estimated_tokens, maximum_reserved_tokens, estimated_amount, reserved_amount, currency, capability_version, pricing_version, billing_rule_version, guaranteed_price]
+      properties:
+        model:
+          $ref: '#/components/schemas/PublicModel'
+        estimated_tokens:
+          type: integer
+          minimum: 0
+        maximum_reserved_tokens:
+          type: integer
+          minimum: 0
+        estimated_amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        reserved_amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        currency:
+          type: string
+          const: USD
+        capability_version:
+          type: string
+        pricing_version:
+          type: string
+        billing_rule_version:
+          type: string
+        guaranteed_price:
+          type: boolean
+          const: false
+        metering:
+          $ref: '#/components/schemas/ReservationMetering'
+        price:
+          $ref: '#/components/schemas/VideoPrice'
+    ModelInfo:
+      type: object
+      additionalProperties: false
+      required: [id, enabled, verified, capability_version, pricing_version, billing_rule_version, capabilities, prices]
+      properties:
+        id:
+          $ref: '#/components/schemas/PublicModel'
+        enabled:
+          type: boolean
+        verified:
+          type: boolean
+          description: 平台管理员发布的能力已核验标记，不代表本文档示例或 mock 测试已经完成该账号的官方真机验收。创建仍检查当前能力、价格与租户策略。
+        capability_version:
+          type: string
+        pricing_version:
+          type: string
+        billing_rule_version:
+          type: string
+        capabilities:
+          type: object
+          additionalProperties: false
+          required: [resolutions, max_duration_seconds, automatic_duration, frames, input_video, input_audio, draft, portrait_assets]
+          properties:
+            resolutions:
+              type: array
+              items:
+                type: string
+                enum: [480p, 720p, 1080p, 4k]
+            max_duration_seconds:
+              type: integer
+              minimum: 1
+            automatic_duration:
+              type: boolean
+            frames:
+              type: boolean
+            input_video:
+              type: boolean
+            input_audio:
+              type: boolean
+            draft:
+              type: boolean
+            portrait_assets:
+              type: boolean
+              description: 当前组织、该模型官方 scope 的素材路由及 Portrait 能力已启用，且允许异步执行暂存；仅表示能力可用，不代表某会话已认证或某素材已获有效业务许可。
+        prices:
+          type: array
+          description: 本组织客户售价规则，不是火山账单价格或平台采购成本。
+          items:
+            $ref: '#/components/schemas/VideoPrice'
+    VideoPrice:
+      type: object
+      additionalProperties: false
+      required: [price_rule_id, label, mode, resolution, input_video, service_tier, draft, unit, amount, currency, minimum_rule_version]
+      properties:
+        price_rule_id:
+          type: string
+        label:
+          type: string
+          description: 仅用于展示。计价键使用结构化字段，完整请求先调用 estimates。
+        mode:
+          type: string
+          enum: [generate, edit, extend, draft_conversion]
+        resolution:
+          type: string
+          enum: [480p, 720p, 1080p, 4k]
+        input_video:
+          type: boolean
+        service_tier:
+          type: string
+        draft:
+          type: boolean
+        minimum_rule_version:
+          type: string
+        unit:
+          type: string
+          const: million_video_tokens
+        amount:
+          $ref: '#/components/schemas/PriceAmount'
+        currency:
+          type: string
+          const: USD
+    ReservationMetering:
+      type: object
+      additionalProperties: false
+      description: 创建时预冻结的计量依据，不等于官方实际 usage。历史未记录的维度为空，时长来源 unknown，视频数量 null；不回填猜测值。
+      properties:
+        mode:
+          type: string
+        resolution:
+          type: string
+        ratio:
+          type: string
+        service_tier:
+          type: string
+        draft:
+          type: boolean
+        input_video:
+          type: boolean
+        input_video_count:
+          type: [integer, 'null']
+          minimum: 0
+        input_duration_ms:
+          type: integer
+        input_duration_source:
+          type: string
+          enum: [none, verified_media, configured_upper_bound, draft_inherited, unknown]
+        output_duration_ms:
+          type: integer
+        output_frames:
+          type: integer
+        width:
+          type: integer
+        height:
+          type: integer
+        fps_numerator:
+          type: integer
+        fps_denominator:
+          type: integer
+        minimum_tokens:
+          type: integer
+        minimum_rule_version:
+          type: string
+        capability_version:
+          type: string
+        input_token_semantics:
+          type: string
+          const: not_projected_separately_completion_tokens_authoritative
+          description: 平台不单列输入 Token，按核实的 completion_tokens 结算；不声称官方输入用量为零。
+        usage_semantics:
+          type: string
+          const: reservation_upper_bound
+    Billing:
+      type: object
+      additionalProperties: false
+      required: [task_id, state, currency, reserved_amount, settled_amount, released_amount, actual_usage, billable_tokens, pricing_version, billing_rule_version, pricing_snapshot, entries]
+      properties:
+        task_id:
+          $ref: '#/components/schemas/TaskId'
+        state:
+          $ref: '#/components/schemas/BillingState'
+        currency:
+          type: string
+          const: USD
+        reserved_amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        settled_amount:
+          $ref: '#/components/schemas/NullableMoneyAmount'
+          description: 未结算为 null；首次返回实际扣款，不超过预冻结额，超出部分不自动追扣。后续经审核调整后返回累计净客户金额，历史 capture 与 adjustment 分录保留，详情见 entries。
+        released_amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        actual_usage:
+          oneOf:
+            - $ref: '#/components/schemas/ActualUsage'
+            - type: 'null'
+        billable_tokens:
+          type: [integer, 'null']
+          minimum: 0
+          description: 已确认的客户计费用量；未知为 null，最低计费量和官方 usage 的区别由规则版本定义。
+        pricing_version:
+          type: string
+        billing_rule_version:
+          type: string
+        metering:
+          $ref: '#/components/schemas/ReservationMetering'
+        pricing_snapshot:
+          type: object
+          additionalProperties: false
+          required: [price_rule_id, mode, unit, unit_price_usd_per_1m, currency, rounding_mode, rounding_scale]
+          description: |
+            创建时的客户销售计价快照。unit_price_usd_per_1m 已包含客户适用倍率/折扣，不能再次乘倍率；
+            实际量计算金额=ROUND(completion_tokens / 1000000 × unit_price_usd_per_1m, rounding_scale)，
+            completion_tokens 使用首次结算时已核实的实际用量，不能用 total_tokens 或预估量替代。
+            首次实扣=MIN(实际量计算金额, reserved_amount)，不超过预冻结额，超出部分不自动追扣。
+            后续人工调整以 entries 中 adjustment_credit/debit 独立反映，不覆盖快照。
+            settled_amount 为调整后的净额；不能把调整后 billable_tokens 再乘原单价当作所有人工调整的重建公式。
+            不会返回火山成本、资源包或采购折扣。
+          properties:
+            price_rule_id:
+              type: string
+            mode:
+              type: string
+              enum: [without_input_video, with_input_video]
+              description: 客户销售价所选计费场景；判定依据规范化请求及实际计量规则。
+            generation_mode:
+              type: string
+            resolution:
+              type: string
+            input_video:
+              type: boolean
+            service_tier:
+              type: string
+            draft:
+              type: boolean
+            minimum_rule_version:
+              type: string
+            unit:
+              type: string
+              const: million_video_tokens
+            unit_price_usd_per_1m:
+              $ref: '#/components/schemas/PriceAmount'
+            currency:
+              type: string
+              const: USD
+            rounding_mode:
+              type: string
+              const: half_up
+            rounding_scale:
+              type: integer
+              const: 8
+        entries:
+          type: array
+          description: 已持久化客户账务分录；不暴露供应商成本和内部科目。
+          items:
+            type: object
+            additionalProperties: false
+            required: [entry_id, type, amount, currency, created_at]
+            properties:
+              entry_id:
+                type: string
+                pattern: '^be_[A-Za-z0-9_-]+$'
+              type:
+                type: string
+                enum: [reserve, capture, release, adjustment_credit, adjustment_debit]
+                description: amount 总为非负；adjustment_credit 减少净费用，adjustment_debit 增加净费用。释放未消费冻结额与退回已扣费用不是同一分录。
+              amount:
+                $ref: '#/components/schemas/MoneyAmount'
+              currency:
+                type: string
+                const: USD
+              created_at:
+                type: string
+                format: date-time
+    TaskEvent:
+      type: object
+      additionalProperties: false
+      required: [id, type, created_at, request_id]
+      properties:
+        id:
+          type: string
+          pattern: '^evt_[A-Za-z0-9_-]+$'
+        type:
+          type: string
+          enum: [task.accepted, task.submitting, task.submission_unknown, task.status_changed, task.cancelled, task.deletion_requested, task.operation_updated, billing.settled, billing.released, billing.pending_usage, billing.adjusted]
+        created_at:
+          type: string
+          format: date-time
+        request_id:
+          type: string
+          description: 平台请求或后台操作追踪 ID，不是火山 request ID。
+        from_status:
+          $ref: '#/components/schemas/TaskStatus'
+        to_status:
+          $ref: '#/components/schemas/TaskStatus'
+    AssetGroup:
+      type: object
+      additionalProperties: false
+      required: [id, kind, name, status, asset_count, authorization_status, version, created_at, updated_at]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: 当前资源版本；PATCH 的 expected_version 必须来自最近 GET 或列表，不能自行递增猜测。
+        id:
+          $ref: '#/components/schemas/GroupId'
+        kind:
+          type: string
+          enum: [virtual, real_person]
+        name:
+          type: string
+        status:
+          type: string
+          enum: [creating, ready, failed, deleting]
+        authorization_status:
+          type: string
+          enum: [not_required, authorized, expired, revoked, needs_review]
+          description: |
+            本平台可审计业务许可记录或经核官方信号，只读。GetAssetGroup 的基本信息不能证明实时未撤销。
+            H5 成功不等于永久业务许可；真人组上传和使用时重新验证，无法确认仍有效则拒绝引用。
+        authorization_last_verified_at:
+          type: string
+          format: date-time
+          description: 最近核实业务许可的时间；未知时省略，与 H5 链接创建/到期时间不同。
+        authorization_valid_until:
+          type: string
+          format: date-time
+          description: 可审计业务许可截止时间；未知时省略，不能解读为永久授权。
+        asset_count:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Asset:
+      type: object
+      additionalProperties: false
+      required: [id, group_id, media_type, name, status, version, created_at, updated_at]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: 当前资源版本；PATCH 时提交为 expected_version，版本过期返回 409。
+        id:
+          $ref: '#/components/schemas/AssetId'
+        group_id:
+          $ref: '#/components/schemas/GroupId'
+        media_type:
+          $ref: '#/components/schemas/MediaType'
+        name:
+          type: string
+          maxLength: 64
+        status:
+          type: string
+          enum: [creating, processing, ready, needs_review, failed, deleting]
+        reference:
+          type: string
+          pattern: '^asset://asset_[A-Za-z0-9_-]+$'
+          description: 仅 ready 时提供的本平台素材引用。
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    PortraitAuthorizationSummary:
+      type: object
+      additionalProperties: false
+      required: [session_id, status, expires_at, created_at]
+      properties:
+        session_id:
+          $ref: '#/components/schemas/SessionId'
+        status:
+          type: string
+          enum: [creating, submission_unknown, pending, succeeded, failed, expired]
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: H5 认证凭证到期时间；官方凭证有效 30 分钟且单次认证，未取得凭证时为 null，不是肖像业务许可期限。
+        created_at:
+          type: string
+          format: date-time
+        group_id:
+          $ref: '#/components/schemas/GroupId'
+      allOf:
+        - if:
+            properties:
+              status:
+                const: succeeded
+          then:
+            required: [group_id]
+          else:
+            not:
+              required: [group_id]
+    PortraitAuthorization:
+      type: object
+      additionalProperties: false
+      required: [session_id, status, expires_at, created_at]
+      properties:
+        session_id:
+          $ref: '#/components/schemas/SessionId'
+        status:
+          type: string
+          enum: [creating, submission_unknown, pending, succeeded, failed, expired]
+          description: 创建结果未知不得盲重发官方请求；沿原会话意图核对并重放同一平台 session_id。
+        authorization_url:
+          type: string
+          format: uri
+          pattern: '^https://'
+          description: 仅 pending 返回的官方 H5 授权 URL，禁止写入普通日志或事件 DTO。
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: H5 认证凭证到期时间；官方有效 30 分钟且单次认证，创建未完成为 null，与肖像授权期限独立。
+        created_at:
+          type: string
+          format: date-time
+        group_id:
+          $ref: '#/components/schemas/GroupId'
+      allOf:
+        - if:
+            properties:
+              status:
+                const: succeeded
+          then:
+            required: [group_id]
+          else:
+            not:
+              required: [group_id]
+        - if:
+            properties:
+              status:
+                const: pending
+          then:
+            required: [authorization_url]
+            properties:
+              expires_at:
+                type: string
+          else:
+            not:
+              required: [authorization_url]
+    SafeErrorCode:
+      type: string
+      enum: [invalid_request, unauthenticated, forbidden, not_found, idempotency_conflict, invalid_state, insufficient_balance, quota_exceeded, rate_limited, unsupported_capability, invalid_asset, authorization_required, authorization_expired, group_not_empty, resource_in_use, content_expired, content_not_ready, provider_unavailable, submission_uncertain, generation_failed, cancellation_failed, deletion_failed, internal_error]
+      description: 平台白名单错误码，不透传上游自由文本或内部分类。
+    SafeError:
+      type: object
+      additionalProperties: false
+      required: [code, message, retryable]
+      properties:
+        code:
+          $ref: '#/components/schemas/SafeErrorCode'
+        message:
+          type: string
+          maxLength: 300
+          description: 安全合成文案，不含 prompt、素材 URL、PII、上游凭证/ID/错误原文。
+        retryable:
+          type: boolean
+          description: |
+            是否可按既有幂等语义重试同一平台操作；true 也不允许改幂等键重建未知任务。
+            操作结果 unknown 应查询 operations 或任务状态，不能据此盲重发上游请求。
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error, request_id]
+      properties:
+        error:
+          $ref: '#/components/schemas/SafeError'
+        request_id:
+          type: string
+          description: 平台请求 ID。

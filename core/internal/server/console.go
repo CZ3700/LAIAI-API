@@ -7,7 +7,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/ledger"
-	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
 )
 
@@ -68,55 +67,11 @@ func (s *Server) getLedger(c *gin.Context) {
 // getPricing：GET /api/pricing —— 公开模型价目（无需登录；营销站/模型市场页同源数据）。
 // 与 /v1/models 同一可见性规则：已定价且有活跃渠道才列出（孤儿定价隐藏）。
 func (s *Server) getPricing(c *gin.Context) {
-	rdb := s.db.WithContext(c.Request.Context())
-	var prices []relay.ModelPrice
-	if err := rdb.Order("model").Find(&prices).Error; err != nil {
+	rows, err := s.publicPricing(c.Request.Context())
+	if err != nil {
 		fail(c, http.StatusInternalServerError, "pricing query failed")
 		return
 	}
-	var channels []relay.Channel
-	if err := rdb.Where("status = 1").Find(&channels).Error; err != nil {
-		fail(c, http.StatusInternalServerError, "pricing query failed")
-		return
-	}
-	servedBy := func(model string) (string, bool) {
-		for i := range channels {
-			if channels[i].ServesModel(model) {
-				return channels[i].Provider, true
-			}
-		}
-		return "", false
-	}
-	metaMap := s.loadModelMetaMap()
-	out := make([]gin.H, 0, len(prices))
-	for _, p := range prices {
-		provider, ok := servedBy(p.Model)
-		if !ok {
-			continue
-		}
-		row := gin.H{
-			"model":             p.Model,
-			"provider":          provider,
-			"input_usd_per_1m":  p.InputUSDPer1M,
-			"output_usd_per_1m": p.OutputUSDPer1M,
-			"image_usd":         p.ImageUSD,
-		}
-		// 非零才带（批 D-2 模型详情完整价目）：按次固定价（MJ/转写类）与缓存输入折扣价
-		if p.PerCallUSD.IsPositive() {
-			row["per_call_usd"] = p.PerCallUSD
-		}
-		if p.CachedInputUSDPer1M.IsPositive() {
-			row["cached_input_usd_per_1m"] = p.CachedInputUSDPer1M
-		}
-		if meta, ok := metaMap[p.Model]; ok { // 模型元数据（gap P2-D）：有则前端用真实厂商/分类，无则回退按名猜
-			row["vendor"] = meta.Vendor
-			row["category"] = meta.Category
-			row["tags"] = meta.Tags
-			row["context_length"] = meta.ContextLength
-			row["icon"] = meta.Icon
-		}
-		out = append(out, row)
-	}
-	c.JSON(http.StatusOK, gin.H{"models": out})
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"models": rows})
 }
-
