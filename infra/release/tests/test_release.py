@@ -95,7 +95,8 @@ def compose():
     if 'run' in a:
         tool=a[a.index('--entrypoint')+1].split('/')[-1]; event(tool)
         if tool=='migrate':
-            if c.get('migration_fails'): fail()
+            if c.get('migration_fails'):
+                print('migration read denied; '+c['secret'], file=sys.stderr); fail()
             c['migrated']=True; save(); print('migration successful'); return
         if tool=='schema-doctor': print('schema valid'); return
         if tool=='backfill-funds':
@@ -169,7 +170,9 @@ elif name=='docker':
         event('stop-caddy')
         if c.get('stop_caddy_fails'): fail()
         c['caddy_running']=False; save()
-    elif args[0]=='run': pass
+    elif args[0]=='run':
+        if c['new_images']['core'] in args and c.get('image_read_fails'):
+            print('cannot read migration: '+c['secret'], file=sys.stderr); fail()
     elif args[0]=='exec':
         cid=next(v for v in args[1:] if not v.startswith('-'))
         if cid not in c['ids'].values(): fail()
@@ -471,6 +474,16 @@ class CLITests(unittest.TestCase):
         self.assertFalse((self.run_dir() / "build.ok").exists())
         self.assertEqual((self.run_dir() / "failed-stage").read_text().strip(), "build")
 
+    def test_unreadable_candidate_blocks_before_maintenance(self):
+        self.prepare("backup")
+        self.change(image_read_fails=True)
+        self.call("build", ok=False, error="Core image is not readable/executable")
+        self.assert_no_stop_or_up()
+        self.assertNotIn("maintenance", self.log())
+        self.assertFalse((self.run_dir() / "build.ok").exists())
+        self.assertIn("cannot read migration: " + SECRET,
+                      (self.run_dir() / "check-core-image.log").read_text())
+
     def test_pin_does_not_follow_main_and_deploy_refuses_drift(self):
         self.prepare("backup")
         self.change(remote=NEXT_SHA)
@@ -500,6 +513,9 @@ class CLITests(unittest.TestCase):
         self.assertIn("migrate", self.log())
         self.assertFalse(any(v.startswith("up-") or v == "image-load" or v == "open" for v in self.log()))
         self.assertTrue((self.run_dir() / "migration-started.ok").exists())
+        diagnostics = self.run_dir() / "migrate.stderr.log"
+        self.assertIn("migration read denied; " + SECRET, diagnostics.read_text())
+        self.assertEqual(diagnostics.stat().st_mode & 0o777, 0o600)
 
     def test_nonempty_backfill_replay_blocks_start(self):
         self.prepare()

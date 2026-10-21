@@ -22,7 +22,11 @@ RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 10001 laiai
 COPY --from=builder /out/core /out/migrate /out/schema-doctor /out/backfill-funds /app/
 COPY migrations/ /app/migrations/
 COPY infra/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# Release checkouts use umask 077; COPY retains their private file modes.
+# Normalize only runtime code, never loosen the host's release/secret files.
+RUN chmod 0755 /app/entrypoint.sh && \
+    find /app/migrations -type d -exec chmod 0755 {} + && \
+    find /app/migrations -type f -exec chmod 0644 {} +
 USER laiai
 EXPOSE 8080
 ENTRYPOINT ["/app/entrypoint.sh"]
