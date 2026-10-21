@@ -19,6 +19,9 @@ CREATE TABLE video_asset_sync_jobs (
  seen_hashes MEDIUMTEXT NOT NULL, idempotency_hash CHAR(64) NOT NULL,
  pages BIGINT NOT NULL DEFAULT 0, items BIGINT NOT NULL DEFAULT 0, fence BIGINT UNSIGNED NOT NULL DEFAULT 0,
  lease_until DATETIME(3) NULL, error_code VARCHAR(64) NOT NULL DEFAULT '', created_at DATETIME(3) NOT NULL, updated_at DATETIME(3) NOT NULL,
+ request_id VARCHAR(64) NOT NULL DEFAULT '', http_status INT NOT NULL DEFAULT 0, upstream_request_id VARCHAR(128) NOT NULL DEFAULT '',
+ attempts BIGINT UNSIGNED NOT NULL DEFAULT 0, retry_count BIGINT UNSIGNED NOT NULL DEFAULT 0, next_attempt_at DATETIME(3) NULL,
+ last_request_payload_id VARCHAR(64) NOT NULL DEFAULT '', last_response_payload_id VARCHAR(64) NOT NULL DEFAULT '',
  UNIQUE KEY uk_video_asset_sync_idem(org_id,idempotency_hash), KEY idx_video_asset_sync_work(status,lease_until), KEY idx_video_asset_sync_scope(scope_id,status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE video_asset_discoveries (

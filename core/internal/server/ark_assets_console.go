@@ -358,6 +358,24 @@ func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 		}
 		c.JSON(202, out)
 	})
+	g.GET("/asset-sync-jobs/latest", func(c *gin.Context) {
+		a, ok := s.assetConsoleCaller(c, false)
+		if !ok {
+			return
+		}
+		kinds, present := c.GetQueryArray("kind")
+		if !present || len(kinds) != 1 {
+			assetConsoleError(c, videoasset.ErrInvalid)
+			return
+		}
+		out, e := s.video.Assets.LatestSyncJob(c.Request.Context(), a.OrgID, kinds[0])
+		if e != nil {
+			assetConsoleError(c, e)
+			return
+		}
+		c.Header("Cache-Control", "private, no-store")
+		c.JSON(200, gin.H{"job": out})
+	})
 	g.GET("/asset-sync-jobs/:id", func(c *gin.Context) {
 		a, ok := s.assetConsoleCaller(c, false)
 		if !ok {

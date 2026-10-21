@@ -18,7 +18,7 @@ const built = await build({
       if (args.path === 'vue') return { contents: `export const defineComponent = v => v; export const ref = (...a) => globalThis.__videoAssets.vue.ref(...a); export const computed = (...a) => globalThis.__videoAssets.vue.computed(...a); export const watch = (...a) => globalThis.__videoAssets.vue.watch(...a); export const nextTick = (...a) => globalThis.__videoAssets.vue.nextTick(...a); export const onMounted = f => globalThis.__videoAssets.mounted.push(f); export const onUnmounted = f => globalThis.__videoAssets.unmounted.push(f);` }
       if (args.path === '@/stores/auth') return { contents: 'export const useAuth = () => globalThis.__videoAssets.auth;' }
       if (args.path === '@/lib/api') return { contents: `export class ApiError extends Error { constructor(status, message, requestId = null, code = null) { super(message); Object.assign(this,{status,requestId,code}); } } export const api = (...a) => { globalThis.__videoAssets.ApiError = ApiError; return globalThis.__videoAssets.api(...a); }; export const copyText = () => {}; export const errorMessage = (e,f) => e?.message ?? f;` }
-      if (args.path === '@/lib/videoAssets') return { contents: `export const assetWrite = (...a) => globalThis.__videoAssets.api(...a); export const assetDelete = path => globalThis.__videoAssets.delete(path); export const assetQuery = v => new URLSearchParams(Object.entries(v).filter(([,x])=>x!==undefined&&x!=='')).toString(); export const assetPreview = () => ''; export const uploadAssetFile = (...a) => globalThis.__videoAssets.upload(...a);` }
+      if (args.path === '@/lib/videoAssets') return { contents: `export const assetWrite = (...a) => globalThis.__videoAssets.api(...a); export const assetDelete = path => globalThis.__videoAssets.delete(path); export const assetQuery = v => new URLSearchParams(Object.entries(v).filter(([,x])=>x!==undefined&&x!=='')).toString(); export const assetPreview = () => ''; export const uploadAssetFile = (...a) => globalThis.__videoAssets.upload(...a); export const syncIsRunning = (...a) => globalThis.__videoAssets.helpers.syncIsRunning(...a); export const syncIsTerminal = (...a) => globalThis.__videoAssets.helpers.syncIsTerminal(...a); export const validSyncJob = (...a) => globalThis.__videoAssets.helpers.validSyncJob(...a); export const syncPhaseText = (...a) => globalThis.__videoAssets.helpers.syncPhaseText(...a); export const syncErrorText = (...a) => globalThis.__videoAssets.helpers.syncErrorText(...a); export const syncSummary = (...a) => globalThis.__videoAssets.helpers.syncSummary(...a); export const groupStateText = (...a) => globalThis.__videoAssets.helpers.groupStateText(...a); export const assetStateText = (...a) => globalThis.__videoAssets.helpers.assetStateText(...a); export const assetReviewExplanation = (...a) => globalThis.__videoAssets.helpers.assetReviewExplanation(...a);` }
       if (args.path.endsWith('.vue')) return { contents: 'export default {};' }
       throw new Error(`Unexpected import: ${args.path}`)
     })
@@ -46,13 +46,14 @@ async function until(predicate) { const end = performance.now() + 3000; while (p
 async function harness(t, rows = [group()]) {
   const keys = ['__videoAssets', 'window', 'document', 'setInterval', 'clearInterval']
   const previous = new Map(keys.map(key => [key, globalThis[key]]))
-  const h = { vue, auth: vue.reactive({ orgId: 1, token: 'fixture-session', isSuperadmin: true }), mounted: [], unmounted: [], calls: [], groups: rows, assets: [], op: operation(), failGroupReads: 0 }
+  const h = { vue, helpers: client, auth: vue.reactive({ orgId: 1, token: 'fixture-session', isSuperadmin: true }), mounted: [], unmounted: [], calls: [], groups: rows, assets: [], op: operation(), failGroupReads: 0 }
   h.respond = async call => {
     if (call.method === 'DELETE') {
       h.groups = h.groups.map(row => ({ ...row, status: 'deleting', deletion_mode: 'blocked', deletion_block_reason: 'operation_pending', delete_operation: operation() }))
       return structuredClone(h.op)
     }
-    if (call.path === '/api/video/asset-capabilities') return { ready: true, virtual: true, delete_empty_group: true, delete: true, update: true, upload: true, media_types: ['image','video','audio'] }
+    if (call.path === '/api/video/asset-capabilities') return { ready: true, scope_id: 'scope_fixture', project: 'LAIAI-Gateway', sync: true, virtual: true, delete_empty_group: true, delete: true, update: true, upload: true, media_types: ['image','video','audio'] }
+    if (call.path.startsWith('/api/video/asset-sync-jobs/latest?')) return {job:null}
     if (call.path.startsWith('/api/video/asset-operations/')) return structuredClone(h.op)
     if (call.path.startsWith('/api/video/asset-groups?')) {
       if (h.failGroupReads > 0) { h.failGroupReads--; throw new Error('sensitive raw upstream fixture') }
@@ -201,7 +202,8 @@ test('rejected deletion releases its lock after readback while unknown outcomes 
   h.op = operation('unknown', { error: { code: 'provider_unavailable', message: 'sensitive raw upstream payload', retryable: false } })
   await h.tick()
   assert.match(h.vm.groupDeleteReason(h.vm.groups.value[0]), /待核验/)
-  assert.match(h.vm.error.value, /不能重复提交/)
+  assert.equal(h.vm.error.value, '')
+  assert.match(h.vm.resourceOperationNotice(h.vm.groups.value[0]), /官方.*尚未确认/)
   assert.equal(h.vm.error.value.includes('sensitive'), false)
   assert.equal(h.vm.pendingOperations.value.length, 1)
   h.vm.openDelete(h.vm.groups.value[0], true); await h.vm.remove()
@@ -367,7 +369,8 @@ test('unknown group creation exposes its receipt and safe error without enabling
   assert.equal(h.vm.operationError(created).includes('private'),false)
   assert.match(h.vm.groupDeleteReason(h.vm.groups.value[0]),/待核验/)
   await h.tick()
-  assert.match(h.vm.error.value,/req-create/)
+  assert.equal(h.vm.error.value,'')
+  assert.equal(h.vm.resourceOperations(h.vm.shownGroup.value)[0].request_id,'req-create')
   assert.equal(writes(h).length,0)
   assert.equal(h.vm.pendingOperations.value[0].operation_id,'create_group')
   h.auth.orgId=2; await until(()=>!h.vm.busy.value)
@@ -388,7 +391,8 @@ test('asset deletion uses the fixed resource eligibility and restores unknown op
   h.vm.openDelete(h.vm.assets.value[0],false); await h.vm.remove()
   await h.tick()
   assert.equal(writes(h).length,0)
-  assert.match(h.vm.error.value,/req-delete-asset/)
+  assert.equal(h.vm.error.value,'')
+  assert.equal(h.vm.resourceOperations(h.vm.assets.value[0])[0].request_id,'req-delete-asset')
   h.op={...op,status:'confirmed'}; h.assets=[]; await h.tick()
   assert.equal(h.vm.pendingOperations.value.length,0)
   assert.equal(h.vm.deleteLocks.value.asset_fixture,undefined)
@@ -494,4 +498,171 @@ test('late sync and verification responses cannot overwrite a replacement sessio
     assert.equal(h.vm.modal.value,'rename');assert.equal(h.vm.notice.value,'');assert.equal(h.vm.sync.value,undefined);assert.equal(h.vm.discoveryJob.value,undefined)
     assert.equal(writes(h).length,1)
   })
+})
+
+
+const syncJob=(overrides={})=>({id:'asj_fixture',status:'pending',phase:'groups',pages:0,items:0,scope_id:'scope_fixture',project:'LAIAI-Gateway',kind:'virtual',mode:'owned',...overrides})
+function syncTransport(h){
+  const respond=h.respond
+  h.job=syncJob()
+  h.respond=call=>{
+    if(call.method==='POST'&&call.path==='/api/video/asset-sync-jobs')return structuredClone(h.job)
+    if(call.method==='GET'&&call.path==='/api/video/asset-sync-jobs/asj_fixture')return structuredClone(h.job)
+    return respond(call)
+  }
+}
+
+test('sync completion keeps readback pending and retries only GET after the first list failure',async t=>{
+  const h=await harness(t);syncTransport(h)
+  await h.vm.startSync();assert.equal(writes(h).length,1);assert.equal(h.vm.sync.value.status,'pending')
+  h.job=syncJob({status:'succeeded',phase:'assets',pages:3,items:3});h.assets=[asset(),asset({id:'asset_second'})];h.failGroupReads=1
+  await h.tick()
+  assert.equal(h.vm.syncReadback.value.state,'pending');assert.match(h.vm.syncReadback.value.error,/继续读取/)
+  assert.equal(h.vm.assets.value.length,0);assert.equal(client.syncSummary(h.vm.sync.value,h.vm.syncReadback.value).includes('同步已完成'),false)
+  const jobReads=h.calls.filter(c=>c.path==='/api/video/asset-sync-jobs/asj_fixture').length
+  await h.tick()
+  assert.equal(h.vm.syncReadback.value.state,'complete');assert.equal(h.vm.assets.value.length,2)
+  assert.match(client.syncSummary(h.vm.sync.value,h.vm.syncReadback.value),/同步已完成，列表已刷新/)
+  assert.equal(h.calls.filter(c=>c.path==='/api/video/asset-sync-jobs/asj_fixture').length,jobReads,'terminal readback does not resubmit or repoll the provider job')
+  assert.equal(writes(h).length,1)
+})
+
+test('failed sync refreshes committed partial results and shows a safe failure rather than ongoing progress',async t=>{
+  const h=await harness(t);syncTransport(h);await h.vm.startSync()
+  h.job=syncJob({status:'failed',phase:'assets',pages:2,items:2,error_code:'provider_sync_failed',http_status:503,upstream_request_id:'official-safe-id'})
+  h.assets=[asset({source:'imported',status:'needs_review',stage:'needs_review'})];await h.tick()
+  assert.equal(h.vm.assets.value.length,1);assert.equal(h.vm.syncReadback.value.state,'complete')
+  assert.match(client.syncSummary(h.vm.sync.value,h.vm.syncReadback.value),/同步未完成/)
+  assert.match(client.syncErrorText(h.vm.sync.value),/官方读取请求未成功/)
+  assert.equal(h.vm.notice.value.includes('正在同步'),false);assert.equal(h.vm.syncActionBlocked.value,false)
+  assert.equal(writes(h).length,1)
+})
+
+test('read-only sync backoff remains in progress and prevents duplicate submission',async t=>{
+  const h=await harness(t);syncTransport(h);await h.vm.startSync()
+  h.job=syncJob({error_code:'provider_rate_limited',http_status:429,attempts:1,retry_count:1,next_attempt_at:'2026-10-22T09:00:00Z'})
+  await h.tick()
+  assert.match(client.syncSummary(h.vm.sync.value,h.vm.syncReadback.value),/等待自动重试/)
+  assert.match(client.syncErrorText(h.vm.sync.value),/^上次读取：官方读取请求触发限流/)
+  assert.equal(h.vm.syncActionBlocked.value,true);await h.vm.startSync();assert.equal(writes(h).length,1)
+  h.job=syncJob({status:'succeeded',pages:1,items:1,error_code:'',retry_count:0});await h.tick()
+  assert.equal(client.syncErrorText(h.vm.sync.value),'');assert.equal(h.vm.syncReadback.value.state,'complete')
+})
+
+test('an unrelated unknown group never replaces sync feedback or repeatedly refreshes the whole list',async t=>{
+  const op=operation('unknown',{operation_id:'op_unknown',kind:'CreateAssetGroup',resource_id:'grp_unknown',request_id:'req-unknown',error:{code:'provider_unavailable',message:'private upstream body',retryable:false}})
+  const h=await harness(t,[group(),group({id:'grp_unknown',name:'kk',status:'needs_review',deletion_mode:'blocked',deletion_block_reason:'submission_uncertain',create_operation:op})])
+  h.op=op;syncTransport(h);await h.vm.startSync();h.vm.notice.value='another explicit action notice'
+  h.job=syncJob({status:'succeeded',phase:'assets',pages:2,items:2});h.assets=[asset(),asset({id:'asset_second'})]
+  await h.tick()
+  assert.equal(h.vm.syncReadback.value.state,'complete');assert.equal(h.vm.assets.value.length,2)
+  assert.equal(h.vm.error.value,'');assert.equal(h.vm.notice.value,'another explicit action notice')
+  assert.match(h.vm.resourceOperationNotice(h.vm.groups.value[1]),/官方处理暂未确认/)
+  const reads=h.calls.filter(c=>c.path.startsWith('/api/video/asset-groups?')).length
+  await h.tick();assert.equal(h.calls.filter(c=>c.path.startsWith('/api/video/asset-groups?')).length,reads)
+  assert.equal(writes(h).length,1)
+})
+
+test('one operation lookup failure does not prevent a separate sync job from completing',async t=>{
+  const op=operation('unknown',{kind:'CreateAssetGroup',resource_id:'grp_unknown'})
+  const h=await harness(t,[group(),group({id:'grp_unknown',status:'needs_review',create_operation:op,deletion_mode:'blocked'})]);syncTransport(h)
+  const respond=h.respond;h.respond=call=>{if(call.path.includes('/asset-operations/'))throw new Error('private upstream request');return respond(call)}
+  await h.vm.startSync();h.job=syncJob({status:'succeeded',phase:'assets',pages:2,items:2});h.assets=[asset()];await h.tick()
+  assert.equal(h.vm.syncReadback.value.state,'complete');assert.equal(h.vm.assets.value.length,1)
+  assert.match(h.vm.operationReadErrors.value[op.operation_id],/此操作状态暂未更新/)
+  assert.equal(h.vm.error.value,'');assert.equal(h.vm.operationReadErrors.value[op.operation_id].includes('private'),false)
+})
+
+test('latest owned sync restores a running task and prevents duplicate submission after reopening',async t=>{
+  const h=await harness(t);syncTransport(h);const respond=h.respond
+  h.respond=call=>call.path.startsWith('/api/video/asset-sync-jobs/latest?')?{job:structuredClone(h.job)}:respond(call)
+  await h.vm.loadScope();assert.equal(h.vm.sync.value.id,'asj_fixture');assert.equal(h.vm.syncActionBlocked.value,true)
+  await h.vm.startSync();assert.equal(writes(h).length,0)
+  h.job=syncJob({status:'failed',phase:'assets',pages:1,items:1,error_code:'provider_sync_failed'});await h.tick()
+  assert.equal(h.vm.syncReadback.value.state,'complete');assert.equal(h.vm.sync.value.status,'failed')
+  await h.vm.loadScope();assert.equal(h.vm.sync.value.status,'failed');assert.equal(h.vm.syncReadback.value.state,'pending')
+  await h.tick();assert.equal(h.vm.syncReadback.value.state,'complete');assert.equal(writes(h).length,0)
+})
+
+test('failed latest lookup blocks another POST until an explicit state refresh succeeds',async t=>{
+  const h=await harness(t),respond=h.respond;let fail=true
+  h.respond=call=>{if(call.path.startsWith('/api/video/asset-sync-jobs/latest?')){if(fail)throw new h.ApiError(503,'private details','req-sync-state');return {job:null}};return respond(call)}
+  await h.vm.loadScope();assert.equal(h.vm.syncRecoveryRequired.value,true)
+  await h.vm.startSync();assert.equal(writes(h).length,0)
+  fail=false;await h.vm.refreshSyncStatus();assert.equal(h.vm.syncRecoveryRequired.value,false);assert.equal(h.vm.sync.value,undefined);assert.equal(h.vm.syncQueryError.value,'')
+})
+
+test('latest lookup rejects a different scope or kind and late results cannot replace another organization',async t=>{
+  const h=await harness(t),respond=h.respond
+  h.respond=call=>call.path.startsWith('/api/video/asset-sync-jobs/latest?')?{job:syncJob({scope_id:'scope_other'})}:respond(call)
+  await h.vm.loadScope();assert.equal(h.vm.sync.value,undefined);assert.equal(h.vm.syncRecoveryRequired.value,true)
+  const late=deferred();let latestCalls=0
+  h.respond=call=>call.path.startsWith('/api/video/asset-sync-jobs/latest?')?(++latestCalls===1?late.promise:{job:null}):respond(call)
+  const pending=h.vm.restoreLatestSync();await until(()=>latestCalls===1)
+  h.auth.orgId=2;await until(()=>!h.vm.busy.value&&!h.vm.syncRestoring.value)
+  late.resolve({job:syncJob()});await pending
+  assert.equal(h.vm.sync.value,undefined);assert.equal(h.vm.syncQueryError.value,'');assert.equal(writes(h).length,0)
+})
+
+test('uncertain sync submission is recovered with GET and never automatically resent',async t=>{
+  const h=await harness(t),respond=h.respond
+  h.respond=call=>{if(call.method==='POST'&&call.path==='/api/video/asset-sync-jobs')throw new Error('network failure');if(call.path.startsWith('/api/video/asset-sync-jobs/latest?'))return {job:syncJob()};return respond(call)}
+  await h.vm.startSync();assert.equal(h.vm.syncRecoveryRequired.value,true);assert.match(h.vm.syncQueryError.value,/是否受理尚未确认/)
+  await h.vm.startSync();assert.equal(writes(h).length,1)
+  await h.vm.refreshSyncStatus();assert.equal(h.vm.sync.value.id,'asj_fixture');assert.equal(h.vm.syncRecoveryRequired.value,false)
+  await h.vm.startSync();assert.equal(writes(h).length,1)
+})
+
+test('official discovery completion also retries failed list readback without a second discovery POST',async t=>{
+  const h=await harness(t),respond=h.respond;let job=syncJob({mode:'discover'}),failPage=false
+  h.respond=call=>{
+    if(call.path==='/api/admin/video/asset-discovery-jobs'||call.path.startsWith('/api/admin/video/asset-discovery-jobs/asj_fixture?'))return structuredClone(job)
+    if(call.path.startsWith('/api/admin/video/asset-discoveries?')){if(failPage){failPage=false;throw new Error('private details')};return {data:[{id:'discovery_fixture'}],total:1}}
+    return respond(call)
+  }
+  await h.vm.discover();job=syncJob({mode:'discover',status:'succeeded',pages:1,items:1});failPage=true;await h.tick()
+  assert.equal(h.vm.discoveryReadback.value.state,'pending');assert.equal(h.vm.discoveries.value.length,0)
+  await h.tick();assert.equal(h.vm.discoveryReadback.value.state,'complete');assert.equal(h.vm.discoveries.value.length,1)
+  assert.equal(writes(h).length,1)
+})
+
+test('imported assets needing media verification remain visible and independently deletable while upload stays disabled',async t=>{
+  const h=await harness(t),row=asset({source:'imported',status:'needs_review',stage:'needs_review'})
+  h.vm.caps.value.upload=false;h.assets=[row];await h.vm.loadAssets()
+  assert.equal(client.assetStateText(row),'媒体待核验');assert.match(client.assetReviewExplanation(row),/平台尚未完成媒体安全核验/)
+  assert.equal(h.vm.assetDeleteReason(row),'');assert.match(h.vm.uploadBlockedReason.value,/媒体存储与安全核验服务尚未配置/)
+  assert.equal(client.groupStateText(group({create_operation:operation('unknown',{kind:'CreateAssetGroup'})})),'创建结果待核验')
+  assert.equal(client.assetStateText(asset({stage:'needs_review',status:'failed',source:'imported'})),'官方处理失败')
+  assert.equal(client.assetStateText(asset({stage:'needs_review',status:'processing',source:'imported'})),'官方处理中')
+  assert.equal(writes(h).length,0)
+})
+
+test('sync helper validates receipts and never displays unknown raw error text',()=>{
+  assert.equal(client.validSyncJob(syncJob()),true)
+  for(const bad of [null,{},syncJob({pages:-1}),syncJob({items:NaN}),syncJob({id:'unsafe\nvalue'}),syncJob({id:'unsafe\n'}),syncJob({status:'raw-private-response'})])assert.equal(client.validSyncJob(bad),false)
+  assert.equal(client.syncErrorText(syncJob({error_code:'private raw content'})).includes('private'),false)
+  for(const code of ['provider_timeout','provider_rate_limited','provider_authentication_failed','provider_permission_denied','provider_response_invalid','provider_unavailable','sync_storage_failed','sync_evidence_unavailable','resource_identity_mismatch'])assert.doesNotMatch(client.syncErrorText(syncJob({status:'failed',error_code:code})),/请凭任务 ID 核对日志/)
+  assert.match(client.syncSummary(syncJob({status:'succeeded'}),{job_id:'different',state:'complete',error:''}),/正在刷新列表/)
+})
+
+
+test('sync readback is independent of unavailable upload history and latest state survives an initial list error',async t=>{
+  const h=await harness(t);syncTransport(h);const respond=h.respond
+  h.job=syncJob({status:'succeeded',phase:'assets',pages:2,items:2});h.failGroupReads=1;h.assets=[asset(),asset({id:'asset_second'})]
+  h.respond=call=>{if(call.path.startsWith('/api/video/asset-sync-jobs/latest?'))return {job:h.job};if(call.path.startsWith('/api/video/media-uploads?'))throw new Error('upload history unavailable');return respond(call)}
+  await h.vm.loadScope();assert.equal(h.vm.sync.value.id,'asj_fixture');assert.equal(h.vm.syncReadback.value.state,'pending')
+  await h.tick();assert.equal(h.vm.syncReadback.value.state,'complete');assert.equal(h.vm.assets.value.length,2);assert.equal(writes(h).length,0)
+})
+
+test('changing material kind restores only its matching sync and discards the previous job reply',async t=>{
+  const h=await harness(t);syncTransport(h);const late=deferred(),respond=h.respond
+  h.respond=call=>{
+    if(call.path==='/api/video/asset-sync-jobs/asj_fixture')return late.promise
+    if(call.path.startsWith('/api/video/asset-sync-jobs/latest?'))return {job:syncJob({id:'asj_real',kind:'real_person',status:'failed',error_code:'provider_sync_failed'})}
+    return respond(call)
+  }
+  h.vm.acceptSyncJob('owned',syncJob());const pending=h.tick();await until(()=>h.calls.some(c=>c.path==='/api/video/asset-sync-jobs/asj_fixture'))
+  h.vm.kind.value='real_person';await until(()=>h.vm.sync.value?.id==='asj_real'&&!h.vm.busy.value)
+  late.resolve(syncJob({status:'succeeded'}));await pending
+  assert.equal(h.vm.sync.value.id,'asj_real');assert.equal(h.vm.sync.value.kind,'real_person');assert.equal(writes(h).length,0)
 })

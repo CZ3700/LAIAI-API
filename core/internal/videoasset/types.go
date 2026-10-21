@@ -160,7 +160,7 @@ type Asset struct {
 	ByteSize, DurationMS                                                         int64
 	Width, Height, FPSNum, FPSDen                                                int
 	MetadataVersion                                                              uint64
-	VerifiedAt                                                                   time.Time
+	VerifiedAt                                                                   time.Time `gorm:"default:null"`
 	CreateOperationID, SafeErrorCode                                             string
 	RowVersion                                                                   uint64
 	DeletedAt                                                                    *time.Time

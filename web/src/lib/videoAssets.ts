@@ -7,7 +7,55 @@ export interface AssetGroup { id:string;kind:string;name:string;description:stri
 export interface VideoAsset { id:string;group_id:string;media_type:string;name:string;status:string;stage:string;version:number;bytes:number;duration_ms:number;error_code?:string;reference?:string;preview_url?:string;created_at:string;source:string;create_operation?:AssetOperation;delete_operation?:AssetOperation;deletion_mode?:'official'|'local_failed'|'blocked';deletion_block_reason?:string }
 export interface Portrait { session_id:string;status:string;authorization_url?:string;expires_at?:string;group_id?:string }
 export interface Page<T> {data:T[];total:number;next_cursor?:string}
-export interface SyncJob {id:string;status:string;phase:string;pages:number;items:number;error_code?:string}
+export interface SyncJob {id:string;status:string;phase:string;pages:number;items:number;error_code?:string;scope_id?:string;project?:string;kind?:string;mode?:string;request_id?:string;http_status?:number;upstream_request_id?:string;attempts?:number;retry_count?:number;next_attempt_at?:string}
+export interface SyncReadback {job_id:string;state:'idle'|'pending'|'complete';error:string}
+export function syncIsRunning(job:SyncJob|undefined){return !!job&&['pending','running'].includes(job.status)}
+export function syncIsTerminal(job:SyncJob|undefined){return !!job&&['succeeded','failed'].includes(job.status)}
+export function validSyncJob(value:unknown):value is SyncJob {
+ if(!value||typeof value!=='object')return false
+ const job=value as Partial<SyncJob>
+ return typeof job.id==='string'&&job.id.trim()===job.id&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(job.id)&&['pending','running','succeeded','failed'].includes(job.status??'')&&typeof job.phase==='string'&&Number.isSafeInteger(job.pages)&&Number(job.pages)>=0&&Number.isSafeInteger(job.items)&&Number(job.items)>=0
+}
+export function syncPhaseText(job:SyncJob){return ({groups:'读取素材组',assets:'读取组内素材'} as Record<string,string>)[job.phase]??'核对官方资源'}
+const syncErrors:Record<string,string>={
+ management_scope_unavailable:'所属账号项目或同步权限已不可用，请核对素材管理配置。',
+ resource_query_failed:'暂时无法读取本平台资源记录，请稍后刷新状态。',
+ resource_mutation_in_progress:'素材组正在变更，本次同步已暂停；确认操作结果后可重新同步。',
+ provider_sync_failed:'官方读取请求未成功，请核对管理权限、项目及接口连接后再试。',
+ provider_timeout:'官方读取响应超时。',provider_rate_limited:'官方读取请求触发限流。',provider_unavailable:'官方读取服务暂时不可用。',
+ provider_authentication_failed:'官方身份验证未通过，请管理员核对素材管理凭据。',provider_permission_denied:'官方拒绝读取，请管理员核对项目与素材管理权限。',
+ provider_response_invalid:'官方返回的数据未通过完整性核验，本次未继续导入。',
+ sync_storage_failed:'同步记录暂未保存，请管理员核对存储状态后再试。',sync_evidence_unavailable:'同步请求记录暂不可用，请管理员核对日志存储。',resource_identity_mismatch:'资源所属账号或项目与当前同步范围不一致，已停止导入。',
+ checkpoint_expired:'同步断点已过期，需要重新发起同步。',checkpoint_invalid:'同步断点无效，需要重新发起同步。',checkpoint_unavailable:'暂时无法保存同步断点，请稍后重试。',
+ pagination_cycle:'官方返回重复的分页位置，已停止同步。',sync_page_limit:'已达到本次同步的分页上限，请由管理员核对资源数量。',
+}
+export function syncErrorText(job:SyncJob){return job.error_code?(syncIsRunning(job)?'上次读取：':'')+(syncErrors[job.error_code]??(syncIsRunning(job)?'暂未取得有效结果，请查看任务进度。':'同步未完成，请凭任务 ID 核对日志。')):''}
+export function syncSummary(job:SyncJob,readback:SyncReadback){
+ if(syncIsRunning(job))return `${job.status==='pending'?(job.next_attempt_at?'等待自动重试':'等待同步'):'同步进行中'} · ${syncPhaseText(job)}`
+ if(readback.job_id!==job.id||readback.state!=='complete')return job.status==='failed'?'同步未完成，正在刷新已获取的记录。':'官方读取已结束，正在刷新列表。'
+ return job.status==='failed'?'同步未完成；列表已刷新，已获取的记录已保留。':'同步已完成，列表已刷新。'
+}
+export function groupStateText(row:AssetGroup){
+ if(row.delete_operation?.status==='unknown')return '删除结果待核验'
+ if(row.create_operation?.status==='unknown')return '创建结果待核验'
+ return ''
+}
+export function assetStateText(row:VideoAsset){
+ if(row.delete_operation?.status==='unknown')return '删除结果待核验'
+ if(row.create_operation?.status==='unknown')return '注册结果待核验'
+ if(row.stage==='needs_review'){
+  if(row.status==='failed')return '官方处理失败'
+  if(['processing','creating'].includes(row.status))return '官方处理中'
+  if(row.source==='imported')return '媒体待核验'
+ }
+ return ''
+}
+export function assetReviewExplanation(row:VideoAsset){
+ if(row.delete_operation?.status==='unknown')return '删除是否完成尚未确认，不能重复提交删除。'
+ if(row.create_operation?.status==='unknown')return '官方注册结果尚未确认，暂时不能用于生成或按失败清理。'
+ if(row.stage==='needs_review'&&row.source==='imported')return '此记录来自官方同步；平台尚未完成媒体安全核验，暂时不能用于生成。素材删除是否允许由独立的资源状态与权限决定。'
+ return ''
+}
 export function assetQuery(values:Record<string,string|number|undefined>) {const q=new URLSearchParams();for(const [k,v] of Object.entries(values)){if(v!==undefined&&v!=='')q.set(k,String(v))};return q.toString()}
 export function assetWrite<T>(method:string,path:string,body?:unknown,key=uuid()){return api<T>(method,path,body,{headers:{'Idempotency-Key':key}})}
 // A 202 response must carry an operation. Only HTTP 204 proves synchronous completion.
