@@ -256,6 +256,7 @@ type GroupDTO struct {
 	AssetCount                  int64         `json:"asset_count"`
 	DeletionMode                string        `json:"deletion_mode"`
 	DeletionBlockReason         string        `json:"deletion_block_reason"`
+	CreateOperation             *OperationDTO `json:"create_operation,omitempty"`
 	DeleteOperation             *OperationDTO `json:"delete_operation,omitempty"`
 	AuthorizationStatus         string        `json:"authorization_status"`
 	AuthorizationLastVerifiedAt *time.Time    `json:"authorization_last_verified_at,omitempty"`
@@ -264,15 +265,19 @@ type GroupDTO struct {
 	UpdatedAt                   time.Time     `json:"updated_at"`
 }
 type AssetDTO struct {
-	ID        string    `json:"id"`
-	Version   uint64    `json:"version"`
-	GroupID   string    `json:"group_id"`
-	MediaType string    `json:"media_type"`
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	Reference string    `json:"reference,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                  string        `json:"id"`
+	Version             uint64        `json:"version"`
+	GroupID             string        `json:"group_id"`
+	MediaType           string        `json:"media_type"`
+	Name                string        `json:"name"`
+	Status              string        `json:"status"`
+	Reference           string        `json:"reference,omitempty"`
+	CreateOperation     *OperationDTO `json:"create_operation,omitempty"`
+	DeleteOperation     *OperationDTO `json:"delete_operation,omitempty"`
+	DeletionMode        string        `json:"deletion_mode"`
+	DeletionBlockReason string        `json:"deletion_block_reason"`
+	CreatedAt           time.Time     `json:"created_at"`
+	UpdatedAt           time.Time     `json:"updated_at"`
 }
 type PortraitDTO struct {
 	ID               string     `json:"session_id"`

@@ -231,7 +231,11 @@ func (s *Service) ConsoleGroups(ctx context.Context, org uint64, f ListFilter) (
 		}
 		q = q.Where("kind = ?", kind)
 	}
-	if status != "" {
+	if status == "needs_review" {
+		q = q.Where("status = ? AND review_state = ?", StatusPending, ReviewRequired)
+	} else if status == StatusPending {
+		q = q.Where("status = ? AND review_state <> ?", status, ReviewRequired)
+	} else if status != "" {
 		q = q.Where("status = ?", status)
 	}
 	if err = q.Count(&out.Total).Error; err != nil {
@@ -286,11 +290,13 @@ func (s *Service) ConsoleAssets(ctx context.Context, org uint64, f ListFilter) (
 	now := s.now()
 	args := []any{ReviewClear, StatusActive, ReviewClear, KindVirtual, now, now, now, now.Add(-s.options.MaxLicenseAge), now}
 	if status == "needs_review" {
-		q = q.Where("status = ?", StatusActive).Where("NOT ("+ready+")", args...)
+		q = q.Where("review_state = ? OR (status = ? AND NOT ("+ready+"))", append([]any{ReviewRequired, StatusActive}, args...)...)
 	} else if status != "" {
 		q = q.Where("status = ?", status)
 		if status == StatusActive {
 			q = q.Where(ready, args...)
+		} else {
+			q = q.Where("review_state <> ?", ReviewRequired)
 		}
 	}
 	if err = q.Count(&out.Total).Error; err != nil {
@@ -411,30 +417,54 @@ func (s *Service) DeleteAsset(ctx context.Context, c CreateContext, id string) (
 		return OperationDTO{}, true, nil
 	}
 	var g Group
-	if s.db.WithContext(ctx).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", c.OrgID, a.GroupID).Take(&g).Error != nil {
+	if s.db.WithContext(ctx).Where("org_id = ? AND group_id = ?", c.OrgID, a.GroupID).Take(&g).Error != nil {
 		return OperationDTO{}, false, ErrNotFound
+	}
+	path, public := "/v1/video/assets/"+id, bodyJSON(map[string]string{"id": id})
+	if old, found, err := s.replay(s.db.WithContext(ctx), c, path, public); err != nil {
+		return OperationDTO{}, false, err
+	} else if found {
+		if old.Action != "DeleteAsset" || old.ResourceType != "asset" || old.ResourceID != id || a.ScopeID != g.ScopeID || a.ScopeVersion != g.ScopeVersion || !sameScope(opScope(old), groupScope(g)) {
+			return OperationDTO{}, false, ErrConflict
+		}
+		return operationDTO(old), false, nil
+	}
+	mode, reason, latest, err := s.assetDeletionState(s.db.WithContext(ctx), a, g)
+	if err != nil {
+		return OperationDTO{}, false, err
+	}
+	if latest != nil && (latest.Status == "pending" || latest.Status == "in_flight" || latest.Status == "unknown") {
+		return operationDTO(*latest), false, nil
+	}
+	if mode == "local_failed" {
+		err := s.deleteFailedAsset(ctx, c, id)
+		return OperationDTO{}, err == nil, err
+	}
+	if mode != "official" {
+		return OperationDTO{}, false, deletionBlockError(reason)
 	}
 	r, err := s.resolve(ctx, c.OrgID, groupScope(g))
 	if err != nil || !r.Capabilities.DeleteAssets {
 		return OperationDTO{}, false, ErrUnsupported
 	}
-	if a.ProviderID == nil || (a.Status != StatusActive && a.Status != StatusFailed) {
-		return OperationDTO{}, false, ErrConflict
-	}
-	op, _, err := s.accept(ctx, c, r, "/v1/video/assets/"+id, "DeleteAsset", "asset", id, bodyJSON(map[string]string{"id": id}), bodyJSON(map[string]string{"Id": *a.ProviderID, "ProjectName": r.Scope.Project}), func(tx *gorm.DB, _ Operation) error {
-		var mutating int64
-		if tx.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND status IN ?", c.OrgID, id, []string{"pending", "in_flight", "unknown"}).Count(&mutating).Error != nil {
-			return ErrStorage
+	op, _, err := s.accept(ctx, c, r, path, "DeleteAsset", "asset", id, public, bodyJSON(map[string]string{"Id": *a.ProviderID, "ProjectName": r.Scope.Project}), func(tx *gorm.DB, _ Operation) error {
+		var current Asset
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", c.OrgID, id).Take(&current).Error; err != nil {
+			return ErrNotFound
 		}
-		if mutating > 0 {
+		var currentGroup Group
+		if err := tx.Where("org_id = ? AND group_id = ?", c.OrgID, current.GroupID).Take(&currentGroup).Error; err != nil {
+			return ErrNotFound
+		}
+		if !sameScope(groupScope(currentGroup), r.Scope) || current.ProviderID == nil || *current.ProviderID != *a.ProviderID {
 			return ErrConflict
 		}
-		var count int64
-		if tx.Model(&TaskReference{}).Where("org_id = ? AND asset_id = ? AND released_at IS NULL", c.OrgID, id).Count(&count).Error != nil {
-			return ErrStorage
+		mode, reason, _, err := s.assetDeletionState(tx, current, currentGroup)
+		if err != nil {
+			return err
 		}
-		if count > 0 {
-			return ErrInUse
+		if mode != "official" {
+			return deletionBlockError(reason)
 		}
 		res := tx.Model(&Asset{}).Where("org_id = ? AND asset_id = ? AND status = ? AND row_version = ? AND deleted_at IS NULL", c.OrgID, id, a.Status, a.RowVersion).Updates(map[string]any{"status": StatusDeleting, "row_version": gorm.Expr("row_version + 1"), "updated_at": nowMillis(s)})
 		if res.Error != nil {
