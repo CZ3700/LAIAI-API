@@ -18,6 +18,7 @@ type portraitSecret struct {
 }
 
 func (s *Service) CreatePortrait(ctx context.Context, c CreateContext, input PortraitCreate) (PortraitDTO, bool, error) {
+	ctx = WithCaller(ctx, c)
 	if !validCreate(c) || !safeName(input.Name, 64, false) || !safeName(input.Description, 300, false) || !validHTTPS(input.CallbackURL, 2048) || s.options.ResolveCallback == nil || s.options.ResolveCallbackByID == nil || !validPlatformCallback(s.options.PlatformCallbackURL) {
 		return PortraitDTO{}, false, ErrInvalid
 	}
@@ -77,7 +78,11 @@ func (s *Service) readSecret(ctx context.Context, p Portrait, actor string, owne
 		if err := tx.Where("org_id = ? AND session_id = ?", p.OrgID, p.ID).Take(&current).Error; err != nil {
 			return ErrNotFound
 		}
-		if current.SessionStatus != "pending" || current.SessionExpiresAt == nil || !current.SessionExpiresAt.After(s.now()) || !worker && current.CreatedByKeyID != ownerKey {
+		allowed := worker || current.CreatedByKeyID == ownerKey
+		if caller, present := callerFrom(ctx); present && !worker {
+			allowed = validCaller(caller, p.OrgID) && ((caller.UserID > 0 && caller.UserID == current.OwnerUserID) || (caller.UserID == 0 && current.OwnerUserID == 0 && caller.KeyID > 0 && caller.KeyID == current.CreatedByKeyID))
+		}
+		if current.SessionStatus != "pending" || current.SessionExpiresAt == nil || !current.SessionExpiresAt.After(s.now()) || !allowed {
 			return ErrSecret
 		}
 		var row Secret
@@ -115,7 +120,7 @@ func (s *Service) GetPortrait(ctx context.Context, org uint64, id string, keyID 
 		return PortraitDTO{}, ErrInvalid
 	}
 	var p Portrait
-	if err := s.db.WithContext(ctx).Where("org_id = ? AND session_id = ?", org, id).Take(&p).Error; err != nil {
+	if err := owned(ctx, s.db.WithContext(ctx), org, "portrait", "session_id").Where("org_id = ? AND session_id = ?", org, id).Take(&p).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return PortraitDTO{}, ErrNotFound
 		}
@@ -141,11 +146,12 @@ func (s *Service) ListPortraits(ctx context.Context, org uint64, limit int, curs
 	if org == 0 || limit < 1 || limit > 100 {
 		return nil, "", ErrInvalid
 	}
-	after, err := s.parseCursor(org, "portraits", cursor)
+	kind := actorCursor(ctx, "portraits")
+	after, err := s.parseCursor(org, kind, cursor)
 	if err != nil {
 		return nil, "", err
 	}
-	q := s.db.WithContext(ctx).Where("org_id = ?", org)
+	q := owned(ctx, s.db.WithContext(ctx), org, "portrait", "session_id").Where("org_id = ?", org)
 	if after != "" {
 		q = q.Where("session_id > ?", after)
 	}
@@ -156,7 +162,7 @@ func (s *Service) ListPortraits(ctx context.Context, org uint64, limit int, curs
 	next := ""
 	if len(rows) > limit {
 		rows = rows[:limit]
-		next = s.cursor(org, "portraits", rows[len(rows)-1].ID)
+		next = s.cursor(org, kind, rows[len(rows)-1].ID)
 	}
 	result := make([]PortraitDTO, 0, len(rows))
 	for _, row := range rows {

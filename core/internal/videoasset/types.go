@@ -62,6 +62,7 @@ func (Credentials) GoString() string     { return "[redacted Ark credentials]" }
 func (Credentials) LogValue() slog.Value { return slog.StringValue("[redacted Ark credentials]") }
 
 type RuntimeScope struct {
+	RouteSource                               string
 	Scope                                     Scope
 	Credentials                               Credentials
 	Capabilities                              Capabilities
@@ -307,6 +308,8 @@ type CreateContext struct {
 	CallerKind                string
 	OrgID, UserID, KeyID      uint64
 	RequestID, IdempotencyKey string
+	// Set only by a live named-session administrator check, never from a body.
+	Superadmin bool
 }
 type GroupCreate struct {
 	Description string `json:"description,omitempty"`

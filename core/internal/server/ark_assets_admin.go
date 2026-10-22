@@ -64,6 +64,15 @@ func (s *Server) registerArkAssetAdmin(su *gin.RouterGroup) {
 		}
 		s.videoAdminReply(c, s.video.SetOrgAssetRoute(c.Request.Context(), actor, in))
 	})
+	g.PUT("/asset-shared-default", func(c *gin.Context) {
+		actor, _ := s.videoAdminActor(c)
+		var in video.AssetSharedDefaultInput
+		if videoAdminDecode(c, &in) != nil {
+			fail(c, 422, "invalid shared default")
+			return
+		}
+		s.videoAdminReply(c, s.video.SetAssetSharedDefault(c.Request.Context(), actor, in))
+	})
 	g.POST("/verified-media", func(c *gin.Context) {
 		actor, _ := s.videoAdminActor(c)
 		var in video.AssetMediaRegistration

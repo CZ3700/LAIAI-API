@@ -18,7 +18,7 @@ func (s *Service) LatestSyncJob(ctx context.Context, org uint64, kind string) (*
 		return nil, err
 	}
 	var job SyncJob
-	err = s.db.WithContext(ctx).
+	err = owned(ctx, s.db.WithContext(ctx), org, "sync", "id").
 		Where("org_id = ? AND scope_id = ? AND scope_version = ? AND account_id = ? AND region = ? AND project = ? AND mode = ? AND kind = ?",
 			org, r.Scope.ID, r.Scope.Version, r.Scope.AccountID, r.Scope.Region, r.Scope.Project, "owned", kind).
 		Order("created_at DESC, id DESC").Take(&job).Error

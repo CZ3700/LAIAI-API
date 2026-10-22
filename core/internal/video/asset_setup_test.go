@@ -24,6 +24,8 @@ CREATE TABLE organizations(id INTEGER PRIMARY KEY, status INTEGER NOT NULL);
 CREATE TABLE video_provider_scopes(id INTEGER PRIMARY KEY,account_ref TEXT,region TEXT,project_name TEXT,enabled INTEGER);
 CREATE TABLE video_asset_scope_configs(provider_scope_id INTEGER,version INTEGER,account_ref TEXT,region TEXT,project_name TEXT,capabilities_json TEXT,credential_cipher TEXT,enabled INTEGER,PRIMARY KEY(provider_scope_id,version));
 CREATE TABLE video_asset_org_routes(org_id INTEGER,provider_scope_id INTEGER,scope_version INTEGER,enabled INTEGER,default_route INTEGER,PRIMARY KEY(org_id,provider_scope_id));
+CREATE TABLE video_asset_shared_defaults(id INTEGER PRIMARY KEY,revision INTEGER,provider_scope_id INTEGER,scope_version INTEGER,enabled INTEGER,allow_async INTEGER,updated_by INTEGER,updated_at DATETIME);
+INSERT INTO video_asset_shared_defaults VALUES(1,0,0,0,0,0,0,'2026-10-22');
 CREATE TABLE video_org_policies(org_id INTEGER PRIMARY KEY,async_execution_allowed INTEGER,capture_history INTEGER,retention_days INTEGER);
 CREATE TABLE video_asset_callback_registry(id TEXT PRIMARY KEY,org_id INTEGER,url_hmac TEXT,value_cipher TEXT,expires_at DATETIME,revoked_at DATETIME);
 INSERT INTO organizations VALUES(1,1),(2,1),(3,0);

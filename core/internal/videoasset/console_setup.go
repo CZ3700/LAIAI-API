@@ -5,6 +5,7 @@ import "net/url"
 // ConsoleDeploymentState reports process dependencies only. It does not probe
 // the provider or assert that the configured account has any official rights.
 type ConsoleDeploymentState struct {
+	URLRegistrationConfigured  bool `json:"url_registration_configured"`
 	ConsoleConfigured          bool `json:"console_configured"`
 	MediaConfigured            bool `json:"media_configured"`
 	PlatformCallbackConfigured bool `json:"platform_callback_configured"`
@@ -22,7 +23,8 @@ func (s *Service) ConsoleSetupState() (ConsoleDeploymentState, string) {
 		return ConsoleDeploymentState{}, ""
 	}
 	out := ConsoleDeploymentState{
-		ConsoleConfigured: s.console.enabled, MediaConfigured: s.console.Media != nil,
+		URLRegistrationConfigured: s.console.enabled,
+		ConsoleConfigured:         s.console.enabled, MediaConfigured: s.console.Media != nil,
 		PlatformCallbackConfigured:  validPlatformCallback(s.options.PlatformCallbackURL),
 		CallbackResolversConfigured: s.options.ResolveCallback != nil && s.options.ResolveCallbackByID != nil,
 	}

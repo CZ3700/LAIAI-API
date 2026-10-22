@@ -57,6 +57,7 @@ func (s *Service) auth(c *gin.Context, write bool) (CreateContext, bool) {
 		s.httpError(c, ErrStorage)
 		return CreateContext{}, false
 	}
+	c.Request = c.Request.WithContext(WithCaller(c.Request.Context(), context))
 	return context, true
 }
 func decodeBody(c *gin.Context, dst any) error {

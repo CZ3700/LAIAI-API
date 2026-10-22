@@ -189,7 +189,18 @@ func (s *Service) Estimate(org uint64, in ark.CreateRequest) (videobilling.Quote
 	return p.quote, err
 }
 
+func (s *Service) EstimateForKey(ctx context.Context, key *identity.APIKey, in ark.CreateRequest) (videobilling.QuoteResult, error) {
+	if key == nil {
+		return videobilling.QuoteResult{}, ErrForbidden
+	}
+	ctx = videoasset.WithAPIKey(ctx, key)
+	var p createPlan
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error { var err error; p, err = s.plan(tx, key.OrgID, in); return err })
+	return p.quote, err
+}
+
 func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, idempotency string, in ark.CreateRequest) (TaskView, bool, error) {
+	ctx = videoasset.WithAPIKey(ctx, key)
 	if key == nil || !validIdempotency(idempotency) {
 		return TaskView{}, false, ErrInvalid
 	}

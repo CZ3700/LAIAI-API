@@ -18,11 +18,14 @@ interface ProviderScope { id: number; account_ref: string; region: string; proje
 interface ScopeConfig { provider_scope_id: number; version: number; enabled: boolean; credential_present: boolean; capabilities: Capabilities; capabilities_valid: boolean; identity_matches_provider: boolean }
 interface OrgRoute { org_id: number; provider_scope_id: number; scope_version: number; enabled: boolean; default_route: boolean }
 interface PolicyDraft { async_execution_allowed: boolean; capture_history: boolean; retention_days: number }
+interface SharedDefault { revision: number; provider_scope_id: number; scope_version: number; enabled: boolean; allow_async: boolean }
 interface Setup {
   org_id: number; org_active: boolean; configuration_ready: boolean; official_access: 'not_checked'; provider_scopes: ProviderScope[]; scope_configs: ScopeConfig[]; org_routes: OrgRoute[]
   policy: { present: boolean; async_execution_allowed: boolean; capture_history: boolean; retention_days: number }
   deployment: { console_configured: boolean; media_configured: boolean; platform_callback_configured: boolean; portrait_return_configured: boolean; portrait_target_ready: boolean }
   issues: string[]
+  shared_default?: SharedDefault
+  route_source?: 'organization' | 'shared_default'
 }
 const emptyCapabilities = () => Object.fromEntries(capabilityOptions.map(([key]) => [key, false])) as Capabilities
 const setup = ref<Setup | null>(null), loading = ref(false), busy = ref(false), error = ref(''), notice = ref('')
@@ -30,7 +33,8 @@ const scopeId = ref(0), selectedVersion = ref(0), version = ref(''), enabled = r
 const accessKey = ref(''), secretKey = ref(''), sessionToken = ref(''), registrationConfirmed = ref(false), bindingConfirmed = ref(false), refreshRequired = ref(false)
 const enableConfirmed = ref(false), projectName = ref('')
 const asyncExecutionAllowed = ref(false), captureHistory = ref(false), retentionDays = ref('1'), policyConfirmed = ref(false)
-const pendingReadback = ref<{ kind: 'registration' | 'enable' | 'project' | 'binding'; scopeId: number; version?: number; project?: { account_ref: string; region: string; project_name: string } } | { kind: 'policy'; policy: PolicyDraft } | null>(null)
+const sharedEnabled = ref(false), sharedAllowAsync = ref(false), sharedConfirmed = ref(false)
+const pendingReadback = ref<{ kind: 'registration' | 'enable' | 'project' | 'binding'; scopeId: number; version?: number; project?: { account_ref: string; region: string; project_name: string } } | { kind: 'policy'; policy: PolicyDraft } | { kind: 'shared'; expected: SharedDefault } | null>(null)
 let generation = 0, operation = 0, installing = false
 const allowed = computed(() => auth.isSuperadmin && !!auth.token && props.orgId > 0 && props.orgId === auth.orgId)
 const provider = computed(() => setup.value?.provider_scopes.find(item => item.id === scopeId.value))
@@ -101,6 +105,15 @@ const policyBlockers = computed(() => {
   return reasons
 })
 const canSavePolicy = computed(() => policyBlockers.value.length === 0)
+const sharedBlockers = computed(() => {
+  const reasons = [...commonBlockers.value, ...savedVersionBlockers.value]
+  if (!setup.value?.shared_default) reasons.push('当前服务尚不支持发布共享默认项目，请升级后刷新配置。')
+  if (sharedEnabled.value && savedVersion.value && !savedVersion.value.enabled) reasons.push('共享默认项目必须使用已启用的管理版本。')
+  if (sharedEnabled.value && !sharedAllowAsync.value) reasons.push('启用共享默认项目需明确允许默认素材异步操作。')
+  if (!sharedConfirmed.value) reasons.push('请确认共享默认项目的适用范围及资源按创建者隔离。')
+  return reasons
+})
+const canPublishShared = computed(() => sharedBlockers.value.length === 0)
 function installPolicy(policy: Setup['policy']) {
   asyncExecutionAllowed.value = policy.present ? policy.async_execution_allowed : false
   captureHistory.value = policy.present ? policy.capture_history : false
@@ -128,8 +141,9 @@ function clearSecrets() { accessKey.value = ''; secretKey.value = ''; sessionTok
 function resetRegistration() { clearSecrets(); enabled.value = false; capabilities.value = emptyCapabilities(); registrationConfirmed.value = false; version.value = '' }
 function reset() {
   ++generation; ++operation; clearSecrets(); resetRegistration(); setup.value = null; scopeId.value = 0; selectedVersion.value = 0
-  bindingConfirmed.value = false; enableConfirmed.value = false; projectName.value = ''; pendingReadback.value = null; refreshRequired.value = false; error.value = ''; notice.value = ''; loading.value = false; busy.value = false
+  bindingConfirmed.value = false; enableConfirmed.value = false; sharedConfirmed.value = false; projectName.value = ''; pendingReadback.value = null; refreshRequired.value = false; error.value = ''; notice.value = ''; loading.value = false; busy.value = false
   installPolicy({ present: false, async_execution_allowed: false, capture_history: false, retention_days: 1 })
+  sharedEnabled.value = sharedAllowAsync.value = sharedConfirmed.value = false
 }
 function safeError(e: unknown, fallback: string) {
   if (!(e instanceof ApiError)) return fallback
@@ -146,6 +160,9 @@ async function readSetup(org: number) {
 function install(data: Setup, desiredScope = scopeId.value, desiredVersion = selectedVersion.value) {
   setup.value = data
   installPolicy(data.policy)
+  sharedEnabled.value = data.shared_default?.enabled ?? false
+  sharedAllowAsync.value = data.shared_default?.allow_async ?? false
+  sharedConfirmed.value = false
   const preferred = data.provider_scopes.some(item => item.id === desiredScope) ? desiredScope : data.org_routes.find(item => item.default_route && item.enabled)?.provider_scope_id ?? (data.provider_scopes.length === 1 ? data.provider_scopes[0]!.id : 0)
   installing = true
   try { scopeId.value = preferred } finally { installing = false }
@@ -155,6 +172,19 @@ function install(data: Setup, desiredScope = scopeId.value, desiredVersion = sel
 function confirmReadback(data: Setup) {
   const expected = pendingReadback.value
   if (!expected) return true
+  if (expected.kind === 'shared') {
+    const value = data.shared_default, wanted = expected.expected
+    const matched = !!value && value.revision === wanted.revision && value.provider_scope_id === wanted.provider_scope_id && value.scope_version === wanted.scope_version && value.enabled === wanted.enabled && value.allow_async === wanted.allow_async
+    if (!matched) {
+      refreshRequired.value = true; notice.value = ''
+      error.value = '尚未回读确认本次共享默认配置，请继续刷新核对；不会重复发布或覆盖其他管理员修改。'
+      return false
+    }
+    pendingReadback.value = null; install(data, wanted.provider_scope_id, wanted.scope_version)
+    error.value = ''; notice.value = '共享默认项目已发布并回读确认。普通用户仅能访问本人资源；专属路由、显式禁用策略和原文历史留存设置保持各自规则。'
+    emit('bound')
+    return true
+  }
   if (expected.kind === 'policy') {
     pendingReadback.value = null
     const matched = data.policy.present && data.policy.async_execution_allowed === expected.policy.async_execution_allowed && data.policy.capture_history === expected.policy.capture_history && data.policy.retention_days === expected.policy.retention_days
@@ -185,19 +215,19 @@ function confirmReadback(data: Setup) {
 async function load() {
   if (!allowed.value || busy.value || loading.value) return
   const epoch = ++generation, org = props.orgId
-  clearSecrets(); registrationConfirmed.value = false; bindingConfirmed.value = false; enableConfirmed.value = false; policyConfirmed.value = false; error.value = ''; loading.value = true
+  clearSecrets(); registrationConfirmed.value = false; bindingConfirmed.value = false; enableConfirmed.value = false; policyConfirmed.value = false; sharedConfirmed.value = false; error.value = ''; loading.value = true
   try { const data = await readSetup(org); if (epoch !== generation || !allowed.value) return; install(data); if (confirmReadback(data)) refreshRequired.value = false }
   catch (e) { if (epoch === generation) { refreshRequired.value = true; error.value = safeError(e, '无法读取素材管理配置，请稍后刷新。') } }
   finally { if (epoch === generation) loading.value = false }
 }
 function snapshot(data: Setup, id: number) {
-  return JSON.stringify({ org: data.org_id, active: data.org_active, provider: data.provider_scopes.find(item => item.id === id), configs: data.scope_configs.filter(item => item.provider_scope_id === id), routes: data.org_routes, policy: data.policy, deployment: data.deployment })
+  return JSON.stringify({ org: data.org_id, active: data.org_active, provider: data.provider_scopes.find(item => item.id === id), configs: data.scope_configs.filter(item => item.provider_scope_id === id), routes: data.org_routes, shared: data.shared_default, policy: data.policy, deployment: data.deployment })
 }
 async function preflight(epoch: number, op: number, org: number, id: number, before: string) {
   const data = await readSetup(org)
   if (epoch !== generation || op !== operation || !allowed.value || scopeId.value !== id) return false
   if (snapshot(data, id) !== before) {
-    install(data); clearSecrets(); registrationConfirmed.value = false; bindingConfirmed.value = false; enableConfirmed.value = false
+    install(data); clearSecrets(); registrationConfirmed.value = false; bindingConfirmed.value = false; enableConfirmed.value = false; sharedConfirmed.value = false
     error.value = '配置或组织路由已变化，已刷新当前状态；请重新核对并确认后操作。'
     return false
   }
@@ -253,6 +283,31 @@ async function bind() {
     refreshRequired.value = true; error.value = safeError(e, '无法确认组织绑定结果，请刷新当前路由后决定是否继续。已保存管理版本无需重复登记。')
   } }
   finally { if (current()) busy.value = false }
+}
+async function publishShared() {
+  if (!canPublishShared.value || !setup.value?.shared_default || !savedVersion.value) return
+  const epoch = generation, op = ++operation, org = props.orgId, id = scopeId.value, targetVersion = selectedVersion.value, before = snapshot(setup.value, id)
+  const body = { expected_revision: setup.value.shared_default.revision, provider_scope_id: id, scope_version: targetVersion, enabled: sharedEnabled.value, allow_async: sharedEnabled.value && sharedAllowAsync.value }
+  const current = () => epoch === generation && op === operation && allowed.value && scopeId.value === id
+  const unchanged = () => sharedConfirmed.value && selectedVersion.value === targetVersion && sharedEnabled.value === body.enabled && (sharedEnabled.value && sharedAllowAsync.value) === body.allow_async
+  busy.value = true; error.value = ''; notice.value = ''; clearSecrets()
+  try {
+    if (!await preflight(epoch, op, org, id, before) || !current() || !unchanged()) return
+    pendingReadback.value = { kind: 'shared', expected: { revision: body.expected_revision + 1, provider_scope_id: id, scope_version: targetVersion, enabled: body.enabled, allow_async: body.allow_async } }
+    await api('PUT', '/api/admin/video/asset-shared-default', body)
+    if (!current()) return
+    sharedConfirmed.value = false; refreshRequired.value = true
+    const data = await readSetup(org)
+    if (!current()) return
+    install(data, id, targetVersion)
+    if (confirmReadback(data)) refreshRequired.value = false
+  } catch (e) {
+    if (current()) {
+      if (e instanceof ApiError && [400, 401, 403, 404, 409, 422, 429].includes(e.status)) pendingReadback.value = null
+      refreshRequired.value = true; sharedConfirmed.value = false
+      error.value = safeError(e, '无法确认共享默认配置发布结果，请刷新核对后再操作；不会自动重复发布。')
+    }
+  } finally { if (current()) busy.value = false }
 }
 async function savePolicy() {
   if (!canSavePolicy.value || !setup.value) return
@@ -333,16 +388,17 @@ async function addProject() {
     if (!confirmReadback(data)) return
     refreshRequired.value = false
     // Even a reused project requires a fresh registration draft and explicit route confirmation.
-    resetRegistration(); version.value = suggestedVersion(); bindingConfirmed.value = false; enableConfirmed.value = false; projectName.value = ''
+    resetRegistration(); version.value = suggestedVersion(); bindingConfirmed.value = false; enableConfirmed.value = false; sharedConfirmed.value = false; projectName.value = ''
     notice.value = `项目 ${name} 已登记并选中${added.enabled ? '' : '（该项目已停用）'}。未在火山创建项目，未复制其他项目的管理凭据、能力或组织路由。`
   } catch (e) { if (current()) { refreshRequired.value = true; error.value = safeError(e, '无法确认项目登记或刷新结果，请先刷新项目列表；不会自动重发登记操作。') } }
   finally { if (current()) { clearSecrets(); busy.value = false } }
 }
 watch(busy, value => emit('busy-change', value), { flush: 'sync' })
-watch(scopeId, () => { if (!installing) { ++generation; ++operation; busy.value = false; pendingReadback.value = null; refreshRequired.value = false }; resetRegistration(); version.value = provider.value ? suggestedVersion() : ''; selectedVersion.value = preferredVersion(); bindingConfirmed.value = false; enableConfirmed.value = false; projectName.value = ''; error.value = ''; notice.value = '' }, { flush: 'sync' })
-watch(selectedVersion, () => { bindingConfirmed.value = false; enableConfirmed.value = false; clearSecrets() }, { flush: 'sync' })
+watch(scopeId, () => { if (!installing) { ++generation; ++operation; busy.value = false; pendingReadback.value = null; refreshRequired.value = false }; resetRegistration(); version.value = provider.value ? suggestedVersion() : ''; selectedVersion.value = preferredVersion(); bindingConfirmed.value = false; enableConfirmed.value = false; sharedConfirmed.value = false; projectName.value = ''; error.value = ''; notice.value = '' }, { flush: 'sync' })
+watch(selectedVersion, () => { bindingConfirmed.value = false; enableConfirmed.value = false; sharedConfirmed.value = false; clearSecrets() }, { flush: 'sync' })
 watch([version, enabled, capabilities], () => { registrationConfirmed.value = false }, { deep: true, flush: 'sync' })
 watch([asyncExecutionAllowed, captureHistory, retentionDays], () => { policyConfirmed.value = false }, { flush: 'sync' })
+watch([sharedEnabled, sharedAllowAsync], () => { sharedConfirmed.value = false }, { flush: 'sync' })
 watch(() => [props.orgId, auth.orgId, auth.token, auth.isSuperadmin], () => { reset(); if (allowed.value) void load() }, { flush: 'sync' })
 onMounted(load)
 onBeforeUnmount(reset)
@@ -355,8 +411,8 @@ onBeforeUnmount(reset)
     <p v-if="!allowed" class="inline-alert" role="alert">需要当前组织的有效个人超级管理员会话。</p>
     <p v-if="error" class="inline-alert" role="alert">{{ error }}</p><p v-if="notice" class="inline-success" role="status">{{ notice }}</p>
     <div class="flex items-center justify-between gap-3"><strong class="text-sm">当前组织 #{{ orgId }}</strong><button type="button" class="btn-ghost" :disabled="loading || busy || !allowed" @click="load">{{ loading ? '读取中…' : '刷新配置状态' }}</button></div>
-    <template v-if="setup">
-      <section class="rounded border border-line p-4 text-sm space-y-2"><p>当前默认路由：{{ currentRoute ? `账号项目 #${currentRoute.provider_scope_id} · 管理版本 ${currentRoute.scope_version}` : '尚未绑定' }}</p><p>本地配置：{{ setup.configuration_ready ? '已就绪' : '仍有未完成项' }}；官方权限：尚未实际验证。</p><p v-if="!setup.org_active" class="text-danger">当前组织已停用，不能保存或绑定。</p><p v-if="!setup.policy.present || !setup.policy.async_execution_allowed" class="text-warn">当前组织尚未开启异步执行许可。已保存并绑定管理版本后，请继续完成下方第 3 步。</p><p v-else class="text-sm">组织异步执行许可：已开启；历史留存：{{ setup.policy.capture_history ? `已开启，${setup.policy.retention_days} 天` : '已关闭' }}。</p><p v-if="!setup.deployment.console_configured" class="text-warn">服务端尚未配置火山素材管理接口，请由部署管理员补齐。</p><p v-if="!setup.deployment.media_configured" class="text-warn">媒体存储与核验服务尚未就绪，上传功能仍不可用。</p><p v-if="!setup.deployment.portrait_target_ready" class="text-muted">真人认证返回地址尚未就绪，真人功能还需完成服务端配置。</p></section>
+    <template v-if="setup && allowed">
+      <section class="rounded border border-line p-4 text-sm space-y-2"><p>当前默认路由：{{ setup.route_source==='shared_default'?'继承共享默认素材项目':currentRoute ? `账号项目 #${currentRoute.provider_scope_id} · 管理版本 ${currentRoute.scope_version}` : '尚未绑定' }}</p><p>本地配置：{{ setup.configuration_ready ? '已就绪' : '仍有未完成项' }}；官方权限：尚未实际验证。</p><p v-if="!setup.org_active" class="text-danger">当前组织已停用，不能保存或绑定。</p><p v-if="!setup.policy.present && setup.route_source==='shared_default' && setup.shared_default?.allow_async" class="text-sm">素材异步执行继承共享默认授权；请求原文历史默认关闭，未开通视频生成执行许可。</p><p v-else-if="!setup.policy.present || !setup.policy.async_execution_allowed" class="text-warn">当前组织尚未开启异步执行许可。组织专属路由可在第 3 步设置，共享默认项目可单独发布素材执行授权。</p><p v-else class="text-sm">组织异步执行许可：已开启；历史留存：{{ setup.policy.capture_history ? `已开启，${setup.policy.retention_days} 天` : '已关闭' }}。</p><p v-if="!setup.deployment.console_configured" class="text-warn">服务端尚未配置火山素材管理接口，请由部署管理员补齐。</p><p class="text-muted">素材通过公开 HTTPS 网址直接注册火山，平台不存储或扫描媒体文件。本地文件直传尚未提供；无需为网址注册配置平台媒体存储或扫描器。</p><p v-if="!setup.deployment.portrait_target_ready" class="text-muted">真人认证返回地址尚未就绪，真人功能还需完成服务端配置。</p></section>
       <label class="block text-sm">已有火山账号项目<select v-model.number="scopeId" class="input mt-1" :disabled="busy || loading"><option :value="0">请选择账号项目</option><option v-for="item in setup.provider_scopes" :key="item.id" :value="item.id" :disabled="!item.enabled">{{ item.account_ref }} · {{ item.region }} · {{ item.project_name }}{{ item.enabled ? '' : '（已停用）' }}</option></select></label>
       <p v-if="!setup.provider_scopes.length" class="text-sm text-muted">尚无已登记的火山账号项目，请先完成视频渠道的账号项目绑定。</p>
       <template v-if="provider">
@@ -383,6 +439,19 @@ onBeforeUnmount(reset)
           <div v-if="bindBlockers.length" class="rounded border border-line p-3 text-sm" aria-live="polite"><strong>绑定前还需完成：</strong><ul class="mt-2 list-disc pl-5 text-muted"><li v-for="reason in bindBlockers" :key="reason">{{ reason }}</li></ul></div>
           <button type="button" class="btn-primary" :disabled="!canBind" @click="bind">{{ busy ? '处理中…' : '绑定当前组织并启用' }}</button>
         </section>
+        <section v-if="setup.shared_default" class="rounded border border-line p-4 space-y-4">
+          <h3 class="font-medium">共享默认素材项目</h3>
+          <p class="text-sm">当前发布版本 {{ setup.shared_default.revision }} · {{ setup.shared_default.enabled ? `账号项目 #${setup.shared_default.provider_scope_id} · 管理版本 ${setup.shared_default.scope_version}` : '尚未启用' }}</p>
+          <p class="text-xs text-muted">使用上方选择的已保存管理版本，无需再次填写 AK/SK。没有专属路由的组织可继承此项目；项目配置共用，素材组和素材仍仅创建者本人可见。普通组织管理员不会自动获得其他用户资源。</p>
+          <fieldset :disabled="busy || loading || refreshRequired" class="space-y-3">
+            <label class="flex items-start gap-2 text-sm"><input v-model="sharedEnabled" type="checkbox" class="mt-1 shrink-0"><span>启用所选版本作为共享默认素材项目</span></label>
+            <label class="flex items-start gap-2 text-sm"><input v-model="sharedAllowAsync" type="checkbox" class="mt-1 shrink-0"><span>允许未单独设置执行策略的组织使用素材异步操作</span></label>
+            <p class="text-xs text-muted">此项只授权素材操作，不开通视频生成；请求原文历史默认关闭。已有专属路由或明确禁用的组织策略不会被共享默认配置绕过。</p>
+            <label class="flex items-start gap-2 text-sm"><input v-model="sharedConfirmed" type="checkbox" class="mt-1 shrink-0"><span>已核对所选账号项目、管理版本与共享范围，确认发布；不会共享用户素材或修改视频价格、预算。</span></label>
+          </fieldset>
+          <ul v-if="sharedBlockers.length" class="list-disc pl-5 text-xs text-warn" aria-live="polite"><li v-for="reason in sharedBlockers" :key="reason">{{ reason }}</li></ul>
+          <button type="button" class="btn-primary" :disabled="!canPublishShared" @click="publishShared">{{ busy ? '处理中…' : '发布共享默认项目' }}</button>
+        </section>
       </template>
       <section class="rounded border border-line p-4 space-y-4"><h3 class="font-medium">3. 组织执行与历史留存</h3>
         <p class="text-sm text-muted">保存管理版本和绑定项目不会自动开启执行许可。此策略属于组织 #{{ orgId }}，由视频异步任务与素材操作共用；已有策略会按当前保存值显示，请核对后修改。</p>
@@ -395,7 +464,7 @@ onBeforeUnmount(reset)
         </fieldset>
         <div v-if="policyBlockers.length" class="rounded border border-line p-3 text-sm" aria-live="polite"><strong>保存前还需完成：</strong><ul class="mt-2 list-disc pl-5 text-muted"><li v-for="reason in policyBlockers" :key="reason">{{ reason }}</li></ul></div>
         <button type="button" class="btn-primary" :disabled="!canSavePolicy" @click="savePolicy">{{ busy ? '处理中…' : '保存组织执行与留存设置' }}</button>
-        <p class="text-xs text-muted">此操作不更换 AK/SK 或组织项目，不调整视频价格与预算。上传存储、媒体核验、真人认证的服务端缺项仍需分别配置；保存成功不代表火山官方权限验证通过。</p>
+        <p class="text-xs text-muted">此操作不更换 AK/SK 或组织项目，不调整视频价格与预算。HTTPS 网址由火山直接读取，真人认证的服务端配置仍独立检查；保存成功不代表火山官方权限验证通过。</p>
       </section>
       <p v-if="refreshRequired" class="text-sm text-warn" role="status">请先刷新配置状态，再核对已保存版本、当前组织路由与执行策略；不会自动重发任何写入。</p>
     </template>

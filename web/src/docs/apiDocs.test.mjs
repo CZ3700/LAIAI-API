@@ -246,6 +246,23 @@ test('asset examples obtain versions, use platform IDs and submit guarded mutati
   for (const name of ['Asset', 'AssetGroup']) assert.ok(spec.components.schemas[name].required.includes('version'))
 })
 
+test('asset guide documents upstream URL registration and creator isolation without promising local media scans', () => {
+  const guide = docPages.find(page => page.id === 'video-assets-guide')
+  const api = docPages.find(page => page.id === 'video-assets')
+  const text = JSON.stringify([guide, api])
+  assert.match(text, /火山直接下载、保存并处理素材/)
+  assert.match(text, /平台不下载、不存储、不扫描媒体/)
+  assert.match(text, /同一用户的新 Key 可复用本人素材/)
+  assert.match(text, /未关联用户的组织 Key 单独隔离/)
+  assert.match(text, /视频和音频缺少可信时长/)
+  assert.match(text, /unknown.*不得更换幂等键重复注册/)
+  assert.doesNotMatch(text, /URL 必须能被本组织可信媒体验证|并非任意公网 URL 都能直接/)
+  const body = byID('asset-create-call').request
+  assert.ok(body.url.startsWith('https://'))
+  assert.equal(body.media_type, 'image')
+  assert.deepEqual(Object.keys(body).sort(), ['group_id', 'media_type', 'name', 'url'])
+})
+
 test('negative requests are rejected by documented video and asset schemas', () => {
   const create = expanded(spec.paths['/v1/video/generations'].post.requestBody).content['application/json'].schema
   const good = byID('video-submit').request

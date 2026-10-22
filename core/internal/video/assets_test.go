@@ -212,6 +212,13 @@ func assetTestSeed(t *testing.T, f *fixture, provider ProviderScope, kind string
 	must(t, f.s.DB.Create(&g).Error)
 	a := videoasset.Asset{ID: assetID, OrgID: f.key.OrgID, GroupID: g.ID, MediaType: "image", Name: "fixture", ScopeID: g.ScopeID, ScopeVersion: 1, ProviderID: &upAsset, Status: videoasset.StatusActive, ReviewState: videoasset.ReviewClear, ImmutableObjectRef: "object1", ObjectSHA256: strings.Repeat("a", 64), MIME: "image/png", ByteSize: 1234, Width: 1280, Height: 720, MetadataVersion: 1, VerifiedAt: f.now, RowVersion: 1, CreatedAt: f.now, UpdatedAt: f.now}
 	must(t, f.s.DB.Create(&a).Error)
+	userID, keyID := uint64(0), f.key.ID
+	if f.key.UserID != nil && *f.key.UserID > 0 {
+		userID, keyID = *f.key.UserID, 0
+	}
+	for _, owner := range []videoasset.Ownership{{OrgID: f.key.OrgID, ResourceType: "asset_group", ResourceID: g.ID, OwnerUserID: userID, OwnerKeyID: keyID}, {OrgID: f.key.OrgID, ResourceType: "asset", ResourceID: a.ID, OwnerUserID: userID, OwnerKeyID: keyID}} {
+		must(t, f.s.DB.Create(&owner).Error)
+	}
 	return g, a
 }
 
@@ -240,6 +247,22 @@ func TestMySQLAssetTaskCreationBindingsAndRollback(t *testing.T) {
 		t.Fatal("bad whitelist snapshot")
 	}
 	must(t, f.s.DB.Transaction(func(tx *gorm.DB) error { return f.s.ValidateTaskAssetsTx(tx, f.key.OrgID, v.ID) }))
+	// Worker validation must preserve the persisted creator even without an HTTP
+	// context. A revoked Key retains its accepted intent but cannot claim another
+	// creator's asset, even if a privileged caller context reaches the worker.
+	must(t, f.s.DB.Model(&identity.APIKey{}).Where("id = ?", f.key.ID).Update("status", identity.StatusDisabled).Error)
+	must(t, f.s.DB.Transaction(func(tx *gorm.DB) error { return f.s.ValidateTaskAssetsTx(tx, f.key.OrgID, v.ID) }))
+	must(t, f.s.DB.Model(&identity.APIKey{}).Where("id = ?", f.key.ID).Update("status", identity.StatusActive).Error)
+	must(t, f.s.DB.Model(&videoasset.Ownership{}).Where("org_id = ? AND resource_type = ? AND resource_id = ?", f.key.OrgID, "asset", asset.ID).Updates(map[string]any{"owner_user_id": 999999, "owner_key_id": 0}).Error)
+	adminCtx := videoasset.WithCaller(context.Background(), videoasset.CreateContext{OrgID: f.key.OrgID, UserID: 77, CallerKind: "session_user", Superadmin: true})
+	if err = f.s.DB.WithContext(adminCtx).Transaction(func(tx *gorm.DB) error { return f.s.ValidateTaskAssetsTx(tx, f.key.OrgID, v.ID) }); !errors.Is(err, videoasset.ErrNotFound) {
+		t.Fatalf("worker accepted foreign asset ownership: %v", err)
+	}
+	ownerUser, ownerKey := uint64(0), f.key.ID
+	if f.key.UserID != nil && *f.key.UserID > 0 {
+		ownerUser, ownerKey = *f.key.UserID, 0
+	}
+	must(t, f.s.DB.Model(&videoasset.Ownership{}).Where("org_id = ? AND resource_type = ? AND resource_id = ?", f.key.OrgID, "asset", asset.ID).Updates(map[string]any{"owner_user_id": ownerUser, "owner_key_id": ownerKey}).Error)
 	must(t, f.s.SetAssetScopeEnabled(context.Background(), assetTestActor(), scope.ID, 1, false))
 	if f.s.DB.Transaction(func(tx *gorm.DB) error { return f.s.ValidateTaskAssetsTx(tx, f.key.OrgID, v.ID) }) == nil {
 		t.Fatal("disabled scope accepted at dispatch")

@@ -36,21 +36,21 @@ func TestConsoleOfficialStatusAndMediaEligibilityRemainIndependent(t *testing.T)
 			}
 			continue
 		}
-		if asset.MediaVerificationStatus != "unverified" || asset.GenerationStatus != "blocked" || asset.Reference != "" {
-			t.Fatal("official import invented media eligibility", asset)
+		if asset.MediaVerificationStatus != "unverified" {
+			t.Fatal("official import invented local media verification", asset)
 		}
 		switch asset.Name {
 		case "Active":
 			importedID = asset.ID
-			if asset.ProviderStatus != "active" || asset.Status != "needs_review" || asset.Stage != "needs_review" || asset.GenerationBlockReason != "media_unverified" {
-				t.Fatal("official availability conflated with platform verification", asset)
+			if asset.ProviderStatus != "active" || asset.Status != "ready" || asset.Stage != "ready" || asset.GenerationStatus != "ready" || asset.GenerationBlockReason != "" || asset.Reference == "" {
+				t.Fatal("official Active image did not become referenceable", asset)
 			}
 		case "Processing":
-			if asset.ProviderStatus != "processing" || asset.GenerationBlockReason != "provider_not_ready" {
+			if asset.ProviderStatus != "processing" || asset.GenerationStatus != "blocked" || asset.Reference != "" || asset.GenerationBlockReason != "provider_not_ready" {
 				t.Fatal("official processing state lost", asset)
 			}
 		case "Failed":
-			if asset.ProviderStatus != "failed" || asset.GenerationBlockReason != "provider_not_ready" {
+			if asset.ProviderStatus != "failed" || asset.GenerationStatus != "blocked" || asset.Reference != "" || asset.GenerationBlockReason != "provider_not_ready" {
 				t.Fatal("official failed state lost", asset)
 			}
 		default:
@@ -60,15 +60,15 @@ func TestConsoleOfficialStatusAndMediaEligibilityRemainIndependent(t *testing.T)
 	if importedID == "" {
 		t.Fatal("missing official Active import")
 	}
-	if _, err := s.ResolveBindingsTx(db, 1, testScope(), "unverified-state-task", []ReferenceInput{{AssetID: importedID, Role: "reference_image", ContentIndex: 0}}); err != ErrConflict {
-		t.Fatal("console Active projection bypassed generation verification", err)
+	if _, err := s.ResolveBindingsTx(db, 1, testScope(), "provider-image-task", []ReferenceInput{{AssetID: importedID, Role: "reference_image", ContentIndex: 0}}); err != nil {
+		t.Fatal("official Active image was blocked by optional local verification", err)
 	}
 	for _, tc := range []struct {
 		provider, legacy string
 		want             int64
 	}{
 		{"active", "", 2}, {"processing", "", 1}, {"failed", "", 1}, {"unknown", "", 0},
-		{"", "ready", 1}, {"active", "ready", 1}, {"active", "verifying", 1}, {"failed", "ready", 0},
+		{"", "ready", 2}, {"active", "ready", 2}, {"active", "verifying", 0}, {"failed", "ready", 0},
 	} {
 		got, err := s.ConsoleAssets(ctx, 1, ListFilter{GroupID: group.ID, ProviderStatus: tc.provider, Status: tc.legacy, Limit: 20})
 		if err != nil || got.Total != tc.want {

@@ -87,7 +87,7 @@ func TestConsoleSessionCannotReadAnotherH5(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.UserID = 23
-	if _, err = s.GetPortraitForCaller(context.Background(), c, p.ID, true); err != ErrSecret {
+	if _, err = s.GetPortraitForCaller(context.Background(), c, p.ID, true); err != ErrNotFound {
 		t.Fatal(err)
 	}
 	c.UserID = 22
@@ -120,7 +120,7 @@ func TestSyncDiscoveryDoesNotGrantTenantAccess(t *testing.T) {
 		return syncReply(req, map[string]any{"Items": []any{map[string]string{"Id": "official-real-import", "Name": "external", "Description": "official", "GroupType": "LivenessFace", "ProjectName": "project1"}}}), nil
 	})})
 	ctx := context.Background()
-	c := createContext("discover")
+	c := adminContext("discover")
 	job, err := s.CreateSyncJob(ctx, c, "real_person", "discover")
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +183,7 @@ func TestSyncPaginationCycleKeepsCheckpointAndFails(t *testing.T) {
 		return syncReply(req, map[string]any{"Items": []any{}, "NextToken": "same-token"}), nil
 	})})
 	ctx := context.Background()
-	job, err := s.CreateSyncJob(ctx, createContext("cycle"), "virtual", "owned")
+	job, err := s.CreateSyncJob(ctx, adminContext("cycle"), "virtual", "owned")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestMediaUploadVerifiedFileAndTenantIsolation(t *testing.T) {
 	}
 	wrong := c
 	wrong.UserID = 23
-	if _, err = s.CompleteUpload(context.Background(), wrong, upload.ID, strings.NewReader("bad"), ""); err != ErrAuthorization {
+	if _, err = s.CompleteUpload(context.Background(), wrong, upload.ID, strings.NewReader("bad"), ""); err != ErrNotFound {
 		t.Fatal(err)
 	}
 	var pngBytes bytes.Buffer
@@ -290,7 +290,8 @@ func TestMediaUploadVerifiedFileAndTenantIsolation(t *testing.T) {
 	if _, err = s.GetUpload(context.Background(), 2, upload.ID); err != ErrNotFound {
 		t.Fatal(err)
 	}
-	g := readyGroup(t, s, "media-group")
+	c.IdempotencyKey, c.RequestID = "media-group", "media-group"
+	g := createOwnedGroup(t, s, c)
 	c.IdempotencyKey = "register-upload"
 	a, _, err := s.CreateAssetFromMedia(context.Background(), c, g.ID, upload.ID, "uploaded")
 	if err != nil {
@@ -330,7 +331,7 @@ func TestMediaUploadVerifiedFileAndTenantIsolation(t *testing.T) {
 func TestSyncGateSerializesSharedScopeAndLimitsAccount(t *testing.T) {
 	s, _, now, provider := setup(t)
 	ctx := context.Background()
-	c := createContext("scope-a")
+	c := adminContext("scope-a")
 	var wg sync.WaitGroup
 	out := make(chan error, 2)
 	for i := uint64(1); i <= 2; i++ {
@@ -379,7 +380,7 @@ func TestSyncGateSerializesSharedScopeAndLimitsAccount(t *testing.T) {
 		t.Fatal("gate did not release")
 	}
 }
-func TestConsoleReadyFilterRequiresImmutableFacts(t *testing.T) {
+func TestConsoleReadyImageDoesNotRequirePlatformMediaCopy(t *testing.T) {
 	s, db, now, _ := setup(t)
 	g := readyGroup(t, s, "ready-filter")
 	a := readyAsset(t, s, now, g.ID, "ready-filter")
@@ -387,18 +388,18 @@ func TestConsoleReadyFilterRequiresImmutableFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.GetAsset(context.Background(), 1, a.ID)
-	if err != nil || got.Reference != "" || got.Status != "needs_review" {
+	if err != nil || got.Reference == "" || got.Status != "ready" {
 		t.Fatal(got, err)
 	}
 	page, err := s.ConsoleAssets(context.Background(), 1, ListFilter{GroupID: g.ID, Status: "ready", Limit: 20})
-	if err != nil || page.Total != 0 {
-		t.Fatal(page, err)
-	}
-	page, err = s.ConsoleAssets(context.Background(), 1, ListFilter{GroupID: g.ID, Status: "verifying", Limit: 20})
 	if err != nil || page.Total != 1 {
 		t.Fatal(page, err)
 	}
-	if _, err = s.ResolveBindingsTx(db, 1, testScope(), "missing-facts", []ReferenceInput{{AssetID: a.ID, Role: "reference_image", ContentIndex: 0}}); err != ErrConflict {
+	page, err = s.ConsoleAssets(context.Background(), 1, ListFilter{GroupID: g.ID, Status: "verifying", Limit: 20})
+	if err != nil || page.Total != 0 {
+		t.Fatal(page, err)
+	}
+	if _, err = s.ResolveBindingsTx(db, 1, testScope(), "missing-facts", []ReferenceInput{{AssetID: a.ID, Role: "reference_image", ContentIndex: 0}}); err != nil {
 		t.Fatal(err)
 	}
 }

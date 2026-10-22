@@ -518,6 +518,9 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 		if err := tx.Create(&group).Error; err != nil {
 			return ErrStorage
 		}
+		if err := inheritOwnerTx(tx, op.OrgID, "portrait", p.ID, "asset_group", id); err != nil {
+			return err
+		}
 		if err := saveDetails(tx, op.OrgID, id, label.Description, "platform", now); err != nil {
 			return err
 		}
@@ -599,6 +602,9 @@ func (s *Service) enqueueQuery(ctx context.Context, org uint64, scope Scope, res
 		row := Operation{ID: id, OrgID: org, Action: action, ResourceType: resourceType, ResourceID: resourceID, RequestID: request, CanonicalPath: "internal:" + action + ":" + resourceID, HMACKeyVersion: s.options.ActiveHMACKey, IdempotencyHash: s.digest(s.options.ActiveHMACKey, "internal", org, action, id), BodyHash: s.digest(s.options.ActiveHMACKey, "body", org, action, string(body)), ScopeID: scope.ID, ScopeVersion: scope.Version, AccountID: scope.AccountID, Region: scope.Region, Project: scope.Project, Status: "pending", PayloadID: prepared.PayloadID(), CreatedAt: now, UpdatedAt: now, NextAttemptAt: now}
 		if err := tx.Create(&row).Error; err != nil {
 			return ErrStorage
+		}
+		if err := inheritOwnerTx(tx, org, resourceType, resourceID, "operation", id); err != nil {
+			return err
 		}
 		return s.event(tx, org, resourceType, resourceID, id, "query_intent", prepared.PayloadID(), "worker")
 	})

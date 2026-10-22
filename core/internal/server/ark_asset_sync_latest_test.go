@@ -28,12 +28,14 @@ INSERT INTO organizations(id,slug,name) VALUES(1,'sync-one','Sync one'),(2,'sync
 INSERT INTO users(id,email,email_canonical) VALUES(1,'sync@test.invalid','sync@test.invalid');
 INSERT INTO org_members(org_id,user_id,role) VALUES(1,1,'billing'),(2,1,'member'),(3,1,'owner');
 CREATE TABLE video_asset_sync_jobs(id TEXT PRIMARY KEY,org_id INTEGER,scope_id TEXT,scope_version INTEGER,account_id TEXT,region TEXT,project TEXT,mode TEXT,kind TEXT,status TEXT,created_at DATETIME,updated_at DATETIME);
+CREATE TABLE video_asset_owners(org_id INTEGER,resource_type TEXT,resource_id TEXT,owner_user_id INTEGER,owner_key_id INTEGER,manage_all BOOLEAN,PRIMARY KEY(org_id,resource_type,resource_id));
 INSERT INTO video_asset_sync_jobs VALUES
 ('asj_owned',1,'scope1',1,'account1','cn-beijing','project1','owned','virtual','failed','2026-10-22 00:00:00','2026-10-22 00:00:00'),
 ('asj_foreign',2,'scope1',1,'account1','cn-beijing','project1','owned','virtual','running','2026-10-22 01:00:00','2026-10-22 01:00:00'),
 ('asj_discovery',1,'scope1',1,'account1','cn-beijing','project1','discover','virtual','succeeded','2026-10-22 02:00:00','2026-10-22 02:00:00'),
 ('asj_revision',1,'scope1',2,'account1','cn-beijing','project1','owned','virtual','running','2026-10-22 03:00:00','2026-10-22 03:00:00'),
 ('asj_real',1,'scope1',1,'account1','cn-beijing','project1','owned','real_person','succeeded','2026-10-22 04:00:00','2026-10-22 04:00:00');
+INSERT INTO video_asset_owners SELECT org_id,'sync',id,1,0,0 FROM video_asset_sync_jobs;
 `
 	if err := db.Exec(schema).Error; err != nil {
 		t.Fatal(err)

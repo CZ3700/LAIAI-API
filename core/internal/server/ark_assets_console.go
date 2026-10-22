@@ -21,6 +21,11 @@ func (s *Server) assetConsoleCaller(c *gin.Context, write bool) (videoasset.Crea
 		return videoasset.CreateContext{}, false
 	}
 	claims := mustClaims(c)
+	var user identity.User
+	if s.db.WithContext(c.Request.Context()).Select("id", "role", "status").Where("id = ? AND status = ?", claims.UserID, identity.StatusActive).Take(&user).Error != nil {
+		fail(c, 403, "named active user required")
+		return videoasset.CreateContext{}, false
+	}
 	role, e := identity.RoleIn(s.db.WithContext(c.Request.Context()), claims.OrgID, claims.UserID)
 	if e != nil || write && role == identity.RoleBilling {
 		fail(c, 403, "asset permission required")
@@ -36,7 +41,9 @@ func (s *Server) assetConsoleCaller(c *gin.Context, write bool) (videoasset.Crea
 		id = hex.EncodeToString(raw[:])
 	}
 	c.Header("X-Request-Id", id)
-	return videoasset.CreateContext{CallerKind: "session_user", OrgID: claims.OrgID, UserID: claims.UserID, RequestID: id, IdempotencyKey: c.GetHeader("Idempotency-Key")}, true
+	a := videoasset.CreateContext{CallerKind: "session_user", OrgID: claims.OrgID, UserID: claims.UserID, RequestID: id, IdempotencyKey: c.GetHeader("Idempotency-Key"), Superadmin: user.Role == identity.PlatRoleSuperadmin}
+	c.Request = c.Request.WithContext(videoasset.WithCaller(c.Request.Context(), a))
+	return a, true
 }
 func assetConsoleError(c *gin.Context, e error) {
 	status, code := 500, "internal_error"
@@ -177,15 +184,28 @@ func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 			return
 		}
 		var in struct {
-			GroupID  string `json:"group_id"`
-			MediaRef string `json:"media_ref"`
-			Name     string `json:"name"`
+			GroupID   string `json:"group_id"`
+			MediaRef  string `json:"media_ref"`
+			URL       string `json:"url"`
+			MediaType string `json:"media_type"`
+			Name      string `json:"name"`
 		}
 		if videoAdminDecode(c, &in) != nil {
 			assetConsoleError(c, videoasset.ErrInvalid)
 			return
 		}
-		out, replay, e := s.video.Assets.CreateAssetFromMedia(c.Request.Context(), a, in.GroupID, in.MediaRef, in.Name)
+		var out videoasset.AssetDTO
+		var replay bool
+		var e error
+		if in.MediaRef != "" && (in.URL != "" || in.MediaType != "") {
+			assetConsoleError(c, videoasset.ErrInvalid)
+			return
+		}
+		if in.MediaRef != "" {
+			out, replay, e = s.video.Assets.CreateAssetFromMedia(c.Request.Context(), a, in.GroupID, in.MediaRef, in.Name)
+		} else {
+			out, replay, e = s.video.Assets.CreateAsset(c.Request.Context(), a, videoasset.AssetCreate{GroupID: in.GroupID, URL: in.URL, MediaType: in.MediaType, Name: in.Name})
+		}
 		if e != nil {
 			assetConsoleError(c, e)
 			return
@@ -213,6 +233,7 @@ func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 			assetConsoleError(c, e)
 		}
 	})
+	g.GET("/assets/:id/source", s.getArkAssetSource)
 	g.POST("/portrait-authorizations", func(c *gin.Context) {
 		a, ok := s.assetConsoleCaller(c, true)
 		if !ok {
@@ -424,7 +445,7 @@ func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 			assetConsoleError(c, videoasset.ErrUnsupported)
 			return
 		}
-		a := videoasset.CreateContext{CallerKind: "session_user", OrgID: in.OrgID, UserID: actor.ID, RequestID: assetAdminRequestID(c), IdempotencyKey: c.GetHeader("Idempotency-Key")}
+		a := videoasset.CreateContext{CallerKind: "session_user", OrgID: in.OrgID, UserID: actor.ID, RequestID: assetAdminRequestID(c), IdempotencyKey: c.GetHeader("Idempotency-Key"), Superadmin: true}
 		out, e := s.video.Assets.CreateSyncJob(c.Request.Context(), a, in.Kind, "discover")
 		if e != nil {
 			assetConsoleError(c, e)
@@ -433,7 +454,8 @@ func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 		c.JSON(202, out)
 	})
 	ag.GET("/asset-discovery-jobs/:id", func(c *gin.Context) {
-		if _, ok := s.videoAdminActor(c); !ok {
+		actor, ok := s.videoAdminActor(c)
+		if !ok {
 			return
 		}
 		if s.video == nil || s.video.Assets == nil {
@@ -445,7 +467,8 @@ func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 			assetConsoleError(c, videoasset.ErrInvalid)
 			return
 		}
-		out, err := s.video.Assets.GetSyncJob(c.Request.Context(), org, c.Param("id"), true)
+		ctx := videoasset.WithCaller(c.Request.Context(), videoasset.CreateContext{OrgID: org, UserID: actor.ID, CallerKind: "session_user", Superadmin: true})
+		out, err := s.video.Assets.GetSyncJob(ctx, org, c.Param("id"), true)
 		if err != nil {
 			assetConsoleError(c, err)
 			return
@@ -486,7 +509,7 @@ func (s *Server) registerArkAssetsConsole(org, su, mediaOrg *gin.RouterGroup) {
 			assetConsoleError(c, videoasset.ErrInvalid)
 			return
 		}
-		a := videoasset.CreateContext{CallerKind: "session_user", OrgID: in.OrgID, UserID: actor.ID, RequestID: assetAdminRequestID(c), IdempotencyKey: c.GetHeader("Idempotency-Key")}
+		a := videoasset.CreateContext{CallerKind: "session_user", OrgID: in.OrgID, UserID: actor.ID, RequestID: assetAdminRequestID(c), IdempotencyKey: c.GetHeader("Idempotency-Key"), Superadmin: true}
 		payload, e := s.prepareArkLicense(in.OrgID, in.Evidence)
 		if e != nil {
 			assetConsoleError(c, videoasset.ErrInvalid)

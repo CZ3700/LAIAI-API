@@ -186,6 +186,7 @@ type Upload struct {
 
 func (Upload) TableName() string { return "video_media_uploads" }
 func (s *Service) BeginUpload(ctx context.Context, c CreateContext, mediaType string) (Upload, error) {
+	ctx = WithCaller(ctx, c)
 	if !validCreate(c) || s.console.Media == nil {
 		return Upload{}, ErrUnsupported
 	}
@@ -206,6 +207,9 @@ func (s *Service) BeginUpload(ctx context.Context, c CreateContext, mediaType st
 		}
 		e := tx.Where("org_id = ? AND idempotency_hash = ?", c.OrgID, key).Take(&out).Error
 		if e == nil {
+			if e := resourceVisible(ctx, tx, c.OrgID, "upload", out.ID); e != nil {
+				return e
+			}
 			if out.BodyHash != body {
 				return ErrConflict
 			}
@@ -218,6 +222,9 @@ func (s *Service) BeginUpload(ctx context.Context, c CreateContext, mediaType st
 		out = Upload{ID: id, OrgID: c.OrgID, UserID: c.UserID, KeyID: c.KeyID, MediaType: mediaType, Status: "uploading", IdempotencyHash: key, BodyHash: body, ExpiresAt: now.Add(24 * time.Hour), CreatedAt: now, UpdatedAt: now}
 		if tx.Create(&out).Error != nil {
 			return ErrStorage
+		}
+		if e := registerOwnerTx(tx, c, "upload", id); e != nil {
+			return e
 		}
 		return s.event(tx, c.OrgID, "upload", id, "", "upload_created", "", callerLabel(c))
 	})
@@ -240,12 +247,12 @@ func (s *Service) ListUploads(ctx context.Context, org uint64, f ListFilter) (Up
 	default:
 		return out, ErrInvalid
 	}
-	identity := "uploads:" + f.Status + ":" + f.MediaType
+	identity := actorCursor(ctx, "uploads:"+f.Status+":"+f.MediaType)
 	after, err := s.parseCursor(org, identity, f.Cursor)
 	if err != nil {
 		return out, err
 	}
-	q := s.db.WithContext(ctx).Model(&Upload{}).Where("org_id = ?", org)
+	q := owned(ctx, s.db.WithContext(ctx).Model(&Upload{}), org, "upload", "id").Where("org_id = ?", org)
 	now := s.now()
 	if f.Status == "expired" {
 		q = q.Where("status = ? OR (status IN ? AND expires_at <= ?)", "expired", []string{"uploading", "verifying", "ready"}, now)
@@ -282,18 +289,16 @@ func (s *Service) ListUploads(ctx context.Context, org uint64, f ListFilter) (Up
 
 func (s *Service) GetUpload(ctx context.Context, org uint64, id string) (Upload, error) {
 	var row Upload
-	if s.db.WithContext(ctx).Where("org_id = ? AND id = ?", org, id).Take(&row).Error != nil {
+	if owned(ctx, s.db.WithContext(ctx), org, "upload", "id").Where("org_id = ? AND id = ?", org, id).Take(&row).Error != nil {
 		return row, ErrNotFound
 	}
 	return row, nil
 }
 func (s *Service) CompleteUpload(ctx context.Context, c CreateContext, id string, reader io.Reader, rawURL string) (Upload, error) {
+	ctx = WithCaller(ctx, c)
 	row, e := s.GetUpload(ctx, c.OrgID, id)
 	if e != nil {
 		return row, e
-	}
-	if row.UserID != c.UserID || row.KeyID != c.KeyID {
-		return Upload{}, ErrAuthorization
 	}
 	if row.Status == "ready" {
 		return row, nil
@@ -476,6 +481,7 @@ func (s *Service) uploadEvidence(ctx context.Context, org uint64, id, kind strin
 	return MediaEvidence{ImmutableObjectRef: row.ObjectRef, ObjectSHA256: row.ObjectSHA256, MIME: row.MIME, ByteSize: row.Bytes, DurationMS: row.DurationMS, Width: row.Width, Height: row.Height, FPSNum: row.FPSNum, FPSDen: row.FPSDen, Version: 1, VerifiedAt: s.now(), FetchURL: s.console.Media.url(org, row.ID, row.ExpiresAt)}, nil
 }
 func (s *Service) CreateAssetFromMedia(ctx context.Context, c CreateContext, group, id, name string) (AssetDTO, bool, error) {
+	ctx = WithCaller(ctx, c)
 	row, e := s.GetUpload(ctx, c.OrgID, id)
 	if e != nil {
 		return AssetDTO{}, false, e
@@ -507,11 +513,14 @@ func (s *Service) verifyMedia(ctx context.Context, org uint64, raw, kind string)
 	return s.options.VerifyMedia(ctx, org, raw, kind)
 }
 func (s *Service) Preview(ctx context.Context, org uint64, id string, w http.ResponseWriter, r *http.Request) error {
+	if err := resourceVisible(ctx, s.db, org, "asset", id); err != nil {
+		return err
+	}
 	if s.console.Media == nil {
 		return ErrUnsupported
 	}
 	var a Asset
-	if s.db.WithContext(ctx).Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", org, id).Take(&a).Error != nil {
+	if owned(ctx, s.db.WithContext(ctx), org, "asset", "asset_id").Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", org, id).Take(&a).Error != nil {
 		return ErrNotFound
 	}
 	if a.ImmutableObjectRef == "" {
@@ -527,11 +536,14 @@ func (s *Service) Preview(ctx context.Context, org uint64, id string, w http.Res
 // Imported media is verified from a fresh, scoped official GetAsset URL. A
 // customer upload cannot be substituted as the evidence for an existing Ark ID.
 func (s *Service) VerifyImportedAsset(ctx context.Context, org uint64, id string) error {
+	if err := resourceVisible(ctx, s.db, org, "asset", id); err != nil {
+		return err
+	}
 	if s.console.Media == nil {
 		return ErrUnsupported
 	}
 	var a Asset
-	if s.db.WithContext(ctx).Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", org, id).Take(&a).Error != nil {
+	if owned(ctx, s.db.WithContext(ctx), org, "asset", "asset_id").Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", org, id).Take(&a).Error != nil {
 		return ErrNotFound
 	}
 	if a.ProviderID == nil || a.Status != StatusActive {

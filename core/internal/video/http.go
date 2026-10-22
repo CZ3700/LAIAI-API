@@ -167,6 +167,7 @@ func (s *Service) Middleware() gin.HandlerFunc {
 			start.UserID = key.UserID
 			start.AuthOutcome = "authenticated"
 			c.Set("video_key", key)
+			c.Request = c.Request.WithContext(videoasset.WithAPIKey(c.Request.Context(), key))
 		}
 		if err := s.DB.Transaction(func(tx *gorm.DB) error { return s.Evidence.RequestStartTx(tx, start) }); err != nil {
 			apiError(c, 503, "audit_unavailable")
@@ -398,7 +399,7 @@ func (s *Service) HandleEstimate(c *gin.Context) {
 		apiError(c, 403, "model_not_allowed")
 		return
 	}
-	q, e := s.Estimate(key.OrgID, in)
+	q, e := s.EstimateForKey(c.Request.Context(), key, in)
 	if e != nil {
 		respondError(c, e)
 		return

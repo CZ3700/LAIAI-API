@@ -94,7 +94,7 @@ func exerciseOwnedSync(t *testing.T, s *Service, db *gorm.DB, now *time.Time, sc
 			return nil, ErrInvalid
 		}
 	})})
-	caller := createContext("owned-sync-" + scope.ID)
+	caller := adminContext("owned-sync-" + scope.ID)
 	job, err := s.CreateSyncJob(ctx, caller, "virtual", "owned")
 	if err != nil {
 		t.Fatal(err)
@@ -127,10 +127,10 @@ func exerciseOwnedSync(t *testing.T, s *Service, db *gorm.DB, now *time.Time, sc
 		t.Fatal("official assets missing from console", page.Total, err)
 	}
 	for _, asset := range page.Data {
-		if asset.Stage != "needs_review" || asset.Reference != "" || asset.PreviewURL != "" || asset.Source != "imported" || asset.DeletionMode != "official" {
-			t.Fatal("sync either fabricated media verification or blocked deletion", asset.Stage, asset.Reference, asset.DeletionMode)
+		if asset.Stage != "ready" || asset.Reference == "" || asset.PreviewURL != "" || asset.Source != "imported" || asset.DeletionMode != "official" {
+			t.Fatal("official Active image reference or deletion unavailable", asset.Stage, asset.Reference, asset.DeletionMode)
 		}
-		if asset.ProviderStatus != "active" || asset.MediaVerificationStatus != "unverified" || asset.GenerationStatus != "blocked" || asset.GenerationBlockReason != "media_unverified" {
+		if asset.ProviderStatus != "active" || asset.MediaVerificationStatus != "unverified" || asset.GenerationStatus != "ready" || asset.GenerationBlockReason != "" {
 			t.Fatal("official import did not preserve independent availability and verification", asset.ProviderStatus, asset.MediaVerificationStatus, asset.GenerationStatus)
 		}
 		var row Asset
@@ -146,8 +146,11 @@ func exerciseOwnedSync(t *testing.T, s *Service, db *gorm.DB, now *time.Time, sc
 				t.Fatal("unverified imported asset must store SQL NULL rather than a zero date", err)
 			}
 		}
-		if _, err := s.ResolveBindingsTx(db, 1, scope, "task-unverified-"+asset.ID, []ReferenceInput{{AssetID: asset.ID, Role: "reference_image", ContentIndex: 0}}); err != ErrConflict {
-			t.Fatal("unverified official import became eligible for generation", err)
+		if _, err := s.ResolveBindingsTx(db, 1, scope, "task-provider-image-"+asset.ID, []ReferenceInput{{AssetID: asset.ID, Role: "reference_image", ContentIndex: 0}}); err != nil {
+			t.Fatal("official Active image requires an unnecessary platform copy", err)
+		}
+		if err := s.ReleaseBindingsTx(db, 1, "task-provider-image-"+asset.ID); err != nil {
+			t.Fatal(err)
 		}
 	}
 	var unbound Group
@@ -177,7 +180,7 @@ func exerciseOwnedSync(t *testing.T, s *Service, db *gorm.DB, now *time.Time, sc
 		deletes++
 		return syncReply(req, map[string]any{}), nil
 	})})
-	operation, done, err := s.DeleteAsset(ctx, createContext("delete-imported-"+scope.ID), toDelete.ID)
+	operation, done, err := s.DeleteAsset(ctx, adminContext("delete-imported-"+scope.ID), toDelete.ID)
 	if err != nil || done {
 		t.Fatal("imported asset deletion blocked by absent media service", err)
 	}
@@ -229,7 +232,7 @@ func TestOwnedSyncPersistenceFailureStopsWithoutLeaseLoop(t *testing.T) {
 		}
 		return syncReply(req, map[string]any{"Items": []any{map[string]string{"Id": "asset-storage-failure", "Name": "fixture", "GroupId": *row.ProviderID, "ProjectName": row.Project, "AssetType": "Image", "Status": "Active"}}}), nil
 	})})
-	job, err := s.CreateSyncJob(context.Background(), createContext("storage-failure"), "virtual", "owned")
+	job, err := s.CreateSyncJob(context.Background(), adminContext("storage-failure"), "virtual", "owned")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -27,9 +27,9 @@ function saved(version = 1) { return {provider_scope_id: 7, version, enabled: tr
 function publishedPolicy(body) { return {present: true, async_execution_allowed: body.async_execution_allowed, capture_history: body.capture_history, retention_days: body.retention_days} }
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => {resolve = yes; reject = no}); return {promise, resolve, reject} }
 async function until(predicate) { const end = performance.now() + 3000; while (performance.now() < end) { if (predicate()) return; await delay(5) }; assert.fail('condition not reached') }
-async function harness(t, data = setup()) {
+async function harness(t, data = setup(), authOverrides = {}) {
   const previous = globalThis.__assetSetup
-  const h = {vue, props: vue.reactive({orgId: data.org_id}), auth: vue.reactive({orgId: data.org_id, token: 'fixture-session', isSuperadmin: true}), mounted: [], unmounted: [], calls: [], events: [], data, respond: () => undefined}
+  const h = {vue, props: vue.reactive({orgId: data.org_id}), auth: vue.reactive({orgId: data.org_id, token: 'fixture-session', isSuperadmin: true, ...authOverrides}), mounted: [], unmounted: [], calls: [], events: [], data, respond: () => undefined}
   h.api = async (method, path, body) => { const call = {method, path, body: body ? structuredClone(body) : undefined}; h.calls.push(call); return method === 'GET' ? h.read(call) : h.respond(call) }
   h.read = () => structuredClone(h.data)
   globalThis.__assetSetup = h
@@ -41,6 +41,90 @@ async function harness(t, data = setup()) {
 }
 function fillRegistration(h) { h.vm.version.value = '1'; h.vm.enabled.value = true; h.vm.capabilities.value.VirtualGroups = true; h.vm.accessKey.value = 'fixture-access'; h.vm.secretKey.value = 'fixture-secret'; h.vm.sessionToken.value = 'fixture-session-token'; h.vm.registrationConfirmed.value = true }
 const writes = h => h.calls.filter(call => call.method !== 'GET')
+
+function sharedSetup() {
+  const data = setup()
+  data.scope_configs = [saved()]
+  data.shared_default = { revision: 0, provider_scope_id: 0, scope_version: 0, enabled: false, allow_async: false }
+  data.route_source = 'organization'
+  return data
+}
+function confirmShared(h) { h.vm.sharedEnabled.value = true; h.vm.sharedAllowAsync.value = true; h.vm.sharedConfirmed.value = true }
+
+test('shared default publishing reuses a saved version with explicit consent and revision readback, without credentials', async t => {
+  const h = await harness(t, sharedSetup())
+  assert.equal(h.vm.sharedEnabled.value, false); assert.equal(h.vm.sharedAllowAsync.value, false)
+  assert.equal(h.vm.canPublishShared.value, false); assert.equal(writes(h).length, 0)
+  confirmShared(h)
+  assert.equal(h.vm.canPublishShared.value, true)
+  h.respond = call => {
+    assert.equal(call.path, '/api/admin/video/asset-shared-default')
+    assert.deepEqual(call.body, { expected_revision: 0, provider_scope_id: 7, scope_version: 1, enabled: true, allow_async: true })
+    h.data.shared_default = { revision: 1, provider_scope_id: 7, scope_version: 1, enabled: true, allow_async: true }
+  }
+  await h.vm.publishShared()
+  assert.equal(writes(h).length, 1); assert.equal(h.vm.refreshRequired.value, false)
+  assert.match(h.vm.notice.value, /共享默认项目已发布并回读确认/)
+  assert.equal(h.vm.sharedConfirmed.value, false)
+  assert.equal(h.vm.accessKey.value + h.vm.secretKey.value + h.vm.sessionToken.value, '')
+})
+
+test('shared default preflight stops concurrent revisions and changed confirmation scopes', async t => {
+  const h = await harness(t, sharedSetup())
+  confirmShared(h)
+  h.data.shared_default = { revision: 1, provider_scope_id: 7, scope_version: 1, enabled: true, allow_async: false }
+  await h.vm.publishShared()
+  assert.equal(writes(h).length, 0); assert.equal(h.vm.sharedConfirmed.value, false)
+  assert.equal(h.vm.setup.value.shared_default.revision, 1)
+  confirmShared(h); h.vm.sharedAllowAsync.value = false
+  assert.equal(h.vm.canPublishShared.value, false)
+  await h.vm.publishShared(); assert.equal(writes(h).length, 0)
+})
+
+test('shared enable requires async consent and disabling publishes the normalized false permission', async t => {
+  const data=sharedSetup();data.shared_default={revision:3,provider_scope_id:7,scope_version:1,enabled:true,allow_async:true}
+  const h=await harness(t,data)
+  h.vm.sharedAllowAsync.value=false;h.vm.sharedConfirmed.value=true
+  assert.equal(h.vm.canPublishShared.value,false);await h.vm.publishShared();assert.equal(writes(h).length,0)
+  h.vm.sharedAllowAsync.value=true;h.vm.sharedEnabled.value=false;h.vm.sharedConfirmed.value=true
+  h.respond=call=>{
+    assert.deepEqual(call.body,{expected_revision:3,provider_scope_id:7,scope_version:1,enabled:false,allow_async:false})
+    h.data.shared_default={revision:4,provider_scope_id:7,scope_version:1,enabled:false,allow_async:false}
+  }
+  await h.vm.publishShared();assert.equal(h.vm.refreshRequired.value,false);assert.equal(writes(h).length,1)
+})
+
+test('unknown shared publication is read back rather than repeated', async t => {
+  const h = await harness(t, sharedSetup())
+  confirmShared(h)
+  h.respond = () => {
+    h.data.shared_default = { revision: 1, provider_scope_id: 7, scope_version: 1, enabled: true, allow_async: true }
+    throw new h.ApiError(503, 'private fixture-secret')
+  }
+  await h.vm.publishShared()
+  assert.equal(h.vm.refreshRequired.value, true); assert.equal(h.vm.error.value.includes('fixture-secret'), false)
+  confirmShared(h); await h.vm.publishShared(); assert.equal(writes(h).length, 1)
+  await h.vm.load()
+  assert.equal(h.vm.refreshRequired.value, false); assert.equal(h.vm.pendingReadback.value, null)
+  assert.match(h.vm.notice.value, /回读确认/); assert.equal(writes(h).length, 1)
+})
+
+test('ordinary users cannot load or publish management credentials or shared defaults', async t => {
+  const h = await harness(t, sharedSetup(), { isSuperadmin: false })
+  assert.equal(h.calls.length, 0); assert.equal(h.vm.setup.value, null)
+  confirmShared(h); await h.vm.publishShared(); await h.vm.register(); await h.vm.bind()
+  assert.equal(h.calls.length, 0)
+})
+
+test('shared publishing response cannot enter a replacement session', async t => {
+  const h = await harness(t, sharedSetup()), late = deferred()
+  confirmShared(h); h.respond = () => late.promise
+  const pending = h.vm.publishShared(); await until(() => writes(h).length === 1)
+  h.auth.token = 'replacement-session'; await until(() => !h.vm.loading.value)
+  late.resolve(); await pending
+  assert.equal(h.vm.notice.value, ''); assert.equal(h.vm.sharedConfirmed.value, false)
+  assert.equal(h.vm.pendingReadback.value, null); assert.equal(writes(h).length, 1)
+})
 
 test('setup starts with all capabilities off, then saves and explicitly binds an existing version without resending credentials', async t => {
   const h = await harness(t)
