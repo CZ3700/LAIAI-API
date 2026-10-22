@@ -2,6 +2,7 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError, copyText, errorMessage } from '@/lib/api'
+import { buildKeyCreateBody, videoPermission, type VideoPermissionChoice } from '@/lib/keyPermissions'
 import ByokPanel from '@/components/ByokPanel.vue'
 import DetailDrawer from '@/components/DetailDrawer.vue'
 import { useAuth } from '@/stores/auth'
@@ -10,6 +11,7 @@ interface KeyRow {
   id: number
   prefix: string
   name: string
+  scopes?: string
   status: number
   expires_at: string | null
   quota_limit: string
@@ -24,6 +26,10 @@ const { t, d } = useI18n()
 const auth = useAuth()
 const selectedKey = ref<KeyRow | null>(null)
 let loadEpoch = 0
+let contextEpoch = 0
+type KeyContext = { epoch: number; org: number; token: string }
+const context = (): KeyContext => ({ epoch: contextEpoch, org: auth.orgId, token: auth.token })
+const current = (value: KeyContext) => value.epoch === contextEpoch && value.org === auth.orgId && value.token === auth.token
 const keys = ref<KeyRow[]>([])
 const loading = ref(true)
 const error = ref('')
@@ -36,6 +42,10 @@ const newIps = ref('')
 const newExpiry = ref(0)
 const newRPM = ref(0) // key 级每分钟请求上限，0=不限（0041）
 const newRoute = ref('') // key 级路由策略，''=order 默认（0043）
+const newVideoPermission = ref<VideoPermissionChoice>('none')
+const videoChoices: VideoPermissionChoice[] = ['none', 'read', 'read_write']
+const permissionLabels = { none: 'keys.videoNone', read: 'keys.videoRead', read_write: 'keys.videoReadWrite', write: 'keys.videoWriteOnly' }
+const permissionHints = { none: 'keys.videoNoneHint', read: 'keys.videoReadHint', read_write: 'keys.videoReadWriteHint' }
 const creating = ref(false)
 // 明文只显示一次（红线 8 的 UI 面）：弹窗关闭即不可再取
 const createdKey = ref('')
@@ -49,40 +59,30 @@ const cappedKeys = computed(() => keys.value.filter((k) => k.quota_limit !== '0'
 // —— 弹窗焦点管理 + Escape（无障碍：role=dialog 焦点陷阱 + 关闭即恢复焦点）——
 const createDialog = ref<HTMLElement | null>(null)
 const createdDialog = ref<HTMLElement | null>(null)
+const stepUpDialog = ref<HTMLElement | null>(null)
 let lastFocused: HTMLElement | null = null
 let copyResetTimer: ReturnType<typeof setTimeout> | undefined
 
 function focusDialog(el: HTMLElement | null) {
   const focusable = el?.querySelector<HTMLElement>(
-    'input, button, [tabindex]:not([tabindex="-1"])',
+    'input, select, button, [tabindex]:not([tabindex="-1"])',
   )
   focusable?.focus()
 }
 
-watch([showCreate, createdKey], async ([create, created]) => {
-  const open = create || created !== ''
-  if (open) {
-    lastFocused = document.activeElement as HTMLElement
-    await nextTick()
-    focusDialog(create ? createDialog.value : createdDialog.value)
-  } else {
-    lastFocused?.focus()
-    lastFocused = null
-  }
-})
-
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
-    if (createdKey.value) createdKey.value = ''
+    if (stepUp.value.open) closeStepUp()
+    else if (createdKey.value) createdKey.value = ''
     else if (showCreate.value) showCreate.value = false
     return
   }
   // 焦点陷阱：Tab 在弹窗内循环
   if (e.key !== 'Tab') return
-  const dialog = createdKey.value ? createdDialog.value : showCreate.value ? createDialog.value : null
+  const dialog = stepUp.value.open ? stepUpDialog.value : createdKey.value ? createdDialog.value : showCreate.value ? createDialog.value : null
   if (!dialog) return
   const nodes = dialog.querySelectorAll<HTMLElement>(
-    'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
   )
   if (nodes.length === 0) return
   const first = nodes[0]
@@ -101,83 +101,117 @@ onBeforeUnmount(() => {
   clearTimeout(copyResetTimer)
 })
 
-async function load() {
-  const epoch = ++loadEpoch, org = auth.orgId
+async function load(owner = context()) {
+  if (!current(owner)) return
+  if (!owner.token) { loading.value = false; return }
+  const epoch = ++loadEpoch
   loading.value = true
   try {
     const r = await api<{ keys: KeyRow[] }>('GET', '/api/keys')
-    if (epoch !== loadEpoch || org !== auth.orgId) return
+    if (epoch !== loadEpoch || !current(owner)) return
     keys.value = r.keys
     selectedKey.value = null
     error.value = ''
   } catch (e) {
-    if (epoch === loadEpoch && org === auth.orgId) error.value = errorMessage(e, t('common.error'))
+    if (epoch === loadEpoch && current(owner)) error.value = errorMessage(e, t('common.error'))
   } finally {
-    if (epoch === loadEpoch) loading.value = false
+    if (epoch === loadEpoch && current(owner)) loading.value = false
   }
 }
 
 // 二次验证（step-up）：若运营开启 require_stepup_for_keys，创建 Key 会先回 403
 // VERIFICATION_REQUIRED；此时弹窗收集密码/TOTP 换 step-up 令牌，再带 X-Secure-Verify 重试。
-const stepUp = ref<{ open: boolean; pwd: string; code: string; err: string; busy: boolean; body: Record<string, unknown> | null }>(
-  { open: false, pwd: '', code: '', err: '', busy: false, body: null },
+const stepUp = ref<{ open: boolean; pwd: string; code: string; err: string; busy: boolean; body: Record<string, unknown> | null; context: KeyContext | null }>(
+  { open: false, pwd: '', code: '', err: '', busy: false, body: null, context: null },
 )
 
-function buildKeyBody(): Record<string, unknown> {
-  const body: Record<string, unknown> = { name: newName.value }
-  if (newQuota.value) body.quota_limit = newQuota.value
-  if (newModels.value.trim()) body.model_limits = newModels.value.split(',').map((m) => m.trim()).filter(Boolean)
-  if (newIps.value.trim()) body.allow_ips = newIps.value.trim()
-  if (newExpiry.value > 0) body.expires_in_days = newExpiry.value
-  if (newRPM.value > 0) body.rpm_limit = newRPM.value
-  if (newRoute.value) body.route_policy = newRoute.value
-  return body
-}
+watch([showCreate, createdKey, () => stepUp.value.open], async ([create, created, verify]) => {
+  if (create || created !== '' || verify) {
+    lastFocused ??= document.activeElement as HTMLElement
+    await nextTick()
+    focusDialog(stepUp.value.open ? stepUpDialog.value : createdKey.value ? createdDialog.value : showCreate.value ? createDialog.value : null)
+  } else {
+    lastFocused?.focus()
+    lastFocused = null
+  }
+})
 
-async function doCreate(body: Record<string, unknown>, stepUpToken?: string) {
-  const r = await api<{ key: string }>('POST', '/api/keys', body, stepUpToken ? { headers: { 'X-Secure-Verify': stepUpToken } } : {})
-  createdKey.value = r.key
-  showCreate.value = false
+function closeStepUp() {
+  stepUp.value = { open: false, pwd: '', code: '', err: '', busy: false, body: null, context: null }
+}
+function resetForm() {
   newName.value = newQuota.value = newModels.value = newIps.value = ''
   newExpiry.value = 0
   newRPM.value = 0
   newRoute.value = ''
-  await load()
+  newVideoPermission.value = 'none'
+}
+function openCreate() {
+  resetForm()
+  closeStepUp()
+  selectedKey.value = null
+  error.value = ''
+  showCreate.value = true
+}
+function buildKeyBody(): Record<string, unknown> {
+  return buildKeyCreateBody({ name: newName.value, quota: newQuota.value, models: newModels.value, ips: newIps.value,
+    expiry: newExpiry.value, rpm: newRPM.value, route: newRoute.value, videoPermission: newVideoPermission.value })
+}
+async function doCreate(body: Record<string, unknown>, owner: KeyContext, stepUpToken?: string) {
+  if (!current(owner)) return
+  const r = await api<{ key: string }>('POST', '/api/keys', body, stepUpToken ? { headers: { 'X-Secure-Verify': stepUpToken } } : {})
+  if (!current(owner)) return
+  createdKey.value = r.key
+  copied.value = copyError.value = false
+  showCreate.value = false
+  resetForm()
+  await load(owner)
 }
 
 async function create() {
+  if (creating.value || stepUp.value.open) return
+  const owner = context()
   creating.value = true
   const body = buildKeyBody()
   try {
-    await doCreate(body)
+    await doCreate(body, owner)
   } catch (e) {
+    if (!current(owner)) return
     if (e instanceof ApiError && e.code === 'VERIFICATION_REQUIRED') {
-      stepUp.value = { open: true, pwd: '', code: '', err: '', busy: false, body }
+      stepUp.value = { open: true, pwd: '', code: '', err: '', busy: false, body, context: owner }
     } else {
       error.value = errorMessage(e, t('common.error'))
     }
   } finally {
-    creating.value = false
+    if (current(owner)) creating.value = false
   }
 }
 
 async function submitStepUp() {
-  stepUp.value.busy = true
-  stepUp.value.err = ''
+  const pending = stepUp.value, owner = pending.context
+  if (!pending.open || pending.busy || !pending.body || !owner || !current(owner)) return
+  pending.busy = true
+  pending.err = ''
   try {
-    const vr = await api<{ token: string }>('POST', '/api/me/verify', { password: stepUp.value.pwd, totp_code: stepUp.value.code })
-    await doCreate(stepUp.value.body ?? {}, vr.token)
-    stepUp.value.open = false
+    const vr = await api<{ token: string }>('POST', '/api/me/verify', { password: pending.pwd, totp_code: pending.code })
+    pending.pwd = pending.code = ''
+    if (!current(owner) || stepUp.value !== pending || !pending.open) return
+    await doCreate(pending.body, owner, vr.token)
+    if (current(owner) && stepUp.value === pending) closeStepUp()
   } catch (e) {
-    stepUp.value.err = errorMessage(e, t('common.error'))
+    if (current(owner) && stepUp.value === pending) pending.err = errorMessage(e, t('common.error'))
   } finally {
-    stepUp.value.busy = false
+    pending.pwd = pending.code = ''
+    if (current(owner) && stepUp.value === pending) pending.busy = false
   }
 }
 
 async function copyKey() {
+  const owner = context(), value = createdKey.value
   copyError.value = false
-  if (await copyText(createdKey.value)) {
+  const ok = await copyText(value)
+  if (!current(owner) || createdKey.value !== value) return
+  if (ok) {
     copied.value = true
     clearTimeout(copyResetTimer)
     copyResetTimer = setTimeout(() => (copied.value = false), 1500)
@@ -188,32 +222,42 @@ async function copyKey() {
 
 async function revoke(id: number) {
   if (!confirm(t('keys.revokeConfirm'))) return
+  const owner = context()
   revoking.value = id
   try {
     await api('DELETE', `/api/keys/${id}`)
-    await load()
+    if (current(owner)) await load(owner)
   } catch (e) {
-    error.value = errorMessage(e, t('common.error'))
+    if (current(owner)) error.value = errorMessage(e, t('common.error'))
   } finally {
-    revoking.value = null
+    if (current(owner)) revoking.value = null
   }
 }
 
 async function remove(id: number) {
   if (!confirm(t('keys.deleteConfirm'))) return
+  const owner = context()
   revoking.value = id
   try {
     await api('DELETE', `/api/keys/${id}/purge`)
-    await load()
+    if (current(owner)) await load(owner)
   } catch (e) {
-    error.value = errorMessage(e, t('common.error'))
+    if (current(owner)) error.value = errorMessage(e, t('common.error'))
   } finally {
-    revoking.value = null
+    if (current(owner)) revoking.value = null
   }
 }
 
-watch(() => auth.orgId, () => { selectedKey.value = null; keys.value = []; void load() })
-onBeforeUnmount(() => { loadEpoch++; selectedKey.value = null })
+function clearContext() {
+  contextEpoch++; loadEpoch++
+  selectedKey.value = null; keys.value = []; error.value = ''
+  showCreate.value = false; createdKey.value = ''; creating.value = false; revoking.value = null
+  copied.value = copyError.value = false
+  clearTimeout(copyResetTimer)
+  resetForm(); closeStepUp()
+}
+watch([() => auth.orgId, () => auth.token], () => { clearContext(); void load() }, { flush: 'sync' })
+onBeforeUnmount(clearContext)
 onMounted(load)
 </script>
 
@@ -225,7 +269,7 @@ onMounted(load)
         <h1 class="app-page-title">{{ t('keys.title') }}</h1>
         <p class="app-page-subtitle">{{ t('keys.controlsHint') }}</p>
       </div>
-      <button class="btn-primary shrink-0" @click="showCreate = true">{{ t('keys.create') }}</button>
+      <button class="btn-primary shrink-0" :disabled="creating || stepUp.busy" @click="openCreate">{{ t('keys.create') }}</button>
     </div>
 
     <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
@@ -265,6 +309,7 @@ onMounted(load)
           <tr class="border-b border-line text-left text-muted">
             <th class="px-4 py-3 font-medium">{{ t('keys.name') }}</th>
             <th class="px-4 py-3 font-medium">{{ t('keys.prefix') }}</th>
+            <th class="px-4 py-3 font-medium">{{ t('keys.videoPermissionsTitle') }}</th>
             <th class="px-4 py-3 font-medium">{{ t('keys.limits') }}</th>
             <th class="px-4 py-3 font-medium text-right">{{ t('keys.used') }}</th>
             <th class="px-4 py-3 font-medium">{{ t('keys.status') }}</th>
@@ -273,11 +318,14 @@ onMounted(load)
         </thead>
         <tbody>
           <tr v-if="keys.length === 0">
-            <td colspan="6" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
+            <td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
           </tr>
           <tr v-for="k in keys" :key="k.id" class="border-b border-line last:border-0">
             <td class="px-4 py-3">{{ k.name || '—' }}</td>
             <td class="px-4 py-3 font-mono text-muted">{{ k.prefix }}…</td>
+            <td class="px-4 py-3 text-xs">
+              <span :class="videoPermission(k.scopes) === 'none' ? 'badge-muted' : 'badge-ok'">{{ t(permissionLabels[videoPermission(k.scopes)]) }}</span>
+            </td>
             <td class="px-4 py-3 text-xs">
               <span v-if="k.model_limits" class="badge-muted" :title="k.model_limits">{{ t('keys.modelLimited') }}</span>
               <span v-if="k.allow_ips" class="badge-muted ml-1" :title="k.allow_ips">IP</span>
@@ -321,11 +369,17 @@ onMounted(load)
       <dl v-if="selectedKey" class="detail-grid">
         <div><dt>ID</dt><dd>{{ selectedKey.id }}</dd></div><div><dt>{{ t('keys.prefix') }}</dt><dd>{{ selectedKey.prefix }}…</dd></div>
         <div><dt>{{ t('keys.name') }}</dt><dd>{{ selectedKey.name || '—' }}</dd></div><div><dt>{{ t('keys.status') }}</dt><dd>{{ t(selectedKey.status === 1 ? 'keys.active' : 'keys.revoked') }}</dd></div>
+        <div class="col-span-2"><dt>{{ t('keys.videoPermissionsTitle') }}</dt><dd>{{ t(permissionLabels[videoPermission(selectedKey.scopes)]) }}</dd></div>
+        <div class="col-span-2"><dt>{{ t('keys.scopeIdentifiers') }}</dt><dd class="font-mono break-all">{{ selectedKey.scopes || '—' }}</dd></div>
         <div><dt>{{ t('keys.used') }}</dt><dd>USD {{ selectedKey.used_amount }}</dd></div><div><dt>{{ t('keys.quotaLimit') }}</dt><dd>{{ Number(selectedKey.quota_limit) === 0 ? '∞' : `USD ${selectedKey.quota_limit}` }}</dd></div>
         <div><dt>expires_at</dt><dd>{{ selectedKey.expires_at ? d(new Date(selectedKey.expires_at), { dateStyle: 'short', timeStyle: 'medium' }) : '—' }}</dd></div>
         <div><dt>{{ t('keys.rpmLimit') }}</dt><dd>{{ selectedKey.rpm_limit || '∞' }}</dd></div><div><dt>{{ t('keys.routePolicy') }}</dt><dd>{{ selectedKey.route_policy || 'order' }}</dd></div>
         <div class="col-span-2"><dt>{{ t('keys.modelLimitsField') }}</dt><dd>{{ selectedKey.model_limits || '—' }}</dd></div><div class="col-span-2"><dt>{{ t('keys.allowIps') }}</dt><dd>{{ selectedKey.allow_ips || '—' }}</dd></div>
       </dl>
+      <div class="mt-5 space-y-3 rounded-xl border border-line p-4">
+        <p class="text-sm text-muted">{{ t('keys.videoNewKeyHint') }}</p>
+        <button type="button" class="btn-ghost" :disabled="creating || stepUp.busy" @click="openCreate">{{ t('keys.create') }}</button>
+      </div>
       <p class="mt-5 text-sm text-muted">{{ t('surface.keysSafety') }}</p>
     </DetailDrawer>
 
@@ -339,7 +393,7 @@ onMounted(load)
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-key-title"
-        class="app-panel modal-panel w-full max-w-lg p-6 space-y-4"
+        class="app-panel modal-panel w-full max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto p-6 space-y-4"
         @submit.prevent="create"
       >
         <h2 id="create-key-title" class="font-semibold">{{ t('keys.create') }}</h2>
@@ -347,7 +401,18 @@ onMounted(load)
           <label class="label" for="keyname">{{ t('keys.name') }}</label>
           <input id="keyname" v-model="newName" class="input" :placeholder="t('keys.namePlaceholder')" />
         </div>
-        <div class="grid grid-cols-3 gap-3">
+        <fieldset class="space-y-2" aria-describedby="key-video-permissions-hint">
+          <legend class="label">{{ t('keys.videoPermissionsTitle') }}</legend>
+          <label v-for="choice in videoChoices" :key="choice" class="flex cursor-pointer items-start gap-3 rounded-lg border p-3" :class="newVideoPermission === choice ? 'border-accent bg-accent/5' : 'border-line'">
+            <input v-model="newVideoPermission" type="radio" name="key-video-permission" :value="choice" class="mt-1 shrink-0 accent-accent" />
+            <span class="min-w-0">
+              <span class="block text-sm font-medium">{{ t(permissionLabels[choice]) }}</span>
+              <span class="mt-1 block text-xs text-muted">{{ t(permissionHints[choice]) }}</span>
+            </span>
+          </label>
+          <p id="key-video-permissions-hint" class="text-xs text-muted">{{ t('keys.videoPermissionsHint') }}</p>
+        </fieldset>
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div>
             <label class="label" for="keyquota">{{ t('keys.quotaLimit') }}</label>
             <input id="keyquota" v-model="newQuota" class="input" placeholder="∞" />
@@ -387,9 +452,9 @@ onMounted(load)
     </div>
 
     <!-- 二次验证（step-up，仅运营开启时触发） -->
-    <div v-if="stepUp.open" class="modal-backdrop" @click.self="stepUp.open = false">
-      <form class="app-panel modal-panel w-full max-w-sm p-6 space-y-4" @submit.prevent="submitStepUp">
-        <h2 class="font-semibold">{{ t('keys.stepUpTitle') }}</h2>
+    <div v-if="stepUp.open" class="modal-backdrop" @click.self="closeStepUp">
+      <form ref="stepUpDialog" role="dialog" aria-modal="true" aria-labelledby="key-stepup-title" class="app-panel modal-panel w-full max-w-sm max-h-[calc(100dvh-2rem)] overflow-y-auto p-6 space-y-4" @submit.prevent="submitStepUp">
+        <h2 id="key-stepup-title" class="font-semibold">{{ t('keys.stepUpTitle') }}</h2>
         <p class="text-sm text-muted">{{ t('keys.stepUpHint') }}</p>
         <div>
           <label class="label" for="su-pwd">{{ t('keys.stepUpPassword') }}</label>
@@ -401,7 +466,7 @@ onMounted(load)
         </div>
         <p v-if="stepUp.err" class="text-sm text-danger" role="alert">{{ stepUp.err }}</p>
         <div class="flex justify-end gap-2">
-          <button type="button" class="btn-ghost" @click="stepUp.open = false">{{ t('common.cancel') }}</button>
+          <button type="button" class="btn-ghost" @click="closeStepUp">{{ t('common.cancel') }}</button>
           <button class="btn-primary" :disabled="stepUp.busy">{{ t('keys.stepUpVerify') }}</button>
         </div>
       </form>
