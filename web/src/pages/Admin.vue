@@ -229,7 +229,7 @@ async function loadPayChannels() {
   // 结算全局设置（汇率/最低充值/返佣）从 settings 取——支付相关统一收到支付页（#2 去重）
   if (Object.keys(settings.value).length === 0) await loadSettings()
 }
-// 保存支付页里的全局结算设置（仅这 3 个键）
+// 仅保存支付页中的全局结算和显示币种灰度设置。
 const payGlobalsBusy = ref(false)
 const payGlobalsMsg = ref('')
 async function savePayGlobals() {
