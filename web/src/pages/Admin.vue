@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useCurrency } from '@/stores/currency'
+import { fmtUsd, displayCurrencyCode } from '@/lib/money'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -236,11 +238,16 @@ async function savePayGlobals() {
   try {
     await adminApi('PUT', '/api/admin/settings', {
       cny_per_usd: settings.value.cny_per_usd ?? '',
+      currency_display_enabled: settings.value.currency_display_enabled ?? 'false',
+      currency_display_percent: settings.value.currency_display_percent ?? '0',
+      currency_display_user_ids: settings.value.currency_display_user_ids ?? '',
+      currency_display_org_ids: settings.value.currency_display_org_ids ?? '',
       min_topup_usd: settings.value.min_topup_usd ?? '',
       recharge_bonus_tiers: settings.value.recharge_bonus_tiers ?? '',
       invite_grant_usd: settings.value.invite_grant_usd ?? '',
     })
     payGlobalsMsg.value = t('settings.saved')
+    await useCurrency().load(useCurrency().sessionToken)
   } catch (e) {
     showError(e)
   } finally {
@@ -1304,7 +1311,7 @@ onMounted(async () => {
               <span class="metric-icon mi-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
               <p class="text-xs text-muted">{{ t('admin.anConsumption') }}</p>
             </div>
-            <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(overview.revenue_window).toFixed(4) }}</p>
+            <p class="mt-1 text-2xl font-semibold font-mono">{{ fmtUsd(overview.revenue_window, { precision: 4 }) }}</p>
             <p class="mt-1 text-xs text-muted">{{ t('admin.ovLastDays', { days: overview.window_days }) }}</p>
           </div>
         </div>
@@ -1318,7 +1325,7 @@ onMounted(async () => {
               <div v-for="m in overview.top_models" :key="m.model">
                 <div class="flex items-baseline justify-between text-sm">
                   <span class="font-mono truncate pr-2">{{ m.model }}</span>
-                  <span class="shrink-0 text-muted">{{ m.calls }} · ${{ Number(m.cost).toFixed(4) }}</span>
+                  <span class="shrink-0 text-muted">{{ m.calls }} · {{ fmtUsd(m.cost, { precision: 4 }) }}</span>
                 </div>
                 <div class="mt-1 h-1.5 rounded-full bg-line">
                   <div
@@ -1373,7 +1380,7 @@ onMounted(async () => {
                 <span class="metric-icon mi-indigo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z" /></svg></span>
                 <p class="text-xs text-muted">{{ t('admin.anCashIn') }}</p>
               </div>
-              <p class="mt-1 text-2xl font-semibold font-mono text-ok">${{ Number(analytics.finance.cash_in).toFixed(2) }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono text-ok">{{ fmtUsd(analytics.finance.cash_in, { precision: 2 }) }}</p>
               <Sparkline :data="cashSeries" :width="140" :height="34" class="mt-2" />
             </div>
             <div class="app-panel p-4">
@@ -1381,7 +1388,7 @@ onMounted(async () => {
                 <span class="metric-icon mi-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
                 <p class="text-xs text-muted">{{ t('admin.anConsumption') }}</p>
               </div>
-              <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.finance.consumption).toFixed(4) }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono">{{ fmtUsd(analytics.finance.consumption, { precision: 4 }) }}</p>
               <Sparkline :data="costSeries" :width="140" :height="34" class="mt-2" />
             </div>
             <div class="app-panel p-4">
@@ -1389,7 +1396,7 @@ onMounted(async () => {
                 <span class="metric-icon mi-amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3" /></svg></span>
                 <p class="text-xs text-muted">{{ t('admin.anFloat') }}</p>
               </div>
-              <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.finance.float).toFixed(2) }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono">{{ fmtUsd(analytics.finance.float, { precision: 2 }) }}</p>
               <p class="mt-1 text-xs text-muted">{{ t('admin.anFloatHint') }}</p>
             </div>
             <div class="app-panel p-4">
@@ -1431,7 +1438,7 @@ onMounted(async () => {
                 <span class="metric-icon mi-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span>
                 <p class="text-xs text-muted">{{ t('admin.anArpu') }}</p>
               </div>
-              <p class="mt-1 text-2xl font-semibold font-mono">${{ Number(analytics.users.arpu).toFixed(4) }}</p>
+              <p class="mt-1 text-2xl font-semibold font-mono">{{ fmtUsd(analytics.users.arpu, { precision: 4 }) }}</p>
               <p class="mt-1 text-xs text-muted">{{ t('admin.anArpuHint') }}</p>
             </div>
             <div class="app-panel p-4">
@@ -1459,7 +1466,7 @@ onMounted(async () => {
                   <tr v-for="o in analytics.top_orgs" :key="o.org_id">
                     <td class="truncate">{{ o.name || `#${o.org_id}` }}</td>
                     <td class="text-right font-mono text-muted">{{ o.calls }}</td>
-                    <td class="text-right font-mono">${{ Number(o.cost).toFixed(4) }}</td>
+                    <td class="text-right font-mono">{{ fmtUsd(o.cost, { precision: 4 }) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1473,7 +1480,7 @@ onMounted(async () => {
                 <div v-else class="space-y-2">
                   <div v-for="p in analytics.quality.by_provider" :key="p.provider" class="flex items-center justify-between text-sm">
                     <span class="font-mono">{{ p.provider || '—' }}</span>
-                    <span class="text-muted">{{ p.calls }} · ${{ Number(p.cost).toFixed(4) }}</span>
+                    <span class="text-muted">{{ p.calls }} · {{ fmtUsd(p.cost, { precision: 4 }) }}</span>
                   </div>
                 </div>
               </div>
@@ -1483,7 +1490,7 @@ onMounted(async () => {
                 <div v-else class="space-y-2">
                   <div v-for="p in analytics.finance.by_provider" :key="p.provider" class="flex items-center justify-between text-sm">
                     <span class="font-mono">{{ p.provider }}</span>
-                    <span class="text-muted">{{ p.paid_count }} · <span class="text-ok">${{ Number(p.amount).toFixed(2) }}</span></span>
+                    <span class="text-muted">{{ p.paid_count }} · <span class="text-ok">{{ fmtUsd(p.amount, { precision: 2 }) }}</span></span>
                   </div>
                 </div>
               </div>
@@ -2087,9 +2094,17 @@ onMounted(async () => {
             <p class="mb-4 text-xs text-muted">{{ t('admin.payGlobalsHint') }}</p>
             <div class="grid gap-3 sm:grid-cols-3">
               <div>
-                <label class="label" for="pg-cny">{{ t('admin.setCnyRate') }}</label>
+                <label class="label" for="pg-cny">{{ t('currency.rateLabel') }}</label>
                 <input id="pg-cny" v-model="settings.cny_per_usd" class="input" placeholder="7.3" />
+                <p class="mt-2 text-xs text-muted">{{ t('currency.rateWarning') }}</p>
               </div>
+              <fieldset class="sm:col-span-3 grid gap-3 rounded border border-line p-4 sm:grid-cols-2">
+                <label class="flex items-center gap-2"><input v-model="settings.currency_display_enabled" type="checkbox" true-value="true" false-value="false">{{ t('currency.enabled') }}</label>
+                <label>{{ t('currency.percent') }}<select v-model="settings.currency_display_percent" class="input"><option v-for="n in ['0','5','25','100']" :key="n" :value="n">{{ n }}%</option></select></label>
+                <label>{{ t('currency.users') }}<input v-model="settings.currency_display_user_ids" class="input" placeholder="1,2"></label>
+                <label>{{ t('currency.orgs') }}<input v-model="settings.currency_display_org_ids" class="input" placeholder="1,2"></label>
+                <p class="sm:col-span-2 text-xs text-muted">{{ t('currency.rolloutHint') }}</p>
+              </fieldset>
               <div>
                 <label class="label" for="pg-min">{{ t('admin.setMinTopup') }}</label>
                 <input id="pg-min" v-model="settings.min_topup_usd" class="input" placeholder="1" />
@@ -2408,9 +2423,9 @@ onMounted(async () => {
                     <span v-else class="text-xs text-muted">{{ o.group }}</span>
                   </td>
                   <td class="px-4 py-2.5 text-right">{{ o.members }}{{ o.max_members ? `/${o.max_members}` : '' }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono">${{ Number(o.balance).toFixed(2) }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono text-muted">${{ Number(o.held).toFixed(2) }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono">${{ Number(o.spend).toFixed(4) }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono">{{ fmtUsd(o.balance, { precision: 2 }) }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-muted">{{ fmtUsd(o.held, { precision: 2 }) }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono">{{ fmtUsd(o.spend, { precision: 4 }) }}</td>
                   <td class="px-4 py-2.5 text-right font-mono text-muted">{{ o.calls }}</td>
                   <td class="px-4 py-2.5 text-xs text-muted">{{ o.last_active ? o.last_active.slice(0, 10) : '—' }}</td>
                   <td class="px-4 py-2.5 text-right whitespace-nowrap">
@@ -2509,7 +2524,7 @@ onMounted(async () => {
                 <th class="px-4 py-3 font-medium">{{ t('admin.lgChannel') }}</th>
                 <th class="px-4 py-3 font-medium">{{ t('usage.status') }}</th>
                 <th class="px-4 py-3 font-medium text-right">{{ t('usage.tokens') }}</th>
-                <th class="px-4 py-3 font-medium text-right">{{ t('usage.cost') }}</th>
+                <th class="px-4 py-3 font-medium text-right">{{ t('usage.cost', { currency: displayCurrencyCode() }) }}</th>
               </tr>
             </thead>
             <tbody>
@@ -2526,7 +2541,7 @@ onMounted(async () => {
                     <span :class="l.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ l.status }}</span>
                   </td>
                   <td class="px-4 py-2.5 text-right font-mono">{{ l.prompt_tokens }} / {{ l.completion_tokens }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono">${{ Number(l.cost_usd).toFixed(4) }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono">{{ fmtUsd(l.cost_usd, { precision: 4 }) }}</td>
                 </tr>
 
               </template>
@@ -2593,7 +2608,7 @@ onMounted(async () => {
                   </select>
                   <span v-else class="badge-muted">{{ t(`admin.role_${u.role || 'user'}`) }}</span>
                 </td>
-                <td class="px-4 py-2.5 text-right font-mono">${{ Number(u.balance).toFixed(2) }}</td>
+                <td class="px-4 py-2.5 text-right font-mono">{{ fmtUsd(u.balance, { precision: 2 }) }}</td>
                 <td class="px-4 py-2.5">
                   <select
                     v-if="auth.isSuperadmin"
@@ -2654,7 +2669,7 @@ onMounted(async () => {
                   <th class="px-4 py-3 font-medium">{{ t('auth.email') }}</th>
                   <th class="px-4 py-3 font-medium text-right">{{ t('admin.usageCalls') }}</th>
                   <th class="px-4 py-3 font-medium text-right">{{ t('usage.tokens') }}</th>
-                  <th class="px-4 py-3 font-medium text-right">{{ t('usage.cost') }}</th>
+                  <th class="px-4 py-3 font-medium text-right">{{ t('usage.cost', { currency: displayCurrencyCode() }) }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -2663,7 +2678,7 @@ onMounted(async () => {
                   <td class="px-4 py-2.5 font-mono text-xs">{{ r.email || t('admin.usageNoUser') }}</td>
                   <td class="px-4 py-2.5 text-right font-mono">{{ r.succeeded }}/{{ r.calls }}</td>
                   <td class="px-4 py-2.5 text-right font-mono">{{ (r.prompt_tokens + r.completion_tokens).toLocaleString() }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono text-ok">${{ Number(r.cost_usd).toFixed(4) }}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-ok">{{ fmtUsd(r.cost_usd, { precision: 4 }) }}</td>
                 </tr>
               </tbody>
             </table>
@@ -2973,7 +2988,7 @@ onMounted(async () => {
       </template>
       <DetailDrawer :open="!!selectedLog && auth.isSuperadmin" :title="t('reqlog.drawerTitle', { id: selectedLog?.id ?? '' })" size="lg" @update:open="open => { if (!open) selectedLog = null }">
         <template v-if="selectedLog">
-          <dl class="detail-grid mb-6"><div><dt>{{ t('admin.lgOrg') }}</dt><dd>{{ selectedLog.org_id }}</dd></div><div><dt>{{ t('usage.model') }}</dt><dd>{{ selectedLog.model }}</dd></div><div><dt>{{ t('usage.tokens') }}</dt><dd>{{ selectedLog.prompt_tokens }} / {{ selectedLog.completion_tokens }}</dd></div><div><dt>{{ t('usage.cost') }}</dt><dd>USD {{ selectedLog.cost_usd }}</dd></div><div><dt>{{ t('usage.status') }}</dt><dd>{{ selectedLog.status }}</dd></div><div><dt>{{ t('admin.lgChannel') }}</dt><dd>#{{ selectedLog.channel_id }} {{ selectedLog.provider }}</dd></div></dl>
+          <dl class="detail-grid mb-6"><div><dt>{{ t('admin.lgOrg') }}</dt><dd>{{ selectedLog.org_id }}</dd></div><div><dt>{{ t('usage.model') }}</dt><dd>{{ selectedLog.model }}</dd></div><div><dt>{{ t('usage.tokens') }}</dt><dd>{{ selectedLog.prompt_tokens }} / {{ selectedLog.completion_tokens }}</dd></div><div><dt>{{ t('usage.cost', { currency: displayCurrencyCode() }) }}</dt><dd>{{ fmtUsd(selectedLog.cost_usd) }}</dd></div><div><dt>{{ t('usage.status') }}</dt><dd>{{ selectedLog.status }}</dd></div><div><dt>{{ t('admin.lgChannel') }}</dt><dd>#{{ selectedLog.channel_id }} {{ selectedLog.provider }}</dd></div></dl>
                     <dl class="grid grid-cols-2 gap-x-8 gap-y-1.5 text-xs sm:grid-cols-4">
                       <div><dt class="text-muted">{{ t('usage.requestId') }}</dt><dd class="font-mono select-all">{{ selectedLog.request_id }}</dd></div>
                       <div><dt class="text-muted">{{ t('usage.dStatusCode') }}</dt><dd class="font-mono">{{ selectedLog.status_code }}</dd></div>

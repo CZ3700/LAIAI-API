@@ -26,6 +26,7 @@ const built = await build({
         export const onDeactivated = fn => globalThis.__arkHarness.deactivated.push(fn);
         export const onBeforeUnmount = fn => globalThis.__arkHarness.unmounted.push(fn);
       `}
+      if (args.path === '@/lib/money') return {contents: 'export const fmtUsd = value => value; export const displayCurrencyCode = () => "USD";'}
       if (args.path === '@/stores/auth') return {contents: 'export const useAuth = () => globalThis.__arkHarness.auth;'}
       if (args.path === '@/lib/api') return {contents: 'export const uuid = () => "fixture-operation-" + ++globalThis.__arkHarness.uuid;'}
       if (args.path === './messages') return {contents: 'export const useSeedanceI18n = () => ({t: key => key});'}

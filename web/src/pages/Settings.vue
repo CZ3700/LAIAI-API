@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, copyText, errorMessage } from '@/lib/api'
+import CurrencyPreference from '@/components/CurrencyPreference.vue'
 import QrCode from '@/components/QrCode.vue'
 
 interface Me {
@@ -233,6 +234,7 @@ async function changePassword() {
       </div>
     </div>
 
+    <CurrencyPreference />
     <section class="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
     <!-- 账户信息 -->
     <div class="app-panel-strong p-6">

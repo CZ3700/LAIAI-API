@@ -190,6 +190,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			// 被移出当前 org 的有效用户仍可在此列出并切换到其它有效 org（switchOrg 校验目标 membership）。
 			authed.GET("/me", s.me)
 			authed.PATCH("/me", s.updateProfile)
+			authed.PUT("/me/preferences", s.updatePreferences)
 			authed.POST("/me/password", s.changePassword)
 			authed.POST("/me/2fa/setup", s.twofaSetup)
 			authed.POST("/me/2fa/enable", s.twofaEnable)

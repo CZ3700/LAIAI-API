@@ -197,12 +197,14 @@ func (s *Server) me(c *gin.Context) {
 		role = identity.PlatRoleUser
 	}
 	out := gin.H{
-		"user_id":      user.ID,
-		"email":        user.Email,
-		"display_name": user.DisplayName,
-		"org_id":       claims.OrgID,
-		"totp_enabled": user.TOTPEnabled != 0,
-		"role":         role, // RBAC（0020）：前端据此决定是否放行后台、显示管理员入口
+		"display_currency":           normalizeCurrency(user.DisplayCurrency),
+		"currency_display_available": s.currencyDisplayAvailable(user.ID, claims.OrgID),
+		"user_id":                    user.ID,
+		"email":                      user.Email,
+		"display_name":               user.DisplayName,
+		"org_id":                     claims.OrgID,
+		"totp_enabled":               user.TOTPEnabled != 0,
+		"role":                       role, // RBAC（0020）：前端据此决定是否放行后台、显示管理员入口
 	}
 	if user.TOTPEnabled != 0 { // 剩余备用码数（低余量提醒，gap #3）
 		if n, err := identity.CountUnusedBackupCodes(s.db, user.ID); err == nil {

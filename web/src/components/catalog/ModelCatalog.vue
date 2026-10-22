@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { displayCurrencyCode } from '@/lib/money'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -16,7 +17,7 @@ const filterRefs = { search, provider, type: category, unit, tag, endpoint, view
 const categories: CatalogCategory[] = ['text', 'image', 'video', 'embedding', 'audio', 'other']
 const categoryLabel = (v: string) => t(`catalog.${v === 'image' ? 'imageType' : v}`)
 const unitKeys: Record<string, string> = { 'USD/1M_tokens': 'unitToken', 'USD/image': 'unitImage', 'USD/call': 'unitCall', 'USD/1K_characters': 'unitChars', 'USD/1M_audio_tokens': 'unitAudio', 'USD/1M_video_tokens': 'unitVideo', mixed: 'mixed', unknown: 'unknown' }
-const unitLabel = (v: string) => unitKeys[v] ? t(`catalog.${unitKeys[v]}`) : v
+const unitLabel = (v: string) => unitKeys[v] ? t(`catalog.${unitKeys[v]}`, { currency: displayCurrencyCode() }) : v
 const providers = computed(() => [...new Set(models.value.map(m => m.provider))].sort())
 const units = computed(() => [...new Set(models.value.flatMap(m => { const p = catalogPricing(m); return p ? [p.unit, ...p.rates.map(r => r.unit)] : [] }))].sort())
 const tags = computed(() => [...new Set(models.value.flatMap(catalogTags))].sort())
@@ -71,9 +72,9 @@ onBeforeUnmount(() => { loadGeneration++; clearTimeout(copyTimer) })
         <label><span>{{ t('catalog.unit') }}</span><select v-model="unit" class="input"><option value="">{{ t('catalog.all') }}</option><option v-for="u in units" :key="u" :value="u">{{ unitLabel(u) }}</option></select></label>
         <label v-if="tags.length"><span>{{ t('catalog.tags') }}</span><select v-model="tag" class="input"><option value="">{{ t('catalog.all') }}</option><option v-for="v in tags" :key="v">{{ v }}</option></select></label>
         <label v-if="endpoints.length"><span>{{ t('catalog.endpoint') }}</span><select v-model="endpoint" class="input"><option value="">{{ t('catalog.all') }}</option><option v-for="v in endpoints" :key="v">{{ v }}</option></select></label>
-        <button v-if="activeFilters" type="button" class="btn-ghost text-xs" @click="resetFilters">{{ t('catalog.reset') }}</button><p class="mt-2 text-xs leading-5 text-muted">{{ t('catalog.publicNote') }}</p>
+        <button v-if="activeFilters" type="button" class="btn-ghost text-xs" @click="resetFilters">{{ t('catalog.reset') }}</button><p class="mt-2 text-xs leading-5 text-muted">{{ t('catalog.publicNote', { currency: displayCurrencyCode() }) }}</p>
       </aside>
-      <div class="min-w-0"><div class="mb-3 flex items-center justify-between text-xs text-muted" aria-live="polite"><span>{{ filtered.length }} {{ t('surface.statShown') }}</span><span>USD</span></div>
+      <div class="min-w-0"><div class="mb-3 flex items-center justify-between text-xs text-muted" aria-live="polite"><span>{{ filtered.length }} {{ t('surface.statShown') }}</span><span>{{ displayCurrencyCode() }}</span></div>
         <div v-if="error" class="inline-alert mb-4" role="alert">{{ error }} <button type="button" class="underline ml-2" @click="load">{{ t('catalog.retry') }}</button></div>
         <div v-if="loading" class="catalog-grid"><div v-for="i in 6" :key="i" class="model-card p-5"><div class="skeleton h-5 w-2/3"></div><div class="skeleton h-24 mt-5"></div></div></div>
         <div v-else-if="!filtered.length" class="empty-state"><p>{{ t('catalog.empty') }}</p><button v-if="activeFilters" class="btn-ghost mt-4" @click="resetFilters">{{ t('catalog.reset') }}</button></div>
@@ -90,7 +91,7 @@ onBeforeUnmount(() => { loadGeneration++; clearTimeout(copyTimer) })
         <div class="catalog-tabs mt-5" role="tablist" :aria-label="t('catalog.detail')"><button v-for="tab in ['overview', 'prices', 'api']" :id="'catalog-tab-' + tab" :key="tab" role="tab" :aria-selected="detailTab === tab" aria-controls="catalog-detail-panel" :tabindex="detailTab === tab ? 0 : -1" @keydown="moveDetailTab" @click="detailTab = tab">{{ t('catalog.' + tab) }}</button></div>
         <section id="catalog-detail-panel" class="py-5" role="tabpanel" :aria-labelledby="'catalog-tab-' + detailTab">
           <template v-if="detailTab === 'overview'"><dl class="grid grid-cols-1 sm:grid-cols-2 gap-5 text-sm"><div><dt class="text-muted mb-1">{{ t('models.model') }}</dt><dd class="font-mono break-all">{{ selected.model }}</dd></div><div><dt class="text-muted mb-1">{{ t('catalog.provider') }}</dt><dd>{{ selected.provider }}</dd></div><div v-if="selected.context_length"><dt class="text-muted mb-1">{{ t('catalog.context') }}</dt><dd>{{ selected.context_length.toLocaleString() }}</dd></div><div><dt class="text-muted mb-1">{{ t('catalog.unit') }}</dt><dd>{{ unitLabel(selectedPricing?.unit || 'unknown') }}</dd></div></dl><p v-if="selected.description" class="mt-6 text-sm leading-6">{{ selected.description }}</p><div v-if="catalogTags(selected).length" class="flex flex-wrap gap-2 mt-5"><span v-for="item in catalogTags(selected)" :key="item" class="badge-muted">{{ item }}</span></div><div class="mt-6 rounded-xl border border-line p-5"><h2 class="font-semibold mb-4">{{ t('catalog.price') }}</h2><ModelPriceSummary :model="selected" /></div></template>
-          <template v-else-if="detailTab === 'prices'"><ModelPriceSummary :model="selected" detailed /><p v-if="selectedPricing?.billing_kind === 'video'" class="mt-5 text-sm leading-6 text-muted">{{ t('catalog.videoNote') }}</p><p class="mt-4 text-xs leading-5 text-muted">{{ t('catalog.publicNote') }}</p></template>
+          <template v-else-if="detailTab === 'prices'"><ModelPriceSummary :model="selected" detailed /><p v-if="selectedPricing?.billing_kind === 'video'" class="mt-5 text-sm leading-6 text-muted">{{ t('catalog.videoNote') }}</p><p class="mt-4 text-xs leading-5 text-muted">{{ t('catalog.publicNote', { currency: displayCurrencyCode() }) }}</p></template>
           <template v-else><ul class="space-y-2"><li v-for="path in selectedPricing?.endpoints || []" :key="path" class="font-mono text-xs rounded border border-line p-3 break-all">{{ path }}</li></ul><div class="flex items-center gap-2 mt-5"><button v-for="lang in (['curl', 'python', 'js'] as const)" :key="lang" type="button" class="catalog-chip" :aria-pressed="language === lang" @click="language = lang">{{ lang }}</button><button v-if="snippet" class="btn-ghost !min-h-0 text-xs ml-auto" @click="copy(snippet, 'snippet')">{{ copied === 'snippet' ? t('common.copied') : t('common.copy') }}</button></div><pre v-if="snippet" class="mt-3 overflow-x-auto rounded-lg border border-line bg-panel p-4 font-mono text-xs leading-6">{{ snippet }}</pre><p class="mt-4 text-xs leading-6 text-muted">{{ t(snippet ? 'catalog.snippetNote' : 'catalog.noSnippet') }}</p></template>
         </section>
       </template>

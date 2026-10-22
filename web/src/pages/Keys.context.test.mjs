@@ -27,6 +27,7 @@ const built = await build({
         export const onBeforeUnmount = fn => globalThis.__keysHarness.unmounted.push(fn);
       ` }
       if (args.path === 'vue-i18n') return { contents: 'export const useI18n = () => ({ t: key => key, d: value => value });' }
+      if (args.path === '@/lib/money') return { contents: 'export const fmtUsd = value => value; export const displayCurrencyCode = () => "USD";' }
       if (args.path === '@/stores/auth') return { contents: 'export const useAuth = () => globalThis.__keysHarness.auth;' }
       if (args.path === '@/lib/api') return { contents: `
         export const api = (...args) => globalThis.__keysHarness.api(...args);

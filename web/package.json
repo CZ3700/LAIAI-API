@@ -13,9 +13,11 @@
     "test:api-docs": "node --test src/docs/apiDocs.test.mjs",
     "test:video-assets": "node --test src/components/seedance/AssetManagementSetup.context.test.mjs src/pages/VideoAssets.context.test.mjs",
     "check:i18n": "node scripts/check-i18n.mjs",
-    "build": "node scripts/check-i18n.mjs && vue-tsc -b && vite build",
+    "build": "node scripts/check-money.mjs && node scripts/check-i18n.mjs && vue-tsc -b && vite build",
     "typecheck": "vue-tsc -b",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:money": "node --test src/lib/money.test.mjs",
+    "check:money": "node scripts/check-money.mjs"
   },
   "dependencies": {
     "pinia": "^2.2.6",

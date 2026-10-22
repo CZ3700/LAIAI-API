@@ -105,6 +105,7 @@ func (s *Server) engineFor(provider string) payment.Engine {
 // getPaymentMethods：GET /api/payment/methods —— 可用支付方式 + 充值档位（前端钱包页）。
 // 有启用的表渠道则列表渠道；否则退回设置里的 stripe/epay（向后兼容）。
 func (s *Server) getPaymentMethods(c *gin.Context) {
+	_, cnyRate := s.effectiveCNYPerUSD()
 	methods := []gin.H{}
 	chs := s.enabledPaymentChannels()
 	if len(chs) > 0 {
@@ -127,7 +128,7 @@ func (s *Server) getPaymentMethods(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"methods":        methods,
 		"amount_options": []int{10, 20, 50, 100, 200, 500},     // USD 档位
-		"cny_rate":       s.getSetting("cny_per_usd"),          // EPay 用：1 USD = ? CNY（空=默认 7.3）
+		"cny_rate":       cnyRate,                              // EPay 用：1 USD = ? CNY（空=默认 7.3）
 		"bonus_tiers":    s.getSetting("recharge_bonus_tiers"), // 充值阶梯优惠（前端按金额预览赠额；空=无）
 	})
 }
@@ -170,12 +171,7 @@ func (s *Server) createTopup(c *gin.Context) {
 	// 实付金额/币种：stripe 直接 USD；epay 按汇率折 CNY
 	payAmount, payCurrency := amountUSD, "USD"
 	if protocol == "epay" {
-		rate := decimal.RequireFromString("7.3")
-		if r := s.getSetting("cny_per_usd"); r != "" {
-			if rr, e := decimal.NewFromString(r); e == nil && rr.IsPositive() {
-				rate = rr
-			}
-		}
+		rate, _ := s.effectiveCNYPerUSD()
 		payAmount, payCurrency = amountUSD.Mul(rate).Round(2), "CNY"
 	}
 
