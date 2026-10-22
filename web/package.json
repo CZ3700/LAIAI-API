@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test:keys": "node --test src/lib/keyPermissions.test.mjs src/pages/Keys.context.test.mjs",
     "test:models": "node --test src/lib/modelCatalog.test.mjs",
     "test:playground": "node --test src/pages/Playground.context.test.mjs src/components/seedance/ArkVideoPlayground.context.test.mjs src/components/seedance/workflow.test.mjs",
     "test:video-pricing": "node --test src/pages/VideoPricing.context.test.mjs",

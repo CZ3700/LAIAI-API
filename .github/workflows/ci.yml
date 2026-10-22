@@ -46,6 +46,8 @@ jobs:
         run: npm run test:playground --prefix web
       - name: Public model catalog contracts
         run: npm run test:models --prefix web
+      - name: Key video permissions and session isolation
+        run: npm run test:keys --prefix web
       - name: Console 类型检查 + 构建
         run: make web
       - name: Video pricing context regressions

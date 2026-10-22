@@ -17,6 +17,10 @@ export IDEMPOTENCY_KEY='your-business-operation-unique-key'
 
 GET 要求 `video:read`；POST、PATCH、DELETE 以及 POST 预估要求 `video:write`。`video:*` 或 `*` 同时覆盖两者，单独 `video:write` 不替代网关的 GET 权限。API Key 的组织、IP、模型白名单及任务准入限制仍生效。
 
+在控制台「API 密钥」新建时，按需要选择「官方 Seedance 视频与素材接口权限」：仅查询对应 `video:read`，查询、生成与管理对应 `video:read video:write`。默认不启用官方 Seedance 视频与素材权限；该选择不改变其他模型接口的既有权限规则。模型白名单不能代替接口权限。已有空权限密钥不会自动升级；需要新建带所需权限的密钥，完成客户端切换后再撤销旧密钥。
+
+`Authorization: Bearer <平台 Key>` 用于认证；`Idempotency-Key` 用于同一业务操作的去重，不能授予权限，注意完整拼写包含开头的 `I`。两者都应放在请求头中。`scopes` 只在创建密钥时设置，不能放进素材组或视频任务 JSON。返回 `403 forbidden` 时，可按响应 `request_id` 查请求记录中的安全错误码；例如 `insufficient_scope` 表示缺少接口权限，此时请求正文尚未捕获，也尚未发往火山。
+
 同一业务操作的网络重试必须保持相同 `Idempotency-Key` 和请求。任务创建/取消键为 8–128 位 ASCII 可见字符（不含空白）；素材组、素材和授权会话创建，以及素材 PATCH、单素材 DELETE 接受 1–128 位非控制字符，建议统一使用至少 8 位随机业务键。任务冲突返回 `409 idempotency_conflict`；素材模块冲突返回 `409 invalid_state`。
 
 创建接口返回 `202` 表示已持久化受理，不表示生成、素材处理或 H5 认证已完成。不要因为客户端超时、`submission_unknown` 或 `operation.status=unknown` 更换幂等键重新提交。
