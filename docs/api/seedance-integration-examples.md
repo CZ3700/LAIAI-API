@@ -159,7 +159,9 @@ curl -sS -X DELETE "$BASE_URL/v1/video/generations/$TASK_ID" \
 
 任务 `content` 可以直接使用 HTTPS 图片、视频或音频地址（依当前模型能力）。原始图片/音频直接交给官方获取，平台不声称已验证或保存其不可变副本。原始视频若没有可信媒体登记，必须配置已经核实的模型**总输入视频时长上界**；任何一段未登记视频都会使整组输入按该上界冻结，不能用客户提交的时长或尺寸降低冻结额。未配置安全上界则拒绝受理。
 
-素材管理的 `POST /assets` 有更严格前提：URL 必须通过本组织可信媒体验证。可使用控制台上传/导入且已验证的媒体来源，或由可信管理员登记的有效不可变媒体。证据包含 SHA-256、大小、类型、尺寸/时长/FPS 和有效期；管理员登记最长在核验后一小时内有效，控制台媒体按自身 expires_at 校验。外部 URL 不能任意提交，必须精确命中有效可信登记项；客户自报信息不能替代核验。
+素材管理 `POST /assets` 接受未预登记的公网 HTTPS `url`，由火山下载、保存及处理，平台不下载或存放媒体。使用 `Idempotency-Key` 保存业务意图，并轮询创建操作和素材状态；未知创建不得换键重复提交。官方已入库图片可在归属、项目与授权一致时引用。视频/音频未取得可靠时长时允许注册与查询，但暂不能生成引用，不会按 0 时长计费。
+
+普通用户继承管理员发布的共享项目配置，仅能查看和操作本人素材。具名用户的多个 Key 共享个人资源；无具名用户的 Key 单独隔离。传入其他人的 `group_id`、素材 ID 或操作 ID 不会获得访问权。
 
 ```bash
 curl -sS "$BASE_URL/v1/video/asset-groups" \
@@ -171,7 +173,7 @@ export GROUP_ID='ag_REPLACE_WITH_RESPONSE_ID'
 curl -fsS "$BASE_URL/v1/video/asset-groups/$GROUP_ID" \
   -H "Authorization: Bearer $GATEWAY_KEY"
 
-# 等组 ready；把 URL 换成管理员已经登记、当前仍有效的精确地址。
+# 等组 ready；把 URL 换成火山可读取、当前有效的公网 HTTPS 素材地址。
 curl -sS "$BASE_URL/v1/video/assets" \
   -H "Authorization: Bearer $GATEWAY_KEY" -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: your-asset-import-operation' \

@@ -30,6 +30,7 @@ type RequestLogFilter struct {
 }
 
 type RequestLogRow struct {
+	PrivateAssetSource   bool       `json:"-"`
 	RequestID            string     `json:"request_id"`
 	TraceID              string     `json:"trace_id"`
 	OrgID                uint64     `json:"org_id"`
@@ -66,7 +67,7 @@ const requestOperationSQL = `COALESCE(NULLIF(x.operation,''),CASE WHEN r.route='
 const requestModelSQL = `COALESCE(NULLIF(x.public_model,''),t.model,'')`
 
 func requestLogQuery(db *gorm.DB, org uint64) *gorm.DB {
-	return db.Table("api_request_logs AS r").
+	return privateAssetLogOwner(db, org).Table("api_request_logs AS r").
 		Joins("LEFT JOIN video_request_contexts x ON x.request_id=r.request_id AND x.org_id=r.org_id").
 		Joins("LEFT JOIN video_task_states origin ON origin.create_request_id=r.request_id AND origin.org_id=r.org_id").
 		Joins("LEFT JOIN tasks t ON t.org_id=r.org_id AND t.provider=? AND t.task_id=COALESCE(NULLIF(x.task_id,''),CASE WHEN r.resource_type='task' THEN NULLIF(r.resource_id,'') ELSE NULL END,origin.task_id)", Provider).
@@ -74,7 +75,7 @@ func requestLogQuery(db *gorm.DB, org uint64) *gorm.DB {
 		Where("r.org_id = ?", org)
 }
 
-const requestSelectSQL = `r.request_id,r.trace_id,r.org_id,r.user_id,r.api_key_id,r.method,r.route,` + requestOperationSQL + ` AS operation,` + requestModelSQL + ` AS model,COALESCE(t.task_id,'') AS task_id,COALESCE(x.operation_id,'') AS operation_id,COALESCE(x.origin_request_id,origin.create_request_id,'') AS origin_request_id,COALESCE(x.replay_state,'unknown') AS replay_state,r.started_at,r.finished_at,r.http_status,r.outcome,r.safe_error_code,COALESCE(t.status,'') AS task_status,COALESCE(st.billing_state,'') AS billing_state,COALESCE(st.artifact_status,'') AS artifact_status,st.deleted_at,COALESCE((SELECT a.net_usd FROM video_adjustment_applications a WHERE a.org_id=t.org_id AND a.task_id=t.task_id ORDER BY a.id DESC LIMIT 1),(SELECT b.captured_usd FROM video_billing_entries b WHERE b.org_id=t.org_id AND b.task_id=t.task_id AND b.state IN ('settled','released') ORDER BY b.id DESC LIMIT 1)) AS task_net_charged_amount`
+const requestSelectSQL = privateAssetLogSQL + ` AS private_asset_source,r.request_id,r.trace_id,r.org_id,r.user_id,r.api_key_id,r.method,r.route,` + requestOperationSQL + ` AS operation,` + requestModelSQL + ` AS model,COALESCE(t.task_id,'') AS task_id,COALESCE(x.operation_id,'') AS operation_id,COALESCE(x.origin_request_id,origin.create_request_id,'') AS origin_request_id,COALESCE(x.replay_state,'unknown') AS replay_state,r.started_at,r.finished_at,r.http_status,r.outcome,r.safe_error_code,COALESCE(t.status,'') AS task_status,COALESCE(st.billing_state,'') AS billing_state,COALESCE(st.artifact_status,'') AS artifact_status,st.deleted_at,COALESCE((SELECT a.net_usd FROM video_adjustment_applications a WHERE a.org_id=t.org_id AND a.task_id=t.task_id ORDER BY a.id DESC LIMIT 1),(SELECT b.captured_usd FROM video_billing_entries b WHERE b.org_id=t.org_id AND b.task_id=t.task_id AND b.state IN ('settled','released') ORDER BY b.id DESC LIMIT 1)) AS task_net_charged_amount`
 
 func finishRequestRow(r *RequestLogRow) {
 	if r.FinishedAt != nil {
@@ -103,7 +104,7 @@ func (s *Service) ListRequestLogs(ctx context.Context, org uint64, f RequestLogF
 		return out, ErrInvalid
 	}
 	filter, _ := json.Marshal(f)
-	scope := "request-logs/" + string(filter)
+	scope := requestLogCursorScope(ctx, "request-logs/"+string(filter))
 	value, e := s.uncursor(org, scope, cursor)
 	if e != nil {
 		return out, e
@@ -220,7 +221,7 @@ func (s *Service) RequestLogDetail(ctx context.Context, org uint64, rid string, 
 			return e
 		}
 		for _, section := range []string{invocation.VideoClientRequest, invocation.VideoClientResponse, invocation.VideoEffectiveRequest} {
-			if section == invocation.VideoEffectiveRequest && !internal {
+			if !internal && (section == invocation.VideoEffectiveRequest || out.Request.PrivateAssetSource && section == invocation.VideoClientResponse) {
 				out.Bodies[section] = HistoryBodyInfo{Availability: "forbidden"}
 				continue
 			}
@@ -374,6 +375,12 @@ func (s *Service) ReadRequestHistory(ctx context.Context, org uint64, rid, secti
 	if e != nil {
 		return out, e
 	}
+	// Legacy asset responses may contain another creator's group, media URL or
+	// authorization state. Only named internal administrators may inspect these
+	// historical response bodies; ordinary users use the owner-filtered live API.
+	if r.PrivateAssetSource && section == invocation.VideoClientResponse && access.ActorRole != invocation.VideoRoleRoot {
+		return out, ErrForbidden
+	}
 	p, e := s.historyPayload(s.DB.WithContext(ctx), r, section, attemptID)
 	if e != nil {
 		return out, e
@@ -416,7 +423,7 @@ func (s *Service) RequestExecution(ctx context.Context, org uint64, rid, kind, c
 	if e != nil {
 		return out, e
 	}
-	scope := "request-execution/" + rid + "/" + kind
+	scope := requestLogCursorScope(ctx, "request-execution/"+rid+"/"+kind)
 	v, e := s.uncursor(org, scope, cursor)
 	if e != nil {
 		return out, e

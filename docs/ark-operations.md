@@ -33,12 +33,13 @@
 
 - `POST /api/admin/video/asset-scopes` 登记不可变 scope/version/权限及凭证，`PUT /asset-scopes/{scope_id}/{version}` 控制启用。
 - `PUT /api/admin/video/asset-org-routes` 明确组织可用 scope 及默认路线。
+- `PUT /api/admin/video/asset-shared-default` 由具名超级管理员发布共享项目：`expected_revision` 取管理诊断的 `shared_default.revision`，传已保存的 `provider_scope_id`、`scope_version`、`enabled`、`allow_async`。没有专属路由的活跃组织继承此配置；已有组织路由（包括禁用）与显式执行策略优先。默认素材执行授权不写视频策略，不开启视频推理或原文历史。普通用户只读写本人创建的素材组、素材和操作；同一具名用户的 Key 共用个人资源，未绑定用户的 Key 各自隔离。历史归属不明确的资源仅超级管理员可见，不按同名或共享项目分配。
 - `POST /api/admin/video/verified-media` 只接受内部已核验、不可变素材的 URL、摘要及测量元数据。登记有效期最多一小时；该入口本身不抓取文件、测量时长或执行文件安全扫描。过期需重新核验及登记。
 - `POST /api/admin/video/verified-callbacks` 登记组织可用的回跳地址。撤销分别为 `POST /orgs/{org_id}/verified-media/{resource_id}/revoke` 和 `verified-callbacks` 对应路径。
 - `POST /api/admin/video/orgs/{org_id}/portrait-authorizations/{session_id}/license` 接收 source、valid_from、valid_until、reverify_due_at、evidence JSON。操作者、用途和核验时间由服务端设置；证据经 Invocation Store 加密，与许可事件同事务保存，最多30天；需24小时内复核。source 为人工复核合同/控制台或已核实供应商许可之一。H5 完成不会自动授予此许可。
 - 相同路径加 `/revoke` 并提交 evidence 撤销许可。客户没有许可写接口。客户端 `asset://`、Draft、真人素材引用每次准入和发送前均复核。
 
-原始 HTTPS 图片/音频仍可直接透传，平台不主动下载；原始视频须有已核验的聚合输入时长上界以保守冻结。素材创建接口则必须先完成可信登记。单素材及组删除按已核验管理能力执行；先检查任务引用，保存持久化操作，官方结果未知时保留删除屏障，不能把 ACK 或超时当作删除完成。
+自 2026-10-22 起，素材创建接受未预登记的公网 HTTPS `url`，将网址加密记录并发送火山 CreateAsset；平台不下载、扫描或保存该媒体字节。官方状态由 GetAsset/ListAssets 同步，不虚构 SHA、尺寸、时长。已入库图片在权限与项目一致时可引用；视频/音频没有可靠时长时，注册与查询正常，生成引用明确拒绝，不能按 0 时长冻结。未知创建保留原幂等键及操作回执，不自动重发。单素材及组删除继续检查任务引用并确认官方结果，不能把 ACK 或超时当作删除完成。
 
 ## 任务与账单恢复
 
@@ -66,7 +67,7 @@ Invocation Store 的独立 `delivery` 胶囊只保存经校验的结果 URL 元�
 
 后台入口为 `/app/video-assets`、`/app/video-pricing`、`/app/request-logs` 和 `/app/fund-activities`。定价只向实名 superadmin 开放；素材与客户流水仍绑定当前组织。公共平台 Key 接口继续使用 `/v1/video/*`，会话接口不签发或伪造客户 Key。
 
-上传功能需完整配置以下环境变量；全空则显示上传未就绪，部分配置会阻止启动：
+网址注册默认只依赖可用的官方素材管理配置，不依赖下面的本地媒体组件。以下配置仅适用于可选的本地文件上传；全空时只关闭文件上传，部分配置会阻止启动：
 
 | 变量 | 配置要求 |
 |---|---|
@@ -76,7 +77,7 @@ Invocation Store 的独立 `delivery` 胶囊只保存经校验的结果 URL 元�
 | `LAIAI_VIDEO_MEDIA_FFPROBE_PATH` | 已安装的 ffprobe 可执行文件路径，用于实际时长、尺寸及帧率探测。 |
 | `LAIAI_VIDEO_MEDIA_SCAN_COMMAND` | 扫描器 argv 的 JSON 数组，例如 `["clamdscan","--no-summary"]`。程序直接执行 argv，不经过 shell。扫描失败拒收。 |
 
-原始文件只经已登录的 `/api/video/media-uploads/{id}/complete` 上传，端点按媒体类型限流量；其余 JSON 控制接口仍保持 1 MiB 限制。源文件必须完成扫描及媒体核验后才能注册到官方。普通成员不能取得官方管理凭据。火山素材管理 AK/SK 与推理 Bearer Key 分开配置；仅配置推理 Key 不代表具备官方素材库权限。
+可选本地文件链路经已登录的 `/api/video/media-uploads/{id}/complete` 上传，端点按媒体类型限流量；文件需完成扫描及媒体核验。网址注册直接通过 `/api/video/assets` 或 `/v1/video/assets` 提交 `group_id`、`url`、`media_type`、`name`，其余 JSON 控制接口仍保持 1 MiB 限制。原始本地文件直传火山未提供公开二进制上传实现，不能用网址注册代替本地文件上传。普通成员不能取得官方管理凭据。火山素材管理 AK/SK 与推理 Bearer Key 分开配置；仅配置推理 Key 不代表具备官方素材库权限。
 
 首次同步由管理员在正确的账户/区域/项目作用域发现官方组，审查待归属项并显式分配给组织。不得将 `default` 项目全量资源自动归属到某个下游客户。导入真人组仍需单独核验使用许可，不能把导入状态当成 H5 认证记录。
 

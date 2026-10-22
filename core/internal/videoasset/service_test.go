@@ -25,6 +25,7 @@ import (
 
 const testSchema = `
 PRAGMA foreign_keys=ON;
+CREATE TABLE video_asset_owners(org_id INTEGER NOT NULL,resource_type TEXT NOT NULL,resource_id TEXT NOT NULL,owner_user_id INTEGER NOT NULL DEFAULT 0,owner_key_id INTEGER NOT NULL DEFAULT 0,manage_all INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(org_id,resource_type,resource_id));
 CREATE TABLE invocation_payloads(payload_id TEXT PRIMARY KEY,org_id INTEGER NOT NULL,request_id TEXT NOT NULL,attempt_id TEXT NOT NULL,correlation_key TEXT UNIQUE NOT NULL,direction TEXT NOT NULL,purpose TEXT NOT NULL,schema_version INTEGER NOT NULL,body_format TEXT NOT NULL,encryption_key_id TEXT NOT NULL,wrapped_key TEXT NOT NULL,nonce BLOB NOT NULL,ciphertext_sha256 TEXT NOT NULL,plaintext_bytes INTEGER NOT NULL,redaction_version TEXT NOT NULL,capture_status TEXT NOT NULL,capture_representation TEXT NOT NULL DEFAULT 'legacy_unknown',object_ref TEXT NOT NULL,created_at DATETIME NOT NULL,expires_at DATETIME NOT NULL,cleanup_after DATETIME,object_deleted_at DATETIME);
 CREATE TABLE invocation_payload_staging(payload_id TEXT PRIMARY KEY,ciphertext BLOB NOT NULL,attempts INTEGER NOT NULL,next_attempt_at DATETIME NOT NULL,lease_owner TEXT NOT NULL,lease_expires_at DATETIME,fencing_token INTEGER NOT NULL,created_at DATETIME NOT NULL);
 CREATE TABLE invocation_payload_accesses(access_id TEXT NOT NULL,phase TEXT NOT NULL,org_id INTEGER NOT NULL,payload_id TEXT NOT NULL,actor_role TEXT NOT NULL,actor_id TEXT NOT NULL,reason_code TEXT NOT NULL,operation_id TEXT NOT NULL,outcome TEXT NOT NULL,safe_error_code TEXT NOT NULL,created_at DATETIME NOT NULL,PRIMARY KEY(access_id,phase));
@@ -157,6 +158,11 @@ func setup(t *testing.T) (*Service, *gorm.DB, *time.Time, *fakeProvider) {
 func createContext(id string) CreateContext {
 	return CreateContext{OrgID: 1, UserID: 2, KeyID: 3, RequestID: "req-" + id, IdempotencyKey: "idem-" + id}
 }
+func adminContext(id string) CreateContext {
+	c := createContext(id)
+	c.CallerKind, c.KeyID, c.Superadmin = "session_user", 0, true
+	return c
+}
 func readyGroup(t *testing.T, s *Service, id string) GroupDTO {
 	t.Helper()
 	group, _, err := s.CreateGroup(context.Background(), createContext(id), GroupCreate{Kind: KindVirtual, Name: "A useful group"})
@@ -174,7 +180,16 @@ func readyGroup(t *testing.T, s *Service, id string) GroupDTO {
 }
 func readyAsset(t *testing.T, s *Service, now *time.Time, group string, id string) AssetDTO {
 	t.Helper()
-	asset, _, err := s.CreateAsset(context.Background(), createContext(id), AssetCreate{GroupID: group, MediaType: "image", URL: "https://media.example/immutable.png"})
+	c := createContext(id)
+	var owner Ownership
+	if err := s.db.Where("org_id = ? AND resource_type = ? AND resource_id = ?", 1, "asset_group", group).Take(&owner).Error; err != nil {
+		t.Fatal(err)
+	}
+	c.UserID, c.KeyID = owner.OwnerUserID, owner.OwnerKeyID
+	if c.UserID > 0 {
+		c.CallerKind, c.KeyID = "session_user", 0
+	}
+	asset, _, err := s.CreateAsset(context.Background(), c, AssetCreate{GroupID: group, MediaType: "image", URL: "https://media.example/immutable.png"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +594,8 @@ func TestHTTPContractRejectsForgeryAndUnknownFields(t *testing.T) {
 	router := gin.New()
 	group := router.Group("/v1/video")
 	group.Use(func(c *gin.Context) {
-		c.Set("video_key", &identity.APIKey{ID: 3, OrgID: 1, Scopes: "video:read video:write"})
+		uid := uint64(2)
+		c.Set("video_key", &identity.APIKey{ID: 3, OrgID: 1, UserID: &uid, Scopes: "video:read video:write"})
 		c.Set("video_request_id", "req-http")
 		c.Next()
 	})

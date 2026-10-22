@@ -104,6 +104,9 @@ func (s *Service) replay(tx *gorm.DB, c CreateContext, path string, raw []byte) 
 	if err != nil {
 		return Operation{}, false, ErrStorage
 	}
+	if err := resourceVisible(WithCaller(tx.Statement.Context, c), tx, c.OrgID, "operation", old.ID); err != nil {
+		return Operation{}, false, err
+	}
 	if len(s.options.HMACKeys[old.HMACKeyVersion]) == 0 || s.digest(old.HMACKeyVersion, "body", c.OrgID, path, string(raw)) != old.BodyHash {
 		return Operation{}, false, ErrConflict
 	}
@@ -114,6 +117,7 @@ func validCreate(c CreateContext) bool {
 }
 
 func (s *Service) accept(ctx context.Context, c CreateContext, r RuntimeScope, path, action, resourceType, resourceID string, public, provider []byte, create func(*gorm.DB, Operation) error, initialReceipt ...string) (Operation, bool, error) {
+	ctx = WithCaller(ctx, c)
 	if !validCreate(c) || !r.ExecutionRetentionConsent {
 		return Operation{}, false, ErrInvalid
 	}
@@ -149,6 +153,14 @@ func (s *Service) accept(ctx context.Context, c CreateContext, r RuntimeScope, p
 		if err := create(tx, op); err != nil {
 			return err
 		}
+		if action == "CreateAssetGroup" || action == "CreateAsset" || action == "CreateVisualValidateSession" {
+			if err := registerOwnerTx(tx, c, resourceType, resourceID); err != nil {
+				return err
+			}
+		}
+		if err := inheritOwnerTx(tx, c.OrgID, resourceType, resourceID, "operation", id); err != nil {
+			return err
+		}
 		if _, err := s.evidence.StageTx(tx, prepared); err != nil {
 			return ErrStorage
 		}
@@ -161,6 +173,7 @@ func (s *Service) accept(ctx context.Context, c CreateContext, r RuntimeScope, p
 }
 
 func (s *Service) CreateGroup(ctx context.Context, c CreateContext, input GroupCreate) (GroupDTO, bool, error) {
+	ctx = WithCaller(ctx, c)
 	if !validCreate(c) || input.Kind != KindVirtual || !safeName(input.Name, 64, true) || !safeName(input.Description, 300, false) {
 		return GroupDTO{}, false, ErrInvalid
 	}
@@ -227,7 +240,8 @@ func validMedia(m MediaEvidence, kind string, now time.Time) bool {
 	return false
 }
 func (s *Service) CreateAsset(ctx context.Context, c CreateContext, input AssetCreate) (AssetDTO, bool, error) {
-	if !validCreate(c) || !validID(input.GroupID) || !validHTTPS(input.URL, 4096) || !safeName(input.Name, 64, false) {
+	ctx = WithCaller(ctx, c)
+	if !validCreate(c) || !validID(input.GroupID) || !publicAssetSourceURL(input.URL) || !safeName(input.Name, 64, false) {
 		return AssetDTO{}, false, ErrInvalid
 	}
 	if old, found, err := s.replay(s.db.WithContext(ctx), c, "/v1/video/assets", bodyJSON(input)); err != nil {
@@ -237,18 +251,18 @@ func (s *Service) CreateAsset(ctx context.Context, c CreateContext, input AssetC
 		return dto, true, err
 	}
 	var group Group
-	if err := s.db.WithContext(ctx).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", c.OrgID, input.GroupID).Take(&group).Error; err != nil {
+	if err := owned(ctx, s.db.WithContext(ctx), c.OrgID, "asset_group", "group_id").Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", c.OrgID, input.GroupID).Take(&group).Error; err != nil {
 		return AssetDTO{}, false, ErrNotFound
 	}
 	r, err := s.resolve(ctx, c.OrgID, groupScope(group))
 	if err != nil {
 		return AssetDTO{}, false, err
 	}
-	if !mediaAllowed(r.Capabilities, input.MediaType) || s.options.VerifyMedia == nil && s.console.Media == nil {
+	if !mediaAllowed(r.Capabilities, input.MediaType) {
 		return AssetDTO{}, false, ErrUnsupported
 	}
-	media, err := s.verifyMedia(ctx, c.OrgID, input.URL, input.MediaType)
-	if err != nil || !validMedia(media, input.MediaType, s.now()) {
+	media, err := s.registrationMedia(ctx, c.OrgID, input.URL, input.MediaType)
+	if err != nil || !publicAssetSourceURL(media.FetchURL) {
 		return AssetDTO{}, false, ErrInvalid
 	}
 	if group.ProviderID == nil {
@@ -261,7 +275,7 @@ func (s *Service) CreateAsset(ctx context.Context, c CreateContext, input AssetC
 	provider := bodyJSON(map[string]any{"GroupId": *group.ProviderID, "URL": media.FetchURL, "Name": input.Name, "AssetType": strings.ToUpper(input.MediaType[:1]) + input.MediaType[1:], "ProjectName": r.Scope.Project})
 	op, replayed, err := s.accept(ctx, c, r, "/v1/video/assets", "CreateAsset", "asset", id, bodyJSON(input), provider, func(tx *gorm.DB, op Operation) error {
 		var current Group
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND group_id = ?", c.OrgID, group.ID).Take(&current).Error; err != nil {
+		if err := owned(ctx, tx.Clauses(clause.Locking{Strength: "UPDATE"}), c.OrgID, "asset_group", "group_id").Where("org_id = ? AND group_id = ?", c.OrgID, group.ID).Take(&current).Error; err != nil {
 			return ErrNotFound
 		}
 		if current.Status != StatusActive || current.ReviewState != ReviewClear || current.DeletedAt != nil || !sameScope(groupScope(current), r.Scope) || current.ProviderID == nil || *current.ProviderID != *group.ProviderID {
@@ -339,15 +353,18 @@ func (s *Service) resolveBindingsTx(tx *gorm.DB, org uint64, scope Scope, taskID
 		}
 		seen[ref.ContentIndex] = true
 		var asset Asset
-		if err := tx.Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", org, ref.AssetID).Take(&asset).Error; err != nil {
+		if err := owned(tx.Statement.Context, tx, org, "asset", "asset_id").Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", org, ref.AssetID).Take(&asset).Error; err != nil {
 			return nil, ErrNotFound
 		}
 		var group Group
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", org, asset.GroupID).Take(&group).Error; err != nil {
 			return nil, ErrNotFound
 		}
-		if asset.Status != StatusActive || asset.ReviewState != ReviewClear || !hasMediaFacts(asset) || asset.ProviderID == nil || group.Status != StatusActive || group.ReviewState != ReviewClear || !sameScope(groupScope(group), scope) || asset.ScopeID != scope.ID || asset.ScopeVersion != scope.Version {
+		if asset.Status != StatusActive || asset.ReviewState != ReviewClear || asset.ProviderID == nil || group.Status != StatusActive || group.ReviewState != ReviewClear || !sameScope(groupScope(group), scope) || asset.ScopeID != scope.ID || asset.ScopeVersion != scope.Version {
 			return nil, ErrConflict
+		}
+		if !referenceMediaReady(asset) {
+			return nil, ErrUnsupported
 		}
 		licenseVersion, err := s.authorizeGroup(tx, group, "video_generation")
 		if err != nil {

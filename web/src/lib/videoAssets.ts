@@ -1,10 +1,10 @@
 import { api, ApiError, uuid } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
 
-export interface AssetCapabilities { ready:boolean; project?:string; scope_id?:string; virtual:boolean; portrait:boolean; media_types:string[]; sync:boolean; update:boolean; delete:boolean; delete_empty_group:boolean; upload:boolean; reason?:string }
+export interface AssetCapabilities { ready:boolean; project?:string; scope_id?:string; virtual:boolean; portrait:boolean; media_types:string[]; sync:boolean; update:boolean; delete:boolean; delete_empty_group:boolean; upload:boolean; url_registration?:boolean; local_upload?:boolean; route_source?:'organization'|'shared_default'; resource_visibility?:'owner'|'organization_admin'; reason?:string }
 export interface AssetOperation { operation_id:string;kind:string;resource_id:string;status:string;poll_url?:string;request_id?:string;error?:{code:string;message:string;retryable:boolean};completed_at?:string|null }
 export interface AssetGroup { id:string;kind:string;name:string;description:string;status:string;asset_count:number;authorization_status:string;version:number;source:string;last_synced_at?:string;portrait_session_id?:string;deletion_mode?:'official'|'local_failed'|'blocked';deletion_block_reason?:string;create_operation?:AssetOperation;delete_operation?:AssetOperation }
-export interface VideoAsset { id:string;group_id:string;media_type:string;name:string;status:string;stage:string;version:number;bytes:number;duration_ms:number;error_code?:string;reference?:string;preview_url?:string;created_at:string;source:string;create_operation?:AssetOperation;delete_operation?:AssetOperation;deletion_mode?:'official'|'local_failed'|'blocked';deletion_block_reason?:string;provider_status?:'active'|'processing'|'failed'|'unknown';media_verification_status?:'verified'|'unverified';generation_status?:'ready'|'blocked';generation_block_reason?:string }
+export interface VideoAsset { id:string;group_id:string;media_type:string;name:string;status:string;stage:string;version:number;bytes:number;duration_ms:number;error_code?:string;reference?:string;preview_url?:string;source_available?:boolean;created_at:string;source:string;create_operation?:AssetOperation;delete_operation?:AssetOperation;deletion_mode?:'official'|'local_failed'|'blocked';deletion_block_reason?:string;provider_status?:'active'|'processing'|'failed'|'unknown';media_verification_status?:'verified'|'unverified';generation_status?:'ready'|'blocked';generation_block_reason?:string }
 export interface Portrait { session_id:string;status:string;authorization_url?:string;expires_at?:string;group_id?:string }
 export interface Page<T> {data:T[];total:number;next_cursor?:string}
 export interface SyncJob {id:string;status:string;phase:string;pages:number;items:number;error_code?:string;scope_id?:string;project?:string;kind?:string;mode?:string;request_id?:string;http_status?:number;upstream_request_id?:string;attempts?:number;retry_count?:number;next_attempt_at?:string}
@@ -54,13 +54,14 @@ export function assetProviderState(row:VideoAsset):'active'|'processing'|'failed
  return 'unknown'
 }
 export function assetStateTone(row:VideoAsset){return row.create_operation?.status==='unknown'||row.delete_operation?.status==='unknown'?'unknown':assetProviderState(row)}
-export function assetMediaStateText(row:VideoAsset){return row.media_verification_status==='verified'?'媒体已核验':row.media_verification_status==='unverified'?'媒体待核验':'媒体核验未确认'}
+export function assetMediaStateText(row:VideoAsset){return row.media_verification_status==='verified'?'媒体事实已核验':row.media_verification_status==='unverified'?'由官方处理，未做平台核验':'媒体事实未确认'}
 function hasUnresolvedAssetOperation(row:VideoAsset){return [row.create_operation,row.delete_operation].some(op=>op&&['pending','sending','in_flight','unknown'].includes(op.status))}
-function assetReferenceReady(row:VideoAsset){return row.generation_status==='ready'&&row.media_verification_status==='verified'&&assetProviderState(row)==='active'&&!hasUnresolvedAssetOperation(row)}
+function assetReferenceReady(row:VideoAsset){return row.generation_status==='ready'&&assetProviderState(row)==='active'&&!hasUnresolvedAssetOperation(row)}
 export function assetGenerationText(row:VideoAsset){return assetReferenceReady(row)?'素材引用就绪':'暂不可用于生成'}
 const generationReasons:Record<string,string>={
  submission_uncertain:'官方操作结果尚未确认，暂时不能用于生成。',operation_pending:'资源操作正在处理，暂时不能用于生成。',
- provider_not_ready:'官方素材尚未入库，暂时不能用于生成。',media_unverified:'平台尚未完成媒体安全核验，暂时不能用于生成。',
+ provider_not_ready:'官方素材尚未入库，暂时不能用于生成。',media_unverified:'素材事实尚未确认，请刷新官方状态。',
+ media_facts_unavailable:'尚未取得可信的视频或音频时长，暂不能准确计算用量或用于生成。',
  resource_not_ready:'所属素材组或使用许可尚未满足引用条件，暂时不能用于生成。',
 }
 export function assetReviewExplanation(row:VideoAsset){
@@ -69,8 +70,7 @@ export function assetReviewExplanation(row:VideoAsset){
  if(hasUnresolvedAssetOperation(row))return generationReasons.operation_pending!
  if(assetReferenceReady(row))return '素材引用条件已满足；实际生成仍由任务接口核对模型、配额及授权。'
  if(row.generation_block_reason&&generationReasons[row.generation_block_reason])return generationReasons[row.generation_block_reason]!
- if(row.media_verification_status==='unverified')return generationReasons.media_unverified!
- if(row.media_verification_status!=='verified')return '平台媒体核验状态尚未确认，暂时不能用于生成。'
+ if(row.generation_status===undefined)return '素材引用条件尚未确认，请刷新官方状态。'
  return '素材引用状态尚未就绪，请刷新状态或查看请求日志。'
 }
 export function assetSizeText(row:VideoAsset){
@@ -80,6 +80,10 @@ export function assetSizeText(row:VideoAsset){
  return new Intl.NumberFormat('zh-CN',{maximumFractionDigits:2}).format(value)+' '+units[unit]
 }
 export function assetDurationText(row:VideoAsset){return row.media_verification_status==='verified'&&Number.isSafeInteger(row.duration_ms)&&row.duration_ms>0?new Intl.NumberFormat('zh-CN',{maximumFractionDigits:2}).format(row.duration_ms/1000)+' 秒':'时长未知'}
+export function assetRegistrationURL(value:string){
+ const candidate=value.trim()
+ try{const url=new URL(candidate);return url.protocol==='https:'&&!!url.hostname&&!url.username&&!url.password&&!url.hash?candidate:''}catch{return ''}
+}
 export function assetQuery(values:Record<string,string|number|undefined>) {const q=new URLSearchParams();for(const [k,v] of Object.entries(values)){if(v!==undefined&&v!=='')q.set(k,String(v))};return q.toString()}
 export function assetWrite<T>(method:string,path:string,body?:unknown,key=uuid()){return api<T>(method,path,body,{headers:{'Idempotency-Key':key}})}
 // A 202 response must carry an operation. Only HTTP 204 proves synchronous completion.
@@ -112,7 +116,7 @@ export async function uploadAssetFile(id:string,file:File){
  }
  return data
 }
-export async function assetPreview(path:string){const response=await fetch(path,{headers:{Authorization:`Bearer ${useAuth().token}`},cache:'no-store'});if(!response.ok)throw new Error('preview_unavailable');return URL.createObjectURL(await response.blob())}
+export async function assetPreview(path:string){if(!/^\/api\/video\/assets\/[A-Za-z0-9_-]+\/preview$/.test(path))throw new Error('preview_unavailable');const response=await fetch(path,{headers:{Authorization:`Bearer ${useAuth().token}`},cache:'no-store'});if(!response.ok)throw new Error('preview_unavailable');return URL.createObjectURL(await response.blob())}
 
 export interface AssetDiscovery {id:string;scope_id:string;provider_id:string;kind:string;name:string;description:string;status:string;version:number}
 

@@ -63,7 +63,7 @@ func TestAssetConsoleExecutionPolicyDiagnostics(t *testing.T) {
 			}
 			got := s.Assets.ConsoleCapabilities(context.Background(), 1)
 			if tc.reason != "" {
-				want := videoasset.CapabilityView{MediaTypes: []string{}, Reason: tc.reason}
+				want := videoasset.CapabilityView{MediaTypes: []string{}, Reason: tc.reason, ResourceVisibility: "owner"}
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("unavailable setup exposed capabilities: %+v", got)
 				}

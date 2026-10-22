@@ -128,17 +128,22 @@ func TestPortraitAuditAndSealedIdentityBinding(t *testing.T) {
 	}
 }
 
-func TestUnverifiedMutableMediaAndRevokedLicenseRejectedBeforeSubmit(t *testing.T) {
-	s, _, _, provider := setup(t)
+func TestUnverifiedPublicMediaDoesNotAcquireIncompleteFacts(t *testing.T) {
+	s, db, _, provider := setup(t)
 	group := readyGroup(t, s, "group")
 	s.options.VerifyMedia = func(context.Context, uint64, string, string) (MediaEvidence, error) {
 		return MediaEvidence{ImmutableObjectRef: "looks-frozen", ObjectSHA256: strings.Repeat("a", 64), MIME: "image/png", ByteSize: 4096, Width: 640, Height: 480, Version: 1, VerifiedAt: s.now()}, nil
 	}
-	if _, _, err := s.CreateAsset(context.Background(), createContext("mutable"), AssetCreate{GroupID: group.ID, MediaType: "image", URL: "https://customer.example/mutable.png"}); !errors.Is(err, ErrInvalid) {
-		t.Fatal("missing approved immutable URL accepted", err)
+	asset, _, err := s.CreateAsset(context.Background(), createContext("mutable"), AssetCreate{GroupID: group.ID, MediaType: "image", URL: "https://customer.example/mutable.png"})
+	if err != nil {
+		t.Fatal("public source incorrectly requires a platform copy", err)
+	}
+	var row Asset
+	if err := db.Where("asset_id = ?", asset.ID).Take(&row).Error; err != nil || hasMediaFacts(row) || row.MetadataVersion != 0 || row.ImmutableObjectRef != "" {
+		t.Fatal("incomplete optional media evidence was treated as verified", err)
 	}
 	if provider.calls["CreateAsset"] != 0 {
-		t.Fatal("invalid media reached provider")
+		t.Fatal("creation bypassed the encrypted asynchronous outbox")
 	}
 	credentials := Credentials{AccessKey: "access-secret", SecretKey: "signing-secret", SessionToken: "session-secret"}
 	if strings.Contains(fmt.Sprintf("%+v %#v", credentials, credentials), "signing-secret") {

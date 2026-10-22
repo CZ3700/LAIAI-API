@@ -16,6 +16,7 @@ import (
 
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/identity"
+	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -337,11 +338,11 @@ func (s *Service) assetScopeTx(tx *gorm.DB, org uint64, providerID uint64, reque
 	if org == 0 {
 		return out, ErrForbidden
 	}
-	var route AssetOrgRoute
-	q := tx.Where("org_id = ? AND enabled = ?", org, true)
-	if providerID != 0 {
-		q = q.Where("provider_scope_id = ?", providerID)
-	} else if requested.ID != "" {
+	var organization struct{ Status int8 }
+	if tx.Table("organizations").Select("status").Where("id = ?", org).Take(&organization).Error != nil || organization.Status != identity.StatusActive {
+		return out, ErrForbidden
+	}
+	if providerID == 0 && requested.ID != "" {
 		if !strings.HasPrefix(requested.ID, "scope_") {
 			return out, ErrCapability
 		}
@@ -349,12 +350,15 @@ func (s *Service) assetScopeTx(tx *gorm.DB, org uint64, providerID uint64, reque
 		if err != nil || assetScopeID(id) != requested.ID {
 			return out, ErrCapability
 		}
-		q = q.Where("provider_scope_id = ?", id)
-	} else {
-		q = q.Where("default_route = ?", true)
+		providerID = id
 	}
-	if q.First(&route).Error != nil {
-		return out, ErrCapability
+	route, inherited, err := s.assetRouteTx(tx, org, providerID)
+	if err != nil {
+		return out, err
+	}
+	out.RouteSource = "organization"
+	if inherited.Enabled {
+		out.RouteSource = "shared_default"
 	}
 	var config AssetScopeConfig
 	if tx.Where("provider_scope_id = ? AND version = ? AND enabled = ?", route.ProviderScopeID, route.ScopeVersion, true).First(&config).Error != nil {
@@ -371,20 +375,12 @@ func (s *Service) assetScopeTx(tx *gorm.DB, org uint64, providerID uint64, reque
 	if json.Unmarshal([]byte(config.CapabilitiesJSON), &out.Capabilities) != nil {
 		return out, ErrCapability
 	}
-	var policy Policy
-	if err := tx.Where("org_id = ?", org).First(&policy).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// Preserve the admission error while letting local setup diagnostics
-			// distinguish missing consent from unusable management credentials.
-			return out, errors.Join(ErrForbidden, videoasset.ErrExecutionPolicy)
-		}
-		return out, ErrForbidden
+	policy, err := assetExecutionPolicyTx(tx, org, inherited)
+	if err != nil {
+		return out, err
 	}
 	out.ExecutionRetentionConsent = policy.AsyncExecutionAllowed
 	out.CaptureHistory = policy.CaptureHistory
-	if policy.RetentionDays < 1 || policy.RetentionDays > 30 {
-		return out, errors.Join(ErrForbidden, videoasset.ErrExecutionPolicy)
-	}
 	out.RetentionDays = policy.RetentionDays
 	if credentials {
 		var c struct{ Account, Region, Project, AccessKey, SecretKey, SessionToken string }
@@ -788,6 +784,28 @@ func (s *Service) ValidateTaskAssetsTx(tx *gorm.DB, org uint64, taskID string) e
 	if s.Assets == nil {
 		return ErrCapability
 	}
+	// Dispatch restores the accepted task's creator, never the worker's context
+	// or a caller-supplied user. Revoking a Key does not revoke an already
+	// accepted intent; only its immutable organization/creator identity is read.
+	var accepted task.Task
+	if tx.Select("org_id", "api_key_id", "user_id").Where("org_id = ? AND task_id = ?", org, taskID).Take(&accepted).Error != nil || accepted.APIKeyID == 0 {
+		return ErrState
+	}
+	var key identity.APIKey
+	if tx.Select("id", "org_id", "user_id").Where("org_id = ? AND id = ?", org, accepted.APIKeyID).Take(&key).Error != nil {
+		return ErrState
+	}
+	var acceptedUser, keyUser uint64
+	if accepted.UserID != nil {
+		acceptedUser = *accepted.UserID
+	}
+	if key.UserID != nil {
+		keyUser = *key.UserID
+	}
+	if acceptedUser != keyUser {
+		return ErrState
+	}
+	tx = tx.WithContext(videoasset.WithAPIKey(tx.Statement.Context, &key))
 	var metadata TaskParameters
 	if tx.Where("org_id = ? AND task_id = ?", org, taskID).First(&metadata).Error != nil {
 		return ErrState

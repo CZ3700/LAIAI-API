@@ -27,7 +27,7 @@ func TestSyncReadOnlyRetriesAreBoundedAndRespectBackoff(t *testing.T) {
 		}
 		return nil, errors.New("temporary connection failure with private detail")
 	})})
-	job, err := s.CreateSyncJob(context.Background(), createContext("sync-retry"), "virtual", "owned")
+	job, err := s.CreateSyncJob(context.Background(), adminContext("sync-retry"), "virtual", "owned")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestSyncReadOnlyRetriesAreBoundedAndRespectBackoff(t *testing.T) {
 		t.Fatal("failed sync was resent", err)
 	}
 	var rows []invocation.VideoPayload
-	if err = db.Where("request_id = ?", createContext("sync-retry").RequestID).Find(&rows).Error; err != nil || len(rows) != 3 {
+	if err = db.Where("request_id = ?", adminContext("sync-retry").RequestID).Find(&rows).Error; err != nil || len(rows) != 3 {
 		t.Fatal("request evidence absent", len(rows), err)
 	}
 	for _, p := range rows {
@@ -96,7 +96,7 @@ func TestSyncRetriesTransientResponsesButNotInvalidOrForbidden(t *testing.T) {
 				}
 				return r, nil
 			})})
-			job, err := s.CreateSyncJob(context.Background(), createContext("response"), "virtual", "owned")
+			job, err := s.CreateSyncJob(context.Background(), adminContext("response"), "virtual", "owned")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -125,7 +125,7 @@ func TestSyncPageEvidenceHonorsHistoryConsentAndRetryRecovers(t *testing.T) {
 				}
 				return syncReply(req, map[string]any{"Items": []any{}}), nil
 			})})
-			job, err := s.CreateSyncJob(context.Background(), createContext("consent"), "virtual", "owned")
+			job, err := s.CreateSyncJob(context.Background(), adminContext("consent"), "virtual", "owned")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -145,7 +145,7 @@ func TestSyncPageEvidenceHonorsHistoryConsentAndRetryRecovers(t *testing.T) {
 				t.Fatal("successful retry not committed", job, err)
 			}
 			var rows []invocation.VideoPayload
-			if err = db.Where("request_id = ?", createContext("consent").RequestID).Find(&rows).Error; err != nil || len(rows) != 3 {
+			if err = db.Where("request_id = ?", adminContext("consent").RequestID).Find(&rows).Error; err != nil || len(rows) != 3 {
 				t.Fatal("attempt evidence missing", err, len(rows))
 			}
 			for _, p := range rows {
@@ -178,7 +178,7 @@ func TestSyncPartialAndHTMLResponsesRetainRedactedEvidenceAndClassifyRetry(t *te
 				}
 				return &http.Response{StatusCode: tc.status, Body: io.NopCloser(body), Header: http.Header{}, Request: req}, nil
 			})})
-			job, err := s.CreateSyncJob(context.Background(), createContext("partial"), "virtual", "owned")
+			job, err := s.CreateSyncJob(context.Background(), adminContext("partial"), "virtual", "owned")
 			if err != nil {
 				t.Fatal(err)
 			}

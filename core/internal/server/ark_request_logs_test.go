@@ -67,6 +67,39 @@ func TestMySQLRequestLogConsoleAuthorizationAndAudit(t *testing.T) {
 	call("POST", adminPath, `{"section":"effective_request","reason_code":"request_debugging"}`, "", true, 403)
 	call("POST", adminPath, `{"section":"effective_request","reason_code":"request_debugging"}`, f.tokens[0], false, 200)
 	call("GET", fmt.Sprintf("/api/admin/video/request-logs/%s?org_id=%d", rid, f.org+100000), "", f.tokens[0], false, 404)
+	// Private asset history is creator scoped, including historical list/source
+	// responses which were captured before creator filtering existed.
+	for _, source := range []struct {
+		suffix string
+		owner  uint64
+	}{{"own", f.users[0]}, {"other", f.users[1]}} {
+		assetRID := "asset-" + source.suffix + "-" + f.uid
+		arkBillMust(t, f.db.Transaction(func(tx *gorm.DB) error {
+			return svc.Evidence.RequestStartTx(tx, invocation.VideoRequestStart{RequestID: assetRID, OrgID: &f.org, UserID: &source.owner, AuthOutcome: "authenticated", Method: "GET", Route: "/api/video/assets", Operation: "video_api", StartedAt: f.now})
+		}))
+		for _, direction := range []string{invocation.VideoClientRequest, invocation.VideoClientResponse} {
+			p, e := svc.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: f.org, RequestID: assetRID, Direction: direction, Purpose: invocation.VideoPurposeHistory, SchemaVersion: 1, Body: []byte(`{"private_asset_fixture":"historical mixed creator response"}`), CaptureEnabled: true, ExpiresAt: f.now.Add(time.Hour), CaptureRepresentation: "response_json_redacted"})
+			arkBillMust(t, e)
+			arkBillMust(t, f.db.Transaction(func(tx *gorm.DB) error { _, e := svc.Evidence.StageTx(tx, p); return e }))
+		}
+		assetPath := "/api/video/request-logs/" + assetRID
+		if source.suffix == "other" {
+			call("GET", assetPath, "", f.tokens[0], false, 404)
+			call("POST", assetPath+"/payload-reads", `{"section":"client_request","reason_code":"request_debugging"}`, f.tokens[0], false, 404)
+		} else {
+			call("POST", assetPath+"/payload-reads", `{"section":"client_request","reason_code":"request_debugging"}`, f.tokens[0], false, 200)
+			call("POST", assetPath+"/payload-reads", `{"section":"client_response","reason_code":"request_debugging"}`, f.tokens[0], false, 403)
+			meta := call("GET", assetPath, "", f.tokens[0], false, 200)
+			if !strings.Contains(meta.Body.String(), `"client_response":{"availability":"forbidden"`) {
+				t.Fatal("asset response visibility metadata disagrees with read guard", meta.Body.String())
+			}
+		}
+		call("POST", fmt.Sprintf("/api/admin/video/request-logs/%s/payload-reads?org_id=%d", assetRID, f.org), `{"section":"client_response","reason_code":"request_debugging"}`, f.tokens[0], false, 200)
+	}
+	assetList := call("GET", "/api/video/request-logs?operation=all", "", f.tokens[0], false, 200)
+	if strings.Contains(assetList.Body.String(), "asset-other-"+f.uid) || !strings.Contains(assetList.Body.String(), "asset-own-"+f.uid) {
+		t.Fatal("private asset request list leaked a different creator")
+	}
 	// A failure in the existing audit channel blocks delivery even when payload storage works.
 	arkBillMust(t, f.db.Callback().Create().Before("gorm:create").Register("test_log_audit_failure", func(tx *gorm.DB) {
 		if tx.Statement.Table == "audit_logs" {

@@ -32,7 +32,7 @@ func (s *Service) GetGroup(ctx context.Context, org uint64, id string) (GroupDTO
 		return GroupDTO{}, ErrInvalid
 	}
 	var row Group
-	if err := s.db.WithContext(ctx).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", org, id).Take(&row).Error; err != nil {
+	if err := owned(ctx, s.db.WithContext(ctx), org, "asset_group", "group_id").Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", org, id).Take(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return GroupDTO{}, ErrNotFound
 		}
@@ -55,7 +55,7 @@ func (s *Service) GetGroup(ctx context.Context, org uint64, id string) (GroupDTO
 			}
 		}
 	}
-	if err := s.db.WithContext(ctx).Model(&Asset{}).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", org, id).Count(&dto.AssetCount).Error; err != nil {
+	if err := owned(ctx, s.db.WithContext(ctx).Model(&Asset{}), org, "asset", "asset_id").Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", org, id).Count(&dto.AssetCount).Error; err != nil {
 		return GroupDTO{}, ErrStorage
 	}
 	if row.Kind == KindReal {
@@ -96,7 +96,7 @@ func (s *Service) GetAsset(ctx context.Context, org uint64, id string) (AssetDTO
 		return AssetDTO{}, ErrInvalid
 	}
 	var row Asset
-	if err := s.db.WithContext(ctx).Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", org, id).Take(&row).Error; err != nil {
+	if err := owned(ctx, s.db.WithContext(ctx), org, "asset", "asset_id").Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", org, id).Take(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return AssetDTO{}, ErrNotFound
 		}
@@ -139,7 +139,7 @@ func (s *Service) GetAsset(ctx context.Context, org uint64, id string) (AssetDTO
 		}
 	}
 	if row.Status == StatusActive {
-		usable := row.ReviewState == ReviewClear && hasMediaFacts(row) && row.ProviderID != nil
+		usable := row.ReviewState == ReviewClear && referenceMediaReady(row)
 		usable = usable && group.DeletedAt == nil && group.Status == StatusActive && group.ReviewState == ReviewClear && row.ScopeID == group.ScopeID && row.ScopeVersion == group.ScopeVersion
 		if group.Kind == KindReal {
 			var p Portrait
@@ -162,7 +162,7 @@ func (s *Service) GetOperation(ctx context.Context, org uint64, id string) (Oper
 		return OperationDTO{}, ErrInvalid
 	}
 	var row Operation
-	if err := s.db.WithContext(ctx).Where("org_id = ? AND operation_id = ? ", org, id).Take(&row).Error; err != nil {
+	if err := owned(ctx, s.db.WithContext(ctx), org, "operation", "operation_id").Where("org_id = ? AND operation_id = ? ", org, id).Take(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return OperationDTO{}, ErrNotFound
 		}
@@ -217,12 +217,13 @@ func (s *Service) ListGroups(ctx context.Context, org uint64, limit int, cursor 
 	if org == 0 || limit < 1 || limit > 100 {
 		return nil, "", ErrInvalid
 	}
-	after, err := s.parseCursor(org, "groups", cursor)
+	kind := actorCursor(ctx, "groups")
+	after, err := s.parseCursor(org, kind, cursor)
 	if err != nil {
 		return nil, "", err
 	}
 	var rows []Group
-	q := s.db.WithContext(ctx).Where("org_id = ? AND deleted_at IS NULL", org)
+	q := owned(ctx, s.db.WithContext(ctx), org, "asset_group", "group_id").Where("org_id = ? AND deleted_at IS NULL", org)
 	if after != "" {
 		q = q.Where("group_id > ?", after)
 	}
@@ -232,7 +233,7 @@ func (s *Service) ListGroups(ctx context.Context, org uint64, limit int, cursor 
 	next := ""
 	if len(rows) > limit {
 		rows = rows[:limit]
-		next = s.cursor(org, "groups", rows[len(rows)-1].ID)
+		next = s.cursor(org, kind, rows[len(rows)-1].ID)
 	}
 	result := make([]GroupDTO, 0, len(rows))
 	for _, row := range rows {
@@ -251,14 +252,17 @@ func (s *Service) ListAssets(ctx context.Context, org uint64, group string, limi
 	if org == 0 || limit < 1 || limit > 100 || group != "" && !validID(group) {
 		return nil, "", ErrInvalid
 	}
-	kind := "assets:" + group
+	kind := actorCursor(ctx, "assets:"+group)
 	after, err := s.parseCursor(org, kind, cursor)
 	if err != nil {
 		return nil, "", err
 	}
 	var rows []Asset
-	q := s.db.WithContext(ctx).Where("org_id = ? AND deleted_at IS NULL", org)
+	q := owned(ctx, s.db.WithContext(ctx), org, "asset", "asset_id").Where("org_id = ? AND deleted_at IS NULL", org)
 	if group != "" {
+		if err := resourceVisible(ctx, s.db, org, "asset_group", group); err != nil {
+			return nil, "", err
+		}
 		q = q.Where("group_id = ?", group)
 	}
 	if after != "" {
@@ -287,6 +291,7 @@ func (s *Service) ListAssets(ctx context.Context, org uint64, group string, limi
 }
 
 func (s *Service) DeleteGroup(ctx context.Context, c CreateContext, id string, cascade bool) (OperationDTO, bool, error) {
+	ctx = WithCaller(ctx, c)
 	if cascade {
 		return OperationDTO{}, false, ErrUnsupported
 	}
@@ -297,7 +302,7 @@ func (s *Service) DeleteGroup(ctx context.Context, c CreateContext, id string, c
 		return OperationDTO{}, false, ErrInvalid
 	}
 	var group Group
-	if err := s.db.WithContext(ctx).Where("org_id = ? AND group_id = ?", c.OrgID, id).Take(&group).Error; err != nil {
+	if err := owned(ctx, s.db.WithContext(ctx), c.OrgID, "asset_group", "group_id").Where("org_id = ? AND group_id = ?", c.OrgID, id).Take(&group).Error; err != nil {
 		return OperationDTO{}, false, ErrNotFound
 	}
 	if group.DeletedAt != nil {
@@ -329,7 +334,7 @@ func (s *Service) DeleteGroup(ctx context.Context, c CreateContext, id string, c
 	}
 	op, _, err := s.accept(ctx, c, r, "/v1/video/asset-groups/"+id, "DeleteAssetGroup", "asset_group", id, bodyJSON(map[string]any{"id": id, "cascade": false}), bodyJSON(map[string]any{"Id": *group.ProviderID, "ProjectName": r.Scope.Project}), func(tx *gorm.DB, op Operation) error {
 		var current Group
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", c.OrgID, id).Take(&current).Error; err != nil {
+		if err := owned(ctx, tx.Clauses(clause.Locking{Strength: "UPDATE"}), c.OrgID, "asset_group", "group_id").Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", c.OrgID, id).Take(&current).Error; err != nil {
 			return ErrNotFound
 		}
 		if !sameScope(groupScope(current), r.Scope) || current.ProviderID == nil || *current.ProviderID != *group.ProviderID {

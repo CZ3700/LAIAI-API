@@ -37,7 +37,15 @@ func (s *Service) recordSyncAttempt(ctx context.Context, job SyncJob, r RuntimeS
 		if entry.direction == invocation.VideoUpstreamResponse {
 			representation = "response_json_redacted"
 		}
-		p, err := s.prepareHistoryEvidence(r, invocation.VideoPayloadInput{
+		history := r
+		actor, present := callerFrom(ctx)
+		if entry.direction == invocation.VideoUpstreamResponse && (!present || !validCaller(actor, job.OrgID) || !actor.Superadmin) {
+			// A group page can also contain administrator-created assets. Retain
+			// safe attempt metadata for ordinary sync without retaining a mixed
+			// creator response as readable history or pretending it was filtered.
+			history.CaptureHistory = false
+		}
+		p, err := s.prepareHistoryEvidence(history, invocation.VideoPayloadInput{
 			OrgID: job.OrgID, RequestID: requestID, AttemptID: attemptID, Direction: entry.direction,
 			SchemaVersion: 1, Body: entry.body, SecretValues: []string{r.Credentials.AccessKey, r.Credentials.SecretKey, r.Credentials.SessionToken},
 			CaptureRepresentation: representation,

@@ -55,7 +55,7 @@ func TestOwnedSyncAllowsTheSameCursorInDifferentGroups(t *testing.T) {
 			"ProjectName": scope.Project, "AssetType": "Image", "Status": "Active"}
 		return syncReply(req, map[string]any{"Items": []any{asset}, "NextToken": next}), nil
 	})})
-	job, err := s.CreateSyncJob(context.Background(), createContext("repeat-cursor"), KindVirtual, "owned")
+	job, err := s.CreateSyncJob(context.Background(), adminContext("repeat-cursor"), KindVirtual, "owned")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestOwnedSyncDoesNotApplyToGroupChangedDuringProviderCall(t *testing.T) {
 					"ProjectName": original.Project, "AssetType": "Image", "Status": "Active"}
 				return syncReply(req, map[string]any{"Items": []any{asset}, "NextToken": "late-next"}), nil
 			})})
-			job, err := s.CreateSyncJob(context.Background(), createContext("late-sync-"+tc.name), KindVirtual, "owned")
+			job, err := s.CreateSyncJob(context.Background(), adminContext("late-sync-"+tc.name), KindVirtual, "owned")
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -18,7 +18,7 @@ const built = await build({
       if (args.path === 'vue') return { contents: `export const defineComponent = v => v; export const ref = (...a) => globalThis.__videoAssets.vue.ref(...a); export const computed = (...a) => globalThis.__videoAssets.vue.computed(...a); export const watch = (...a) => globalThis.__videoAssets.vue.watch(...a); export const nextTick = (...a) => globalThis.__videoAssets.vue.nextTick(...a); export const onMounted = f => globalThis.__videoAssets.mounted.push(f); export const onUnmounted = f => globalThis.__videoAssets.unmounted.push(f);` }
       if (args.path === '@/stores/auth') return { contents: 'export const useAuth = () => globalThis.__videoAssets.auth;' }
       if (args.path === '@/lib/api') return { contents: `export class ApiError extends Error { constructor(status, message, requestId = null, code = null) { super(message); Object.assign(this,{status,requestId,code}); } } export const api = (...a) => { globalThis.__videoAssets.ApiError = ApiError; return globalThis.__videoAssets.api(...a); }; export const copyText = () => {}; export const errorMessage = (e,f) => e?.message ?? f;` }
-      if (args.path === '@/lib/videoAssets') return { contents: `export const assetWrite = (...a) => globalThis.__videoAssets.api(...a); export const assetDelete = path => globalThis.__videoAssets.delete(path); export const assetQuery = v => new URLSearchParams(Object.entries(v).filter(([,x])=>x!==undefined&&x!=='')).toString(); export const assetPreview = () => ''; export const uploadAssetFile = (...a) => globalThis.__videoAssets.upload(...a); export const syncIsRunning = (...a) => globalThis.__videoAssets.helpers.syncIsRunning(...a); export const syncIsTerminal = (...a) => globalThis.__videoAssets.helpers.syncIsTerminal(...a); export const validSyncJob = (...a) => globalThis.__videoAssets.helpers.validSyncJob(...a); export const syncPhaseText = (...a) => globalThis.__videoAssets.helpers.syncPhaseText(...a); export const syncErrorText = (...a) => globalThis.__videoAssets.helpers.syncErrorText(...a); export const syncSummary = (...a) => globalThis.__videoAssets.helpers.syncSummary(...a); export const groupStateText = (...a) => globalThis.__videoAssets.helpers.groupStateText(...a); export const assetStateText = (...a) => globalThis.__videoAssets.helpers.assetStateText(...a); export const assetReviewExplanation = (...a) => globalThis.__videoAssets.helpers.assetReviewExplanation(...a); export const assetProviderState = (...a) => globalThis.__videoAssets.helpers.assetProviderState(...a); export const assetStateTone = (...a) => globalThis.__videoAssets.helpers.assetStateTone(...a); export const assetMediaStateText = (...a) => globalThis.__videoAssets.helpers.assetMediaStateText(...a); export const assetGenerationText = (...a) => globalThis.__videoAssets.helpers.assetGenerationText(...a); export const assetSizeText = (...a) => globalThis.__videoAssets.helpers.assetSizeText(...a); export const assetDurationText = (...a) => globalThis.__videoAssets.helpers.assetDurationText(...a); ` }
+      if (args.path === '@/lib/videoAssets') return { contents: `export const assetWrite = (...a) => globalThis.__videoAssets.api(...a); export const assetDelete = path => globalThis.__videoAssets.delete(path); export const assetQuery = v => new URLSearchParams(Object.entries(v).filter(([,x])=>x!==undefined&&x!=='')).toString(); export const assetPreview = () => ''; export const assetRegistrationURL = (...a) => globalThis.__videoAssets.helpers.assetRegistrationURL(...a); export const syncIsRunning = (...a) => globalThis.__videoAssets.helpers.syncIsRunning(...a); export const syncIsTerminal = (...a) => globalThis.__videoAssets.helpers.syncIsTerminal(...a); export const validSyncJob = (...a) => globalThis.__videoAssets.helpers.validSyncJob(...a); export const syncPhaseText = (...a) => globalThis.__videoAssets.helpers.syncPhaseText(...a); export const syncErrorText = (...a) => globalThis.__videoAssets.helpers.syncErrorText(...a); export const syncSummary = (...a) => globalThis.__videoAssets.helpers.syncSummary(...a); export const groupStateText = (...a) => globalThis.__videoAssets.helpers.groupStateText(...a); export const assetStateText = (...a) => globalThis.__videoAssets.helpers.assetStateText(...a); export const assetReviewExplanation = (...a) => globalThis.__videoAssets.helpers.assetReviewExplanation(...a); export const assetProviderState = (...a) => globalThis.__videoAssets.helpers.assetProviderState(...a); export const assetStateTone = (...a) => globalThis.__videoAssets.helpers.assetStateTone(...a); export const assetMediaStateText = (...a) => globalThis.__videoAssets.helpers.assetMediaStateText(...a); export const assetGenerationText = (...a) => globalThis.__videoAssets.helpers.assetGenerationText(...a); export const assetSizeText = (...a) => globalThis.__videoAssets.helpers.assetSizeText(...a); export const assetDurationText = (...a) => globalThis.__videoAssets.helpers.assetDurationText(...a); ` }
       if (args.path.endsWith('.vue')) return { contents: 'export default {};' }
       throw new Error(`Unexpected import: ${args.path}`)
     })
@@ -52,7 +52,7 @@ async function harness(t, rows = [group()]) {
       h.groups = h.groups.map(row => ({ ...row, status: 'deleting', deletion_mode: 'blocked', deletion_block_reason: 'operation_pending', delete_operation: operation() }))
       return structuredClone(h.op)
     }
-    if (call.path === '/api/video/asset-capabilities') return { ready: true, scope_id: 'scope_fixture', project: 'LAIAI-Gateway', sync: true, virtual: true, delete_empty_group: true, delete: true, update: true, upload: true, media_types: ['image','video','audio'] }
+    if (call.path === '/api/video/asset-capabilities') return { ready: true, scope_id: 'scope_fixture', project: 'LAIAI-Gateway', sync: true, virtual: true, delete_empty_group: true, delete: true, update: true, upload: false, local_upload: false, url_registration: true, route_source: 'shared_default', resource_visibility: 'owner', media_types: ['image','video','audio'] }
     if (call.path.startsWith('/api/video/asset-sync-jobs/latest?')) return {job:null}
     if (call.path.startsWith('/api/video/asset-operations/')) return structuredClone(h.op)
     if (call.path.startsWith('/api/video/asset-groups?')) {
@@ -341,14 +341,14 @@ test('management setup readback refreshes capabilities without closing the drawe
 
 const asset = (overrides = {}) => ({ id:'asset_fixture',group_id:'grp_fixture',media_type:'image',name:'asset',status:'ready',stage:'ready',version:1,bytes:20,duration_ms:0,created_at:'2026-10-21T00:00:00Z',source:'platform',deletion_mode:'official',deletion_block_reason:'',...overrides })
 
-test('upload prerequisites have actionable explanations and never create an upload while disabled', async t => {
+test('URL registration requires explicit official capability, independently of local media deployment', async t => {
   const h=await harness(t)
-  h.vm.caps.value.upload=false
-  assert.match(h.vm.uploadBlockedReason.value,/媒体存储与安全核验服务尚未配置/)
+  h.vm.caps.value.url_registration=false
+  assert.match(h.vm.uploadBlockedReason.value,/官方网址注册尚未开通/)
   h.vm.openUpload(); assert.equal(h.vm.modal.value,'')
   h.vm.sourceURL.value='https://example.com/media.png'; await h.vm.upload()
   assert.equal(writes(h).length,0)
-  h.vm.caps.value.upload=true; h.vm.caps.value.media_types=[]
+  h.vm.caps.value.url_registration=true; h.vm.caps.value.upload=false; h.vm.caps.value.local_upload=false; h.vm.caps.value.media_types=[]
   assert.match(h.vm.uploadBlockedReason.value,/未启用图片、视频或音频/)
   h.vm.caps.value.media_types=['video']; h.vm.openUpload()
   assert.equal(h.vm.modal.value,'upload'); assert.equal(h.vm.uploadType.value,'video')
@@ -411,11 +411,11 @@ test('confirmed failed asset registration can be cleaned locally with 204 and re
   assert.equal(h.vm.assets.value.length,0); assert.match(h.vm.notice.value,/未调用官方删除/)
 })
 
-test('late group creation and registration cannot mutate replacement organization or session views', async t => {
+test('late group creation and legacy registration cannot mutate replacement organization or session views', async t => {
   for(const action of ['create','register'])for(const change of ['org','session'])await t.test(`${action}-${change}`,async t=>{
     const h=await harness(t),late=deferred(),respond=h.respond
     h.respond=call=>call.method==='POST'?late.promise:respond(call)
-    h.vm.name.value='new'; h.vm.selectedUpload.value={id:'upload_fixture'}
+    h.vm.name.value='new'; h.vm.selectedUpload.value={id:'upload_fixture'}; h.vm.caps.value.local_upload=true
     const pending=action==='create'?h.vm.createGroup():h.vm.registerUpload()
     await until(()=>writes(h).length===1)
     if(change==='org')h.auth.orgId=2;else h.auth.token='replacement-session'
@@ -426,42 +426,110 @@ test('late group creation and registration cannot mutate replacement organizatio
   })
 })
 
-test('multi-step upload stops after context changes at every network boundary', async t => {
-  for(const boundary of ['start','complete','register'])for(const change of ['org','session'])await t.test(`${boundary}-${change}`,async t=>{
+test('URL registration responses cannot mutate a replacement organization or session and never create local upload sessions', async t => {
+  for(const change of ['org','session'])await t.test(change,async t=>{
     const h=await harness(t),late=deferred(),respond=h.respond
     h.respond=call=>{
       if(call.method!=='POST')return respond(call)
-      if(call.path==='/api/video/media-uploads')return boundary==='start'?late.promise:{id:'upload_fixture'}
-      if(call.path.endsWith('/complete'))return boundary==='complete'?late.promise:{id:'upload_fixture',status:'ready'}
-      if(call.path==='/api/video/assets')return boundary==='register'?late.promise:asset()
+      if(call.path==='/api/video/assets')return late.promise
       throw new Error('unexpected write')
     }
     h.vm.sourceURL.value='https://example.com/media.png'; h.vm.name.value='new'
-    const pending=h.vm.upload(),expected={start:1,complete:2,register:3}[boundary]
-    await until(()=>writes(h).length===expected)
+    const pending=h.vm.upload()
+    await until(()=>writes(h).length===1)
     if(change==='org')h.auth.orgId=2;else h.auth.token='replacement-session'
     await until(()=>!h.vm.busy.value); h.vm.modal.value='rename'
-    late.resolve(boundary==='register'?asset():{id:'upload_fixture',status:'ready'}); await pending
-    assert.equal(writes(h).length,expected,'never continue a previous scope upload')
+    late.resolve(asset()); await pending
+    assert.equal(writes(h).length,1,'never create local upload or continue under the replacement context')
+    assert.equal(writes(h)[0].path,'/api/video/assets')
     assert.equal(h.vm.modal.value,'rename'); assert.equal(h.vm.notice.value,''); assert.equal(h.vm.uploadID.value,'')
   })
 })
 
-test('upload registration keeps the original group and media inputs across asynchronous steps', async t => {
+test('URL registration sends the original group and signed URL once, without caller-supplied ownership or media facts', async t => {
   const h=await harness(t),late=deferred(),respond=h.respond
   h.groups=[group(),group({id:'grp_other'})]; await h.vm.loadScope()
   h.respond=call=>{
-    if(call.path==='/api/video/media-uploads')return late.promise
-    if(call.path.endsWith('/complete'))return {status:'ready'}
-    if(call.path==='/api/video/assets')return asset()
+    if(call.path==='/api/video/assets')return late.promise
     return respond(call)
   }
-  h.vm.sourceURL.value='https://example.com/original.png'; h.vm.name.value='original'
+  h.vm.sourceURL.value='https://example.com/original.png?signature=fixture%2Bvalue'; h.vm.name.value='original'
   const pending=h.vm.upload(); await until(()=>writes(h).length===1)
   h.vm.selected.value='grp_other'; h.vm.sourceURL.value='https://example.com/replacement.png'; h.vm.name.value='replacement'
-  late.resolve({id:'upload_fixture'}); await pending
-  assert.deepEqual(writes(h)[1].body,{url:'https://example.com/original.png'})
-  assert.deepEqual(writes(h)[2].body,{group_id:'grp_fixture',media_ref:'upload_fixture',name:'original'})
+  late.resolve(asset()); await pending
+  assert.deepEqual(writes(h)[0].body,{group_id:'grp_fixture',url:'https://example.com/original.png?signature=fixture%2Bvalue',media_type:'image',name:'original'})
+  assert.equal(writes(h).length,1)
+  assert.match(h.vm.notice.value,/网址已提交官方注册/)
+})
+
+test('invalid URLs and uncertain registration outcomes cannot trigger duplicate or local file submissions', async t=>{
+  const h=await harness(t),respond=h.respond
+  for(const url of ['','http://example.com/a','https://user:secret@example.com/a','file:///a','https://example.com/a#part']){
+    h.vm.sourceURL.value=url;await h.vm.upload();assert.equal(writes(h).length,0)
+  }
+  h.respond=call=>{if(call.method==='POST')throw new Error('private upstream source');return respond(call)}
+  h.vm.sourceURL.value='https://example.com/a';await h.vm.upload()
+  assert.equal(h.vm.registrationUncertain.value,true);assert.equal(h.vm.error.value.includes('private'),false)
+  await h.vm.upload();h.vm.close();h.vm.openUpload();h.vm.sourceURL.value='https://example.com/a';await h.vm.upload()
+  assert.equal(writes(h).length,1)
+})
+
+test('mismatched registration receipts remain uncertain only for their original group',async t=>{
+  const h=await harness(t),respond=h.respond
+  h.groups=[group(),group({id:'grp_other'})];await h.vm.loadScope()
+  h.respond=call=>call.method==='POST'?asset({group_id:'grp_wrong'}):respond(call)
+  h.vm.sourceURL.value='https://example.com/image.png';await h.vm.upload()
+  assert.equal(h.vm.registrationUncertain.value,true);assert.equal(writes(h).length,1)
+  h.vm.selected.value='grp_other';assert.equal(h.vm.registrationUncertain.value,false)
+  h.vm.selected.value='grp_fixture';assert.equal(h.vm.registrationUncertain.value,true)
+})
+
+test('losing superadmin privileges clears organization-wide details and reloads the owner view',async t=>{
+  const h=await harness(t),row=asset({source_available:true}),respond=h.respond
+  h.vm.showGroupDetails(h.vm.groups.value[0]);h.vm.previewAsset.value=row;h.vm.previewURL.value='https://example.com/old.png';h.vm.setupOpen.value=true
+  h.groups=[]
+  h.respond=call=>call.path==='/api/video/asset-capabilities'?{ready:true,url_registration:true,media_types:['image'],route_source:'shared_default',resource_visibility:'owner'}:respond(call)
+  h.auth.isSuperadmin=false
+  assert.equal(h.vm.detailGroup.value,undefined);assert.equal(h.vm.previewURL.value,'');assert.equal(h.vm.setupOpen.value,false)
+  await until(()=>!h.vm.busy.value)
+  assert.deepEqual(h.vm.groups.value,[]);assert.equal(h.vm.caps.value.resource_visibility,'owner')
+  assert.equal(writes(h).length,0)
+})
+
+test('official source preview requests an authenticated same-origin URL then displays the returned HTTPS address directly', async t=>{
+  const h=await harness(t),respond=h.respond,previousFetch=globalThis.fetch
+  globalThis.fetch=()=>assert.fail('official media must be displayed directly, never fetched with platform authorization')
+  t.after(()=>{globalThis.fetch=previousFetch})
+  h.respond=call=>call.path==='/api/video/assets/asset_fixture/source'?{url:'https://official.example.com/image.png?signature=fixture%2Bvalue',source:'upstream'}:respond(call)
+  await h.vm.showPreview(asset({source_available:true}))
+  assert.equal(h.vm.previewURL.value,'https://official.example.com/image.png?signature=fixture%2Bvalue')
+  assert.ok(h.calls.some(call=>call.method==='GET'&&call.path==='/api/video/assets/asset_fixture/source'))
+  assert.equal(writes(h).length,0)
+  h.vm.closePreview();assert.equal(h.vm.previewURL.value,'');assert.equal(h.vm.previewAsset.value,undefined)
+})
+
+test('late official preview cannot survive drawer close or session replacement, and unsafe sources stay hidden',async t=>{
+  for(const change of ['close','session'])await t.test(change,async t=>{
+    const h=await harness(t),respond=h.respond,late=deferred()
+    h.respond=call=>call.path.endsWith('/source')?late.promise:respond(call)
+    const pending=h.vm.showPreview(asset({source_available:true}))
+    await until(()=>h.calls.some(call=>call.path.endsWith('/source')))
+    if(change==='close')h.vm.closePreview();else h.auth.token='replacement-session'
+    late.resolve({url:'https://official.example.com/private.png',source:'upstream'});await pending
+    assert.equal(h.vm.previewURL.value,'');assert.equal(h.vm.previewAsset.value,undefined)
+    assert.equal(writes(h).length,0)
+  })
+  const h=await harness(t),respond=h.respond
+  h.respond=call=>call.path.endsWith('/source')?{url:'https://secret@example.com/private.png',source:'upstream'}:respond(call)
+  await h.vm.showPreview(asset({source_available:true}))
+  assert.equal(h.vm.previewURL.value,'');assert.equal(h.vm.previewError.value.includes('secret'),false)
+})
+
+test('legacy preview helper refuses external addresses before attaching platform authorization',async t=>{
+  await harness(t);const previousFetch=globalThis.fetch
+  globalThis.fetch=()=>assert.fail('must not send platform bearer to an external address')
+  t.after(()=>{globalThis.fetch=previousFetch})
+  for(const path of ['https://official.example.com/media.png','//official.example.com/media.png','/api/video/assets/id/preview?url=https://other.invalid'])await assert.rejects(client.assetPreview(path),/preview_unavailable/)
 })
 
 test('file upload errors preserve safe codes and request IDs without exposing object payloads or expiring replacement sessions', async t => {
@@ -487,12 +555,12 @@ test('late discovery lists never reveal another organization project or reopen i
 })
 
 test('late sync and verification responses cannot overwrite a replacement session',async t=>{
-  for(const action of ['sync','verify','discover','assign','license'])await t.test(action,async t=>{
+  for(const action of ['sync','discover','assign','license'])await t.test(action,async t=>{
     const h=await harness(t),late=deferred(),respond=h.respond
     h.vm.caps.value.scope_id='scope_old';h.vm.assignment.value={id:'discovery_fixture',version:1};h.vm.targetOrg.value=1;h.vm.assignmentConfirmed.value=true;h.vm.evidence.value='reviewed'
     h.vm.groups.value=[group({portrait_session_id:'portrait_fixture'})];h.vm.licenseUntil.value='2026-10-22T00:00';h.vm.reverifyAt.value='2026-10-21T12:00'
     h.respond=call=>call.method==='POST'?late.promise:respond(call)
-    const pending=action==='sync'?h.vm.startSync():action==='verify'?h.vm.verify(asset()):action==='discover'?h.vm.discover():action==='assign'?h.vm.assign():h.vm.reviewLicense()
+    const pending=action==='sync'?h.vm.startSync():action==='discover'?h.vm.discover():action==='assign'?h.vm.assign():h.vm.reviewLicense()
     await until(()=>writes(h).length===1);h.auth.token='replacement-session';await until(()=>!h.vm.busy.value);h.vm.modal.value='rename'
     late.resolve({id:'old_job'});await pending
     assert.equal(h.vm.modal.value,'rename');assert.equal(h.vm.notice.value,'');assert.equal(h.vm.sync.value,undefined);assert.equal(h.vm.discoveryJob.value,undefined)
@@ -626,11 +694,11 @@ test('official discovery completion also retries failed list readback without a 
   assert.equal(writes(h).length,1)
 })
 
-test('imported assets needing media verification remain visible and independently deletable while upload stays disabled',async t=>{
-  const h=await harness(t),row=asset({source:'imported',status:'ready',stage:'needs_review',provider_status:'active',media_verification_status:'unverified',generation_status:'blocked',generation_block_reason:'media_unverified'})
+test('official Active images can be referenced and deleted without platform scanning or file uploads',async t=>{
+  const h=await harness(t),row=asset({source:'imported',status:'ready',stage:'ready',provider_status:'active',media_verification_status:'unverified',generation_status:'ready',generation_block_reason:''})
   h.vm.caps.value.upload=false;h.assets=[row];await h.vm.loadAssets()
-  assert.equal(client.assetStateText(row),'已入库');assert.equal(client.assetMediaStateText(row),'媒体待核验');assert.match(client.assetReviewExplanation(row),/平台尚未完成媒体安全核验/)
-  assert.equal(h.vm.assetDeleteReason(row),'');assert.match(h.vm.uploadBlockedReason.value,/媒体存储与安全核验服务尚未配置/)
+  assert.equal(client.assetStateText(row),'已入库');assert.equal(client.assetMediaStateText(row),'由官方处理，未做平台核验');assert.equal(client.assetGenerationText(row),'素材引用就绪')
+  assert.equal(h.vm.assetDeleteReason(row),'');assert.equal(h.vm.uploadBlockedReason.value,'')
   assert.equal(client.groupStateText(group({create_operation:operation('unknown',{kind:'CreateAssetGroup'})})),'创建结果待核验')
   assert.equal(client.assetStateText(asset({stage:'needs_review',status:'failed',source:'imported'})),'失败')
   assert.equal(client.assetStateText(asset({stage:'needs_review',status:'processing',source:'imported'})),'处理中')
@@ -638,10 +706,10 @@ test('imported assets needing media verification remain visible and independentl
 })
 
 test('official asset status stays independent of platform verification and reference readiness',()=>{
-  const row=asset({source:'imported',stage:'needs_review',provider_status:'active',media_verification_status:'unverified',generation_status:'blocked',generation_block_reason:'media_unverified'})
+  const row=asset({source:'imported',media_type:'video',stage:'needs_review',provider_status:'active',media_verification_status:'unverified',generation_status:'blocked',generation_block_reason:'media_facts_unavailable'})
   assert.equal(client.assetStateText(row),'已入库');assert.equal(client.assetStateTone(row),'active')
-  assert.equal(client.assetMediaStateText(row),'媒体待核验');assert.equal(client.assetGenerationText(row),'暂不可用于生成')
-  assert.match(client.assetReviewExplanation(row),/平台尚未完成媒体安全核验/)
+  assert.equal(client.assetMediaStateText(row),'由官方处理，未做平台核验');assert.equal(client.assetGenerationText(row),'暂不可用于生成')
+  assert.match(client.assetReviewExplanation(row),/可信的视频或音频时长/)
   const ready={...row,media_verification_status:'verified',generation_status:'ready',generation_block_reason:''}
   assert.equal(client.assetGenerationText(ready),'素材引用就绪')
   assert.match(client.assetReviewExplanation(ready),/任务接口核对模型、配额及授权/)
@@ -665,7 +733,7 @@ test('unknown operations override an Active projection without inventing a new o
 
 test('legacy or incomplete asset responses never claim verified media or infer Active from imported source',()=>{
   const row=asset({source:'imported',status:'needs_review',stage:'needs_review',bytes:999999})
-  assert.equal(client.assetStateText(row),'官方状态待确认');assert.equal(client.assetMediaStateText(row),'媒体核验未确认')
+  assert.equal(client.assetStateText(row),'官方状态待确认');assert.equal(client.assetMediaStateText(row),'媒体事实未确认')
   assert.equal(client.assetGenerationText(row),'暂不可用于生成');assert.equal(client.assetSizeText(row),'大小未知')
   assert.equal(client.assetStateText(asset()),'已入库');assert.equal(client.assetGenerationText(asset()),'暂不可用于生成')
   assert.equal(client.assetStateText(asset({provider_status:'unknown'})),'官方状态待确认')

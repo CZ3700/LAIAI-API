@@ -290,7 +290,8 @@ func TestAssetCleanupHTTPRemainsIdempotentAndTenantIsolated(t *testing.T) {
 	org := uint64(1)
 	group := router.Group("/v1/video")
 	group.Use(func(c *gin.Context) {
-		c.Set("video_key", &identity.APIKey{ID: 3, OrgID: org, Scopes: "video:read video:write"})
+		uid := uint64(2)
+		c.Set("video_key", &identity.APIKey{ID: 3, OrgID: org, UserID: &uid, Scopes: "video:read video:write"})
 		c.Set("video_request_id", "req-delete-http")
 		c.Next()
 	})

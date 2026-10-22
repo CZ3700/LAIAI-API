@@ -74,6 +74,7 @@ func (s *Server) arkRequestLogActor(internal bool) gin.HandlerFunc {
 		c.Set("ark_log_org", org)
 		c.Set("ark_log_actor", actor)
 		c.Set("ark_log_internal", internal)
+		c.Request = c.Request.WithContext(video.WithRequestLogActor(c.Request.Context(), org, actor, internal))
 		c.Next()
 	}
 }

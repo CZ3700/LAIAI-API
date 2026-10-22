@@ -97,8 +97,12 @@ func extractProviderID(raw []byte) string {
 	return v.ID
 }
 func (s *Service) CreateSyncJob(ctx context.Context, c CreateContext, kind, mode string) (SyncJob, error) {
+	ctx = WithCaller(ctx, c)
 	if !validCreate(c) || (kind != KindVirtual && kind != "real_person") || (mode != "owned" && mode != "discover") {
 		return SyncJob{}, ErrInvalid
+	}
+	if mode == "discover" && !c.Superadmin {
+		return SyncJob{}, ErrNotFound
 	}
 	r, e := s.resolve(ctx, c.OrgID, Scope{})
 	if e != nil || !r.Capabilities.Sync {
@@ -116,7 +120,7 @@ func (s *Service) CreateSyncJob(ctx context.Context, c CreateContext, kind, mode
 		}
 		e := tx.Where("org_id = ? AND idempotency_hash = ?", c.OrgID, key).Take(&out).Error
 		if e == nil {
-			return nil
+			return resourceVisible(ctx, tx, c.OrgID, "sync", out.ID)
 		}
 		if !errors.Is(e, gorm.ErrRecordNotFound) {
 			return ErrStorage
@@ -133,8 +137,14 @@ func (s *Service) CreateSyncJob(ctx context.Context, c CreateContext, kind, mode
 		}
 		now := nowMillis(s)
 		out = SyncJob{ID: id, OrgID: c.OrgID, RequestID: c.RequestID, ScopeID: r.Scope.ID, ScopeVersion: r.Scope.Version, AccountID: r.Scope.AccountID, Region: r.Scope.Region, Project: r.Scope.Project, Mode: mode, Kind: kind, Phase: "groups", Status: "pending", IdempotencyHash: key, CreatedAt: now, UpdatedAt: now}
+		if mode == "owned" && !c.Superadmin {
+			out.Phase = "assets"
+		}
 		if tx.Create(&out).Error != nil {
 			return ErrStorage
+		}
+		if err := registerOwnerTx(tx, c, "sync", id); err != nil {
+			return err
 		}
 		return s.event(tx, c.OrgID, "sync", id, "", "sync_requested", "", callerLabel(c))
 	})
@@ -142,7 +152,7 @@ func (s *Service) CreateSyncJob(ctx context.Context, c CreateContext, kind, mode
 }
 func (s *Service) GetSyncJob(ctx context.Context, org uint64, id string, admin bool) (SyncJob, error) {
 	var out SyncJob
-	q := s.db.WithContext(ctx).Where("org_id = ? AND id = ?", org, id)
+	q := owned(ctx, s.db.WithContext(ctx), org, "sync", "id").Where("org_id = ? AND id = ?", org, id)
 	if !admin {
 		q = q.Where("mode = ?", "owned")
 	}
@@ -189,6 +199,10 @@ func (s *Service) ListDiscoveries(ctx context.Context, scope string) ([]Discover
 	return page.Data, err
 }
 func (s *Service) AssignDiscovery(ctx context.Context, c CreateContext, id string, version uint64, evidence string) (GroupDTO, error) {
+	ctx = WithCaller(ctx, c)
+	if !c.Superadmin {
+		return GroupDTO{}, ErrNotFound
+	}
 	if !validCreate(c) || !validID(evidence) {
 		return GroupDTO{}, ErrInvalid
 	}
@@ -234,6 +248,14 @@ func (s *Service) AssignDiscovery(ctx context.Context, c CreateContext, id strin
 		if tx.Create(&g).Error != nil {
 			return ErrConflict
 		}
+		if err := registerOwnerTx(tx, c, "asset_group", gid); err != nil {
+			return err
+		}
+		if g.PortraitID != "" {
+			if err := registerOwnerTx(tx, c, "portrait", g.PortraitID); err != nil {
+				return err
+			}
+		}
 		if saveDetails(tx, c.OrgID, gid, d.Description, "imported", now) != nil {
 			return ErrStorage
 		}
@@ -263,6 +285,23 @@ func (s *Service) processSyncJobs(ctx context.Context) error {
 	return nil
 }
 func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
+	var ownerErr error
+	ctx, ownerErr = s.syncOwnerContext(ctx, job)
+	if ownerErr != nil {
+		return ownerErr
+	}
+	caller, _ := callerFrom(ctx)
+	if job.Mode == "discover" && (!validCaller(caller, job.OrgID) || !caller.Superadmin) {
+		return s.db.WithContext(ctx).Model(&SyncJob{}).Where("org_id = ? AND id = ? AND status IN ?", job.OrgID, job.ID, []string{"pending", "running"}).Updates(map[string]any{"status": "failed", "error_code": "resource_owner_unavailable", "lease_until": nil}).Error
+	}
+	// Old in-flight owned jobs may still have a project-wide groups cursor.
+	// A nonadministrator must start at their own groups after this upgrade.
+	if job.Mode == "owned" && !caller.Superadmin && job.Phase == "groups" {
+		if err := s.db.WithContext(ctx).Model(&SyncJob{}).Where("id = ? AND org_id = ? AND fence = ?", job.ID, job.OrgID, job.Fence).Updates(map[string]any{"phase": "assets", "checkpoint_id": "", "seen_hashes": ""}).Error; err != nil {
+			return ErrStorage
+		}
+		job.Phase, job.CheckpointID, job.SeenHashes = "assets", "", ""
+	}
 	now := nowMillis(s)
 	lease := now.Add(2 * time.Minute)
 	claimed := false
@@ -311,7 +350,7 @@ func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 	action := "ListAssetGroups"
 	var group Group
 	if job.Phase == "assets" {
-		q := s.db.WithContext(ctx).Where("org_id = ? AND scope_id = ? AND scope_version = ? AND account_id = ? AND region = ? AND project = ? AND kind = ? AND deleted_at IS NULL AND provider_id IS NOT NULL", job.OrgID, job.ScopeID, job.ScopeVersion, job.AccountID, job.Region, job.Project, kind)
+		q := owned(ctx, s.db.WithContext(ctx), job.OrgID, "asset_group", "group_id").Where("org_id = ? AND scope_id = ? AND scope_version = ? AND account_id = ? AND region = ? AND project = ? AND kind = ? AND deleted_at IS NULL AND provider_id IS NOT NULL", job.OrgID, job.ScopeID, job.ScopeVersion, job.AccountID, job.Region, job.Project, kind)
 		if job.GroupID != "" {
 			q = q.Where("group_id = ?", job.GroupID)
 		} else {
@@ -402,7 +441,7 @@ func (s *Service) syncPage(ctx context.Context, job SyncJob) error {
 			// before applying its page so a late response cannot populate a group
 			// which was deleted, mutated, or reassigned while the call was in flight.
 			var currentGroup Group
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND group_id = ?", job.OrgID, group.ID).Take(&currentGroup).Error; err != nil {
+			if err := owned(ctx, tx.Clauses(clause.Locking{Strength: "UPDATE"}), job.OrgID, "asset_group", "group_id").Where("org_id = ? AND group_id = ?", job.OrgID, group.ID).Take(&currentGroup).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					applyErrorCode = "resource_identity_mismatch"
 				}
@@ -505,6 +544,12 @@ func (s *Service) syncGroupTx(tx *gorm.DB, job SyncJob, item upstreamGroup, kind
 	if g.OrgID != job.OrgID || g.DeletedAt != nil || g.Status != StatusActive || !sameScope(groupScope(g), Scope{job.ScopeID, job.ScopeVersion, job.AccountID, job.Region, job.Project}) {
 		return 0, nil
 	}
+	if err := resourceVisible(tx.Statement.Context, tx, job.OrgID, "asset_group", g.ID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
 	var active int64
 	if tx.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND action IN ? AND status IN ?", g.OrgID, g.ID, []string{"UpdateAssetGroup", "DeleteAssetGroup"}, []string{"pending", "in_flight", "unknown"}).Count(&active).Error != nil {
 		return 0, ErrStorage
@@ -542,9 +587,12 @@ func (s *Service) syncAssetTx(tx *gorm.DB, job SyncJob, g Group, item upstreamAs
 		if e != nil {
 			return e
 		}
-		a = Asset{ID: id, OrgID: g.OrgID, GroupID: g.ID, MediaType: kind, Name: item.Name, ScopeID: g.ScopeID, ScopeVersion: g.ScopeVersion, ProviderID: &item.ID, Status: status, ReviewState: ReviewRequired, RowVersion: 1, CreatedAt: now, UpdatedAt: now}
+		a = Asset{ID: id, OrgID: g.OrgID, GroupID: g.ID, MediaType: kind, Name: item.Name, ScopeID: g.ScopeID, ScopeVersion: g.ScopeVersion, ProviderID: &item.ID, Status: status, ReviewState: ReviewClear, RowVersion: 1, CreatedAt: now, UpdatedAt: now}
 		if tx.Create(&a).Error != nil {
 			return ErrStorage
+		}
+		if err := inheritOwnerTx(tx, g.OrgID, "asset_group", g.ID, "asset", id); err != nil {
+			return err
 		}
 		return saveDetails(tx, g.OrgID, id, "", "imported", now)
 	}
@@ -553,6 +601,12 @@ func (s *Service) syncAssetTx(tx *gorm.DB, job SyncJob, g Group, item upstreamAs
 	}
 	if a.OrgID != g.OrgID || a.GroupID != g.ID {
 		return ErrConflict
+	}
+	if err := resourceVisible(tx.Statement.Context, tx, g.OrgID, "asset", a.ID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
 	}
 	if a.DeletedAt != nil || a.Status == StatusDeleting {
 		return nil
@@ -568,5 +622,16 @@ func (s *Service) syncAssetTx(tx *gorm.DB, job SyncJob, g Group, item upstreamAs
 	if status == StatusFailed {
 		code = "asset_processing_failed"
 	}
-	return tx.Model(&Asset{}).Where("org_id = ? AND asset_id = ?", g.OrgID, a.ID).Updates(map[string]any{"name": item.Name, "status": status, "safe_error_code": code, "updated_at": now, "row_version": gorm.Expr("row_version + 1")}).Error
+	updates := map[string]any{"name": item.Name, "status": status, "safe_error_code": code, "updated_at": now, "row_version": gorm.Expr("row_version + 1")}
+	if a.CreateOperationID == "" && a.ReviewState == ReviewRequired {
+		var details Details
+		err := tx.Where("org_id = ? AND resource_id = ?", g.OrgID, a.ID).Take(&details).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrStorage
+		}
+		if err == nil && details.Source == "imported" {
+			updates["review_state"] = ReviewClear
+		}
+	}
+	return tx.Model(&Asset{}).Where("org_id = ? AND asset_id = ?", g.OrgID, a.ID).Updates(updates).Error
 }

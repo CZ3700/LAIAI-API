@@ -40,8 +40,8 @@ func consoleGenerationStatus(row Asset, dto AssetDTO, providerStatus, mediaStatu
 		return "blocked", "operation_pending"
 	case providerStatus != StatusActive:
 		return "blocked", "provider_not_ready"
-	case mediaStatus != "verified":
-		return "blocked", "media_unverified"
+	case !referenceMediaReady(row):
+		return "blocked", "media_facts_unavailable"
 	case dto.Reference == "":
 		return "blocked", "resource_not_ready"
 	default:

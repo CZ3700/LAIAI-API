@@ -30,6 +30,7 @@ func TestArkAssetSetupRequiresIndividualSuperadminAndWorksWithoutGateway(t *test
 CREATE TABLE video_provider_scopes(id INTEGER PRIMARY KEY,account_ref TEXT,region TEXT,project_name TEXT,enabled INTEGER);
 CREATE TABLE video_asset_scope_configs(provider_scope_id INTEGER,version INTEGER,account_ref TEXT,region TEXT,project_name TEXT,capabilities_json TEXT,credential_cipher TEXT,enabled INTEGER);
 CREATE TABLE video_asset_org_routes(org_id INTEGER,provider_scope_id INTEGER,scope_version INTEGER,enabled INTEGER,default_route INTEGER);
+CREATE TABLE video_asset_shared_defaults(id INTEGER PRIMARY KEY,revision INTEGER,provider_scope_id INTEGER,scope_version INTEGER,enabled INTEGER,allow_async INTEGER,updated_by INTEGER,updated_at DATETIME);
 CREATE TABLE video_org_policies(org_id INTEGER,async_execution_allowed INTEGER,capture_history INTEGER,retention_days INTEGER);
 INSERT INTO organizations(id,slug,name) VALUES(1,'setup-one','Setup one'),(2,'setup-two','Setup two');
 INSERT INTO video_provider_scopes VALUES(10,'1234567890','cn-beijing','default',1);

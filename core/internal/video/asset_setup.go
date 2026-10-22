@@ -42,6 +42,8 @@ type AssetSetupPolicy struct {
 }
 
 type AssetSetupView struct {
+	SharedDefault      AssetSharedDefault                `json:"shared_default"`
+	RouteSource        string                            `json:"route_source"`
 	OrgID              uint64                            `json:"org_id"`
 	OrgActive          bool                              `json:"org_active"`
 	ConfigurationReady bool                              `json:"configuration_ready"`
@@ -149,10 +151,18 @@ func (s *Service) AssetSetup(ctx context.Context, actor *identity.User, org uint
 			return ErrUnavailable
 		}
 		var defaults []AssetOrgRoute
+		if err := tx.Where("id = 1").Take(&out.SharedDefault).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrUnavailable
+		}
 		for _, route := range out.OrgRoutes {
 			if route.Enabled && route.DefaultRoute {
 				defaults = append(defaults, route)
 			}
+		}
+		out.RouteSource = "organization"
+		if len(out.OrgRoutes) == 0 && out.SharedDefault.Enabled && out.SharedDefault.AllowAsync {
+			defaults = append(defaults, AssetOrgRoute{OrgID: org, ProviderScopeID: out.SharedDefault.ProviderScopeID, ScopeVersion: out.SharedDefault.ScopeVersion, Enabled: true, DefaultRoute: true})
+			out.RouteSource = "shared_default"
 		}
 		if len(defaults) == 0 {
 			issue("org_default_route_missing", true)
@@ -196,7 +206,11 @@ func (s *Service) AssetSetup(ctx context.Context, actor *identity.User, org uint
 			if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrUnavailable
 			}
-			issue("execution_policy_missing", true)
+			if out.RouteSource == "shared_default" {
+				out.Policy = AssetSetupPolicy{Present: false, AsyncExecutionAllowed: true, CaptureHistory: false, RetentionDays: 1}
+			} else {
+				issue("execution_policy_missing", true)
+			}
 		} else {
 			out.Policy.Present = true
 			if !out.Policy.AsyncExecutionAllowed {

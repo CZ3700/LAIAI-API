@@ -58,6 +58,10 @@ func saveDetails(tx *gorm.DB, org uint64, id, description, source string, now ti
 	return tx.Create(&Details{ResourceID: id, OrgID: org, Description: description, Source: source, UpdatedAt: now}).Error
 }
 func (s *Service) GetPortraitForCaller(ctx context.Context, c CreateContext, id string, withURL bool) (PortraitDTO, error) {
+	ctx = WithCaller(ctx, c)
+	if err := resourceVisible(ctx, s.db, c.OrgID, "portrait", id); err != nil {
+		return PortraitDTO{}, err
+	}
 	if c.CallerKind != "session_user" {
 		return s.GetPortrait(ctx, c.OrgID, id, c.KeyID, withURL)
 	}
@@ -68,29 +72,36 @@ func (s *Service) GetPortraitForCaller(ctx context.Context, c CreateContext, id 
 	if err := s.db.WithContext(ctx).Where("org_id = ? AND session_id = ?", c.OrgID, id).Take(&p).Error; err != nil {
 		return PortraitDTO{}, ErrNotFound
 	}
-	if withURL && (p.OwnerUserID != c.UserID || p.CreatedByKeyID != 0) {
+	if withURL && p.OwnerUserID != c.UserID {
 		return PortraitDTO{}, ErrSecret
 	}
 	return s.GetPortrait(ctx, c.OrgID, id, 0, withURL)
 }
 
 type CapabilityView struct {
-	Ready            bool     `json:"ready"`
-	ScopeID          string   `json:"scope_id,omitempty"`
-	Project          string   `json:"project,omitempty"`
-	Virtual          bool     `json:"virtual"`
-	Portrait         bool     `json:"portrait"`
-	MediaTypes       []string `json:"media_types"`
-	Sync             bool     `json:"sync"`
-	Update           bool     `json:"update"`
-	Delete           bool     `json:"delete"`
-	DeleteEmptyGroup bool     `json:"delete_empty_group"`
-	Upload           bool     `json:"upload"`
-	Reason           string   `json:"reason,omitempty"`
+	URLRegistration    bool     `json:"url_registration"`
+	LocalUpload        bool     `json:"local_upload"`
+	RouteSource        string   `json:"route_source"`
+	ResourceVisibility string   `json:"resource_visibility"`
+	Ready              bool     `json:"ready"`
+	ScopeID            string   `json:"scope_id,omitempty"`
+	Project            string   `json:"project,omitempty"`
+	Virtual            bool     `json:"virtual"`
+	Portrait           bool     `json:"portrait"`
+	MediaTypes         []string `json:"media_types"`
+	Sync               bool     `json:"sync"`
+	Update             bool     `json:"update"`
+	Delete             bool     `json:"delete"`
+	DeleteEmptyGroup   bool     `json:"delete_empty_group"`
+	Upload             bool     `json:"upload"`
+	Reason             string   `json:"reason,omitempty"`
 }
 
 func (s *Service) ConsoleCapabilities(ctx context.Context, org uint64) CapabilityView {
-	out := CapabilityView{MediaTypes: []string{}}
+	out := CapabilityView{MediaTypes: []string{}, ResourceVisibility: "owner"}
+	if c, present := callerFrom(ctx); present && validCaller(c, org) && c.Superadmin {
+		out.ResourceVisibility = "organization_admin"
+	}
 	r, err := s.resolveConfiguredScope(ctx, org, Scope{})
 	if err != nil {
 		out.Reason = "management_scope_not_configured"
@@ -106,6 +117,9 @@ func (s *Service) ConsoleCapabilities(ctx context.Context, org uint64) Capabilit
 	out.Ready = true
 	out.ScopeID = r.Scope.ID
 	out.Project = r.Scope.Project
+	out.RouteSource = r.RouteSource
+	out.URLRegistration = r.Capabilities.Images || r.Capabilities.Videos || r.Capabilities.Audio
+	out.LocalUpload = s.console.Media != nil
 	out.Virtual = r.Capabilities.VirtualGroups
 	out.Portrait = r.Capabilities.Portrait && s.consolePortraitReady(ctx, org)
 	out.Sync = r.Capabilities.Sync
@@ -154,6 +168,7 @@ type ConsoleGroup struct {
 	PortraitSessionID string     `json:"portrait_session_id,omitempty"`
 }
 type ConsoleAsset struct {
+	SourceAvailable bool `json:"source_available"`
 	AssetDTO
 	ProviderStatus          string `json:"provider_status"`
 	MediaVerificationStatus string `json:"media_verification_status"`
@@ -224,11 +239,12 @@ func (s *Service) ConsoleGroups(ctx context.Context, org uint64, f ListFilter) (
 	if !ok {
 		return out, ErrInvalid
 	}
-	after, err := s.parseCursor(org, filterIdentity(f), f.Cursor)
+	kind := actorCursor(ctx, filterIdentity(f))
+	after, err := s.parseCursor(org, kind, f.Cursor)
 	if err != nil {
 		return out, err
 	}
-	q := applyName(s.db.WithContext(ctx).Model(&Group{}).Where("org_id = ? AND deleted_at IS NULL", org), f.Name)
+	q := applyName(owned(ctx, s.db.WithContext(ctx).Model(&Group{}), org, "asset_group", "group_id").Where("org_id = ? AND deleted_at IS NULL", org), f.Name)
 	if f.Kind != "" {
 		kind := f.Kind
 		if kind == "real_person" {
@@ -255,7 +271,7 @@ func (s *Service) ConsoleGroups(ctx context.Context, org uint64, f ListFilter) (
 	}
 	if len(rows) > f.Limit {
 		rows = rows[:f.Limit]
-		out.NextCursor = s.cursor(org, filterIdentity(f), rows[len(rows)-1].ID)
+		out.NextCursor = s.cursor(org, kind, rows[len(rows)-1].ID)
 	}
 	for _, row := range rows {
 		dto, e := s.GetGroup(ctx, org, row.ID)
@@ -280,19 +296,23 @@ func (s *Service) ConsoleAssets(ctx context.Context, org uint64, f ListFilter) (
 	if !ok {
 		return out, ErrInvalid
 	}
-	after, err := s.parseCursor(org, filterIdentity(f), f.Cursor)
+	kind := actorCursor(ctx, filterIdentity(f))
+	after, err := s.parseCursor(org, kind, f.Cursor)
 	if err != nil {
 		return out, err
 	}
-	q := applyName(s.db.WithContext(ctx).Model(&Asset{}).Where("org_id = ? AND deleted_at IS NULL", org), f.Name)
+	q := applyName(owned(ctx, s.db.WithContext(ctx).Model(&Asset{}), org, "asset", "asset_id").Where("org_id = ? AND deleted_at IS NULL", org), f.Name)
 	if f.GroupID != "" {
+		if err := resourceVisible(ctx, s.db, org, "asset_group", f.GroupID); err != nil {
+			return out, err
+		}
 		q = q.Where("group_id = ?", f.GroupID)
 	}
 	if f.MediaType != "" {
 		q = q.Where("media_type = ?", f.MediaType)
 	}
 	q = applyProviderStatusFilter(q, f.ProviderStatus)
-	ready := `video_assets.review_state = ? AND video_assets.metadata_version > 0 AND video_assets.immutable_object_ref <> '' AND video_assets.provider_id IS NOT NULL AND EXISTS (SELECT 1 FROM video_asset_groups g WHERE g.org_id = video_assets.org_id AND g.group_id = video_assets.group_id AND g.deleted_at IS NULL AND g.status = ? AND g.review_state = ? AND g.scope_id = video_assets.scope_id AND g.scope_version = video_assets.scope_version AND (g.kind = ? OR EXISTS (SELECT 1 FROM video_portrait_authorizations p WHERE p.org_id = g.org_id AND p.session_id = g.portrait_id AND p.session_status IN ('succeeded','imported_verified') AND p.license_status = 'verified' AND p.license_scope = 'video_generation' AND p.license_evidence_ref <> '' AND p.revoked_at IS NULL AND p.valid_from <= ? AND p.valid_until > ? AND p.last_verified_at <= ? AND p.last_verified_at >= ? AND p.reverify_due_at > ?)))`
+	ready := `video_assets.review_state = ? AND ` + referenceMediaReadySQL + ` AND EXISTS (SELECT 1 FROM video_asset_groups g WHERE g.org_id = video_assets.org_id AND g.group_id = video_assets.group_id AND g.deleted_at IS NULL AND g.status = ? AND g.review_state = ? AND g.scope_id = video_assets.scope_id AND g.scope_version = video_assets.scope_version AND (g.kind = ? OR EXISTS (SELECT 1 FROM video_portrait_authorizations p WHERE p.org_id = g.org_id AND p.session_id = g.portrait_id AND p.session_status IN ('succeeded','imported_verified') AND p.license_status = 'verified' AND p.license_scope = 'video_generation' AND p.license_evidence_ref <> '' AND p.revoked_at IS NULL AND p.valid_from <= ? AND p.valid_until > ? AND p.last_verified_at <= ? AND p.last_verified_at >= ? AND p.reverify_due_at > ?)))`
 	now := s.now()
 	args := []any{ReviewClear, StatusActive, ReviewClear, KindVirtual, now, now, now, now.Add(-s.options.MaxLicenseAge), now}
 	if status == "needs_review" {
@@ -317,7 +337,7 @@ func (s *Service) ConsoleAssets(ctx context.Context, org uint64, f ListFilter) (
 	}
 	if len(rows) > f.Limit {
 		rows = rows[:f.Limit]
-		out.NextCursor = s.cursor(org, filterIdentity(f), rows[len(rows)-1].ID)
+		out.NextCursor = s.cursor(org, kind, rows[len(rows)-1].ID)
 	}
 	for _, row := range rows {
 		dto, e := s.GetAsset(ctx, org, row.ID)
@@ -348,7 +368,7 @@ func (s *Service) ConsoleAssets(ctx context.Context, org uint64, f ListFilter) (
 			mediaStatus = "verified"
 		}
 		generationStatus, generationReason := consoleGenerationStatus(row, dto, providerStatus, mediaStatus)
-		out.Data = append(out.Data, ConsoleAsset{AssetDTO: dto, Version: row.RowVersion, Stage: stage,
+		out.Data = append(out.Data, ConsoleAsset{AssetDTO: dto, Version: row.RowVersion, Stage: stage, SourceAvailable: providerStatus == "active" && row.ProviderID != nil && *row.ProviderID != "",
 			ProviderStatus: providerStatus, MediaVerificationStatus: mediaStatus, GenerationStatus: generationStatus, GenerationBlockReason: generationReason,
 			Bytes: row.ByteSize, DurationMS: row.DurationMS, Width: row.Width, Height: row.Height, ErrorCode: row.SafeErrorCode, PreviewURL: preview, Source: source})
 	}
@@ -362,6 +382,7 @@ type Rename struct {
 }
 
 func (s *Service) RenameResource(ctx context.Context, c CreateContext, id string, isGroup bool, in Rename) (OperationDTO, error) {
+	ctx = WithCaller(ctx, c)
 	if !validCreate(c) || !validID(id) || !safeName(in.Name, 64, true) || in.ExpectedVersion == 0 || in.Description != nil && !safeName(*in.Description, 300, false) || !isGroup && in.Description != nil {
 		return OperationDTO{}, ErrInvalid
 	}
@@ -370,11 +391,11 @@ func (s *Service) RenameResource(ctx context.Context, c CreateContext, id string
 	action, kind, path := "UpdateAsset", "asset", "/v1/video/assets/"+id
 	if isGroup {
 		action, kind, path = "UpdateAssetGroup", "asset_group", "/v1/video/asset-groups/"+id
-		if s.db.WithContext(ctx).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", c.OrgID, id).Take(&group).Error != nil {
+		if owned(ctx, s.db.WithContext(ctx), c.OrgID, "asset_group", "group_id").Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", c.OrgID, id).Take(&group).Error != nil {
 			return OperationDTO{}, ErrNotFound
 		}
 	} else {
-		if s.db.WithContext(ctx).Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", c.OrgID, id).Take(&asset).Error != nil {
+		if owned(ctx, s.db.WithContext(ctx), c.OrgID, "asset", "asset_id").Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", c.OrgID, id).Take(&asset).Error != nil {
 			return OperationDTO{}, ErrNotFound
 		}
 		if s.db.WithContext(ctx).Where("org_id = ? AND group_id = ?", c.OrgID, asset.GroupID).Take(&group).Error != nil {
@@ -420,11 +441,12 @@ func (s *Service) RenameResource(ctx context.Context, c CreateContext, id string
 	return operationDTO(op), err
 }
 func (s *Service) DeleteAsset(ctx context.Context, c CreateContext, id string) (OperationDTO, bool, error) {
+	ctx = WithCaller(ctx, c)
 	if !validCreate(c) || !validID(id) {
 		return OperationDTO{}, false, ErrInvalid
 	}
 	var a Asset
-	if s.db.WithContext(ctx).Where("org_id = ? AND asset_id = ?", c.OrgID, id).Take(&a).Error != nil {
+	if owned(ctx, s.db.WithContext(ctx), c.OrgID, "asset", "asset_id").Where("org_id = ? AND asset_id = ?", c.OrgID, id).Take(&a).Error != nil {
 		return OperationDTO{}, false, ErrNotFound
 	}
 	if a.DeletedAt != nil {
@@ -463,7 +485,7 @@ func (s *Service) DeleteAsset(ctx context.Context, c CreateContext, id string) (
 	}
 	op, _, err := s.accept(ctx, c, r, path, "DeleteAsset", "asset", id, public, bodyJSON(map[string]string{"Id": *a.ProviderID, "ProjectName": r.Scope.Project}), func(tx *gorm.DB, _ Operation) error {
 		var current Asset
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", c.OrgID, id).Take(&current).Error; err != nil {
+		if err := owned(ctx, tx.Clauses(clause.Locking{Strength: "UPDATE"}), c.OrgID, "asset", "asset_id").Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", c.OrgID, id).Take(&current).Error; err != nil {
 			return ErrNotFound
 		}
 		var currentGroup Group
