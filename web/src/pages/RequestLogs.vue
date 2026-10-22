@@ -126,8 +126,8 @@ async function loadMeta() {
     api<{ keys: KeyRow[] }>('GET', '/api/keys'),
   ])
   if (version !== metaVersion || org !== auth.orgId) return
-  if (bm.status === 'fulfilled') models.value = bm.value.items
-  if (k.status === 'fulfilled') keys.value = k.value.keys
+  if (bm.status === 'fulfilled') models.value = bm.value.items ?? []
+  if (k.status === 'fulfilled') keys.value = k.value.keys ?? []
 }
 
 async function load() {

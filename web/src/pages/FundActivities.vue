@@ -16,7 +16,7 @@ function closeDetail() { detailEpoch++; selectedOperation.value = null; detail.v
 const keyword = ref(''), refType = ref(''), failureCode = ref('')
 const view = ref('movements'), direction = ref(''), status = ref(''), type = ref(''), refID = ref(''), from = ref(''), until = ref('')
 const movements = ref<Movement[]>([]), operations = ref<Operation[]>([]), summary = ref<Summary | null>(null), detail = ref<Detail | null>(null)
-const exportJob = ref<{ id: number; status: string; row_count: number; expires_at: string; error_code?: string } | null>(null)
+const exportJob = ref<{ id: number; status: string; row_count: number; expires_at: string; error_code?: string; display_money?: { display_currency: string; cny_per_usd: string; rate_snapshot_at: string } } | null>(null)
 const loading = ref(false), exporting = ref(false), error = ref(''), notice = ref(''), next = ref(0)
 const directionLabels: Record<string, string> = { credit: '入账', debit: '扣费', freeze: '冻结', unfreeze: '解冻' }
 const statusLabels: Record<string, string> = { success: '成功', failed: '失败', processing: '处理中', reversed: '冲正' }
@@ -51,9 +51,9 @@ async function show(id: number) {
 async function download() {
   exporting.value = true; error.value = ''; notice.value = ''
   try {
-    const filters = { direction: direction.value, status: status.value, type: type.value, ref_id: refID.value, keyword: keyword.value, ref_type: refType.value, from: from.value ? new Date(from.value).toISOString() : '', until: until.value ? new Date(until.value).toISOString() : '' }
+    const filters = { display_currency: displayCurrencyCode(), direction: direction.value, status: status.value, type: type.value, ref_id: refID.value, keyword: keyword.value, ref_type: refType.value, from: from.value ? new Date(from.value).toISOString() : '', until: until.value ? new Date(until.value).toISOString() : '' }
     exportJob.value = await api('POST', '/api/fund-exports', filters, { headers: { 'Idempotency-Key': uuid() } })
-    notice.value = '导出已排队，固定当前流水快照。可点击刷新状态；文件 15 分钟后失效。'
+    notice.value = '导出已排队，固定当前流水、显示币种与汇率快照。可点击刷新状态；文件 15 分钟后失效。'
   } catch (e) { error.value = errorMessage(e, '导出创建失败') } finally { exporting.value = false }
 }
 async function refreshExport() {
@@ -77,10 +77,10 @@ onMounted(() => load())
 </script>
 
 <template>
-  <main class="fund-page"><header><h1>资金流水</h1><p>冻结仅预留可用额度，实际扣费才是消费。当前显示 {{ displayCurrencyCode() }}，账本及导出保持 USD。</p></header>
+  <main class="fund-page"><header><h1>资金流水</h1><p>冻结仅预留可用额度，实际扣费才是消费。当前显示 {{ displayCurrencyCode() }}，导出使用生成时的显示币种，并附原始 USD 金额供核对。</p></header>
     <p v-if="error" role="alert" class="message error">{{ error }}</p><p v-if="notice" role="status" class="message">{{ notice }}</p>
     <section v-if="summary" class="balances"><article><span>当前账面余额</span><strong>{{ fmtUsd(summary.posted_balance) }}</strong></article><article><span>当前冻结</span><strong>{{ fmtUsd(summary.held_amount) }}</strong></article><article><span>当前可用</span><strong>{{ fmtUsd(summary.available_balance) }}</strong></article></section>
-    <section v-if="exportJob" class="panel"><strong>导出 #{{ exportJob.id }} · {{ exportJob.status }} · {{ exportJob.row_count }} 条</strong><p>有效期至 {{ exportJob.expires_at }}。{{ exportJob.error_code }}</p><button :disabled="exporting" @click="refreshExport">刷新导出状态</button> <button v-if="exportJob.status === 'success'" :disabled="exporting" @click="downloadReady">下载完整 CSV</button></section><section class="panel"><div class="tabs" role="group" aria-label="记录类型"><button :class="{ active: view === 'movements' }" :disabled="loading" @click="view = 'movements'; load()">资金变动</button><button :class="{ active: view === 'operations' }" :disabled="loading" @click="view = 'operations'; load()">操作状态</button></div>
+    <section v-if="exportJob" class="panel"><strong>导出 #{{ exportJob.id }} · {{ exportJob.status }} · {{ exportJob.row_count }} 条</strong><p>导出币种 {{ exportJob.display_money?.display_currency ?? 'USD' }}<template v-if="exportJob.display_money"> · 1 USD = {{ exportJob.display_money.cny_per_usd }} CNY · 汇率时间 {{ exportJob.display_money.rate_snapshot_at }}</template></p><p>有效期至 {{ exportJob.expires_at }}。{{ exportJob.error_code }}</p><button :disabled="exporting" @click="refreshExport">刷新导出状态</button> <button v-if="exportJob.status === 'success'" :disabled="exporting" @click="downloadReady">下载完整 CSV</button></section><section class="panel"><div class="tabs" role="group" aria-label="记录类型"><button :class="{ active: view === 'movements' }" :disabled="loading" @click="view = 'movements'; load()">资金变动</button><button :class="{ active: view === 'operations' }" :disabled="loading" @click="view = 'operations'; load()">操作状态</button></div>
       <form class="filters" @submit.prevent="load()"><label>方向<select v-model="direction"><option value="">全部</option><option v-for="(label, value) in directionLabels" :key="value" :value="value">{{ label }}</option></select></label><label>状态<select v-model="status"><option value="">全部</option><option v-for="(label, value) in statusLabels" :key="value" :value="value">{{ label }}</option></select></label><label>类型<select v-model="type"><option value="">全部</option><option v-for="(label, value) in typeLabels" :key="value" :value="value">{{ label }}</option></select></label><label>开始时间<input v-model="from" type="datetime-local"></label><label>结束时间（不含）<input v-model="until" type="datetime-local"></label><label>业务关联 ID<input v-model="refID" placeholder="任务或订单 ID"></label><label>关联 ID 关键词<input v-model="keyword" placeholder="部分 ID"></label><label>关联类型<input v-model="refType" placeholder="video / topup"></label><label v-if="view === 'operations'">安全错误码<input v-model="failureCode" placeholder="insufficient_balance"></label><button type="submit" :disabled="loading">查询</button><button type="button" :disabled="exporting || loading || view !== 'movements'" @click="download">导出资金变动</button></form>
       <p class="hint">余额卡片是当前所有账户分片合计；下方汇总只包含筛选范围的真实资金变动。旧系统上线前历史可能尚未回填。</p>
       <div v-if="summary" class="totals"><span>净账面变化 <strong>{{ fmtUsd(summary.net_change_usd) }}</strong></span><span>退款 <strong>{{ fmtUsd(summary.refund_usd) }}</strong></span><span>净用量扣费 <strong>{{ fmtUsd(summary.net_usage_usd) }}</strong></span><span v-for="s in summary.movements" :key="s.direction">{{ directionLabels[s.direction] }}合计 <strong>{{ fmtUsd(s.amount) }}</strong></span></div>

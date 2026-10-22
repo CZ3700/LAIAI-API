@@ -130,12 +130,12 @@ async function load() {
   // hour 桶键是 'YYYY-MM-DD HH:00'，不能截日期；day 桶保持既有 slice(0,10) 口径
   if (sum.status === 'fulfilled') {
     summary.value = granularity.value === 'hour'
-      ? sum.value.items
-      : sum.value.items.map((s) => ({ ...s, day: s.day.slice(0, 10) }))
+      ? (sum.value.items ?? [])
+      : (sum.value.items ?? []).map((s) => ({ ...s, day: s.day.slice(0, 10) }))
   }
-  if (models.status === 'fulfilled') byModel.value = models.value.items
-  if (byKeyResult.status === 'fulfilled') byKey.value = byKeyResult.value.items
-  if (keyRowsResult.status === 'fulfilled') keys.value = keyRowsResult.value.keys
+  if (models.status === 'fulfilled') byModel.value = models.value.items ?? []
+  if (byKeyResult.status === 'fulfilled') byKey.value = byKeyResult.value.items ?? []
+  if (keyRowsResult.status === 'fulfilled') keys.value = keyRowsResult.value.keys ?? []
   const failed = [sum, models].find((r) => r.status === 'rejected')
   if (failed?.status === 'rejected') error.value = errorMessage(failed.reason, t('usagex.loadFailed'))
   loading.value = false

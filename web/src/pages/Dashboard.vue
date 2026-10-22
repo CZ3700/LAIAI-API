@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api } from '@/lib/api'
+import { api, errorMessage } from '@/lib/api'
 import DailyBarChart, { type ChartMetric, type SummaryDay } from '@/components/DailyBarChart.vue'
 import DonutChart from '@/components/DonutChart.vue'
 import { fmtUsd, addMoney, negateMoney, displayCurrencyCode } from '@/lib/money'
@@ -37,6 +37,7 @@ const keys = ref<KeyRow[]>([])
 const monthRechargeUSD = ref('0')
 const last7RechargeUSD = ref('0')
 const loading = ref(true)
+const balanceLoading = ref(true), balanceError = ref('')
 
 type RankMetric = 'tokens' | 'cost' | 'calls'
 const chartMetric = ref<ChartMetric>('tokens')
@@ -161,10 +162,14 @@ function pctClass(current: number | string, previous: number | string): string {
   return cur >= prev ? 'text-ok' : 'text-danger'
 }
 
-onMounted(async () => {
+async function load() {
+  balanceLoading.value = true; balanceError.value = ''
   loading.value = true
-  const [bal, sum, bm, bk, use, keyRows, ords] = await Promise.allSettled([
-    api<{ balance: string; held: string }>('GET', '/api/balance'),
+  const [, sum, bm, bk, use, keyRows, ords] = await Promise.allSettled([
+    api<{ balance: string; held: string }>('GET', '/api/balance')
+      .then(value => { balance.value = value.balance; held.value = value.held })
+      .catch(e => { balanceError.value = errorMessage(e, t('usagex.loadFailed')) })
+      .finally(() => { balanceLoading.value = false }),
     api<{ items: SummaryDay[] }>('GET', '/api/usage/summary?days=30'),
     api<{ items: ModelStat[] }>('GET', '/api/usage/by-model?days=30'),
     api<{ items: KeyStat[] }>('GET', '/api/usage/by-key?days=30'),
@@ -172,21 +177,18 @@ onMounted(async () => {
     api<{ keys: KeyRow[] }>('GET', '/api/keys'),
     api<{ month_usd: string; last7_usd: string }>('GET', '/api/payment/recharge-stats'),
   ])
-  if (bal.status === 'fulfilled') {
-    balance.value = bal.value.balance
-    held.value = bal.value.held
-  }
-  if (sum.status === 'fulfilled') summary.value = sum.value.items.map((s) => ({ ...s, day: s.day.slice(0, 10) }))
-  if (bm.status === 'fulfilled') byModel.value = bm.value.items
-  if (bk.status === 'fulfilled') byKey.value = bk.value.items
-  if (use.status === 'fulfilled') recent.value = use.value.items
-  if (keyRows.status === 'fulfilled') keys.value = keyRows.value.keys
+  if (sum.status === 'fulfilled') summary.value = (sum.value.items ?? []).map((s) => ({ ...s, day: s.day.slice(0, 10) }))
+  if (bm.status === 'fulfilled') byModel.value = bm.value.items ?? []
+  if (bk.status === 'fulfilled') byKey.value = bk.value.items ?? []
+  if (use.status === 'fulfilled') recent.value = use.value.items ?? []
+  if (keyRows.status === 'fulfilled') keys.value = keyRows.value.keys ?? []
   if (ords.status === 'fulfilled') {
     monthRechargeUSD.value = ords.value.month_usd
     last7RechargeUSD.value = ords.value.last7_usd
   }
   loading.value = false
-})
+}
+onMounted(load)
 </script>
 
 <template>
@@ -257,8 +259,9 @@ onMounted(async () => {
           <span class="metric-icon mi-sky"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3" /></svg></span>
           <p class="text-xs font-medium text-muted">{{ t('dash.cardBalanceTitle', { currency: displayCurrencyCode() }) }}</p>
         </div>
-        <p class="mt-3 font-mono text-2xl font-semibold">{{ fmtUsd(balance) }}</p>
-        <p class="mt-2 text-xs text-muted">{{ t('dash.cardBalanceSub', { held: fmtUsd(held) }) }}</p>
+        <p class="mt-3 font-mono text-2xl font-semibold">{{ balanceLoading ? '…' : balanceError ? '—' : fmtUsd(balance) }}</p>
+        <p v-if="balanceError" role="alert" class="mt-2 text-xs text-danger">{{ balanceError }} <button type="button" class="table-link" @click.stop.prevent="load">{{ t('common.retry') }}</button></p>
+        <p v-if="!balanceLoading && !balanceError" class="mt-2 text-xs text-muted">{{ t('dash.cardBalanceSub', { held: fmtUsd(held) }) }}</p>
       </router-link>
       <router-link to="/app/recharges" class="metric-card block">
         <div class="flex items-center gap-3">

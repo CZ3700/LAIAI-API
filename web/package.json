@@ -16,7 +16,7 @@
     "build": "node scripts/check-money.mjs && node scripts/check-i18n.mjs && vue-tsc -b && vite build",
     "typecheck": "vue-tsc -b",
     "preview": "vite preview",
-    "test:money": "node --test src/lib/money.test.mjs",
+    "test:money": "node --test src/lib/money.test.mjs src/pages/Billing.currency.test.mjs",
     "check:money": "node scripts/check-money.mjs"
   },
   "dependencies": {

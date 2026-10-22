@@ -99,6 +99,11 @@ func (s *Server) getUsage(c *gin.Context) {
 // 与 getUsage 同 org 隔离口径（红线 5）；按 days 截最近 N 天（默认 30，1..365），上限 usageExportMaxRows。
 // CSV 注入防护走 csvSafe（与 admin 导出一致）；只导出对外字段，不含渠道/上游 id 等平台内部信息。
 func (s *Server) getUsageExport(c *gin.Context) {
+	money, err := s.newExportMoney(c.Query("display_currency"))
+	if err != nil {
+		fail(c, 422, err.Error())
+		return
+	}
 	claims := mustClaims(c)
 	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
 	if days < 1 || days > 365 {
@@ -118,19 +123,18 @@ func (s *Server) getUsageExport(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "usage export query failed")
 		return
 	}
-	c.Header("Content-Type", "text/csv; charset=utf-8")
-	c.Header("Content-Disposition", `attachment; filename="usage.csv"`)
+	money.headers(c, "usage")
 	w := csv.NewWriter(c.Writer)
-	_ = w.Write([]string{"time", "request_id", "model", "status", "status_code", "stream",
-		"prompt_tokens", "completion_tokens", "cost_usd", "frt_ms", "duration_ms"})
+	_ = w.Write(money.costHeader([]string{"time", "request_id", "model", "status", "status_code", "stream",
+		"prompt_tokens", "completion_tokens", "cost_usd", "frt_ms", "duration_ms"}))
 	for i := range rows {
 		r := &rows[i]
-		_ = w.Write([]string{
+		_ = w.Write(money.costRow([]string{
 			r.CreatedAt.UTC().Format(time.RFC3339), csvSafe(r.RequestID), csvSafe(r.Model), csvSafe(r.Status),
 			strconv.Itoa(r.StatusCode), strconv.FormatBool(r.IsStream),
 			strconv.FormatInt(r.PromptTokens, 10), strconv.FormatInt(r.CompletionTokens, 10),
 			r.CostUSD.String(), strconv.Itoa(r.FRTMs), strconv.Itoa(r.DurationMs),
-		})
+		}, r.CostUSD))
 	}
 	w.Flush()
 }
@@ -156,14 +160,14 @@ func (s *Server) getUsageByModel(c *gin.Context) {
 		keyPred = " AND api_key_id = ?"
 		args = append(args, id)
 	}
-	var rows []struct {
+	rows := []struct {
 		Model            string          `json:"model"`
 		Calls            int64           `json:"calls"`
 		Succeeded        int64           `json:"succeeded"`
 		PromptTokens     int64           `json:"prompt_tokens"`
 		CompletionTokens int64           `json:"completion_tokens"`
 		CostUSD          decimal.Decimal `json:"cost_usd"`
-	}
+	}{}
 	err := s.readOnly().WithContext(c.Request.Context()).Raw(`
 		SELECT model,
 		       COUNT(*) AS calls,
@@ -192,14 +196,14 @@ func (s *Server) getUsageByKey(c *gin.Context) {
 		days = 30
 	}
 	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
-	var rows []struct {
+	rows := []struct {
 		APIKeyID         uint64          `json:"api_key_id"`
 		Name             string          `json:"name"`
 		Calls            int64           `json:"calls"`
 		PromptTokens     int64           `json:"prompt_tokens"`
 		CompletionTokens int64           `json:"completion_tokens"`
 		CostUSD          decimal.Decimal `json:"cost_usd"`
-	}
+	}{}
 	err := s.readOnly().WithContext(c.Request.Context()).Raw(`
 		SELECT i.api_key_id AS api_key_id,
 		       COALESCE(MAX(k.name), '') AS name,
@@ -254,14 +258,14 @@ func (s *Server) getUsageSummary(c *gin.Context) {
 		keyPred = " AND api_key_id = ?"
 		args = append(args, id)
 	}
-	var rows []struct {
+	rows := []struct {
 		Day              string          `json:"day"`
 		Calls            int64           `json:"calls"`
 		Succeeded        int64           `json:"succeeded"`
 		PromptTokens     int64           `json:"prompt_tokens"`
 		CompletionTokens int64           `json:"completion_tokens"`
 		CostUSD          decimal.Decimal `json:"cost_usd"`
-	}
+	}{}
 	err := s.readOnly().Raw(`
 		SELECT `+bucket+` AS day,
 		       COUNT(*) AS calls,
@@ -279,8 +283,6 @@ func (s *Server) getUsageSummary(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"days": days, "granularity": gran, "items": rows})
 }
-
-
 
 // percentiles：与前端原口径一致的分位（过滤 0/负值后升序，idx = ceil(p/100*n)-1，封顶 [0, n-1]）。
 // 返回 p50/p95/p99（毫秒整数）。空样本返回全 0。

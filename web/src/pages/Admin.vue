@@ -587,18 +587,19 @@ async function loadUsageByUser() {
 }
 // CSV 导出：带上 X-Admin-Token（沿用 adminApi 的鉴权头），fetch → blob → 触发下载
 function exportUsageByUser() {
+  const currency = displayCurrencyCode()
   const headers: Record<string, string> = {}
   const tok = adminToken.get()
   if (tok) headers['X-Admin-Token'] = tok
   const sess = auth.token
   if (sess) headers['Authorization'] = `Bearer ${sess}`
-  fetch(`/api/admin/usage/by-user/export?days=${usageDays.value}`, { headers })
+  fetch(`/api/admin/usage/by-user/export?days=${usageDays.value}&display_currency=${currency}`, { headers })
     .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('export failed'))))
     .then((blob) => {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `usage_by_user_${usageDays.value}d.csv`
+      a.download = `usage_by_user_${usageDays.value}d_${currency}.csv`
       a.click()
       URL.revokeObjectURL(url)
     })

@@ -4,7 +4,7 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import DetailDrawer from '@/components/DetailDrawer.vue'
 import { useAuth } from '@/stores/auth'
 import { useI18n } from 'vue-i18n'
-import { api } from '@/lib/api'
+import { api, errorMessage } from '@/lib/api'
 import type { SummaryDay } from '@/components/DailyBarChart.vue'
 
 interface LedgerEntry {
@@ -37,6 +37,7 @@ const orders = ref<Order[]>([])
 const monthRechargeUSD = ref('0')
 const ledgerTotal = ref(0)
 const loading = ref(true)
+const balanceLoading = ref(true), balanceError = ref('')
 
 function num(v: string | number): number {
   const out = Number(v)
@@ -54,27 +55,27 @@ const monthLabel = computed(() => new Date().toISOString().slice(0, 7))
 async function load() {
   const epoch = ++loadEpoch, org = auth.orgId
   loading.value = true
+  balanceLoading.value = true; balanceError.value = ''
   // 本月消耗按「本月至今」口径：summary 取当前 UTC 月已过天数（与 monthLabel 的 YYYY-MM 自然月一致），
   // 不再用滚动 31 天冒充自然月。本月充值用服务端 UTC 自然月聚合 month_usd。
   const mtdDays = new Date().getUTCDate()
-  const [bal, sum, lg, ord, rs] = await Promise.allSettled([
-    api<{ balance: string; held: string }>('GET', '/api/balance'),
+  const [, sum, lg, ord, rs] = await Promise.allSettled([
+    api<{ balance: string; held: string }>('GET', '/api/balance')
+      .then(value => { if (epoch === loadEpoch && org === auth.orgId) { balance.value = value.balance; held.value = value.held } })
+      .catch(e => { if (epoch === loadEpoch && org === auth.orgId) balanceError.value = errorMessage(e, t('usagex.loadFailed')) })
+      .finally(() => { if (epoch === loadEpoch && org === auth.orgId) balanceLoading.value = false }),
     api<{ items: SummaryDay[] }>('GET', `/api/usage/summary?days=${mtdDays}`),
     api<{ total: number; items: LedgerEntry[] }>('GET', '/api/ledger'),
     api<{ orders: Order[] }>('GET', '/api/payment/orders'),
     api<{ month_usd: string }>('GET', '/api/payment/recharge-stats'),
   ])
   if (epoch !== loadEpoch || org !== auth.orgId) return
-  if (bal.status === 'fulfilled') {
-    balance.value = bal.value.balance
-    held.value = bal.value.held
-  }
-  if (sum.status === 'fulfilled') summary.value = sum.value.items.map((s) => ({ ...s, day: s.day.slice(0, 10) }))
+  if (sum.status === 'fulfilled') summary.value = (sum.value.items ?? []).map((s) => ({ ...s, day: s.day.slice(0, 10) }))
   if (lg.status === 'fulfilled') {
-    ledger.value = lg.value.items
+    ledger.value = lg.value.items ?? []
     ledgerTotal.value = lg.value.total
   }
-  if (ord.status === 'fulfilled') orders.value = ord.value.orders
+  if (ord.status === 'fulfilled') orders.value = ord.value.orders ?? []
   if (rs.status === 'fulfilled') monthRechargeUSD.value = rs.value.month_usd
   loading.value = false
 }
@@ -99,8 +100,9 @@ onMounted(load)
           <span class="metric-icon mi-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3" /></svg></span>
           <p class="text-xs text-muted">{{ t('billx.cardBalance') }}</p>
         </div>
-        <p class="mt-3 font-mono text-2xl font-semibold">{{ loading ? '…' : fmtUsd(balance) }}</p>
-        <p class="mt-2 text-xs text-muted">{{ t('billx.cardHeld', { v: fmtUsd(held) }) }}</p>
+        <p class="mt-3 font-mono text-2xl font-semibold">{{ balanceLoading ? '…' : balanceError ? '—' : fmtUsd(balance) }}</p>
+        <p v-if="!balanceLoading && !balanceError" class="mt-2 text-xs text-muted">{{ t('billx.cardHeld', { v: fmtUsd(held) }) }}</p>
+        <p v-if="balanceError" role="alert" class="mt-2 text-xs text-danger">{{ balanceError }} <button type="button" class="table-link" @click="load">{{ t('common.retry') }}</button></p>
       </div>
       <div class="metric-card">
         <div class="flex items-center gap-3">
