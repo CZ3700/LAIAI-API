@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { fmtUsd, displayCurrencyCode } from '@/lib/money'
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError, copyText, errorMessage } from '@/lib/api'
@@ -334,7 +335,7 @@ onMounted(load)
               <span v-if="!k.model_limits && !k.allow_ips && !(k.rpm_limit > 0) && (!k.route_policy || k.route_policy === 'order')" class="text-muted">—</span>
             </td>
             <td class="px-4 py-3 text-right font-mono text-xs">
-              ${{ Number(k.used_amount).toFixed(4) }}<span v-if="k.quota_limit !== '0'" class="text-muted"> / ${{ Number(k.quota_limit).toFixed(2) }}</span>
+              {{ fmtUsd(k.used_amount, { precision: 4 }) }}<span v-if="k.quota_limit !== '0'" class="text-muted"> / {{ fmtUsd(k.quota_limit, { precision: 2 }) }}</span>
             </td>
             <td class="px-4 py-3">
               <span :class="k.status === 1 ? 'badge-ok' : 'badge-muted'">
@@ -371,7 +372,7 @@ onMounted(load)
         <div><dt>{{ t('keys.name') }}</dt><dd>{{ selectedKey.name || '—' }}</dd></div><div><dt>{{ t('keys.status') }}</dt><dd>{{ t(selectedKey.status === 1 ? 'keys.active' : 'keys.revoked') }}</dd></div>
         <div class="col-span-2"><dt>{{ t('keys.videoPermissionsTitle') }}</dt><dd>{{ t(permissionLabels[videoPermission(selectedKey.scopes)]) }}</dd></div>
         <div class="col-span-2"><dt>{{ t('keys.scopeIdentifiers') }}</dt><dd class="font-mono break-all">{{ selectedKey.scopes || '—' }}</dd></div>
-        <div><dt>{{ t('keys.used') }}</dt><dd>USD {{ selectedKey.used_amount }}</dd></div><div><dt>{{ t('keys.quotaLimit') }}</dt><dd>{{ Number(selectedKey.quota_limit) === 0 ? '∞' : `USD ${selectedKey.quota_limit}` }}</dd></div>
+        <div><dt>{{ t('keys.used') }}</dt><dd>{{ fmtUsd(selectedKey.used_amount) }}</dd></div><div><dt>{{ t('currency.quota', { currency: displayCurrencyCode() }) }}</dt><dd>{{ Number(selectedKey.quota_limit) === 0 ? '∞' : fmtUsd(selectedKey.quota_limit) }}</dd></div>
         <div><dt>expires_at</dt><dd>{{ selectedKey.expires_at ? d(new Date(selectedKey.expires_at), { dateStyle: 'short', timeStyle: 'medium' }) : '—' }}</dd></div>
         <div><dt>{{ t('keys.rpmLimit') }}</dt><dd>{{ selectedKey.rpm_limit || '∞' }}</dd></div><div><dt>{{ t('keys.routePolicy') }}</dt><dd>{{ selectedKey.route_policy || 'order' }}</dd></div>
         <div class="col-span-2"><dt>{{ t('keys.modelLimitsField') }}</dt><dd>{{ selectedKey.model_limits || '—' }}</dd></div><div class="col-span-2"><dt>{{ t('keys.allowIps') }}</dt><dd>{{ selectedKey.allow_ips || '—' }}</dd></div>

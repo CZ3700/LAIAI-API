@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { fmtUsd, addMoney, multiplyMoney } from '@/lib/money'
 import { computed, onActivated, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/lib/api'
@@ -66,10 +67,8 @@ function estCost(r: RunState): string {
   if (!r.usage) return ''
   const p = models.value.find((m) => m.model === r.model)
   if (!p) return ''
-  const cost =
-    (r.usage.prompt_tokens / 1e6) * parseFloat(p.input_usd_per_1m || '0') +
-    (r.usage.completion_tokens / 1e6) * parseFloat(p.output_usd_per_1m || '0')
-  return cost > 0 ? `$${cost.toFixed(6)}` : ''
+  const cost = addMoney(multiplyMoney(r.usage.prompt_tokens, p.input_usd_per_1m || '0', 6), multiplyMoney(r.usage.completion_tokens, p.output_usd_per_1m || '0', 6))
+  return fmtUsd(cost, { precision: 6 })
 }
 
 async function runOne(run: RunState, ac: AbortController) {

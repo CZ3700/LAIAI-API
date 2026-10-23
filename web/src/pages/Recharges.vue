@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { fmtUsd, formatNativeMoney, displayCurrencyCode } from '@/lib/money'
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import DetailDrawer from '@/components/DetailDrawer.vue'
 import { useAuth } from '@/stores/auth'
@@ -32,7 +33,7 @@ const creating = ref(false)
 const error = ref('')
 
 const selectedMethod = computed(() => methods.value.find((m) => m.provider === selectedProvider.value))
-const estimated = computed(() => `$${amount.value.toFixed(2)}`)
+const estimated = computed(() => fmtUsd(String(amount.value), { precision: 2 }))
 
 function statusLabel(s: number): string {
   if (s === 1) return t('recharge.statusPaid')
@@ -112,7 +113,7 @@ onMounted(load)
                 :class="amount === a ? 'border-accent bg-accent/10 text-accent' : 'border-line hover:border-muted/40'"
                 @click="amount = a"
               >
-                ${{ a }}
+                {{ formatNativeMoney(a, 'USD') }}
               </button>
             </div>
             <input v-model.number="amount" class="input mt-2" type="number" min="1" step="1" :placeholder="t('recharge.customAmountPlaceholder')" />
@@ -155,7 +156,7 @@ onMounted(load)
               <tr v-else-if="orders.length === 0"><td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('recharge.emptyRecords') }}</td></tr>
               <tr v-for="o in orders" :key="o.id">
                 <td class="px-4 py-2.5 font-mono text-xs">{{ o.order_no }}</td>
-                <td class="px-4 py-2.5 text-right font-mono">{{ o.pay_amount }} {{ o.pay_currency }}</td>
+                <td class="px-4 py-2.5 text-right font-mono">{{ formatNativeMoney(o.pay_amount, o.pay_currency) }}</td>
                 <td class="px-4 py-2.5">{{ o.provider }}</td>
                 <td class="px-4 py-2.5">
                   <span :class="o.status === 1 ? 'badge-ok' : o.status === 0 ? 'badge-warn' : 'badge-danger'">{{ statusLabel(o.status) }}</span>
@@ -169,7 +170,7 @@ onMounted(load)
       </div>
     </section>
     <DetailDrawer :open="!!selectedOrder" :title="selectedOrder?.order_no || t('recharge.recordsTitle')" @update:open="open => { if (!open) selectedOrder = null }">
-      <dl v-if="selectedOrder" class="detail-grid"><div><dt>ID</dt><dd>{{ selectedOrder.id }}</dd></div><div><dt>{{ t('recharge.colOrderNo') }}</dt><dd>{{ selectedOrder.order_no }}</dd></div><div><dt>{{ t('recharge.colStatus') }}</dt><dd>{{ statusLabel(selectedOrder.status) }}</dd></div><div><dt>{{ t('recharge.colAmount') }}</dt><dd>{{ selectedOrder.pay_amount }} {{ selectedOrder.pay_currency }}</dd></div><div><dt>USD</dt><dd>{{ selectedOrder.amount_usd }}</dd></div><div><dt>{{ t('recharge.colPayMethod') }}</dt><dd>{{ selectedOrder.provider }}</dd></div><div><dt>{{ t('recharge.colTradeNo') }}</dt><dd>{{ selectedOrder.trade_no || '—' }}</dd></div><div><dt>{{ t('recharge.colCreatedAt') }}</dt><dd>{{ d(new Date(selectedOrder.created_at * 1000), { dateStyle: 'short', timeStyle: 'medium' }) }}</dd></div></dl>
+      <dl v-if="selectedOrder" class="detail-grid"><div><dt>ID</dt><dd>{{ selectedOrder.id }}</dd></div><div><dt>{{ t('recharge.colOrderNo') }}</dt><dd>{{ selectedOrder.order_no }}</dd></div><div><dt>{{ t('recharge.colStatus') }}</dt><dd>{{ statusLabel(selectedOrder.status) }}</dd></div><div><dt>{{ t('recharge.colAmount') }}</dt><dd>{{ formatNativeMoney(selectedOrder.pay_amount, selectedOrder.pay_currency) }}</dd></div><div><dt>{{ displayCurrencyCode() }}</dt><dd>{{ fmtUsd(selectedOrder.amount_usd, { precision: 2 }) }}</dd></div><div><dt>{{ t('recharge.colPayMethod') }}</dt><dd>{{ selectedOrder.provider }}</dd></div><div><dt>{{ t('recharge.colTradeNo') }}</dt><dd>{{ selectedOrder.trade_no || '—' }}</dd></div><div><dt>{{ t('recharge.colCreatedAt') }}</dt><dd>{{ d(new Date(selectedOrder.created_at * 1000), { dateStyle: 'short', timeStyle: 'medium' }) }}</dd></div></dl>
     </DetailDrawer>
   </div>
 </template>

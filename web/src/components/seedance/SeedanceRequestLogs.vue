@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { fmtUsd, displayCurrencyCode } from '@/lib/money'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, errorMessage } from '@/lib/api'
@@ -106,8 +107,8 @@ onBeforeUnmount(() => { listVersion++; close() })
     </form>
     <p v-if="error && !selected" role="alert" class="text-danger">{{ error }}</p>
     <div class="overflow-auto rounded border border-line">
-      <table class="w-full text-left text-xs"><thead><tr class="border-b border-line bg-elev"><th v-for="key in ['request','task','key','model','operation','http','taskStatus','billing','artifact','amount','time']" :key="key" class="whitespace-nowrap p-3">{{ t(`seedance.${key}`) }}</th></tr></thead>
-        <tbody><tr v-for="row in rows" :key="row.request_id" class="border-b border-line"><td class="p-3"><button type="button" class="table-link font-mono" @click="open(row.request_id)">{{ row.request_id }}</button><div v-if="row.replay_state === 'replayed'" class="text-muted">{{ t('seedance.replay') }}</div></td><td class="p-3 font-mono">{{ row.task_id || '—' }}</td><td class="p-3 font-mono">{{ row.api_key_id == null ? '—' : `#${row.api_key_id}` }}</td><td class="p-3">{{ row.model || '—' }}</td><td class="p-3">{{ row.operation }}</td><td class="p-3">{{ row.http_status || '—' }}<div>{{ row.outcome }}</div></td><td class="p-3">{{ row.task_status || '—' }}</td><td class="p-3">{{ row.billing_state || '—' }}</td><td class="p-3">{{ row.artifact_status || '—' }}</td><td class="p-3 font-mono">{{ row.task_id ? (row.task_net_charged_amount ?? t('seedance.pending')) : '—' }}</td><td class="whitespace-nowrap p-3" :title="row.started_at">{{ time(row.started_at) }}</td></tr></tbody>
+      <table class="w-full text-left text-xs"><thead><tr class="border-b border-line bg-elev"><th v-for="key in ['request','task','key','model','operation','http','taskStatus','billing','artifact','amount','time']" :key="key" class="whitespace-nowrap p-3">{{ t(`seedance.${key}`, { currency: displayCurrencyCode() }) }}</th></tr></thead>
+        <tbody><tr v-for="row in rows" :key="row.request_id" class="border-b border-line"><td class="p-3"><button type="button" class="table-link font-mono" @click="open(row.request_id)">{{ row.request_id }}</button><div v-if="row.replay_state === 'replayed'" class="text-muted">{{ t('seedance.replay') }}</div></td><td class="p-3 font-mono">{{ row.task_id || '—' }}</td><td class="p-3 font-mono">{{ row.api_key_id == null ? '—' : `#${row.api_key_id}` }}</td><td class="p-3">{{ row.model || '—' }}</td><td class="p-3">{{ row.operation }}</td><td class="p-3">{{ row.http_status || '—' }}<div>{{ row.outcome }}</div></td><td class="p-3">{{ row.task_status || '—' }}</td><td class="p-3">{{ row.billing_state || '—' }}</td><td class="p-3">{{ row.artifact_status || '—' }}</td><td class="p-3 font-mono">{{ row.task_id ? (row.task_net_charged_amount == null ? t('seedance.pending') : fmtUsd(row.task_net_charged_amount)) : '—' }}</td><td class="whitespace-nowrap p-3" :title="row.started_at">{{ time(row.started_at) }}</td></tr></tbody>
       </table>
       <p v-if="!rows.length" class="p-8 text-center text-muted">{{ t(loading ? 'seedance.loading' : 'seedance.empty') }}</p>
     </div>
@@ -140,10 +141,10 @@ onBeforeUnmount(() => { listVersion++; close() })
               <p v-if="detail.request.deleted_at" class="text-warn">{{ t('seedance.deleted') }}</p>
               <p class="text-xs text-muted">{{ t('seedance.asOf') }}: {{ time(detail.as_of) }}</p>
               <div v-if="detail.billing" class="grid grid-cols-2 gap-3 rounded border border-line p-4 text-sm">
-                <p>{{ t('seedance.reserved') }}: {{ detail.billing.reserved_amount }} USD</p><p>{{ t('seedance.settled') }}: {{ detail.billing.settled_amount ?? t('seedance.pending') }} USD</p><p>{{ t('seedance.released') }}: {{ detail.billing.released_amount }} USD</p><p>{{ t('seedance.net') }}: {{ detail.billing.net_charged_amount ?? t('seedance.pending') }} USD</p>
+                <p>{{ t('seedance.reserved') }}: {{ fmtUsd(detail.billing.reserved_amount) }}</p><p>{{ t('seedance.settled') }}: {{ detail.billing.settled_amount == null ? t('seedance.pending') : fmtUsd(detail.billing.settled_amount) }}</p><p>{{ t('seedance.released') }}: {{ fmtUsd(detail.billing.released_amount) }}</p><p>{{ t('seedance.net') }}: {{ detail.billing.net_charged_amount == null ? t('seedance.pending') : fmtUsd(detail.billing.net_charged_amount) }}</p>
                 <p>{{ t('seedance.videoTokens') }}: {{ detail.billing.billable_tokens ?? t('seedance.pending') }}</p><p>{{ t('seedance.inputTokens') }}</p><p class="break-all">{{ t('seedance.priceVersion') }}: {{ detail.billing.pricing_version }}</p><p class="break-all">{{ t('seedance.ruleVersion') }}: {{ detail.billing.billing_rule_version }}</p>
-                <p>{{ t('seedance.reservedTokens') }}: {{ detail.billing.estimated_tokens ?? '—' }}</p><p>{{ t('seedance.unitPrice') }}: {{ detail.billing.unit_price_usd_per_1m ?? '—' }}</p>
-                <p v-for="entry in detail.billing.entries" :key="entry.entry_id" class="col-span-2">{{ entry.type }} · {{ entry.amount }} USD · {{ time(entry.created_at) }}</p>
+                <p>{{ t('seedance.reservedTokens') }}: {{ detail.billing.estimated_tokens ?? '—' }}</p><p>{{ t('seedance.unitPrice', { currency: displayCurrencyCode() }) }}: {{ fmtUsd(detail.billing.unit_price_usd_per_1m, { precision: 6 }) }}</p>
+                <p v-for="entry in detail.billing.entries" :key="entry.entry_id" class="col-span-2">{{ entry.type }} · {{ fmtUsd(entry.amount) }} · {{ time(entry.created_at) }}</p>
               </div>
               <div v-if="detail.billing?.hold_breakdown" class="space-y-2 rounded border border-line p-4 text-sm">
                 <h3 class="font-medium">{{ t('seedance.holdBreakdown') }}</h3>
@@ -151,7 +152,7 @@ onBeforeUnmount(() => { listVersion++; close() })
                   <p>{{ t('seedance.formulaTokens') }}: {{ detail.billing.hold_breakdown.formula_tokens }}</p>
                   <p>{{ t('seedance.minimumTokens') }}: {{ detail.billing.hold_breakdown.minimum_tokens }}</p>
                   <p>{{ t('seedance.baseTokens') }}: {{ detail.billing.hold_breakdown.base_tokens }}</p>
-                  <p>{{ t('seedance.baseAmount') }}: {{ detail.billing.hold_breakdown.base_amount_usd }} USD</p>
+                  <p>{{ t('seedance.baseAmount') }}: {{ fmtUsd(detail.billing.hold_breakdown.base_amount_usd) }}</p>
                   <p>{{ t('seedance.reservationFactor') }}: {{ detail.billing.hold_breakdown.reservation_factor }}×</p>
                   <p>{{ t('seedance.reservedTokens') }}: {{ detail.billing.hold_breakdown.reserved_tokens }}</p>
                 </div>

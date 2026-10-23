@@ -1,11 +1,15 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // —— 运营设置（0013，运行时可配项） ——
@@ -44,13 +48,17 @@ var settingDefaults = map[string]string{
 	"smtp_from":     "",      // 发件人邮箱（空=取 username）
 	"smtp_ssl":      "false", // true=隐式 TLS(465)；false=STARTTLS(587)
 	// —— 支付（引擎 engineFor 消费；密钥服务端存，前端永不回显明文）——
-	"stripe_secret_key":     "",
-	"stripe_webhook_secret": "",
-	"epay_pid":              "",
-	"epay_key":              "",
-	"epay_api_url":          "",
-	"cny_per_usd":           "",  // 空=默认 7.3
-	"min_topup_usd":         "1", // 最低充值额（USD）；createTopup 消费
+	"stripe_secret_key":         "",
+	"stripe_webhook_secret":     "",
+	"epay_pid":                  "",
+	"epay_key":                  "",
+	"epay_api_url":              "",
+	"currency_display_enabled":  "false",
+	"currency_display_percent":  "0",
+	"currency_display_user_ids": "",
+	"currency_display_org_ids":  "",
+	"cny_per_usd":               "",  // 空=默认 7.3
+	"min_topup_usd":             "1", // 最低充值额（USD）；createTopup 消费
 	// 充值阶梯优惠（gap P1-D）：JSON 数组 [{"min_usd":"50","rate":"0.05"},...]，空=无优惠。
 	// 入账时取「amount≥min_usd 的最高档 min_usd」对应 rate，bonus=amount×rate（KindGrant 单列入账）。
 	"recharge_bonus_tiers": "",
@@ -160,45 +168,86 @@ func (s *Server) adminSetSettings(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	updated := 0
+	// Validate and encrypt the complete patch before any write.
+	prepared := map[string]string{}
 	for name, value := range req {
 		if _, known := settingDefaults[name]; !known {
-			fail(c, http.StatusBadRequest, "unknown setting: "+name)
+			fail(c, 400, "unknown setting: "+name)
 			return
 		}
+		normalized, err := validateCurrencySetting(name, value)
+		if err != nil {
+			fail(c, 400, err.Error())
+			return
+		}
+		value = normalized
 		if secretSettingKeys[name] {
-			// write-only（P1-3）：空或掩码＝保留原值（前端表单回显的是掩码，回传不应清空）。
 			if value == "" || value == secretMask {
 				continue
 			}
 			if s.keyring == nil {
-				fail(c, http.StatusServiceUnavailable, "LAIAI_DATA_KEYS not configured; cannot store secret")
+				fail(c, 503, "LAIAI_DATA_KEYS not configured; cannot store secret")
 				return
 			}
 			enc, err := s.keyring.Encrypt(value)
 			if err != nil {
-				fail(c, http.StatusInternalServerError, "secret encrypt failed")
+				fail(c, 500, "secret encrypt failed")
 				return
 			}
-			value = settingEncPrefix + enc // 落库即密文，明文绝不入 ext_settings
+			value = settingEncPrefix + enc
 		}
-		if err := s.db.Save(&Setting{Name: name, Value: value}).Error; err != nil {
-			fail(c, http.StatusInternalServerError, "save failed")
-			return
-		}
-		updated++
+		prepared[name] = value
 	}
+	names := make([]string, 0, len(prepared))
+	for name := range prepared {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// Materialize and lock the FX row so concurrent changes have an accurate audit chain.
+		if _, ok := prepared["cny_per_usd"]; ok {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&Setting{Name: "cny_per_usd", Value: ""}).Error; err != nil {
+				return err
+			}
+		}
+		for _, name := range names {
+			value := prepared[name]
+			if name == "cny_per_usd" || strings.HasPrefix(name, "currency_display_") {
+				var old Setting
+				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("name = ?", name).First(&old).Error; err != nil && err != gorm.ErrRecordNotFound {
+					return err
+				}
+				if old.Value != value {
+					detail, _ := json.Marshal(map[string]string{"old": old.Value, "new": value})
+					actor := c.GetString("actor_label")
+					if actor == "" {
+						actor = "admin"
+					}
+					if err := tx.Create(&AuditLog{Actor: actor, Action: "currency_setting_update", Target: name, Detail: string(detail), IP: c.ClientIP(), CreatedAt: s.now().UnixMilli()}).Error; err != nil {
+						return err
+					}
+				}
+			}
+			if err := tx.Save(&Setting{Name: name, Value: value}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		fail(c, 500, "save failed")
+		return
+	}
+	updated := len(prepared)
 	s.writeAudit(c, "settings_update", "", "updated platform settings")
 	c.JSON(http.StatusOK, gin.H{"updated": updated})
 }
 
 // getConfig：GET /api/config —— 公开运营配置（无需登录；前端门面/注册页用）。
 func (s *Server) getConfig(c *gin.Context) {
-	cny := s.getSetting("cny_per_usd")
-	if cny == "" {
-		cny = "7.3" // 与 settingDefaults 注释一致的回退（前端 ≈¥ 展示用）
-	}
+	_, cny := s.effectiveCNYPerUSD()
 	c.JSON(http.StatusOK, gin.H{
+		"currency_display_enabled":   s.getBoolSetting("currency_display_enabled"),
 		"cny_per_usd":                cny, // 前端把 USD 金额换算 ≈¥ 展示（运营可在设置热配）
 		"site_name":                  s.getSetting("site_name"),
 		"register_enabled":           s.getBoolSetting("register_enabled"),

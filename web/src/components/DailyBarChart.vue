@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { fmtUsd } from '@/lib/money'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -31,7 +32,7 @@ interface Bar {
   label: string
   calls: number
   tokens: number
-  cost: number
+  cost: string
   success: number // 成功率 0..1
   value: number // 当前指标取值
 }
@@ -52,9 +53,9 @@ const chart = computed(() => {
     const s = byDay.get(key)
     const calls = s?.calls ?? 0
     const tokens = (s?.prompt_tokens ?? 0) + (s?.completion_tokens ?? 0)
-    const cost = Number(s?.cost_usd ?? '0')
+    const cost = s?.cost_usd ?? '0'
     const success = calls > 0 ? (s?.succeeded ?? 0) / calls : 0
-    const value = props.metric === 'tokens' ? tokens : props.metric === 'cost' ? cost : props.metric === 'success' ? success : calls
+    const value = props.metric === 'tokens' ? tokens : props.metric === 'cost' ? Number(cost) : props.metric === 'success' ? success : calls
     out.push({ label: hourly ? key.slice(11) : key.slice(5), calls, tokens, cost, success, value })
   }
   const max = Math.max(props.metric === 'success' ? 1 : Number.EPSILON, ...out.map((x) => x.value))
@@ -63,7 +64,7 @@ const chart = computed(() => {
 
 const color = computed(() => METRIC_COLOR[props.metric])
 function fmtTip(b: Bar): string {
-  return `${b.label} · ${b.calls} calls · ${b.tokens.toLocaleString()} tok · $${b.cost.toFixed(4)} · ${(b.success * 100).toFixed(0)}% ok`
+  return `${b.label} · ${b.calls} calls · ${b.tokens.toLocaleString()} tok · ${fmtUsd(b.cost, { precision: 4 })} · ${(b.success * 100).toFixed(0)}% ok`
 }
 </script>
 

@@ -1643,22 +1643,26 @@ func (s *Server) usageByUserRows(c *gin.Context, days, limit int) []usageByUserR
 // adminUsageByUserExport：GET /api/admin/usage/by-user/export?days=N —— 同上聚合的 CSV 下载（gap P2-B）。
 // 与 JSON 同口径（usageByUserRows）。CSV 注入防护：以 =,+,-,@ 起首的字段加前导单引号。
 func (s *Server) adminUsageByUserExport(c *gin.Context) {
+	money, err := s.newExportMoney(c.Query("display_currency"))
+	if err != nil {
+		fail(c, 422, err.Error())
+		return
+	}
 	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
 	if days < 1 || days > 365 {
 		days = 30
 	}
 	rows := s.usageByUserRows(c, days, 1000)
-	c.Header("Content-Type", "text/csv; charset=utf-8")
-	c.Header("Content-Disposition", `attachment; filename="usage_by_user.csv"`)
+	money.headers(c, "usage_by_user")
 	w := csv.NewWriter(c.Writer)
-	_ = w.Write([]string{"user_id", "email", "calls", "succeeded", "prompt_tokens", "completion_tokens", "cost_usd"})
+	_ = w.Write(money.costHeader([]string{"user_id", "email", "calls", "succeeded", "prompt_tokens", "completion_tokens", "cost_usd"}))
 	for _, r := range rows {
-		_ = w.Write([]string{
+		_ = w.Write(money.costRow([]string{
 			strconv.FormatUint(r.UserID, 10), csvSafe(r.Email),
 			strconv.FormatInt(r.Calls, 10), strconv.FormatInt(r.Succeeded, 10),
 			strconv.FormatInt(r.PromptTokens, 10), strconv.FormatInt(r.CompletionTokens, 10),
 			r.CostUSD.String(),
-		})
+		}, r.CostUSD))
 	}
 	w.Flush()
 	s.writeAudit(c, "usage_export", "", "exported usage-by-user CSV")

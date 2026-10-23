@@ -80,17 +80,18 @@ const (
 )
 
 type User struct {
-	ID             uint64 `gorm:"primaryKey"`
-	Email          string `gorm:"column:email"`
-	EmailCanonical string `gorm:"column:email_canonical"`
-	PasswordHash   string `gorm:"column:password_hash"`
-	DisplayName    string `gorm:"column:display_name"`
-	TOTPSecretEnc  string `gorm:"column:totp_secret_enc"` // 2FA 共享密钥（信封加密，0017）
-	TOTPEnabled    int8   `gorm:"column:totp_enabled"`    // 2FA 是否启用
-	Role           string `gorm:"column:role"`            // 平台角色（0020，RBAC）：user|support|admin|superadmin
-	Status         int8   `gorm:"column:status"`
-	EmailVerified  int8   `gorm:"column:email_verified"`        // 0030：邮箱是否已验证（注册时过验证码即 1，供邮件推送/未验证门控）
-	AdminRemark    string `gorm:"column:admin_remark" json:"-"` // 运营备注（0025，gap P2-B）：仅后台可见可改，json:"-" 防原样返回时外露给用户
+	DisplayCurrency string `gorm:"column:display_currency;default:USD"`
+	ID              uint64 `gorm:"primaryKey"`
+	Email           string `gorm:"column:email"`
+	EmailCanonical  string `gorm:"column:email_canonical"`
+	PasswordHash    string `gorm:"column:password_hash"`
+	DisplayName     string `gorm:"column:display_name"`
+	TOTPSecretEnc   string `gorm:"column:totp_secret_enc"` // 2FA 共享密钥（信封加密，0017）
+	TOTPEnabled     int8   `gorm:"column:totp_enabled"`    // 2FA 是否启用
+	Role            string `gorm:"column:role"`            // 平台角色（0020，RBAC）：user|support|admin|superadmin
+	Status          int8   `gorm:"column:status"`
+	EmailVerified   int8   `gorm:"column:email_verified"`        // 0030：邮箱是否已验证（注册时过验证码即 1，供邮件推送/未验证门控）
+	AdminRemark     string `gorm:"column:admin_remark" json:"-"` // 运营备注（0025，gap P2-B）：仅后台可见可改，json:"-" 防原样返回时外露给用户
 }
 
 // 平台角色（0020 RBAC）。线性等级，rank 越大权越大。X-Admin-Token 视同 superadmin。

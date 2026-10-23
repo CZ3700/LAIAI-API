@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { displayCurrencyCode, fmtUsd } from '@/lib/money'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { catalogPricing, standardVideoRows, type PricedModel } from '@/lib/modelCatalog'
@@ -14,10 +15,10 @@ const others = computed(() => pricing.value?.combinations.filter(c => c.mode !==
   <div class="price-summary">
     <p v-if="!pricing || (!pricing.rates.length && !pricing.combinations.length)" class="text-sm text-muted py-3">{{ t('catalog.unknown') }}</p>
     <template v-else-if="pricing.billing_kind === 'video'">
-      <p class="text-xs text-muted mb-3">{{ t('catalog.unitHint') }}</p>
+      <p class="text-xs text-muted mb-3">{{ t('catalog.unitHint', { currency: displayCurrencyCode() }) }}</p>
       <table v-if="rows.length" class="w-full text-xs">
         <thead><tr class="text-muted"><th class="text-left font-normal pb-2">{{ t('catalog.resolution') }}</th><th class="text-right font-normal pb-2">{{ t('catalog.noReference') }}</th><th class="text-right font-normal pb-2">{{ t('catalog.withReference') }}</th></tr></thead>
-        <tbody><tr v-for="row in rows" :key="row.resolution" class="border-t border-line"><th class="py-2.5 text-left font-medium">{{ row.resolution }}</th><td class="py-2.5 text-right font-mono">{{ row.without === undefined ? '—' : '$' + row.without }}</td><td class="py-2.5 text-right font-mono">{{ row.with === undefined ? '—' : '$' + row.with }}</td></tr></tbody>
+        <tbody><tr v-for="row in rows" :key="row.resolution" class="border-t border-line"><th class="py-2.5 text-left font-medium">{{ row.resolution }}</th><td class="py-2.5 text-right font-mono">{{ row.without === undefined ? '—' : fmtUsd(row.without, { precision: 6 }) }}</td><td class="py-2.5 text-right font-mono">{{ row.with === undefined ? '—' : fmtUsd(row.with, { precision: 6 }) }}</td></tr></tbody>
       </table>
       <p v-if="rows.some(row => row.with === undefined || row.without === undefined)" class="mt-2 text-xs text-muted">— {{ t('catalog.unavailable') }}</p>
       <div v-if="detailed && others.length" class="mt-4 space-y-2">
@@ -27,15 +28,15 @@ const others = computed(() => pricing.value?.combinations.filter(c => c.mode !==
           <dt>{{ t('catalog.withReference') }}</dt><dd>{{ t(cell.input_video ? 'catalog.yes' : 'catalog.no') }}</dd>
           <dt>{{ t('catalog.tier') }}</dt><dd>{{ cell.service_tier }}</dd>
           <dt>{{ t('catalog.draft') }}</dt><dd>{{ t(cell.draft ? 'catalog.yes' : 'catalog.no') }}</dd>
-          <dt>{{ t('catalog.price') }}</dt><dd class="font-mono">${{ cell.amount }}</dd>
+          <dt>{{ t('catalog.price') }}</dt><dd class="font-mono">{{ fmtUsd(cell.amount, { precision: 6 }) }}</dd>
         </dl>
       </div>
       <p v-else-if="others.length" class="text-xs text-muted mt-3">{{ t('catalog.more') }}</p>
     </template>
     <dl v-else class="space-y-3">
       <div v-for="rate in pricing.rates" :key="rate.key" class="flex justify-between gap-3 text-sm">
-        <dt class="min-w-0 text-muted">{{ rateLabels[rate.key] ? t('catalog.' + rateLabels[rate.key]) : rate.key }}<span class="block text-[11px]">{{ units[rate.unit] ? t('catalog.' + units[rate.unit]) : rate.unit }}</span></dt>
-        <dd class="font-mono font-semibold shrink-0">${{ rate.amount }}</dd>
+        <dt class="min-w-0 text-muted">{{ rateLabels[rate.key] ? t('catalog.' + rateLabels[rate.key]) : rate.key }}<span class="block text-[11px]">{{ units[rate.unit] ? t('catalog.' + units[rate.unit], { currency: displayCurrencyCode() }) : rate.unit }}</span></dt>
+        <dd class="font-mono font-semibold shrink-0">{{ fmtUsd(rate.amount, { precision: 6 }) }}</dd>
       </div>
     </dl>
   </div>

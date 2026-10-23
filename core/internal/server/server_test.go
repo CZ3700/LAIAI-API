@@ -54,6 +54,7 @@ CREATE TABLE group_ratios (
     name TEXT PRIMARY KEY, ratio NUMERIC NOT NULL DEFAULT 1
 );
 CREATE TABLE users (
+    display_currency TEXT NOT NULL DEFAULT 'USD',
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL, email_canonical TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',

@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorMessage } from '@/lib/api'
-import { fmtUsd } from '@/lib/money'
+import { fmtUsd, displayCurrencyCode } from '@/lib/money'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuth } from '@/stores/auth'
 import DetailDrawer from '@/components/DetailDrawer.vue'
@@ -126,8 +126,8 @@ async function loadMeta() {
     api<{ keys: KeyRow[] }>('GET', '/api/keys'),
   ])
   if (version !== metaVersion || org !== auth.orgId) return
-  if (bm.status === 'fulfilled') models.value = bm.value.items
-  if (k.status === 'fulfilled') keys.value = k.value.keys
+  if (bm.status === 'fulfilled') models.value = bm.value.items ?? []
+  if (k.status === 'fulfilled') keys.value = k.value.keys ?? []
 }
 
 async function load() {
@@ -253,7 +253,7 @@ onMounted(() => {
             <th class="px-4 py-3">{{ t('reqlog.colModel') }}</th>
             <th class="px-4 py-3">{{ t('reqlog.colProtocol') }}</th>
             <th class="px-4 py-3 text-right">{{ t('reqlog.colTokens') }}</th>
-            <th class="px-4 py-3 text-right">{{ t('reqlog.colCost') }}</th>
+            <th class="px-4 py-3 text-right">{{ t('reqlog.colCost', { currency: displayCurrencyCode() }) }}</th>
             <th class="px-4 py-3 text-right">{{ t('reqlog.colLatency') }}</th>
             <th class="px-4 py-3">{{ t('reqlog.colStatus') }}</th>
             <th class="sticky right-0 z-10 bg-panel px-4 py-3 text-right">{{ t('reqlog.colActions') }}</th>
@@ -295,7 +295,7 @@ onMounted(() => {
               <p class="mt-1 font-mono text-2xl font-semibold">{{ n(selected.prompt_tokens + selected.completion_tokens) }}</p>
             </div>
             <div class="p-4 text-center">
-              <p class="text-xs text-muted">{{ t('reqlog.statCostUSD') }}</p>
+              <p class="text-xs text-muted">{{ t('reqlog.statCostUSD', { currency: displayCurrencyCode() }) }}</p>
               <p class="mt-1 font-mono text-2xl font-semibold">{{ fmtUsd(selected.cost_usd) }}</p>
             </div>
             <div class="p-4 text-center">
@@ -325,7 +325,7 @@ onMounted(() => {
               <div><dt>{{ t('reqlog.dtTokensTotal') }}</dt><dd>{{ n(selected.prompt_tokens + selected.completion_tokens) }}</dd></div>
               <div><dt>{{ t('reqlog.dtReasoningTokens') }}</dt><dd>{{ selected.reasoning_tokens ? n(selected.reasoning_tokens) : '—' }}</dd></div>
               <div><dt>{{ t('reqlog.dtCacheReadTokens') }}</dt><dd>{{ selected.cached_tokens ? n(selected.cached_tokens) : '—' }}</dd></div>
-              <div><dt>{{ t('reqlog.dtCostUSD') }}</dt><dd>{{ fmtUsd(selected.cost_usd) }}</dd></div>
+              <div><dt>{{ t('reqlog.dtCostUSD', { currency: displayCurrencyCode() }) }}</dt><dd>{{ fmtUsd(selected.cost_usd) }}</dd></div>
             </dl>
           </section>
 

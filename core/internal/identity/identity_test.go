@@ -25,6 +25,7 @@ CREATE TABLE organizations (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE users (
+    display_currency TEXT NOT NULL DEFAULT 'USD',
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL,
     email_canonical TEXT NOT NULL UNIQUE,

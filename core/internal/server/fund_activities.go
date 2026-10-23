@@ -209,35 +209,54 @@ func fundOptionalID(v *uint64) string {
 	return strconv.FormatUint(*v, 10)
 }
 
+type fundExportFilter struct {
+	ledger.ActivityFilter
+	Money *exportMoneySnapshot `json:"money,omitempty"`
+}
+
+func (j *fundExportJob) loadMoney() error {
+	var f fundExportFilter
+	if err := json.Unmarshal([]byte(j.FilterJSON), &f); err != nil {
+		return err
+	}
+	if err := f.Money.validate(); err != nil {
+		return err
+	}
+	j.DisplayMoney = f.Money
+	return nil
+}
+
 type fundExportJob struct {
-	ID             uint64    `gorm:"primaryKey" json:"id"`
-	OrgID          uint64    `json:"-"`
-	UserID         uint64    `json:"-"`
-	IdempotencyKey string    `json:"-"`
-	RequestHash    string    `json:"-"`
-	FilterJSON     string    `gorm:"column:filter_json" json:"-"`
-	MaxMovementID  uint64    `json:"snapshot_max_movement_id"`
-	CursorID       uint64    `json:"-"`
-	RowCount       int       `json:"row_count"`
-	Status         string    `json:"status"`
-	ErrorCode      string    `json:"error_code,omitempty"`
-	CSVData        string    `gorm:"column:csv_data" json:"-"`
-	CreatedAt      time.Time `json:"created_at"`
-	ExpiresAt      time.Time `json:"expires_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	DisplayMoney   *exportMoneySnapshot `gorm:"-" json:"display_money,omitempty"`
+	ID             uint64               `gorm:"primaryKey" json:"id"`
+	OrgID          uint64               `json:"-"`
+	UserID         uint64               `json:"-"`
+	IdempotencyKey string               `json:"-"`
+	RequestHash    string               `json:"-"`
+	FilterJSON     string               `gorm:"column:filter_json" json:"-"`
+	MaxMovementID  uint64               `json:"snapshot_max_movement_id"`
+	CursorID       uint64               `json:"-"`
+	RowCount       int                  `json:"row_count"`
+	Status         string               `json:"status"`
+	ErrorCode      string               `json:"error_code,omitempty"`
+	CSVData        string               `gorm:"column:csv_data" json:"-"`
+	CreatedAt      time.Time            `json:"created_at"`
+	ExpiresAt      time.Time            `json:"expires_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
 }
 
 func (fundExportJob) TableName() string { return "ledger_export_jobs" }
 
 type fundExportRequest struct {
-	Type      string `json:"type"`
-	Direction string `json:"direction"`
-	Status    string `json:"status"`
-	RefID     string `json:"ref_id"`
-	From      string `json:"from"`
-	Until     string `json:"until"`
-	RefType   string `json:"ref_type"`
-	Keyword   string `json:"keyword"`
+	DisplayCurrency string `json:"display_currency,omitempty"`
+	Type            string `json:"type"`
+	Direction       string `json:"direction"`
+	Status          string `json:"status"`
+	RefID           string `json:"ref_id"`
+	From            string `json:"from"`
+	Until           string `json:"until"`
+	RefType         string `json:"ref_type"`
+	Keyword         string `json:"keyword"`
 }
 
 func (s *Server) createFundExport(c *gin.Context) {
@@ -261,6 +280,11 @@ func (s *Server) createFundExport(c *gin.Context) {
 		fail(c, 422, "invalid export filters")
 		return
 	}
+	money, e := s.newExportMoney(in.DisplayCurrency)
+	if e != nil {
+		fail(c, 422, e.Error())
+		return
+	}
 	raw, _ := json.Marshal(in)
 	sum := sha256.Sum256(raw)
 	hash := hex.EncodeToString(sum[:])
@@ -280,16 +304,20 @@ func (s *Server) createFundExport(c *gin.Context) {
 		if e := tx.Model(&ledger.Movement{}).Where("org_id = ? AND account_type = ? AND type <> ?", claims.OrgID, ledger.AccountUserCredit, "internal_transfer").Select("COALESCE(MAX(id),0)").Scan(&max).Error; e != nil {
 			return e
 		}
-		filter, _ := json.Marshal(f)
+		filter, _ := json.Marshal(fundExportFilter{ActivityFilter: f, Money: money})
 		now := s.now().UTC()
 		job = fundExportJob{OrgID: claims.OrgID, UserID: claims.UserID, IdempotencyKey: key, RequestHash: hash, FilterJSON: string(filter), MaxMovementID: max, Status: "pending", CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(15 * time.Minute)}
 		if e := tx.Create(&job).Error; e != nil {
 			return e
 		}
-		return tx.Create(&AuditLog{Actor: fmt.Sprintf("user#%d", claims.UserID), Action: "fund.export.create", Target: fmt.Sprintf("org:%d/job:%d", claims.OrgID, job.ID), Detail: "USD snapshot; filter_sha256=" + hash, CreatedAt: now.UnixMilli()}).Error
+		return tx.Create(&AuditLog{Actor: fmt.Sprintf("user#%d", claims.UserID), Action: "fund.export.create", Target: fmt.Sprintf("org:%d/job:%d", claims.OrgID, job.ID), Detail: "ledger snapshot; filter_sha256=" + hash, CreatedAt: now.UnixMilli()}).Error
 	})
 	if e != nil {
 		fail(c, 409, "export request could not be recorded")
+		return
+	}
+	if job.loadMoney() != nil {
+		fail(c, 503, "export snapshot unavailable")
 		return
 	}
 	c.JSON(202, job)
@@ -300,6 +328,10 @@ func (s *Server) ownedFundExport(c *gin.Context) (fundExportJob, bool) {
 	claims := mustClaims(c)
 	if e != nil || id == 0 || claims.OrgID == 0 || claims.UserID == 0 || s.db.Where("id = ? AND org_id = ? AND user_id = ? AND expires_at > ?", id, claims.OrgID, claims.UserID, s.now().UTC()).Take(&job).Error != nil {
 		fail(c, 404, "export not found or expired")
+		return job, false
+	}
+	if job.loadMoney() != nil {
+		fail(c, 503, "export snapshot unavailable")
 		return job, false
 	}
 	return job, true
@@ -318,12 +350,17 @@ func (s *Server) downloadFundExport(c *gin.Context) {
 		fail(c, 409, "export is not ready")
 		return
 	}
-	if e := s.db.Create(&AuditLog{Actor: fmt.Sprintf("user#%d", job.UserID), Action: "fund.export.download", Target: fmt.Sprintf("org:%d/job:%d", job.OrgID, job.ID), Detail: "USD financial metadata", CreatedAt: s.now().UnixMilli()}).Error; e != nil {
+	if e := s.db.Create(&AuditLog{Actor: fmt.Sprintf("user#%d", job.UserID), Action: "fund.export.download", Target: fmt.Sprintf("org:%d/job:%d", job.OrgID, job.ID), Detail: "financial metadata with frozen display currency", CreatedAt: s.now().UnixMilli()}).Error; e != nil {
 		fail(c, 503, "export audit unavailable")
 		return
 	}
 	c.Header("Cache-Control", "private, no-store")
-	c.JSON(200, gin.H{"filename": fmt.Sprintf("fund-movements-%d.csv", job.ID), "csv": job.CSVData, "rows": job.RowCount, "currency": "USD", "snapshot_at": job.CreatedAt})
+	currency, filename := "USD", fmt.Sprintf("fund-movements-%d.csv", job.ID)
+	if job.DisplayMoney != nil {
+		currency = job.DisplayMoney.Currency
+		filename = fmt.Sprintf("fund-movements-%d-%s.csv", job.ID, currency)
+	}
+	c.JSON(200, gin.H{"filename": filename, "csv": job.CSVData, "rows": job.RowCount, "currency": currency, "snapshot_at": job.CreatedAt, "display_money": job.DisplayMoney})
 }
 
 // RunFundExportJobs resumes durable pending jobs after process restart. One
@@ -379,17 +416,33 @@ func (s *Server) processFundExportChunk(ctx context.Context, id uint64) error {
 	})
 }
 func (s *Server) appendFundExportChunk(tx *gorm.DB, job *fundExportJob, rows []ledger.Movement) error {
+	if err := job.loadMoney(); err != nil {
+		return err
+	}
+	money := job.DisplayMoney
 	var b bytes.Buffer
 	w := csv.NewWriter(&b)
 	if job.RowCount == 0 {
-		_ = w.Write([]string{"id", "operation_id", "occurred_at", "recorded_at", "type", "direction", "status", "currency", "amount", "posted_delta", "held_delta", "available_delta", "ref_type", "ref_id", "quality", "original_journal_id", "original_hold_id", "correction_proposal_id", "correction_review_id"})
+		header := []string{"id", "operation_id", "occurred_at", "recorded_at", "type", "direction", "status", "currency", "amount", "posted_delta", "held_delta", "available_delta", "ref_type", "ref_id", "quality", "original_journal_id", "original_hold_id", "correction_proposal_id", "correction_review_id"}
+		if money != nil {
+			header = append(header, "source_currency", "amount_usd", "posted_delta_usd", "held_delta_usd", "available_delta_usd", "cny_per_usd", "rate_snapshot_at")
+		}
+		_ = w.Write(header)
 	}
 	for _, r := range rows {
 		occurred := ""
 		if r.OccurredAt != nil {
 			occurred = r.OccurredAt.Format(time.RFC3339)
 		}
-		_ = w.Write([]string{fmt.Sprint(r.ID), fmt.Sprint(r.OperationID), occurred, r.CreatedAt.Format(time.RFC3339), fundCSVSafe(r.Type), r.Direction, r.Status, "USD", r.Amount.String(), r.PostedDelta.String(), r.HeldDelta.String(), r.AvailableDelta.String(), fundCSVSafe(r.RefType), fundCSVSafe(r.RefID), r.Quality, fundOptionalID(r.OriginalJournalID), fundOptionalID(r.OriginalHoldID), fundOptionalID(r.CorrectionProposalID), fundOptionalID(r.CorrectionReviewID)})
+		row := []string{fmt.Sprint(r.ID), fmt.Sprint(r.OperationID), occurred, r.CreatedAt.Format(time.RFC3339), fundCSVSafe(r.Type), r.Direction, r.Status, "USD", r.Amount.String(), r.PostedDelta.String(), r.HeldDelta.String(), r.AvailableDelta.String(), fundCSVSafe(r.RefType), fundCSVSafe(r.RefID), r.Quality, fundOptionalID(r.OriginalJournalID), fundOptionalID(r.OriginalHoldID), fundOptionalID(r.CorrectionProposalID), fundOptionalID(r.CorrectionReviewID)}
+		if money != nil {
+			if r.Currency != "USD" {
+				return ledger.ErrInvalidInput
+			}
+			row[7], row[8], row[9], row[10], row[11] = money.Currency, money.amount(r.Amount), money.amount(r.PostedDelta), money.amount(r.HeldDelta), money.amount(r.AvailableDelta)
+			row = append(row, "USD", r.Amount.String(), r.PostedDelta.String(), r.HeldDelta.String(), r.AvailableDelta.String(), money.CNYPerUSD, money.SnapshotAt.Format(time.RFC3339Nano))
+		}
+		_ = w.Write(row)
 	}
 	w.Flush()
 	if w.Error() != nil {
