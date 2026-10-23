@@ -242,7 +242,10 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		}
 		var policy Policy
 		if e = tx.Where("org_id = ? AND async_execution_allowed = ?", key.OrgID, true).First(&policy).Error; e != nil {
-			return ErrForbidden
+			if errors.Is(e, gorm.ErrRecordNotFound) {
+				return errors.Join(ErrForbidden, ErrExecutionPolicy)
+			}
+			return e
 		}
 		if policy.RetentionDays < 1 || policy.RetentionDays > 30 {
 			return ErrCapability

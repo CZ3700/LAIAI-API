@@ -19,12 +19,14 @@ export interface KeyCreateForm {
   rpm: number
   route: string
   videoPermission: VideoPermissionChoice
+  enableVideoAsync?: boolean
 }
 
 export function buildKeyCreateBody(form: KeyCreateForm): Record<string, unknown> {
   const scopes = form.videoPermission === 'read_write' ? 'video:read video:write'
     : form.videoPermission === 'read' ? 'video:read' : ''
   const body: Record<string, unknown> = { name: form.name, scopes }
+  if (form.videoPermission === 'read_write' && form.enableVideoAsync === true) body.enable_video_async = true
   if (form.quota) body.quota_limit = form.quota
   if (form.models.trim()) body.model_limits = form.models.split(',').map(model => model.trim()).filter(Boolean)
   if (form.ips.trim()) body.allow_ips = form.ips.trim()

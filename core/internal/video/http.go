@@ -22,13 +22,40 @@ import (
 )
 
 func apiError(c *gin.Context, status int, code string) {
+	apiErrorWithParam(c, status, code, "")
+}
+
+func apiErrorWithParam(c *gin.Context, status int, code, param string) {
 	c.Set("video_error", code)
 	publicCode := publicErrorCode(code, status)
-	c.AbortWithStatusJSON(status, gin.H{"request_id": c.GetString("video_request_id"), "error": gin.H{"code": publicCode, "message": strings.ReplaceAll(publicCode, "_", " "), "retryable": status == 429 || status == 503}})
+	message := strings.ReplaceAll(publicCode, "_", " ")
+	if publicCode == "insufficient_scope" {
+		message = "The API key requires video:read for queries or video:write for changes."
+	}
+	if publicCode == "video_execution_not_enabled" {
+		message = "Organization video execution is not enabled. Ask the organization owner or administrator to enable it."
+	}
+	detail := gin.H{"code": publicCode, "message": message, "retryable": status == 429 || status == 503}
+	// Only known parameter names are exposed. Never return provider/input text.
+	if status == 422 && (publicCode == "unsupported_capability" || publicCode == "invalid_request") && safeVideoErrorParam(param) {
+		detail["param"] = param
+		detail["message"] = "Invalid or unsupported parameter: " + param + ". Check this model's capabilities at /v1/video/models."
+	}
+	c.AbortWithStatusJSON(status, gin.H{"request_id": c.GetString("video_request_id"), "error": detail})
+}
+
+func safeVideoErrorParam(param string) bool {
+	switch param {
+	case "model", "content", "resolution", "ratio", "duration", "frames", "seed", "service_tier", "generate_audio", "return_last_frame", "draft", "execution_expires_after", "omni_reference_task_type", "output_format", "max_charge_usd", "expected_pricing_version":
+		return true
+	}
+	return false
 }
 
 func publicErrorCode(code string, status int) string {
 	switch code {
+	case "insufficient_scope", "video_execution_not_enabled":
+		return code
 	case "invalid_request", "unauthenticated", "forbidden", "not_found", "idempotency_conflict", "invalid_state", "insufficient_balance", "quota_exceeded", "rate_limited", "unsupported_capability", "invalid_asset", "authorization_required", "authorization_expired", "group_not_empty", "resource_in_use", "content_expired", "content_not_ready", "provider_unavailable", "submission_uncertain", "generation_failed", "cancellation_failed", "deletion_failed", "internal_error":
 		return code
 	}
@@ -57,7 +84,9 @@ func respondError(c *gin.Context, err error) {
 	var a *ark.Error
 	switch {
 	case errors.As(err, &a):
-		apiError(c, a.HTTPStatus, a.Code)
+		apiErrorWithParam(c, a.HTTPStatus, a.Code, a.Field)
+	case errors.Is(err, ErrExecutionPolicy):
+		apiError(c, 403, "video_execution_not_enabled")
 	case isNotFound(err) || errors.Is(err, videoasset.ErrNotFound):
 		apiError(c, 404, "not_found")
 	case errors.Is(err, ErrForbidden) || errors.Is(err, videoasset.ErrAuthorization) || errors.Is(err, videoasset.ErrSecret):

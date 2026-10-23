@@ -17,13 +17,14 @@ import (
 )
 
 var (
-	ErrInvalid     = errors.New("video: invalid request")
-	ErrUnavailable = errors.New("video: unavailable")
-	ErrNotFound    = errors.New("video: not found")
-	ErrConflict    = errors.New("video: conflict")
-	ErrState       = errors.New("video: invalid state")
-	ErrCapability  = errors.New("video: unsupported capability")
-	ErrForbidden   = errors.New("video: forbidden")
+	ErrInvalid         = errors.New("video: invalid request")
+	ErrUnavailable     = errors.New("video: unavailable")
+	ErrNotFound        = errors.New("video: not found")
+	ErrConflict        = errors.New("video: conflict")
+	ErrState           = errors.New("video: invalid state")
+	ErrCapability      = errors.New("video: unsupported capability")
+	ErrForbidden       = errors.New("video: forbidden")
+	ErrExecutionPolicy = errors.New("video: organization execution not enabled")
 )
 
 func randomID(prefix string) (string, error) {

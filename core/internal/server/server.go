@@ -213,6 +213,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				s.registerFundActivities(org)
 				org.POST("/keys", s.requireStepUpForKeys(), s.createKey) // 受开关保护：开启则需 step-up
 				org.GET("/keys", s.listKeys)
+				org.GET("/keys/video-access", s.keyVideoAccess)
 				org.DELETE("/keys/:id", s.revokeKey)
 				org.DELETE("/keys/:id/purge", s.deleteKey)
 				org.GET("/usage", s.getUsage)
