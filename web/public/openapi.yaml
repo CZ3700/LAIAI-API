@@ -1523,6 +1523,28 @@
             "maxLength": 300,
             "type": "string"
           },
+          "param": {
+            "description": "可选的失败参数名，仅用于 422 参数或能力校验失败。查询 /v1/video/models 获取该模型的已发布能力；例如 Mini 使用 480p 或 720p，不接受 420p。",
+            "enum": [
+              "model",
+              "content",
+              "resolution",
+              "ratio",
+              "duration",
+              "frames",
+              "seed",
+              "service_tier",
+              "generate_audio",
+              "return_last_frame",
+              "draft",
+              "execution_expires_after",
+              "omni_reference_task_type",
+              "output_format",
+              "max_charge_usd",
+              "expected_pricing_version"
+            ],
+            "type": "string"
+          },
           "retryable": {
             "description": "是否可按既有幂等语义重试同一平台操作；true 也不允许改幂等键重建未知任务。\n操作结果 unknown 应查询 operations 或任务状态，不能据此盲重发上游请求。\n",
             "type": "boolean"
@@ -1541,6 +1563,8 @@
           "invalid_request",
           "unauthenticated",
           "forbidden",
+          "insufficient_scope",
+          "video_execution_not_enabled",
           "not_found",
           "idempotency_conflict",
           "invalid_state",
@@ -3922,5 +3946,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "dcd11f052b4674c20ef8039225aac0f219f7b3926ac556f8f2ef9002eff02e3a"
+  "x-seedance-source-sha256": "68c56e17c0b5e66ed9fdf2e0e1d4a82176b4dd274f41d918c348672c6ff04250"
 }
