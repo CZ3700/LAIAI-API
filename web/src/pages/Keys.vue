@@ -44,6 +44,28 @@ const newExpiry = ref(0)
 const newRPM = ref(0) // key 级每分钟请求上限，0=不限（0041）
 const newRoute = ref('') // key 级路由策略，''=order 默认（0043）
 const newVideoPermission = ref<VideoPermissionChoice>('none')
+type VideoAccess = { state: 'enabled' | 'not_configured' | 'disabled' | 'unavailable'; can_enable: boolean }
+const videoAccess = ref<VideoAccess | null>(null)
+const videoAccessLoading = ref(false)
+const enableVideoAsync = ref(false)
+let videoAccessEpoch = 0
+const videoWriteBlocked = computed(() => newVideoPermission.value === 'read_write' &&
+  (videoAccessLoading.value || !videoAccess.value || (videoAccess.value.state !== 'enabled' &&
+    !(videoAccess.value.state === 'not_configured' && videoAccess.value.can_enable && enableVideoAsync.value))))
+
+async function loadVideoAccess(owner = context()) {
+  const epoch = ++videoAccessEpoch
+  videoAccessLoading.value = true; videoAccess.value = null; enableVideoAsync.value = false
+  try {
+    const result = await api<VideoAccess>('GET', '/api/keys/video-access')
+    if (current(owner) && epoch === videoAccessEpoch) videoAccess.value = result
+  } catch {
+    if (current(owner) && epoch === videoAccessEpoch) videoAccess.value = { state: 'unavailable', can_enable: false }
+  } finally {
+    if (current(owner) && epoch === videoAccessEpoch) videoAccessLoading.value = false
+  }
+}
+watch(newVideoPermission, () => { enableVideoAsync.value = false }, { flush: 'sync' })
 const videoChoices: VideoPermissionChoice[] = ['none', 'read', 'read_write']
 const permissionLabels = { none: 'keys.videoNone', read: 'keys.videoRead', read_write: 'keys.videoReadWrite', write: 'keys.videoWriteOnly' }
 const permissionHints = { none: 'keys.videoNoneHint', read: 'keys.videoReadHint', read_write: 'keys.videoReadWriteHint' }
@@ -146,6 +168,7 @@ function resetForm() {
   newRPM.value = 0
   newRoute.value = ''
   newVideoPermission.value = 'none'
+  enableVideoAsync.value = false
 }
 function openCreate() {
   resetForm()
@@ -153,10 +176,12 @@ function openCreate() {
   selectedKey.value = null
   error.value = ''
   showCreate.value = true
+  void loadVideoAccess()
 }
 function buildKeyBody(): Record<string, unknown> {
   return buildKeyCreateBody({ name: newName.value, quota: newQuota.value, models: newModels.value, ips: newIps.value,
-    expiry: newExpiry.value, rpm: newRPM.value, route: newRoute.value, videoPermission: newVideoPermission.value })
+    expiry: newExpiry.value, rpm: newRPM.value, route: newRoute.value, videoPermission: newVideoPermission.value,
+    enableVideoAsync: videoAccess.value?.state === 'not_configured' && videoAccess.value.can_enable && enableVideoAsync.value })
 }
 async function doCreate(body: Record<string, unknown>, owner: KeyContext, stepUpToken?: string) {
   if (!current(owner)) return
@@ -170,7 +195,7 @@ async function doCreate(body: Record<string, unknown>, owner: KeyContext, stepUp
 }
 
 async function create() {
-  if (creating.value || stepUp.value.open) return
+  if (creating.value || stepUp.value.open || videoWriteBlocked.value) return
   const owner = context()
   creating.value = true
   const body = buildKeyBody()
@@ -182,6 +207,7 @@ async function create() {
       stepUp.value = { open: true, pwd: '', code: '', err: '', busy: false, body, context: owner }
     } else {
       error.value = errorMessage(e, t('common.error'))
+      if (e instanceof ApiError && e.code?.startsWith('video_execution_')) await loadVideoAccess(owner)
     }
   } finally {
     if (current(owner)) creating.value = false
@@ -251,6 +277,7 @@ async function remove(id: number) {
 
 function clearContext() {
   contextEpoch++; loadEpoch++
+  videoAccessEpoch++; videoAccess.value = null; videoAccessLoading.value = false
   selectedKey.value = null; keys.value = []; error.value = ''
   showCreate.value = false; createdKey.value = ''; creating.value = false; revoking.value = null
   copied.value = copyError.value = false
@@ -398,6 +425,7 @@ onMounted(load)
         @submit.prevent="create"
       >
         <h2 id="create-key-title" class="font-semibold">{{ t('keys.create') }}</h2>
+        <p v-if="error" class="text-sm text-danger" role="alert">{{ error }}</p>
         <div>
           <label class="label" for="keyname">{{ t('keys.name') }}</label>
           <input id="keyname" v-model="newName" class="input" :placeholder="t('keys.namePlaceholder')" />
@@ -412,6 +440,17 @@ onMounted(load)
             </span>
           </label>
           <p id="key-video-permissions-hint" class="text-xs text-muted">{{ t('keys.videoPermissionsHint') }}</p>
+          <div v-if="newVideoPermission === 'read_write'" class="rounded-lg border border-line p-3 space-y-2 text-sm" aria-live="polite">
+            <p v-if="videoAccessLoading">{{ t('keysVideo.loading') }}</p>
+            <p v-else-if="videoAccess?.state === 'enabled'">{{ t('keysVideo.enabled') }}</p>
+            <template v-else-if="videoAccess?.state === 'not_configured' && videoAccess.can_enable">
+              <label class="flex items-start gap-2"><input v-model="enableVideoAsync" type="checkbox" class="mt-1 accent-accent" /><span>{{ t('keysVideo.consent') }}</span></label>
+              <p class="text-xs text-muted">{{ t('keysVideo.retention') }}</p>
+            </template>
+            <p v-else-if="videoAccess?.state === 'not_configured'">{{ t('keysVideo.ownerRequired') }}</p>
+            <p v-else-if="videoAccess?.state === 'disabled'">{{ t('keysVideo.disabled') }}</p>
+            <template v-else><p>{{ t('keysVideo.unavailable') }}</p><button type="button" class="btn-ghost" @click="loadVideoAccess()">{{ t('common.retry') }}</button></template>
+          </div>
         </fieldset>
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div>
@@ -447,7 +486,7 @@ onMounted(load)
         <p class="text-xs text-muted">{{ t('keys.controlsHint') }}</p>
         <div class="flex justify-end gap-2">
           <button type="button" class="btn-ghost" @click="showCreate = false">{{ t('common.cancel') }}</button>
-          <button class="btn-primary" :disabled="creating">{{ t('common.confirm') }}</button>
+          <button class="btn-primary" :disabled="creating || videoWriteBlocked">{{ t('common.confirm') }}</button>
         </div>
       </form>
     </div>

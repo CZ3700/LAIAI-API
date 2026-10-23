@@ -12,17 +12,19 @@ import (
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type createKeyReq struct {
-	Name          string   `json:"name"`
-	Scopes        string   `json:"scopes"`
-	ExpiresInDays int      `json:"expires_in_days"` // 0 = 永不过期
-	QuotaLimit    string   `json:"quota_limit"`     // 累计消费上限 USD，空/0=无限
-	ModelLimits   []string `json:"model_limits"`    // 模型白名单，空=不限
-	AllowIPs      string   `json:"allow_ips"`       // IP 白名单（逗号/换行），空=不限
-	RPMLimit      int      `json:"rpm_limit"`       // key 级每分钟请求上限，0=不限（0041）
-	RoutePolicy   string   `json:"route_policy"`    // key 级路由策略（0043）：''|order|latency|throughput|price
+	EnableVideoAsync bool     `json:"enable_video_async"`
+	Name             string   `json:"name"`
+	Scopes           string   `json:"scopes"`
+	ExpiresInDays    int      `json:"expires_in_days"` // 0 = 永不过期
+	QuotaLimit       string   `json:"quota_limit"`     // 累计消费上限 USD，空/0=无限
+	ModelLimits      []string `json:"model_limits"`    // 模型白名单，空=不限
+	AllowIPs         string   `json:"allow_ips"`       // IP 白名单（逗号/换行），空=不限
+	RPMLimit         int      `json:"rpm_limit"`       // key 级每分钟请求上限，0=不限（0041）
+	RoutePolicy      string   `json:"route_policy"`    // key 级路由策略（0043）：''|order|latency|throughput|price
 }
 
 func (s *Server) createKey(c *gin.Context) {
@@ -55,10 +57,27 @@ func (s *Server) createKey(c *gin.Context) {
 	}
 	var plaintext string
 	var key *identity.APIKey
+	if req.EnableVideoAsync && !videoWriteScope(req.Scopes) {
+		fail(c, 400, "enable_video_async requires video write scope")
+		return
+	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// Serialize key admission and first-time policy creation with admin policy writes.
+		var org identity.Organization
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", claims.OrgID).Take(&org).Error; err != nil {
+			return err
+		}
+		if err := identity.VerifyActiveMembership(tx, claims.UserID, claims.OrgID); err != nil {
+			return err
+		}
 		ent, err := identity.LoadEntitlements(tx, claims.OrgID)
 		if err != nil {
 			return err
+		}
+		if videoWriteScope(req.Scopes) {
+			if err := s.ensureKeyVideoAccess(tx, claims.OrgID, claims.UserID, req.EnableVideoAsync, ent); err != nil {
+				return err
+			}
 		}
 		uid := claims.UserID
 		plaintext, key, err = identity.IssueKey(tx, identity.IssueKeyInput{
@@ -73,6 +92,9 @@ func (s *Server) createKey(c *gin.Context) {
 		})
 		return err
 	})
+	if replyKeyVideoError(c, err) {
+		return
+	}
 	if errors.Is(err, identity.ErrKeyLimit) {
 		fail(c, http.StatusForbidden, "api key limit reached for this organization")
 		return

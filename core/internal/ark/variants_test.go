@@ -19,6 +19,25 @@ func variantTestCapability(model string) Capability {
 	return c
 }
 
+// Regression for the reported Mini request: 420p is a typo, not a permission failure.
+func TestMiniReportedResolution(t *testing.T) {
+	in := CreateRequest{}
+	if err := json.Unmarshal([]byte(`{"model":"seedance-2.0-mini","content":[{"type":"text","text":"A paper boat on a quiet lake."}],"duration":4,"resolution":"420p","ratio":"16:9","generate_audio":true}`), &in); err != nil {
+		t.Fatal(err)
+	}
+	cap := variantTestCapability(Model20Mini)
+	_, err := Normalize(in, cap, Bindings{})
+	if e, ok := err.(*Error); !ok || e.Code != "unsupported_capability" || e.Field != "resolution" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resolution := "480p"
+	in.Resolution = &resolution
+	normalized, err := Normalize(in, cap, Bindings{})
+	if err != nil || normalized.Parameters.Resolution != "480p" || !normalized.Parameters.GenerateAudio {
+		t.Fatalf("corrected request: %v", err)
+	}
+}
+
 func TestVariantIdentityPinsReviewedDeployments(t *testing.T) {
 	for _, tc := range []struct{ model, upstream string }{
 		{Model20, "doubao-seedance-2-0-260128"},

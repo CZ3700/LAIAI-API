@@ -1765,7 +1765,7 @@ components:
               required: [authorization_url]
     SafeErrorCode:
       type: string
-      enum: [invalid_request, unauthenticated, forbidden, not_found, idempotency_conflict, invalid_state, insufficient_balance, quota_exceeded, rate_limited, unsupported_capability, invalid_asset, authorization_required, authorization_expired, group_not_empty, resource_in_use, content_expired, content_not_ready, provider_unavailable, submission_uncertain, generation_failed, cancellation_failed, deletion_failed, internal_error]
+      enum: [invalid_request, unauthenticated, forbidden, insufficient_scope, video_execution_not_enabled, not_found, idempotency_conflict, invalid_state, insufficient_balance, quota_exceeded, rate_limited, unsupported_capability, invalid_asset, authorization_required, authorization_expired, group_not_empty, resource_in_use, content_expired, content_not_ready, provider_unavailable, submission_uncertain, generation_failed, cancellation_failed, deletion_failed, internal_error]
       description: 平台白名单错误码，不透传上游自由文本或内部分类。
     SafeError:
       type: object
@@ -1778,6 +1778,10 @@ components:
           type: string
           maxLength: 300
           description: 安全合成文案，不含 prompt、素材 URL、PII、上游凭证/ID/错误原文。
+        param:
+          type: string
+          enum: [model, content, resolution, ratio, duration, frames, seed, service_tier, generate_audio, return_last_frame, draft, execution_expires_after, omni_reference_task_type, output_format, max_charge_usd, expected_pricing_version]
+          description: 可选的失败参数名，仅用于 422 参数或能力校验失败。查询 /v1/video/models 获取该模型的已发布能力；例如 Mini 使用 480p 或 720p，不接受 420p。
         retryable:
           type: boolean
           description: |

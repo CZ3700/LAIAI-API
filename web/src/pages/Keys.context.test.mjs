@@ -54,7 +54,7 @@ async function harness(t) {
   const originalDocument = globalThis.document, originalHarness = globalThis.__keysHarness
   const h = {
     vue, auth: vue.reactive({ orgId: 1, token: 'fixture-session-A' }), calls: [], mounted: [], unmounted: [],
-    response: call => call.method === 'GET' ? { keys: [] } : { key: 'fixture-once-only' },
+    response: call => call.path === '/api/keys/video-access' ? { state: 'enabled', can_enable: false } : call.method === 'GET' ? { keys: [] } : { key: 'fixture-once-only' },
     api: async (method, path, body, options) => {
       const call = { method, path, body, options, org: h.auth.orgId, token: h.auth.token }
       h.calls.push(call)
@@ -76,7 +76,7 @@ async function harness(t) {
   return h
 }
 function creationCalls(h) { return h.calls.filter(call => call.method === 'POST' && call.path === '/api/keys') }
-function fill(h, permission = 'read_write') {
+async function fill(h, permission = 'read_write') {
   h.vm.openCreate()
   h.vm.newName.value = 'fixture-video'
   h.vm.newVideoPermission.value = permission
@@ -86,6 +86,7 @@ function fill(h, permission = 'read_write') {
   h.vm.newExpiry.value = 1
   h.vm.newRPM.value = 2
   h.vm.newRoute.value = 'latency'
+  await vue.nextTick()
 }
 async function requireVerification(h) {
   h.response = call => {
@@ -105,11 +106,51 @@ function assertCleared(h) {
   assert.equal(h.vm.stepUp.value.code, '')
   assert.equal(h.vm.stepUp.value.body, null)
   assert.equal(h.vm.newVideoPermission.value, 'none')
+  assert.equal(h.vm.enableVideoAsync.value, false)
 }
+
+test('first video key requires explicit owner consent and sends it only once', async t => {
+  const h = await harness(t)
+  h.response = call => call.path === '/api/keys/video-access' ? { state: 'not_configured', can_enable: true } : call.method === 'GET' ? { keys: [] } : { key: 'fixture-key' }
+  await fill(h)
+  await h.vm.create()
+  assert.equal(creationCalls(h).length, 0)
+  h.vm.enableVideoAsync.value = true
+  await h.vm.create()
+  assert.equal(creationCalls(h)[0].body.enable_video_async, true)
+  assert.equal(h.vm.enableVideoAsync.value, false)
+  await fill(h, 'read')
+  h.vm.enableVideoAsync.value = true
+  await h.vm.create()
+  assert.equal(creationCalls(h)[1].body.enable_video_async, undefined)
+})
+
+for (const access of [{ state: 'disabled', can_enable: false }, { state: 'not_configured', can_enable: false }, null]) {
+  test(`video write creation blocks unavailable or unauthorized state: ${access?.state}`, async t => {
+    const h = await harness(t)
+    h.response = () => { if (!access) throw new Error('offline'); return access }
+    await fill(h)
+    h.vm.enableVideoAsync.value = true
+    await h.vm.create()
+    assert.equal(creationCalls(h).length, 0)
+  })
+}
+
+test('late readiness from a previous organization cannot enable a new key', async t => {
+  const h = await harness(t), pending = deferred()
+  h.response = call => call.path === '/api/keys/video-access' ? pending.promise : { keys: [] }
+  await fill(h)
+  h.vm.enableVideoAsync.value = true
+  h.auth.orgId = 2
+  pending.resolve({ state: 'enabled', can_enable: false })
+  await vue.nextTick(); await vue.nextTick()
+  assert.equal(h.vm.videoAccess.value, null)
+  assertCleared(h)
+})
 
 test('real create handler sends explicit video scopes and preserves all configured limits', async t => {
   const h = await harness(t)
-  fill(h)
+  await fill(h)
   await h.vm.create()
   assert.deepEqual(creationCalls(h)[0].body, {
     name: 'fixture-video', scopes: 'video:read video:write', quota_limit: '0.00100000', model_limits: ['mini', 'fast'],
@@ -125,7 +166,7 @@ test('real create handler sends explicit video scopes and preserves all configur
 
 test('step-up retries only the captured body, preserving scopes and restrictions when the form changes', async t => {
   const h = await harness(t)
-  fill(h, 'read')
+  await fill(h, 'read')
   await requireVerification(h)
   const originalBody = structuredClone(creationCalls(h)[0].body)
   h.vm.newVideoPermission.value = 'read_write'
@@ -143,7 +184,7 @@ test('step-up retries only the captured body, preserving scopes and restrictions
 for (const transition of ['organization', 'session', 'unmount', 'close']) {
   test(`${transition} change while verifying cannot submit the captured body`, async t => {
     const h = await harness(t), response = deferred()
-    fill(h); await requireVerification(h)
+    await fill(h); await requireVerification(h)
     h.response = call => call.path === '/api/me/verify' ? response.promise : { keys: [] }
     const submitting = h.vm.submitStepUp()
     if (transition === 'organization') h.auth.orgId = 2
@@ -163,7 +204,7 @@ for (const transition of ['organization', 'session', 'unmount', 'close']) {
 for (const transition of ['organization', 'session', 'unmount']) {
   test(`late key creation after ${transition} change cannot expose another context's key`, async t => {
     const h = await harness(t), response = deferred()
-    fill(h)
+    await fill(h)
     h.response = call => call.method === 'POST' ? response.promise : { keys: [] }
     const creating = h.vm.create()
     if (transition === 'organization') h.auth.orgId = 2
@@ -178,7 +219,7 @@ for (const transition of ['organization', 'session', 'unmount']) {
 
 test('switching organization clears an already displayed plaintext key and opens a fresh non-video form', async t => {
   const h = await harness(t)
-  fill(h); await h.vm.create()
+  await fill(h); await h.vm.create()
   assert.equal(h.vm.createdKey.value, 'fixture-once-only')
   h.auth.orgId = 2
   assertCleared(h)
@@ -192,7 +233,7 @@ test('switching organization clears an already displayed plaintext key and opens
 
 test('an uncertain creation failure is shown without automatically creating another key', async t => {
   const h = await harness(t)
-  fill(h)
+  await fill(h)
   h.response = () => { throw new Error('fixture-network-failure') }
   await h.vm.create()
   assert.equal(h.vm.error.value, 'fixture-network-failure')

@@ -1,9 +1,11 @@
+import { keyVideoMessages } from './keyVideo'
 import { currencyMessages } from './currency'
 import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
 import en, { type Messages } from './en'
 
 export default {
+  keysVideo: keyVideoMessages['ja'],
   currency: currencyMessages['ja'],
   pricingAdmin: pricingRedesignAdminMessages['ja'].pricingAdmin,
   catalog: modelCatalogMessages['ja'],
