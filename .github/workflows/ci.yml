@@ -116,7 +116,6 @@ jobs:
     timeout-minutes: 15
     env:
       GOPROXY: https://proxy.golang.org,direct
-      ARK_BASELINE_REPORT_DIR: ${{ runner.temp }}/ark-mock-baseline
       ARK_BASELINE_MYSQL_IMAGE: docker.io/library/mysql@sha256:c36050afdca850f23cef85703f84c7531a5ae155a11b5ee1c60acb09937c4084
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -129,6 +128,8 @@ jobs:
           cache: true
       - name: Isolated single-scope Mock Ark baseline
         # Creates its own disposable database. No deployment DSN or Ark key.
+        env:
+          ARK_BASELINE_REPORT_DIR: ${{ runner.temp }}/ark-mock-baseline
         run: make ark-mock-baseline
       - name: Retain baseline evidence
         if: always()
