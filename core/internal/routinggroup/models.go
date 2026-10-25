@@ -1,5 +1,5 @@
 // Package routinggroup owns routing configuration, not billing groups or execution.
-// G1 does not authorize any grouped API key. No HTTP route exposes these commands yet.
+// Named-superadmin HTTP commands manage configuration; grouped API keys remain disabled.
 package routinggroup
 
 import "time"

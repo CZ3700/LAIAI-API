@@ -3,9 +3,12 @@ package routinggroup
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
+	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -91,6 +94,129 @@ func rowCount(t *testing.T, db *gorm.DB, model any) int64 {
 		t.Fatal(e)
 	}
 	return n
+}
+
+func TestGroupCreateDuplicateRequiresExactOwnerSlug(t *testing.T) {
+	s, _ := serviceFixture(t)
+	in := CreateInput{Slug: "same-slug", Name: "Original", Description: "unchanged", Audit: audit}
+	original, err := s.Create(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Name = "Must not overwrite"
+	got, err := s.Create(context.Background(), in)
+	if !errors.Is(err, ErrExists) || got != (Group{}) || err.Error() != ErrExists.Error() {
+		t.Fatalf("duplicate group must return only its safe domain error: %#v %v", got, err)
+	}
+	var saved Group
+	if err := s.DB.First(&saved, original.ID).Error; err != nil || saved.Name != original.Name || saved.PolicyVersion != 1 {
+		t.Fatal("duplicate replaced the existing group", err)
+	}
+	if rowCount(t, s.DB, &Group{}) != 1 || rowCount(t, s.DB, &Event{}) != 1 {
+		t.Fatal("duplicate created configuration or events")
+	}
+	in.OwnerOrgID = 1
+	if _, err := s.Create(context.Background(), in); err != nil {
+		t.Fatal("same slug in another owner is valid", err)
+	}
+	// A typed UNIQUE error on a different constraint is not an owner/slug
+	// conflict. Confirming the requested key must find a real matching row.
+	if err := s.DB.Exec("CREATE UNIQUE INDEX fixture_group_name ON routing_groups(name)").Error; err != nil {
+		t.Fatal(err)
+	}
+	in.Slug = "different-slug"
+	if _, err := s.Create(context.Background(), in); err == nil || errors.Is(err, ErrExists) {
+		t.Fatal("unrelated unique constraint was called an existing group", err)
+	}
+	if rowCount(t, s.DB, &Group{}) != 2 || rowCount(t, s.DB, &Event{}) != 2 {
+		t.Fatal("failed unrelated uniqueness left partial writes")
+	}
+}
+
+func TestGroupCreateEventDuplicateDoesNotBecomeGroupExists(t *testing.T) {
+	s, _ := serviceFixture(t)
+	// The first generated group will have ID 1. Its version event already
+	// exists, producing an actual SQLite UNIQUE error after the group INSERT.
+	if err := s.DB.Create(&Event{AggregateType: "group", AggregateID: 1, AggregateVersion: 1, EventKind: "fixture", ActorUserID: audit.ActorUserID, RequestID: audit.RequestID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Create(context.Background(), CreateInput{Slug: "event-conflict", Name: "Event conflict", Audit: audit})
+	if err == nil || errors.Is(err, ErrExists) || rowCount(t, s.DB, &Group{}) != 0 || rowCount(t, s.DB, &Event{}) != 1 {
+		t.Fatal("event conflict was swallowed or failed to roll back the group", err)
+	}
+}
+
+func TestGroupCreateDuplicateTextAndConfirmationFailureStayUnavailable(t *testing.T) {
+	s, _ := serviceFixture(t)
+	in := CreateInput{Slug: "exists", Name: "Existing", Audit: audit}
+	if _, err := s.Create(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.Callback().Create().Before("gorm:create").Register("group-untyped-duplicate", func(tx *gorm.DB) {
+		if tx.Statement.Table == "routing_groups" {
+			tx.AddError(errors.New("UNIQUE constraint failed: routing_groups.owner_org_id, routing_groups.slug"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Create(context.Background(), in)
+	if err == nil || errors.Is(err, ErrExists) {
+		t.Fatal("plain driver-looking text was treated as typed duplicate", err)
+	}
+	if err := s.DB.Callback().Create().Remove("group-untyped-duplicate"); err != nil {
+		t.Fatal(err)
+	}
+	checked := false
+	if err := s.DB.Callback().Query().Before("gorm:query").Register("group-confirmation-fault", func(tx *gorm.DB) {
+		if tx.Statement.Table == "routing_groups" {
+			checked = true
+			tx.AddError(errors.New("synthetic confirmation unavailable"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Create(context.Background(), in)
+	if !checked || err == nil || errors.Is(err, ErrExists) {
+		t.Fatal("failed current read was treated as confirmed duplicate", err)
+	}
+	if err := s.DB.Callback().Query().Remove("group-confirmation-fault"); err != nil {
+		t.Fatal(err)
+	}
+	if rowCount(t, s.DB, &Group{}) != 1 || rowCount(t, s.DB, &Event{}) != 1 {
+		t.Fatal("failed duplicate classification changed data")
+	}
+}
+
+type groupCreateMySQLDialect struct{ gorm.Dialector }
+
+func (groupCreateMySQLDialect) Name() string { return "mysql" }
+
+func TestGroupInsertDuplicateClassifierUsesTypedDriverAndDialect(t *testing.T) {
+	s, _ := serviceFixture(t)
+	mysqlDB := s.DB.Session(&gorm.Session{})
+	config := *mysqlDB.Config
+	mysqlDB.Config = &config
+	mysqlDB.Dialector = groupCreateMySQLDialect{s.DB.Dialector}
+	for _, test := range []struct {
+		err  error
+		want bool
+	}{
+		{&mysql.MySQLError{Number: 1062, Message: "private-values"}, true},
+		{fmt.Errorf("wrapped: %w", &mysql.MySQLError{Number: 1062}), true},
+		{&mysql.MySQLError{Number: 1213, Message: "Duplicate entry"}, false},
+		{errors.New("Duplicate entry for key uk_routing_group_slug"), false},
+		{gorm.ErrDuplicatedKey, false},
+	} {
+		if got := groupInsertDuplicate(mysqlDB, test.err); got != test.want {
+			t.Fatal("unexpected MySQL typed classification")
+		}
+		if groupInsertDuplicate(s.DB, test.err) {
+			t.Fatal("MySQL errors accepted on SQLite")
+		}
+	}
+	if strings.Contains(ErrExists.Error(), "private-values") {
+		t.Fatal("domain conflict error contains driver text")
+	}
 }
 
 func TestGroupOwnershipCASAndBindingAtomicity(t *testing.T) {

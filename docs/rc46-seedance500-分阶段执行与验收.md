@@ -37,11 +37,11 @@
 | P0-1B R2 补充与凭据接管 | 明确拒绝/缺 ID/未知状态的完整持久化矩阵；同账号项目凭据接管与请求头隔离 | 不扩大退款依据；凭据接管需证明目标身份；多版本退役演练在实际 V2 前完成 | 待实施；P0-1A 的活动配置隔离不等于在途凭据迁移 |
 | P0-2A1 创建响应收件箱 | 不可变执行登记、独立响应保存、同 attempt 恢复、legacy 分流；默认关闭 | CAS/取消/删除竞态、重复/矛盾证据、无响应过期、历史关闭、真实迁移与账务不变 | [PR #59](https://github.com/CZ3700/LAIAI-API/pull/59) 七项 CI、真实二进制交接及 Mock 通过，已合入 main `9552e2b`；迁移 0128；写开关仍默认关闭 |
 | P0-2A1.1 持久化失败控制 | 同一证据有界重试、保存失败停止后续发送、关库前等待在途保存 | 不重发上游、不把未提交响应标为已保存；数据库恢复/关机故障用例 | [PR #60](https://github.com/CZ3700/LAIAI-API/pull/60) 七项 CI 全绿，已合入 main `c2cebf6`；隔离 R2 证据见第 5.6 节，A2 未完成前不开生产新写入 |
-| P0-2A2/B 故障恢复后续 | 取消/删除/交付收件箱、完整兼容演练；随后数据库时间/fence、独立结算 | A1 完成后逐批；完整 R3 崩溃点/双 Worker/超 hold、零资金差异 | 待实施，A1 不等于整个 P0-2 完成 |
-| P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | [PR #61](https://github.com/CZ3700/LAIAI-API/pull/61) 七项 CI 全绿，G1-A 已合入 main `7688307`；G1-B 管理 HTTP/宿主桥接仍待实施 |
+| P0-2A2/B 故障恢复后续 | 取消/删除/交付收件箱、完整兼容演练；随后数据库时间/fence、独立结算 | A1 完成后逐批；完整 R3 崩溃点/双 Worker/超 hold、零资金差异 | A2a consumer已由PR #63合入main `309890a`；A2b producer开发中，默认off；后续二进制交接/调度仍待验收 |
+| P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | [PR #61](https://github.com/CZ3700/LAIAI-API/pull/61) 七项 CI 全绿，G1-A 已合入 main `7688307`；G1-B1 管理HTTP/宿主桥接已完成隔离R2验收，正在PR；B2授权/默认组仍待实施 |
 | P0-G2 全入口授权 | 同一有效模型/组解析器覆盖目录、报价、创建、重试、派发复核；撤权强校验 | 全入口拒绝矩阵；已发送任务继续查询结算；空 subset 拒绝 | 待实施，依赖 G1 |
 | P0-G3 组 UI 与迁移 | 管理员影响预览、用户组选择、有效模型集合差分 | G2 全绿后才开放；不得静默改旧 Key 权限 | 待实施 |
-| P0-UI1 日志改进 | 共用 FilterSpec、全条件日志合计、列表/导出一致、后台日志组件、请求竞态保护 | R8 的 237 条跨页夹具、角色/币种/时间/导出/抽屉测试 | UI1-A1 后端查询已通过隔离 R1/R2 验收，待独立 PR 门禁；前端/导出 A2 待实施 |
+| P0-UI1 日志改进 | 共用 FilterSpec、全条件日志合计、列表/导出一致、后台日志组件、请求竞态保护 | R8 的 237 条跨页夹具、角色/币种/时间/导出/抽屉测试 | UI1-A1 已由PR #62合入main `94d00d8`；A2a后端CSV正在真实MySQL验收，A2b前端待实施 |
 | P0-3 独立 Worker | DB 租约领取/心跳、共享账户容量、外部预留、组织公平队列、查询平滑、Redis 故障策略 | P0-1/2 完成；R4 逐档 + R5 故障；多副本无超发 | 待实施 |
 | P0-4 500 验收与迁移 | GET 缓存/ETag、容量管理、备份演练、版本/镜像回滚、500 Mock 报告 | 500 在途≥60分钟；时效 p95≤30秒/p99≤60秒；R6 回滚 | 待实施 |
 | P1-A 协议与 UsageFacts | 纯 Go 转换层；先 Chat→Anthropic 请求抽取；presence/source 累计/增量事实 | R1 语义差分/大请求 bench；不发送第二份付费请求；账务接入另 PR | 待实施，可并行 |
@@ -209,6 +209,16 @@ R1通过make门禁、0130两DDL边界/旧数据与列定义/旧INSERT默认NULL/
 R2于 `2026-10-25T22:03:50Z` 通过：make vet/ci、130迁移/101表doctor、失败场景及typed未发送回归两轮race（9.916秒）、video/videoasset/server真实MySQL（201.642/0.926/44.798秒）、六领域race（video233.903秒）。保留R1数据库和积压，未重跑无改动且已过的迁移故障用例。源码SHA-256 `fcaa874c0fe026442e3e23a6a9277b6d7e62c7b4177de25df25464691ba407ef`；证据 `/var/lib/laiai-artifacts/rc46-a2-20261026-r2/ci.log` SHA-256 `c4753d37aec79ea9fb2890be4ff7e1ced88128140e7899e83dbb942509e943cf`。922文件清单要求业务/测试与最终提交精确一致，仅验收补充文档不同。详细R1及输入/404/财务边界见 `rc46-取消删除响应收件箱实施契约.md`。
 
 专用数据库已停止；官方费用0、生产未变更。本批只固定consumer C_a；后续producer默认off、每operation最多一次DELETE及实际二进制交接分别验收，不能拿本批fixture代替A2全部完成。最新PR CI绿才合main。
+
+## 5.9 P0-G1-B1 管理接口验收
+
+基线main `309890a`，分支 `codex/rc46-routing-admin`。具名superadmin管理组、渠道绑定和结构预览；严格参数/CAS、同事务宿主桥接、1秒有界只读RR及零等待gate。没有新迁移、授权/默认组HTTP或分组Key开放。独立审查补齐未来expected_version的PATCH并发覆盖和重复owner/slug精确409分类，事件失败仍503并整体回滚。
+
+R1保留失败：SQLite取消丢最后连接、GORM测试callback与既有后台读竞态。R2只修新夹具生命周期并整合A2a main；原行为断言不变，保留R1数据库和历史。2026-10-25T22:37:13Z全通过：make vet/ci、130迁移/101表doctor、两项回归三轮race83.453秒、六项实际MySQL+全管理HTTP race142.208秒、identity/relay/routinggroup全包race。详细约束和EXPLAIN见 `rc46-路由组管理接口实施契约.md`。
+
+源包SHA-256 `8c94910aa000897ac64d9cc64fae9f08f677d7f0f95574f748d0ae623662314c`；日志 `/var/lib/laiai-artifacts/rc46-g1-b1-20261026-r2/ci.log` SHA-256 `c59529b9846cc5b892bf236d4eee1b2eada1a2cf57accaca278eea3a3347c46b`。935文件要求非文档与最终提交精确一致。专用库停止、官方调用/费用0、生产未变更；最新PR CI绿后才能合main。
+
+A2a补充：consumer固定提交 C_a=`64650ecc9e3a672ea49d0ffaf6f417b03fe6ad89`，PR #63最新CI `40238754483`七项全绿，合入main `309890a803e650b1e29b90ad5d89d69847bdcb59`。后续producer开关默认关闭，当前生产仍 `d7fc499`。
 
 ## 6. 500 容量验收边界
 
