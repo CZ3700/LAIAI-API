@@ -57,7 +57,7 @@ func (s *Service) Cancel(ctx context.Context, org uint64, id, requestID, key str
 		}
 		// A second idempotency key is another reference to the same unresolved
 		// cancellation, never authority to send another DELETE after uncertainty.
-		e = locked(tx).Where("org_id = ? AND resource_id = ? AND kind = ? AND status IN ?", org, id, "cancel_task", []string{"pending", "in_flight", "unknown"}).Order("created_at, id").First(&op).Error
+		e = locked(tx).Where("org_id = ? AND resource_id = ? AND kind = ? AND status IN ?", org, id, "cancel_task", []string{"pending", "in_flight", "unknown", "needs_review"}).Order("created_at, id").First(&op).Error
 		if e == nil {
 			if e = requireOperationRuntime(st, op); e != nil {
 				return e
@@ -80,6 +80,9 @@ func (s *Service) Cancel(ctx context.Context, org uint64, id, requestID, key str
 				return e
 			}
 			if e = requireOperationRuntime(st, create); e != nil {
+				return e
+			}
+			if e = requireNoExecutionAttemptTx(tx, org, create.ID); e != nil {
 				return e
 			}
 			descriptor, e := videoruntime.Resolve(stateRuntime(st))
@@ -215,6 +218,9 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 		if e = locked(tx).Where("org_id = ? AND id = ?", op.OrgID, op.ID).First(&current).Error; e != nil {
 			return e
 		}
+		if e = requireNoExecutionAttemptTx(tx, op.OrgID, op.ID); e != nil {
+			return e
+		}
 		if current.Status != "pending" {
 			return nil
 		}
@@ -305,6 +311,9 @@ func (s *Service) applyMutationReceipt(ctx context.Context, op Operation) error 
 		}
 		var current Operation
 		if e := locked(tx).Where("org_id = ? AND id = ? AND resource_id = ?", op.OrgID, op.ID, op.ResourceID).First(&current).Error; e != nil {
+			return e
+		}
+		if e := requireNoExecutionAttemptTx(tx, op.OrgID, op.ID); e != nil {
 			return e
 		}
 		if current.ReceiptAppliedAt != nil || current.Status == "confirmed" || current.Status == "rejected" {

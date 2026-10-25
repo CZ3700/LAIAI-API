@@ -12,6 +12,7 @@ type ExecutionAttempt struct {
 	OrgID                    uint64
 	TaskID                   string
 	OperationID              string
+	TargetUpstreamTaskID     *string `gorm:"column:target_upstream_task_id" json:",omitempty"`
 	Action                   string
 	StorageProtocol          string
 	ProviderScopeID          uint64

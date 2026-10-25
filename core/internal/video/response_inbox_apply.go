@@ -45,11 +45,12 @@ func (s *Service) recoverResponseInbox(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	return s.recoverMutationResponseInbox(ctx)
 }
 
 func supportedInboxRuntime(db *gorm.DB) *gorm.DB {
 	return supportedOperationRuntime(db).
+		Where("ea.target_upstream_task_id IS NULL").
 		Where("ea.storage_protocol = ? AND ea.action = ? AND ea.runtime_version = v.runtime_version AND ea.adapter_version = v.adapter_version AND ea.protocol_contract_version = v.protocol_contract_version AND ea.billing_schema_version = v.billing_schema_version AND ea.execution_schema_version = ? AND ea.observation_schema_version = ?", responseInboxProtocol, "create_task", 1, 1).
 		Where("ea.provider_scope_id = v.provider_scope_id AND ea.credential_snapshot_id = v.credential_snapshot_id AND ea.billing_snapshot_id = v.billing_snapshot_id AND ea.input_payload_ref = v.effective_payload_ref AND o.payload_ref = ea.input_payload_ref AND ea.input_hmac_version = ? AND ea.evidence_hmac_version = ?", "v1", "v1")
 }
@@ -119,7 +120,7 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 		if err := s.validateResponseInboxTx(tx, attempt, receipt); err != nil {
 			return mark("blocked", "response_identity_unavailable", err)
 		}
-		if attempt.StorageProtocol != responseInboxProtocol || attempt.Action != "create_task" || attempt.ExecutionSchemaVersion != 1 || attempt.ObservationSchemaVersion != 1 || receipt.StorageProtocol != attempt.StorageProtocol {
+		if attempt.StorageProtocol != responseInboxProtocol || attempt.Action != "create_task" || attempt.ExecutionSchemaVersion != 1 || attempt.ObservationSchemaVersion != 1 || receipt.StorageProtocol != attempt.StorageProtocol || attempt.TargetUpstreamTaskID != nil {
 			return mark("blocked", "runtime_contract_unsupported", videoruntime.ErrUnsupported)
 		}
 		if err := requireTaskRuntimeTx(tx, st); err != nil {

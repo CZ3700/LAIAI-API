@@ -121,12 +121,16 @@ func appendPreparedResponseWithRetry(ctx context.Context, p *preparedResponseRec
 // saveCreateResponse does not interpret/apply the result and never retries
 // HTTP. Even a paused service still saves responses already in flight.
 func (s *Service) saveCreateResponse(ctx context.Context, attempt ExecutionAttempt, result ark.Result, credential string) (ResponseInbox, error) {
+	return s.savePreparedResponse(ctx, func() (*preparedResponseReceipt, error) { return s.prepareResponseReceipt(attempt, result, credential) })
+}
+
+func (s *Service) savePreparedResponse(ctx context.Context, prepare func() (*preparedResponseReceipt, error)) (ResponseInbox, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), responseSaveWindow)
 	defer cancel()
-	p, err := s.prepareResponseReceipt(attempt, result, credential)
+	p, err := prepare()
 	if err == nil {
 		var receipt ResponseInbox
 		receipt, err = appendPreparedResponseWithRetry(saveCtx, p, s.appendResponseReceipt, responseRetryWait)

@@ -141,6 +141,14 @@ func (s *VideoStore) accessEvent(ctx context.Context, accessID, phase string, or
 }
 
 func (s *VideoStore) read(ctx context.Context, orgID uint64, payloadID, purpose string, recovery bool, expectedSchema *uint32, access VideoAccess) ([]byte, error) {
+	return s.readWithSchemaPolicy(ctx, orgID, payloadID, purpose, recovery, func(meta VideoPayload) bool {
+		return videoReadSchemaSupported(meta, expectedSchema)
+	}, access)
+}
+
+// schemaPolicy is supplied only by the fixed internal entry points; callers
+// cannot choose an arbitrary schema through any exported reader.
+func (s *VideoStore) readWithSchemaPolicy(ctx context.Context, orgID uint64, payloadID, purpose string, recovery bool, schemaPolicy func(VideoPayload) bool, access VideoAccess) ([]byte, error) {
 	if orgID == 0 || !videoValidID(payloadID, false) || !videoValidID(access.ActorID, false) ||
 		!videoValidID(access.OperationID, true) || !videoValidID(access.ReasonCode, false) ||
 		(access.ActorRole != VideoRoleWorker && access.ActorRole != VideoRoleOrgReader && access.ActorRole != VideoRoleRoot) {
@@ -176,7 +184,7 @@ func (s *VideoStore) read(ctx context.Context, orgID uint64, payloadID, purpose 
 	if meta.Purpose != purpose || purpose == VideoPurposeExecution && meta.Direction != VideoEffectiveRequest || (recovery || purpose == VideoPurposeDelivery) && meta.Direction != VideoUpstreamResponse {
 		return deny(ErrVideoAccessDenied, "PURPOSE_DENIED")
 	}
-	if !videoReadSchemaSupported(meta, expectedSchema) {
+	if !schemaPolicy(meta) {
 		return deny(ErrVideoSchemaUnsupported, "SCHEMA_UNSUPPORTED")
 	}
 	if meta.CaptureStatus == VideoCaptureExpired || !meta.ExpiresAt.After(s.now()) {
@@ -203,7 +211,7 @@ func (s *VideoStore) read(ctx context.Context, orgID uint64, payloadID, purpose 
 			if meta.Purpose != purpose || purpose == VideoPurposeExecution && meta.Direction != VideoEffectiveRequest || (recovery || purpose == VideoPurposeDelivery) && meta.Direction != VideoUpstreamResponse {
 				return deny(ErrVideoAccessDenied, "PURPOSE_DENIED")
 			}
-			if !videoReadSchemaSupported(meta, expectedSchema) {
+			if !schemaPolicy(meta) {
 				return deny(ErrVideoSchemaUnsupported, "SCHEMA_UNSUPPORTED")
 			}
 			if meta.CaptureStatus != VideoCaptureStored || !meta.ExpiresAt.After(s.now()) {

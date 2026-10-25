@@ -157,11 +157,21 @@ func sameExecutionAttempt(a, b ExecutionAttempt) bool {
 	if !a.RegisteredAt.Equal(b.RegisteredAt) {
 		return false
 	}
+	if (a.TargetUpstreamTaskID == nil) != (b.TargetUpstreamTaskID == nil) || a.TargetUpstreamTaskID != nil && *a.TargetUpstreamTaskID != *b.TargetUpstreamTaskID {
+		return false
+	}
+	a.TargetUpstreamTaskID, b.TargetUpstreamTaskID = nil, nil
 	a.RegisteredAt, b.RegisteredAt = time.Time{}, time.Time{}
 	return a == b
 }
 
 func (s *Service) validateExecutionAttemptInputTx(tx *gorm.DB, attempt ExecutionAttempt) error {
+	if attempt.StorageProtocol == videoruntime.ActionStorageProtocolV1 {
+		return s.validateMutationAttemptInputTx(tx, attempt)
+	}
+	if attempt.TargetUpstreamTaskID != nil {
+		return ErrConflict
+	}
 	if err := responseTransaction(tx); err != nil {
 		return err
 	}
@@ -211,8 +221,19 @@ func (s *Service) responsePreparationSeal(p *preparedResponseReceipt) string {
 // contract this consumer cannot interpret. Append validates registration, not
 // the current task/operation or the current runtime registry.
 func (s *Service) prepareResponseReceipt(attempt ExecutionAttempt, result ark.Result, credential string) (*preparedResponseReceipt, error) {
-	if s == nil || s.Evidence == nil || s.Now == nil || len(s.Secret) < 32 || attempt.OrgID == 0 || attempt.AttemptID == "" || attempt.TaskID == "" || attempt.OperationID == "" || attempt.RegisteredAt.IsZero() || attempt.EvidenceHMACVersion != "v1" || attempt.InputHMACVersion != "v1" || attempt.RetentionDays < 1 || attempt.RetentionDays > 30 || result.Action != ark.ActionSubmit {
+	if result.Action != ark.ActionSubmit || attempt.TargetUpstreamTaskID != nil {
 		return nil, ErrInvalid
+	}
+	return s.prepareCapturedResponse(attempt, result, credential, false)
+}
+
+func (s *Service) prepareCapturedResponse(attempt ExecutionAttempt, result ark.Result, credential string, mutation bool) (*preparedResponseReceipt, error) {
+	if s == nil || s.Evidence == nil || s.Now == nil || len(s.Secret) < 32 || attempt.OrgID == 0 || attempt.AttemptID == "" || attempt.TaskID == "" || attempt.OperationID == "" || attempt.RegisteredAt.IsZero() || attempt.EvidenceHMACVersion != "v1" || attempt.InputHMACVersion != "v1" || attempt.RetentionDays < 1 || attempt.RetentionDays > 30 {
+		return nil, ErrInvalid
+	}
+	if attempt.TargetUpstreamTaskID != nil {
+		target := *attempt.TargetUpstreamTaskID
+		attempt.TargetUpstreamTaskID = &target
 	}
 	row := ResponseInbox{OrgID: attempt.OrgID, TaskID: attempt.TaskID, OperationID: attempt.OperationID, AttemptID: attempt.AttemptID,
 		Action: attempt.Action, StorageProtocol: attempt.StorageProtocol, ProviderScopeID: attempt.ProviderScopeID,
@@ -236,7 +257,7 @@ func (s *Service) prepareResponseReceipt(attempt ExecutionAttempt, result ark.Re
 		row.Truncated = true
 	}
 	row.CapturedBodyBytes = int64(len(body))
-	if row.Truncated || row.Outcome == string(ark.OutcomeAccepted) && row.UpstreamTaskID == "" {
+	if row.Truncated || !mutation && row.Outcome == string(ark.OutcomeAccepted) && row.UpstreamTaskID == "" || mutation && result.TaskID != "" && row.UpstreamTaskID == "" {
 		row.Outcome, row.SafeErrorCode = string(ark.OutcomeUnknown), "invalid_upstream_response"
 	}
 	// Capture identity and bounded raw evidence BEFORE random envelope values.

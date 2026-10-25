@@ -35,6 +35,12 @@ func videoIdentityTransaction(tx *gorm.DB) error {
 // durable response may outlive its input capsule; identity is still verifiable
 // without restoring access to expired plaintext.
 func ReadVideoExecutionIdentityTx(tx *gorm.DB, org uint64, payloadID string, expectedSchema uint32) (VideoExecutionIdentity, error) {
+	return readVideoExecutionIdentityTx(tx, org, payloadID, func(meta VideoPayload) bool {
+		return videoReadSchemaSupported(meta, &expectedSchema)
+	})
+}
+
+func readVideoExecutionIdentityTx(tx *gorm.DB, org uint64, payloadID string, schemaPolicy func(VideoPayload) bool) (VideoExecutionIdentity, error) {
 	var out VideoExecutionIdentity
 	if err := videoIdentityTransaction(tx); err != nil {
 		return out, err
@@ -53,7 +59,7 @@ func ReadVideoExecutionIdentityTx(tx *gorm.DB, org uint64, payloadID string, exp
 	if meta.Purpose != VideoPurposeExecution || meta.Direction != VideoEffectiveRequest {
 		return out, ErrVideoAccessDenied
 	}
-	if !videoReadSchemaSupported(meta, &expectedSchema) {
+	if !schemaPolicy(meta) {
 		return out, ErrVideoSchemaUnsupported
 	}
 	correlation, _ := json.Marshal([]any{meta.OrgID, meta.RequestID, meta.AttemptID, meta.Direction, meta.Purpose, meta.SchemaVersion})
