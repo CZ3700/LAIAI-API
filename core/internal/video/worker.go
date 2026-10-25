@@ -22,6 +22,9 @@ func (s *Service) ProcessOnce(ctx context.Context) (err error) {
 	m := s.metrics()
 	finish := m.startCycle()
 	defer func() { finish(err) }()
+	if err := s.recoverResponseInbox(ctx); err != nil {
+		return err
+	}
 	if err := s.recoverOperations(ctx); err != nil {
 		return err
 	}
@@ -74,7 +77,7 @@ func (s *Service) pendingQueryCandidates(ctx context.Context) *gorm.DB {
 	now := s.Now().UTC()
 	// A live lease must not consume the bounded candidate batch while another
 	// query is in flight. pollTask still rechecks and claims under its row lock.
-	return supportedTaskRuntime(s.DB.WithContext(ctx).Table("video_task_states AS v").Select("v.*").Joins("JOIN tasks t ON t.task_id = v.task_id AND t.org_id = v.org_id")).Where("t.provider = ? AND v.deleted_at IS NULL AND v.next_poll_at <= ? AND (v.query_lease_until IS NULL OR v.query_lease_until <= ?) AND t.upstream_task_id <> '' AND (t.status IN ? OR v.billing_state = ?)", Provider, now, now, []string{"queued", "running"}, "pending_usage")
+	return supportedTaskRuntime(s.DB.WithContext(ctx).Table("video_task_states AS v").Select("v.*").Joins("JOIN tasks t ON t.task_id = v.task_id AND t.org_id = v.org_id")).Where(noCreateInboxReview).Where("t.provider = ? AND v.deleted_at IS NULL AND v.next_poll_at <= ? AND (v.query_lease_until IS NULL OR v.query_lease_until <= ?) AND t.upstream_task_id <> '' AND (t.status IN ? OR v.billing_state = ?)", Provider, now, now, []string{"queued", "running"}, "pending_usage")
 }
 
 func (s *Service) pendingOperationCandidates(ctx context.Context) *gorm.DB {
@@ -82,7 +85,7 @@ func (s *Service) pendingOperationCandidates(ctx context.Context) *gorm.DB {
 }
 
 func (s *Service) recoveryOperationCandidates(ctx context.Context) *gorm.DB {
-	return supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Select("o.*").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("(o.status IN ? AND o.receipt_ref <> '' AND o.receipt_applied_at IS NULL) OR (o.status = ? AND o.lease_until <= ?)", []string{"in_flight", "unknown"}, "in_flight", s.Now().UTC())
+	return supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Select("o.*").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)").Where("(o.status IN ? AND o.receipt_ref <> '' AND o.receipt_applied_at IS NULL) OR (o.status = ? AND o.lease_until <= ?)", []string{"in_flight", "unknown"}, "in_flight", s.Now().UTC())
 }
 
 func (s *Service) recoverOperations(ctx context.Context) error {
@@ -192,6 +195,7 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	}
 	var t task.Task
 	var st State
+	var executionAttempt ExecutionAttempt
 	claimed := false
 	var validationErr error
 	validationCode := "asset_validation_failed"
@@ -235,6 +239,12 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 		}
 		op.Version++
 		op.AttemptID = attemptID
+		if s.ResponseInboxEnabled {
+			executionAttempt, e = s.registerExecutionAttemptTx(tx, t, st, op)
+			if e != nil {
+				return e
+			}
+		}
 		if e = tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ? AND status = ?", t.OrgID, t.TaskID, "accepted").Update("status", "submitting").Error; e != nil {
 			return e
 		}
@@ -280,6 +290,22 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	callStarted := time.Now()
 	response := client.Submit(ctx, ark.NormalizedRequest{Body: body, PublicModel: t.Model, UpstreamModel: st.UpstreamModel, CapabilityVersion: st.CapabilityVersion})
 	s.observeAdapterCall("submit", response, callStarted)
+	if executionAttempt.AttemptID != "" {
+		// The caller may have been cancelled after Ark accepted the request.
+		// Persist under a bounded internal context, independently of application
+		// CAS and the producer's now possibly expired claim.
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		prepared, err := s.prepareResponseReceipt(executionAttempt, response, client.Credential)
+		if err != nil {
+			return err
+		}
+		receipt, err := s.appendResponseReceipt(saveCtx, prepared)
+		if err != nil {
+			return err
+		}
+		return s.applyClaimedCreateInbox(saveCtx, op, receipt.ReceiptID)
+	}
 	if response.Outcome == ark.OutcomeNotSent {
 		return s.knownUnsent(ctx, t, st, op, "request_not_sent")
 	}
@@ -338,6 +364,13 @@ func (s *Service) applyCreateReceipt(ctx context.Context, op Operation) error {
 		if err := locked(tx).Where("org_id = ? AND id = ?", op.OrgID, op.ID).First(&current).Error; err != nil {
 			return err
 		}
+		var registered int64
+		if err := tx.Model(&ExecutionAttempt{}).Where("org_id = ? AND operation_id = ?", op.OrgID, op.ID).Count(&registered).Error; err != nil {
+			return err
+		}
+		if registered != 0 {
+			return ErrConflict // Inbox operations never fall back to legacy application.
+		}
 		if err := requireTaskRuntimeTx(tx, st); err != nil {
 			return err
 		}
@@ -353,84 +386,96 @@ func (s *Service) applyCreateReceipt(ctx context.Context, op Operation) error {
 		if current.ReceiptAppliedAt != nil {
 			return nil
 		}
-		response := ark.Result{Outcome: ark.Outcome(current.ReceivedOutcome), TaskID: current.ReceivedTaskID}
-		from := t.Status
-		switch response.Outcome {
-		case ark.OutcomeAccepted:
-			if response.TaskID == "" {
-				return ErrUnavailable
-			}
-			// Same provider scope cannot bind one upstream task to two customer tasks.
-			binding := UpstreamBinding{ProviderScopeID: st.ProviderScopeID, UpstreamTaskID: response.TaskID, OrgID: t.OrgID, TaskID: t.TaskID, CreatedAt: now}
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&binding).Error; err != nil {
-				return err
-			}
-			var existing UpstreamBinding
-			if err := locked(tx).Where("provider_scope_id = ? AND upstream_task_id = ?", st.ProviderScopeID, response.TaskID).First(&existing).Error; err != nil {
-				return err
-			}
-			if existing.OrgID != t.OrgID || existing.TaskID != t.TaskID {
-				return ErrConflict
-			}
-			if !terminal(t.Status) {
-				t.Status = "queued"
-			}
-			st.SyncState = "fresh"
-			if !financialFinal(st.BillingState) {
-				st.BillingState = "reserved"
-			}
-			current.Status = "confirmed"
-			if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"status": t.Status, "upstream_task_id": response.TaskID}).Error; err != nil {
-				return err
-			}
-		case ark.OutcomeRejected:
-			// A definite synchronous rejection did not create an accepted task.
-			if err := s.afterAssetsTerminalTx(tx, t.OrgID, t.TaskID); err != nil {
-				return err
-			}
-			if _, err := videobilling.ReleaseConfirmedTx(tx, videobilling.ReleaseInput{OrgID: t.OrgID, TaskID: t.TaskID, EvidenceID: op.ReceiptRef, Reason: videobilling.ReleaseProviderNoCharge, Confirmed: true, Now: now}); err != nil {
-				return err
-			}
-			t.Status = "failed"
-			st.BillingState = "released"
-			current.Status = "rejected"
-			if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"status": t.Status, "finished_at": now}).Error; err != nil {
-				return err
-			}
-		default:
-			if !terminal(t.Status) {
-				t.Status = "submission_unknown"
-			}
-			st.SyncState = "needs_review"
-			if !financialFinal(st.BillingState) {
-				st.BillingState = "pending_usage"
-			}
-			current.Status = "unknown"
-			if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Update("status", t.Status).Error; err != nil {
-				return err
-			}
-		}
-		st.ResponsePayloadRef = op.ReceiptRef
-		st.UpdatedAt = now
-		st.NextPollAt = now
-		st.RowVersion++
-		if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"sync_state": st.SyncState, "billing_state": st.BillingState, "response_payload_ref": op.ReceiptRef, "row_version": st.RowVersion, "updated_at": now, "next_poll_at": now}).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ?", op.OrgID, op.ID).Updates(map[string]any{"status": current.Status, "receipt_applied_at": now, "updated_at": now}).Error; err != nil {
-			return err
-		}
-		if terminal(t.Status) {
-			if err := s.afterObservationTx(tx, &t, &st, false, false, now); err != nil {
-				return err
-			}
-		}
-		typ := "task.status_changed"
-		if t.Status == "submission_unknown" {
-			typ = "task.submission_unknown"
-		}
-		return appendEventTx(tx, &t, &st, typ, from, t.Status, st.CreateRequestID, op.ReceiptRef, now)
+		return s.applyCreateResultTx(tx, t, st, current, op, st.CreateRequestID, now)
 	})
+}
+
+// applyCreateResultTx is the shared state/financial reducer. The caller must
+// hold Task -> State -> Operation locks and establish the appropriate legacy
+// or inbox application permission before entering.
+func (s *Service) applyCreateResultTx(tx *gorm.DB, t task.Task, st State, current, op Operation, requestID string, now time.Time) error {
+	response := ark.Result{Outcome: ark.Outcome(current.ReceivedOutcome), TaskID: current.ReceivedTaskID}
+	from := t.Status
+	switch response.Outcome {
+	case ark.OutcomeAccepted:
+		if response.TaskID == "" {
+			return ErrUnavailable
+		}
+		// Same provider scope cannot bind one upstream task to two customer tasks.
+		binding := UpstreamBinding{ProviderScopeID: st.ProviderScopeID, UpstreamTaskID: response.TaskID, OrgID: t.OrgID, TaskID: t.TaskID, CreatedAt: now}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&binding).Error; err != nil {
+			return err
+		}
+		var existing UpstreamBinding
+		if err := locked(tx).Where("provider_scope_id = ? AND upstream_task_id = ?", st.ProviderScopeID, response.TaskID).First(&existing).Error; err != nil {
+			return err
+		}
+		if existing.OrgID != t.OrgID || existing.TaskID != t.TaskID {
+			return ErrConflict
+		}
+		if !terminal(t.Status) {
+			t.Status = "queued"
+		}
+		st.SyncState = "fresh"
+		if !financialFinal(st.BillingState) {
+			st.BillingState = "reserved"
+		}
+		current.Status = "confirmed"
+		if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"status": t.Status, "upstream_task_id": response.TaskID}).Error; err != nil {
+			return err
+		}
+	case ark.OutcomeRejected, ark.OutcomeNotSent:
+		// Only the fixed adapter's definite rejection/not-sent classification
+		// authorizes release; absence or lease expiry never does.
+		reason := videobilling.ReleaseProviderNoCharge
+		if response.Outcome == ark.OutcomeNotSent {
+			reason = videobilling.ReleaseNotDispatched
+		}
+		if err := s.afterAssetsTerminalTx(tx, t.OrgID, t.TaskID); err != nil {
+			return err
+		}
+		if _, err := videobilling.ReleaseConfirmedTx(tx, videobilling.ReleaseInput{OrgID: t.OrgID, TaskID: t.TaskID, EvidenceID: op.ReceiptRef, Reason: reason, Confirmed: true, Now: now}); err != nil {
+			return err
+		}
+		t.Status = "failed"
+		st.BillingState = "released"
+		current.Status = "rejected"
+		if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"status": t.Status, "finished_at": now}).Error; err != nil {
+			return err
+		}
+	default:
+		if !terminal(t.Status) {
+			t.Status = "submission_unknown"
+		}
+		st.SyncState = "needs_review"
+		if !financialFinal(st.BillingState) {
+			st.BillingState = "pending_usage"
+		}
+		current.Status = "unknown"
+		if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Update("status", t.Status).Error; err != nil {
+			return err
+		}
+	}
+	st.ResponsePayloadRef = op.ReceiptRef
+	st.UpdatedAt = now
+	st.NextPollAt = now
+	st.RowVersion++
+	if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"sync_state": st.SyncState, "billing_state": st.BillingState, "response_payload_ref": op.ReceiptRef, "row_version": st.RowVersion, "updated_at": now, "next_poll_at": now}).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ?", op.OrgID, op.ID).Updates(map[string]any{"status": current.Status, "receipt_ref": op.ReceiptRef, "http_status": current.HTTPStatus, "received_outcome": current.ReceivedOutcome, "received_task_id": current.ReceivedTaskID, "receipt_applied_at": now, "updated_at": now}).Error; err != nil {
+		return err
+	}
+	if terminal(t.Status) {
+		if err := s.afterObservationTx(tx, &t, &st, false, false, now); err != nil {
+			return err
+		}
+	}
+	typ := "task.status_changed"
+	if t.Status == "submission_unknown" {
+		typ = "task.submission_unknown"
+	}
+	return appendEventTx(tx, &t, &st, typ, from, t.Status, requestID, op.ReceiptRef, now)
 }
 
 func (s *Service) knownUnsent(ctx context.Context, t task.Task, st State, op Operation, code string) error {
@@ -491,6 +536,9 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 			return e
 		}
 		if e = requireTaskRuntimeTx(tx, st); e != nil {
+			return e
+		}
+		if e = requireNoCreateInboxReviewTx(tx, org, id); e != nil {
 			return e
 		}
 		if t.UpstreamTaskID == "" || st.NextPollAt.After(now) || (st.QueryLeaseUntil != nil && st.QueryLeaseUntil.After(now)) {
@@ -607,7 +655,7 @@ func (s *Service) recoverQueryReceipts(ctx context.Context) error {
 }
 
 func (s *Service) recoveryQueryCandidates(ctx context.Context) *gorm.DB {
-	return supportedQueryReceiptRuntime(s.DB.WithContext(ctx).Table("video_query_receipts AS r").Select("r.*").Joins("JOIN video_task_states v ON v.org_id = r.org_id AND v.task_id = r.task_id")).Where("r.applied_at IS NULL AND r.apply_error_code <> ?", "settlement_conflict")
+	return supportedQueryReceiptRuntime(s.DB.WithContext(ctx).Table("video_query_receipts AS r").Select("r.*").Joins("JOIN video_task_states v ON v.org_id = r.org_id AND v.task_id = r.task_id")).Where(noCreateInboxReview).Where("r.applied_at IS NULL AND r.apply_error_code <> ?", "settlement_conflict")
 }
 
 func (s *Service) applyQueryReceipt(ctx context.Context, receipt QueryReceipt) error {
@@ -625,6 +673,9 @@ func (s *Service) applyQueryReceipt(ctx context.Context, receipt QueryReceipt) e
 		}
 		if receipt.AppliedAt != nil {
 			return nil
+		}
+		if e = requireNoCreateInboxReviewTx(tx, receipt.OrgID, receipt.TaskID); e != nil {
+			return e
 		}
 		finish := func(code string) error {
 			return tx.Model(&QueryReceipt{}).Where("org_id = ? AND task_id = ? AND attempt_id = ?", receipt.OrgID, receipt.TaskID, receipt.AttemptID).Updates(map[string]any{"applied_at": now, "apply_error_code": code}).Error
@@ -763,6 +814,8 @@ func (s *Service) applyQueryReceipt(ctx context.Context, receipt QueryReceipt) e
 	code := "query_apply_failed"
 	if errors.Is(err, videoruntime.ErrUnsupported) {
 		code = "runtime_contract_unsupported"
+	} else if errors.Is(err, errCreateInboxReview) {
+		code = "create_identity_review"
 	} else if errors.Is(err, videobilling.ErrConflict) {
 		code = "settlement_conflict"
 	}

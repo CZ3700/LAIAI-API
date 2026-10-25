@@ -104,11 +104,18 @@ func TestMySQLRuntimeBinaryHandoff(t *testing.T) {
 	var count int64
 	must(t, db.Model(&task.Task{}).Count(&count).Error)
 	if phase == "old_before" {
-		if count != 0 || !strings.HasPrefix(report.Schema, "0126_") {
+		if count != 0 || report.Schema != "0126_user_display_currency" {
 			t.Fatal("old-before requires empty pre-expansion schema")
 		}
-	} else if !strings.HasPrefix(report.Schema, "0127_") {
-		t.Fatal("post-expansion phase requires migration 0127")
+	} else {
+		// Keep the historical producer and runtime-default checks fixed. New
+		// additive migrations may follow 0127; record the actual maximum rather
+		// than pretending the database still ends at the runtime expansion.
+		var runtimeMigration int64
+		must(t, db.Table("schema_migrations").Where("version = ?", "0127_video_runtime_contracts").Count(&runtimeMigration).Error)
+		if runtimeMigration != 1 {
+			t.Fatal("post-expansion phase requires the exact runtime migration")
+		}
 	}
 	if phase == "old_after" && count != 4 || phase == "new_verify" && count != 8 {
 		t.Fatal("handoff database contains unexpected task data")
@@ -118,6 +125,9 @@ func TestMySQLRuntimeBinaryHandoff(t *testing.T) {
 	} else {
 		runtimeHandoffSeed(t, &report)
 	}
+	if phase != "old_before" {
+		runtimeHandoffAssertNoInboxRegistration(t, db)
+	}
 	drift, err := ledger.CheckDrift(db)
 	must(t, err)
 	report.LedgerDrift = len(drift)
@@ -125,6 +135,25 @@ func TestMySQLRuntimeBinaryHandoff(t *testing.T) {
 		t.Fatal("runtime handoff introduced ledger drift")
 	}
 	report.Passed = true
+}
+
+func runtimeHandoffAssertNoInboxRegistration(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	var inboxMigration int64
+	must(t, db.Table("schema_migrations").Where("version = ?", "0128_video_response_inbox").Count(&inboxMigration).Error)
+	if inboxMigration == 0 {
+		return
+	}
+	// Raw table names keep this identical harness compilable on the genuine
+	// pre-runtime source. The old producer and new default-off service exercise
+	// legacy paths only; this does not claim inbox-only rollback compatibility.
+	for _, table := range []string{"video_execution_attempts", "video_response_inbox", "video_receipt_applications"} {
+		var rows int64
+		must(t, db.Table(table).Count(&rows).Error)
+		if rows != 0 {
+			t.Fatal("legacy handoff unexpectedly registered response-inbox work")
+		}
+	}
 }
 
 func runtimeHandoffDB(t *testing.T) *gorm.DB {

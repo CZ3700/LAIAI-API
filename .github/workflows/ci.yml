@@ -102,6 +102,8 @@ jobs:
         run: go -C core test ./internal/arkpricetemplate -run TestMySQL -count=1 -timeout=5m
       - name: Runtime expand migration and interrupted replay preserve old data
         run: go -C core test ./internal/migrate -run TestMySQLVideoRuntimeMigrationPreservesLegacyAndReplays -count=1 -timeout=5m -v
+      - name: Response inbox expand and partial migration preserve legacy data
+        run: go -C core test ./internal/migrate -run TestMySQLVideoInboxMigrationPreservesLegacyAndReplays -count=1 -timeout=5m -v
       - name: Apply and replay formal MySQL migrations
         run: |
           go -C core run ./cmd/migrate -dir ../migrations

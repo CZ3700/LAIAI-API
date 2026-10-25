@@ -37,6 +37,9 @@ type Service struct {
 	ArtifactService *videoartifact.Service
 	Assets          *videoasset.Service
 	workerMetrics   *workerMetrics
+	// Controls registration of future create attempts only. Recovery of already
+	// registered inbox attempts must remain enabled when this switch is off.
+	ResponseInboxEnabled bool
 	// Endpoint overrides exist for injected httptest clients only. Production
 	// configuration uses the fixed mainland official endpoint.
 	AllowTestEndpoint bool

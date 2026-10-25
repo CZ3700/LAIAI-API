@@ -120,6 +120,7 @@ func main() {
 			log.Error("official video initialization failed")
 			os.Exit(1)
 		}
+		videoSvc.ResponseInboxEnabled = cfg.VideoResponseInboxEnabled
 		// Seedance delivers the provider's signed result URLs. Generated media
 		// never passes through platform storage or a background transfer worker.
 		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL}); err != nil {

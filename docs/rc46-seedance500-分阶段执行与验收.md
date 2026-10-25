@@ -33,9 +33,11 @@
 | --- | --- | --- | --- |
 | P0-0A 基线与安全 | 本执行表、UI0 契约、Go 1.26.10；发送前操作租约复核；查询候选排除有效租约 | 全量 CI、MySQL 故障回归、无重复上游 POST/DELETE、无错误退款 | PR #56 已合入 main `38b1873`，未部署生产 |
 | P0-0B 可观测与 Mock | 可控 Mock Ark、低基数调度/查询延迟/DB/回执队列指标、现状负载报告 | R0 可复跑；安全日志无正文/密钥；指标不冒充账务事实 | [PR #57](https://github.com/CZ3700/LAIAI-API/pull/57) 已合入 main `ceecb12`；未开始 R4 容量测试 |
-| P0-1A 运行时契约固定 | 复用现有 State/Operation，固定 runtime/adapter/protocol/billing-schema，未知格式安全拒绝 | 单 v1 旧新二进制交接；未知版本零发送/零资金动作；配置快照隔离 | 实现与隔离验收完成；[PR #58](https://github.com/CZ3700/LAIAI-API/pull/58)，未发布；见第 5.3 节 |
+| P0-1A 运行时契约固定 | 复用现有 State/Operation，固定 runtime/adapter/protocol/billing-schema，未知格式安全拒绝 | 单 v1 旧新二进制交接；未知版本零发送/零资金动作；配置快照隔离 | [PR #58](https://github.com/CZ3700/LAIAI-API/pull/58) 七项门禁通过后已合入 main `fa1cfef`；未发布生产；见第 5.3 节 |
 | P0-1B R2 补充与凭据接管 | 明确拒绝/缺 ID/未知状态的完整持久化矩阵；同账号项目凭据接管与请求头隔离 | 不扩大退款依据；凭据接管需证明目标身份；多版本退役演练在实际 V2 前完成 | 待实施；P0-1A 的活动配置隔离不等于在途凭据迁移 |
-| P0-2 故障证据与恢复 | 数据库时间、不可变响应收件箱/迟到证据归属、未知提交核对、终态缺 usage 恢复 | R3 崩溃点/双 Worker/重复回执/超 hold；零资金差异 | 待实施 |
+| P0-2A1 创建响应收件箱 | 不可变执行登记、独立响应保存、同 attempt 恢复、legacy 分流；默认关闭 | CAS/取消/删除竞态、重复/矛盾证据、无响应过期、历史关闭、真实迁移与账务不变 | 基于 main `fa1cfef` 在 `codex/rc46-response-inbox` 开发中；迁移 0128 |
+| P0-2A1.1 持久化失败控制 | 同一证据有界重试、保存失败停止后续发送、关库前等待在途保存 | 不重发上游、不把未提交响应标为已保存；数据库恢复/关机故障用例 | A1 后立即实施；未完成前不得启用生产 inbox 新写入 |
+| P0-2A2/B 故障恢复后续 | 取消/删除/交付收件箱、完整兼容演练；随后数据库时间/fence、独立结算 | A1 完成后逐批；完整 R3 崩溃点/双 Worker/超 hold、零资金差异 | 待实施，A1 不等于整个 P0-2 完成 |
 | P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | 待实施，可并行 P0-1 |
 | P0-G2 全入口授权 | 同一有效模型/组解析器覆盖目录、报价、创建、重试、派发复核；撤权强校验 | 全入口拒绝矩阵；已发送任务继续查询结算；空 subset 拒绝 | 待实施，依赖 G1 |
 | P0-G3 组 UI 与迁移 | 管理员影响预览、用户组选择、有效模型集合差分 | G2 全绿后才开放；不得静默改旧 Key 权限 | 待实施 |
@@ -119,6 +121,29 @@ R3 证据目录为 `laiai-release:/var/lib/laiai-artifacts/rc46-p1-20261026-r3/`
 干净提交证据目录为 `/var/lib/laiai-artifacts/rc46-p1-6a7ad68-clean/`。兼容报告 `runtime-compat/run-20261025T175313Z-dPbdQWRp/report.json` SHA-256：`f312feba7aa6d069040e2bd7788564e7b1225a0ba7a550f695cf9c69903dde0b`；该次 `mysql:8.4` 实际解析 digest 为 `sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69`。Mock 报告 `mock-baseline/run-20261025T175816Z-P6YTEONE/report.json` SHA-256：`61bd3698e7d74b53da1903f7a1e91fbbe276b6739d842167b263037c6092b46e`，使用固定 MySQL digest `sha256:c36050afdca850f23cef85703f84c7531a5ae155a11b5ee1c60acb09937c4084`。
 
 唯一运行时 descriptor SHA-256：`77f6aa32417500ddd9e3e11a2a1036866cdda49237d86b7379ca67b92710f8bc`。本批只证明 v1 固定、未知契约安全拒绝及旧任务兼容；活动凭据更新隔离不等于同账号/项目验证后的在途接管。完整原 R2、迟到 inbox、数据库时间/fence、500 长时压测和生产灰度仍按对应阶段推进。
+
+## 5.4 P0-2A1 隔离验收记录
+
+R2 源快照基于 main `fa1cfef`，SHA-256 为 `5d5a4b320c2e3b3af8d4126d4f837a85d7cb12875215dcd020d930332beb0c5b`，逐文件清单保留在 `source-manifest.json`。尚未以本记录代替最终 PR CI、旧新二进制和 Mock 基线验收。
+
+| 验收 | 实际结果 |
+| --- | --- |
+| 工具链和完整检查 | Go 1.26.10，`make vet`、`make ci` 通过；MySQL 8.4.9 使用固定 digest |
+| 迁移 0128 | fresh、分别已提交 1/2/3 条 CREATE 后恢复、记录后重放均通过；旧表行/列指纹保持，旧 SQL 不制造新登记；正式迁移和 schema-doctor 通过 |
+| 收件箱故障 | 18 个顶层真实 MySQL 用例连续 `-race -count=2`，共 36 次通过；覆盖 CAS/租约/取消/删除、并发重复、冲突、五处保存事务回滚、应用回滚、未知格式分流和队列退避 |
+| 留存与旧权限 | 真实 `PurgeExpired` 后新 Service 默认关闭写开关仍恢复 accepted/rejected；无解密历史、无新增 HTTP；已 applied/review 的进度不因临时元数据/版本错误重新入队 |
+| 完整集成 | 同库 video/videoasset/server 全套 MySQL 与 video/videoartifact/videoasset/videobilling/invocation/notify 六领域 race 通过 |
+| 资源与边界 | 专用测试数据库已停止，官方调用和费用为 0；未变更生产。A1.1 的重试/熔断/关机等待与 A2 仍未完成，不能开启生产新写入或声称完整 R3/500 容量达标 |
+
+R2 于 `2026-10-25T19:09:40Z` 完成，目录 `laiai-release:/var/lib/laiai-artifacts/rc46-p2a-20261026-r2/`，`ci.log` SHA-256 为 `3bba6b1b9610991e1bce0c5709f03bdcb7d1fc5ff1c55a28a5645e4d164b03f5`。真实二进制交接测试由专用 runner 执行，普通 MySQL 套件中该用例的 skip 不计为通过。
+
+保留首轮失败证据：R1 在迁移后新旧 ID 列比较触发 MySQL 1267，根因是 `utf8mb4_0900_bin` 与既有 `utf8mb4_bin` 不兼容。修正新表共享 ID 的排序规则，协议/版本仍保留 NO PAD；没有更改旧表或通过给测试 SQL 加转换掩盖问题。R1 `ci.log` SHA-256 为 `d8804cf55a443471298c198516ce1652acab2e9d0338427774f2e7e70d55ccad`，目录 `/var/lib/laiai-artifacts/rc46-p2a-20261026-r1/`，该轮不计为验收通过。
+
+R3 补齐同任务创建身份核对屏障：普通查询与恢复在候选 LIMIT 前排除待核对任务，已在途 GET 仍保存响应但不应用状态/资金；另一份创建回执不能绕过同任务核对。临时 `blocked` 和普通 `sync_state=needs_review` 不被混同为身份核对。新增四项回归后，共 22 个顶层收件箱测试连续两轮 race 通过；`make vet`、`make ci`、正式迁移/doctor 也通过。R3 源包 SHA-256 为 `8889502889894d7e7471b481e3100fa73dc5377fdaa71528dc1b1cfa2e15125b`。
+
+该轮随后同库全套 MySQL 失败，不能计为完整验收通过：`StaleProducerCannotApplyConflictOrDowngradeAppliedReceipt` 假定自己的新回执必定进入全局 30 项恢复窗口，而前序故障夹具的 `blocked` 回执已经过退避期限、重新排在其前。修复仅安排本测试回执在当前合格队列前并断言入选，保留原状态/资金/HTTP 断言；不改变业务 LIMIT、不清库、不修改其他组织。R4 继续复用 R3 隔离库及其积压验证。R3 日志保留于 `/var/lib/laiai-artifacts/rc46-p2a-20261026-r3/ci.log`，SHA-256 为 `6b96387fc80cf710853b7e71ff3a4e8ef2cd7eec47af96d9645a0dedb2f08a7b`。
+
+R4 于 `2026-10-25T19:47:50Z` 全部通过，源包 SHA-256 为 `536cbf56d4661f4336404dd5106cdd7c33a81add6c25eb11b1cbb58e86739449`，对应实现提交 `8890e9f1aea3e6638ef76bdf76864b959a20b8fb` 的 872 个文件逐项完全一致。该轮保留 R3 专用库和既有积压，先将修复用例连续两轮 race，再执行完整 video/videoasset/server MySQL 和六领域 race，均通过；重新运行 `make vet`、`make ci` 与 schema-doctor 亦通过。完整视频 MySQL 127.103 秒，视频 race 161.012 秒。证据目录 `/var/lib/laiai-artifacts/rc46-p2a-20261026-r4/`，`ci.log` SHA-256 为 `00f48812aba581330b5cb2c164f9d653ad98571b82ba28576adb9ff93d884e66`。专用数据库已停止，官方调用和费用为零；该结果仍不代替干净提交的旧新二进制/Mock 验收与最新 PR CI。
 
 ## 6. 500 容量验收边界
 
