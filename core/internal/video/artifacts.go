@@ -122,7 +122,9 @@ func (s *Service) refreshDelivery(ctx context.Context, t task.Task, st State) er
 	if e != nil {
 		return e
 	}
+	callStarted := time.Now()
 	response := client.Query(ctx, t.UpstreamTaskID)
+	s.observeAdapterCall("delivery_query", response, callStarted)
 	body := response.Body
 	if len(body) == 0 {
 		body = []byte(`{}`)

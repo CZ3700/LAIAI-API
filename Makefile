@@ -5,7 +5,7 @@ export GOPROXY
 export GOTOOLCHAIN := local
 
 .PHONY: ci test vet build migrate-lint migrate-smoke help
-.PHONY: release-check toolchain-check
+.PHONY: release-check toolchain-check ark-mock-baseline
 
 ci: vet migrate-lint test build ## 完整本地 CI gate（提交前必跑）
 
@@ -21,6 +21,10 @@ migrate-lint: toolchain-check ## 迁移安全 lint（破坏性 DDL 即 fail；�
 
 migrate-smoke: toolchain-check ## 真 MySQL 迁移冒烟（需 docker；apply×2 幂等 + schema-doctor 漂移体检）
 	sh scripts/mysql-smoke.sh
+
+ark-mock-baseline: toolchain-check ## 独立 MySQL + 单作用域 Mock Ark 实际调度基线（约一分钟，无官方调用）
+	bash scripts/tests/test-ark-mock-baseline.sh
+	bash scripts/ark-mock-baseline.sh
 
 test: toolchain-check ## 全部测试（纯 Go sqlite，无 CGO）
 	cd core && go test ./... -count=1

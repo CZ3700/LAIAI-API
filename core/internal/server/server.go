@@ -300,6 +300,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				s.registerArkOfficialPriceCatalog(su)
 				su.GET("/video/models/:model/pricing/reference-candidates", s.getArkReferenceCandidates)
 				s.registerArkRequestLogs(videoConsoleOrg, su)
+				su.GET("/video/worker-observability", s.getArkWorkerObservability)
 				// 跨租户全平台调用明细（org_id/user_id/model/cost）：限 superadmin（P2-3）
 				su.GET("/invocations", s.adminListInvocations)
 				su.POST("/credits", s.adminGrantCredit) // 授信入金（动钱）

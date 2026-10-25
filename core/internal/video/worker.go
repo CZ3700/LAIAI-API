@@ -17,7 +17,10 @@ import (
 
 // ProcessOnce has bounded work. Unknown creates are never placed back on the
 // dispatch queue. A persisted response can be replayed without another POST.
-func (s *Service) ProcessOnce(ctx context.Context) error {
+func (s *Service) ProcessOnce(ctx context.Context) (err error) {
+	m := s.metrics()
+	finish := m.startCycle()
+	defer func() { finish(err) }()
 	if err := s.recoverOperations(ctx); err != nil {
 		return err
 	}
@@ -31,11 +34,17 @@ func (s *Service) ProcessOnce(ctx context.Context) error {
 	if err := s.DB.WithContext(ctx).Table("(?) AS eligible", queued).Where("scope_rank = 1").Order("created_at, id").Limit(20).Find(&ops).Error; err != nil {
 		return err
 	}
+	m.mu.Lock()
+	m.operationCandidates += uint64(len(ops))
+	m.mu.Unlock()
 	for _, op := range ops {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if err := s.processOperation(ctx, op); err != nil {
+			m.mu.Lock()
+			m.operationErrors++
+			m.mu.Unlock()
 			s.Log.Warn("video operation needs recovery", "operation_id", op.ID)
 		}
 	}
@@ -43,11 +52,17 @@ func (s *Service) ProcessOnce(ctx context.Context) error {
 	if err := s.pendingQueryCandidates(ctx).Order("v.next_poll_at, v.task_id").Limit(40).Scan(&rows).Error; err != nil {
 		return err
 	}
+	m.mu.Lock()
+	m.queryCandidates += uint64(len(rows))
+	m.mu.Unlock()
 	for _, st := range rows {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if err := s.pollTask(ctx, st.OrgID, st.TaskID); err != nil {
+			m.mu.Lock()
+			m.queryErrors++
+			m.mu.Unlock()
 			s.Log.Warn("video query needs recovery", "task_id", st.TaskID)
 		}
 	}
@@ -136,6 +151,7 @@ func (s *Service) rateTx(tx *gorm.DB, scope uint64, action string, now time.Time
 func (s *Service) operationMaySend(ctx context.Context, op Operation) (bool, error) {
 	var count int64
 	err := s.DB.WithContext(ctx).Model(&Operation{}).Where("org_id = ? AND id = ? AND resource_id = ? AND kind = ? AND status = ? AND version = ? AND attempt_id = ? AND lease_until > ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, s.Now().UTC()).Count(&count).Error
+	s.observeGuard(op.Kind, count == 1, err)
 	return count == 1, err
 }
 
@@ -217,7 +233,9 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	}
 	// Body was validated, priced and encrypted at acceptance. Never reconstruct
 	// it from today's capability/defaults after a configuration change.
+	callStarted := time.Now()
 	response := client.Submit(ctx, ark.NormalizedRequest{Body: body, PublicModel: t.Model, UpstreamModel: st.UpstreamModel, CapabilityVersion: st.CapabilityVersion})
+	s.observeAdapterCall("submit", response, callStarted)
 	if response.Outcome == ark.OutcomeNotSent {
 		return s.knownUnsent(ctx, t, st, op, "request_not_sent")
 	}
@@ -441,7 +459,9 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 	if err != nil {
 		return err
 	}
+	callStarted := time.Now()
 	response := client.Query(ctx, t.UpstreamTaskID)
+	s.observeAdapterCall("query", response, callStarted)
 	received := s.Now().UTC()
 	body := response.Body
 	if len(body) == 0 {
