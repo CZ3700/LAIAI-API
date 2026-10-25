@@ -25,7 +25,13 @@ func TestAuthRateLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 突发 3：第 4 次同 IP 登录应 429
-	engine := New(db, Options{AuthSecret: testSecret, AuthRateBurst: 3})
+	engine, srv := NewWithServer(db, Options{AuthSecret: testSecret, AuthRateBurst: 3})
+	// This test asserts the burst boundary, not wall-clock refill speed. The
+	// real login handler performs Argon2 even for an unknown user; under -race
+	// three sequential logins can take over one second and refill a token.
+	// Disable refill only in this fixture, while exercising the real middleware
+	// and password checks. Production retains its one-token-per-second rate.
+	srv.authLimiter = newIPLimiter(0, 3)
 
 	do := func() int {
 		body, _ := json.Marshal(map[string]string{"email": "x@example.com", "password": "wrongpass1"})
