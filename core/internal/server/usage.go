@@ -102,6 +102,9 @@ func (s *Server) getUsage(c *gin.Context) {
 // 与 getUsage 同 org 隔离口径（红线 5）；按 days 截最近 N 天（默认 30，1..365），上限 usageExportMaxRows。
 // CSV 注入防护走 csvSafe（与 admin 导出一致）；只导出对外字段，不含渠道/上游 id 等平台内部信息。
 func (s *Server) getUsageExport(c *gin.Context) {
+	if s.dispatchInvocationExportV1(c) {
+		return
+	}
 	money, err := s.newExportMoney(c.Query("display_currency"))
 	if err != nil {
 		fail(c, 422, err.Error())

@@ -86,6 +86,10 @@ func (e *queryFailure) Is(target error) bool { return target == ErrQueryUnavaila
 // The host's deadline includes its preceding FX read; this additional bound only
 // shortens an unbounded direct caller and cannot extend the host's deadline.
 func QueryLogs(ctx context.Context, db *gorm.DB, scope QueryScope, filter QueryFilter, page, pageSize int) (QueryResult, error) {
+	return queryLogs(ctx, db, scope, filter, page, pageSize, false)
+}
+
+func queryLogs(ctx context.Context, db *gorm.DB, scope QueryScope, filter QueryFilter, page, pageSize int, export bool) (QueryResult, error) {
 	// Take ownership of optional values before either query is built.
 	if filter.Modality != nil {
 		modality := *filter.Modality
@@ -117,7 +121,7 @@ func QueryLogs(ctx context.Context, db *gorm.DB, scope QueryScope, filter QueryF
 	result := QueryResult{Items: make([]Invocation, 0), AsOf: time.Now().UTC()}
 	// Parent connections use a warning logger. Slow/error SQL must not reveal
 	// client-supplied filters, even when the returned error is safely wrapped.
-	err := db.Session(&gorm.Session{NewDB: true, Logger: logger.Discard}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := db.Session(&gorm.Session{NewDB: true, Context: ctx, Logger: logger.Discard}).Transaction(func(tx *gorm.DB) error {
 		prefix, err := querySelectPrefix(ctx, tx.Dialector.Name())
 		if err != nil {
 			return err
@@ -133,18 +137,28 @@ func QueryLogs(ctx context.Context, db *gorm.DB, scope QueryScope, filter QueryF
 		if err != nil {
 			return err
 		}
+		if export && totals.RecordCount > QueryExportMaxRows {
+			return ErrQueryExportLimit
+		}
 		prefix, err = querySelectPrefix(ctx, tx.Dialector.Name())
 		if err != nil {
 			return err
 		}
 		// Start a fresh chain: the aggregate's select/destination/order cannot
 		// leak into this query. Both chains use this transaction and predicate.
-		if err := queryPredicate(tx, scope, filter).Select(prefix + "*").Order("id DESC").
-			Limit(pageSize).Offset((page - 1) * pageSize).Find(&result.Items).Error; err != nil {
+		columns, limit, offset := "*", pageSize, (page-1)*pageSize
+		if export {
+			columns, limit, offset = queryExportColumns, QueryExportMaxRows, 0
+		}
+		if err := queryPredicate(tx, scope, filter).Select(prefix + columns).Order("id DESC").
+			Limit(limit).Offset(offset).Find(&result.Items).Error; err != nil {
 			return err
 		}
+		if export && int64(len(result.Items)) != totals.RecordCount {
+			return ErrQueryUnavailable
+		}
 		result.Totals = totals
-		return nil
+		return ctx.Err()
 	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return QueryResult{}, &queryFailure{cause: err}
