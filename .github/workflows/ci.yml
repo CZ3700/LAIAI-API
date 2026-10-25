@@ -116,6 +116,10 @@ jobs:
         run: go -C core test -p 1 ./internal/video ./internal/videoasset ./internal/server -run 'TestMySQL|TestArkBillMySQL' -count=1 -timeout=10m
       - name: Billing admin and control-plane lifecycle regressions
         run: go -C core test -race ./internal/server -run '^(TestArkBillMySQL|TestAuthRateLimit$|TestRealtime(WriteDeadlineDoS|IdleTimeout)$)' -count=1 -timeout=3m
+      - name: Invocation snapshot queries and exact totals
+        # Includes real two-connection snapshot, read-pool cancellation and
+        # a private 100K-row schema; never uses deployment credentials.
+        run: go -C core test -race -p 1 ./internal/invocation ./internal/server -run '^(TestQuery|TestInvocation|TestMySQLInvocation)' -count=1 -timeout=5m
       - name: Ark concurrency and Linux storage checks
         run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=10m
       - name: Main lifecycle HTTP and SIGTERM drain checks

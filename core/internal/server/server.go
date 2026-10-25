@@ -61,8 +61,9 @@ type Server struct {
 	notify              *notify.Dispatcher // 统一通知层（§4.9）；nil = 通知禁用
 	video               *video.Service
 	log                 *slog.Logger
-	now                 func() time.Time // 可注入时钟，测试用
-	invRetentionDefault int              // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
+	now                 func() time.Time    // 可注入时钟，测试用
+	invRetentionDefault int                 // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
+	invocationQueries   invocationQueryGate // v1 metadata queries: global 4, subject 2, zero wait.
 }
 
 // readOnly 返回只读副本句柄（规模化：分析/用量/排行/公开价目等重读卸载到副本）；未配副本回退主库。

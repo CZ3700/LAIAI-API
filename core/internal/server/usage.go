@@ -26,6 +26,9 @@ const (
 // upstream_request_id 对请求所有者可见（排障闭环 0045：开发者找厂商开工单的唯一凭证，
 // id 本身是不透明串，不泄露渠道归属）。
 func (s *Server) getUsage(c *gin.Context) {
+	if s.dispatchInvocationQueryV1(c, false) {
+		return
+	}
 	claims := mustClaims(c)
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
