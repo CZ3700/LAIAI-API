@@ -1,3 +1,3 @@
 module github.com/laiai/laiai-next/relay
 
-go 1.26.1
+go 1.26.10

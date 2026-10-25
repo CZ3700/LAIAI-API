@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -332,5 +333,264 @@ func TestMySQLExpiredCreateLeaseWithoutReceiptNeverResends(t *testing.T) {
 	must(t, f.s.DB.Model(&videobilling.BillingEntry{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Count(&entries).Error)
 	if view.Status != "submission_unknown" || view.BillingState != "pending_usage" || st.SyncState != "needs_review" || st.ReviewDueAt == nil || op.Status != "unknown" || op.ReceiptRef != "" || len(queued) != 0 || events != 1 || entries != 0 || f.posts.Load() != 0 || f.hold(t, v.ID).Status != ledger.HoldActive {
 		t.Fatal("expired ambiguous claim was resent, refunded or requeued", view.Status, op.Status, events, entries)
+	}
+}
+
+// Pause after preparation has read the credential, before the dispatch guard.
+// This exercises the real worker path without introducing production test hooks.
+func pauseVideoCredentialRead(t *testing.T, f *fixture) (<-chan struct{}, func()) {
+	t.Helper()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var paused atomic.Bool
+	var once sync.Once
+	resume := func() { once.Do(func() { close(release) }) }
+	name := fmt.Sprintf("test:dispatch-pause-%d", f.key.OrgID)
+	must(t, f.s.DB.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
+		if tx.Statement.Table == "video_credential_snapshots" && paused.CompareAndSwap(false, true) {
+			close(entered)
+			<-release
+		}
+	}))
+	t.Cleanup(func() {
+		resume()
+		f.s.DB.Callback().Query().Remove(name)
+	})
+	return entered, resume
+}
+
+func TestMySQLOperationDispatchRequiresCurrentClaim(t *testing.T) {
+	for _, kind := range []string{"create_task", "cancel_task", "delete_task"} {
+		for _, invalidation := range []string{"status", "version", "attempt", "lease_expired", "lease_recovered"} {
+			t.Run(kind+"/"+invalidation, func(t *testing.T) {
+				f := mysqlFixture(t)
+				v := f.create(t, "dispatch-guard-create")
+				var op Operation
+				if kind != "create_task" {
+					f.dispatch(t, v.ID)
+				}
+				switch kind {
+				case "create_task":
+					must(t, f.s.DB.Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, v.ID, kind).First(&op).Error)
+				case "cancel_task":
+					var err error
+					op, _, err = f.s.Cancel(context.Background(), f.key.OrgID, v.ID, f.requestID("guard-cancel"), "dispatch-guard-cancel")
+					must(t, err)
+				case "delete_task":
+					must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
+					var err error
+					op, _, err = f.s.Delete(context.Background(), f.key.OrgID, v.ID, f.requestID("guard-delete"))
+					must(t, err)
+				}
+				holdBefore := f.hold(t, v.ID)
+				postsBefore := f.posts.Load()
+				var deletes atomic.Int32
+				f.response = func(req *http.Request) (*http.Response, error) {
+					if req.Method == http.MethodDelete {
+						deletes.Add(1)
+					}
+					return reply(200, `{}`), nil
+				}
+				entered, resume := pauseVideoCredentialRead(t, f)
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- f.s.processOperation(ctx, op) }()
+				select {
+				case <-entered:
+				case err := <-done:
+					t.Fatal("worker returned before the preparation pause", err)
+				case <-ctx.Done():
+					t.Fatal("worker did not reach the preparation pause")
+				}
+				var claimed Operation
+				must(t, f.s.DB.Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).First(&claimed).Error)
+				if claimed.Status != "in_flight" || claimed.AttemptID == "" {
+					t.Fatal("test did not pause a claimed operation")
+				}
+				updates := map[string]any{}
+				switch invalidation {
+				case "status":
+					updates["status"] = "unknown"
+				case "version":
+					updates["version"] = claimed.Version + 1
+				case "attempt":
+					updates["attempt_id"] = "att_replaced_" + v.ID
+				case "lease_expired", "lease_recovered":
+					// Equality is expired. No wall-clock sleep is needed.
+					f.now = claimed.LeaseUntil.UTC()
+				}
+				if len(updates) > 0 {
+					must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).Updates(updates).Error)
+				}
+				if invalidation == "lease_recovered" {
+					must(t, f.s.recoverOperations(context.Background()))
+				}
+				resume()
+				select {
+				case err := <-done:
+					must(t, err)
+				case <-ctx.Done():
+					t.Fatal("resumed worker did not return")
+				}
+				var after Operation
+				must(t, f.s.DB.Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).First(&after).Error)
+				holdAfter := f.hold(t, v.ID)
+				if f.posts.Load() != postsBefore || deletes.Load() != 0 || after.ReceiptRef != "" || after.ReceiptAppliedAt != nil || after.Status == "rejected" || after.Status == "confirmed" || holdAfter.Status != holdBefore.Status || !holdAfter.CapturedAmount.Equal(holdBefore.CapturedAmount) {
+					t.Fatal("invalidated worker sent a request, fabricated a receipt or changed its hold", after.Status)
+				}
+				if invalidation == "lease_expired" || invalidation == "lease_recovered" {
+					must(t, f.s.recoverOperations(context.Background()))
+					must(t, f.s.DB.Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).First(&after).Error)
+					must(t, f.s.processOperation(context.Background(), after))
+					if after.Status != "unknown" || f.posts.Load() != postsBefore || deletes.Load() != 0 || f.hold(t, v.ID).Status != holdBefore.Status {
+						t.Fatal("expired permission was retried or refunded")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestMySQLLateCreateReceiptSurvivesExpiredLeaseRecovery(t *testing.T) {
+	f := mysqlFixture(t)
+	v := f.create(t, "late-create-receipt")
+	var op Operation
+	must(t, f.s.DB.Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, v.ID, "create_task").First(&op).Error)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once, enteredOnce sync.Once
+	resume := func() { once.Do(func() { close(release) }) }
+	defer resume()
+	f.response = func(req *http.Request) (*http.Response, error) {
+		enteredOnce.Do(func() { close(entered) })
+		select {
+		case <-release:
+			return reply(200, fmt.Sprintf(`{"id":%q}`, "up_"+v.ID)), nil
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		}
+	}
+	done := make(chan error, 1)
+	go func() { done <- f.s.processOperation(ctx, op) }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("worker did not enter its single provider request")
+	}
+	f.now = f.now.Add(4 * time.Minute)
+	must(t, f.s.recoverOperations(context.Background()))
+	var recovered Operation
+	must(t, f.s.DB.Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).First(&recovered).Error)
+	if recovered.Status != "unknown" || f.hold(t, v.ID).Status != ledger.HoldActive {
+		t.Fatal("expired HTTP request did not retain the uncertain hold")
+	}
+	resume()
+	select {
+	case err := <-done:
+		must(t, err)
+	case <-ctx.Done():
+		t.Fatal("late provider response did not finish")
+	}
+	must(t, f.s.recoverOperations(context.Background()))
+	must(t, f.s.processOperation(context.Background(), recovered))
+	must(t, f.s.DB.Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).First(&recovered).Error)
+	view, err := f.s.Get(f.key.OrgID, v.ID)
+	must(t, err)
+	var receipts, bindings int64
+	must(t, f.s.DB.Model(&Attempt{}).Where("org_id = ? AND task_id = ? AND phase = ?", f.key.OrgID, v.ID, "response_received").Count(&receipts).Error)
+	must(t, f.s.DB.Model(&UpstreamBinding{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Count(&bindings).Error)
+	if f.posts.Load() != 1 || receipts != 1 || bindings != 1 || recovered.ReceiptRef == "" || recovered.ReceiptAppliedAt == nil || recovered.Status != "confirmed" || view.Status != "queued" || view.BillingState != "reserved" || f.hold(t, v.ID).Status != ledger.HoldActive {
+		t.Fatal("late receipt was lost, resent or treated as a refund", view.Status, recovered.Status)
+	}
+}
+
+func TestMySQLOperationDispatchGuardDatabaseFailureNeverSends(t *testing.T) {
+	for _, kind := range []string{"create_task", "cancel_task", "delete_task"} {
+		t.Run(kind, func(t *testing.T) {
+			f := mysqlFixture(t)
+			v := f.create(t, "dispatch-db-failure-create")
+			var op Operation
+			if kind != "create_task" {
+				f.dispatch(t, v.ID)
+			}
+			switch kind {
+			case "create_task":
+				must(t, f.s.DB.Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, v.ID, kind).First(&op).Error)
+			case "cancel_task":
+				var err error
+				op, _, err = f.s.Cancel(context.Background(), f.key.OrgID, v.ID, f.requestID("db-failure-cancel"), "dispatch-db-failure-cancel")
+				must(t, err)
+			case "delete_task":
+				must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
+				var err error
+				op, _, err = f.s.Delete(context.Background(), f.key.OrgID, v.ID, f.requestID("db-failure-delete"))
+				must(t, err)
+			}
+			holdBefore := f.hold(t, v.ID)
+			postsBefore := f.posts.Load()
+			var deletes atomic.Int32
+			f.response = func(req *http.Request) (*http.Response, error) {
+				if req.Method == http.MethodDelete {
+					deletes.Add(1)
+				}
+				return reply(200, `{}`), nil
+			}
+			injected := errors.New("injected dispatch permission database failure")
+			var failed atomic.Bool
+			name := fmt.Sprintf("test:dispatch-db-failure-%d", f.key.OrgID)
+			// Fail the permission read even when its count was populated. A
+			// database error must take precedence over a seemingly valid claim.
+			must(t, f.s.DB.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
+				if tx.Statement.Table == "video_operations" && strings.Contains(strings.ToLower(tx.Statement.SQL.String()), "count(*)") && failed.CompareAndSwap(false, true) {
+					tx.AddError(injected)
+				}
+			}))
+			t.Cleanup(func() { f.s.DB.Callback().Query().Remove(name) })
+			if err := f.s.processOperation(context.Background(), op); !failed.Load() || !errors.Is(err, injected) {
+				t.Fatal("dispatch did not propagate its permission read failure", err)
+			}
+			var after Operation
+			must(t, f.s.DB.Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).First(&after).Error)
+			holdAfter := f.hold(t, v.ID)
+			if f.posts.Load() != postsBefore || deletes.Load() != 0 || after.Status != "in_flight" || after.ReceiptRef != "" || after.ReceiptAppliedAt != nil || holdAfter.Status != holdBefore.Status || !holdAfter.CapturedAmount.Equal(holdBefore.CapturedAmount) {
+				t.Fatal("permission read failure sent a request, fabricated a receipt or changed the hold")
+			}
+			f.now = after.LeaseUntil.UTC()
+			must(t, f.s.recoverOperations(context.Background()))
+			must(t, f.s.DB.Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).First(&after).Error)
+			must(t, f.s.processOperation(context.Background(), after))
+			if after.Status != "unknown" || f.posts.Load() != postsBefore || deletes.Load() != 0 || f.hold(t, v.ID).Status != holdBefore.Status {
+				t.Fatal("permission read failure became a retry or refund during recovery")
+			}
+		})
+	}
+}
+
+func TestMySQLQueryCandidatesExcludeLiveLeasesBeforeBatchLimit(t *testing.T) {
+	f := mysqlFixture(t)
+	v := f.create(t, "query-candidate-after-leases")
+	f.dispatch(t, v.ID)
+	lease := f.now.Add(time.Minute)
+	for i := 0; i < 40; i++ {
+		id := fmt.Sprintf("task_leased_%d_%d", f.key.OrgID, i)
+		must(t, f.s.DB.Create(&task.Task{TaskID: id, OrgID: f.key.OrgID, Provider: Provider, Status: "running", UpstreamTaskID: "up_" + id, SubmittedAt: f.now}).Error)
+		must(t, f.s.DB.Create(&State{TaskID: id, OrgID: f.key.OrgID, BillingState: "reserved", NextPollAt: f.now.Add(-time.Minute), QueryLeaseUntil: &lease, CreatedAt: f.now, UpdatedAt: f.now}).Error)
+	}
+	for _, boundary := range []string{"no_lease", "expired_lease"} {
+		var expiry any
+		if boundary == "expired_lease" {
+			expiry = f.now
+		}
+		must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Update("query_lease_until", expiry).Error)
+		var rows []State
+		must(t, f.s.pendingQueryCandidates(context.Background()).Where("v.org_id = ?", f.key.OrgID).Order("v.next_poll_at, v.task_id").Limit(40).Scan(&rows).Error)
+		if len(rows) != 1 || rows[0].TaskID != v.ID {
+			t.Fatal("live leases consumed the bounded batch and hid the eligible task", boundary, len(rows))
+		}
+	}
+	must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
+	if f.gets.Load() != 1 {
+		t.Fatal("eligible candidate was not queried")
 	}
 }

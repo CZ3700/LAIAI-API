@@ -1,13 +1,17 @@
 # core 控制面镜像（构建上下文 = 仓库根目录）
 # 纪律：确定性构建（-trimpath、无时间戳）；生产部署按 digest pin（红线 7）
 ARG GOPROXY=https://proxy.golang.org,direct
-ARG GO_IMAGE=golang:1.26-alpine
+# Verified linux/amd64 compiler: go1.26.10. Releases may supply another digest,
+# but the compiler below must still meet the security baseline.
+ARG GO_IMAGE=docker.io/library/golang@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca
 ARG ALPINE_IMAGE=alpine:3.21
 
 FROM ${GO_IMAGE} AS builder
 ARG GOPROXY
-ENV GOPROXY=${GOPROXY} CGO_ENABLED=0 GOOS=linux
+ENV GOPROXY=${GOPROXY} GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux
 WORKDIR /src
+COPY scripts/check-go-toolchain.sh ./scripts/check-go-toolchain.sh
+RUN sh scripts/check-go-toolchain.sh
 COPY core/go.mod core/go.sum ./core/
 RUN cd core && go mod download
 COPY core/ ./core/
