@@ -59,14 +59,14 @@ func TestMySQLResponseInboxAppendFailureRollsBackEveryReference(t *testing.T) {
 			injected := errors.New("synthetic inbox append failure")
 			name := fmt.Sprintf("test:inbox-append-%d", f.key.OrgID)
 			fired := false
-			must(t, f.s.DB.Callback().Create().Before("gorm:create").Register(name, func(tx *gorm.DB) {
+			must(t, f.s.responseDB.Callback().Create().Before("gorm:create").Register(name, func(tx *gorm.DB) {
 				if tx.Statement.Table == table {
 					fired = true
 					tx.AddError(injected)
 				}
 			}))
 			_, err = f.s.appendResponseReceipt(context.Background(), p)
-			must(t, f.s.DB.Callback().Create().Remove(name))
+			must(t, f.s.responseDB.Callback().Create().Remove(name))
 			if !fired || err == nil {
 				t.Fatal("append failure did not reach its intended transactional write")
 			}

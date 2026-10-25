@@ -155,10 +155,10 @@ func TestMySQLResponseInboxDispatchedEvidenceSurvivesLostApplyPermission(t *test
 			if receipt.Outcome != string(ark.OutcomeAccepted) || receipt.UpstreamTaskID != "up_"+v.ID || receipt.RuntimeVersion != videoruntime.RuntimeV1 || receipt.PayloadRef == "" || payload.CaptureStatus != invocation.VideoCaptureStaged || responseInboxFunds(t, f, v.ID) != before || f.posts.Load() != 1 {
 				t.Fatal("sent response was lost, applied with stale permission, or changed funds")
 			}
-			// Caller cancellation does not revoke a still-live durable claim.
-			// A detached save/apply context may complete it immediately; the
-			// remaining faults invalidate application and must leave it pending.
-			if fault != "caller_cancelled" && (row.UpstreamTaskID != "" || responseInboxApp(t, f, receipt).AppliedAt != nil) {
+			// Saving is detached from cancellation; application keeps the caller's
+			// context. Every lost-permission case must leave durable evidence for
+			// a current consumer instead of binding during the failed call.
+			if row.UpstreamTaskID != "" || responseInboxApp(t, f, receipt).AppliedAt != nil {
 				t.Fatal("response was applied after its claim or task identity changed")
 			}
 			if fault == "runtime_changed" {

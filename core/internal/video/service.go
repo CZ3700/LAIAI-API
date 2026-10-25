@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
@@ -37,6 +38,9 @@ type Service struct {
 	ArtifactService *videoartifact.Service
 	Assets          *videoasset.Service
 	workerMetrics   *workerMetrics
+	// Configured once before workers start. Only response append uses this pool.
+	responseDB     *gorm.DB
+	responsePaused atomic.Bool
 	// Controls registration of future create attempts only. Recovery of already
 	// registered inbox attempts must remain enabled when this switch is off.
 	ResponseInboxEnabled bool

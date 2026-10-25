@@ -25,12 +25,12 @@ func (s *VideoStore) StageTx(tx *gorm.DB, prepared *PreparedVideoPayload) (strin
 		meta := prepared.metadata
 		result := db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "correlation_key"}}, DoNothing: true}).Create(&meta)
 		if result.Error != nil {
-			return ErrVideoStorage
+			return videoStorageFailure(result.Error)
 		}
 		if result.RowsAffected == 0 {
 			var old VideoPayload
 			if err := db.Where("correlation_key = ? AND org_id = ?", meta.CorrelationKey, meta.OrgID).Take(&old).Error; err != nil {
-				return ErrVideoStorage
+				return videoStorageFailure(err)
 			}
 			if old.CaptureStatus == VideoCaptureExpired {
 				return ErrVideoExpired
@@ -45,12 +45,16 @@ func (s *VideoStore) StageTx(tx *gorm.DB, prepared *PreparedVideoPayload) (strin
 		}
 		stage := prepared.staging
 		if err := db.Create(&stage).Error; err != nil {
-			return ErrVideoStorage
+			return videoStorageFailure(err)
 		}
 		return nil
 	})
 	if err != nil {
-		return "", err
+		// SAVEPOINT/rollback errors also remain safe but classifiable.
+		if errors.Is(err, ErrVideoStorage) || errors.Is(err, ErrVideoExpired) || errors.Is(err, ErrVideoConflict) {
+			return "", err
+		}
+		return "", videoStorageFailure(err)
 	}
 	return prepared.PayloadID(), nil
 }

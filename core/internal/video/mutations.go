@@ -191,6 +191,9 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 	if op.Kind != "cancel_task" && op.Kind != "delete_task" {
 		return nil
 	}
+	if s.DispatchPaused() {
+		return ErrDispatchPaused
+	}
 	var t task.Task
 	var st State
 	claimed := false
@@ -204,6 +207,9 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 		t, st, e = loadTask(tx, op.OrgID, op.ResourceID, true)
 		if e != nil {
 			return e
+		}
+		if s.DispatchPaused() {
+			return ErrDispatchPaused
 		}
 		var current Operation
 		if e = locked(tx).Where("org_id = ? AND id = ?", op.OrgID, op.ID).First(&current).Error; e != nil {
@@ -243,6 +249,9 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 		allowed, e := s.rateTx(tx, st.ProviderScopeID, "delete", now)
 		if e != nil || !allowed {
 			return e
+		}
+		if s.DispatchPaused() {
+			return ErrDispatchPaused
 		}
 		op.Version = current.Version + 1
 		op.AttemptID = attempt
