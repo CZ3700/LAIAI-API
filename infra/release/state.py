@@ -46,10 +46,14 @@ def config_hash():
     keys = ['LIVE_DIR', 'STATE_DIR', 'SOURCE_REPOSITORY', 'COMPOSE_PROJECT', 'LIVE_ENV',
             'VIDEO_ENV', 'CADDYFILE', 'PUBLIC_ORIGIN', 'BACKUP_KEY_FILE', 'GO_IMAGE',
             'ALPINE_IMAGE', 'NODE_IMAGE', 'CADDY_BASE_IMAGE', 'MIN_FREE_MB',
-            'MIN_AVAILABLE_MB', 'CI_CHECK_HOOK', 'CHECK_HOOK', 'HOOK_TIMEOUT']
+            'MIN_AVAILABLE_MB', 'CI_CHECK_HOOK', 'CHECK_HOOK', 'HOOK_TIMEOUT',
+            'IMAGE_SOURCE', 'ARTIFACT_MANIFEST', 'REGISTRY_AUTHORITY', 'DOCKER_CONFIG']
     values = {key: os.environ.get(key, '') for key in keys}
     paths = [values[key] for key in ['LIVE_ENV', 'VIDEO_ENV', 'CADDYFILE', 'BACKUP_KEY_FILE',
-                                    'CI_CHECK_HOOK', 'CHECK_HOOK'] if values[key]]
+                                    'CI_CHECK_HOOK', 'CHECK_HOOK', 'ARTIFACT_MANIFEST'] if values[key]]
+    if values['DOCKER_CONFIG']:
+        paths.append(str(Path(values['DOCKER_CONFIG']) / 'config.json'))
+    paths.append(str(Path(os.environ['TOOL_DIR']).parent / 'release.sh'))
     paths += [str(p) for p in Path(os.environ['TOOL_DIR']).rglob('*') if p.is_file() and p.suffix in ('.sh', '.py', '.sql')]
     paths += [str(Path(values['LIVE_DIR']) / 'infra' / p)
               for p in ['docker-compose.yml', 'mysql/my.cnf', 'redis/redis.conf']]

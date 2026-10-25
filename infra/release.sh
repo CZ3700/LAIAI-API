@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Production release coordinator. Application images are built on this host, never pulled.
+# Production release coordinator. Pin locally built or tested registry images; never deploy mutable tags.
 set -Eeuo pipefail
 set +x
 umask 077
@@ -16,10 +16,11 @@ Usage: bash infra/release.sh [--config FILE] COMMAND [--release ID] [--yes]
   compare      Compare the running/live checkout with GitHub main (no deployment).
   preflight    Pin main, capture the production baseline and check prerequisites.
   backup       Encrypt database/configuration backups and archive old images.
-  build        Build the pinned core and Caddy images sequentially.
+  build        Build pinned images sequentially (IMAGE_SOURCE=build only).
+  pull         Pull and verify tested image digests (IMAGE_SOURCE=registry only).
   deploy       Enter maintenance, stop writes, final backup, migrate, backfill, switch.
   open         Verify the candidate and approved acceptance, then remove maintenance.
-  release      preflight -> backup -> build -> deploy -> open (same pinned plan).
+  release      preflight -> backup -> build|pull -> deploy -> open (same pinned plan).
   rollback     Restore recorded application images/configuration, never restore DB.
   verify       Check running candidate, funds invariants and HTTPS health.
   status       Show a release's recorded stages, without changing services.
@@ -63,7 +64,7 @@ while (($#)); do
     *) [[ -z "$COMMAND" ]] || die 'Only one command is allowed'; COMMAND=$1; shift;;
   esac
 done
-case "$COMMAND" in compare|preflight|backup|build|deploy|open|release|rollback|verify|status|approve) ;; *) usage; exit 2;; esac
+case "$COMMAND" in compare|preflight|backup|build|pull|deploy|open|release|rollback|verify|status|approve) ;; *) usage; exit 2;; esac
 [[ $(id -u) == 0 ]] || die 'Run on the production Linux host as root.'
 [[ $(uname -s) == Linux ]] || die 'Production execution requires Linux.'
 
@@ -91,10 +92,19 @@ set +x
 : "${PUBLIC_ORIGIN:=https://laiai.ai}" "${BACKUP_KEY_FILE:=/root/.laiai-release-backup.key}"
 : "${MIN_FREE_MB:=8192}" "${MIN_AVAILABLE_MB:=1024}" "${HOOK_TIMEOUT:=600}"
 : "${CI_CHECK_HOOK:=$TOOL_DIR/check-github-ci.sh}" "${CHECK_HOOK:=$TOOL_DIR/check-approval.sh}"
+: "${IMAGE_SOURCE:=build}" "${ARTIFACT_MANIFEST:=}" "${REGISTRY_AUTHORITY:=}"
 : "${GO_IMAGE:=}" "${ALPINE_IMAGE:=}" "${NODE_IMAGE:=}" "${CADDY_BASE_IMAGE:=}"
 export LIVE_DIR STATE_DIR SOURCE_REPOSITORY COMPOSE_PROJECT LIVE_ENV VIDEO_ENV CADDYFILE PUBLIC_ORIGIN
 export BACKUP_KEY_FILE MIN_FREE_MB MIN_AVAILABLE_MB HOOK_TIMEOUT CI_CHECK_HOOK CHECK_HOOK
-export GO_IMAGE ALPINE_IMAGE NODE_IMAGE CADDY_BASE_IMAGE
+export GO_IMAGE ALPINE_IMAGE NODE_IMAGE CADDY_BASE_IMAGE IMAGE_SOURCE ARTIFACT_MANIFEST REGISTRY_AUTHORITY
+case "$IMAGE_SOURCE" in build|registry) ;; *) die "IMAGE_SOURCE must be build or registry.";; esac
+if [[ "$IMAGE_SOURCE" == registry ]]; then
+  trusted_file "$ARTIFACT_MANIFEST"
+  [[ "$REGISTRY_AUTHORITY" =~ ^[a-zA-Z0-9][a-zA-Z0-9.:-]*$ ]] || die "Invalid registry authority; configure a trusted host and optional port, without a scheme or path."
+  [[ -z "${DOCKER_CONFIG:-}" ]] || secret_file "$DOCKER_CONFIG/config.json"
+fi
+[[ "$COMMAND" != build || "$IMAGE_SOURCE" == build ]] || die "Build is forbidden in registry mode; use pull."
+[[ "$COMMAND" != pull || "$IMAGE_SOURCE" == registry ]] || die "Pull requires IMAGE_SOURCE=registry."
 [[ "$COMPOSE_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die 'Invalid Compose project.'
 [[ "$PUBLIC_ORIGIN" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]] || die 'PUBLIC_ORIGIN must be an HTTPS origin.'
 [[ "$SOURCE_REPOSITORY" == https://github.com/CZ3700/LAIAI-API.git || "$SOURCE_REPOSITORY" == git@github.com:CZ3700/LAIAI-API.git ]] || die 'Repository must be CZ3700/LAIAI-API without embedded credentials.'
@@ -127,8 +137,25 @@ load_plan() {
   [[ "$TARGET" =~ ^[0-9a-f]{40}$ ]] || die 'Invalid planned commit.'
   SOURCE_DIR="$STATE_DIR/sources/$TARGET"
 }
+artifact() { python3 "$TOOL_DIR/artifact.py" "$@"; }
+verify_artifact() {
+  [[ "$IMAGE_SOURCE" == registry ]] || return 0
+  trusted_file "$ARTIFACT_MANIFEST"
+  artifact validate "$ARTIFACT_MANIFEST" "$TARGET" >/dev/null
+  local role
+  for role in core caddy; do
+    artifact reference "$ARTIFACT_MANIFEST" "$TARGET" "$REGISTRY_AUTHORITY" "$role" >/dev/null
+  done
+}
+candidate_ready() {
+  if [[ "$IMAGE_SOURCE" == registry ]]; then [[ -f "$RUN_DIR/pull.ok" ]]; else [[ -f "$RUN_DIR/build.ok" ]]; fi
+}
+require_candidate() {
+  if [[ "$IMAGE_SOURCE" == registry ]]; then require_mark pull; else require_mark build; fi
+}
 verify_config() {
   [[ "$(state config-hash)" == "$(get config_hash)" ]] || die 'Configuration/tool/evidence hooks changed; create a fresh preflight plan.'
+  verify_artifact
 }
 remote_main() {
   local line
@@ -297,13 +324,20 @@ preflight() {
   [[ ! -f "$RUN_DIR/maintenance-started.ok" ]] || die 'A deployment already started; use status/verify/open/rollback.'
   log "Release ID: $RELEASE_ID"
   capacity; checkout_source; ci_check
-  local ref
-  for ref in "$GO_IMAGE" "$ALPINE_IMAGE" "$NODE_IMAGE" "$CADDY_BASE_IMAGE"; do
-    [[ "$ref" =~ ^[^[:space:]]+@sha256:[0-9a-f]{64}$ ]] || die 'All four base images need verified repository@sha256 references.'
-  done
+  if [[ "$IMAGE_SOURCE" == build ]]; then
+    local ref
+    for ref in "$GO_IMAGE" "$ALPINE_IMAGE" "$NODE_IMAGE" "$CADDY_BASE_IMAGE"; do
+      [[ "$ref" =~ ^[^[:space:]]+@sha256:[0-9a-f]{64}$ ]] || die 'All four base images need verified repository@sha256 references.'
+    done
+  else
+    verify_artifact
+    mkdir -p "$RUN_DIR/config"
+    cp -- "$ARTIFACT_MANIFEST" "$RUN_DIR/config/artifact-manifest.json"
+    chmod 600 "$RUN_DIR/config/artifact-manifest.json"
+  fi
   check_data preflight
   state schema "$RUN_DIR/schema.txt" "$SOURCE_DIR/migrations" subset
-  if [[ ! -f "$RUN_DIR/build.ok" ]]; then
+  if ! candidate_ready; then
     adapt_caddy
     freeze_rollback_runtime
     # Use existing image IDs only to validate planned mounts before a build exists.
@@ -327,6 +361,7 @@ backup_stage() {
 }
 build_stage() {
   PHASE=build
+  [[ "$IMAGE_SOURCE" == build ]] || die "Build is forbidden in registry mode; use pull."
   load_plan; require_mark preflight; require_mark backup; verify_config; same_live; checkout_source; ci_check; capacity
   [[ ! -f "$RUN_DIR/build.ok" ]] || die 'Build is immutable. Use the existing images or a fresh release.'
   local ref core_tag caddy_tag
@@ -347,6 +382,11 @@ build_stage() {
   CORE_IMAGE=$(docker image inspect --format '{{.Id}}' "$core_tag")
   CADDY_IMAGE=$(docker image inspect --format '{{.Id}}' "$caddy_tag")
   images_present "$CORE_IMAGE" "$CADDY_IMAGE"
+  finish_candidate
+  mark build
+  log 'Both candidate images built and archived; services remain unchanged.'
+}
+finish_candidate() {
   state images "$RUN_DIR/images.json" "$CORE_IMAGE" "$CADDY_IMAGE"
   docker run --rm --pull never --network none --read-only --entrypoint sh "$CORE_IMAGE" \
     -ec '
@@ -361,8 +401,25 @@ build_stage() {
     -ec 'test -s /srv/console/index.html; test -d /srv/console/assets'
   docker image save -o "$RUN_DIR/candidate-images.tar" "$CORE_IMAGE" "$CADDY_IMAGE"
   (cd "$RUN_DIR" && sha256sum candidate-images.tar > candidate-images.tar.sha256 && sha256sum -c candidate-images.tar.sha256 >/dev/null)
-  compose new; mark build
-  log 'Both candidate images built and archived; services remain unchanged.'
+  compose new
+}
+pull_stage() {
+  PHASE=pull
+  [[ "$IMAGE_SOURCE" == registry ]] || die 'Pull requires IMAGE_SOURCE=registry.'
+  load_plan; require_mark preflight; require_mark backup; verify_config; same_live; require_current_main; checkout_source; ci_check; capacity
+  [[ ! -f "$RUN_DIR/pull.ok" ]] || die 'Pulled candidate is immutable. Use the existing images or a fresh release.'
+  local role reference image
+  for role in core caddy; do
+    reference=$(artifact reference "$ARTIFACT_MANIFEST" "$TARGET" "$REGISTRY_AUTHORITY" "$role")
+    docker pull --platform linux/amd64 "$reference" > "$RUN_DIR/pull-$role.log" 2>&1 || die "Cannot pull $role digest; inspect its private pull log."
+    image=$(docker image inspect "$reference" | artifact inspect "$TARGET" "$reference")
+    printf -v "${role^^}_IMAGE" '%s' "$image"
+    health
+  done
+  images_present "$CORE_IMAGE" "$CADDY_IMAGE"
+  finish_candidate
+  mark pull
+  log 'Tested candidate digests pulled, verified and archived; services remain unchanged.'
 }
 maintenance_enter() {
   printf '%s\n' "$RELEASE_ID" > "$STATE_DIR/.active-release.tmp"
@@ -421,7 +478,7 @@ open_stage() {
 }
 deploy_stage() {
   PHASE=deploy
-  load_plan; require_mark preflight; require_mark backup; require_mark build
+  load_plan; require_mark preflight; require_mark backup; require_candidate
   [[ ! -f "$RUN_DIR/maintenance-started.ok" ]] || die 'A deployment already started. Inspect status; use open/rollback or manual recovery, not repeated migration.'
   verify_config; same_live; require_current_main; ci_check; checkout_source; capacity
   images_present "$(state get "$RUN_DIR/images.json" core)" "$(state get "$RUN_DIR/images.json" caddy)"
@@ -551,7 +608,7 @@ case "$COMMAND" in
     secret_file "$EVIDENCE"; confirm
     state approve "$PLAN" "$STAGE" "$EVIDENCE"
     log "Evidence recorded for $STAGE; built-in checks remain mandatory.";;
-  backup) confirm; backup_stage;; build) confirm; build_stage;; deploy) confirm; deploy_stage;;
+  backup) confirm; backup_stage;; build) confirm; build_stage;; pull) confirm; pull_stage;; deploy) confirm; deploy_stage;;
   open) confirm; open_stage;; verify) verify_stage;; rollback) confirm; rollback_stage;;
   release)
     confirm
@@ -560,7 +617,9 @@ case "$COMMAND" in
     else
       preflight
       [[ -f "$RUN_DIR/backup.ok" ]] || backup_stage
-      [[ -f "$RUN_DIR/build.ok" ]] || build_stage
+      if ! candidate_ready; then
+        if [[ "$IMAGE_SOURCE" == registry ]]; then pull_stage; else build_stage; fi
+      fi
       deploy_stage
     fi;;
 esac
