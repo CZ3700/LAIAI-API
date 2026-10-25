@@ -7,7 +7,7 @@ import (
 )
 
 func TestAllowsModel(t *testing.T) {
-	k := &APIKey{} // 空白名单 = 不限
+	k := &APIKey{ModelAccessMode: ModelAccessLegacy, PolicyVersion: 1} // legacy 空白名单 = 不限
 	if !k.AllowsModel("anything") {
 		t.Fatal("empty limits should allow all")
 	}

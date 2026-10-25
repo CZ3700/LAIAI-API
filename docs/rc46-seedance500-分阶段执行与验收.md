@@ -7,7 +7,7 @@
 - 应用基线：main `d7fc49949c44b7e0dbfbf95384dafd15df13dadf`；首批分支 `codex/rc46-p0-baseline`。
 - 原方案基于 `e4eb84f` 的部分缺口已过时。原工作树未提交的 ArkControl/UI 配置独立保留，不直接合入本批。
 - 生产已运行 d7fc499；镜像构建和测试迁到 laiai-release，生产 laiai-pod 仅拉取已验收的固定 digest。发布工具 PR #55 是独立变更，不能将其未合入的状态写成应用 main 已包含。
-- 当前迁移到 0126。只在确需 schema 时新增顺序迁移，禁止 ORM 自动迁移或第二套钱包/任务账本。
+- 启动基线迁移到 0126；截至 PR #59 主线已到 0128，当前 G1-A 顺序追加 0129。只在确需 schema 时新增顺序迁移，禁止 ORM 自动迁移或第二套钱包/任务账本。
 - 每批：架构/契约 → 开发 → 针对性测试 → `make vet`/`make ci`（涉及 Web 则 `make ci-all`）→ 独立提交/PR → CI 与验收证据。未通过不标完成，不将 PR 创建等同于生产发布。
 - 本批使用隔离 MySQL 和 Mock HTTP，不使用生产凭据、不调用付费视频、不改线上数据。真实出片预算需按已有累计账单另行核对，不能将旧预算当成 500 次负载调用许可。
 
@@ -35,10 +35,10 @@
 | P0-0B 可观测与 Mock | 可控 Mock Ark、低基数调度/查询延迟/DB/回执队列指标、现状负载报告 | R0 可复跑；安全日志无正文/密钥；指标不冒充账务事实 | [PR #57](https://github.com/CZ3700/LAIAI-API/pull/57) 已合入 main `ceecb12`；未开始 R4 容量测试 |
 | P0-1A 运行时契约固定 | 复用现有 State/Operation，固定 runtime/adapter/protocol/billing-schema，未知格式安全拒绝 | 单 v1 旧新二进制交接；未知版本零发送/零资金动作；配置快照隔离 | [PR #58](https://github.com/CZ3700/LAIAI-API/pull/58) 七项门禁通过后已合入 main `fa1cfef`；未发布生产；见第 5.3 节 |
 | P0-1B R2 补充与凭据接管 | 明确拒绝/缺 ID/未知状态的完整持久化矩阵；同账号项目凭据接管与请求头隔离 | 不扩大退款依据；凭据接管需证明目标身份；多版本退役演练在实际 V2 前完成 | 待实施；P0-1A 的活动配置隔离不等于在途凭据迁移 |
-| P0-2A1 创建响应收件箱 | 不可变执行登记、独立响应保存、同 attempt 恢复、legacy 分流；默认关闭 | CAS/取消/删除竞态、重复/矛盾证据、无响应过期、历史关闭、真实迁移与账务不变 | PR #59 七项 CI、真实二进制交接及 Mock 通过，已合入 main `9552e2b`；迁移 0128；写开关仍默认关闭 |
-| P0-2A1.1 持久化失败控制 | 同一证据有界重试、保存失败停止后续发送、关库前等待在途保存 | 不重发上游、不把未提交响应标为已保存；数据库恢复/关机故障用例 | `codex/rc46-response-persistence` 隔离 R2 全部通过，见第 5.6 节；提交 PR 后仍须最新 CI，A2 未完成前不开生产新写入 |
+| P0-2A1 创建响应收件箱 | 不可变执行登记、独立响应保存、同 attempt 恢复、legacy 分流；默认关闭 | CAS/取消/删除竞态、重复/矛盾证据、无响应过期、历史关闭、真实迁移与账务不变 | [PR #59](https://github.com/CZ3700/LAIAI-API/pull/59) 七项 CI、真实二进制交接及 Mock 通过，已合入 main `9552e2b`；迁移 0128；写开关仍默认关闭 |
+| P0-2A1.1 持久化失败控制 | 同一证据有界重试、保存失败停止后续发送、关库前等待在途保存 | 不重发上游、不把未提交响应标为已保存；数据库恢复/关机故障用例 | [PR #60](https://github.com/CZ3700/LAIAI-API/pull/60) 七项 CI 全绿，已合入 main `c2cebf6`；隔离 R2 证据见第 5.6 节，A2 未完成前不开生产新写入 |
 | P0-2A2/B 故障恢复后续 | 取消/删除/交付收件箱、完整兼容演练；随后数据库时间/fence、独立结算 | A1 完成后逐批；完整 R3 崩溃点/双 Worker/超 hold、零资金差异 | 待实施，A1 不等于整个 P0-2 完成 |
-| P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | 待实施，可并行 P0-1 |
+| P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | G1-A 隔离验收 R2+R3 完成，独立 PR 待最新 CI；G1-B 管理 HTTP/宿主桥接仍待实施 |
 | P0-G2 全入口授权 | 同一有效模型/组解析器覆盖目录、报价、创建、重试、派发复核；撤权强校验 | 全入口拒绝矩阵；已发送任务继续查询结算；空 subset 拒绝 | 待实施，依赖 G1 |
 | P0-G3 组 UI 与迁移 | 管理员影响预览、用户组选择、有效模型集合差分 | G2 全绿后才开放；不得静默改旧 Key 权限 | 待实施 |
 | P0-UI1 日志改进 | 共用 FilterSpec、全条件日志合计、列表/导出一致、后台日志组件、请求竞态保护 | R8 的 237 条跨页夹具、角色/币种/时间/导出/抽屉测试 | UI0 契约先行，可并行 |
@@ -145,6 +145,30 @@ R3 补齐同任务创建身份核对屏障：普通查询与恢复在候选 LIMI
 
 R4 于 `2026-10-25T19:47:50Z` 全部通过，源包 SHA-256 为 `536cbf56d4661f4336404dd5106cdd7c33a81add6c25eb11b1cbb58e86739449`，对应实现提交 `8890e9f1aea3e6638ef76bdf76864b959a20b8fb` 的 872 个文件逐项完全一致。该轮保留 R3 专用库和既有积压，先将修复用例连续两轮 race，再执行完整 video/videoasset/server MySQL 和六领域 race，均通过；重新运行 `make vet`、`make ci` 与 schema-doctor 亦通过。完整视频 MySQL 127.103 秒，视频 race 161.012 秒。证据目录 `/var/lib/laiai-artifacts/rc46-p2a-20261026-r4/`，`ci.log` SHA-256 为 `00f48812aba581330b5cb2c164f9d653ad98571b82ba28576adb9ff93d884e66`。专用数据库已停止，官方调用和费用为零；该结果仍不代替干净提交的旧新二进制/Mock 验收与最新 PR CI。
 
+干净提交 `800446272589d81c65033f89e04d5973210f7f92` 于 `2026-10-25T19:55:00Z` 完成独立旧新二进制和 Mock 验收，目录 `/var/lib/laiai-artifacts/rc46-p2a-clean/`，`source_dirty=false`。旧二进制固定为 `ceecb121093610b8727808d63f1917492832f610`，八个旧任务经扩展迁移前后交接，无额外 HTTP，新增结算 2 笔、账本差异 0。兼容报告 `runtime-compat/run-20261025T195111Z-qnbdGz6p/report.json` SHA-256 为 `bbf840166e919b302fc5f30b6208da341a7015467f624fe4af7379a21da1c6ba`。
+
+同次 Mock 为 10 任务/1 scope/1 worker，71.015 秒，POST 10、GET 30，终态可见 p95/max=12.608 秒。冻结 8.64 USD、扣款 0.008 USD、释放 8.632 USD，10 笔结算/扣费 journal，剩余冻结 0、账本差异 0，官方调用为 0。报告 `mock-baseline/run-20261025T195253Z-TDDXl75F/report.json` SHA-256 为 `844b6a5b838b1f26a2b91e00dd98ad52a00093c1cf0d4be9c66fd363ac32846e`；专用容器已移除。这证明现有旧任务路径及短基线兼容，不替代 A2 完整新收件箱兼容或 500 长测。
+
+[PR #59](https://github.com/CZ3700/LAIAI-API/pull/59) 最新提交对应 CI run `40227899238` 七项全部通过后，以 `9552e2bfd2b0dae534e775c07a4933c508ab0082` 合入 main。A1.1、A2 仍为新写入上线前置，生产未变更。
+
+## 5.5 P0-G1-A 实施与验收
+
+基于 main `9552e2b`，分支 `codex/rc46-routing-group-contracts`。本批只交付组/渠道绑定/组织授权/策略事件领域命令、迁移 0129，以及现有 Key 签发/验证的 legacy 兼容与新模式关闭门禁。新增字段由数据库为旧 SQL 写入提供默认值；显式未知/空模式不回退 legacy。具名超级管理员 HTTP 管理、宿主桥接和有界预览归 G1-B；本批不挂载新路由、不开放分组 Key。
+
+本地单测及 vet 已通过；真实 MySQL 迁移中断重放、旧数据指纹、默认组并发与事件原子性正在 laiai-release 独立库验收。源码快照、日志和最终结果在通过后补入，不以本地 MySQL skip 作为通过证据。
+
+R1 首次真实验收未通过，源包 SHA-256 `996c5a5d3a12354f8f9a49d40e7a585a304f02eff7cfc53db6e297af0a26f0ac`：`make vet`、`make ci`、DDL 后 0–4 个边界重放和默认组并发/事件原子性通过；全部五条 DDL 已提交但迁移记录未写时，combined ALTER 重放先返回 MySQL 3822（重复命名 CHECK），不是既有迁移器已处理的重复列错误。日志 `/var/lib/laiai-artifacts/rc46-g1-20261026-r1/ci.log` SHA-256 `73ae94a8130f43f2712b4422e394fa6d0817c9067c34d8c8ee07a8e4bcad3e1d`，专用库已停止。
+
+修复仅将未发布 0129 的 Key 原子 ALTER 中两条 CHECK 交由 MySQL 自动命名，保留约束语义和全部原测试；新增独立重复命名 CHECK 必须失败、不记迁移成功、不执行后续 DDL 的负例。未扩大迁移器可忽略错误范围。R2 将重新运行完整门禁，未验证前不标完成。
+
+R2 源包 SHA-256 `2b21bee3a02a0abb67328a15b80b8a871fdf31df1a0d0d6c66f47af2f36c5572` 已通过 `make vet`、`make ci`、六个迁移中断边界、默认组并发和重复命名 CHECK 负例；129 迁移/101 表 schema-doctor 无漂移，video/videoasset/server 的 `TestMySQL` 全过，routinggroup/identity/relay race 全过。但完整 server race 未过：四个 `TestArkBillMySQL...` 夹具的运行时契约缺失，认证限流测试随墙钟补充令牌，两个 Realtime 测试 teardown 与未结束处理器读取共享超时变量竞态。该轮不记完整验收成功。日志 `/var/lib/laiai-artifacts/rc46-g1-20261026-r2/ci.log` SHA-256 `70aa4be74e3e29d0be849935ae818e56765b6a5d87b473bb721ccd3a4bb33fc0`；专用库保留且停止。下一轮保留断言与真实旧数据库，只修正经确认的测试夹具/生命周期，并将原 CI 名称选择遗漏的 `TestArkBillMySQL` 加入明确门禁。
+
+R3 于 `2026-10-25T21:03:00Z` 完成，源包 SHA-256 `9d6c19b5388e3f478ffafea41ca664a39cb578c3446e64654142feded93831e8`。逐文件清单证明与 R2 仅三个测试文件、CI 与本执行记录不同，业务/迁移完全相同；保留 R2 数据库和历史，不清理积压或财务夹具。修复账单 fixture 显式四元组并加四字段×空/未知八项 409 资金/事件不变负例；限流 fixture 冻结补充速率只测 burst；WebSocket 完成 handler 排空后才恢复测试全局值，并清理假死上游。生产校验、密码哈希、超时和行为断言均未放宽。
+
+R3 `make vet`、`make ci`、迁移重放和 doctor 全通过。账单管理、认证限流、全部 Realtime 及分组 Key HTTP 回归连续两轮 race 通过（38.993 秒）；video/videoasset/server 的真实 MySQL 明确包含此前漏选的 `TestArkBillMySQL`，全通过（126.639/0.687/13.948 秒）。未重复没有改动且在 R2 已通过的六个迁移边界和三个领域 race；R2 的完整 server race 失败记录保留，R3 只对修复和相关入口进行定向 race，不冒充完整 server race 重跑。CI 已固定新的账单选择和故障回归门禁。
+
+R3 证据目录 `/var/lib/laiai-artifacts/rc46-g1-20261026-r3/`，`ci.log` SHA-256 `541073ff4fdffa7a7196830c5d63e575763d0e984163ac1077f70be1365212b8`。runner 退出0、专用数据库停止，官方调用与费用0、生产未操作。最终提交业务/测试必须与 R3 清单一致，只有补充验收文档可不同；合入仍须该提交的最新 GitHub 门禁。
+
 ## 5.6 P0-2A1.1 持久化失败控制验收
 
 基线 main `9552e2bfd2b0dae534e775c07a4933c508ab0082`。前序 [PR #59](https://github.com/CZ3700/LAIAI-API/pull/59) 的最终 head `800446272589d81c65033f89e04d5973210f7f92` 已完成干净检出的旧 `ceecb12`/新二进制交接与十任务 Mock：旧任务八条、额外 HTTP=0、新结算=2、drift=0；Mock POST=10/GET=30、p95=12.608 秒、冻结8.64/扣款0.008/释放8.632 USD、剩余冻结0。七项 GitHub CI run `40227899238` 全绿后合入上述 main。证据目录 `/var/lib/laiai-artifacts/rc46-p2a-clean/`；兼容报告 SHA-256 `bbf840166e919b302fc5f30b6208da341a7015467f624fe4af7379a21da1c6ba`，Mock 报告 `844b6a5b838b1f26a2b91e00dd98ad52a00093c1cf0d4be9c66fd363ac32846e`。该证明不代替 A2 的动作收件箱兼容。
@@ -163,6 +187,8 @@ A1.1 使用同主库身份的独立两连接证据池、一次 prepare/三次有
 R2 于 `2026-10-25T20:56:13Z` 完成，源码快照 SHA-256 `db24e61f0d41709a65f3a65f009c912802c4875f7d9ff475be8ace20472e5feb`，目录 `laiai-release:/var/lib/laiai-artifacts/rc46-p2a11-20261026-r2/`，`ci.log` SHA-256 `c28d3358ca4a67f77d7264c1ad4ec1011165fa7ae084b6be428f438f020494c4`。
 
 R1 失败证据保留：源码 SHA-256 `1395d5dc7b614e9dbd5ada67928efb0e05130a89665427dcca09846a0d37e58b`，日志 `/var/lib/laiai-artifacts/rc46-p2a11-20261026-r1/ci.log` SHA-256 `f5b7e714e5f53e75af2ff9082efb5b771958625a3cf8bc5544c4b75d6fef4c3a`。32 个顶层故障测试中只有队列优先级 fixture 在同一已执行 GORM 链追加 JOIN，导致1066别名重复；最小修复每次从新链构造同一真实谓词，不清库、不改 LIMIT/资金/HTTP 断言。R2 保留 R1 的数据库积压，先将该用例两轮 race，再跑全矩阵和回归。最终提交只允许本执行记录与测试源包不同，业务与测试逐文件核验后进入 PR CI。
+
+A1.1 最终提交 `17370ce9ad05aa5464578bc03abbca062d31d4c3` 的 GitHub CI run `40233532964` 七项全绿（包括真实旧新二进制交接与 Mock），随后 [PR #60](https://github.com/CZ3700/LAIAI-API/pull/60) 合入 main `c2cebf6c57adc950ae66dd5de2cfd8ea6cd34c90`；生产未变更。
 
 ## 6. 500 容量验收边界
 

@@ -104,6 +104,8 @@ jobs:
         run: go -C core test ./internal/migrate -run TestMySQLVideoRuntimeMigrationPreservesLegacyAndReplays -count=1 -timeout=5m -v
       - name: Response inbox expand and partial migration preserve legacy data
         run: go -C core test ./internal/migrate -run TestMySQLVideoInboxMigrationPreservesLegacyAndReplays -count=1 -timeout=5m -v
+      - name: Routing groups preserve legacy keys and serialize default grants
+        run: go -C core test -race ./internal/migrate -run TestMySQLRouting -count=1 -timeout=8m -v
       - name: Apply and replay formal MySQL migrations
         run: |
           go -C core run ./cmd/migrate -dir ../migrations
@@ -111,7 +113,9 @@ jobs:
       - name: Ark MySQL transaction and HTTP integration
         # These packages share fixtures and model configuration in ark_test.
         # Keep package fixtures isolated while retaining in-test concurrency.
-        run: go -C core test -p 1 ./internal/video ./internal/videoasset ./internal/server -run TestMySQL -count=1 -timeout=10m
+        run: go -C core test -p 1 ./internal/video ./internal/videoasset ./internal/server -run 'TestMySQL|TestArkBillMySQL' -count=1 -timeout=10m
+      - name: Billing admin and control-plane lifecycle regressions
+        run: go -C core test -race ./internal/server -run '^(TestArkBillMySQL|TestAuthRateLimit$|TestRealtime(WriteDeadlineDoS|IdleTimeout)$)' -count=1 -timeout=3m
       - name: Ark concurrency and Linux storage checks
         run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=10m
       - name: Main lifecycle HTTP and SIGTERM drain checks
