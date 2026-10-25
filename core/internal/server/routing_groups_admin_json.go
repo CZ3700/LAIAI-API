@@ -19,13 +19,19 @@ var errRoutingAdminInput = errors.New("invalid routing group request")
 // Validate tokens before decoding: encoding/json alone permits duplicate keys,
 // case-insensitive field names and null values in scalar destinations.
 func routingAdminJSON(c *gin.Context, out any, fields ...string) error {
+	return routingAdminJSONNullable(c, out, nil, fields...)
+}
+
+// Existing commands supply no nullable paths. Only the default command permits
+// two explicit top-level nulls; a same-named nested value remains forbidden.
+func routingAdminJSONNullable(c *gin.Context, out any, nullable map[string]bool, fields ...string) error {
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, routingAdminBodyLimit+1))
 	if err != nil || len(body) > routingAdminBodyLimit || !utf8.Valid(body) {
 		return errRoutingAdminInput
 	}
 	d := json.NewDecoder(bytes.NewReader(body))
 	d.UseNumber()
-	if err := routingAdminJSONValue(d, 0, true); err != nil {
+	if err := routingAdminJSONValueAt(d, 0, true, "", nullable); err != nil {
 		return errRoutingAdminInput
 	}
 	if _, err := d.Token(); !errors.Is(err, io.EOF) {
@@ -35,11 +41,21 @@ func routingAdminJSON(c *gin.Context, out any, fields ...string) error {
 }
 
 func routingAdminJSONValue(d *json.Decoder, depth int, object bool) error {
+	return routingAdminJSONValueAt(d, depth, object, "", nil)
+}
+
+func routingAdminJSONValueAt(d *json.Decoder, depth int, object bool, path string, nullable map[string]bool) error {
 	if depth > 8 {
 		return errRoutingAdminInput
 	}
 	token, err := d.Token()
-	if err != nil || token == nil {
+	if err != nil {
+		return errRoutingAdminInput
+	}
+	if token == nil {
+		if !object && depth == 1 && nullable[path] {
+			return nil
+		}
 		return errRoutingAdminInput
 	}
 	delim, composite := token.(json.Delim)
@@ -59,13 +75,13 @@ func routingAdminJSONValue(d *json.Decoder, depth int, object bool) error {
 				return errRoutingAdminInput
 			}
 			seen[name] = true
-			if err := routingAdminJSONValue(d, depth+1, false); err != nil {
+			if err := routingAdminJSONValueAt(d, depth+1, false, path+"/"+name, nullable); err != nil {
 				return err
 			}
 		}
 	case '[':
 		for d.More() {
-			if err := routingAdminJSONValue(d, depth+1, false); err != nil {
+			if err := routingAdminJSONValueAt(d, depth+1, false, path+"/[]", nullable); err != nil {
 				return err
 			}
 		}

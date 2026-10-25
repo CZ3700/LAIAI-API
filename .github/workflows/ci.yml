@@ -124,6 +124,8 @@ jobs:
         run: go -C core test -race -p 1 ./internal/invocation ./internal/server -run '^(TestQuery|TestInvocation|TestMySQLInvocation)' -count=1 -timeout=8m
       - name: Named routing administration and bounded MySQL reads
         run: go -C core test -race -p 1 ./internal/identity ./internal/relay ./internal/routinggroup ./internal/server -run '^(TestRouting|TestGroupCreate|TestGroupInsertDuplicate|TestAdmin(Read|Preview|Select)|TestMySQLRoutingAdmin)' -count=1 -timeout=8m
+      - name: Organization routing grants and default CAS
+        run: go -C core test -race ./internal/server -run '^(TestMySQLRoutingOrgAdmin|TestRoutingOrgAdmin)' -count=1 -timeout=10m -v
       - name: Ark concurrency and Linux storage checks
         run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=10m
       - name: Gated mutation producer atomicity and dispatch faults
