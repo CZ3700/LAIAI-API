@@ -31,7 +31,7 @@
 
 | 阶段 | 可评审交付 | 依赖和验收门槛 | 状态 |
 | --- | --- | --- | --- |
-| P0-0A 基线与安全 | 本执行表、UI0 契约、Go 1.26.10；发送前操作租约复核；查询候选排除有效租约 | 全量 CI、MySQL 故障回归、无重复上游 POST/DELETE、无错误退款 | 开发中 |
+| P0-0A 基线与安全 | 本执行表、UI0 契约、Go 1.26.10；发送前操作租约复核；查询候选排除有效租约 | 全量 CI、MySQL 故障回归、无重复上游 POST/DELETE、无错误退款 | 已开发，隔离验收通过，PR #56 |
 | P0-0B 可观测与 Mock | 可控 Mock Ark、低基数调度/查询延迟/DB/回执队列指标、现状负载报告 | R0 可复跑；安全日志无正文/密钥；指标不冒充账务事实 | 待实施 |
 | P0-1 运行时契约 | 复用现有 State/Operation，增加固定 runtime/adapter/protocol/billing-schema 与版本注册；凭据同账户旋转约束 | R2 全结果分类；N/N-1 支持矩阵；未知版本不发送；旧任务兼容 | 待实施 |
 | P0-2 故障证据与恢复 | 数据库时间、不可变响应收件箱/迟到证据归属、未知提交核对、终态缺 usage 恢复 | R3 崩溃点/双 Worker/重复回执/超 hold；零资金差异 | 待实施 |
@@ -73,15 +73,35 @@
 
 ## 7. 首批验收记录
 
-开始时：代码与测试尚在实施，以下记录必须在实际执行后填写。
+实际验收于 2026-10-25T08:15:22Z 完成。代码提交 `d56f67a92be31b60c26792b2117134b3cde49d91`；测试快照与该提交的全部非文档文件 SHA-256 一致，仅 UI0 文档换行排版不同。后续本执行记录更新不改变代码。
 
 | 检查 | 结果 | 证据 |
 | --- | --- | --- |
 | 主分支基线与现状审计 | 完成只读核对 | main d7fc499；3条独立代码审计线 |
 | Go builder 版本 | 已核验 1.26.10 linux/amd64 | golang digest `sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca` 实际运行 |
-| Go/门禁与 Worker 回归 | 待执行 | 不以测试用例存在代替执行 |
-| MySQL 8.4 迁移与故障回归 | 待执行 | 独立 ark_test；不得连接生产 DB |
-| 第一批 PR/CI | 待提交 | 不自动合并或发布生产 |
+| Go/门禁与 Worker 回归 | `make ci`、15项 shell 门禁、race 全通过 | Go 1.26.10 linux/amd64；20个新增故障场景实际连接 MySQL 执行 |
+| MySQL 8.4 迁移与故障回归 | 通过；126 applied、94 tables verified、无漂移 | MySQL 8.4.9 独立 ark_test；模板升级、迁移×2、video/videoasset/server 集成回归 |
+| 第一批 PR/CI | [PR #56](https://github.com/CZ3700/LAIAI-API/pull/56)，远端门禁状态以 PR 为准 | 隔离验收完成，未合并/未发布生产；GitHub 另验证实际 Docker 构建与私有 checkout 权限 |
 | 500 在途完整验收 | 尚未开始 | 依赖后续调度与真实配额核验 |
+
+测试服务器证据：`laiai-release:/var/lib/laiai-artifacts/rc46-p0-20261025-r2/ci.log`，SHA-256 `334696f85f8417caef236e6af90222ec4179fcd3ab2292389157bcd98a1c4090`；`ci.ok` 存在，测试容器退出码 0，专用数据库已停止。源快照 `source-manifest.json` 与测试日志一起保留。首轮打包器错误归一化了原有哈希固定 TSV 的换行，导致校验失败；第二轮从 Git 原始 blob 提取未修改文件，保留证据原始字节，未更改价格或摘要校验规则，失败日志也保留。
+
+可复跑命令（在隔离 runner 设置专用 `ARK_TEST_MYSQL_DSN`，禁止生产连接）：
+
+```sh
+sh scripts/tests/test-go-toolchain.sh
+make ci # 此步不设置 MySQL DSN
+# 随后设置同一隔离 ark_test 的 LAIAI_DSN / ARK_TEST_MYSQL_DSN
+go -C core test ./internal/arkpricetemplate -run TestMySQL -count=1 -timeout=5m
+go -C core run ./cmd/migrate -dir ../migrations
+go -C core run ./cmd/migrate -dir ../migrations
+go -C core run ./cmd/schema-doctor -dir ../migrations
+go -C core test -p 1 ./internal/video ./internal/videoasset ./internal/server -run TestMySQL -count=1 -timeout=10m
+go -C core test -race ./internal/video -run 'TestMySQL(OperationDispatchRequiresCurrentClaim|OperationDispatchGuardDatabaseFailureNeverSends|LateCreateReceiptSurvivesExpiredLeaseRecovery|QueryCandidatesExcludeLiveLeasesBeforeBatchLimit|ConcurrentCreateClaimsSendOnlyOnePOST|CreateReceiptRecoveryDoesNotRepeatPOST|ExpiredCreateLeaseWithoutReceiptNeverResends)$' -count=1 -timeout=10m -v
+# 另外在不设置 DSN 的环境执行六个领域包的通用 race 检查
+go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=10m
+```
+
+隔离验收耗用的官方视频费用为 0；这组证据仅覆盖本批安全变更，不代表 R4 长时间容量压测、R5 全部故障矩阵或生产灰度通过。下一批从 P0-0B 的可观测与 Mock 基线、P0-1 的运行时版本契约开始；UI-1A/G1 可按本文依赖并行。
 
 参考固定上游：[rc.46 Release](https://github.com/QuantumNous/new-api/releases/tag/v1.0.0-rc.46)、[固定提交 7d8b91268dab69d7150f345c448b5e250163146a](https://github.com/QuantumNous/new-api/commit/7d8b91268dab69d7150f345c448b5e250163146a)、[RelayKit](https://github.com/QuantumNous/new-api/blob/v1.0.0-rc.46/relaykit/README.md)、[Go 官方版本](https://go.dev/dl/)。不照搬 RelayKit 的忽略零值 usage 合并或未发布的动态插件运行方式。
