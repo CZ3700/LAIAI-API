@@ -1060,6 +1060,9 @@ func (s *Server) adminOverview(c *gin.Context) {
 // 筛选：status / model / channel_id / org_id / since / until（YYYY-MM-DD）。分页。
 // admin 视图回显平台内部字段（org/channel/provider/上游 id），普通 /api/usage 仍隐藏这些。
 func (s *Server) adminListInvocations(c *gin.Context) {
+	if s.dispatchInvocationQueryV1(c, true) {
+		return
+	}
 	rdb := s.db.WithContext(c.Request.Context())
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if page < 1 {
