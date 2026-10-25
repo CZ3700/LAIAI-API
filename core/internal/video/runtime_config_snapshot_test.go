@@ -64,7 +64,9 @@ func TestMySQLRuntimeAcceptedConfigurationSurvivesActivePublication(t *testing.T
 	must(t, f.s.DB.Model(&relay.ChannelCredential{}).Where("channel_id = ?", acceptedTask.ChannelID).Update("credential_enc", replacementCipher).Error)
 	replacementChannel := relay.Channel{Name: "runtime replacement", Provider: "volcengine", BaseURL: accepted.ProviderBaseURL, CredentialEnc: replacementCipher, Models: acceptedTask.Model, Weight: 1, Status: 1, MaxConcurrentTasks: 100}
 	must(t, f.s.DB.Create(&replacementChannel).Error)
-	replacementScope := ProviderScope{ScopeKey: "replacement-" + v.ID, AccountRef: "replacement-account", Region: "cn-beijing", ProjectName: "replacement-project", Enabled: true, FXUSDPerCNY: "0.20", FXVersion: "replacement-fx", FXObservedAt: f.now}
+	// ScopeKey is not the only unique identity: the canonical account/region/
+	// project tuple must also differ when the suite repeats on the same DB.
+	replacementScope := ProviderScope{ScopeKey: "replacement-" + v.ID, AccountRef: "replacement-" + v.ID, Region: "cn-beijing", ProjectName: "replacement-project", Enabled: true, FXUSDPerCNY: "0.20", FXVersion: "replacement-fx", FXObservedAt: f.now}
 	must(t, f.s.DB.Create(&replacementScope).Error)
 	must(t, f.s.DB.Model(&ProviderScope{}).Where("id = ?", accepted.ProviderScopeID).Updates(map[string]any{"fx_usd_per_cny": "0.20", "fx_version": "updated-active-fx", "fx_observed_at": f.now.Add(time.Second)}).Error)
 	price.ID = 0

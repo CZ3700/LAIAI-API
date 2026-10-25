@@ -114,6 +114,8 @@ R3 证据目录为 `laiai-release:/var/lib/laiai-artifacts/rc46-p1-20261026-r3/`
 
 后续仅增加两份测试与验收文档，业务实现不变。补充 R4 目录为 `/var/lib/laiai-artifacts/rc46-p1-20261026-r4/`；源包 SHA-256 为 `c3cff69e208d4cf3bccff004294ea1cdf625cf0701801a6ace55a10198c8ebd0`；`ci.log` SHA-256 为 `1cdfd4a9621dfc34e332f423a3dfa1b744ad1d5035a997d52e18e8cda9ee08fb`。两份新增测试均实际执行，不以本地缺 DSN 的跳过替代验收。
 
+最终补充测试提交 `df671fb` 的 GitHub CI 发现同库第二轮运行时，配置隔离用例的固定替换账号/区域/项目触发唯一约束。只修正测试 AccountRef 绑定本次唯一 task ID，不改业务实现或删除遗留 fixture。R5 在同一个隔离库先将该用例 `-race -count=2`，再完整运行 video/videoasset/server MySQL 和六领域 race，全部通过；另完成 `make vet`、`make ci`、迁移/doctor 与协议用例重复运行。R5 完成时间 `2026-10-25T18:22:13Z`，证据目录 `/var/lib/laiai-artifacts/rc46-p1-20261026-r5/`，源包 SHA-256 `35d17b945bf6690b87bbc5002187ecda8d08f96f16714deb0b290fafe0f8b4db`，`ci.log` SHA-256 `6e2a5cd256c1ca7a599477085f09b7cd10423c7bc3a9c44fa7fed31212ddac63`。失败轮记录保留，合并仍须最新提交 GitHub 全门禁通过。
+
 干净提交证据目录为 `/var/lib/laiai-artifacts/rc46-p1-6a7ad68-clean/`。兼容报告 `runtime-compat/run-20261025T175313Z-dPbdQWRp/report.json` SHA-256：`f312feba7aa6d069040e2bd7788564e7b1225a0ba7a550f695cf9c69903dde0b`；该次 `mysql:8.4` 实际解析 digest 为 `sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69`。Mock 报告 `mock-baseline/run-20261025T175816Z-P6YTEONE/report.json` SHA-256：`61bd3698e7d74b53da1903f7a1e91fbbe276b6739d842167b263037c6092b46e`，使用固定 MySQL digest `sha256:c36050afdca850f23cef85703f84c7531a5ae155a11b5ee1c60acb09937c4084`。
 
 唯一运行时 descriptor SHA-256：`77f6aa32417500ddd9e3e11a2a1036866cdda49237d86b7379ca67b92710f8bc`。本批只证明 v1 固定、未知契约安全拒绝及旧任务兼容；活动凭据更新隔离不等于同账号/项目验证后的在途接管。完整原 R2、迟到 inbox、数据库时间/fence、500 长时压测和生产灰度仍按对应阶段推进。
