@@ -15,7 +15,7 @@ import (
 
 // The caller establishes the claim in its Task -> State -> Operation
 // transaction. Input staging, the operation's input reference and registration
-// commit together. No production producer calls this consumer-only entry yet.
+// commit together. The independently gated producer uses this fixed consumer contract.
 func (s *Service) registerMutationAttemptTx(tx *gorm.DB, t task.Task, st State, op Operation, p *preparedMutationInput) (ExecutionAttempt, error) {
 	var out ExecutionAttempt
 	if err := responseTransaction(tx); err != nil {

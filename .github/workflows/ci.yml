@@ -126,8 +126,11 @@ jobs:
         run: go -C core test -race -p 1 ./internal/identity ./internal/relay ./internal/routinggroup ./internal/server -run '^(TestRouting|TestGroupCreate|TestGroupInsertDuplicate|TestAdmin(Read|Preview|Select)|TestMySQLRoutingAdmin)' -count=1 -timeout=8m
       - name: Ark concurrency and Linux storage checks
         run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=10m
-      - name: Main lifecycle HTTP and SIGTERM drain checks
-        run: go -C core test -race ./cmd/core -count=1 -timeout=3m -v
+      - name: Gated mutation producer atomicity and dispatch faults
+        run: go -C core test -race ./internal/video -run '^(TestMutationProducer|TestMySQLMutationProducer)' -count=1 -timeout=8m -v
+      - name: Main lifecycle HTTP and real mutation SIGTERM drain checks
+        # Real mutation tests use their own generated ark_test_mshutdown schemas.
+        run: go -C core test -race ./cmd/core -count=1 -timeout=6m -v
 
   ark-mock-baseline:
     runs-on: ubuntu-latest

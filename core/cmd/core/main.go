@@ -141,6 +141,7 @@ func runCore(log *slog.Logger) (code int) {
 			log.Error("official video evidence connection initialization failed")
 			return 1
 		}
+		videoSvc.MutationResponseInboxEnabled = cfg.VideoMutationResponseInboxEnabled
 		// Seedance delivers the provider's signed result URLs. Generated media
 		// never passes through platform storage or a background transfer worker.
 		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL}); err != nil {

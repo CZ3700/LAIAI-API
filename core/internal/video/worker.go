@@ -88,7 +88,14 @@ func (s *Service) pendingQueryCandidates(ctx context.Context) *gorm.DB {
 }
 
 func (s *Service) pendingOperationCandidates(ctx context.Context) *gorm.DB {
-	return supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Select("o.*, ROW_NUMBER() OVER (PARTITION BY v.provider_scope_id, CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END ORDER BY o.created_at, o.id) AS scope_rank").Joins("JOIN tasks t ON t.org_id = o.org_id AND t.task_id = o.resource_id").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)").Joins("LEFT JOIN video_provider_rates p ON p.scope_id = v.provider_scope_id AND p.action = CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END").Where("o.status = ? AND t.provider = ? AND v.deleted_at IS NULL AND (p.next_allowed_at IS NULL OR p.next_allowed_at <= ?)", "pending", Provider, s.Now().UTC()).Where("(o.kind = ? AND t.status = ?) OR (o.kind = ? AND t.status NOT IN ?) OR (o.kind = ? AND t.status IN ?)", "create_task", "accepted", "cancel_task", []string{"submitting", "submission_unknown"}, "delete_task", []string{"succeeded", "failed", "cancelled", "expired"})
+	query := supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Select("o.*, ROW_NUMBER() OVER (PARTITION BY v.provider_scope_id, CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END ORDER BY o.created_at, o.id) AS scope_rank").Joins("JOIN tasks t ON t.org_id = o.org_id AND t.task_id = o.resource_id").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)").Joins("LEFT JOIN video_provider_rates p ON p.scope_id = v.provider_scope_id AND p.action = CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END").Where("o.status = ? AND t.provider = ? AND v.deleted_at IS NULL AND (p.next_allowed_at IS NULL OR p.next_allowed_at <= ?)", "pending", Provider, s.Now().UTC()).Where("(o.kind = ? AND t.status = ?) OR (o.kind = ? AND t.status NOT IN ?) OR (o.kind = ? AND t.status IN ?)", "create_task", "accepted", "cancel_task", []string{"submitting", "submission_unknown"}, "delete_task", []string{"succeeded", "failed", "cancelled", "expired"})
+	if s.MutationResponseInboxEnabled {
+		// Filter before ROW_NUMBER/LIMIT so a broken credential on one action
+		// cannot monopolize its scope. Definitive local cancel outcomes bypass
+		// preparation cooldown; they need neither credentials nor HTTP.
+		query = query.Where("o.kind NOT IN ? OR o.error_code <> ? OR o.updated_at <= ? OR (o.kind = ? AND t.status NOT IN ?)", []string{"cancel_task", "delete_task"}, mutationPreparationDeferredCode, s.Now().UTC().Add(-mutationPreparationCooldown), "cancel_task", []string{"queued", "submitting", "submission_unknown"})
+	}
+	return query
 }
 
 // Call while holding the operation lock. Any registration, even a future
@@ -213,8 +220,8 @@ func (s *Service) operationMaySend(ctx context.Context, op Operation) (bool, err
 	var count int64
 	query := supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("o.org_id = ? AND o.id = ? AND o.resource_id = ? AND o.kind = ? AND o.status = ? AND o.version = ? AND o.attempt_id = ? AND o.lease_until > ? AND o.runtime_version = ? AND o.adapter_version = ? AND o.protocol_contract_version = ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, s.Now().UTC(), op.RuntimeVersion, op.AdapterVersion, op.ProtocolContractVersion)
 	if op.Kind != "create_task" {
-		// A2a has consumers only. No legacy DELETE may send for a registered
-		// action, including an unknown action protocol.
+		// Legacy DELETE must never send for a registered action, including an
+		// unknown protocol. Only the separate captured-action guard can send it.
 		query = query.Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)")
 	}
 	err := query.Count(&count).Error

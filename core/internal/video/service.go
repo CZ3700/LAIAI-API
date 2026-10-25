@@ -44,6 +44,9 @@ type Service struct {
 	// Controls registration of future create attempts only. Recovery of already
 	// registered inbox attempts must remain enabled when this switch is off.
 	ResponseInboxEnabled bool
+	// Independently controls new cancel/delete registrations. Action consumers
+	// continue running when this startup-only producer switch is off.
+	MutationResponseInboxEnabled bool
 	// Endpoint overrides exist for injected httptest clients only. Production
 	// configuration uses the fixed mainland official endpoint.
 	AllowTestEndpoint bool
