@@ -200,6 +200,16 @@ R2 于 `2026-10-25T21:33:32Z` 完成，源包SHA-256 `2e6bf3b6cb418676f55bfd58ac
 
 G1-A 补充：合入A1.1后的R4精确HEAD `11a86ea` 通过make vet/ci，源包SHA-256 `ad82d5b04004889331f51d1b98088b09f96c28c8951eb90d1ceef4e73cfd6a8b`、日志SHA-256 `dd04d85708bb2cacb889f7cbf5a3130a9e077fb6aa9f782a0c3594b9c9a6dab7`；随后PR #61最新七项GitHub门禁全绿并合入 `7688307`。
 
+## 5.8 P0-2A2a 取消与删除响应消费者验收
+
+基线main `94d00d8`（UI1-A1 PR #62，CI run `40236365628`七项全绿后合入）；本批独立consumer分支 `codex/rc46-mutation-inbox-consumer`。新增0130可空目标、固定inbox-actions-v1动作契约和schema2窄读取、immutable目标/HMAC、独立保存与恢复应用。任意登记阻止legacy重发/应用/退款，cancel ACK保留unknown待权威GET，delete仅终态财务完成后软删；不新增producer开关、不产生生产新动作。
+
+R1通过make门禁、0130两DDL边界/旧数据与列定义/旧INSERT默认NULL/精确目标索引JOIN，以及20顶层mutation真实MySQL race两轮（101.852秒）；旧create全回归发现5处安全空过被新guard误返回冲突。原测试保留，guard移动至非accepted空过之后且仍在副作用之前，registered accepted继续拒绝。R1失败日志及清单保留，不能记完整成功。
+
+R2于 `2026-10-25T22:03:50Z` 通过：make vet/ci、130迁移/101表doctor、失败场景及typed未发送回归两轮race（9.916秒）、video/videoasset/server真实MySQL（201.642/0.926/44.798秒）、六领域race（video233.903秒）。保留R1数据库和积压，未重跑无改动且已过的迁移故障用例。源码SHA-256 `fcaa874c0fe026442e3e23a6a9277b6d7e62c7b4177de25df25464691ba407ef`；证据 `/var/lib/laiai-artifacts/rc46-a2-20261026-r2/ci.log` SHA-256 `c4753d37aec79ea9fb2890be4ff7e1ced88128140e7899e83dbb942509e943cf`。922文件清单要求业务/测试与最终提交精确一致，仅验收补充文档不同。详细R1及输入/404/财务边界见 `rc46-取消删除响应收件箱实施契约.md`。
+
+专用数据库已停止；官方费用0、生产未变更。本批只固定consumer C_a；后续producer默认off、每operation最多一次DELETE及实际二进制交接分别验收，不能拿本批fixture代替A2全部完成。最新PR CI绿才合main。
+
 ## 6. 500 容量验收边界
 
 - 容量单位是 accepted/submitting/unknown/queued/running 的未终态任务。初始建议值不是已核验配额：2 Core + 2 Worker、每 Worker submit=8/query=32、租约45秒/心跳10秒、Query目标周期20秒、平台队列1000/等待15分钟。

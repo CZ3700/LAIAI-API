@@ -88,7 +88,20 @@ func (s *Service) pendingQueryCandidates(ctx context.Context) *gorm.DB {
 }
 
 func (s *Service) pendingOperationCandidates(ctx context.Context) *gorm.DB {
-	return supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Select("o.*, ROW_NUMBER() OVER (PARTITION BY v.provider_scope_id, CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END ORDER BY o.created_at, o.id) AS scope_rank").Joins("JOIN tasks t ON t.org_id = o.org_id AND t.task_id = o.resource_id").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Joins("LEFT JOIN video_provider_rates p ON p.scope_id = v.provider_scope_id AND p.action = CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END").Where("o.status = ? AND t.provider = ? AND v.deleted_at IS NULL AND (p.next_allowed_at IS NULL OR p.next_allowed_at <= ?)", "pending", Provider, s.Now().UTC()).Where("(o.kind = ? AND t.status = ?) OR (o.kind = ? AND t.status NOT IN ?) OR (o.kind = ? AND t.status IN ?)", "create_task", "accepted", "cancel_task", []string{"submitting", "submission_unknown"}, "delete_task", []string{"succeeded", "failed", "cancelled", "expired"})
+	return supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Select("o.*, ROW_NUMBER() OVER (PARTITION BY v.provider_scope_id, CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END ORDER BY o.created_at, o.id) AS scope_rank").Joins("JOIN tasks t ON t.org_id = o.org_id AND t.task_id = o.resource_id").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)").Joins("LEFT JOIN video_provider_rates p ON p.scope_id = v.provider_scope_id AND p.action = CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END").Where("o.status = ? AND t.provider = ? AND v.deleted_at IS NULL AND (p.next_allowed_at IS NULL OR p.next_allowed_at <= ?)", "pending", Provider, s.Now().UTC()).Where("(o.kind = ? AND t.status = ?) OR (o.kind = ? AND t.status NOT IN ?) OR (o.kind = ? AND t.status IN ?)", "create_task", "accepted", "cancel_task", []string{"submitting", "submission_unknown"}, "delete_task", []string{"succeeded", "failed", "cancelled", "expired"})
+}
+
+// Call while holding the operation lock. Any registration, even a future
+// protocol this binary cannot interpret, owns its send/application path.
+func requireNoExecutionAttemptTx(tx *gorm.DB, org uint64, operationID string) error {
+	var count int64
+	if err := tx.Model(&ExecutionAttempt{}).Where("org_id = ? AND operation_id = ?", org, operationID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count != 0 {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (s *Service) recoveryOperationCandidates(ctx context.Context) *gorm.DB {
@@ -125,6 +138,9 @@ func (s *Service) recoverOperations(ctx context.Context) error {
 				return e
 			}
 			if e = requireCurrentOperationRuntimeTx(tx, st, op); e != nil {
+				return e
+			}
+			if e = requireNoExecutionAttemptTx(tx, op.OrgID, op.ID); e != nil {
 				return e
 			}
 			result := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ? AND status = ?", op.OrgID, op.ID, op.Version, "in_flight").Updates(map[string]any{"status": "unknown", "error_code": "submission_uncertain", "updated_at": now})
@@ -195,7 +211,13 @@ func (s *Service) operationMaySend(ctx context.Context, op Operation) (bool, err
 	// current time after that preparation, not before it: a recovered/expired
 	// operation must not use an earlier successful check to authorize a send.
 	var count int64
-	err := supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("o.org_id = ? AND o.id = ? AND o.resource_id = ? AND o.kind = ? AND o.status = ? AND o.version = ? AND o.attempt_id = ? AND o.lease_until > ? AND o.runtime_version = ? AND o.adapter_version = ? AND o.protocol_contract_version = ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, s.Now().UTC(), op.RuntimeVersion, op.AdapterVersion, op.ProtocolContractVersion).Count(&count).Error
+	query := supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("o.org_id = ? AND o.id = ? AND o.resource_id = ? AND o.kind = ? AND o.status = ? AND o.version = ? AND o.attempt_id = ? AND o.lease_until > ? AND o.runtime_version = ? AND o.adapter_version = ? AND o.protocol_contract_version = ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, s.Now().UTC(), op.RuntimeVersion, op.AdapterVersion, op.ProtocolContractVersion)
+	if op.Kind != "create_task" {
+		// A2a has consumers only. No legacy DELETE may send for a registered
+		// action, including an unknown action protocol.
+		query = query.Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)")
+	}
+	err := query.Count(&count).Error
 	// The database read can block while another goroutine fails to save a
 	// response. Recheck the process latch after it, at the send boundary.
 	if err == nil && s.DispatchPaused() {
@@ -241,6 +263,9 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 		}
 		if t.Status != "accepted" {
 			return nil
+		}
+		if e = requireNoExecutionAttemptTx(tx, op.OrgID, op.ID); e != nil {
+			return e
 		}
 		validationErr = s.ValidateTaskAssetsTx(tx, t.OrgID, t.TaskID)
 		if validationErr == nil {
@@ -289,8 +314,20 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	if err != nil || !claimed {
 		return err
 	}
+	knownUnsent := func(code string) error {
+		if executionAttempt.AttemptID == "" {
+			return s.knownUnsent(ctx, t, st, op, code)
+		}
+		// Registered work must record even a definite local no-send through
+		// its inbox, so recovery and financial idempotence use one path.
+		receipt, err := s.saveCreateResponse(ctx, executionAttempt, ark.Result{Action: ark.ActionSubmit, Outcome: ark.OutcomeNotSent, Error: &ark.Error{Code: code}}, "")
+		if err != nil {
+			return err
+		}
+		return s.applyClaimedCreateInbox(ctx, op, receipt.ReceiptID)
+	}
 	if validationErr != nil {
-		return s.knownUnsent(ctx, t, st, op, validationCode)
+		return knownUnsent(validationCode)
 	}
 	descriptor, err := videoruntime.Resolve(stateRuntime(st))
 	if err != nil {
@@ -301,14 +338,14 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 		if errors.Is(err, invocation.ErrVideoSchemaUnsupported) {
 			return videoruntime.ErrUnsupported
 		}
-		return s.knownUnsent(ctx, t, st, op, "execution_unavailable")
+		return knownUnsent("execution_unavailable")
 	}
 	client, err := s.clientFor(ctx, t, st)
 	if err != nil {
 		if errors.Is(err, videoruntime.ErrUnsupported) {
 			return err
 		}
-		return s.knownUnsent(ctx, t, st, op, "credential_unavailable")
+		return knownUnsent("credential_unavailable")
 	}
 	allowed, err := s.operationMaySend(ctx, op)
 	if err != nil || !allowed {
@@ -355,6 +392,13 @@ func (s *Service) persistResponse(ctx context.Context, t task.Task, op Operation
 	}
 	var ref string
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current Operation
+		if err := locked(tx).Where("org_id = ? AND id = ? AND resource_id = ?", op.OrgID, op.ID, op.ResourceID).Take(&current).Error; err != nil {
+			return err
+		}
+		if err := requireNoExecutionAttemptTx(tx, op.OrgID, op.ID); err != nil {
+			return err
+		}
 		var e error
 		ref, e = s.Evidence.StageTx(tx, payload)
 		if e != nil {
@@ -508,6 +552,9 @@ func (s *Service) knownUnsent(ctx context.Context, t task.Task, st State, op Ope
 			return e
 		}
 		if e = requireCurrentOperationRuntimeTx(tx, st, op); e != nil {
+			return e
+		}
+		if e = requireNoExecutionAttemptTx(tx, op.OrgID, op.ID); e != nil {
 			return e
 		}
 		updated := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ? AND status = ?", op.OrgID, op.ID, op.Version, "in_flight").Updates(map[string]any{"status": "rejected", "error_code": code, "updated_at": s.Now().UTC()})
