@@ -25,6 +25,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/video"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -146,6 +147,8 @@ func arkBillError(c *gin.Context, code int, message string) {
 }
 func arkBillRespondError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, videoruntime.ErrUnsupported):
+		arkBillError(c, 409, "runtime_contract_unsupported")
 	case errors.Is(err, videobilling.ErrInvalid), errors.Is(err, video.ErrInvalid):
 		arkBillError(c, 422, "invalid_request")
 	case errors.Is(err, errArkBillEvidence), errors.Is(err, invocation.ErrVideoExpired), errors.Is(err, invocation.ErrVideoAccessDenied):

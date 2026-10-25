@@ -10,6 +10,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -27,7 +28,7 @@ CREATE TABLE video_pricing_rules(id INTEGER PRIMARY KEY AUTOINCREMENT,rule_id TE
 CREATE TABLE video_quota_policies(id INTEGER PRIMARY KEY AUTOINCREMENT,org_id INTEGER NOT NULL,scope TEXT NOT NULL,owner_id INTEGER NOT NULL,model TEXT NOT NULL,metric TEXT NOT NULL,period TEXT NOT NULL,timezone TEXT NOT NULL,limit_amount NUMERIC,limit_units INTEGER,version TEXT NOT NULL,enabled INTEGER NOT NULL);
 CREATE TABLE video_quota_buckets(id INTEGER PRIMARY KEY AUTOINCREMENT,policy_id INTEGER NOT NULL,scope_key TEXT NOT NULL,timezone TEXT NOT NULL,org_id INTEGER NOT NULL,period_start DATETIME NOT NULL,period_end DATETIME,limit_amount NUMERIC,limit_units INTEGER,reserved_amount NUMERIC NOT NULL DEFAULT 0,consumed_amount NUMERIC NOT NULL DEFAULT 0,reserved_units INTEGER NOT NULL DEFAULT 0,consumed_units INTEGER NOT NULL DEFAULT 0,blocked INTEGER NOT NULL DEFAULT 0,UNIQUE(scope_key,period_start));
 CREATE TABLE video_quota_reservations(id INTEGER PRIMARY KEY AUTOINCREMENT,org_id INTEGER NOT NULL,task_id TEXT NOT NULL,bucket_id INTEGER NOT NULL,metric TEXT NOT NULL,supplier INTEGER NOT NULL,reserved_amount NUMERIC NOT NULL,reserved_units INTEGER NOT NULL,actual_amount NUMERIC NOT NULL,actual_units INTEGER NOT NULL,state TEXT NOT NULL,created_at DATETIME NOT NULL,settled_at DATETIME,UNIQUE(task_id,bucket_id));
-CREATE TABLE video_billing_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,org_id INTEGER NOT NULL,api_key_id INTEGER NOT NULL,task_id TEXT NOT NULL,provider_scope_id INTEGER NOT NULL,model TEXT NOT NULL,rule_id TEXT NOT NULL,rule_version TEXT NOT NULL,formula_version TEXT NOT NULL,minimum_rule_version TEXT NOT NULL,capability_version TEXT NOT NULL,request_hmac TEXT NOT NULL,metering_json TEXT NOT NULL,hold_id INTEGER NOT NULL,estimated_tokens INTEGER NOT NULL,hold_usd NUMERIC NOT NULL,retail_usd_per_1m NUMERIC NOT NULL,supplier_cny_per_1m NUMERIC NOT NULL,effective_ratio NUMERIC NOT NULL,fx_usd_per_cny NUMERIC NOT NULL,fx_version TEXT NOT NULL,fx_observed_at DATETIME NOT NULL,supplier_reserved_cny NUMERIC NOT NULL,supplier_reserved_usd NUMERIC NOT NULL,created_at DATETIME NOT NULL,UNIQUE(org_id,task_id),UNIQUE(hold_id));
+CREATE TABLE video_billing_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,billing_schema_version TEXT NOT NULL,org_id INTEGER NOT NULL,api_key_id INTEGER NOT NULL,task_id TEXT NOT NULL,provider_scope_id INTEGER NOT NULL,model TEXT NOT NULL,rule_id TEXT NOT NULL,rule_version TEXT NOT NULL,formula_version TEXT NOT NULL,minimum_rule_version TEXT NOT NULL,capability_version TEXT NOT NULL,request_hmac TEXT NOT NULL,metering_json TEXT NOT NULL,hold_id INTEGER NOT NULL,estimated_tokens INTEGER NOT NULL,hold_usd NUMERIC NOT NULL,retail_usd_per_1m NUMERIC NOT NULL,supplier_cny_per_1m NUMERIC NOT NULL,effective_ratio NUMERIC NOT NULL,fx_usd_per_cny NUMERIC NOT NULL,fx_version TEXT NOT NULL,fx_observed_at DATETIME NOT NULL,supplier_reserved_cny NUMERIC NOT NULL,supplier_reserved_usd NUMERIC NOT NULL,created_at DATETIME NOT NULL,UNIQUE(org_id,task_id),UNIQUE(hold_id));
 CREATE TABLE video_usage_evidence(id INTEGER PRIMARY KEY AUTOINCREMENT,org_id INTEGER NOT NULL,task_id TEXT NOT NULL,evidence_id TEXT NOT NULL UNIQUE,source TEXT NOT NULL,source_record_id TEXT NOT NULL,source_version TEXT NOT NULL,completion_tokens INTEGER,payload_ref TEXT NOT NULL,observed_at DATETIME NOT NULL,UNIQUE(org_id,task_id,source,source_record_id,source_version));
 CREATE TABLE video_billing_entries(id INTEGER PRIMARY KEY AUTOINCREMENT,org_id INTEGER NOT NULL,task_id TEXT NOT NULL,settlement_key TEXT NOT NULL,state TEXT NOT NULL,snapshot_id INTEGER NOT NULL,evidence_id TEXT NOT NULL,hold_id INTEGER NOT NULL,journal_id INTEGER,completion_tokens INTEGER,calculated_usd NUMERIC NOT NULL,captured_usd NUMERIC NOT NULL,released_usd NUMERIC NOT NULL,absorbed_usd NUMERIC NOT NULL,supplier_cny NUMERIC NOT NULL,supplier_usd NUMERIC NOT NULL,reason TEXT NOT NULL,created_at DATETIME NOT NULL,UNIQUE(org_id,task_id,settlement_key),UNIQUE(journal_id));
 `
@@ -83,7 +84,7 @@ func reserve(t *testing.T, db *gorm.DB, q QuoteResult, id string) ReservationRes
 	var got ReservationResult
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var e error
-		got, e = ReserveTx(tx, ReserveInput{OrgID: 10, APIKeyID: 1, TaskID: id, RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
+		got, e = ReserveTx(tx, ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: 10, APIKeyID: 1, TaskID: id, RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
 		return e
 	})
 	if err != nil {
@@ -209,7 +210,7 @@ func TestReserveHardQuotaAndRollback(t *testing.T) {
 				policy(t, db, QuotaPolicy{OrgID: 10, Scope: ScopeKey, OwnerID: 1, Metric: MetricTokens, LimitUnits: token(1)})
 			}
 			err := db.Transaction(func(tx *gorm.DB) error {
-				_, err := ReserveTx(tx, ReserveInput{OrgID: 10, APIKeyID: 1, TaskID: "task_r", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
+				_, err := ReserveTx(tx, ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: 10, APIKeyID: 1, TaskID: "task_r", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
 				if err != nil {
 					return err
 				}
@@ -358,7 +359,7 @@ func TestAggregateOverrunBlocksAndRollbackPreservesReservations(t *testing.T) {
 				t.Fatal("actual plus remaining reservations must enforce total limit", b)
 			}
 			err = db.Transaction(func(tx *gorm.DB) error {
-				_, e := ReserveTx(tx, ReserveInput{OrgID: 10, APIKeyID: 1, TaskID: "task_total_denied", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
+				_, e := ReserveTx(tx, ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: 10, APIKeyID: 1, TaskID: "task_total_denied", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
 				return e
 			})
 			if !errors.Is(err, ErrQuotaExceeded) {
@@ -529,7 +530,7 @@ func TestTransactionsTenantIsolationAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := db.Transaction(func(tx *gorm.DB) error {
-		_, e := ReserveTx(tx, ReserveInput{OrgID: 20, APIKeyID: 1, TaskID: "x", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
+		_, e := ReserveTx(tx, ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: 20, APIKeyID: 1, TaskID: "x", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
 		return e
 	})
 	if !errors.Is(err, ErrNotFound) {
@@ -558,7 +559,7 @@ func TestConcurrentAdmissionCannotExceedKeyBudget(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			errs <- db.Transaction(func(tx *gorm.DB) error {
-				_, e := ReserveTx(tx, ReserveInput{OrgID: 10, APIKeyID: 1, TaskID: fmt.Sprintf("task_c%d", i), RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
+				_, e := ReserveTx(tx, ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: 10, APIKeyID: 1, TaskID: fmt.Sprintf("task_c%d", i), RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
 				return e
 			})
 		}(i)
@@ -583,7 +584,7 @@ func TestPricingConflictsAndForgedQuotesFailClosed(t *testing.T) {
 	db, q := setup(t, "10")
 	q.HoldUSD = d("0.01")
 	err := db.Transaction(func(tx *gorm.DB) error {
-		_, err := ReserveTx(tx, ReserveInput{OrgID: 10, APIKeyID: 1, TaskID: "task_forged", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
+		_, err := ReserveTx(tx, ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: 10, APIKeyID: 1, TaskID: "task_forged", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
 		return err
 	})
 	if !errors.Is(err, ErrConflict) {
@@ -629,7 +630,7 @@ func TestEvidenceRevisionCannotOverwriteAndZeroQuotaMeansDeny(t *testing.T) {
 	checkBalance(t, db, "10", "0.864")
 	policy(t, db, QuotaPolicy{OrgID: 10, Scope: ScopeOrg, OwnerID: 10, Metric: MetricTokens, LimitUnits: token(0)})
 	err = db.Transaction(func(tx *gorm.DB) error {
-		_, err := ReserveTx(tx, ReserveInput{OrgID: 10, APIKeyID: 1, TaskID: "task_denied", RequestHMAC: strings.Repeat("b", 64), Quote: q, Now: testAt})
+		_, err := ReserveTx(tx, ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: 10, APIKeyID: 1, TaskID: "task_denied", RequestHMAC: strings.Repeat("b", 64), Quote: q, Now: testAt})
 		return err
 	})
 	if !errors.Is(err, ErrQuotaExceeded) {
@@ -647,7 +648,7 @@ func TestConcurrentReplayCreatesOneHoldAndOneSnapshot(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			errs <- db.Transaction(func(tx *gorm.DB) error {
-				_, err := ReserveTx(tx, ReserveInput{OrgID: 10, APIKeyID: 1, TaskID: "task_same", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
+				_, err := ReserveTx(tx, ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: 10, APIKeyID: 1, TaskID: "task_same", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
 				return err
 			})
 		}()
@@ -671,7 +672,7 @@ func TestConflictingBudgetVersionsRollback(t *testing.T) {
 		policy(t, db, QuotaPolicy{OrgID: 10, Scope: ScopeOrg, OwnerID: 10, Metric: MetricUSD, LimitAmount: amount("5"), Version: fmt.Sprintf("v%d", i)})
 	}
 	err := db.Transaction(func(tx *gorm.DB) error {
-		_, err := ReserveTx(tx, ReserveInput{OrgID: 10, APIKeyID: 1, TaskID: "task_conflicting_policies", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
+		_, err := ReserveTx(tx, ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: 10, APIKeyID: 1, TaskID: "task_conflicting_policies", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
 		return err
 	})
 	if !errors.Is(err, ErrConflict) {
@@ -691,7 +692,7 @@ func TestPolicyVersionCannotResetSpentBudget(t *testing.T) {
 	db.Model(&QuotaPolicy{}).Where("version = ?", "v1").Update("enabled", false)
 	policy(t, db, QuotaPolicy{OrgID: 10, Scope: ScopeOrg, OwnerID: 10, Metric: MetricUSD, LimitAmount: amount("1"), Version: "v2"})
 	err := db.Transaction(func(tx *gorm.DB) error {
-		_, err := ReserveTx(tx, ReserveInput{OrgID: 10, APIKeyID: 1, TaskID: "task_policy_v2", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
+		_, err := ReserveTx(tx, ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: 10, APIKeyID: 1, TaskID: "task_policy_v2", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
 		return err
 	})
 	if !errors.Is(err, ErrQuotaExceeded) {

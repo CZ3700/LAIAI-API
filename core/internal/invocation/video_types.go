@@ -14,15 +14,17 @@ import (
 )
 
 var (
-	ErrVideoInvalid          = errors.New("video evidence: invalid input")
-	ErrVideoConflict         = errors.New("video evidence: correlation conflict")
-	ErrVideoRetentionDenied  = errors.New("video evidence: retention not permitted")
-	ErrVideoNotFound         = errors.New("video evidence: not found")
-	ErrVideoExpired          = errors.New("video evidence: expired")
-	ErrVideoAccessDenied     = errors.New("video evidence: access denied")
-	ErrVideoAuditUnavailable = errors.New("video evidence: audit unavailable")
-	ErrVideoStorage          = errors.New("video evidence: storage unavailable")
-	ErrVideoCorrupt          = errors.New("video evidence: integrity check failed")
+	ErrVideoInvalid             = errors.New("video evidence: invalid input")
+	ErrVideoConflict            = errors.New("video evidence: correlation conflict")
+	ErrVideoRetentionDenied     = errors.New("video evidence: retention not permitted")
+	ErrVideoNotFound            = errors.New("video evidence: not found")
+	ErrVideoExpired             = errors.New("video evidence: expired")
+	ErrVideoAccessDenied        = errors.New("video evidence: access denied")
+	ErrVideoAuditUnavailable    = errors.New("video evidence: audit unavailable")
+	ErrVideoStorage             = errors.New("video evidence: storage unavailable")
+	ErrVideoCorrupt             = errors.New("video evidence: integrity check failed")
+	ErrVideoSchemaUnsupported   = errors.New("video evidence: schema unsupported")
+	ErrVideoTransactionRequired = errors.New("video evidence: transaction required")
 )
 
 const (

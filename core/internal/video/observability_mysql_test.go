@@ -37,6 +37,15 @@ func TestMySQLWorkerObservationAggregatesReadOnlyAndIndexed(t *testing.T) {
 	if code != "" {
 		t.Fatal("baseline unavailable", code)
 	}
+	// Earlier integration fixtures retain pending outbox rows. They may become
+	// due between the two database snapshots, so retain their scheduling facts
+	// and evaluate the exact expected count at the final database timestamp.
+	// Static backlog counts still use exact deltas against the baseline.
+	var priorOutboxDueTimes []time.Time
+	must(t, f.s.DB.Model(&Outbox{}).Where("status = ?", "pending").Pluck("next_attempt_at", &priorOutboxDueTimes).Error)
+	if int64(len(priorOutboxDueTimes)) != baseline.Outbox.Pending {
+		t.Fatal("outbox baseline changed before fixture insertion", len(priorOutboxDueTimes), baseline.Outbox.Pending)
+	}
 	ids := []string{}
 	seedTask := func(status, provider string, deleted bool) string {
 		id, err := randomID("task_")
@@ -98,7 +107,7 @@ func TestMySQLWorkerObservationAggregatesReadOnlyAndIndexed(t *testing.T) {
 		}
 		if statements.Add(1) == 1 {
 			// Prove that the server enforces READ ONLY, not merely that these
-			// four queries happen to be SELECTs. No row can match this statement.
+			// five queries happen to be SELECTs. No row can match this statement.
 			_, err := tx.Statement.ConnPool.ExecContext(tx.Statement.Context, "UPDATE tasks SET status = status WHERE 1 = 0")
 			var dbErr *mysqlDriver.MySQLError
 			if errors.As(err, &dbErr) && dbErr.Number == 1792 {
@@ -110,8 +119,8 @@ func TestMySQLWorkerObservationAggregatesReadOnlyAndIndexed(t *testing.T) {
 	}))
 	t.Cleanup(func() { f.s.DB.Callback().Row().Remove(name) })
 	out := f.s.WorkerObservability(context.Background())
-	if !out.Database.Available || !out.Database.Complete || out.Database.Stale || out.Database.Snapshot == nil || !readOnly.Load() || statements.Load() != 4 {
-		t.Fatal("observation is not a complete four-query read-only snapshot", out.Database.ErrorCode, statements.Load())
+	if !out.Database.Available || !out.Database.Complete || out.Database.Stale || out.Database.Snapshot == nil || !readOnly.Load() || statements.Load() != 5 {
+		t.Fatal("observation is not a complete five-query read-only snapshot", out.Database.ErrorCode, statements.Load())
 	}
 	snapshot := out.Database.Snapshot
 	if snapshot.DatabaseTime.IsZero() || snapshot.CompletedAt.Before(snapshot.StartedAt) || !out.DBPool.Available {
@@ -129,8 +138,17 @@ func TestMySQLWorkerObservationAggregatesReadOnlyAndIndexed(t *testing.T) {
 			t.Fatal("operation aggregation lost its closed enum", cell)
 		}
 	}
-	if len(snapshot.OperationCounts) > 12 || snapshot.QueryReceipts.RetryablePending-baseline.QueryReceipts.RetryablePending != 2 || snapshot.QueryReceipts.ConflictPending-baseline.QueryReceipts.ConflictPending != 1 || snapshot.Outbox.Pending-baseline.Outbox.Pending != 2 || snapshot.Outbox.Due-baseline.Outbox.Due != 1 {
-		t.Fatal("backlog counts incorrectly include completed or future work")
+	var priorDueAtSnapshot int64
+	for _, nextAttemptAt := range priorOutboxDueTimes {
+		if !nextAttemptAt.After(snapshot.DatabaseTime) {
+			priorDueAtSnapshot++
+		}
+	}
+	if len(snapshot.OperationCounts) > 12 || snapshot.QueryReceipts.RetryablePending-baseline.QueryReceipts.RetryablePending != 2 || snapshot.QueryReceipts.ConflictPending-baseline.QueryReceipts.ConflictPending != 1 || snapshot.Outbox.Pending-baseline.Outbox.Pending != 2 || snapshot.Outbox.Due-priorDueAtSnapshot != 1 {
+		t.Fatalf("backlog counts incorrectly include completed or future work: operation_cells=%d receipts=%+v baseline_receipts=%+v outbox=%+v baseline_outbox=%+v prior_due_at_snapshot=%d database_time=%s baseline_database_time=%s", len(snapshot.OperationCounts), snapshot.QueryReceipts, baseline.QueryReceipts, snapshot.Outbox, baseline.Outbox, priorDueAtSnapshot, snapshot.DatabaseTime, baseline.DatabaseTime)
+	}
+	if priorDueAtSnapshot != baseline.Outbox.Due {
+		t.Logf("existing pending outbox rows becoming due between snapshots: %d", priorDueAtSnapshot-baseline.Outbox.Due)
 	}
 	body, err := json.Marshal(out)
 	must(t, err)
@@ -141,7 +159,7 @@ func TestMySQLWorkerObservationAggregatesReadOnlyAndIndexed(t *testing.T) {
 	}
 	// A cached GET performs no additional aggregation and owns no transaction.
 	again := f.s.WorkerObservability(context.Background())
-	if statements.Load() != 4 || !again.Database.Snapshot.CompletedAt.Equal(snapshot.CompletedAt) {
+	if statements.Load() != 5 || !again.Database.Snapshot.CompletedAt.Equal(snapshot.CompletedAt) {
 		t.Fatal("fresh cache reran database work")
 	}
 	// Capture actual plans on the production database engine. Small fixtures
@@ -190,7 +208,7 @@ func TestMySQLWorkerObservationSingleRefreshAndStaleFailure(t *testing.T) {
 			close(entered)
 			<-release
 		}
-		if failRefresh.Load() && strings.Contains(tx.Statement.SQL.String(), "FROM video_query_receipts") {
+		if failRefresh.Load() && strings.Contains(tx.Statement.SQL.String(), "/* blocked_contracts */") {
 			tx.AddError(errors.New("secret database failure"))
 		}
 	}))
@@ -219,11 +237,11 @@ func TestMySQLWorkerObservationSingleRefreshAndStaleFailure(t *testing.T) {
 	}
 	resume()
 	first := <-done
-	if !first.Database.Available || queries.Load() != 4 {
+	if !first.Database.Available || queries.Load() != 5 {
 		t.Fatal("initial refresh failed", first.Database.ErrorCode, queries.Load())
 	}
-	// Change the first aggregate, then fail the third SQL. No partial refresh
-	// may be published even though task and operation queries succeeded.
+	// Change the first aggregate, then fail the fifth SQL. No partial refresh
+	// may be published even though the first four queries succeeded.
 	id, err := randomID("task_")
 	must(t, err)
 	must(t, f.s.DB.Create(&task.Task{TaskID: id, OrgID: f.key.OrgID, Provider: Provider, Status: "accepted", SubmittedAt: f.now}).Error)
@@ -241,11 +259,11 @@ func TestMySQLWorkerObservationSingleRefreshAndStaleFailure(t *testing.T) {
 	m.mu.Unlock()
 	failRefresh.Store(true)
 	stale := f.s.WorkerObservability(context.Background())
-	if !stale.Database.Available || !stale.Database.Stale || stale.Database.ErrorCode != "database_unavailable" || !stale.Database.Snapshot.CompletedAt.Equal(first.Database.Snapshot.CompletedAt) || stale.Database.Snapshot.TaskCounts.Accepted != first.Database.Snapshot.TaskCounts.Accepted || queries.Load() != 7 {
+	if !stale.Database.Available || !stale.Database.Stale || stale.Database.ErrorCode != "database_unavailable" || !stale.Database.Snapshot.CompletedAt.Equal(first.Database.Snapshot.CompletedAt) || stale.Database.Snapshot.TaskCounts.Accepted != first.Database.Snapshot.TaskCounts.Accepted || queries.Load() != 10 {
 		t.Fatal("failed refresh erased or misrepresented the previous snapshot")
 	}
 	f.s.WorkerObservability(context.Background())
-	if queries.Load() != 7 {
+	if queries.Load() != 10 {
 		t.Fatal("failed refresh bypassed the retry interval")
 	}
 }

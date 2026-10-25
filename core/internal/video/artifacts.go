@@ -12,6 +12,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videoartifact"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"gorm.io/gorm"
 )
 
@@ -35,6 +36,10 @@ func (s *Service) afterDeletionTx(tx *gorm.DB, t *task.Task, st *State, now time
 }
 
 func (s *Service) prepareDelivery(org uint64, attempt string, st State, o *ark.Observation, credential string, now time.Time) (*invocation.PreparedVideoPayload, error) {
+	descriptor, e := videoruntime.Resolve(stateRuntime(st))
+	if e != nil {
+		return nil, e
+	}
 	if o == nil || o.Status != ark.StatusSucceeded || (o.VideoURL == "" && o.LastFrameURL == "") {
 		return nil, nil
 	}
@@ -50,7 +55,7 @@ func (s *Service) prepareDelivery(org uint64, attempt string, st State, o *ark.O
 	if !expires.After(now) {
 		return nil, nil
 	}
-	p, e := s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: org, RequestID: attempt, AttemptID: attempt, Direction: invocation.VideoUpstreamResponse, Purpose: invocation.VideoPurposeDelivery, SchemaVersion: 1, Body: body, ExpiresAt: expires, CaptureEnabled: true, SecretValues: []string{credential}})
+	p, e := s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: org, RequestID: attempt, AttemptID: attempt, Direction: invocation.VideoUpstreamResponse, Purpose: invocation.VideoPurposeDelivery, SchemaVersion: descriptor.DeliverySchemaVersion, Body: body, ExpiresAt: expires, CaptureEnabled: true, SecretValues: []string{credential}})
 	// An unusable link must not block settlement of confirmed generation usage.
 	if errors.Is(e, invocation.ErrVideoInvalid) {
 		return nil, nil
@@ -59,10 +64,30 @@ func (s *Service) prepareDelivery(org uint64, attempt string, st State, o *ark.O
 }
 
 func (s *Service) readDelivery(ctx context.Context, t task.Task, st State, actor string) (*invocation.VideoDelivery, error) {
+	descriptor, e := videoruntime.Resolve(stateRuntime(st))
+	if e != nil {
+		return nil, e
+	}
 	if t.Status != "succeeded" || st.DeletedAt != nil || st.ResultPayloadRef == "" {
 		return nil, invocation.ErrVideoNotFound
 	}
-	body, e := s.Evidence.ReadForDelivery(ctx, t.OrgID, st.ResultPayloadRef, invocation.VideoAccess{ActorRole: invocation.VideoRoleOrgReader, ActorID: actor, ReasonCode: "task_delivery"})
+	checkCurrent := func(tx *gorm.DB) error {
+		_, current, e := loadTask(tx, t.OrgID, t.TaskID, false)
+		if e != nil {
+			return e
+		}
+		if e = requireTaskRuntimeTx(tx, current); e != nil {
+			return e
+		}
+		if stateRuntime(current) != stateRuntime(st) {
+			return videoruntime.ErrUnsupported
+		}
+		return nil
+	}
+	if e = s.DB.WithContext(ctx).Transaction(checkCurrent); e != nil {
+		return nil, e
+	}
+	body, e := s.Evidence.ReadForDeliverySchema(ctx, t.OrgID, st.ResultPayloadRef, descriptor.DeliverySchemaVersion, invocation.VideoAccess{ActorRole: invocation.VideoRoleOrgReader, ActorID: actor, ReasonCode: "task_delivery"})
 	if e != nil {
 		return nil, e
 	}
@@ -78,7 +103,8 @@ func (s *Service) readDelivery(ctx context.Context, t task.Task, st State, actor
 	}
 	// A slow encrypted-store read may overlap task deletion. Never release the
 	// link if the live tenant-scoped resource disappeared in the meantime.
-	if _, _, e = loadTask(s.DB.WithContext(ctx), t.OrgID, t.TaskID, false); e != nil {
+	e = s.DB.WithContext(ctx).Transaction(checkCurrent)
+	if e != nil {
 		return nil, e
 	}
 	return &links, nil
@@ -87,6 +113,9 @@ func (s *Service) readDelivery(ctx context.Context, t task.Task, st State, actor
 // refreshDelivery performs only a rate-limited official GET for one owned task.
 // It cannot create a task, change accounting, or access legacy media bytes.
 func (s *Service) refreshDelivery(ctx context.Context, t task.Task, st State) error {
+	if e := requireStateRuntime(st); e != nil {
+		return e
+	}
 	if t.Status != "succeeded" || t.UpstreamTaskID == "" || st.DeletedAt != nil {
 		return ErrState
 	}
@@ -102,6 +131,12 @@ func (s *Service) refreshDelivery(ctx context.Context, t task.Task, st State) er
 		_, current, e := loadTask(tx, t.OrgID, t.TaskID, true)
 		if e != nil {
 			return e
+		}
+		if e = requireTaskRuntimeTx(tx, current); e != nil {
+			return e
+		}
+		if stateRuntime(current) != stateRuntime(st) {
+			return videoruntime.ErrUnsupported
 		}
 		if current.ResultPayloadRef != st.ResultPayloadRef {
 			return ErrConflict
@@ -119,6 +154,27 @@ func (s *Service) refreshDelivery(ctx context.Context, t task.Task, st State) er
 		return e
 	}
 	client, e := s.clientFor(ctx, t, st)
+	if e != nil {
+		return e
+	}
+	// Credential loading may overlap a version change. Recheck the live
+	// contract before HTTP without treating a refusal as a task outcome.
+	e = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		_, current, e := loadTask(tx, t.OrgID, t.TaskID, true)
+		if e != nil {
+			return e
+		}
+		if e = requireTaskRuntimeTx(tx, current); e != nil {
+			return e
+		}
+		if stateRuntime(current) != stateRuntime(st) {
+			return videoruntime.ErrUnsupported
+		}
+		if current.ResultPayloadRef != st.ResultPayloadRef {
+			return ErrConflict
+		}
+		return nil
+	})
 	if e != nil {
 		return e
 	}
@@ -141,6 +197,7 @@ func (s *Service) refreshDelivery(ctx context.Context, t task.Task, st State) er
 			return e
 		}
 	}
+	var applyErr error
 	e = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// A deletion or a newer capsule can win while the HTTP call runs.
 		_, current, e := loadTask(tx, t.OrgID, t.TaskID, true)
@@ -153,6 +210,16 @@ func (s *Service) refreshDelivery(ctx context.Context, t task.Task, st State) er
 		}
 		if e = tx.Create(&Attempt{OrgID: t.OrgID, TaskID: t.TaskID, AttemptID: attempt, RequestID: attempt, Phase: "delivery_query_response", HTTPStatus: response.HTTPStatus, UpstreamRequestID: response.RequestID, EvidenceRef: ref, ObservedAt: s.Now().UTC()}).Error; e != nil {
 			return e
+		}
+		// Preserve the response produced under the captured contract even if
+		// the live task can no longer be interpreted by this binary. Only the
+		// delivery projection is withheld; this is never a refund condition.
+		if applyErr = requireTaskRuntimeTx(tx, current); applyErr != nil {
+			return nil
+		}
+		if stateRuntime(current) != stateRuntime(st) {
+			applyErr = videoruntime.ErrUnsupported
+			return nil
 		}
 		if delivery == nil || current.ResultPayloadRef != st.ResultPayloadRef {
 			return nil
@@ -170,6 +237,9 @@ func (s *Service) refreshDelivery(ctx context.Context, t task.Task, st State) er
 	if e != nil {
 		return e
 	}
+	if applyErr != nil {
+		return applyErr
+	}
 	if delivery == nil {
 		return ErrUnavailable
 	}
@@ -182,6 +252,13 @@ func (s *Service) deliveryView(ctx context.Context, t task.Task, st State, actor
 		return v, nil
 	}
 	links, e := s.readDelivery(ctx, t, st, actor)
+	unsupported := func(err error) bool {
+		return errors.Is(err, videoruntime.ErrUnsupported) || errors.Is(err, invocation.ErrVideoSchemaUnsupported)
+	}
+	if unsupported(e) {
+		v.ArtifactStatus = "runtime_contract_unsupported"
+		return v, nil
+	}
 	missing := func(err error) bool {
 		return errors.Is(err, invocation.ErrVideoNotFound) || errors.Is(err, invocation.ErrVideoAccessDenied) || errors.Is(err, invocation.ErrVideoExpired) || errors.Is(err, invocation.ErrVideoRetentionDenied)
 	}
@@ -195,9 +272,16 @@ func (s *Service) deliveryView(ctx context.Context, t task.Task, st State, actor
 				return TaskView{}, err
 			}
 			links, e = s.readDelivery(ctx, freshTask, freshState, actor)
+			if unsupported(e) {
+				v.ArtifactStatus = "runtime_contract_unsupported"
+				return v, nil
+			}
 			if e != nil && !missing(e) {
 				return TaskView{}, e
 			}
+		} else if unsupported(refreshErr) {
+			v.ArtifactStatus = "runtime_contract_unsupported"
+			return v, nil
 		} else if errors.Is(refreshErr, invocation.ErrVideoExpired) {
 			e = refreshErr
 		} else if !errors.Is(refreshErr, videoartifact.ErrSourceDeferred) && !errors.Is(refreshErr, ErrConflict) && !errors.Is(refreshErr, ErrState) {
@@ -246,7 +330,9 @@ func (s *Service) HandleContent(c *gin.Context) {
 		}
 	}
 	if link == "" {
-		if v.ArtifactStatus == "expired" {
+		if v.ArtifactStatus == "runtime_contract_unsupported" {
+			apiError(c, 409, "runtime_contract_unsupported")
+		} else if v.ArtifactStatus == "expired" {
 			apiError(c, 410, "content_expired")
 		} else {
 			apiError(c, 409, "content_not_ready")

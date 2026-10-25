@@ -542,7 +542,11 @@ func TestMySQLOperationDispatchGuardDatabaseFailureNeverSends(t *testing.T) {
 			// Fail the permission read even when its count was populated. A
 			// database error must take precedence over a seemingly valid claim.
 			must(t, f.s.DB.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
-				if tx.Statement.Table == "video_operations" && strings.Contains(strings.ToLower(tx.Statement.SQL.String()), "count(*)") && failed.CompareAndSwap(false, true) {
+				// The final guard uses an aliased operation joined to the task
+				// contract and snapshot. GORM exposes the alias as Table, so
+				// target the actual permission query rather than the old name.
+				sql := strings.ReplaceAll(strings.ToLower(tx.Statement.SQL.String()), "`", "")
+				if strings.Contains(sql, "count(*)") && strings.Contains(sql, "from video_operations as o") && strings.Contains(sql, "join video_task_states v") && failed.CompareAndSwap(false, true) {
 					tx.AddError(injected)
 				}
 			}))
@@ -573,9 +577,12 @@ func TestMySQLQueryCandidatesExcludeLiveLeasesBeforeBatchLimit(t *testing.T) {
 	f.dispatch(t, v.ID)
 	lease := f.now.Add(time.Minute)
 	for i := 0; i < 40; i++ {
-		id := fmt.Sprintf("task_leased_%d_%d", f.key.OrgID, i)
-		must(t, f.s.DB.Create(&task.Task{TaskID: id, OrgID: f.key.OrgID, Provider: Provider, Status: "running", UpstreamTaskID: "up_" + id, SubmittedAt: f.now}).Error)
-		must(t, f.s.DB.Create(&State{TaskID: id, OrgID: f.key.OrgID, BillingState: "reserved", NextPollAt: f.now.Add(-time.Minute), QueryLeaseUntil: &lease, CreatedAt: f.now, UpdatedAt: f.now}).Error)
+		// A real accepted fixture supplies the supported runtime and its exact
+		// billing snapshot. Only the live lease may exclude this earlier row.
+		leased := f.create(t, fmt.Sprintf("query-leased-%02d", i))
+		must(t, f.s.DB.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, leased.ID).Updates(map[string]any{"status": "running", "upstream_task_id": "up_" + leased.ID}).Error)
+		must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, leased.ID).Updates(map[string]any{"next_poll_at": f.now.Add(-time.Minute), "query_lease_until": lease}).Error)
+		must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, leased.ID, "create_task").Update("status", "confirmed").Error)
 	}
 	for _, boundary := range []string{"no_lease", "expired_lease"} {
 		var expiry any

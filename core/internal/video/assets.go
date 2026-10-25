@@ -683,6 +683,9 @@ func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, 
 			if err != nil {
 				return in, bindings, resources, ErrNotFound
 			}
+			if err = requireTaskRuntimeTx(tx, st); err != nil {
+				return in, bindings, resources, err
+			}
 			var metadata TaskParameters
 			if tx.Where("org_id = ? AND task_id = ?", org, parent.TaskID).First(&metadata).Error != nil {
 				return in, bindings, resources, ErrState

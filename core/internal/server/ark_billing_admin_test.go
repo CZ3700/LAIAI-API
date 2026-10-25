@@ -20,6 +20,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/video"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"github.com/shopspring/decimal"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -138,7 +139,7 @@ func arkBillMySQLFixture(t *testing.T, status string) *arkBillFixture {
 	quote, err := videobilling.Quote(rule, videobilling.MeteringInput{OutputDurationMS: 5000, Width: 1280, Height: 720, FPSNumerator: 24, FPSDenominator: 1, BoundsVerified: true, CapabilityVersion: "test-v1", EffectiveRatio: decimal.NewFromInt(1), FXUSDPerCNY: decimal.RequireFromString("0.14"), FXVersion: "test", FXObservedAt: f.now})
 	arkBillMust(t, err)
 	arkBillMust(t, db.Transaction(func(tx *gorm.DB) error {
-		res, e := videobilling.ReserveTx(tx, videobilling.ReserveInput{OrgID: org.ID, APIKeyID: key.ID, TaskID: f.taskID, RequestHMAC: strings.Repeat("a", 64), Quote: quote, Now: f.now})
+		res, e := videobilling.ReserveTx(tx, videobilling.ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: org.ID, APIKeyID: key.ID, TaskID: f.taskID, RequestHMAC: strings.Repeat("a", 64), Quote: quote, Now: f.now})
 		if e != nil {
 			return e
 		}

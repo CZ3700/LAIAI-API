@@ -81,14 +81,23 @@ type WorkerOutboxCounts struct {
 	OldestCreatedAt *time.Time `json:"oldest_created_at"`
 }
 
+// Independent populations: one task may also own an operation and a receipt.
+// These counters must never be added into a purported unique-task total.
+type WorkerBlockedContractCounts struct {
+	Tasks         int64 `json:"tasks"`
+	Operations    int64 `json:"operations"`
+	QueryReceipts int64 `json:"query_receipts"`
+}
+
 type WorkerDatabaseSnapshot struct {
-	DatabaseTime    time.Time              `json:"database_time"`
-	StartedAt       time.Time              `json:"started_at"`
-	CompletedAt     time.Time              `json:"completed_at"`
-	TaskCounts      WorkerTaskCounts       `json:"task_counts"`
-	OperationCounts []WorkerOperationCount `json:"operation_counts"`
-	QueryReceipts   WorkerReceiptCounts    `json:"query_receipts"`
-	Outbox          WorkerOutboxCounts     `json:"outbox"`
+	DatabaseTime     time.Time                   `json:"database_time"`
+	StartedAt        time.Time                   `json:"started_at"`
+	CompletedAt      time.Time                   `json:"completed_at"`
+	TaskCounts       WorkerTaskCounts            `json:"task_counts"`
+	OperationCounts  []WorkerOperationCount      `json:"operation_counts"`
+	QueryReceipts    WorkerReceiptCounts         `json:"query_receipts"`
+	Outbox           WorkerOutboxCounts          `json:"outbox"`
+	BlockedContracts WorkerBlockedContractCounts `json:"blocked_contracts"`
 }
 
 type WorkerDatabaseObservation struct {
@@ -358,7 +367,7 @@ func (s *Service) databaseObservation(ctx context.Context, m *workerMetrics) Wor
 	return m.databaseView(time.Now())
 }
 
-// Four fixed aggregations. The hints cap individual SELECT execution, while
+// Five fixed aggregations. The hints cap individual SELECT execution, while
 // the context also covers pool waits, transaction start and the whole refresh.
 // Historical terminal tasks, raw JSON, credentials and resource IDs are never
 // selected. Additional unindexed queue/billing projections are not collected.
@@ -389,6 +398,41 @@ const workerOutboxSQL = `SELECT /*+ MAX_EXECUTION_TIME(200) */ COUNT(*) AS pendi
  COUNT(CASE WHEN next_attempt_at <= ? THEN 1 END) AS due,
  MIN(created_at) AS oldest_created_at FROM video_outbox WHERE status='pending'`
 
+// This is one SELECT with three independent counts, not three round trips.
+// Positive support scopes are shared with dispatch/recovery; NOT EXISTS also
+// counts incomplete identity joins rather than treating missing data as v1.
+func workerBlockedContractsQuery(tx *gorm.DB) *gorm.DB {
+	fresh := func() *gorm.DB { return tx.Session(&gorm.Session{NewDB: true}) }
+	active := []string{"accepted", "submitting", "submission_unknown", "queued", "running"}
+	activeTasks := fresh().Table("tasks AS t").Select("t.org_id, t.task_id").
+		Joins("LEFT JOIN video_task_states c ON c.org_id = t.org_id AND c.task_id = t.task_id").
+		Where("t.provider = ? AND t.status IN ? AND c.deleted_at IS NULL", Provider, active)
+	// Keep the indexed pending_usage branch separate and exclude rows already
+	// selected above. Deleted tasks with unresolved charges remain observable.
+	pendingTasks := fresh().Table("video_task_states AS c").Select("c.org_id, c.task_id").
+		Joins("JOIN tasks t ON t.org_id = c.org_id AND t.task_id = c.task_id").
+		Where("t.provider = ? AND c.billing_state = ? AND (c.deleted_at IS NOT NULL OR t.status NOT IN ?)", Provider, "pending_usage", active)
+	taskCandidates := fresh().Raw("? UNION ALL ?", activeTasks, pendingTasks)
+	supportedTask := supportedTaskRuntime(fresh().Table("video_task_states AS v").Select("1")).
+		Where("v.org_id = candidate.org_id AND v.task_id = candidate.task_id")
+	tasks := fresh().Table("(?) AS candidate", taskCandidates).Select("COUNT(*)").Where("NOT EXISTS (?)", supportedTask)
+	supportedOperation := supportedOperationRuntime(fresh().Table("video_operations AS o").Select("1").
+		Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).
+		Where("o.org_id = candidate.org_id AND o.id = candidate.id")
+	operations := fresh().Table("video_operations AS candidate").Select("COUNT(*)").
+		Joins("JOIN tasks t ON t.org_id = candidate.org_id AND t.task_id = candidate.resource_id").
+		Where("t.provider = ? AND candidate.status IN ?", Provider, []string{"pending", "in_flight", "unknown"}).
+		Where("NOT EXISTS (?)", supportedOperation)
+	supportedReceipt := supportedQueryReceiptRuntime(fresh().Table("video_query_receipts AS r").Select("1").
+		Joins("JOIN video_task_states v ON v.org_id = r.org_id AND v.task_id = r.task_id")).
+		Where("r.org_id = candidate.org_id AND r.task_id = candidate.task_id AND r.attempt_id = candidate.attempt_id")
+	receipts := fresh().Table("video_query_receipts AS candidate").Select("COUNT(*)").
+		Joins("JOIN tasks t ON t.org_id = candidate.org_id AND t.task_id = candidate.task_id").
+		Where("t.provider = ? AND candidate.applied_at IS NULL", Provider).
+		Where("NOT EXISTS (?)", supportedReceipt)
+	return tx.Raw("SELECT /*+ MAX_EXECUTION_TIME(200) */ /* blocked_contracts */ (?) AS tasks, (?) AS operations, (?) AS query_receipts", tasks, operations, receipts)
+}
+
 func (s *Service) collectWorkerDatabase(ctx context.Context) (*WorkerDatabaseSnapshot, string) {
 	if s.DB == nil {
 		return nil, "database_unavailable"
@@ -412,7 +456,10 @@ func (s *Service) collectWorkerDatabase(ctx context.Context) (*WorkerDatabaseSna
 		if err := tx.Raw(workerReceiptSQL).Scan(&out.QueryReceipts).Error; err != nil {
 			return err
 		}
-		return tx.Raw(workerOutboxSQL, out.DatabaseTime).Scan(&out.Outbox).Error
+		if err := tx.Raw(workerOutboxSQL, out.DatabaseTime).Scan(&out.Outbox).Error; err != nil {
+			return err
+		}
+		return workerBlockedContractsQuery(tx).Scan(&out.BlockedContracts).Error
 	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return nil, workerDatabaseErrorCode(ctx, err)

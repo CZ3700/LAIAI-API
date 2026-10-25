@@ -100,6 +100,8 @@ jobs:
         run: sh scripts/check-go-toolchain.sh
       - name: Seedance template upgrade preserves existing data
         run: go -C core test ./internal/arkpricetemplate -run TestMySQL -count=1 -timeout=5m
+      - name: Runtime expand migration and interrupted replay preserve old data
+        run: go -C core test ./internal/migrate -run TestMySQLVideoRuntimeMigrationPreservesLegacyAndReplays -count=1 -timeout=5m -v
       - name: Apply and replay formal MySQL migrations
         run: |
           go -C core run ./cmd/migrate -dir ../migrations
@@ -137,6 +139,39 @@ jobs:
         with:
           name: ark-mock-baseline-${{ github.sha }}
           path: ${{ runner.temp }}/ark-mock-baseline
+          if-no-files-found: warn
+          retention-days: 14
+
+  ark-runtime-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOPROXY: https://proxy.golang.org,direct
+      ARK_RUNTIME_MYSQL_IMAGE: docker.io/library/mysql@sha256:c36050afdca850f23cef85703f84c7531a5ae155a11b5ee1c60acb09937c4084
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0 # Includes the fixed pre-runtime implementation.
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.work
+          cache: true
+      - name: Real old/new runtime handoff and safe runner failure paths
+        env:
+          ARK_RUNTIME_REPORT_DIR: ${{ runner.temp }}/ark-runtime-compat
+        run: make ark-runtime-compat
+      - name: Retain runtime compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ark-runtime-compat-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ark-runtime-compat/run-*/*.json
+            ${{ runner.temp }}/ark-runtime-compat/run-*/*.jsonl
+            ${{ runner.temp }}/ark-runtime-compat/run-*/*.log
+            ${{ runner.temp }}/ark-runtime-compat/run-*/mysql-image-id
           if-no-files-found: warn
           retention-days: 14
 

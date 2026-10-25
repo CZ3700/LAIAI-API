@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -24,12 +25,18 @@ func ReserveTx(tx *gorm.DB, in ReserveInput) (ReservationResult, error) {
 	if in.OrgID == 0 || in.APIKeyID == 0 || !validID(in.TaskID) || !isHash(in.RequestHMAC) || in.Now.IsZero() {
 		return ReservationResult{}, ErrInvalid
 	}
+	if err := videoruntime.ValidateBillingSchema(in.BillingSchemaVersion); err != nil {
+		return ReservationResult{}, err
+	}
 	if err := lockKey(tx, in.OrgID, in.APIKeyID); err != nil {
 		return ReservationResult{}, err
 	}
 	var old Snapshot
 	err := tx.Where("org_id = ? AND task_id = ?", in.OrgID, in.TaskID).Take(&old).Error
 	if err == nil {
+		if err := validateSnapshotSchema(old, in.BillingSchemaVersion); err != nil {
+			return ReservationResult{}, err
+		}
 		if old.RequestHMAC != in.RequestHMAC {
 			return ReservationResult{}, ErrConflict
 		}
@@ -72,7 +79,7 @@ func ReserveTx(tx *gorm.DB, in ReserveInput) (ReservationResult, error) {
 	if err != nil {
 		return ReservationResult{}, err
 	}
-	s := Snapshot{OrgID: in.OrgID, APIKeyID: in.APIKeyID, TaskID: in.TaskID, ProviderScopeID: rule.ProviderScopeID, Model: rule.Model, RuleID: rule.RuleID, RuleVersion: rule.Version, FormulaVersion: rule.FormulaVersion, MinimumRuleVersion: rule.MinimumRuleVersion, CapabilityVersion: q.Metering.CapabilityVersion, RequestHMAC: in.RequestHMAC, MeteringJSON: string(meta), HoldID: h.ID, EstimatedTokens: q.EstimatedTokens, HoldUSD: q.HoldUSD, RetailUSDPer1M: rule.RetailUSDPer1M, SupplierCNYPer1M: rule.SupplierCNYPer1M, EffectiveRatio: q.Metering.EffectiveRatio, FXUSDPerCNY: q.Metering.FXUSDPerCNY, FXVersion: q.Metering.FXVersion, FXObservedAt: q.Metering.FXObservedAt.UTC(), SupplierReservedCNY: q.SupplierReservedCNY, SupplierReservedUSD: q.SupplierReservedUSD, CreatedAt: in.Now.UTC()}
+	s := Snapshot{OrgID: in.OrgID, APIKeyID: in.APIKeyID, TaskID: in.TaskID, BillingSchemaVersion: in.BillingSchemaVersion, ProviderScopeID: rule.ProviderScopeID, Model: rule.Model, RuleID: rule.RuleID, RuleVersion: rule.Version, FormulaVersion: rule.FormulaVersion, MinimumRuleVersion: rule.MinimumRuleVersion, CapabilityVersion: q.Metering.CapabilityVersion, RequestHMAC: in.RequestHMAC, MeteringJSON: string(meta), HoldID: h.ID, EstimatedTokens: q.EstimatedTokens, HoldUSD: q.HoldUSD, RetailUSDPer1M: rule.RetailUSDPer1M, SupplierCNYPer1M: rule.SupplierCNYPer1M, EffectiveRatio: q.Metering.EffectiveRatio, FXUSDPerCNY: q.Metering.FXUSDPerCNY, FXVersion: q.Metering.FXVersion, FXObservedAt: q.Metering.FXObservedAt.UTC(), SupplierReservedCNY: q.SupplierReservedCNY, SupplierReservedUSD: q.SupplierReservedUSD, CreatedAt: in.Now.UTC()}
 	if err := tx.Create(&s).Error; err != nil {
 		return ReservationResult{}, err
 	}
@@ -88,12 +95,18 @@ func loadLockedSnapshot(tx *gorm.DB, org uint64, task string) (Snapshot, error) 
 	if err != nil {
 		return s, err
 	}
+	if err := videoruntime.ValidateBillingSchema(s.BillingSchemaVersion); err != nil {
+		return s, err
+	}
 	// Same first lock as reservation; prevents quota/key lock inversion.
 	if err := lockKey(tx, org, s.APIKeyID); err != nil {
 		return s, err
 	}
 	err = locked(tx).Where("org_id = ? AND task_id = ?", org, task).Take(&s).Error
-	return s, err
+	if err != nil {
+		return s, err
+	}
+	return s, videoruntime.ValidateBillingSchema(s.BillingSchemaVersion)
 }
 
 func initialEntry(tx *gorm.DB, org uint64, task string) (*BillingEntry, error) {

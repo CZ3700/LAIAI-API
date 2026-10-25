@@ -19,6 +19,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/videoartifact"
 	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -62,6 +63,7 @@ type Dimensions struct {
 	Height int64 `json:"height"`
 }
 type createPlan struct {
+	runtime    videoruntime.Descriptor
 	config     ModelConfig
 	scope      ProviderScope
 	normalized ark.NormalizedRequest
@@ -72,6 +74,11 @@ type createPlan struct {
 
 func (s *Service) plan(tx *gorm.DB, org uint64, in ark.CreateRequest) (createPlan, error) {
 	var p createPlan
+	var runtimeErr error
+	p.runtime, runtimeErr = videoruntime.Resolve(videoruntime.LegacyV1())
+	if runtimeErr != nil {
+		return p, runtimeErr
+	}
 	if err := locked(tx).Where("public_model = ? AND enabled = ?", in.Model, true).First(&p.config).Error; err != nil {
 		return p, ErrCapability
 	}
@@ -256,7 +263,7 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 			return e
 		}
 		// Encryption is local CPU work. There is no remote KMS/blob call inside T1.
-		execution, e = s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: key.OrgID, RequestID: requestID, Direction: invocation.VideoEffectiveRequest, Purpose: invocation.VideoPurposeExecution, SchemaVersion: 1, Body: p.normalized.Body, ExpiresAt: now.Add(24 * time.Hour), CaptureEnabled: true})
+		execution, e = s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: key.OrgID, RequestID: requestID, Direction: invocation.VideoEffectiveRequest, Purpose: invocation.VideoPurposeExecution, SchemaVersion: p.runtime.ExecutionInputSchemaVersion, Body: p.normalized.Body, ExpiresAt: now.Add(24 * time.Hour), CaptureEnabled: true})
 		if e != nil {
 			return e
 		}
@@ -293,7 +300,7 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		if e = tx.Create(&credential).Error; e != nil {
 			return e
 		}
-		reserved, e := videobilling.ReserveTx(tx, videobilling.ReserveInput{OrgID: key.OrgID, APIKeyID: key.ID, TaskID: taskID, RequestHMAC: idem.BodyHMAC, Quote: p.quote, Now: now})
+		reserved, e := videobilling.ReserveTx(tx, videobilling.ReserveInput{OrgID: key.OrgID, APIKeyID: key.ID, TaskID: taskID, RequestHMAC: idem.BodyHMAC, BillingSchemaVersion: p.runtime.Contract.BillingSchemaVersion, Quote: p.quote, Now: now})
 		if e != nil {
 			return e
 		}
@@ -316,6 +323,8 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		}
 		st := State{TaskID: taskID, OrgID: key.OrgID, CreateRequestID: requestID, ProviderScopeID: p.scope.ID, CredentialSnapshotID: credential.ID, ProviderBaseURL: ch.BaseURL, ConfigVersion: p.config.Version, CapabilityVersion: p.normalized.CapabilityVersion, UpstreamModel: p.normalized.UpstreamModel, NoChargeStatuses: p.config.NoChargeStatuses, BillingState: "reserved", SyncState: "fresh", ArtifactStatus: "pending", EffectivePayloadRef: payload, BillingSnapshotID: reserved.Snapshot.ID, IdempotencyRecordID: idem.ID, ParentDraftTaskID: p.normalized.SourceDraftID, RowVersion: 1, CreatedAt: now, UpdatedAt: now}
 		st.NextPollAt = now
+		st.RuntimeVersion, st.AdapterVersion = p.runtime.Contract.RuntimeVersion, p.runtime.Contract.AdapterVersion
+		st.ProtocolContractVersion, st.BillingSchemaVersion = p.runtime.Contract.ProtocolContractVersion, p.runtime.Contract.BillingSchemaVersion
 		st.CaptureHistory = policy.CaptureHistory
 		st.RetentionDays = policy.RetentionDays
 		if e = tx.Create(&st).Error; e != nil {
@@ -325,6 +334,7 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 			return e
 		}
 		op := Operation{ID: opID, OrgID: key.OrgID, ResourceID: taskID, Kind: "create_task", Status: "pending", Version: 1, PayloadRef: payload, CreatedAt: now, UpdatedAt: now}
+		inheritOperationRuntime(st, &op)
 		if e = tx.Create(&op).Error; e != nil {
 			return e
 		}
@@ -346,6 +356,9 @@ func (s *Service) Get(org uint64, id string) (TaskView, error) {
 }
 
 func (s *Service) clientFor(ctx context.Context, t task.Task, st State) (*ark.Client, error) {
+	if err := requireStateRuntime(st); err != nil {
+		return nil, err
+	}
 	var snapshot CredentialSnapshot
 	if err := s.DB.WithContext(ctx).Where("org_id = ? AND task_id = ? AND id = ? AND provider_scope_id = ?", t.OrgID, t.TaskID, st.CredentialSnapshotID, st.ProviderScopeID).First(&snapshot).Error; err != nil {
 		return nil, ErrUnavailable
@@ -359,6 +372,8 @@ func (s *Service) clientFor(ctx context.Context, t task.Task, st State) (*ark.Cl
 
 func safeCode(err error) string {
 	switch {
+	case errors.Is(err, videoruntime.ErrUnsupported):
+		return "runtime_contract_unsupported"
 	case errors.Is(err, ErrConflict):
 		return "idempotency_conflict"
 	case errors.Is(err, ErrState):

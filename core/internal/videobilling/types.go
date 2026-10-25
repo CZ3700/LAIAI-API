@@ -167,31 +167,32 @@ func (QuotaReservation) TableName() string { return "video_quota_reservations" }
 // Snapshot stores immutable creation-time calculation facts and the hold link.
 // MeteringJSON is typed, numerical/version metadata only; never prompt or URL.
 type Snapshot struct {
-	ID                  uint64 `gorm:"primaryKey"`
-	OrgID               uint64
-	APIKeyID            uint64
-	TaskID              string
-	ProviderScopeID     uint64
-	Model               string
-	RuleID              string
-	RuleVersion         string
-	FormulaVersion      string
-	MinimumRuleVersion  string
-	CapabilityVersion   string
-	RequestHMAC         string
-	MeteringJSON        string
-	HoldID              uint64
-	EstimatedTokens     int64
-	HoldUSD             decimal.Decimal
-	RetailUSDPer1M      decimal.Decimal `gorm:"column:retail_usd_per_1m"`
-	SupplierCNYPer1M    decimal.Decimal `gorm:"column:supplier_cny_per_1m"`
-	EffectiveRatio      decimal.Decimal
-	FXUSDPerCNY         decimal.Decimal `gorm:"column:fx_usd_per_cny"`
-	FXVersion           string
-	FXObservedAt        time.Time
-	SupplierReservedCNY decimal.Decimal
-	SupplierReservedUSD decimal.Decimal
-	CreatedAt           time.Time
+	ID                   uint64 `gorm:"primaryKey"`
+	OrgID                uint64
+	APIKeyID             uint64
+	TaskID               string
+	BillingSchemaVersion string
+	ProviderScopeID      uint64
+	Model                string
+	RuleID               string
+	RuleVersion          string
+	FormulaVersion       string
+	MinimumRuleVersion   string
+	CapabilityVersion    string
+	RequestHMAC          string
+	MeteringJSON         string
+	HoldID               uint64
+	EstimatedTokens      int64
+	HoldUSD              decimal.Decimal
+	RetailUSDPer1M       decimal.Decimal `gorm:"column:retail_usd_per_1m"`
+	SupplierCNYPer1M     decimal.Decimal `gorm:"column:supplier_cny_per_1m"`
+	EffectiveRatio       decimal.Decimal
+	FXUSDPerCNY          decimal.Decimal `gorm:"column:fx_usd_per_cny"`
+	FXVersion            string
+	FXObservedAt         time.Time
+	SupplierReservedCNY  decimal.Decimal
+	SupplierReservedUSD  decimal.Decimal
+	CreatedAt            time.Time
 }
 
 func (Snapshot) TableName() string { return "video_billing_snapshots" }
@@ -235,12 +236,13 @@ type BillingEntry struct {
 func (BillingEntry) TableName() string { return "video_billing_entries" }
 
 type ReserveInput struct {
-	OrgID       uint64
-	APIKeyID    uint64
-	TaskID      string
-	RequestHMAC string
-	Quote       QuoteResult
-	Now         time.Time
+	BillingSchemaVersion string
+	OrgID                uint64
+	APIKeyID             uint64
+	TaskID               string
+	RequestHMAC          string
+	Quote                QuoteResult
+	Now                  time.Time
 }
 type ReservationResult struct {
 	Snapshot Snapshot

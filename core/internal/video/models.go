@@ -37,6 +37,10 @@ type State struct {
 	ProviderBaseURL          string
 	ConfigVersion            string
 	CapabilityVersion        string
+	RuntimeVersion           string
+	AdapterVersion           string
+	ProtocolContractVersion  string
+	BillingSchemaVersion     string
 	UpstreamModel            string
 	NoChargeStatuses         string
 	BillingState             string
@@ -121,24 +125,27 @@ type ProviderScope struct {
 func (ProviderScope) TableName() string { return "video_provider_scopes" }
 
 type Operation struct {
-	ID               string     `gorm:"primaryKey;column:id" json:"operation_id"`
-	OrgID            uint64     `json:"-"`
-	ResourceID       string     `json:"resource_id"`
-	Kind             string     `json:"kind"`
-	Status           string     `json:"status"`
-	Version          uint64     `json:"-"`
-	AttemptID        string     `json:"-"`
-	PayloadRef       string     `json:"-"`
-	ReceiptRef       string     `json:"-"`
-	HTTPStatus       int        `gorm:"column:http_status" json:"-"`
-	ReceiptAppliedAt *time.Time `json:"-"`
-	ReceivedOutcome  string     `json:"-"`
-	ReceivedTaskID   string     `json:"-"`
-	LeaseUntil       *time.Time `json:"-"`
-	ErrorCode        string     `json:"-"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"-"`
-	PollURL          string     `gorm:"-" json:"poll_url"`
+	ID                      string     `gorm:"primaryKey;column:id" json:"operation_id"`
+	OrgID                   uint64     `json:"-"`
+	ResourceID              string     `json:"resource_id"`
+	Kind                    string     `json:"kind"`
+	Status                  string     `json:"status"`
+	Version                 uint64     `json:"-"`
+	RuntimeVersion          string     `json:"-"`
+	AdapterVersion          string     `json:"-"`
+	ProtocolContractVersion string     `json:"-"`
+	AttemptID               string     `json:"-"`
+	PayloadRef              string     `json:"-"`
+	ReceiptRef              string     `json:"-"`
+	HTTPStatus              int        `gorm:"column:http_status" json:"-"`
+	ReceiptAppliedAt        *time.Time `json:"-"`
+	ReceivedOutcome         string     `json:"-"`
+	ReceivedTaskID          string     `json:"-"`
+	LeaseUntil              *time.Time `json:"-"`
+	ErrorCode               string     `json:"-"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"-"`
+	PollURL                 string     `gorm:"-" json:"poll_url"`
 }
 
 func (Operation) TableName() string { return "video_operations" }
@@ -222,21 +229,25 @@ func (Policy) TableName() string { return "video_org_policies" }
 // QueryReceipt preserves typed official observations independently of applying
 // billing. ObservationJSON is an explicit whitelist without result URLs.
 type QueryReceipt struct {
-	AttemptID         string `gorm:"primaryKey"`
-	OrgID             uint64
-	TaskID            string
-	Sequence          uint64
-	TaskRowVersion    uint64
-	HTTPStatus        int `gorm:"column:http_status"`
-	Outcome           string
-	ProviderRequestID string
-	ObservationJSON   string `gorm:"column:observation_json"`
-	HasVideo          bool
-	HasLastFrame      bool
-	PayloadRef        string
-	ReceivedAt        time.Time
-	AppliedAt         *time.Time
-	ApplyErrorCode    string
+	AttemptID                string `gorm:"primaryKey"`
+	OrgID                    uint64
+	TaskID                   string
+	Sequence                 uint64
+	TaskRowVersion           uint64
+	RuntimeVersion           string
+	AdapterVersion           string
+	ProtocolContractVersion  string
+	ObservationSchemaVersion uint32
+	HTTPStatus               int `gorm:"column:http_status"`
+	Outcome                  string
+	ProviderRequestID        string
+	ObservationJSON          string `gorm:"column:observation_json"`
+	HasVideo                 bool
+	HasLastFrame             bool
+	PayloadRef               string
+	ReceivedAt               time.Time
+	AppliedAt                *time.Time
+	ApplyErrorCode           string
 }
 
 func (QueryReceipt) TableName() string { return "video_query_receipts" }
