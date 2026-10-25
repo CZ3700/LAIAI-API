@@ -10,8 +10,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	sqliteDriver "github.com/glebarez/go-sqlite"
+	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
 var (
@@ -21,6 +24,7 @@ var (
 	ErrOwnership   = errors.New("routinggroup: ownership mismatch")
 	ErrUnavailable = errors.New("routinggroup: dependency unavailable")
 	ErrInactive    = errors.New("routinggroup: inactive resource")
+	ErrExists      = errors.New("routinggroup: group already exists")
 )
 
 type Organization struct {
@@ -41,8 +45,8 @@ type ChannelLocker interface {
 	LockChannels(context.Context, *gorm.DB, []uint64) ([]Channel, error)
 }
 
-// Only trusted host code can call this config service. G1-B will expose commands
-// behind named-superadmin authentication; an Audit alone is not authentication.
+// Only trusted host code can call this config service. HTTP commands require
+// named-superadmin authentication; an Audit alone is not authentication.
 type Service struct {
 	DB            *gorm.DB
 	Organizations OrganizationLocker
@@ -58,7 +62,7 @@ func (s *Service) transact(ctx context.Context, a Audit, fn func(*gorm.DB) error
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return s.DB.WithContext(ctx).Transaction(fn)
+	return s.DB.Session(&gorm.Session{Logger: logger.Discard}).WithContext(ctx).Transaction(fn)
 }
 
 func (s *Service) lockOrg(tx *gorm.DB, id uint64) (Organization, error) {
@@ -121,6 +125,17 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Group, error) {
 		}
 		g = Group{OwnerOrgID: in.OwnerOrgID, Slug: in.Slug, Name: in.Name, Description: in.Description, Status: Draft, PolicyVersion: 1}
 		if e := tx.Create(&g).Error; e != nil {
+			if groupInsertDuplicate(tx, e) {
+				// Confirm this exact owner/slug using a current read. Never map a
+				// primary-key collision or an event failure to a duplicate group.
+				var existing Group
+				check := tx.Session(&gorm.Session{NewDB: true, Context: tx.Statement.Context, Logger: logger.Discard}).
+					Select("id, owner_org_id, slug").Clauses(clause.Locking{Strength: "SHARE"}).
+					Where("owner_org_id = ? AND slug = ?", in.OwnerOrgID, in.Slug).Take(&existing)
+				if check.Error == nil && existing.ID != 0 && existing.OwnerOrgID == in.OwnerOrgID && existing.Slug == in.Slug {
+					return ErrExists
+				}
+			}
 			return e
 		}
 		return event(tx, "group", g.ID, g.PolicyVersion, "group_created", g.OwnerOrgID, g.ID, 0, in.Audit)
@@ -129,6 +144,21 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Group, error) {
 		return Group{}, err
 	}
 	return g, nil
+}
+
+// This classifier is used only for the routing_groups INSERT, never for an
+// entire transaction. Driver text can include user values and is not parsed.
+func groupInsertDuplicate(tx *gorm.DB, err error) bool {
+	switch tx.Dialector.Name() {
+	case "mysql":
+		var duplicate *mysql.MySQLError
+		return errors.As(err, &duplicate) && duplicate.Number == 1062
+	case "sqlite":
+		var duplicate *sqliteDriver.Error
+		return errors.As(err, &duplicate) && duplicate.Code() == 2067 // SQLITE_CONSTRAINT_UNIQUE
+	default:
+		return false
+	}
 }
 
 type UpdateInput struct {

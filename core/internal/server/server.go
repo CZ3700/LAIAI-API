@@ -64,6 +64,7 @@ type Server struct {
 	now                 func() time.Time    // 可注入时钟，测试用
 	invRetentionDefault int                 // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
 	invocationQueries   invocationQueryGate // v1 metadata queries: global 4, subject 2, zero wait.
+	routingGroupReads   routingAdminReadGate
 }
 
 // readOnly 返回只读副本句柄（规模化：分析/用量/排行/公开价目等重读卸载到副本）；未配副本回退主库。
@@ -291,6 +292,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			// —— superadmin 级（资金 / 系统设置 / 定价策略 / 授权）——（对标 NewAPI RootAuth）
 			su := admin.Group("", s.requireSuperadmin())
 			{
+				s.registerRoutingGroupsAdmin(su)
 				s.registerVideoConfiguration(su)
 				s.registerArkBillingAdmin(su)
 				s.registerArkAssetAdmin(su)
