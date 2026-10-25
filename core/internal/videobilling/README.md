@@ -9,12 +9,15 @@ Quote(rule PricingRule, in MeteringInput) (QuoteResult, error)
 QuoteWithMinimumTx(tx *gorm.DB, rule PricingRule, in MeteringInput, ctx MinimumContext) (QuoteResult, error)
 ResolvePricingTx(tx *gorm.DB, key PricingKey, at time.Time) (PricingRule, error)
 ReserveTx(tx *gorm.DB, in ReserveInput) (ReservationResult, error)
+ValidateSnapshotContractTx(tx *gorm.DB, org uint64, taskID string, snapshotID uint64, expectedSchema string) error
 ValidateDispatchBudgetTx(tx *gorm.DB, org uint64, taskID string) error
 SettleUsageTx(tx *gorm.DB, in SettlementInput) (SettlementResult, error)
 ReleaseConfirmedTx(tx *gorm.DB, in ReleaseInput) (SettlementResult, error)
 ```
 
 Every Tx function requires a real GORM transaction and never commits it. Every returned error requires the caller to roll back. The caller commits task CAS, billing, encrypted evidence staging, events and outbox together. A successful function return is not permission to ignore a subsequent event/outbox error. There are no nested transactions and no global DB writes.
+
+`ReserveInput.BillingSchemaVersion` is required and persists unchanged in the immutable snapshot. Empty or unsupported versions return `videoruntime.ErrUnsupported`, including reservation and settlement replays. Settlement, confirmed release, bill recovery, adjustment proposal/review/application, and dispatch-budget validation independently check the snapshot schema before interpreting it. `ValidateSnapshotContractTx` checks the exact organization/task/snapshot identity and expected schema without acquiring Key, quota or ledger locks. It supplements these money-path checks and may run before host asset locks. Raw bill import and binding remain available to retain evidence; they cannot authorize money movement for an unsupported schema.
 
 - Creation: authenticate/normalize, then in one transaction create the platform task, reserve quota/hold/snapshot, stage execution ciphertext, and write dispatch intent/event/outbox. `ReserveTx` verifies the Key belongs to Org and rereads the published price at creation time. Replayed task+request HMAC returns the existing snapshot before re-resolving changed pricing. Task IDs are globally unique platform IDs.
 - First dispatch: after locking the accepted task and validating assets, call the read-only `ValidateDispatchBudgetTx` before claiming its send attempt. It locks the original Key, snapshot and reservation buckets in settlement order. A blocked bucket returns `ErrQuotaExceeded` so orchestration can record a known-unsent failure and release the hold. Missing or inconsistent supplier reservations and database failures keep the task undispatched for recovery. Already submitted or unknown tasks never pass through this gate. Policy changes and date boundaries do not relocate accepted reservations.
@@ -100,6 +103,7 @@ CREATE TABLE video_quota_reservations (
 
 CREATE TABLE video_billing_snapshots (
  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ billing_schema_version VARCHAR(64) NOT NULL DEFAULT 'usd-decimal-v1',
  org_id BIGINT UNSIGNED NOT NULL, api_key_id BIGINT UNSIGNED NOT NULL,
  task_id VARCHAR(64) NOT NULL, provider_scope_id BIGINT UNSIGNED NOT NULL,
  model VARCHAR(64) NOT NULL, rule_id VARCHAR(64) NOT NULL, rule_version VARCHAR(64) NOT NULL,

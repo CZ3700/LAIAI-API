@@ -18,6 +18,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"gorm.io/gorm"
 )
 
@@ -54,7 +55,7 @@ func safeVideoErrorParam(param string) bool {
 
 func publicErrorCode(code string, status int) string {
 	switch code {
-	case "insufficient_scope", "video_execution_not_enabled":
+	case "insufficient_scope", "video_execution_not_enabled", "runtime_contract_unsupported":
 		return code
 	case "invalid_request", "unauthenticated", "forbidden", "not_found", "idempotency_conflict", "invalid_state", "insufficient_balance", "quota_exceeded", "rate_limited", "unsupported_capability", "invalid_asset", "authorization_required", "authorization_expired", "group_not_empty", "resource_in_use", "content_expired", "content_not_ready", "provider_unavailable", "submission_uncertain", "generation_failed", "cancellation_failed", "deletion_failed", "internal_error":
 		return code
@@ -83,6 +84,8 @@ func publicErrorCode(code string, status int) string {
 func respondError(c *gin.Context, err error) {
 	var a *ark.Error
 	switch {
+	case errors.Is(err, videoruntime.ErrUnsupported), errors.Is(err, invocation.ErrVideoSchemaUnsupported):
+		apiError(c, 409, "runtime_contract_unsupported")
 	case errors.As(err, &a):
 		apiErrorWithParam(c, a.HTTPStatus, a.Code, a.Field)
 	case errors.Is(err, ErrExecutionPolicy):

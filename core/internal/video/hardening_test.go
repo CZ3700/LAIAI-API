@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"gorm.io/gorm"
 )
 
@@ -34,7 +36,10 @@ func (f *fixture) receipt(t *testing.T, id string, sequence uint64, completion *
 	must(t, e)
 	att, e := randomID("att_")
 	must(t, e)
-	r := QueryReceipt{OrgID: f.key.OrgID, TaskID: id, AttemptID: att, Sequence: sequence, HTTPStatus: 200, Outcome: string(ark.OutcomeAccepted), ObservationJSON: string(meta), ReceivedAt: f.now}
+	var state State
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, id).First(&state).Error)
+	r := QueryReceipt{OrgID: f.key.OrgID, TaskID: id, AttemptID: att, Sequence: sequence, HTTPStatus: 200, Outcome: string(ark.OutcomeAccepted), ObservationJSON: string(meta), ReceivedAt: f.now,
+		RuntimeVersion: state.RuntimeVersion, AdapterVersion: state.AdapterVersion, ProtocolContractVersion: state.ProtocolContractVersion, ObservationSchemaVersion: videoruntime.ObservationSchemaV1}
 	must(t, f.s.DB.Create(&r).Error)
 	return r
 }
@@ -267,14 +272,17 @@ func TestPublicErrorCodeContract(t *testing.T) {
 
 func TestMySQLHardeningWaitingCancellationsDoNotStarveCreates(t *testing.T) {
 	f := mysqlFixture(t)
-	// Seed only this fixture's task rows. They represent unknown POST outcomes;
-	// no holds or upstream calls are created for these blocked cancel intents.
+	// Use complete supported contracts and billing snapshots, so the exclusion
+	// being tested is waiting cancellation state rather than a missing snapshot
+	// or unsupported runtime. No upstream requests are sent by this fixture.
 	for i := 0; i < 25; i++ {
-		id, _ := randomID("task_")
-		op, _ := randomID("op_")
-		must(t, f.s.DB.Create(&task.Task{TaskID: id, OrgID: f.key.OrgID, APIKeyID: f.key.ID, Model: ark.Model20, Provider: Provider, Status: "submission_unknown", SubmittedAt: f.now.Add(-time.Hour)}).Error)
-		must(t, f.s.DB.Create(&State{TaskID: id, OrgID: f.key.OrgID, BillingState: "pending_usage", NextPollAt: f.now, CreatedAt: f.now.Add(-time.Hour), UpdatedAt: f.now}).Error)
-		must(t, f.s.DB.Create(&Operation{ID: op, OrgID: f.key.OrgID, ResourceID: id, Kind: "cancel_task", Status: "pending", Version: 1, CreatedAt: f.now.Add(-time.Hour), UpdatedAt: f.now}).Error)
+		v := f.create(t, fmt.Sprintf("hard-waiting-cancel-%02d", i))
+		must(t, f.s.DB.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Updates(map[string]any{"status": "submission_unknown", "submitted_at": f.now.Add(-time.Hour)}).Error)
+		must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Updates(map[string]any{"billing_state": "pending_usage", "next_poll_at": f.now, "created_at": f.now.Add(-time.Hour)}).Error)
+		must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, v.ID, "create_task").Update("status", "unknown").Error)
+		op, _, err := f.s.Cancel(context.Background(), f.key.OrgID, v.ID, f.requestID("waiting-cancel"), fmt.Sprintf("hard-waiting-key-%02d", i))
+		must(t, err)
+		must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).Update("created_at", f.now.Add(-time.Hour)).Error)
 	}
 	v := f.create(t, "hard-fair-queue")
 	var ops []Operation

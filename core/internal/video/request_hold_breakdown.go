@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/laiai/laiai-next/core/internal/videobilling"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"github.com/shopspring/decimal"
 )
 
@@ -25,7 +26,7 @@ type RequestHoldBreakdown struct {
 func requestHoldBreakdown(s videobilling.Snapshot) *RequestHoldBreakdown {
 	// A new formula version needs an explicit replay implementation. Missing
 	// metadata must not borrow present-day prices, capabilities or defaults.
-	if s.FormulaVersion != "ark-video-token-v1" || s.EstimatedTokens <= 0 {
+	if videoruntime.ValidateBillingSchema(s.BillingSchemaVersion) != nil || s.FormulaVersion != "ark-video-token-v1" || s.EstimatedTokens <= 0 {
 		return nil
 	}
 	var saved struct {

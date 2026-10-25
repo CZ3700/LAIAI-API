@@ -172,6 +172,9 @@ func ReviewAdjustmentTx(tx *gorm.DB, in ReviewAdjustmentInput) (AdjustmentReview
 	if err := tx.Where("id = ? AND org_id = ?", in.ProposalID, in.OrgID).Take(&p).Error; err != nil {
 		return AdjustmentReview{}, err
 	}
+	if err := validateReviewSnapshotTx(tx, in.OrgID, p.TaskID); err != nil {
+		return AdjustmentReview{}, err
+	}
 	if in.ReviewerID == p.ProposerID {
 		return AdjustmentReview{}, ErrReviewRequired
 	}

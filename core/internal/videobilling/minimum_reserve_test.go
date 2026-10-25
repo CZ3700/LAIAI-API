@@ -3,6 +3,7 @@ package videobilling
 import (
 	"encoding/json"
 	"errors"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"strings"
 	"testing"
 
@@ -251,7 +252,7 @@ func TestNonInputReservationDoesNotRequireMinimumEvidence(t *testing.T) {
 func assertMinimumReserveRejected(t *testing.T, db *gorm.DB, q QuoteResult, want error) {
 	t.Helper()
 	err := db.Transaction(func(tx *gorm.DB) error {
-		_, err := ReserveTx(tx, ReserveInput{OrgID: 10, APIKeyID: 1, TaskID: "rejected", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
+		_, err := ReserveTx(tx, ReserveInput{BillingSchemaVersion: videoruntime.BillingV1, OrgID: 10, APIKeyID: 1, TaskID: "rejected", RequestHMAC: strings.Repeat("a", 64), Quote: q, Now: testAt})
 		return err
 	})
 	if !errors.Is(err, want) {

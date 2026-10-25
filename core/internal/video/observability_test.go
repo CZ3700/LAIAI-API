@@ -95,16 +95,17 @@ func TestWorkerObservationCacheCopyAndUnavailableSemantics(t *testing.T) {
 	m := s.metrics()
 	now := time.Now().UTC()
 	m.cacheAttempt = time.Now()
-	m.cache = &WorkerDatabaseSnapshot{StartedAt: now, CompletedAt: now, DatabaseTime: now, TaskCounts: WorkerTaskCounts{Accepted: 7, OldestUnknownSubmission: &now}, OperationCounts: []WorkerOperationCount{{Kind: "create_task", Status: "pending", Count: 7}}}
+	m.cache = &WorkerDatabaseSnapshot{StartedAt: now, CompletedAt: now, DatabaseTime: now, TaskCounts: WorkerTaskCounts{Accepted: 7, OldestUnknownSubmission: &now}, OperationCounts: []WorkerOperationCount{{Kind: "create_task", Status: "pending", Count: 7}}, BlockedContracts: WorkerBlockedContractCounts{Tasks: 3, Operations: 2, QueryReceipts: 1}}
 	first := s.WorkerObservability(context.Background())
 	if !first.Database.Available || first.Database.Stale || !first.Database.Complete {
 		t.Fatal("fresh cache was marked unavailable")
 	}
 	first.Database.Snapshot.TaskCounts.Accepted = 999
 	first.Database.Snapshot.OperationCounts[0].Count = 999
+	first.Database.Snapshot.BlockedContracts.Tasks = 999
 	*first.Database.Snapshot.TaskCounts.OldestUnknownSubmission = time.Time{}
 	second := s.WorkerObservability(context.Background())
-	if second.Database.Snapshot.TaskCounts.Accepted != 7 || second.Database.Snapshot.OperationCounts[0].Count != 7 || second.Database.Snapshot.TaskCounts.OldestUnknownSubmission.IsZero() {
+	if second.Database.Snapshot.TaskCounts.Accepted != 7 || second.Database.Snapshot.OperationCounts[0].Count != 7 || second.Database.Snapshot.TaskCounts.OldestUnknownSubmission.IsZero() || second.Database.Snapshot.BlockedContracts.Tasks != 3 {
 		t.Fatal("caller mutated the cached snapshot")
 	}
 	m.cacheAttempt = time.Now().Add(-2 * workerObservationTTL)

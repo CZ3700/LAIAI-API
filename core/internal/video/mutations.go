@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
+	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"gorm.io/gorm"
 )
 
@@ -50,10 +52,16 @@ func (s *Service) Cancel(ctx context.Context, org uint64, id, requestID, key str
 		if e != nil {
 			return e
 		}
+		if e = requireTaskRuntimeTx(tx, st); e != nil {
+			return e
+		}
 		// A second idempotency key is another reference to the same unresolved
 		// cancellation, never authority to send another DELETE after uncertainty.
 		e = locked(tx).Where("org_id = ? AND resource_id = ? AND kind = ? AND status IN ?", org, id, "cancel_task", []string{"pending", "in_flight", "unknown"}).Order("created_at, id").First(&op).Error
 		if e == nil {
+			if e = requireOperationRuntime(st, op); e != nil {
+				return e
+			}
 			replay = true
 			return tx.Model(&IdempotencyRecord{}).Where("org_id = ? AND id = ?", org, idem.ID).Update("operation_id", op.ID).Error
 		}
@@ -65,7 +73,25 @@ func (s *Service) Cancel(ctx context.Context, org uint64, id, requestID, key str
 			return ErrState
 		}
 		op = Operation{ID: opID, OrgID: org, ResourceID: id, Kind: "cancel_task", Status: decision.OperationStatus, Version: 1, CreatedAt: now, UpdatedAt: now}
+		inheritOperationRuntime(st, &op)
 		if decision.CancelLocally {
+			var create Operation
+			if e = locked(tx).Where("org_id = ? AND resource_id = ? AND kind = ? AND status = ?", org, id, "create_task", "pending").First(&create).Error; e != nil {
+				return e
+			}
+			if e = requireOperationRuntime(st, create); e != nil {
+				return e
+			}
+			descriptor, e := videoruntime.Resolve(stateRuntime(st))
+			if e != nil {
+				return e
+			}
+			if create.PayloadRef != st.EffectivePayloadRef {
+				return videoruntime.ErrUnsupported
+			}
+			if e = invocation.ValidateVideoExecutionSchemaTx(tx, org, create.PayloadRef, descriptor.ExecutionInputSchemaVersion); e != nil {
+				return e
+			}
 			changed := tx.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND kind = ? AND status = ?", org, id, "create_task", "pending").Updates(map[string]any{"status": "rejected", "error_code": "cancelled_before_dispatch", "updated_at": now})
 			if changed.Error != nil {
 				return changed.Error
@@ -126,6 +152,9 @@ func (s *Service) Delete(ctx context.Context, org uint64, id, requestID string) 
 		if st.DeletionOperationID != "" {
 			return tx.Where("org_id = ? AND id = ?", org, st.DeletionOperationID).First(&op).Error
 		}
+		if e := requireTaskRuntimeTx(tx, st); e != nil {
+			return e
+		}
 		if !terminal(t.Status) || !financialFinal(st.BillingState) {
 			return ErrState
 		}
@@ -134,6 +163,7 @@ func (s *Service) Delete(ctx context.Context, org uint64, id, requestID string) 
 			return e
 		}
 		op = Operation{ID: opID, OrgID: org, ResourceID: id, Kind: "delete_task", Status: "pending", Version: 1, CreatedAt: now, UpdatedAt: now}
+		inheritOperationRuntime(st, &op)
 		if t.Status == "cancelled" || t.UpstreamTaskID == "" {
 			op.Status = "confirmed"
 			st.DeletedAt = &now
@@ -182,6 +212,21 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 		if current.Status != "pending" {
 			return nil
 		}
+		if e = requireTaskRuntimeTx(tx, st); e != nil {
+			return e
+		}
+		if e = requireOperationRuntime(st, op); e != nil {
+			return e
+		}
+		if e = requireOperationRuntime(st, current); e != nil {
+			return e
+		}
+		// The locked operation is the execution identity. A stale candidate
+		// cannot supply a different protocol or action to the HTTP dispatch.
+		if current.Kind != op.Kind || current.ResourceID != op.ResourceID {
+			return ErrState
+		}
+		op = current
 		if op.Kind == "cancel_task" {
 			if t.Status == "submitting" || t.Status == "submission_unknown" {
 				return nil
@@ -239,16 +284,31 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 func (s *Service) applyMutationReceipt(ctx context.Context, op Operation) error {
 	now := s.Now().UTC()
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		t, st, e := loadTask(tx, op.OrgID, op.ResourceID, true)
-		if e != nil {
+		// Include tombstones only to recognize an already applied deletion.
+		// Keep the normal Task -> State -> Operation lock order.
+		var t task.Task
+		var st State
+		if e := locked(tx).Where("org_id = ? AND task_id = ? AND provider = ?", op.OrgID, op.ResourceID, Provider).First(&t).Error; e != nil {
+			return e
+		}
+		if e := locked(tx).Where("org_id = ? AND task_id = ?", op.OrgID, op.ResourceID).First(&st).Error; e != nil {
 			return e
 		}
 		var current Operation
-		if e = locked(tx).Where("org_id = ? AND id = ?", op.OrgID, op.ID).First(&current).Error; e != nil {
+		if e := locked(tx).Where("org_id = ? AND id = ? AND resource_id = ?", op.OrgID, op.ID, op.ResourceID).First(&current).Error; e != nil {
 			return e
 		}
 		if current.ReceiptAppliedAt != nil || current.Status == "confirmed" || current.Status == "rejected" {
 			return nil
+		}
+		if st.DeletedAt != nil {
+			return ErrState
+		}
+		if e := requireTaskRuntimeTx(tx, st); e != nil {
+			return e
+		}
+		if e := requireOperationRuntime(st, current); e != nil {
+			return e
 		}
 		status := "unknown"
 		code := "upstream_outcome_unknown"
@@ -263,10 +323,10 @@ func (s *Service) applyMutationReceipt(ctx context.Context, op Operation) error 
 		if current.Kind == "delete_task" && current.ReceivedOutcome == string(ark.OutcomeAccepted) {
 			status = "confirmed"
 			code = ""
-			if e = tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error; e != nil {
+			if e := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error; e != nil {
 				return e
 			}
-			if e = s.afterDeletionTx(tx, &t, &st, now); e != nil {
+			if e := s.afterDeletionTx(tx, &t, &st, now); e != nil {
 				return e
 			}
 		}
@@ -274,11 +334,11 @@ func (s *Service) applyMutationReceipt(ctx context.Context, op Operation) error 
 			if !financialFinal(st.BillingState) {
 				st.BillingState = "pending_usage"
 			}
-			if e = tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"next_poll_at": now, "sync_state": "needs_review", "billing_state": st.BillingState}).Error; e != nil {
+			if e := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"next_poll_at": now, "sync_state": "needs_review", "billing_state": st.BillingState}).Error; e != nil {
 				return e
 			}
 		}
-		if e = tx.Model(&current).Updates(map[string]any{"status": status, "error_code": code, "receipt_applied_at": now, "updated_at": now}).Error; e != nil {
+		if e := tx.Model(&current).Updates(map[string]any{"status": status, "error_code": code, "receipt_applied_at": now, "updated_at": now}).Error; e != nil {
 			return e
 		}
 		return appendEventTx(tx, &t, &st, "task.operation_updated", t.Status, t.Status, current.AttemptID, current.ReceiptRef, now)

@@ -11,6 +11,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -73,27 +74,35 @@ func (s *Service) pendingQueryCandidates(ctx context.Context) *gorm.DB {
 	now := s.Now().UTC()
 	// A live lease must not consume the bounded candidate batch while another
 	// query is in flight. pollTask still rechecks and claims under its row lock.
-	return s.DB.WithContext(ctx).Table("video_task_states AS v").Select("v.*").Joins("JOIN tasks t ON t.task_id = v.task_id AND t.org_id = v.org_id").Where("v.deleted_at IS NULL AND v.next_poll_at <= ? AND (v.query_lease_until IS NULL OR v.query_lease_until <= ?) AND t.upstream_task_id <> '' AND (t.status IN ? OR v.billing_state = ?)", now, now, []string{"queued", "running"}, "pending_usage")
+	return supportedTaskRuntime(s.DB.WithContext(ctx).Table("video_task_states AS v").Select("v.*").Joins("JOIN tasks t ON t.task_id = v.task_id AND t.org_id = v.org_id")).Where("t.provider = ? AND v.deleted_at IS NULL AND v.next_poll_at <= ? AND (v.query_lease_until IS NULL OR v.query_lease_until <= ?) AND t.upstream_task_id <> '' AND (t.status IN ? OR v.billing_state = ?)", Provider, now, now, []string{"queued", "running"}, "pending_usage")
 }
 
 func (s *Service) pendingOperationCandidates(ctx context.Context) *gorm.DB {
-	return s.DB.WithContext(ctx).Table("video_operations AS o").Select("o.*, ROW_NUMBER() OVER (PARTITION BY v.provider_scope_id, CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END ORDER BY o.created_at, o.id) AS scope_rank").Joins("JOIN tasks t ON t.org_id = o.org_id AND t.task_id = o.resource_id").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id").Joins("LEFT JOIN video_provider_rates p ON p.scope_id = v.provider_scope_id AND p.action = CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END").Where("o.status = ? AND t.provider = ? AND v.deleted_at IS NULL AND (p.next_allowed_at IS NULL OR p.next_allowed_at <= ?)", "pending", Provider, s.Now().UTC()).Where("(o.kind = ? AND t.status = ?) OR (o.kind = ? AND t.status NOT IN ?) OR (o.kind = ? AND t.status IN ?)", "create_task", "accepted", "cancel_task", []string{"submitting", "submission_unknown"}, "delete_task", []string{"succeeded", "failed", "cancelled", "expired"})
+	return supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Select("o.*, ROW_NUMBER() OVER (PARTITION BY v.provider_scope_id, CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END ORDER BY o.created_at, o.id) AS scope_rank").Joins("JOIN tasks t ON t.org_id = o.org_id AND t.task_id = o.resource_id").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Joins("LEFT JOIN video_provider_rates p ON p.scope_id = v.provider_scope_id AND p.action = CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END").Where("o.status = ? AND t.provider = ? AND v.deleted_at IS NULL AND (p.next_allowed_at IS NULL OR p.next_allowed_at <= ?)", "pending", Provider, s.Now().UTC()).Where("(o.kind = ? AND t.status = ?) OR (o.kind = ? AND t.status NOT IN ?) OR (o.kind = ? AND t.status IN ?)", "create_task", "accepted", "cancel_task", []string{"submitting", "submission_unknown"}, "delete_task", []string{"succeeded", "failed", "cancelled", "expired"})
+}
+
+func (s *Service) recoveryOperationCandidates(ctx context.Context) *gorm.DB {
+	return supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Select("o.*").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("(o.status IN ? AND o.receipt_ref <> '' AND o.receipt_applied_at IS NULL) OR (o.status = ? AND o.lease_until <= ?)", []string{"in_flight", "unknown"}, "in_flight", s.Now().UTC())
 }
 
 func (s *Service) recoverOperations(ctx context.Context) error {
 	var rows []Operation
 	now := s.Now().UTC()
-	if err := s.DB.WithContext(ctx).Where("(status IN ? AND receipt_ref <> '' AND receipt_applied_at IS NULL) OR (status = ? AND lease_until <= ?)", []string{"in_flight", "unknown"}, "in_flight", now).Order("updated_at, id").Limit(30).Find(&rows).Error; err != nil {
+	if err := s.recoveryOperationCandidates(ctx).Order("o.updated_at, o.id").Limit(30).Find(&rows).Error; err != nil {
 		return err
 	}
 	for _, op := range rows {
 		if op.ReceiptRef != "" && op.Kind != "create_task" {
 			if err := s.applyMutationReceipt(ctx, op); err == nil {
 				continue
+			} else if errors.Is(err, videoruntime.ErrUnsupported) {
+				continue
 			}
 		}
 		if op.ReceiptRef != "" && op.Kind == "create_task" {
 			if err := s.applyCreateReceipt(ctx, op); err == nil {
+				continue
+			} else if errors.Is(err, videoruntime.ErrUnsupported) {
 				continue
 			}
 		}
@@ -103,6 +112,9 @@ func (s *Service) recoverOperations(ctx context.Context) error {
 		if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			t, st, e := loadTask(tx, op.OrgID, op.ResourceID, true)
 			if e != nil {
+				return e
+			}
+			if e = requireCurrentOperationRuntimeTx(tx, st, op); e != nil {
 				return e
 			}
 			result := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ? AND status = ?", op.OrgID, op.ID, op.Version, "in_flight").Updates(map[string]any{"status": "unknown", "error_code": "submission_uncertain", "updated_at": now})
@@ -149,8 +161,27 @@ func (s *Service) rateTx(tx *gorm.DB, scope uint64, action string, now time.Time
 // This read cannot make MySQL and HTTP atomic. A process can still pause after
 // it, so lease expiry must never enqueue a second mutating request.
 func (s *Service) operationMaySend(ctx context.Context, op Operation) (bool, error) {
+	if op.Kind == "create_task" {
+		// A failed asset/budget/input check is not permission to interpret an
+		// unknown execution format as definitely unsent. Metadata is checked
+		// before claim/refund and once more at the final send boundary.
+		err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			_, st, e := loadTask(tx, op.OrgID, op.ResourceID, false)
+			if e != nil {
+				return e
+			}
+			return requireCurrentOperationRuntimeTx(tx, st, op)
+		})
+		if err != nil {
+			s.observeGuard(op.Kind, false, err)
+			return false, err
+		}
+	}
+	// Metadata validation may wait for a row lock. Check the current claim and
+	// current time after that preparation, not before it: a recovered/expired
+	// operation must not use an earlier successful check to authorize a send.
 	var count int64
-	err := s.DB.WithContext(ctx).Model(&Operation{}).Where("org_id = ? AND id = ? AND resource_id = ? AND kind = ? AND status = ? AND version = ? AND attempt_id = ? AND lease_until > ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, s.Now().UTC()).Count(&count).Error
+	err := supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("o.org_id = ? AND o.id = ? AND o.resource_id = ? AND o.kind = ? AND o.status = ? AND o.version = ? AND o.attempt_id = ? AND o.lease_until > ? AND o.runtime_version = ? AND o.adapter_version = ? AND o.protocol_contract_version = ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, s.Now().UTC(), op.RuntimeVersion, op.AdapterVersion, op.ProtocolContractVersion).Count(&count).Error
 	s.observeGuard(op.Kind, count == 1, err)
 	return count == 1, err
 }
@@ -173,6 +204,9 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 		var e error
 		t, st, e = loadTask(tx, op.OrgID, op.ResourceID, true)
 		if e != nil {
+			return e
+		}
+		if e = requireCurrentOperationRuntimeTx(tx, st, op); e != nil {
 			return e
 		}
 		if t.Status != "accepted" {
@@ -219,12 +253,22 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	if validationErr != nil {
 		return s.knownUnsent(ctx, t, st, op, validationCode)
 	}
-	body, err := s.Evidence.ReadForExecution(ctx, t.OrgID, op.PayloadRef, invocation.VideoAccess{ActorRole: invocation.VideoRoleWorker, ActorID: "video-dispatch", ReasonCode: "dispatch", OperationID: op.ID})
+	descriptor, err := videoruntime.Resolve(stateRuntime(st))
 	if err != nil {
+		return err
+	}
+	body, err := s.Evidence.ReadForExecutionSchema(ctx, t.OrgID, op.PayloadRef, descriptor.ExecutionInputSchemaVersion, invocation.VideoAccess{ActorRole: invocation.VideoRoleWorker, ActorID: "video-dispatch", ReasonCode: "dispatch", OperationID: op.ID})
+	if err != nil {
+		if errors.Is(err, invocation.ErrVideoSchemaUnsupported) {
+			return videoruntime.ErrUnsupported
+		}
 		return s.knownUnsent(ctx, t, st, op, "execution_unavailable")
 	}
 	client, err := s.clientFor(ctx, t, st)
 	if err != nil {
+		if errors.Is(err, videoruntime.ErrUnsupported) {
+			return err
+		}
 		return s.knownUnsent(ctx, t, st, op, "credential_unavailable")
 	}
 	allowed, err := s.operationMaySend(ctx, op)
@@ -292,6 +336,15 @@ func (s *Service) applyCreateReceipt(ctx context.Context, op Operation) error {
 		}
 		var current Operation
 		if err := locked(tx).Where("org_id = ? AND id = ?", op.OrgID, op.ID).First(&current).Error; err != nil {
+			return err
+		}
+		if err := requireTaskRuntimeTx(tx, st); err != nil {
+			return err
+		}
+		if err := requireOperationRuntime(st, current); err != nil {
+			return err
+		}
+		if err := requireOperationRuntime(st, op); err != nil {
 			return err
 		}
 		if current.Status == "confirmed" || current.Status == "rejected" {
@@ -387,6 +440,9 @@ func (s *Service) knownUnsent(ctx context.Context, t task.Task, st State, op Ope
 		if e != nil {
 			return e
 		}
+		if e = requireCurrentOperationRuntimeTx(tx, st, op); e != nil {
+			return e
+		}
 		updated := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ? AND status = ?", op.OrgID, op.ID, op.Version, "in_flight").Updates(map[string]any{"status": "rejected", "error_code": code, "updated_at": s.Now().UTC()})
 		if updated.Error != nil || updated.RowsAffected == 0 {
 			return updated.Error
@@ -434,6 +490,9 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 		if e != nil {
 			return e
 		}
+		if e = requireTaskRuntimeTx(tx, st); e != nil {
+			return e
+		}
 		if t.UpstreamTaskID == "" || st.NextPollAt.After(now) || (st.QueryLeaseUntil != nil && st.QueryLeaseUntil.After(now)) {
 			return nil
 		}
@@ -459,6 +518,9 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 	if err != nil {
 		return err
 	}
+	if err = s.requireCurrentTaskRuntime(ctx, st); err != nil {
+		return err
+	}
 	callStarted := time.Now()
 	response := client.Query(ctx, t.UpstreamTaskID)
 	s.observeAdapterCall("query", response, callStarted)
@@ -472,6 +534,12 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 		return err
 	}
 	receipt := QueryReceipt{OrgID: org, TaskID: id, AttemptID: attempt, Sequence: st.QuerySequence, TaskRowVersion: st.RowVersion, HTTPStatus: response.HTTPStatus, Outcome: string(response.Outcome), ProviderRequestID: response.RequestID, ReceivedAt: received}
+	receipt.RuntimeVersion, receipt.AdapterVersion, receipt.ProtocolContractVersion = st.RuntimeVersion, st.AdapterVersion, st.ProtocolContractVersion
+	descriptor, err := videoruntime.Resolve(stateRuntime(st))
+	if err != nil {
+		return err
+	}
+	receipt.ObservationSchemaVersion = descriptor.ObservationSchemaVersion
 	var delivery *invocation.PreparedVideoPayload
 	if response.Observation != nil {
 		o := response.Observation
@@ -524,7 +592,7 @@ type queryObservation struct {
 
 func (s *Service) recoverQueryReceipts(ctx context.Context) error {
 	var rows []QueryReceipt
-	if err := s.DB.WithContext(ctx).Where("applied_at IS NULL AND apply_error_code <> ?", "settlement_conflict").Order("received_at, attempt_id").Limit(40).Find(&rows).Error; err != nil {
+	if err := s.recoveryQueryCandidates(ctx).Order("r.received_at, r.attempt_id").Limit(40).Find(&rows).Error; err != nil {
 		return err
 	}
 	for _, row := range rows {
@@ -538,6 +606,10 @@ func (s *Service) recoverQueryReceipts(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) recoveryQueryCandidates(ctx context.Context) *gorm.DB {
+	return supportedQueryReceiptRuntime(s.DB.WithContext(ctx).Table("video_query_receipts AS r").Select("r.*").Joins("JOIN video_task_states v ON v.org_id = r.org_id AND v.task_id = r.task_id")).Where("r.applied_at IS NULL AND r.apply_error_code <> ?", "settlement_conflict")
+}
+
 func (s *Service) applyQueryReceipt(ctx context.Context, receipt QueryReceipt) error {
 	now := s.Now().UTC()
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -546,6 +618,9 @@ func (s *Service) applyQueryReceipt(ctx context.Context, receipt QueryReceipt) e
 			return e
 		}
 		if e = locked(tx).Where("org_id = ? AND task_id = ? AND attempt_id = ?", receipt.OrgID, receipt.TaskID, receipt.AttemptID).First(&receipt).Error; e != nil {
+			return e
+		}
+		if e = requireQueryReceiptRuntime(st, receipt); e != nil {
 			return e
 		}
 		if receipt.AppliedAt != nil {
@@ -636,7 +711,7 @@ func (s *Service) applyQueryReceipt(ctx context.Context, receipt QueryReceipt) e
 				}
 			case "failed", "cancelled", "expired":
 				if t.Status == "cancelled" {
-					if e = tx.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND kind = ? AND status IN ?", org, id, "cancel_task", []string{"pending", "unknown", "in_flight"}).Updates(map[string]any{"status": "confirmed", "updated_at": now}).Error; e != nil {
+					if e = tx.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND kind = ? AND status IN ? AND runtime_version = ? AND adapter_version = ? AND protocol_contract_version = ?", org, id, "cancel_task", []string{"pending", "unknown", "in_flight"}, st.RuntimeVersion, st.AdapterVersion, st.ProtocolContractVersion).Updates(map[string]any{"status": "confirmed", "updated_at": now}).Error; e != nil {
 						return e
 					}
 				}
@@ -686,14 +761,34 @@ func (s *Service) applyQueryReceipt(ctx context.Context, receipt QueryReceipt) e
 	// The response transaction already committed. A settlement/event failure
 	// cannot remove the evidence, and recovery can retry it without another GET.
 	code := "query_apply_failed"
-	if errors.Is(err, videobilling.ErrConflict) {
+	if errors.Is(err, videoruntime.ErrUnsupported) {
+		code = "runtime_contract_unsupported"
+	} else if errors.Is(err, videobilling.ErrConflict) {
 		code = "settlement_conflict"
 	}
 	markErr := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if e := tx.Model(&QueryReceipt{}).Where("org_id = ? AND task_id = ? AND attempt_id = ? AND applied_at IS NULL", receipt.OrgID, receipt.TaskID, receipt.AttemptID).Update("apply_error_code", code).Error; e != nil {
+		// Keep the same State -> receipt lock order as application. A concurrent
+		// successful replay must not be overwritten by a late diagnostic write.
+		var state State
+		if e := locked(tx).Where("org_id = ? AND task_id = ?", receipt.OrgID, receipt.TaskID).Take(&state).Error; e != nil {
 			return e
 		}
-		return tx.Model(&State{}).Where("org_id = ? AND task_id = ? AND deleted_at IS NULL", receipt.OrgID, receipt.TaskID).Update("sync_state", "needs_review").Error
+		var current QueryReceipt
+		if e := locked(tx).Where("org_id = ? AND task_id = ? AND attempt_id = ?", receipt.OrgID, receipt.TaskID, receipt.AttemptID).Take(&current).Error; e != nil {
+			return e
+		}
+		if current.AppliedAt != nil {
+			return nil
+		}
+		if current.ApplyErrorCode != code {
+			if e := tx.Model(&QueryReceipt{}).Where("org_id = ? AND task_id = ? AND attempt_id = ?", receipt.OrgID, receipt.TaskID, receipt.AttemptID).Update("apply_error_code", code).Error; e != nil {
+				return e
+			}
+		}
+		if state.DeletedAt == nil && state.SyncState != "needs_review" {
+			return tx.Model(&State{}).Where("org_id = ? AND task_id = ?", receipt.OrgID, receipt.TaskID).Update("sync_state", "needs_review").Error
+		}
+		return nil
 	})
 	return errors.Join(err, markErr)
 }

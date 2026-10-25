@@ -20,6 +20,9 @@ func LockBillingTaskTx(tx *gorm.DB, org uint64, id string) (task.Task, State, er
 		return t, st, err
 	}
 	err := locked(tx).Where("org_id = ? AND task_id = ?", org, id).First(&st).Error
+	if err == nil {
+		err = requireTaskRuntimeTx(tx, st)
+	}
 	return t, st, err
 }
 func ApplyBillingSettlementTx(tx *gorm.DB, org uint64, id, requestID, evidenceRef string, result videobilling.SettlementResult, now time.Time) error {
