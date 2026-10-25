@@ -7,7 +7,7 @@
 - 应用基线：main `d7fc49949c44b7e0dbfbf95384dafd15df13dadf`；首批分支 `codex/rc46-p0-baseline`。
 - 原方案基于 `e4eb84f` 的部分缺口已过时。原工作树未提交的 ArkControl/UI 配置独立保留，不直接合入本批。
 - 生产已运行 d7fc499；镜像构建和测试迁到 laiai-release，生产 laiai-pod 仅拉取已验收的固定 digest。发布工具 PR #55 是独立变更，不能将其未合入的状态写成应用 main 已包含。
-- 启动基线迁移到 0126；截至 PR #61 主线已到 0129。只在确需 schema 时新增顺序迁移，禁止 ORM 自动迁移或第二套钱包/任务账本。
+- 启动基线迁移到 0126；截至 PR #63 主线已到 0130。只在确需 schema 时新增顺序迁移，禁止 ORM 自动迁移或第二套钱包/任务账本。
 - 每批：架构/契约 → 开发 → 针对性测试 → `make vet`/`make ci`（涉及 Web 则 `make ci-all`）→ 独立提交/PR → CI 与验收证据。未通过不标完成，不将 PR 创建等同于生产发布。
 - 本批使用隔离 MySQL 和 Mock HTTP，不使用生产凭据、不调用付费视频、不改线上数据。真实出片预算需按已有累计账单另行核对，不能将旧预算当成 500 次负载调用许可。
 
@@ -38,10 +38,10 @@
 | P0-2A1 创建响应收件箱 | 不可变执行登记、独立响应保存、同 attempt 恢复、legacy 分流；默认关闭 | CAS/取消/删除竞态、重复/矛盾证据、无响应过期、历史关闭、真实迁移与账务不变 | [PR #59](https://github.com/CZ3700/LAIAI-API/pull/59) 七项 CI、真实二进制交接及 Mock 通过，已合入 main `9552e2b`；迁移 0128；写开关仍默认关闭 |
 | P0-2A1.1 持久化失败控制 | 同一证据有界重试、保存失败停止后续发送、关库前等待在途保存 | 不重发上游、不把未提交响应标为已保存；数据库恢复/关机故障用例 | [PR #60](https://github.com/CZ3700/LAIAI-API/pull/60) 七项 CI 全绿，已合入 main `c2cebf6`；隔离 R2 证据见第 5.6 节，A2 未完成前不开生产新写入 |
 | P0-2A2/B 故障恢复后续 | 取消/删除/交付收件箱、完整兼容演练；随后数据库时间/fence、独立结算 | A1 完成后逐批；完整 R3 崩溃点/双 Worker/超 hold、零资金差异 | A2a consumer已由PR #63合入main `309890a`；A2b producer开发中，默认off；后续二进制交接/调度仍待验收 |
-| P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | [PR #61](https://github.com/CZ3700/LAIAI-API/pull/61) 七项 CI 全绿，G1-A 已合入 main `7688307`；G1-B1 管理HTTP/宿主桥接已完成隔离R2验收，正在PR；B2授权/默认组仍待实施 |
+| P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | [PR #61](https://github.com/CZ3700/LAIAI-API/pull/61) 七项 CI 全绿，G1-A 已合入 main `7688307`；G1-B1 已由PR #64合入main `bf311e0`；B2授权/默认组已完成独立审查并进入隔离MySQL验收 |
 | P0-G2 全入口授权 | 同一有效模型/组解析器覆盖目录、报价、创建、重试、派发复核；撤权强校验 | 全入口拒绝矩阵；已发送任务继续查询结算；空 subset 拒绝 | 待实施，依赖 G1 |
 | P0-G3 组 UI 与迁移 | 管理员影响预览、用户组选择、有效模型集合差分 | G2 全绿后才开放；不得静默改旧 Key 权限 | 待实施 |
-| P0-UI1 日志改进 | 共用 FilterSpec、全条件日志合计、列表/导出一致、后台日志组件、请求竞态保护 | R8 的 237 条跨页夹具、角色/币种/时间/导出/抽屉测试 | UI1-A1 已由PR #62合入main `94d00d8`；A2a后端CSV正在真实MySQL验收，A2b前端待实施 |
+| P0-UI1 日志改进 | 共用 FilterSpec、全条件日志合计、列表/导出一致、后台日志组件、请求竞态保护 | R8 的 237 条跨页夹具、角色/币种/时间/导出/抽屉测试 | UI1-A1 已由PR #62合入main `94d00d8`；A2a后端CSV已通过隔离R2真实MySQL/race并准备PR；A2b前端三线并行实施 |
 | P0-3 独立 Worker | DB 租约领取/心跳、共享账户容量、外部预留、组织公平队列、查询平滑、Redis 故障策略 | P0-1/2 完成；R4 逐档 + R5 故障；多副本无超发 | 待实施 |
 | P0-4 500 验收与迁移 | GET 缓存/ETag、容量管理、备份演练、版本/镜像回滚、500 Mock 报告 | 500 在途≥60分钟；时效 p95≤30秒/p99≤60秒；R6 回滚 | 待实施 |
 | P1-A 协议与 UsageFacts | 纯 Go 转换层；先 Chat→Anthropic 请求抽取；presence/source 累计/增量事实 | R1 语义差分/大请求 bench；不发送第二份付费请求；账务接入另 PR | 待实施，可并行 |
@@ -264,3 +264,12 @@ go -C core test -race ./internal/video ./internal/videoartifact ./internal/video
 隔离验收耗用的官方视频费用为 0；这组证据仅覆盖本批安全变更，不代表 R4 长时间容量压测、R5 全部故障矩阵或生产灰度通过。下一批从 P0-0B 的可观测与 Mock 基线、P0-1 的运行时版本契约开始；UI-1A/G1 可按本文依赖并行。
 
 参考固定上游：[rc.46 Release](https://github.com/QuantumNous/new-api/releases/tag/v1.0.0-rc.46)、[固定提交 7d8b91268dab69d7150f345c448b5e250163146a](https://github.com/QuantumNous/new-api/commit/7d8b91268dab69d7150f345c448b5e250163146a)、[RelayKit](https://github.com/QuantumNous/new-api/blob/v1.0.0-rc.46/relaykit/README.md)、[Go 官方版本](https://go.dev/dl/)。不照搬 RelayKit 的忽略零值 usage 合并或未发布的动态插件运行方式。
+
+
+## 5.10 UI1-A2a 同筛选 CSV 与逐行精度验收
+
+基于已验收main bf311e0，分支codex/rc46-invocation-export。普通`/api/usage/export`显式filter_version=1进入新协议，管理新增`/api/admin/invocations/export`；无版本旧导出保留。列表逐行新增四类Token字符串usage_exact，保留旧字段与普通用户敏感字段隐藏。统一筛选/只读RR/本次FX，最多5000行与8MiB完整缓冲、同主体单导出，超界返回明确422，不截断、不输出部分CSV。独立审查同时修复GORM NewDB/Context分次链污染，list/export两侧回归。
+
+R1新快照测试fixture多一个占位符造成MySQL1136，记录失败后只修fixture；R2连续两轮真实快照和完整查询/CSV race通过。237行/13筛选/20/50/100跨页与USD/CNY、精确SUM超过MaxInt64、微金额、0/5000/5001、实际SQL EXPLAIN、双连接只读RR1792及并发数据变更、取消/池耗尽/限流释放、非空资金/Key/Task/价格/正文保留全部通过。make vet/ci与130迁移重复/101表doctor通过。详细源包/原始日志SHA与不做容量承诺的边界见`rc46-调用日志导出实施契约.md`第6/7节。
+
+仅后端交付；前端请求日志与Admin日志Tab继续UI1-A2b。无新增迁移/账务/上游调用，生产未变更；最新PR CI尚须另行核验。

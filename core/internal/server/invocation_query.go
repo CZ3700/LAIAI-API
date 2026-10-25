@@ -27,12 +27,26 @@ type invocationQueryGate struct {
 	mu       sync.Mutex
 	active   int
 	subjects map[string]int
+	exports  map[string]bool
 }
 
 func (g *invocationQueryGate) tryAcquire(subject string) (func(), bool) {
+	return g.acquire(subject, false)
+}
+
+func (g *invocationQueryGate) tryAcquireExport(subject string) (func(), bool) {
+	return g.acquire(subject, true)
+}
+
+// Check both limits under one mutex, in shared-slot then export-slot order.
+// A rejected export never reserves a shared slot or an empty subject bucket.
+func (g *invocationQueryGate) acquire(subject string, export bool) (func(), bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if subject == "" || g.active >= 4 || g.subjects[subject] >= 2 {
+		return nil, false
+	}
+	if export && g.exports[subject] {
 		return nil, false
 	}
 	if g.subjects == nil {
@@ -40,6 +54,12 @@ func (g *invocationQueryGate) tryAcquire(subject string) (func(), bool) {
 	}
 	g.active++
 	g.subjects[subject]++
+	if export {
+		if g.exports == nil {
+			g.exports = make(map[string]bool)
+		}
+		g.exports[subject] = true
+	}
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -47,6 +67,9 @@ func (g *invocationQueryGate) tryAcquire(subject string) (func(), bool) {
 			defer g.mu.Unlock()
 			g.active--
 			g.subjects[subject]--
+			if export {
+				delete(g.exports, subject)
+			}
 			if g.subjects[subject] == 0 {
 				delete(g.subjects, subject)
 			}
@@ -57,11 +80,18 @@ func (g *invocationQueryGate) tryAcquire(subject string) (func(), bool) {
 // Detect a version key even when its value is malformed percent encoding.
 // A malformed/unknown explicit version must not widen into the legacy path.
 func (s *Server) dispatchInvocationQueryV1(c *gin.Context, admin bool) bool {
-	for _, pair := range strings.Split(c.Request.URL.RawQuery, "&") {
+	if hasInvocationQueryVersion(c.Request.URL.RawQuery) {
+		s.handleInvocationQueryV1(c, admin)
+		return true
+	}
+	return false
+}
+
+func hasInvocationQueryVersion(raw string) bool {
+	for _, pair := range strings.Split(raw, "&") {
 		name, _, _ := strings.Cut(pair, "=")
 		decoded, err := url.QueryUnescape(name)
 		if err == nil && decoded == "filter_version" {
-			s.handleInvocationQueryV1(c, admin)
 			return true
 		}
 	}
@@ -189,7 +219,7 @@ func (s *Server) handleInvocationQueryV1(c *gin.Context, admin bool) {
 		invocationQueryFailure(c, errors.New("invocation query unavailable"))
 		return
 	}
-	var items any = result.Items // Existing public json tags remain the organization boundary.
+	var items any = invocationPublicItems(result.Items)
 	if admin {
 		items = invocationAdminItems(result.Items)
 	}
@@ -212,6 +242,35 @@ func (s *Server) handleInvocationQueryV1(c *gin.Context, admin bool) {
 	})
 }
 
+type invocationExactUsage struct {
+	PromptTokens     string `json:"prompt_tokens"`
+	CompletionTokens string `json:"completion_tokens"`
+	CachedTokens     string `json:"cached_tokens"`
+	ReasoningTokens  string `json:"reasoning_tokens"`
+}
+
+func invocationUsageExact(row invocation.Invocation) invocationExactUsage {
+	return invocationExactUsage{
+		PromptTokens: strconv.FormatInt(row.PromptTokens, 10), CompletionTokens: strconv.FormatInt(row.CompletionTokens, 10),
+		CachedTokens: strconv.FormatInt(row.CachedTokens, 10), ReasoningTokens: strconv.FormatInt(row.ReasoningTokens, 10),
+	}
+}
+
+// Embedding retains the existing organization JSON boundary, including every
+// json:"-" field; exact usage is additive and does not reinterpret old numbers.
+type invocationPublicQueryItem struct {
+	invocation.Invocation
+	UsageExact invocationExactUsage `json:"usage_exact"`
+}
+
+func invocationPublicItems(rows []invocation.Invocation) []invocationPublicQueryItem {
+	items := make([]invocationPublicQueryItem, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, invocationPublicQueryItem{Invocation: row, UsageExact: invocationUsageExact(row)})
+	}
+	return items
+}
+
 func invocationAdminItems(rows []invocation.Invocation) []gin.H {
 	items := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
@@ -221,7 +280,8 @@ func invocationAdminItems(rows []invocation.Invocation) []gin.H {
 			"channel_id": r.ChannelID, "provider": r.Provider, "status": r.Status, "status_code": r.StatusCode, "is_stream": r.IsStream,
 			"attempts": r.Attempts, "prompt_tokens": r.PromptTokens, "completion_tokens": r.CompletionTokens,
 			"cached_tokens": r.CachedTokens, "reasoning_tokens": r.ReasoningTokens, "cost_usd": r.CostUSD, "usage_source": r.UsageSource,
-			"frt_ms": r.FRTMs, "duration_ms": r.DurationMs, "upstream_request_id": r.UpstreamRequestID, "error_brief": r.ErrorBrief,
+			"usage_exact": invocationUsageExact(r),
+			"frt_ms":      r.FRTMs, "duration_ms": r.DurationMs, "upstream_request_id": r.UpstreamRequestID, "error_brief": r.ErrorBrief,
 		})
 	}
 	return items
