@@ -12,6 +12,7 @@ node_modules/
 *.tsbuildinfo
 *.bundle
 coverage.out
+/.cache/ark-mock-baseline/
 
 # OS / editor
 .DS_Store

@@ -31,9 +31,9 @@
 
 | 阶段 | 可评审交付 | 依赖和验收门槛 | 状态 |
 | --- | --- | --- | --- |
-| P0-0A 基线与安全 | 本执行表、UI0 契约、Go 1.26.10；发送前操作租约复核；查询候选排除有效租约 | 全量 CI、MySQL 故障回归、无重复上游 POST/DELETE、无错误退款 | 已开发，隔离验收通过，PR #56 |
-| P0-0B 可观测与 Mock | 可控 Mock Ark、低基数调度/查询延迟/DB/回执队列指标、现状负载报告 | R0 可复跑；安全日志无正文/密钥；指标不冒充账务事实 | 待实施 |
-| P0-1 运行时契约 | 复用现有 State/Operation，增加固定 runtime/adapter/protocol/billing-schema 与版本注册；凭据同账户旋转约束 | R2 全结果分类；N/N-1 支持矩阵；未知版本不发送；旧任务兼容 | 待实施 |
+| P0-0A 基线与安全 | 本执行表、UI0 契约、Go 1.26.10；发送前操作租约复核；查询候选排除有效租约 | 全量 CI、MySQL 故障回归、无重复上游 POST/DELETE、无错误退款 | PR #56 已合入 main `38b1873`，未部署生产 |
+| P0-0B 可观测与 Mock | 可控 Mock Ark、低基数调度/查询延迟/DB/回执队列指标、现状负载报告 | R0 可复跑；安全日志无正文/密钥；指标不冒充账务事实 | 已开发并通过隔离验收，[PR #57](https://github.com/CZ3700/LAIAI-API/pull/57)；未开始 R4 容量测试 |
+| P0-1 运行时契约 | 复用现有 State/Operation，增加固定 runtime/adapter/protocol/billing-schema 与版本注册；凭据同账户旋转约束 | R2 全结果分类；N/N-1 支持矩阵；未知版本不发送；旧任务兼容 | 实施契约已编写，运行时代码及迁移尚未实施 |
 | P0-2 故障证据与恢复 | 数据库时间、不可变响应收件箱/迟到证据归属、未知提交核对、终态缺 usage 恢复 | R3 崩溃点/双 Worker/重复回执/超 hold；零资金差异 | 待实施 |
 | P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | 待实施，可并行 P0-1 |
 | P0-G2 全入口授权 | 同一有效模型/组解析器覆盖目录、报价、创建、重试、派发复核；撤权强校验 | 全入口拒绝矩阵；已发送任务继续查询结算；空 subset 拒绝 | 待实施，依赖 G1 |
@@ -61,6 +61,36 @@
 - 每次验收记录 source SHA、工具链、镜像 digest、数据库版本、命令/退出码、Mock 参数、原始证据路径。跳过数据库测试不算 MySQL 通过。
 - 不把提交到 PR 等同于合入，不把测试服务器镜像等同于生产镜像；最终发布仍按现有 Zot 构建→测试→digest→生产拉取链路。
 
+## 5.1 第二批观测接口与测试入口
+
+- 分支 `codex/rc46-worker-observability` 基于已合入的 main `38b1873`。仅新增观测与测试，不调整现有派单速率或资金逻辑。
+- `GET /api/admin/video/worker-observability` 仅允许具名、有效的 superadmin 会话；拒绝共享管理令牌、数据面 API Key、普通管理员和任意查询参数。响应设置 `Cache-Control: private, no-store`。
+- `runtime` 是本服务实例启动以来的固定枚举计数与耗时桶，重启归零，不是集群汇总。`adapter_calls` 包含 `not_sent`，不能直接当作实际 HTTP 次数。单条操作失败另计 `item_errors`，不只看整个循环返回值。
+- `database` 是最多四条 SQL 的只读一致性快照；15 秒缓存、同进程单刷新、单 SELECT 200ms/整次 1 秒上限。失败标记不可用或陈旧并保留最后成功快照，不伪造零值。`complete` 仅表示四条聚合均成功；缺索引或尚未实现的指标明确列入 `not_collected`。
+- 首版包含非终态任务、待处理操作、未应用查询回执与 outbox；不获取内容正文、资源 ID、凭据或任意自由标签。DB 连接池等待指标与进程指标分别标来源。
+- `make ark-mock-baseline` 在全新 MySQL 中执行单 scope 的 10 任务真实调度；GitHub 单独 job 保留报告，不能与其他 MySQL fixture 混用数据库。参数、账务断言及失败清理见 [Mock 基线说明](rc46-Mock-Ark基线.md)。
+- [运行时版本固定契约](rc46-运行时版本固定实施契约.md) 为下一独立批次提供迁移、派发、回执和结算入口清单；本批尚未添加运行时字段或声称完成 N/N-1 兼容。
+
+## 5.2 第二批实际验收记录
+
+2026-10-25T11:33:49Z，`laiai-release` 对干净提交 `e43ea295c27400a8dff280b6feaf8865b622a00f` 完成隔离验收；通过 Git bundle 检出，`source_dirty=false`。后续 `6db6efe` 仅修正 GitHub 工作流中 runner 上下文的变量位置，业务/测试代码不变。GitHub 对最新 PR 提交执行独立六项门禁，实际状态见 PR，不能用本记录代替远端状态。
+
+| 验收 | 实际结果 |
+| --- | --- |
+| 工具链/数据库 | Go 1.26.10；MySQL 8.4.9 固定 digest；126 个正式迁移重复执行，94 张表无漂移 |
+| 完整检查 | `make vet`、`make ci`、模板升级、video/videoasset/server 真实 MySQL 集成通过 |
+| 并发与只读 | 新增四项 `TestMySQLWorkerObservation*`、管理接口鉴权及原有发送前复核回归实际执行；六领域包 race 通过 |
+| runner 失败路径 | 成功、迁移失败、测试失败、skip 拒绝、部分创建失败清理、标签不符拒删、外部 DSN/未知参数拒绝通过 |
+| Mock 执行 | 10 个任务/1 scope/1 worker，68.634 秒；上游 POST 10 次、GET 30 次；无重复创建、无补充交付查询 |
+| 状态时效 | 10 个样本；终态可见延迟 p50=12.487 秒、p95/max=12.516 秒，nearest-rank；含 500ms 客户采样间隔 |
+| 账务闭环 | 10 笔初次结算/10 笔 capture；总 hold=8.64000000 USD、capture=0.00800000、release=8.63200000；钱包 held=0、Key used=capture、账本 drift=0 |
+| 供应商预算 | 合成 fixture consumed=0.04600000 CNY、reserved=0；与 10 个 reservation 一致 |
+| 清理/费用 | runner 退出 0，独立 Mock MySQL 容器已按标签删除；常规 CI 专用 DB 已停止；官方调用与费用均为 0 |
+
+上述金额来自故意使用 100 个合成 Token 的测试 fixture，验证账务恒等式，不代表官方价格、真实预扣误差或商业成本。查询通常约两秒一条，是当前单 scope 调度的基线；10 个短任务通过不能推导 500 在途容量。
+
+证据根目录：`laiai-release:/var/lib/laiai-artifacts/rc46-p0b-20261025-r1/`。`ci.log` SHA-256 为 `f9d5377b94bb00500ec636a03a994c315108287bef1f12ad1ec3ff21012dc289`；Mock 目录 `mock-baseline/run-20261025T113126Z-zWNQyIBb/` 中 `report.json` SHA-256 为 `7079f084c93978ca85bd48e79e789b3b5540d5d7e10c363bf68a26cee69022d3`，附 `run.json`、`go-test.jsonl` 和迁移日志。完整执行命令为原第 7 节的 CI/MySQL/race，再单独运行 `make ark-mock-baseline`；基线使用全新数据库，不复用前一阶段的 fixture。
+
 ## 6. 500 容量验收边界
 
 - 容量单位是 accepted/submitting/unknown/queued/running 的未终态任务。初始建议值不是已核验配额：2 Core + 2 Worker、每 Worker submit=8/query=32、租约45秒/心跳10秒、Query目标周期20秒、平台队列1000/等待15分钟。
@@ -81,7 +111,7 @@
 | Go builder 版本 | 已核验 1.26.10 linux/amd64 | golang digest `sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca` 实际运行 |
 | Go/门禁与 Worker 回归 | `make ci`、15项 shell 门禁、race 全通过 | Go 1.26.10 linux/amd64；20个新增故障场景实际连接 MySQL 执行 |
 | MySQL 8.4 迁移与故障回归 | 通过；126 applied、94 tables verified、无漂移 | MySQL 8.4.9 独立 ark_test；模板升级、迁移×2、video/videoasset/server 集成回归 |
-| 第一批 PR/CI | [PR #56](https://github.com/CZ3700/LAIAI-API/pull/56)，远端门禁状态以 PR 为准 | 隔离验收完成，未合并/未发布生产；GitHub 另验证实际 Docker 构建与私有 checkout 权限 |
+| 第一批 PR/CI | [PR #56](https://github.com/CZ3700/LAIAI-API/pull/56)，5 项 GitHub CI 通过后合入 main `38b1873` | 未发布生产；GitHub 另验证实际 Docker 构建与私有 checkout 权限 |
 | 500 在途完整验收 | 尚未开始 | 依赖后续调度与真实配额核验 |
 
 测试服务器证据：`laiai-release:/var/lib/laiai-artifacts/rc46-p0-20261025-r2/ci.log`，SHA-256 `334696f85f8417caef236e6af90222ec4179fcd3ab2292389157bcd98a1c4090`；`ci.ok` 存在，测试容器退出码 0，专用数据库已停止。源快照 `source-manifest.json` 与测试日志一起保留。首轮打包器错误归一化了原有哈希固定 TSV 的换行，导致校验失败；第二轮从 Git 原始 blob 提取未修改文件，保留证据原始字节，未更改价格或摘要校验规则，失败日志也保留。

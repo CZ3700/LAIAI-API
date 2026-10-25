@@ -35,6 +35,7 @@ type Service struct {
 	ArtifactWorker  *videoartifact.Worker
 	ArtifactService *videoartifact.Service
 	Assets          *videoasset.Service
+	workerMetrics   *workerMetrics
 	// Endpoint overrides exist for injected httptest clients only. Production
 	// configuration uses the fixed mainland official endpoint.
 	AllowTestEndpoint bool
@@ -47,7 +48,7 @@ func NewService(db *gorm.DB, kr *crypto.Keyring, secret []byte, log *slog.Logger
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Service{DB: db, Keyring: kr, Secret: append([]byte(nil), secret...), Client: relay.NewGuardedClient(2*time.Minute, false), Log: log, Now: time.Now}
+	s := &Service{DB: db, Keyring: kr, Secret: append([]byte(nil), secret...), Client: relay.NewGuardedClient(2*time.Minute, false), Log: log, Now: time.Now, workerMetrics: newWorkerMetrics()}
 	store, err := invocation.NewVideoStore(db, kr, invocation.VideoStoreOptions{Now: func() time.Time { return s.Now().UTC() }})
 	if err != nil {
 		return nil, err
