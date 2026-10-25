@@ -217,6 +217,10 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 	if err != nil {
 		return err
 	}
+	allowed, err := s.operationMaySend(ctx, op)
+	if err != nil || !allowed {
+		return err
+	}
 	response := client.Delete(ctx, t.UpstreamTaskID)
 	ref, err := s.persistResponse(ctx, t, op, response, client.Credential)
 	if err != nil {

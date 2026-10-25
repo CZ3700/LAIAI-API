@@ -1,27 +1,32 @@
 # LAIAI-NEXT CI gate（移植旧平台 make ci 纪律；目标保持幂等、无时间戳产物）
 GOPROXY ?= https://goproxy.cn,direct
 export GOPROXY
+# CI and local builds use the installed, verified compiler consistently.
+export GOTOOLCHAIN := local
 
 .PHONY: ci test vet build migrate-lint migrate-smoke help
-.PHONY: release-check
+.PHONY: release-check toolchain-check
 
 ci: vet migrate-lint test build ## 完整本地 CI gate（提交前必跑）
 
-vet: ## go vet 全 workspace
+toolchain-check: ## 核验已安装 Go 安全基线（禁止自动下载替代旧编译器）
+	sh scripts/check-go-toolchain.sh
+
+vet: toolchain-check ## go vet 全 workspace
 	cd core && go vet ./...
 	cd relay && go vet ./...
 
-migrate-lint: ## 迁移安全 lint（破坏性 DDL 即 fail；离线无需 DB）
+migrate-lint: toolchain-check ## 迁移安全 lint（破坏性 DDL 即 fail；离线无需 DB）
 	cd core && go run ./cmd/schema-doctor -lint -dir ../migrations
 
-migrate-smoke: ## 真 MySQL 迁移冒烟（需 docker；apply×2 幂等 + schema-doctor 漂移体检）
+migrate-smoke: toolchain-check ## 真 MySQL 迁移冒烟（需 docker；apply×2 幂等 + schema-doctor 漂移体检）
 	sh scripts/mysql-smoke.sh
 
-test: ## 全部测试（纯 Go sqlite，无 CGO）
+test: toolchain-check ## 全部测试（纯 Go sqlite，无 CGO）
 	cd core && go test ./... -count=1
 	cd relay && go test ./... -count=1
 
-build: ## 编译检查（不产出二进制）
+build: toolchain-check ## 编译检查（不产出二进制）
 	cd core && go build ./...
 	cd relay && go build ./...
 

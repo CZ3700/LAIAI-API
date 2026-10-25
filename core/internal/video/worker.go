@@ -40,7 +40,7 @@ func (s *Service) ProcessOnce(ctx context.Context) error {
 		}
 	}
 	var rows []State
-	if err := s.DB.WithContext(ctx).Table("video_task_states AS v").Select("v.*").Joins("JOIN tasks t ON t.task_id = v.task_id AND t.org_id = v.org_id").Where("v.deleted_at IS NULL AND v.next_poll_at <= ? AND t.upstream_task_id <> '' AND (t.status IN ? OR v.billing_state = ?)", s.Now().UTC(), []string{"queued", "running"}, "pending_usage").Order("v.next_poll_at, v.task_id").Limit(40).Scan(&rows).Error; err != nil {
+	if err := s.pendingQueryCandidates(ctx).Order("v.next_poll_at, v.task_id").Limit(40).Scan(&rows).Error; err != nil {
 		return err
 	}
 	for _, st := range rows {
@@ -52,6 +52,13 @@ func (s *Service) ProcessOnce(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) pendingQueryCandidates(ctx context.Context) *gorm.DB {
+	now := s.Now().UTC()
+	// A live lease must not consume the bounded candidate batch while another
+	// query is in flight. pollTask still rechecks and claims under its row lock.
+	return s.DB.WithContext(ctx).Table("video_task_states AS v").Select("v.*").Joins("JOIN tasks t ON t.task_id = v.task_id AND t.org_id = v.org_id").Where("v.deleted_at IS NULL AND v.next_poll_at <= ? AND (v.query_lease_until IS NULL OR v.query_lease_until <= ?) AND t.upstream_task_id <> '' AND (t.status IN ? OR v.billing_state = ?)", now, now, []string{"queued", "running"}, "pending_usage")
 }
 
 func (s *Service) pendingOperationCandidates(ctx context.Context) *gorm.DB {
@@ -119,6 +126,17 @@ func (s *Service) rateTx(tx *gorm.DB, scope uint64, action string, now time.Time
 	}
 	result := tx.Model(&ProviderRate{}).Where("scope_id = ? AND action = ? AND next_allowed_at <= ?", scope, action, now).Update("next_allowed_at", now.Add(time.Second))
 	return result.RowsAffected == 1, result.Error
+}
+
+// operationMaySend rechecks the exact claim after preparation, immediately
+// before the external side effect. Losing this permission is not evidence that
+// an operation was never sent: recovery must retain its unknown/hold barrier.
+// This read cannot make MySQL and HTTP atomic. A process can still pause after
+// it, so lease expiry must never enqueue a second mutating request.
+func (s *Service) operationMaySend(ctx context.Context, op Operation) (bool, error) {
+	var count int64
+	err := s.DB.WithContext(ctx).Model(&Operation{}).Where("org_id = ? AND id = ? AND resource_id = ? AND kind = ? AND status = ? AND version = ? AND attempt_id = ? AND lease_until > ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, s.Now().UTC()).Count(&count).Error
+	return count == 1, err
 }
 
 func (s *Service) processOperation(ctx context.Context, op Operation) error {
@@ -192,6 +210,10 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	client, err := s.clientFor(ctx, t, st)
 	if err != nil {
 		return s.knownUnsent(ctx, t, st, op, "credential_unavailable")
+	}
+	allowed, err := s.operationMaySend(ctx, op)
+	if err != nil || !allowed {
+		return err
 	}
 	// Body was validated, priced and encrypted at acceptance. Never reconstruct
 	// it from today's capability/defaults after a configuration change.
