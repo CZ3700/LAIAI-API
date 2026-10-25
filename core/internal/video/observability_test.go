@@ -66,6 +66,38 @@ func TestWorkerObservabilityConcurrentLiteralAndFixedCardinality(t *testing.T) {
 	}
 }
 
+func TestWorkerObservabilityReportsStickySavePauseWithoutSensitiveCause(t *testing.T) {
+	s := &Service{}
+	before := s.WorkerObservability(context.Background())
+	if before.Runtime.DispatchPaused || before.Runtime.DispatchPauseReason != "" {
+		t.Fatal("fresh process reported a persistence pause")
+	}
+	// Exercise the real failure latch, rather than assigning the internal flag.
+	_, err := s.saveCreateResponse(context.Background(), ExecutionAttempt{}, ark.Result{Body: []byte("private upstream response")}, "private-credential")
+	if !errors.Is(err, ErrResponseSaveUnconfirmed) {
+		t.Fatal("invalid evidence did not report unconfirmed persistence")
+	}
+	if allowed, err := s.operationMaySend(context.Background(), Operation{Kind: "create_task"}); allowed || !errors.Is(err, ErrDispatchPaused) {
+		t.Fatal("paused process attempted another send")
+	}
+	for range 2 {
+		out := s.WorkerObservability(context.Background())
+		if !out.Runtime.DispatchPaused || out.Runtime.DispatchPauseReason != "response_persistence_failed" || out.Runtime.Scope != "process_since_start" {
+			t.Fatal("read-only observation cleared or misrepresented process pause")
+		}
+		if observationCounter(t, out.Runtime, "dispatch_guard", "create_task", "denied") != 1 || observationCounter(t, out.Runtime, "dispatch_guard", "create_task", "db_error") != 0 {
+			t.Fatal("known persistence pause was counted as a new database failure")
+		}
+		body, err := json.Marshal(out)
+		if err != nil || strings.Contains(string(body), "private upstream") || strings.Contains(string(body), "private-credential") {
+			t.Fatal("pause observation leaked captured response or credential")
+		}
+	}
+	if (&Service{}).WorkerObservability(context.Background()).Runtime.DispatchPaused {
+		t.Fatal("process-local pause leaked into an independent service")
+	}
+}
+
 func TestWorkerObservabilityCycleAndDurationSemantics(t *testing.T) {
 	m := newWorkerMetrics()
 	m.startCycle()(nil)

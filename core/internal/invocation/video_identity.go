@@ -48,7 +48,7 @@ func ReadVideoExecutionIdentityTx(tx *gorm.DB, org uint64, payloadID string, exp
 		return out, ErrVideoNotFound
 	}
 	if err != nil {
-		return out, ErrVideoStorage
+		return out, videoStorageFailure(err)
 	}
 	if meta.Purpose != VideoPurposeExecution || meta.Direction != VideoEffectiveRequest {
 		return out, ErrVideoAccessDenied
@@ -93,7 +93,7 @@ func ValidateVideoPayloadReferenceTx(tx *gorm.DB, expected VideoPayloadReference
 		return ErrVideoNotFound
 	}
 	if err != nil {
-		return ErrVideoStorage
+		return videoStorageFailure(err)
 	}
 	if meta.RequestID != expected.RequestID || meta.AttemptID != expected.AttemptID || meta.Direction != expected.Direction || meta.Purpose != expected.Purpose {
 		return ErrVideoConflict
@@ -109,7 +109,7 @@ func ValidateVideoPayloadReferenceTx(tx *gorm.DB, expected VideoPayloadReference
 	case VideoCaptureStaged:
 		var n int64
 		if err := tx.Model(&VideoPayloadStaging{}).Where("payload_id = ?", meta.PayloadID).Count(&n).Error; err != nil {
-			return ErrVideoStorage
+			return videoStorageFailure(err)
 		}
 		if n != 1 {
 			return ErrVideoCorrupt

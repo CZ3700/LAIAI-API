@@ -36,7 +36,7 @@
 | P0-1A 运行时契约固定 | 复用现有 State/Operation，固定 runtime/adapter/protocol/billing-schema，未知格式安全拒绝 | 单 v1 旧新二进制交接；未知版本零发送/零资金动作；配置快照隔离 | [PR #58](https://github.com/CZ3700/LAIAI-API/pull/58) 七项门禁通过后已合入 main `fa1cfef`；未发布生产；见第 5.3 节 |
 | P0-1B R2 补充与凭据接管 | 明确拒绝/缺 ID/未知状态的完整持久化矩阵；同账号项目凭据接管与请求头隔离 | 不扩大退款依据；凭据接管需证明目标身份；多版本退役演练在实际 V2 前完成 | 待实施；P0-1A 的活动配置隔离不等于在途凭据迁移 |
 | P0-2A1 创建响应收件箱 | 不可变执行登记、独立响应保存、同 attempt 恢复、legacy 分流；默认关闭 | CAS/取消/删除竞态、重复/矛盾证据、无响应过期、历史关闭、真实迁移与账务不变 | [PR #59](https://github.com/CZ3700/LAIAI-API/pull/59) 七项 CI、真实二进制交接及 Mock 通过，已合入 main `9552e2b`；迁移 0128；写开关仍默认关闭 |
-| P0-2A1.1 持久化失败控制 | 同一证据有界重试、保存失败停止后续发送、关库前等待在途保存 | 不重发上游、不把未提交响应标为已保存；数据库恢复/关机故障用例 | 基于 main `9552e2b` 在 `codex/rc46-response-persistence` 开发与交叉审查；未完成前不得启用生产 inbox 新写入 |
+| P0-2A1.1 持久化失败控制 | 同一证据有界重试、保存失败停止后续发送、关库前等待在途保存 | 不重发上游、不把未提交响应标为已保存；数据库恢复/关机故障用例 | [PR #60](https://github.com/CZ3700/LAIAI-API/pull/60) 七项 CI 全绿，已合入 main `c2cebf6`；隔离 R2 证据见第 5.6 节，A2 未完成前不开生产新写入 |
 | P0-2A2/B 故障恢复后续 | 取消/删除/交付收件箱、完整兼容演练；随后数据库时间/fence、独立结算 | A1 完成后逐批；完整 R3 崩溃点/双 Worker/超 hold、零资金差异 | 待实施，A1 不等于整个 P0-2 完成 |
 | P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | G1-A 隔离验收 R2+R3 完成，独立 PR 待最新 CI；G1-B 管理 HTTP/宿主桥接仍待实施 |
 | P0-G2 全入口授权 | 同一有效模型/组解析器覆盖目录、报价、创建、重试、派发复核；撤权强校验 | 全入口拒绝矩阵；已发送任务继续查询结算；空 subset 拒绝 | 待实施，依赖 G1 |
@@ -169,6 +169,26 @@ R3 `make vet`、`make ci`、迁移重放和 doctor 全通过。账单管理、�
 
 R3 证据目录 `/var/lib/laiai-artifacts/rc46-g1-20261026-r3/`，`ci.log` SHA-256 `541073ff4fdffa7a7196830c5d63e575763d0e984163ac1077f70be1365212b8`。runner 退出0、专用数据库停止，官方调用与费用0、生产未操作。最终提交业务/测试必须与 R3 清单一致，只有补充验收文档可不同；合入仍须该提交的最新 GitHub 门禁。
 
+## 5.6 P0-2A1.1 持久化失败控制验收
+
+基线 main `9552e2bfd2b0dae534e775c07a4933c508ab0082`。前序 [PR #59](https://github.com/CZ3700/LAIAI-API/pull/59) 的最终 head `800446272589d81c65033f89e04d5973210f7f92` 已完成干净检出的旧 `ceecb12`/新二进制交接与十任务 Mock：旧任务八条、额外 HTTP=0、新结算=2、drift=0；Mock POST=10/GET=30、p95=12.608 秒、冻结8.64/扣款0.008/释放8.632 USD、剩余冻结0。七项 GitHub CI run `40227899238` 全绿后合入上述 main。证据目录 `/var/lib/laiai-artifacts/rc46-p2a-clean/`；兼容报告 SHA-256 `bbf840166e919b302fc5f30b6208da341a7015467f624fe4af7379a21da1c6ba`，Mock 报告 `844b6a5b838b1f26a2b91e00dd98ad52a00093c1cf0d4be9c66fd363ac32846e`。该证明不代替 A2 的动作收件箱兼容。
+
+A1.1 使用同主库身份的独立两连接证据池、一次 prepare/三次有界追加、保存失败后的进程发送暂停，以及主程序 HTTP/后台任务/Recorder 的有界退出。默认仍关闭新创建登记；本批没有新增迁移，也没有生产启用、调价或真实官方请求。
+
+| 验收 | 实际结果与限制 |
+| --- | --- |
+| 完整检查 | Go 1.26.10、固定 MySQL 8.4.9；`make vet`、`make ci` 通过；0128 中断恢复、正式迁移及 doctor 通过 |
+| 故障重试与恢复 | 22 个既有 inbox + 10 个 persistence 顶层真实 MySQL 用例连续两轮 race 通过，165.891 秒；保存池耗尽不拖住主池、取消调用方仍保存、永久身份错误不重试、已应用失败不暂停、最终发送检查与已选批次暂停均覆盖 |
+| 提交确认丢失 | 测试 wrapper 真正提交后返回一次 EOF，同 prepared 证据重试只保留一份回执；这是应用层确认丢失模拟，不冒充网络代理断包实验 |
+| 全套集成 | video/videoasset/server 的 `TestMySQL` 通过（154.152/0.806/10.387 秒），六领域 race 通过（video 194.521 秒）；Ark Runtime 协议用例两轮通过。名称为 `TestArkBillMySQL` 的既有管理账单测试由并行 G1 修复线补齐选择，不能将此处前缀测试声称覆盖它 |
+| 关机 | Linux `cmd/core -race` 通过，包含真实 SIGTERM 子进程：完成排空退出0、超时退出非0；既有派生 metadata goroutine 仍不在承诺范围，因此不提前关闭 SQL 池 |
+| 资源与费用 | runner 退出0、保留的专用数据库已停止；全部 Mock/合成数据，官方调用与费用为0，生产未变更；不证明500在途能力 |
+
+R2 于 `2026-10-25T20:56:13Z` 完成，源码快照 SHA-256 `db24e61f0d41709a65f3a65f009c912802c4875f7d9ff475be8ace20472e5feb`，目录 `laiai-release:/var/lib/laiai-artifacts/rc46-p2a11-20261026-r2/`，`ci.log` SHA-256 `c28d3358ca4a67f77d7264c1ad4ec1011165fa7ae084b6be428f438f020494c4`。
+
+R1 失败证据保留：源码 SHA-256 `1395d5dc7b614e9dbd5ada67928efb0e05130a89665427dcca09846a0d37e58b`，日志 `/var/lib/laiai-artifacts/rc46-p2a11-20261026-r1/ci.log` SHA-256 `f5b7e714e5f53e75af2ff9082efb5b771958625a3cf8bc5544c4b75d6fef4c3a`。32 个顶层故障测试中只有队列优先级 fixture 在同一已执行 GORM 链追加 JOIN，导致1066别名重复；最小修复每次从新链构造同一真实谓词，不清库、不改 LIMIT/资金/HTTP 断言。R2 保留 R1 的数据库积压，先将该用例两轮 race，再跑全矩阵和回归。最终提交只允许本执行记录与测试源包不同，业务与测试逐文件核验后进入 PR CI。
+
+A1.1 最终提交 `17370ce9ad05aa5464578bc03abbca062d31d4c3` 的 GitHub CI run `40233532964` 七项全绿（包括真实旧新二进制交接与 Mock），随后 [PR #60](https://github.com/CZ3700/LAIAI-API/pull/60) 合入 main `c2cebf6c57adc950ae66dd5de2cfd8ea6cd34c90`；生产未变更。
 
 ## 6. 500 容量验收边界
 

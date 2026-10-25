@@ -41,6 +41,8 @@ services:
     networks: [laiai]
 
   core:
+    # Main drains HTTP, managed jobs and Recorder within 45s. Leave room for exit.
+    stop_grace_period: 60s
     # WS-3 多实例：无 container_name → 可 `docker compose up -d --scale core=N` 起多副本。
     # Caddy 用 dynamic DNS（服务名 core）轮询所有副本；后台 job 用 Redis leader 租约只在一个副本跑；
     # 迁移用 MySQL GET_LOCK 串行化（N 个副本启动只一个真正迁移）。多实例务必配 LAIAI_REDIS_ADDR

@@ -118,6 +118,8 @@ jobs:
         run: go -C core test -race ./internal/server -run '^(TestArkBillMySQL|TestAuthRateLimit$|TestRealtime(WriteDeadlineDoS|IdleTimeout)$)' -count=1 -timeout=3m
       - name: Ark concurrency and Linux storage checks
         run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=10m
+      - name: Main lifecycle HTTP and SIGTERM drain checks
+        run: go -C core test -race ./cmd/core -count=1 -timeout=3m -v
 
   ark-mock-baseline:
     runs-on: ubuntu-latest
