@@ -24,6 +24,7 @@ func (s *Server) registerRoutingGroupsAdmin(parent *gin.RouterGroup) {
 	g.PUT("/:id/channels/:channel_id", s.routingAdminBind)
 	g.DELETE("/:id/channels/:channel_id", s.routingAdminUnbind)
 	g.POST("/:id/impact-preview", s.routingAdminPreview)
+	s.registerRoutingGroupsOrgAdmin(parent)
 }
 
 type routingAdminGroupDTO struct {
