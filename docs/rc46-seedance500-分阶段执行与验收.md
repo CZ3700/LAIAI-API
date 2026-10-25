@@ -143,6 +143,8 @@ R3 补齐同任务创建身份核对屏障：普通查询与恢复在候选 LIMI
 
 该轮随后同库全套 MySQL 失败，不能计为完整验收通过：`StaleProducerCannotApplyConflictOrDowngradeAppliedReceipt` 假定自己的新回执必定进入全局 30 项恢复窗口，而前序故障夹具的 `blocked` 回执已经过退避期限、重新排在其前。修复仅安排本测试回执在当前合格队列前并断言入选，保留原状态/资金/HTTP 断言；不改变业务 LIMIT、不清库、不修改其他组织。R4 继续复用 R3 隔离库及其积压验证。R3 日志保留于 `/var/lib/laiai-artifacts/rc46-p2a-20261026-r3/ci.log`，SHA-256 为 `6b96387fc80cf710853b7e71ff3a4e8ef2cd7eec47af96d9645a0dedb2f08a7b`。
 
+R4 于 `2026-10-25T19:47:50Z` 全部通过，源包 SHA-256 为 `536cbf56d4661f4336404dd5106cdd7c33a81add6c25eb11b1cbb58e86739449`，对应实现提交 `8890e9f1aea3e6638ef76bdf76864b959a20b8fb` 的 872 个文件逐项完全一致。该轮保留 R3 专用库和既有积压，先将修复用例连续两轮 race，再执行完整 video/videoasset/server MySQL 和六领域 race，均通过；重新运行 `make vet`、`make ci` 与 schema-doctor 亦通过。完整视频 MySQL 127.103 秒，视频 race 161.012 秒。证据目录 `/var/lib/laiai-artifacts/rc46-p2a-20261026-r4/`，`ci.log` SHA-256 为 `00f48812aba581330b5cb2c164f9d653ad98571b82ba28576adb9ff93d884e66`。专用数据库已停止，官方调用和费用为零；该结果仍不代替干净提交的旧新二进制/Mock 验收与最新 PR CI。
+
 ## 6. 500 容量验收边界
 
 - 容量单位是 accepted/submitting/unknown/queued/running 的未终态任务。初始建议值不是已核验配额：2 Core + 2 Worker、每 Worker submit=8/query=32、租约45秒/心跳10秒、Query目标周期20秒、平台队列1000/等待15分钟。
