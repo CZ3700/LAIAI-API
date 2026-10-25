@@ -149,6 +149,9 @@ func arkBillMySQLFixture(t *testing.T, status string) *arkBillFixture {
 			return e
 		}
 		state := video.State{TaskID: f.taskID, OrgID: org.ID, CreateRequestID: "request-" + f.uid, ProviderScopeID: scope.ID, BillingState: "pending_usage", SyncState: "healthy", ArtifactStatus: "pending", RowVersion: 1, BillingSnapshotID: res.Snapshot.ID, CreatedAt: f.now, UpdatedAt: f.now, NextPollAt: f.now.Add(time.Hour)}
+		contract := videoruntime.LegacyV1()
+		state.RuntimeVersion, state.AdapterVersion = contract.RuntimeVersion, contract.AdapterVersion
+		state.ProtocolContractVersion, state.BillingSchemaVersion = contract.ProtocolContractVersion, contract.BillingSchemaVersion
 		if e = tx.Create(&state).Error; e != nil {
 			return e
 		}
@@ -273,6 +276,77 @@ func TestArkBillMySQLReviewedImportSettlementAndAdjustment(t *testing.T) {
 	f.balances(t, "99.352", "0")
 	// Cross-Org paths cannot bind a known official line to another account.
 	f.call(t, 0, "POST", fmt.Sprintf("/orgs/%d/adjustments/%d/apply", f.org+1000000, pid), gin.H{}, 404)
+}
+
+func TestArkBillMySQLUnsupportedRuntimeKeepsFunds(t *testing.T) {
+	f := arkBillMySQLFixture(t, "succeeded")
+	n := int64(54000)
+	line := f.importSource(t, f.upload(t, f.row(&n, 1, "2.484")), 1)
+	contract := videoruntime.LegacyV1()
+	versions := []struct{ column, supported string }{
+		{"runtime_version", contract.RuntimeVersion}, {"adapter_version", contract.AdapterVersion},
+		{"protocol_contract_version", contract.ProtocolContractVersion}, {"billing_schema_version", contract.BillingSchemaVersion},
+	}
+	// Snapshot all task-local financial effects, not just a cached balance.
+	snapshot := func(t *testing.T) string {
+		t.Helper()
+		var accounts []ledger.Account
+		arkBillMust(t, f.db.Where("org_id = ?", f.org).Order("id").Find(&accounts).Error)
+		var accountIDs []uint64
+		for _, account := range accounts {
+			accountIDs = append(accountIDs, account.ID)
+		}
+		var journal []ledger.JournalEntry
+		arkBillMust(t, f.db.Where("account_id IN ?", accountIDs).Order("id").Find(&journal).Error)
+		var hold ledger.Hold
+		arkBillMust(t, f.db.First(&hold, f.holdID).Error)
+		var tk task.Task
+		arkBillMust(t, f.db.Where("org_id = ? AND task_id = ?", f.org, f.taskID).Take(&tk).Error)
+		var st video.State
+		arkBillMust(t, f.db.Where("org_id = ? AND task_id = ?", f.org, f.taskID).Take(&st).Error)
+		var entries []videobilling.BillingEntry
+		arkBillMust(t, f.db.Where("org_id = ? AND task_id = ?", f.org, f.taskID).Order("id").Find(&entries).Error)
+		var events []video.Event
+		arkBillMust(t, f.db.Where("org_id = ? AND task_id = ?", f.org, f.taskID).Order("id").Find(&events).Error)
+		var outbox []video.Outbox
+		arkBillMust(t, f.db.Where("org_id = ? AND task_id = ?", f.org, f.taskID).Order("event_id").Find(&outbox).Error)
+		raw, err := json.Marshal([]any{accounts, journal, hold, tk, st, entries, events, outbox})
+		arkBillMust(t, err)
+		return string(raw)
+	}
+	for _, version := range versions {
+		for _, bad := range []string{"", "future-unsupported-v999"} {
+			name := version.column + "/unknown"
+			if bad == "" {
+				name = version.column + "/empty"
+			}
+			t.Run(name, func(t *testing.T) {
+				arkBillMust(t, f.db.Model(&video.State{}).Where("org_id = ? AND task_id = ?", f.org, f.taskID).Update(version.column, bad).Error)
+				t.Cleanup(func() {
+					arkBillMust(t, f.db.Model(&video.State{}).Where("org_id = ? AND task_id = ?", f.org, f.taskID).Update(version.column, version.supported).Error)
+				})
+				before := snapshot(t)
+				response := f.call(t, 0, "POST", f.taskPath("settle-bill"), gin.H{"line_id": line}, 409)
+				var failure struct {
+					Code string `json:"code"`
+				}
+				arkBillMust(t, json.Unmarshal(response["error"], &failure))
+				if failure.Code != "runtime_contract_unsupported" || snapshot(t) != before {
+					t.Fatal("unsupported contract did not preserve task, hold, journal and outbox")
+				}
+				f.balances(t, "100", "0.864")
+			})
+		}
+	}
+	// The same reviewed evidence becomes usable when the exact supported
+	// contract is restored, and replay must still settle only once.
+	f.call(t, 0, "POST", f.taskPath("settle-bill"), gin.H{"line_id": line}, 200)
+	f.balances(t, "99.568", "0")
+	settled := snapshot(t)
+	f.call(t, 1, "POST", f.taskPath("settle-bill"), gin.H{"line_id": line}, 200)
+	if snapshot(t) != settled {
+		t.Fatal("settlement replay changed financial effects")
+	}
 }
 
 func TestArkBillMySQLUnknownUsageAndUnknownSubmissionRemainHeld(t *testing.T) {

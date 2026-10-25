@@ -59,7 +59,10 @@ func (s *Service) validateResponseHashVersionTx(tx *gorm.DB, version string) err
 	}
 	var row HashVersion
 	if err := tx.Where("version = ?", version).Take(&row).Error; err != nil {
-		return ErrUnavailable
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrUnavailable
+		}
+		return responseStorageFailure(err)
 	}
 	if !hmac.Equal([]byte(row.Fingerprint), []byte(digest(s.Secret, "version-fingerprint:v1"))) {
 		return ErrUnavailable
@@ -313,16 +316,22 @@ func (s *Service) appendResponseReceipt(ctx context.Context, p *preparedResponse
 	if s == nil || s.DB == nil || s.Evidence == nil || ctx == nil || p == nil || p.payload == nil || p.receipt.PayloadRef != p.payload.PayloadID() || !hmac.Equal([]byte(p.seal), []byte(s.responsePreparationSeal(p))) {
 		return out, ErrInvalid
 	}
-	if _, inTransaction := s.DB.Statement.ConnPool.(gorm.TxCommitter); inTransaction {
+	if s.responseDB == nil || s.responseDB.Statement == nil {
 		return out, ErrUnavailable
 	}
-	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if _, inTransaction := s.responseDB.Statement.ConnPool.(gorm.TxCommitter); inTransaction {
+		return out, ErrUnavailable
+	}
+	err := s.responseDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var registered ExecutionAttempt
 		// This is the first read: serialize responses for this immutable
 		// registration before establishing the RR snapshot. A duplicate then
 		// sees the complete committed winner, including Invocation metadata.
 		if err := locked(tx).Where("org_id = ? AND attempt_id = ?", p.attempt.OrgID, p.attempt.AttemptID).Take(&registered).Error; err != nil {
-			return ErrConflict
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrConflict
+			}
+			return responseStorageFailure(err)
 		}
 		if err := s.validateResponseHashVersionTx(tx, p.attempt.EvidenceHMACVersion); err != nil {
 			return err
@@ -346,14 +355,20 @@ func (s *Service) appendResponseReceipt(ctx context.Context, p *preparedResponse
 			// Current locking read sees a concurrent winner after the unique-key
 			// wait, rather than this transaction's earlier registration snapshot.
 			if err := locked(tx).Where("org_id = ? AND attempt_id = ? AND evidence_hmac_version = ? AND evidence_hmac = ?", candidate.OrgID, candidate.AttemptID, candidate.EvidenceHMACVersion, candidate.EvidenceHMAC).Take(&out).Error; err != nil {
-				return ErrConflict
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrConflict
+				}
+				return responseStorageFailure(err)
 			}
 			if !sameResponseEvidence(out, candidate) {
 				return ErrConflict
 			}
 			var app ReceiptApplication
 			if err := locked(tx).Where("receipt_id = ? AND org_id = ? AND task_id = ? AND attempt_id = ?", out.ReceiptID, out.OrgID, out.TaskID, out.AttemptID).Take(&app).Error; err != nil {
-				return ErrConflict
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrConflict
+				}
+				return responseStorageFailure(err)
 			}
 			if app.Version == 0 {
 				return ErrConflict
@@ -387,7 +402,7 @@ func (s *Service) appendResponseReceipt(ctx context.Context, p *preparedResponse
 		return nil
 	})
 	if err != nil {
-		return ResponseInbox{}, err
+		return ResponseInbox{}, responseStorageFailure(err)
 	}
 	return out, nil
 }

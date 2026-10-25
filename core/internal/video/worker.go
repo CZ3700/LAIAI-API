@@ -34,9 +34,11 @@ func (s *Service) ProcessOnce(ctx context.Context) (err error) {
 	var ops []Operation
 	// Pick at most one eligible operation per provider scope/action. Waiting
 	// cancels and an account's backlog cannot monopolize the bounded batch.
-	queued := s.pendingOperationCandidates(ctx)
-	if err := s.DB.WithContext(ctx).Table("(?) AS eligible", queued).Where("scope_rank = 1").Order("created_at, id").Limit(20).Find(&ops).Error; err != nil {
-		return err
+	if !s.DispatchPaused() {
+		queued := s.pendingOperationCandidates(ctx)
+		if err := s.DB.WithContext(ctx).Table("(?) AS eligible", queued).Where("scope_rank = 1").Order("created_at, id").Limit(20).Find(&ops).Error; err != nil {
+			return err
+		}
 	}
 	m.mu.Lock()
 	m.operationCandidates += uint64(len(ops))
@@ -44,6 +46,11 @@ func (s *Service) ProcessOnce(ctx context.Context) (err error) {
 	for _, op := range ops {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		// A previous response in this same batch may have failed to persist.
+		// Stop new mutations, but still query/recover already submitted tasks.
+		if s.DispatchPaused() {
+			break
 		}
 		if err := s.processOperation(ctx, op); err != nil {
 			m.mu.Lock()
@@ -164,6 +171,10 @@ func (s *Service) rateTx(tx *gorm.DB, scope uint64, action string, now time.Time
 // This read cannot make MySQL and HTTP atomic. A process can still pause after
 // it, so lease expiry must never enqueue a second mutating request.
 func (s *Service) operationMaySend(ctx context.Context, op Operation) (bool, error) {
+	if s.DispatchPaused() {
+		s.observeGuard(op.Kind, false, ErrDispatchPaused)
+		return false, ErrDispatchPaused
+	}
 	if op.Kind == "create_task" {
 		// A failed asset/budget/input check is not permission to interpret an
 		// unknown execution format as definitely unsent. Metadata is checked
@@ -185,13 +196,25 @@ func (s *Service) operationMaySend(ctx context.Context, op Operation) (bool, err
 	// operation must not use an earlier successful check to authorize a send.
 	var count int64
 	err := supportedOperationRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("o.org_id = ? AND o.id = ? AND o.resource_id = ? AND o.kind = ? AND o.status = ? AND o.version = ? AND o.attempt_id = ? AND o.lease_until > ? AND o.runtime_version = ? AND o.adapter_version = ? AND o.protocol_contract_version = ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, s.Now().UTC(), op.RuntimeVersion, op.AdapterVersion, op.ProtocolContractVersion).Count(&count).Error
+	// The database read can block while another goroutine fails to save a
+	// response. Recheck the process latch after it, at the send boundary.
+	if err == nil && s.DispatchPaused() {
+		s.observeGuard(op.Kind, false, ErrDispatchPaused)
+		return false, ErrDispatchPaused
+	}
 	s.observeGuard(op.Kind, count == 1, err)
 	return count == 1, err
 }
 
 func (s *Service) processOperation(ctx context.Context, op Operation) error {
+	if s.DispatchPaused() {
+		return ErrDispatchPaused
+	}
 	if op.Kind != "create_task" {
 		return s.processMutation(ctx, op)
+	}
+	if s.ResponseInboxEnabled && s.responseDB == nil {
+		return ErrUnavailable
 	}
 	var t task.Task
 	var st State
@@ -209,6 +232,9 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 		t, st, e = loadTask(tx, op.OrgID, op.ResourceID, true)
 		if e != nil {
 			return e
+		}
+		if s.DispatchPaused() {
+			return ErrDispatchPaused
 		}
 		if e = requireCurrentOperationRuntimeTx(tx, st, op); e != nil {
 			return e
@@ -231,6 +257,9 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 			if e != nil || !allowed {
 				return e
 			}
+		}
+		if s.DispatchPaused() {
+			return ErrDispatchPaused
 		}
 		expires := now.Add(3 * time.Minute)
 		update := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND status = ? AND version = ?", op.OrgID, op.ID, "pending", op.Version).Updates(map[string]any{"status": "in_flight", "version": op.Version + 1, "attempt_id": attemptID, "lease_until": expires, "updated_at": now})
@@ -291,20 +320,13 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	response := client.Submit(ctx, ark.NormalizedRequest{Body: body, PublicModel: t.Model, UpstreamModel: st.UpstreamModel, CapabilityVersion: st.CapabilityVersion})
 	s.observeAdapterCall("submit", response, callStarted)
 	if executionAttempt.AttemptID != "" {
-		// The caller may have been cancelled after Ark accepted the request.
-		// Persist under a bounded internal context, independently of application
-		// CAS and the producer's now possibly expired claim.
-		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		prepared, err := s.prepareResponseReceipt(executionAttempt, response, client.Credential)
+		// Saving owns its bounded, cancellation-independent retry window. A
+		// cancelled application may defer to recovery; it cannot undo evidence.
+		receipt, err := s.saveCreateResponse(ctx, executionAttempt, response, client.Credential)
 		if err != nil {
 			return err
 		}
-		receipt, err := s.appendResponseReceipt(saveCtx, prepared)
-		if err != nil {
-			return err
-		}
-		return s.applyClaimedCreateInbox(saveCtx, op, receipt.ReceiptID)
+		return s.applyClaimedCreateInbox(ctx, op, receipt.ReceiptID)
 	}
 	if response.Outcome == ark.OutcomeNotSent {
 		return s.knownUnsent(ctx, t, st, op, "request_not_sent")

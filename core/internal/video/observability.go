@@ -46,6 +46,8 @@ type WorkerDuration struct {
 
 type WorkerRuntimeObservation struct {
 	Scope                string           `json:"scope"`
+	DispatchPaused       bool             `json:"dispatch_paused"`
+	DispatchPauseReason  string           `json:"dispatch_pause_reason"`
 	StartedAt            time.Time        `json:"started_at"`
 	LastCycleStartedAt   *time.Time       `json:"last_cycle_started_at"`
 	LastCycleCompletedAt *time.Time       `json:"last_cycle_completed_at"`
@@ -219,7 +221,7 @@ func (s *Service) observeGuard(kind string, allowed bool, err error) {
 	m := s.metrics()
 	k := workerEnumIndex(kind, workerGuardKinds[:])
 	o := 1
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrDispatchPaused) {
 		o = 2
 	} else if allowed {
 		o = 0
@@ -293,6 +295,10 @@ func (m *workerMetrics) runtimeSnapshot() WorkerRuntimeObservation {
 func (s *Service) WorkerObservability(ctx context.Context) WorkerObservabilitySnapshot {
 	m := s.metrics()
 	out := WorkerObservabilitySnapshot{SchemaVersion: 1, ObservedAt: time.Now().UTC(), Runtime: m.runtimeSnapshot(), Database: s.databaseObservation(ctx, m)}
+	out.Runtime.DispatchPaused = s.DispatchPaused()
+	if out.Runtime.DispatchPaused {
+		out.Runtime.DispatchPauseReason = "response_persistence_failed"
+	}
 	if s.DB != nil {
 		if db, err := s.DB.DB(); err == nil {
 			stats := db.Stats()

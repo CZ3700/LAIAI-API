@@ -1,6 +1,9 @@
 package server
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -10,21 +13,45 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/relay"
+	"github.com/laiai/laiai-next/core/internal/routinggroup"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 type createKeyReq struct {
-	EnableVideoAsync bool     `json:"enable_video_async"`
-	Name             string   `json:"name"`
-	Scopes           string   `json:"scopes"`
-	ExpiresInDays    int      `json:"expires_in_days"` // 0 = 永不过期
-	QuotaLimit       string   `json:"quota_limit"`     // 累计消费上限 USD，空/0=无限
-	ModelLimits      []string `json:"model_limits"`    // 模型白名单，空=不限
-	AllowIPs         string   `json:"allow_ips"`       // IP 白名单（逗号/换行），空=不限
-	RPMLimit         int      `json:"rpm_limit"`       // key 级每分钟请求上限，0=不限（0041）
-	RoutePolicy      string   `json:"route_policy"`    // key 级路由策略（0043）：''|order|latency|throughput|price
+	EnableVideoAsync bool            `json:"enable_video_async"`
+	Name             string          `json:"name"`
+	Scopes           string          `json:"scopes"`
+	ExpiresInDays    int             `json:"expires_in_days"` // 0 = 永不过期
+	QuotaLimit       string          `json:"quota_limit"`     // 累计消费上限 USD，空/0=无限
+	ModelLimits      []string        `json:"model_limits"`    // 模型白名单，空=不限
+	AllowIPs         string          `json:"allow_ips"`       // IP 白名单（逗号/换行），空=不限
+	RPMLimit         int             `json:"rpm_limit"`       // key 级每分钟请求上限，0=不限（0041）
+	RoutePolicy      string          `json:"route_policy"`    // key 级路由策略（0043）：''|order|latency|throughput|price
+	ModelAccessMode  json.RawMessage `json:"model_access_mode"`
+	RoutingGroupID   json.RawMessage `json:"routing_group_id"`
+}
+
+func (r createKeyReq) routing() (*string, *uint64, error) {
+	var mode *string
+	var group *uint64
+	if len(r.ModelAccessMode) != 0 {
+		var value string
+		if bytes.Equal(bytes.TrimSpace(r.ModelAccessMode), []byte("null")) || json.Unmarshal(r.ModelAccessMode, &value) != nil {
+			return nil, nil, identity.ErrModelAccessMode
+		}
+		mode = &value
+	}
+	if len(r.RoutingGroupID) != 0 && !bytes.Equal(bytes.TrimSpace(r.RoutingGroupID), []byte("null")) {
+		var value uint64
+		if json.Unmarshal(r.RoutingGroupID, &value) != nil {
+			return nil, nil, identity.ErrRoutingGroup
+		}
+		group = &value
+	}
+	_, err := identity.ValidateKeyRouting(mode, group, joinTrim(r.ModelLimits))
+	return mode, group, err
 }
 
 func (s *Server) createKey(c *gin.Context) {
@@ -34,6 +61,17 @@ func (s *Server) createKey(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	mode, group, err := req.routing()
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, identity.ErrGroupRoutingDisabled) {
+			status = http.StatusConflict
+		}
+		c.AbortWithStatusJSON(status, gin.H{"error": err.Error(), "code": err.Error()})
+		return
+	}
+	requestID := rand.Text()
+	c.Header("X-Request-ID", requestID)
 	var expires *time.Time
 	if req.ExpiresInDays > 0 {
 		t := s.now().AddDate(0, 0, req.ExpiresInDays)
@@ -61,7 +99,7 @@ func (s *Server) createKey(c *gin.Context) {
 		fail(c, 400, "enable_video_async requires video write scope")
 		return
 	}
-	err := s.db.Transaction(func(tx *gorm.DB) error {
+	err = s.db.Transaction(func(tx *gorm.DB) error {
 		// Serialize key admission and first-time policy creation with admin policy writes.
 		var org identity.Organization
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", claims.OrgID).Take(&org).Error; err != nil {
@@ -83,12 +121,14 @@ func (s *Server) createKey(c *gin.Context) {
 		plaintext, key, err = identity.IssueKey(tx, identity.IssueKeyInput{
 			OrgID: claims.OrgID, UserID: &uid,
 			Name: req.Name, Scopes: req.Scopes, ExpiresAt: expires,
-			QuotaLimit:  quota,
-			ModelLimits: joinTrim(req.ModelLimits),
-			AllowIPs:    req.AllowIPs,
-			RPMLimit:    req.RPMLimit,
-			RoutePolicy: req.RoutePolicy,
-			MaxKeys:     ent.MaxAPIKeys, // entitlements 上限（红线：原子在 IssueKey 内强制）
+			QuotaLimit:      quota,
+			ModelLimits:     joinTrim(req.ModelLimits),
+			AllowIPs:        req.AllowIPs,
+			RPMLimit:        req.RPMLimit,
+			RoutePolicy:     req.RoutePolicy,
+			MaxKeys:         ent.MaxAPIKeys, // entitlements 上限（红线：原子在 IssueKey 内强制）
+			ModelAccessMode: mode, RoutingGroupID: group,
+			PolicyAudit: routinggroup.Audit{ActorUserID: claims.UserID, RequestID: requestID},
 		})
 		return err
 	})
@@ -124,7 +164,9 @@ func (s *Server) listKeys(c *gin.Context) {
 			"scopes": k.Scopes, "status": k.Status, "expires_at": k.ExpiresAt,
 			"quota_limit": k.QuotaLimit, "used_amount": k.UsedAmount,
 			"model_limits": k.ModelLimits, "allow_ips": k.AllowIPs, "rpm_limit": k.RPMLimit,
-			"route_policy": k.RoutePolicy,
+			"route_policy":     k.RoutePolicy,
+			"routing_group_id": k.RoutingGroupID, "model_access_mode": k.ModelAccessMode, "policy_version": k.PolicyVersion,
+			"grouped_key_issuance_enabled": false,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"keys": out})
@@ -155,7 +197,7 @@ func (s *Server) revokeKey(c *gin.Context) {
 		return
 	}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		return identity.RevokeKey(tx, k.ID)
+		return identity.RevokeKeyWithAudit(tx, k.ID, claims.OrgID, routinggroup.Audit{ActorUserID: claims.UserID, RequestID: rand.Text()})
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, "revoke failed")
 		return

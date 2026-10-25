@@ -6,9 +6,12 @@ package server
 // 真机形态验证走 env 门控 smoke（真实 OpenAI Realtime key 待补）。
 
 import (
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,11 +21,51 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// httptest.Server.Close does not wait for hijacked WebSocket handlers. Track
+// the outer handler until pumpRealtime has joined both relay directions. A
+// failed drain fails the test and deliberately does not run afterDrain (which
+// may restore a package variable still being read by the unfinished pump).
+func newRealtimeTestServer(t *testing.T, handler http.Handler, afterDrain ...func()) *httptest.Server {
+	t.Helper()
+	var mu sync.Mutex
+	var handlers sync.WaitGroup
+	sealed := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if sealed {
+			mu.Unlock()
+			http.Error(w, "test server closing", http.StatusServiceUnavailable)
+			return
+		}
+		handlers.Add(1)
+		mu.Unlock()
+		defer handlers.Done()
+		// Preserve the original ResponseWriter's Hijacker/Flusher interfaces.
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		mu.Lock()
+		sealed = true
+		mu.Unlock()
+		done := make(chan struct{})
+		go func() { srv.Close(); handlers.Wait(); close(done) }()
+		select {
+		case <-done:
+			for _, restore := range afterDrain {
+				restore()
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("realtime test handler did not finish; package settings were not restored")
+		}
+	})
+	return srv
+}
+
 // newMockRealtimeUpstream：模拟 OpenAI Realtime 上游 WS。onRecv 决定每收到一帧后回什么。
 func newMockRealtimeUpstream(t *testing.T, onRecv func(recv []byte) (reply string, closeAfter bool)) *httptest.Server {
 	t.Helper()
 	up := gws.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return newRealtimeTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := up.Upgrade(w, r, nil)
 		if err != nil {
 			return
@@ -76,8 +119,7 @@ const rtDoneFixture = `{"type":"response.done","response":{"usage":{` +
 
 func TestRealtimeHappyPathBilling(t *testing.T) {
 	srv, db := setupRelayServer(t)
-	laiai := httptest.NewServer(srv.engine)
-	defer laiai.Close()
+	laiai := newRealtimeTestServer(t, srv.engine)
 	up := newMockRealtimeUpstream(t, func([]byte) (string, bool) { return rtDoneFixture, false })
 	defer up.Close()
 	setupRealtimeChannel(t, srv, up.URL, "gpt-realtime")
@@ -121,8 +163,7 @@ func TestRealtimeHappyPathBilling(t *testing.T) {
 // 浏览器式握手：key 走 Sec-WebSocket-Protocol 的 openai-insecure-api-key. 段。
 func TestRealtimeSubprotocolAuth(t *testing.T) {
 	srv, _ := setupRelayServer(t)
-	laiai := httptest.NewServer(srv.engine)
-	defer laiai.Close()
+	laiai := newRealtimeTestServer(t, srv.engine)
 	up := newMockRealtimeUpstream(t, func([]byte) (string, bool) { return rtDoneFixture, false })
 	defer up.Close()
 	setupRealtimeChannel(t, srv, up.URL, "gpt-realtime")
@@ -146,8 +187,7 @@ func TestRealtimeSubprotocolAuth(t *testing.T) {
 // 建连预检：余额为 0 → 402，不 upgrade。
 func TestRealtimeInsufficientBalancePreCheck(t *testing.T) {
 	srv, _ := setupRelayServer(t)
-	laiai := httptest.NewServer(srv.engine)
-	defer laiai.Close()
+	laiai := newRealtimeTestServer(t, srv.engine)
 	up := newMockRealtimeUpstream(t, func([]byte) (string, bool) { return "", false })
 	defer up.Close()
 	setupRealtimeChannel(t, srv, up.URL, "gpt-realtime")
@@ -166,8 +206,7 @@ func TestRealtimeInsufficientBalancePreCheck(t *testing.T) {
 // fail-closed：realtime 模型未配音频价 → 建连 400 拒绝（防音频按文本价漏收 10-20×，对抗 review）。
 func TestRealtimeRequiresAudioPricing(t *testing.T) {
 	srv, _ := setupRelayServer(t)
-	laiai := httptest.NewServer(srv.engine)
-	defer laiai.Close()
+	laiai := newRealtimeTestServer(t, srv.engine)
 	up := newMockRealtimeUpstream(t, func([]byte) (string, bool) { return "", false })
 	defer up.Close()
 	// 渠道 + 只配文本价（无 audio_*）
@@ -197,8 +236,7 @@ func TestRealtimeRequiresAudioPricing(t *testing.T) {
 // 会话中余额不足：一轮 cost > 余额 → 扣费失败 → error 事件 + 拆连；余额不透支（不为负）。
 func TestRealtimeMidSessionInsufficientNoOverdraft(t *testing.T) {
 	srv, db := setupRelayServer(t)
-	laiai := httptest.NewServer(srv.engine)
-	defer laiai.Close()
+	laiai := newRealtimeTestServer(t, srv.engine)
 	up := newMockRealtimeUpstream(t, func([]byte) (string, bool) { return rtDoneFixture, false })
 	defer up.Close()
 	setupRealtimeChannel(t, srv, up.URL, "gpt-realtime")
@@ -232,8 +270,7 @@ func TestRealtimeMidSessionInsufficientNoOverdraft(t *testing.T) {
 // 上游主动断连 → 客户端连接联动关闭。
 func TestRealtimeUpstreamClose(t *testing.T) {
 	srv, _ := setupRelayServer(t)
-	laiai := httptest.NewServer(srv.engine)
-	defer laiai.Close()
+	laiai := newRealtimeTestServer(t, srv.engine)
 	up := newMockRealtimeUpstream(t, func([]byte) (string, bool) { return rtDoneFixture, true /* closeAfter */ })
 	defer up.Close()
 	setupRealtimeChannel(t, srv, up.URL, "gpt-realtime")
@@ -259,17 +296,14 @@ func TestRealtimeUpstreamClose(t *testing.T) {
 // 写截止防 DoS（对抗 review CONFIRMED HIGH）：客户端只写不读把 TCP 缓冲填满时，
 // LAIAI 的转发写不得永久阻塞——写截止到期即拆连、goroutine 收敛（非 idle/ctx 路径）。
 func TestRealtimeWriteDeadlineDoS(t *testing.T) {
+	srv, _ := setupRelayServer(t)
 	oldW := relay.RealtimeWriteWait
 	relay.RealtimeWriteWait = 200 * time.Millisecond
-	defer func() { relay.RealtimeWriteWait = oldW }()
-
-	srv, _ := setupRelayServer(t)
-	laiai := httptest.NewServer(srv.engine)
-	defer laiai.Close()
+	laiai := newRealtimeTestServer(t, srv.engine, func() { relay.RealtimeWriteWait = oldW })
 	// 上游收到触发帧后猛灌大帧；LAIAI 转发给"只写不读"的客户端 → 客户端缓冲填满 → LAIAI 写阻塞。
 	// LAIAI 写截止（200ms）到期 → closeBoth → upConn 关 → 上游写报错 → close(broke)。
 	broke := make(chan struct{})
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	up := newRealtimeTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upg := gws.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 		c, err := upg.Upgrade(w, r, nil)
 		if err != nil {
@@ -312,24 +346,22 @@ func TestRealtimeWriteDeadlineDoS(t *testing.T) {
 
 // 心跳 idle 超时：上游假死（upgrade 后不读不写不 pong）→ idle 超时强制关闭（补 New API 缺口）。
 func TestRealtimeIdleTimeout(t *testing.T) {
+	srv, _ := setupRelayServer(t)
 	old := relay.RealtimeIdleTimeout
 	relay.RealtimeIdleTimeout = 300 * time.Millisecond
-	defer func() { relay.RealtimeIdleTimeout = old }()
-
-	srv, _ := setupRelayServer(t)
-	laiai := httptest.NewServer(srv.engine)
-	defer laiai.Close()
+	laiai := newRealtimeTestServer(t, srv.engine, func() { relay.RealtimeIdleTimeout = old })
 	// 假死上游：upgrade 后阻塞，永不读/写/pong
-	deadUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	stopDead := make(chan struct{})
+	defer close(stopDead)
+	deadUp := newRealtimeTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		up := gws.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 		c, err := up.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
-		_ = c
-		select {} // 假死：占住连接不响应（不 ReadMessage → 不回 pong）
+		defer c.Close()
+		<-stopDead // Remains completely idle until test cleanup, without leaking a goroutine.
 	}))
-	defer deadUp.Close()
 	setupRealtimeChannel(t, srv, deadUp.URL, "gpt-realtime")
 	apiKey, _ := seedUserWithCredit(t, srv, "rt-idle@example.com", "10")
 
@@ -343,5 +375,10 @@ func TestRealtimeIdleTimeout(t *testing.T) {
 	_ = cli.SetReadDeadline(time.Now().Add(3 * time.Second))
 	if _, _, err := cli.ReadMessage(); err == nil {
 		t.Fatal("idle session should be closed by idle-timeout")
+	} else {
+		var deadline net.Error
+		if errors.As(err, &deadline) && deadline.Timeout() {
+			t.Fatal("client's own read deadline expired; server idle teardown was not observed")
+		}
 	}
 }

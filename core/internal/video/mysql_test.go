@@ -81,6 +81,8 @@ func mysqlFixture(t *testing.T) *fixture {
 	if e != nil {
 		t.Fatal(e)
 	}
+	must(t, s.ConfigureResponseInbox(dsn, false))
+	t.Cleanup(func() { must(t, s.CloseResponseInbox()) })
 	f := &fixture{s: s, now: now}
 	s.Now = func() time.Time { return f.now }
 	s.Gate = allowGate{}

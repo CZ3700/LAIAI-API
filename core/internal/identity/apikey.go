@@ -6,12 +6,15 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"math"
 	"net"
 	"strings"
 	"time"
 
+	"github.com/laiai/laiai-next/core/internal/routinggroup"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // API Key 设计（红线：明文任何层永不落库，只存 SHA-256 指纹；明文仅签发时返回一次）。
@@ -34,18 +37,24 @@ type APIKey struct {
 	Status    int8       `gorm:"column:status"`
 	ExpiresAt *time.Time `gorm:"column:expires_at"`
 	// 精细管控（0012）
-	QuotaLimit  decimal.Decimal `gorm:"column:quota_limit"`  // 累计消费上限 USD，0=无限
-	UsedAmount  decimal.Decimal `gorm:"column:used_amount"`  // 已消费 USD
-	ModelLimits string          `gorm:"column:model_limits"` // 模型白名单，逗号分隔，空=不限
-	AllowIPs    string          `gorm:"column:allow_ips"`    // IP 白名单，逗号/换行分隔，支持 CIDR，空=不限
-	RPMLimit    int             `gorm:"column:rpm_limit"`    // key 级每分钟请求上限，0=不限（0041）
-	RoutePolicy string          `gorm:"column:route_policy"` // key 级路由策略，空=order 默认（0043）
+	QuotaLimit      decimal.Decimal `gorm:"column:quota_limit"`  // 累计消费上限 USD，0=无限
+	UsedAmount      decimal.Decimal `gorm:"column:used_amount"`  // 已消费 USD
+	ModelLimits     string          `gorm:"column:model_limits"` // 模型白名单，逗号分隔，空=不限
+	AllowIPs        string          `gorm:"column:allow_ips"`    // IP 白名单，逗号/换行分隔，支持 CIDR，空=不限
+	RPMLimit        int             `gorm:"column:rpm_limit"`    // key 级每分钟请求上限，0=不限（0041）
+	RoutePolicy     string          `gorm:"column:route_policy"` // key 级路由策略，空=order 默认（0043）
+	RoutingGroupID  *uint64         `gorm:"column:routing_group_id"`
+	ModelAccessMode string          `gorm:"column:model_access_mode"`
+	PolicyVersion   uint64          `gorm:"column:policy_version"`
 }
 
 func (APIKey) TableName() string { return "api_keys" }
 
 // AllowsModel 返回该 Key 是否可调用某模型（空白名单=不限）。
 func (k *APIKey) AllowsModel(model string) bool {
+	if !k.validLegacyRouting() {
+		return false
+	}
 	if strings.TrimSpace(k.ModelLimits) == "" {
 		return true
 	}
@@ -82,25 +91,50 @@ func (k *APIKey) QuotaExhausted() bool {
 }
 
 type IssueKeyInput struct {
-	OrgID       uint64
-	UserID      *uint64 // per-member key；org 级 key 传 nil
-	Name        string
-	Scopes      string
-	ExpiresAt   *time.Time
-	QuotaLimit  decimal.Decimal // 累计消费上限 USD，0=无限
-	ModelLimits string          // 模型白名单
-	AllowIPs    string          // IP 白名单
-	RPMLimit    int             // key 级每分钟请求上限，0=不限（0041）
-	RoutePolicy string          // key 级路由策略（0043），调用方先过白名单校验
-	MaxKeys     int             // org 活跃 Key 上限（entitlements），0=不限
+	OrgID           uint64
+	UserID          *uint64 // per-member key；org 级 key 传 nil
+	Name            string
+	Scopes          string
+	ExpiresAt       *time.Time
+	QuotaLimit      decimal.Decimal // 累计消费上限 USD，0=无限
+	ModelLimits     string          // 模型白名单
+	AllowIPs        string          // IP 白名单
+	RPMLimit        int             // key 级每分钟请求上限，0=不限（0041）
+	RoutePolicy     string          // key 级路由策略（0043），调用方先过白名单校验
+	MaxKeys         int             // org 活跃 Key 上限（entitlements），0=不限
+	RoutingGroupID  *uint64
+	ModelAccessMode *string // nil is omitted, not an empty stored value
+	PolicyAudit     routinggroup.Audit
 }
 
 // IssueKey 签发新 Key。返回 (明文, 记录)；明文此后不可再取。
 func IssueKey(tx *gorm.DB, in IssueKeyInput) (string, *APIKey, error) {
+	mode, err := ValidateKeyRouting(in.ModelAccessMode, in.RoutingGroupID, in.ModelLimits)
+	if err != nil {
+		return "", nil, err
+	}
+	if tx == nil || in.OrgID == 0 {
+		return "", nil, ErrInvalidInput
+	}
+	var plain string
+	var key *APIKey
+	err = tx.Transaction(func(inner *gorm.DB) error {
+		var e error
+		plain, key, e = issueLegacyKey(inner, in, mode)
+		return e
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return plain, key, nil
+}
+
+func issueLegacyKey(tx *gorm.DB, in IssueKeyInput, mode string) (string, *APIKey, error) {
 	if in.OrgID == 0 {
 		return "", nil, ErrInvalidInput
 	}
-	// 资源上限（entitlements）：同事务内 COUNT 活跃 Key，触顶即拒（原子，无 TOCTOU）。
+	// Host admission holds the Org row before entering this transaction.
+	// That lock, not COUNT alone, serializes concurrent MaxKeys admission.
 	if in.MaxKeys > 0 {
 		var n int64
 		if err := tx.Model(&APIKey{}).
@@ -119,21 +153,30 @@ func IssueKey(tx *gorm.DB, in IssueKeyInput) (string, *APIKey, error) {
 	sum := sha256.Sum256([]byte(plaintext))
 
 	k := &APIKey{
-		OrgID:       in.OrgID,
-		UserID:      in.UserID,
-		Name:        in.Name,
-		Prefix:      plaintext[:len(keyPrefix)+7], // 展示用 "sk-laiai-Ab3dEf9"
-		KeyHash:     hex.EncodeToString(sum[:]),
-		Scopes:      in.Scopes,
-		Status:      StatusActive,
-		ExpiresAt:   in.ExpiresAt,
-		QuotaLimit:  in.QuotaLimit,
-		ModelLimits: in.ModelLimits,
-		AllowIPs:    in.AllowIPs,
-		RPMLimit:    in.RPMLimit,
-		RoutePolicy: in.RoutePolicy,
+		OrgID:           in.OrgID,
+		UserID:          in.UserID,
+		Name:            in.Name,
+		Prefix:          plaintext[:len(keyPrefix)+7], // 展示用 "sk-laiai-Ab3dEf9"
+		KeyHash:         hex.EncodeToString(sum[:]),
+		Scopes:          in.Scopes,
+		Status:          StatusActive,
+		ExpiresAt:       in.ExpiresAt,
+		QuotaLimit:      in.QuotaLimit,
+		ModelLimits:     in.ModelLimits,
+		AllowIPs:        in.AllowIPs,
+		RPMLimit:        in.RPMLimit,
+		RoutePolicy:     in.RoutePolicy,
+		ModelAccessMode: mode,
+		PolicyVersion:   1,
 	}
 	if err := tx.Create(k).Error; err != nil {
+		return "", nil, err
+	}
+	audit := in.PolicyAudit
+	if audit.ActorUserID == 0 && in.UserID != nil {
+		audit.ActorUserID = *in.UserID
+	}
+	if err := routinggroup.RecordKeyEvent(tx, k.ID, k.OrgID, k.PolicyVersion, "key_issued", audit); err != nil {
 		return "", nil, err
 	}
 	return plaintext, k, nil
@@ -158,6 +201,9 @@ func VerifyKey(db *gorm.DB, plaintext string, now time.Time) (*APIKey, error) {
 	if k.ExpiresAt != nil && now.After(*k.ExpiresAt) {
 		return nil, ErrKeyExpired
 	}
+	if !k.validLegacyRouting() {
+		return nil, ErrKeyInvalid
+	}
 	// P0-1：key 所属 org 必须 active；per-member key（绑定具体成员）还需该成员 active 且 membership 仍在
 	// ——组织禁用 / 成员被移除 / 用户被封禁后，其 key 立即失效（不等 TTL）。
 	if k.UserID != nil {
@@ -172,7 +218,33 @@ func VerifyKey(db *gorm.DB, plaintext string, now time.Time) (*APIKey, error) {
 
 // RevokeKey 吊销（幂等：重复吊销无害）。
 func RevokeKey(tx *gorm.DB, keyID uint64) error {
-	return tx.Model(&APIKey{}).Where("id = ?", keyID).Update("status", StatusDisabled).Error
+	return RevokeKeyWithAudit(tx, keyID, 0, routinggroup.Audit{})
+}
+
+// orgID=0 is reserved for trusted internal callers. HTTP supplies its verified
+// organization again inside the lock, not only in an earlier ownership read.
+func RevokeKeyWithAudit(tx *gorm.DB, keyID, orgID uint64, audit routinggroup.Audit) error {
+	return tx.Transaction(func(inner *gorm.DB) error {
+		var key APIKey
+		q := inner.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", keyID)
+		if orgID != 0 {
+			q = q.Where("org_id = ?", orgID)
+		}
+		if err := q.Take(&key).Error; err != nil {
+			return err
+		}
+		if key.Status == StatusDisabled {
+			return nil
+		}
+		if key.PolicyVersion == 0 || key.PolicyVersion == math.MaxUint64 {
+			return ErrKeyInvalid
+		}
+		key.PolicyVersion++
+		if err := inner.Model(&APIKey{}).Where("id = ? AND org_id = ?", key.ID, key.OrgID).Updates(map[string]any{"status": StatusDisabled, "policy_version": key.PolicyVersion}).Error; err != nil {
+			return err
+		}
+		return routinggroup.RecordKeyEvent(inner, key.ID, key.OrgID, key.PolicyVersion, "key_revoked", audit)
+	})
 }
 
 // AddKeyUsageSigned 原子调整 used_amount（允许负 delta），用于 reserve→actual 对账与失败退还。
