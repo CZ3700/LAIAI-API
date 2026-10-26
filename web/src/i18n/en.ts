@@ -1,3 +1,4 @@
+import { invocationLogMessages } from './invocationLogs'
 import { keyVideoMessages } from './keyVideo'
 import { currencyMessages } from './currency'
 import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
@@ -6,6 +7,7 @@ import { modelCatalogMessages } from './modelCatalogRedesign'
 // 其余语种必须 `satisfies Messages`——键集与 en 不一致时 vue-tsc 构建期报错
 // （§5.6"缺 key CI 报错而非运行时静默回退"的类型级实现）。
 const messages = {
+  invocationLogs: invocationLogMessages['en'],
   keysVideo: keyVideoMessages.en,
   currency: currencyMessages.en,
   pricingAdmin: pricingRedesignAdminMessages['en'].pricingAdmin,

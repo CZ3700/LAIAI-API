@@ -9,6 +9,7 @@ import { useAuth } from '@/stores/auth'
 import Sparkline from '@/components/Sparkline.vue'
 import DetailDrawer from '@/components/DetailDrawer.vue'
 import AdminPricingPanel from '@/components/pricing/AdminPricingPanel.vue'
+import InvocationLogPanel from '@/components/invocation/InvocationLogPanel.vue'
 import type { ModelMeta } from '@/components/pricing/types'
 
 const auth = useAuth()
@@ -90,31 +91,6 @@ interface GroupRatio {
   name: string
   ratio: string
 }
-interface LogRow {
-  id: number
-  created_at: string
-  request_id: string
-  org_id: number
-  user_id: number | null
-  api_key_id: number
-  model: string
-  channel_id: number
-  provider: string
-  status: string
-  status_code: number
-  is_stream: boolean
-  attempts: number
-  prompt_tokens: number
-  completion_tokens: number
-  cost_usd: string
-  usage_source: string
-  frt_ms: number
-  duration_ms: number
-  upstream_request_id: string
-  error_brief: string
-  payload_object_key: string
-}
-
 // —— 门禁：role≥admin 自动放行；否则 root-token 破玻璃 ——
 const tokenInput = ref('')
 const unlocked = ref(adminToken.get() !== '')
@@ -150,7 +126,8 @@ const tab = ref<'overview' | 'analytics' | 'health' | 'channels' | 'payments' | 
 const ALL_TABS = ['overview', 'channels', 'payments', 'prices', 'orgs', 'users', 'logs', 'settings', 'audit'] as const
 // logs（全局调用明细）跨租户 → superadmin-only（配合后端 P2-3 把 /invocations 收归超管）
 const SUPER_ONLY_TABS = new Set(['payments', 'settings', 'logs'])
-const visibleTabs = computed(() => ALL_TABS.filter((tb) => auth.isSuperadmin || !SUPER_ONLY_TABS.has(tb)))
+const canReadLogs = computed(() => { adminToken.revision.value; return auth.isSuperadmin || adminToken.get() !== '' })
+const visibleTabs = computed(() => ALL_TABS.filter((tb) => tb === 'logs' ? canReadLogs.value : auth.isSuperadmin || !SUPER_ONLY_TABS.has(tb)))
 function requestedTab(value: unknown): typeof ALL_TABS[number] {
   if (value === 'pricing') return 'prices'
   return ALL_TABS.includes(value as typeof ALL_TABS[number]) ? value as typeof ALL_TABS[number] : 'overview'
@@ -772,32 +749,8 @@ async function saveShards(o: OrgRow) {
   }
 }
 
-// —— 日志（全局调用） ——
-const logs = ref<LogRow[]>([])
-const logTotal = ref(0)
-const logPage = ref(1)
-const logFilter = ref({ status: '', model: '', channel_id: '', org_id: '', since: '', until: '' })
-const selectedLog = ref<LogRow | null>(null)
-const LOG_PAGE_SIZE = 20
-
-async function loadLogs() {
-  const q = new URLSearchParams({ page: String(logPage.value), page_size: String(LOG_PAGE_SIZE) })
-  for (const [k, v] of Object.entries(logFilter.value)) if (v) q.set(k, v)
-  const r = await adminApi<{ total: number; items: LogRow[] }>('GET', `/api/admin/invocations?${q}`)
-  logs.value = r.items
-  logTotal.value = r.total
-}
-function applyLogFilter() {
-  logPage.value = 1
-  void loadLogs().catch(showError)
-}
-function showLog(row: LogRow) { if (auth.isSuperadmin) selectedLog.value = row }
-watch([() => auth.orgId, () => auth.role, tab, unlocked], () => { selectedLog.value = null; selectedAudit.value = null })
-watch(logPage, () => void loadLogs().catch(showError))
-// 切到日志 tab 时首次加载
-watch(tab, (v) => {
-  if (v === 'logs' && logs.value.length === 0) void loadLogs().catch(showError)
-})
+// Log state and request isolation belong to the shared panel.
+watch([() => auth.orgId, () => auth.role, tab, unlocked], () => { selectedAudit.value = null })
 
 // —— 平台概览 ——
 const overview = ref<Overview | null>(null)
@@ -2479,85 +2432,10 @@ onMounted(async () => {
         </div>
       </template>
 
-      <!-- 日志（全局调用） -->
+      <!-- Only logs retains the existing backend root-token compatibility. -->
       <template v-if="tab === 'logs'">
-        <form class="app-panel flex flex-wrap items-end gap-3 p-4" @submit.prevent="applyLogFilter">
-          <div>
-            <label class="label" for="lg-status">{{ t('usage.status') }}</label>
-            <select id="lg-status" v-model="logFilter.status" class="input !w-36">
-              <option value="">{{ t('admin.lgAny') }}</option>
-              <option value="success">success</option>
-              <option value="upstream_error">upstream_error</option>
-              <option value="insufficient_balance">insufficient_balance</option>
-              <option value="no_channel">no_channel</option>
-            </select>
-          </div>
-          <div>
-            <label class="label" for="lg-model">{{ t('usage.model') }}</label>
-            <input id="lg-model" v-model="logFilter.model" class="input !w-40 font-mono text-xs" />
-          </div>
-          <div>
-            <label class="label" for="lg-ch">{{ t('admin.lgChannel') }}</label>
-            <input id="lg-ch" v-model="logFilter.channel_id" class="input !w-24" type="number" min="1" />
-          </div>
-          <div>
-            <label class="label" for="lg-org">{{ t('admin.lgOrg') }}</label>
-            <input id="lg-org" v-model="logFilter.org_id" class="input !w-24" type="number" min="1" />
-          </div>
-          <div>
-            <label class="label" for="lg-since">{{ t('admin.lgSince') }}</label>
-            <input id="lg-since" v-model="logFilter.since" class="input !w-40" type="date" />
-          </div>
-          <div>
-            <label class="label" for="lg-until">{{ t('admin.lgUntil') }}</label>
-            <input id="lg-until" v-model="logFilter.until" class="input !w-40" type="date" />
-          </div>
-          <button class="btn-primary">{{ t('admin.lgApply') }}</button>
-        </form>
-
-        <div class="data-table-wrap">
-          <table class="table w-full text-sm whitespace-nowrap">
-            <thead>
-              <tr class="border-b border-line text-left text-muted">
-                <th class="px-4 py-3 font-medium">{{ t('usage.time') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.lgOrg') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('usage.model') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.lgChannel') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('usage.status') }}</th>
-                <th class="px-4 py-3 font-medium text-right">{{ t('usage.tokens') }}</th>
-                <th class="px-4 py-3 font-medium text-right">{{ t('usage.cost', { currency: displayCurrencyCode() }) }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="logs.length === 0">
-                <td colspan="7" class="px-4 py-8 text-center text-muted">{{ t('common.empty') }}</td>
-              </tr>
-              <template v-for="l in logs" :key="l.id">
-                <tr class="border-b border-line last:border-0">
-                  <td class="px-4 py-2.5 text-muted">{{ d(new Date(l.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</td>
-                  <td class="px-4 py-2.5 font-mono text-xs">{{ l.org_id }}</td>
-                  <td class="px-4 py-2.5 font-mono text-xs"><button type="button" class="table-link" @click="showLog(l)">{{ l.model }} · {{ t('reqlog.btnDetail') }}</button></td>
-                  <td class="px-4 py-2.5 font-mono text-xs">#{{ l.channel_id }} {{ l.provider }}</td>
-                  <td class="px-4 py-2.5">
-                    <span :class="l.status === 'success' ? 'badge-ok' : 'badge-danger'">{{ l.status }}</span>
-                  </td>
-                  <td class="px-4 py-2.5 text-right font-mono">{{ l.prompt_tokens }} / {{ l.completion_tokens }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono">{{ fmtUsd(l.cost_usd, { precision: 4 }) }}</td>
-                </tr>
-
-              </template>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="flex items-center justify-between text-sm text-muted">
-          <span>{{ t('usage.total', { total: logTotal }) }}</span>
-          <div class="flex items-center gap-2">
-            <button class="btn-ghost !py-1" :disabled="logPage <= 1" @click="logPage--">{{ t('common.prev') }}</button>
-            <span>{{ t('common.page', { page: logPage }) }}</span>
-            <button class="btn-ghost !py-1" :disabled="logPage * LOG_PAGE_SIZE >= logTotal" @click="logPage++">{{ t('common.next') }}</button>
-          </div>
-        </div>
+        <InvocationLogPanel v-if="canReadLogs" scope="admin" :active="unlocked && !roleLoading" />
+        <p v-else class="inline-alert" role="alert">{{ t('invocationLogs.permission') }}</p>
       </template>
 
       <!-- 用户 -->
@@ -2987,28 +2865,6 @@ onMounted(async () => {
           </table>
         </div>
       </template>
-      <DetailDrawer :open="!!selectedLog && auth.isSuperadmin" :title="t('reqlog.drawerTitle', { id: selectedLog?.id ?? '' })" size="lg" @update:open="open => { if (!open) selectedLog = null }">
-        <template v-if="selectedLog">
-          <dl class="detail-grid mb-6"><div><dt>{{ t('admin.lgOrg') }}</dt><dd>{{ selectedLog.org_id }}</dd></div><div><dt>{{ t('usage.model') }}</dt><dd>{{ selectedLog.model }}</dd></div><div><dt>{{ t('usage.tokens') }}</dt><dd>{{ selectedLog.prompt_tokens }} / {{ selectedLog.completion_tokens }}</dd></div><div><dt>{{ t('usage.cost', { currency: displayCurrencyCode() }) }}</dt><dd>{{ fmtUsd(selectedLog.cost_usd) }}</dd></div><div><dt>{{ t('usage.status') }}</dt><dd>{{ selectedLog.status }}</dd></div><div><dt>{{ t('admin.lgChannel') }}</dt><dd>#{{ selectedLog.channel_id }} {{ selectedLog.provider }}</dd></div></dl>
-                    <dl class="grid grid-cols-2 gap-x-8 gap-y-1.5 text-xs sm:grid-cols-4">
-                      <div><dt class="text-muted">{{ t('usage.requestId') }}</dt><dd class="font-mono select-all">{{ selectedLog.request_id }}</dd></div>
-                      <div><dt class="text-muted">{{ t('usage.dStatusCode') }}</dt><dd class="font-mono">{{ selectedLog.status_code }}</dd></div>
-                      <div><dt class="text-muted">{{ t('admin.lgAttempts') }}</dt><dd class="font-mono">{{ selectedLog.attempts }}</dd></div>
-                      <div><dt class="text-muted">{{ t('usage.dStream') }}</dt><dd class="font-mono">{{ selectedLog.is_stream ? t('common.yes') : t('common.no') }}</dd></div>
-                      <div><dt class="text-muted">{{ t('admin.lgUser') }}</dt><dd class="font-mono">{{ selectedLog.user_id ?? '—' }}</dd></div>
-                      <div><dt class="text-muted">{{ t('admin.lgApiKey') }}</dt><dd class="font-mono">#{{ selectedLog.api_key_id }}</dd></div>
-                      <div><dt class="text-muted">{{ t('usage.dFrt') }}</dt><dd class="font-mono">{{ selectedLog.frt_ms }} ms</dd></div>
-                      <div><dt class="text-muted">{{ t('usage.dDuration') }}</dt><dd class="font-mono">{{ selectedLog.duration_ms }} ms</dd></div>
-                      <div v-if="selectedLog.usage_source"><dt class="text-muted">{{ t('usage.dUsageSource') }}</dt><dd class="font-mono">{{ selectedLog.usage_source }}</dd></div>
-                      <div v-if="selectedLog.upstream_request_id"><dt class="text-muted">{{ t('admin.lgUpstreamId') }}</dt><dd class="font-mono select-all break-all">{{ selectedLog.upstream_request_id }}</dd></div>
-                      <div v-if="selectedLog.payload_object_key" class="col-span-2"><dt class="text-muted">{{ t('admin.lgPayloadKey') }}</dt><dd class="font-mono select-all break-all">{{ selectedLog.payload_object_key }}</dd></div>
-                      <div v-if="selectedLog.error_brief" class="col-span-2 sm:col-span-4">
-                        <dt class="text-muted">{{ t('usage.dError') }}</dt>
-                        <dd class="font-mono text-danger break-all">{{ selectedLog.error_brief }}</dd>
-                      </div>
-                    </dl>
-        </template>
-      </DetailDrawer>
       <DetailDrawer :open="!!selectedAudit" :title="t('admin.auDetail')" @update:open="open => { if (!open) selectedAudit = null }">
         <dl v-if="selectedAudit" class="detail-grid"><div><dt>ID</dt><dd>{{ selectedAudit.id }}</dd></div><div><dt>{{ t('usage.time') }}</dt><dd>{{ d(new Date(selectedAudit.created_at), { dateStyle: 'short', timeStyle: 'medium' }) }}</dd></div><div><dt>{{ t('admin.auActor') }}</dt><dd>{{ selectedAudit.actor }}</dd></div><div><dt>{{ t('admin.auAction') }}</dt><dd>{{ auditActionLabel(selectedAudit.action) }}</dd></div><div><dt>{{ t('admin.auTarget') }}</dt><dd>{{ selectedAudit.target || '—' }}</dd></div><div><dt>IP</dt><dd>{{ selectedAudit.ip }}</dd></div><div class="col-span-2"><dt>{{ t('admin.auDetail') }}</dt><dd class="whitespace-pre-wrap">{{ selectedAudit.detail || '—' }}</dd></div></dl>
       </DetailDrawer>
