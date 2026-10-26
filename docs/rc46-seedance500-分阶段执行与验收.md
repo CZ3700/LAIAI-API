@@ -37,8 +37,8 @@
 | P0-1B R2 补充与凭据接管 | 明确拒绝/缺 ID/未知状态的完整持久化矩阵；同账号项目凭据接管与请求头隔离 | 不扩大退款依据；凭据接管需证明目标身份；多版本退役演练在实际 V2 前完成 | 待实施；P0-1A 的活动配置隔离不等于在途凭据迁移 |
 | P0-2A1 创建响应收件箱 | 不可变执行登记、独立响应保存、同 attempt 恢复、legacy 分流；默认关闭 | CAS/取消/删除竞态、重复/矛盾证据、无响应过期、历史关闭、真实迁移与账务不变 | [PR #59](https://github.com/CZ3700/LAIAI-API/pull/59) 七项 CI、真实二进制交接及 Mock 通过，已合入 main `9552e2b`；迁移 0128；写开关仍默认关闭 |
 | P0-2A1.1 持久化失败控制 | 同一证据有界重试、保存失败停止后续发送、关库前等待在途保存 | 不重发上游、不把未提交响应标为已保存；数据库恢复/关机故障用例 | [PR #60](https://github.com/CZ3700/LAIAI-API/pull/60) 七项 CI 全绿，已合入 main `c2cebf6`；隔离 R2 证据见第 5.6 节，A2 未完成前不开生产新写入 |
-| P0-2A2/B 故障恢复后续 | 取消/删除/交付收件箱、完整兼容演练；随后数据库时间/fence、独立结算 | A1 完成后逐批；完整 R3 崩溃点/双 Worker/超 hold、零资金差异 | A2a consumer已由PR #63合入main `309890a`；A2b producer开发中，默认off；后续二进制交接/调度仍待验收 |
-| P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | [PR #61](https://github.com/CZ3700/LAIAI-API/pull/61) 七项 CI 全绿，G1-A 已合入 main `7688307`；G1-B1 已由PR #64合入main `bf311e0`；B2授权/默认组已通过两轮真实MySQL race及B1兼容，接续PR65 main的完整CI/定向race也通过，待最新PR门禁 |
+| P0-2A2/B 故障恢复后续 | 取消/删除/交付收件箱、完整兼容演练；随后数据库时间/fence、独立结算 | A1 完成后逐批；完整 R3 崩溃点/双 Worker/超 hold、零资金差异 | A2a consumer已由PR #63合入main `309890a`；A2b producer完成R1/R2真实MySQL与SIGTERM、R3主线整合验收，PR #67，默认off；后续二进制交接/调度仍待验收 |
+| P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | G1-A PR #61、G1-B1 PR #64已合入；G1-B2 PR #66七项CI全绿后合入main `b21308b`，完整证据见5.9.1；分组Key仍关闭 |
 | P0-G2 全入口授权 | 同一有效模型/组解析器覆盖目录、报价、创建、重试、派发复核；撤权强校验 | 全入口拒绝矩阵；已发送任务继续查询结算；空 subset 拒绝 | 待实施，依赖 G1 |
 | P0-G3 组 UI 与迁移 | 管理员影响预览、用户组选择、有效模型集合差分 | G2 全绿后才开放；不得静默改旧 Key 权限 | 待实施 |
 | P0-UI1 日志改进 | 共用 FilterSpec、全条件日志合计、列表/导出一致、后台日志组件、请求竞态保护 | R8 的 237 条跨页夹具、角色/币种/时间/导出/抽屉测试 | UI1-A1 PR #62与A2a PR #65已合入；A2b完成真实HTTP/MySQL浏览器19项、九组344前端测试与R2实际完整构建，待PR门禁；详见统一日志前端实施契约第11/12节 |
@@ -279,3 +279,11 @@ go -C core test -race ./internal/video ./internal/videoartifact ./internal/video
 R1新快照测试fixture多一个占位符造成MySQL1136，记录失败后只修fixture；R2连续两轮真实快照和完整查询/CSV race通过。237行/13筛选/20/50/100跨页与USD/CNY、精确SUM超过MaxInt64、微金额、0/5000/5001、实际SQL EXPLAIN、双连接只读RR1792及并发数据变更、取消/池耗尽/限流释放、非空资金/Key/Task/价格/正文保留全部通过。make vet/ci与130迁移重复/101表doctor通过。详细源包/原始日志SHA与不做容量承诺的边界见`rc46-调用日志导出实施契约.md`第6/7节。
 
 仅后端交付；前端请求日志与Admin日志Tab继续UI1-A2b。无新增迁移/账务/上游调用，生产未变更；最新PR CI尚须另行核验。
+
+## 5.11 P0-2A2b 取消与删除发送端验收
+
+分支codex/rc46-mutation-inbox-producer，整合main c2b9293（UI1-A2a PR #65，CI 40243640002七项全绿）。新增独立默认false开关；动作执行输入准备、原子claim/登记、最终精确身份与lease检查、单次DELETE、独立专池有界保存及原consumer恢复。未登记准备失败短暂冷却，确定本地终态不受冷却阻挡。关闭开关仍消费已登记动作，不回退legacy重发；无新迁移或资金公式变动。
+
+R1通过20项实际MySQL发送端两轮race、真实main生命周期SIGTERM三场景、完整video/videoasset/server数据库与六域race。R2在bf311e0主线重跑make vet/ci、130迁移重复/101表doctor、发送端真实MySQL与SIGTERM；R3在c2b9293重跑make vet/ci和定向race。三轮源包、日志SHA及严格范围见`rc46-取消删除发送端实施契约.md`，R3未设置DSN，不冒充数据库重复验收。
+
+最终业务/测试/CI与951文件R3清单逐项固定，仅验收文档例外。官方调用/费用0，生产d7fc499未变更。最新PR CI全绿后固定P，下一批A2c用固定C_a与P做真实进程交接、kill点和混跑；当前仍不能启用生产producer或宣称500容量通过。

@@ -197,6 +197,9 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 	if s.DispatchPaused() {
 		return ErrDispatchPaused
 	}
+	if s.MutationResponseInboxEnabled {
+		return s.processMutationInbox(ctx, op)
+	}
 	var t task.Task
 	var st State
 	claimed := false
