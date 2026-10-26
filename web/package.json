@@ -17,7 +17,8 @@
     "typecheck": "vue-tsc -b",
     "preview": "vite preview",
     "test:money": "node --test src/lib/money.test.mjs src/pages/Billing.currency.test.mjs",
-    "check:money": "node scripts/check-money.mjs"
+    "check:money": "node scripts/check-money.mjs",
+    "test:invocation": "node --test src/lib/invocationQuery.test.mjs src/lib/invocationQueryTransport.test.mjs src/lib/invocationConsole.acceptance.test.mjs src/components/invocation/InvocationLogPanel.test.mjs"
   },
   "dependencies": {
     "pinia": "^2.2.6",

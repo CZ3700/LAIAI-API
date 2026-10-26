@@ -1,3 +1,4 @@
+import { invocationLogMessages } from './invocationLogs'
 import { keyVideoMessages } from './keyVideo'
 import { currencyMessages } from './currency'
 import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
@@ -5,6 +6,7 @@ import { modelCatalogMessages } from './modelCatalogRedesign'
 import en, { type Messages } from './en'
 
 export default {
+  invocationLogs: invocationLogMessages['th'],
   keysVideo: keyVideoMessages['th'],
   currency: currencyMessages['th'],
   pricingAdmin: pricingRedesignAdminMessages['th'].pricingAdmin,
