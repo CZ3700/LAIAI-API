@@ -291,6 +291,9 @@ func runtimeHandoffVerify(t *testing.T, db *gorm.DB, root string, report *runtim
 			}
 			runtimeHandoffAssertV1(t, db, record)
 			runtimeHandoffEvidenceExists(t, db, record)
+			if record.Role == "pending_query" || record.Role == "settled" {
+				runtimeHandoffAssertRecoveryDefaults(t, db, record)
+			}
 			switch record.Role {
 			case "pending_create":
 				var op Operation
@@ -405,6 +408,45 @@ func runtimeHandoffEvidenceExists(t *testing.T, db *gorm.DB, record runtimeHando
 	}
 }
 
+// The common harness must also compile in the pre-runtime binary, whose model
+// has neither column. Verify the actual expanded SQL defaults independently of
+// the historical fingerprint before the new consumer applies either old writer.
+func runtimeHandoffAssertRecoveryDefaults(t *testing.T, db *gorm.DB, record runtimeHandoffTask) {
+	t.Helper()
+	var row struct {
+		RecoveryDueAt   *time.Time
+		RecoveryVersion uint64
+		DatabaseTime    time.Time
+	}
+	read := db.Raw("SELECT recovery_due_at, recovery_version, UTC_TIMESTAMP(3) AS database_time FROM video_query_receipts WHERE org_id = ? AND task_id = ? AND attempt_id = ?", record.OrgID, record.TaskID, record.AttemptID).Scan(&row)
+	if read.Error != nil || read.RowsAffected != 1 {
+		t.Fatal("could not read exact old-writer recovery defaults")
+	}
+	if row.RecoveryVersion != 0 || row.RecoveryDueAt == nil || row.RecoveryDueAt.IsZero() || row.DatabaseTime.IsZero() || row.RecoveryDueAt.After(row.DatabaseTime) {
+		t.Fatal("old writer did not receive valid database-time recovery defaults")
+	}
+}
+
+func runtimeHandoffHistoricalProjection(table string, columns []string, values []sql.RawBytes) map[string]any {
+	projection := map[string]any{}
+	for i, column := range columns {
+		if column == "runtime_version" || column == "adapter_version" || column == "protocol_contract_version" || column == "billing_schema_version" || column == "observation_schema_version" {
+			continue
+		}
+		// Migration 0133 adds progress, not old-writer evidence. Keep the old
+		// column fingerprint byte-identical; check these defaults separately.
+		if table == "video_query_receipts" && (column == "recovery_due_at" || column == "recovery_version") {
+			continue
+		}
+		if values[i] == nil {
+			projection[column] = nil
+		} else {
+			projection[column] = string(values[i])
+		}
+	}
+	return projection
+}
+
 func runtimeHandoffFingerprint(t *testing.T, db *gorm.DB, record runtimeHandoffTask) string {
 	t.Helper()
 	h := sha256.New()
@@ -429,17 +471,7 @@ func runtimeHandoffFingerprint(t *testing.T, db *gorm.DB, record runtimeHandoffT
 				dest[i] = &values[i]
 			}
 			must(t, rows.Scan(dest...))
-			projection := map[string]any{}
-			for i, column := range columns {
-				if column == "runtime_version" || column == "adapter_version" || column == "protocol_contract_version" || column == "billing_schema_version" || column == "observation_schema_version" {
-					continue
-				}
-				if values[i] == nil {
-					projection[column] = nil
-				} else {
-					projection[column] = string(values[i])
-				}
-			}
+			projection := runtimeHandoffHistoricalProjection(table, columns, values)
 			raw, e := json.Marshal(projection)
 			must(t, e)
 			encoded = append(encoded, string(raw))
@@ -450,4 +482,39 @@ func runtimeHandoffFingerprint(t *testing.T, db *gorm.DB, record runtimeHandoffT
 		_, _ = io.WriteString(h, table+"\x00"+strings.Join(encoded, "\x00")+"\x00")
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func TestRuntimeHandoffHistoricalProjectionPreservesOriginalEvidence(t *testing.T) {
+	columns := []string{"org_id", "task_id", "attempt_id", "applied_at", "apply_error_code", "response_json", "amount"}
+	values := []sql.RawBytes{[]byte("7"), []byte("task-synthetic"), []byte("attempt-synthetic"), nil, []byte(""), []byte(`{"completion_tokens":100}`), []byte("0.00080000")}
+	encode := func(table string, names []string, raw []sql.RawBytes) string {
+		t.Helper()
+		b, err := json.Marshal(runtimeHandoffHistoricalProjection(table, names, raw))
+		if err != nil {
+			t.Fatal("could not encode synthetic historical projection")
+		}
+		return string(b)
+	}
+	const golden = `{"amount":"0.00080000","applied_at":null,"apply_error_code":"","attempt_id":"attempt-synthetic","org_id":"7","response_json":"{\"completion_tokens\":100}","task_id":"task-synthetic"}`
+	if encode("video_query_receipts", columns, values) != golden {
+		t.Fatal("historical evidence encoding changed")
+	}
+	expandedColumns := append(append([]string{}, columns...), "recovery_due_at", "recovery_version")
+	expandedValues := append(append([]sql.RawBytes{}, values...), []byte("2026-10-26 00:00:00.000"), []byte("0"))
+	if encode("video_query_receipts", expandedColumns, expandedValues) != golden {
+		t.Fatal("additive recovery progress changed old evidence fingerprint")
+	}
+	for i := range values {
+		changed := append([]sql.RawBytes{}, expandedValues...)
+		changed[i] = []byte("changed-synthetic-evidence")
+		if encode("video_query_receipts", expandedColumns, changed) == golden {
+			t.Fatal("historical field change escaped the fingerprint")
+		}
+	}
+	if encode("video_operations", expandedColumns, expandedValues) == golden {
+		t.Fatal("query progress exclusion escaped its table")
+	}
+	if encode("video_query_receipts", append(expandedColumns, "recovery_unrecognized"), append(expandedValues, []byte("keep"))) == golden {
+		t.Fatal("unknown future column was silently excluded")
+	}
 }
