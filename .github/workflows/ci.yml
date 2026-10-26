@@ -132,6 +132,8 @@ jobs:
         run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=10m
       - name: Gated mutation producer atomicity and dispatch faults
         run: go -C core test -race ./internal/video -run '^(TestMutationProducer|TestMySQLMutationProducer)' -count=1 -timeout=8m -v
+      - name: Raw HTTP task classifications survive persistence and restart
+        run: go -C core test -race ./internal/video -run '^TestMySQLRuntimeHTTP(CreatePersistence|QueryAcceptedPersistence|NullableUsagePersistence|UninterpretableQueryPersistence)$' -count=2 -timeout=8m -v
       - name: Main lifecycle HTTP and real mutation SIGTERM drain checks
         # Real mutation tests use their own generated ark_test_mshutdown schemas.
         run: go -C core test -race ./cmd/core -count=1 -timeout=6m -v
