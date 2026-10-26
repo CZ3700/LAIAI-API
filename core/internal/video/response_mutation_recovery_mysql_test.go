@@ -46,6 +46,7 @@ func prioritizeMutationReceipt(t *testing.T, m *mutationConsumerFixture, r Respo
 
 func TestMySQLResponseMutationUnknownFormatsExcludedBeforeLimit(t *testing.T) {
 	m := newMutationConsumerFixture(t, "")
+	executionRecoveryScope(t, m.fixture, []uint64{m.key.OrgID})
 	var blocked []ResponseInbox
 	for i := 0; i < 32; i++ {
 		n := m.another(t, fmt.Sprintf("mutation-future-%02d", i))
@@ -103,6 +104,7 @@ func TestMySQLResponseMutationRestartAfterRealInputPurgeWithoutHistory(t *testin
 				final = "succeeded"
 			}
 			m := newMutationConsumerFixture(t, final)
+			executionRecoveryScope(t, m.fixture, []uint64{m.key.OrgID})
 			must(t, m.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", m.key.OrgID, m.taskID).Update("capture_history", false).Error)
 			a, claim := executionOldMutationClaim(t, m, action, executionFixtureNow(t, m.s.DB).Add(-time.Second))
 			r := m.append(t, a, mutationResponse(ark.OutcomeAccepted, 200))
@@ -157,6 +159,7 @@ func TestMySQLResponseMutationExpiredInvalidInputDoesNotStarveSuccessor(t *testi
 	for _, fault := range []string{"identity_hmac", "input_schema"} {
 		t.Run(fault, func(t *testing.T) {
 			m := newMutationConsumerFixture(t, "")
+			executionRecoveryScope(t, m.fixture, []uint64{m.key.OrgID})
 			badAttempt, badClaim := m.register(t, "cancel_task")
 			n := m.another(t, "mutation-expired-successor")
 			_, goodClaim := n.register(t, "cancel_task")
@@ -187,7 +190,11 @@ func TestMySQLResponseMutationExpiredInvalidInputDoesNotStarveSuccessor(t *testi
 				}
 			}
 			funds := m.funds(t)
-			must(t, m.s.recoverExpiredMutationAttempts(context.Background()))
+			wantCause := error(ErrConflict)
+			if fault == "input_schema" {
+				wantCause = invocation.ErrVideoSchemaUnsupported
+			}
+			requireRecoveryCause(t, m.s.recoverExpiredMutationAttempts(context.Background()), wantCause, 1)
 			if m.operation(t, badClaim.ID).Status != "needs_review" || n.operation(t, goodClaim.ID).Status != "unknown" || m.funds(t) != funds {
 				t.Fatal("permanent bad metadata blocked later expiry recovery or released funds")
 			}

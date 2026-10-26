@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,6 +99,9 @@ func TestMySQLSettlementReplayUsesCurrentFinancialFacts(t *testing.T) {
 
 func TestMySQLQueryReceiptRecoversDeadlockWithoutRepeatingProviderCalls(t *testing.T) {
 	f := mysqlFixture(t)
+	// Limit recovery candidates to this fixture on the deliberately reused
+	// MySQL database; claim, authorization and current locked reads are intact.
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	deliverySuccess(f)
 	v := f.create(t, "query-deadlock-create")
 	f.dispatch(t, v.ID)
@@ -110,13 +114,20 @@ func TestMySQLQueryReceiptRecoversDeadlockWithoutRepeatingProviderCalls(t *testi
 		}
 	}))
 	defer f.s.DB.Callback().Create().Remove(name)
-	err := f.s.pollTask(context.Background(), f.key.OrgID, v.ID)
+	beforeFailure, err := authorityFixtureNow(f.s.DB)
+	must(t, err)
+	err = f.s.pollTask(context.Background(), f.key.OrgID, v.ID)
 	var mysqlErr *mysqlDriver.MySQLError
 	if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1213 {
 		t.Fatal("settlement did not exercise the retryable database failure", err)
 	}
 	var receipt QueryReceipt
 	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&receipt).Error)
+	afterFailure, err := authorityFixtureNow(f.s.DB)
+	must(t, err)
+	if receipt.RecoveryDueAt == nil || !receipt.RecoveryDueAt.After(afterFailure) || receipt.RecoveryDueAt.Before(beforeFailure.Add(30*time.Second)) || receipt.RecoveryDueAt.After(afterFailure.Add(30*time.Second)) {
+		t.Fatal("failed settlement did not persist a database-based thirty-second future retry")
+	}
 	view, err := f.s.Get(f.key.OrgID, v.ID)
 	must(t, err)
 	var entries, facts int64
@@ -126,6 +137,35 @@ func TestMySQLQueryReceiptRecoversDeadlockWithoutRepeatingProviderCalls(t *testi
 		t.Fatal("failed settlement lost its receipt, partially charged or incorrectly finalized the task")
 	}
 	failSettlement.Store(false)
+	// This is a precise manual scheduling precondition, not a natural thirty-
+	// second expiry test. S1's independent clock cases cover natural expiry.
+	authorityFixtureTx(t, f.s.DB, func(tx *gorm.DB) error {
+		where := "org_id = ? AND task_id = ? AND attempt_id = ? AND recovery_version = ? AND applied_at IS NULL AND recovery_due_at IS NOT NULL"
+		args := []any{receipt.OrgID, receipt.TaskID, receipt.AttemptID, receipt.RecoveryVersion}
+		update := tx.Model(&QueryReceipt{}).Where(where, args...).UpdateColumn("recovery_due_at", gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND)"))
+		if update.Error != nil {
+			return update.Error
+		}
+		if update.RowsAffected != 1 {
+			return errors.New("query retry fixture did not update exactly one receipt")
+		}
+		var scheduled QueryReceipt
+		if err := tx.Where(where, args...).Take(&scheduled).Error; err != nil {
+			return err
+		}
+		now, err := authorityFixtureNow(tx)
+		if err != nil {
+			return err
+		}
+		if scheduled.RecoveryDueAt == nil || !scheduled.RecoveryDueAt.Before(now) {
+			return errors.New("query retry fixture is not database-due")
+		}
+		scheduled.RecoveryDueAt = receipt.RecoveryDueAt
+		if !reflect.DeepEqual(scheduled, receipt) {
+			return errors.New("query retry scheduling changed immutable receipt or other progress fields")
+		}
+		return nil
+	})
 	must(t, f.s.recoverQueryReceipts(context.Background()))
 	must(t, f.s.recoverQueryReceipts(context.Background()))
 	must(t, f.s.DB.Where("org_id = ? AND attempt_id = ?", f.key.OrgID, receipt.AttemptID).First(&receipt).Error)
@@ -260,6 +300,7 @@ func TestMySQLConcurrentCreateClaimsSendOnlyOnePOST(t *testing.T) {
 
 func TestMySQLCreateReceiptRecoveryDoesNotRepeatPOST(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	v := f.create(t, "receipt-recovery-create")
 	var op Operation
 	must(t, f.s.DB.Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, v.ID, "create_task").First(&op).Error)
@@ -300,6 +341,7 @@ func TestMySQLCreateReceiptRecoveryDoesNotRepeatPOST(t *testing.T) {
 
 func TestMySQLExpiredCreateLeaseWithoutReceiptNeverResends(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	v := f.create(t, "lease-crash-create")
 	var op Operation
 	must(t, f.s.DB.Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, v.ID, "create_task").First(&op).Error)
@@ -459,6 +501,7 @@ func TestMySQLOperationDispatchRequiresCurrentClaim(t *testing.T) {
 		for _, invalidation := range []string{"status", "version", "attempt", "lease_expired", "lease_recovered"} {
 			t.Run(kind+"/"+invalidation, func(t *testing.T) {
 				f := mysqlFixture(t)
+				executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 				v := f.create(t, "dispatch-guard-create")
 				var op Operation
 				if kind != "create_task" {
@@ -553,6 +596,7 @@ func TestMySQLOperationDispatchRequiresCurrentClaim(t *testing.T) {
 
 func TestMySQLLateCreateReceiptSurvivesExpiredLeaseRecovery(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	v := f.create(t, "late-create-receipt")
 	var op Operation
 	must(t, f.s.DB.Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, v.ID, "create_task").First(&op).Error)
@@ -610,6 +654,7 @@ func TestMySQLOperationDispatchGuardDatabaseFailureNeverSends(t *testing.T) {
 	for _, kind := range []string{"create_task", "cancel_task", "delete_task"} {
 		t.Run(kind, func(t *testing.T) {
 			f := mysqlFixture(t)
+			executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 			v := f.create(t, "dispatch-db-failure-create")
 			var op Operation
 			if kind != "create_task" {

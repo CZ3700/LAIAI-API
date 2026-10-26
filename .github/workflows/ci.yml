@@ -112,6 +112,8 @@ jobs:
         run: go -C core test -race ./internal/migrate -run TestMySQLRouting -count=1 -timeout=8m -v
       - name: Mutation target expand preserves inbox and old writers
         run: go -C core test ./internal/migrate -run TestMySQLVideoActionTargetMigrationPreservesLegacyAndReplays -count=1 -timeout=5m -v
+      - name: Query recovery expand and interrupted replay preserve old writers
+        run: go -C core test -race ./internal/migrate -run '^TestMySQLVideoQueryRecoveryMigrationPreservesAndReplays$' -count=2 -timeout=5m -v
       - name: Apply and replay formal MySQL migrations
         run: |
           go -C core run ./cmd/migrate -dir ../migrations
@@ -151,9 +153,21 @@ jobs:
         run: go -C core test -race ./internal/video -run '^(TestMutationProducer|TestMySQLMutationProducer)' -count=1 -timeout=8m -v
       - name: Raw HTTP task classifications survive persistence and restart
         run: go -C core test -race ./internal/video -run '^TestMySQLRuntimeHTTP(CreatePersistence|QueryAcceptedPersistence|NullableUsagePersistence|UninterpretableQueryPersistence)$' -count=2 -timeout=8m -v
+      - name: Persisted recovery error boundaries and lane isolation
+        run: >-
+          go -C core test -race ./internal/video
+          -run '^(TestRecovery(ErrorsHideMessagesAndPreserveEveryCause|LaneDeadlineDoesNotStarveNextLane|ParentCancellationStopsBeforeNextLane|ErrorClassificationRejectsForeignSemantics|CommittedDispositionAndFailureAreIndependent)|TestInboxRecoveryRetainsApplyAndBackoffFailureAndContinues|TestQueryRecovery(DecoderAndClosedErrorTree|EvidenceDigestCoversDurableFields|DatabaseClockFailsClosed|CountsDoNotTurnFailureIntoNoop|QueueErrorOracle))$'
+          -count=2 -timeout=5m -v
+      - name: Persisted query progress, current-read diagnostics and zero-network recovery
+        # Natural backoff remains 30 seconds; each lane keeps its two-second budget.
+        # The fixed binary handoff process is deliberately excluded here.
+        run: >-
+          go -C core test -race ./internal/video
+          -run '^(TestMySQLQueryRecovery(BadQueueProgress|CommittedStatistics|OldDiagnosticCannotReplaceReview|UnsupportedCompatibilityDiagnostic|DiagnosticsUseCurrentEvidence|TemporaryFailuresRemainRetryable|CandidatesIndexedAndBounded|NoNetworkReplayAndIsolation)|TestMySQLPersistedRecoveryClockBudgetIsScoped)$'
+          -count=2 -timeout=15m -v
       - name: Main lifecycle HTTP and real mutation SIGTERM drain checks
-        # Real mutation tests use their own generated ark_test_mshutdown schemas.
-        run: go -C core test -race ./cmd/core -count=1 -timeout=6m -v
+        # Mutation and independent recovery hosts each use their own private schema.
+        run: go -C core test -race ./cmd/core -count=2 -timeout=6m -v
 
   ark-mock-baseline:
     runs-on: ubuntu-latest
@@ -294,6 +308,46 @@ jobs:
           # Export records original/export hashes and removes synthetic secrets
           # from text. The private parent is deliberately never uploaded.
           path: ${{ runner.temp }}/ark-execution-input-${{ github.run_id }}-${{ github.run_attempt }}/export
+          if-no-files-found: warn
+          retention-days: 14
+
+  ark-query-recovery-compat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GOPROXY: https://proxy.golang.org,direct
+      GOMAXPROCS: 3
+      GOMEMLIMIT: 4GiB
+      # Only a private, digest-pinned MySQL and loopback Mock are created.
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.10'
+          cache: true
+      - name: Verify compiler and fixed pre-recovery implementation
+        run: |
+          test "$(go env GOVERSION)" = go1.26.10
+          python3 -c 'import sys; assert sys.version_info >= (3, 11)'
+          docker --host unix:///var/run/docker.sock version --format '{{.Server.Version}}'
+          git cat-file -e a34a46c0b46bee63c9509224a1b6ebbf8e3fca8c^{commit}
+          docker --host unix:///var/run/docker.sock pull docker.io/library/mysql@sha256:c36050afdca850f23cef85703f84c7531a5ae155a11b5ee1c60acb09937c4084
+      - name: Query recovery handoff and independent raw-evidence verification
+        env:
+          QUERY_RECOVERY_REPORT_DIR: ${{ runner.temp }}/ark-query-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          QUERY_RECOVERY_COMPILER: host
+        run: make ark-query-recovery-compat
+      - name: Retain safe query recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ark-query-recovery-${{ github.sha }}-${{ github.run_attempt }}
+          # Never upload the private parent containing synthetic credentials.
+          path: ${{ runner.temp }}/ark-query-recovery-${{ github.run_id }}-${{ github.run_attempt }}/export
           if-no-files-found: warn
           retention-days: 14
 

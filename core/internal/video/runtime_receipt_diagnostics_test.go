@@ -40,11 +40,11 @@ func TestMySQLRuntimeReceiptLateDiagnosticPreservesSuccessfulReplay(t *testing.T
 	t.Cleanup(func() { f.s.DB.Callback().Create().Remove(createHook) })
 	queryHook := fmt.Sprintf("test:runtime-diagnostic-winner-%d", f.key.OrgID)
 	must(t, f.s.DB.Callback().Query().Before("gorm:query").Register(queryHook, func(tx *gorm.DB) {
-		if tx.Statement.Table != "video_task_states" || !awaitingDiagnostic.CompareAndSwap(true, false) {
+		if tx.Statement.Table != "tasks" || !awaitingDiagnostic.CompareAndSwap(true, false) {
 			return
 		}
-		// The first application transaction has rolled back, and markErr has
-		// not executed its State locking read. Use an independent connection;
+		// The first application transaction has rolled back, and the diagnostic
+		// has not acquired its first Task lock. Use an independent connection;
 		// clear the one-shot flag before recursing through the real applier.
 		must(t, f.s.DB.WithContext(ctx).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Take(&winnerReceipt).Error)
 		must(t, f.s.applyQueryReceipt(ctx, winnerReceipt))

@@ -6,7 +6,7 @@ export GOTOOLCHAIN := local
 
 .PHONY: ci test vet build migrate-lint migrate-smoke help
 .PHONY: web ci-all
-.PHONY: release-check toolchain-check ark-mock-baseline ark-runtime-compat ark-mutation-compat ark-execution-input-compat
+.PHONY: release-check toolchain-check ark-mock-baseline ark-runtime-compat ark-mutation-compat ark-execution-input-compat ark-query-recovery-compat
 
 ci: vet migrate-lint test build ## 完整本地 CI gate（提交前必跑）
 
@@ -41,6 +41,11 @@ ark-execution-input-compat: ## Linux host: eight execution-input binary handoffs
 	test -n "$${EXECUTION_INPUT_REPORT_DIR:-}"
 	python3 scripts/tests/test_ark_execution_input_compat.py
 	sh scripts/ark-execution-input-compat.sh --output "$${EXECUTION_INPUT_REPORT_DIR}" --compiler "$${EXECUTION_INPUT_COMPILER:-host}"
+
+ark-query-recovery-compat: ## Linux host: four persisted-query recovery binary handoffs with a private MySQL
+	test -n "$${QUERY_RECOVERY_REPORT_DIR:-}"
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_ark_query_recovery_compat.py
+	sh scripts/ark-query-recovery-compat.sh --output "$${QUERY_RECOVERY_REPORT_DIR}" --compiler "$${QUERY_RECOVERY_COMPILER:-host}"
 
 test: toolchain-check ## 全部测试（纯 Go sqlite，无 CGO）
 	cd core && go test ./... -count=1

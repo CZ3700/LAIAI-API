@@ -42,6 +42,7 @@ func TestMySQLResponseMutationUnknownRegistrationBlocksEveryLegacyEntrypoint(t *
 				final = "succeeded"
 			}
 			m := newMutationConsumerFixture(t, final)
+			executionRecoveryScope(t, m.fixture, []uint64{m.key.OrgID})
 			a, claim := m.register(t, action)
 			r := m.append(t, a, mutationResponse(ark.OutcomeAccepted, 200))
 			must(t, m.s.DB.Model(&ExecutionAttempt{}).Where("org_id = ? AND attempt_id = ?", m.key.OrgID, a.AttemptID).Update("storage_protocol", "future-mutation-protocol").Error)

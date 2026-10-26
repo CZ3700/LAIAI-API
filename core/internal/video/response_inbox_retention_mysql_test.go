@@ -23,6 +23,7 @@ func TestMySQLResponseInboxRestartRecoversAfterRealPayloadPurge(t *testing.T) {
 	for _, outcome := range []ark.Outcome{ark.OutcomeAccepted, ark.OutcomeRejected} {
 		t.Run(string(outcome), func(t *testing.T) {
 			f := mysqlFixture(t)
+			executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 			v := f.create(t, "inbox-restart-after-purge")
 			input := executionOldCreateInput(t, f, v.ID, executionFixtureNow(t, f.s.DB).Add(-time.Second))
 			if input.ExpiresAt.After(executionFixtureNow(t, f.s.DB)) {
@@ -136,6 +137,7 @@ func TestMySQLResponseInboxReviewProgressSurvivesLaterCompatibilityFailures(t *t
 	for _, fault := range []string{"runtime", "history_metadata"} {
 		t.Run(fault, func(t *testing.T) {
 			f := mysqlFixture(t)
+			executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 			v := f.create(t, "inbox-review-progress-preserved")
 			attempt, claim := responseInboxRegister(t, f, v.ID)
 			first := responseInboxAppend(t, f, attempt, responseInboxResult(ark.OutcomeAccepted, "up_"+v.ID))

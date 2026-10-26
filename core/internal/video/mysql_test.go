@@ -206,6 +206,7 @@ func TestMySQLVideoCreateSettleReplay(t *testing.T) {
 func TestMySQLVideoUnknownAndMissingUsageNeverRefund(t *testing.T) {
 	t.Run("lost POST response", func(t *testing.T) {
 		f := mysqlFixture(t)
+		executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 		f.response = func(*http.Request) (*http.Response, error) { return nil, io.ErrUnexpectedEOF }
 		v := f.create(t, "unknown-post-1")
 		f.dispatch(t, v.ID)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -124,6 +125,7 @@ func responsePersistencePauseAfterPermissionCount(t *testing.T, f *fixture, canc
 
 func TestMySQLResponsePersistenceExhaustionPausesAllSendingEntrypoints(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	f.s.ResponseInboxEnabled = true
 	create := f.create(t, "persistence-pending-create")
 	cancelTask, _, _ := responseInboxAcceptWithoutHTTP(t, f, "persistence-pending-cancel")
@@ -272,6 +274,7 @@ func TestMySQLResponsePersistencePauseAtFinalSendGuardStopsPreparedCalls(t *test
 
 func TestMySQLResponsePersistencePauseStopsAlreadySelectedOperationBatch(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	f.s.ResponseInboxEnabled = true
 	lost := f.create(t, "persistence-first-selected-create")
 	deleteTask, _, _ := responseInboxAcceptWithoutHTTP(t, f, "persistence-second-selected-delete")
@@ -322,6 +325,7 @@ func TestMySQLResponsePersistencePauseStopsAlreadySelectedOperationBatch(t *test
 
 func TestMySQLResponsePersistencePauseStillRecoversDurableEvidence(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	queryTask, _, _ := responseInboxAcceptWithoutHTTP(t, f, "persistence-query-recovery")
 	tokens := int64(100)
 	query := f.receipt(t, queryTask.ID, 1, &tokens)
@@ -367,7 +371,7 @@ func TestMySQLResponsePersistencePauseStillRecoversDurableEvidence(t *testing.T)
 	responsePersistencePrioritizeInbox(t, f, inbox)
 	responsePersistencePrioritizeQuery(t, f, getTask.ID)
 	// Prioritize only this fixture's older legacy and query receipts too; their
-	// consumers remain the real global recovery paths inside ProcessOnce.
+	// consumers use the real recovery paths scoped to this fixture Org inside ProcessOnce.
 	var old []Operation
 	must(t, f.s.recoveryOperationCandidates(context.Background()).Order("o.updated_at, o.id").Limit(1).Find(&old).Error)
 	if len(old) != 1 {
@@ -375,11 +379,50 @@ func TestMySQLResponsePersistencePauseStillRecoversDurableEvidence(t *testing.T)
 	}
 	must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, legacy.ID, "create_task").Update("updated_at", old[0].UpdatedAt.Add(-time.Millisecond)).Error)
 	var prior []QueryReceipt
-	must(t, f.s.recoveryQueryCandidates(context.Background()).Order("r.received_at, r.attempt_id").Limit(1).Scan(&prior).Error)
-	if len(prior) != 1 {
+	must(t, f.s.recoveryQueryCandidates(context.Background()).Order("r.recovery_due_at, r.received_at, r.attempt_id").Limit(1).Find(&prior).Error)
+	if len(prior) != 1 || prior[0].RecoveryDueAt == nil {
 		t.Fatal("query recovery fixture is ineligible")
 	}
-	must(t, f.s.DB.Model(&QueryReceipt{}).Where("org_id = ? AND attempt_id = ?", query.OrgID, query.AttemptID).Update("received_at", prior[0].ReceivedAt.Add(-time.Millisecond)).Error)
+	var original QueryReceipt
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ? AND attempt_id = ?", query.OrgID, query.TaskID, query.AttemptID).Take(&original).Error)
+	// Move only this receipt's scheduling time before the actual eligible
+	// queue. ReceivedAt remains immutable evidence, never a retry timestamp.
+	authorityFixtureTx(t, f.s.DB, func(tx *gorm.DB) error {
+		now, err := authorityFixtureNow(tx)
+		if err != nil {
+			return err
+		}
+		due := now
+		if prior[0].RecoveryDueAt.Before(due) {
+			due = *prior[0].RecoveryDueAt
+		}
+		where := "org_id = ? AND task_id = ? AND attempt_id = ? AND recovery_version = ? AND applied_at IS NULL AND recovery_due_at IS NOT NULL"
+		args := []any{original.OrgID, original.TaskID, original.AttemptID, original.RecoveryVersion}
+		update := tx.Model(&QueryReceipt{}).Where(where, args...).UpdateColumn("recovery_due_at", due.Add(-time.Millisecond))
+		if update.Error != nil {
+			return update.Error
+		}
+		if update.RowsAffected != 1 {
+			return errors.New("query priority fixture did not update exactly one receipt")
+		}
+		var scheduled QueryReceipt
+		if err := tx.Where(where, args...).Take(&scheduled).Error; err != nil {
+			return err
+		}
+		if scheduled.RecoveryDueAt == nil || !scheduled.RecoveryDueAt.Equal(due.Add(-time.Millisecond)) {
+			return errors.New("query priority fixture did not persist its precise due time")
+		}
+		scheduled.RecoveryDueAt = original.RecoveryDueAt
+		if !reflect.DeepEqual(scheduled, original) {
+			return errors.New("query priority scheduling changed evidence or other progress fields")
+		}
+		return nil
+	})
+	var firstQueryBatch []QueryReceipt
+	must(t, f.s.recoveryQueryCandidates(context.Background()).Order("r.recovery_due_at, r.received_at, r.attempt_id").Limit(40).Find(&firstQueryBatch).Error)
+	if len(firstQueryBatch) == 0 || firstQueryBatch[0].OrgID != query.OrgID || firstQueryBatch[0].TaskID != query.TaskID || firstQueryBatch[0].AttemptID != query.AttemptID {
+		t.Fatal("query receipt did not become first in the real bounded recovery queue")
+	}
 	posts := f.posts.Load()
 	must(t, f.s.ProcessOnce(context.Background()))
 	if !f.s.DispatchPaused() || responseInboxApp(t, f, inbox).State != "applied" || runtimeWorkerCreateOperation(t, f, legacy.ID).Status != "confirmed" || f.hold(t, queryTask.ID).Status != ledger.HoldCaptured || f.hold(t, queryTask.ID).CapturedAmount.String() != "0.0008" || f.gets.Load() == 0 || f.posts.Load() != posts {
@@ -399,6 +442,7 @@ func TestMySQLResponsePersistencePauseStillRecoversDurableEvidence(t *testing.T)
 
 func TestMySQLResponsePersistenceApplicationFailureDoesNotPauseSending(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	f.s.ResponseInboxEnabled = true
 	v := f.create(t, "persistence-application-only-failure")
 	injected := errors.New("synthetic application transaction failure")

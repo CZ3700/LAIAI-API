@@ -121,6 +121,7 @@ func TestMySQLResponseInboxDispatchedEvidenceSurvivesLostApplyPermission(t *test
 	for _, fault := range []string{"version_changed", "lease_expired", "caller_cancelled", "runtime_changed", "soft_deleted"} {
 		t.Run(fault, func(t *testing.T) {
 			f := mysqlFixture(t)
+			executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 			f.s.ResponseInboxEnabled = true
 			v := f.create(t, "inbox-after-http")
 			op := runtimeWorkerCreateOperation(t, f, v.ID)
@@ -250,6 +251,7 @@ func TestMySQLResponseInboxConcurrentAppendIsImmutableAndIdempotent(t *testing.T
 
 func TestMySQLResponseInboxConflictingAcceptedEvidenceRequiresReview(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	v := f.create(t, "inbox-conflicting-ids")
 	attempt, op := responseInboxRegister(t, f, v.ID)
 	before := responseInboxFunds(t, f, v.ID)
@@ -260,7 +262,7 @@ func TestMySQLResponseInboxConflictingAcceptedEvidenceRequiresReview(t *testing.
 		t.Fatal("different evidence shared its invocation correlation or overwrote the receipt")
 	}
 	responseInboxMakeDue(t, f, second)
-	must(t, f.s.recoverResponseInbox(context.Background()))
+	requireRecoveryCause(t, f.s.recoverResponseInbox(context.Background()), ErrConflict, 1)
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	var row task.Task
 	var state State
@@ -273,6 +275,7 @@ func TestMySQLResponseInboxConflictingAcceptedEvidenceRequiresReview(t *testing.
 
 func TestMySQLResponseInboxUnknownThenAcceptedUsesTypedFactsWithoutHistory(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	must(t, f.s.DB.Model(&Policy{}).Where("org_id = ?", f.key.OrgID).Update("capture_history", false).Error)
 	v := f.create(t, "inbox-history-disabled")
 	attempt, op := responseInboxRegister(t, f, v.ID)

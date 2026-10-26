@@ -31,6 +31,7 @@ func TestMySQLResponseInboxReviewBlocksInFlightQuerySettlement(t *testing.T) {
 	for _, status := range []string{"succeeded", "failed"} {
 		t.Run(status, func(t *testing.T) {
 			f := mysqlFixture(t)
+			executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 			v, attempt, accepted := responseInboxAcceptWithoutHTTP(t, f, "inbox-query-review-race")
 			before := responseInboxFunds(t, f, v.ID)
 			var conflict ResponseInbox
@@ -102,6 +103,7 @@ func TestMySQLResponseInboxReviewBlocksInFlightQuerySettlement(t *testing.T) {
 
 func TestMySQLResponseInboxReviewFiltersBothQueryQueuesBeforeLimit(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	var quarantined []string
 	completion := int64(100)
 	for i := range 41 { // Both production query batches are bounded at 40.
@@ -178,6 +180,7 @@ func TestMySQLResponseInboxNonReviewEvidenceDoesNotBlockOrdinaryPolling(t *testi
 
 func TestMySQLResponseInboxSiblingReviewPreventsEquivalentRejectionRelease(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	v := f.create(t, "inbox-sibling-review-no-release")
 	attempt, claim := responseInboxRegister(t, f, v.ID)
 	first := responseInboxAppend(t, f, attempt, responseInboxResult(ark.OutcomeRejected, ""))

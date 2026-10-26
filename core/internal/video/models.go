@@ -248,6 +248,10 @@ type QueryReceipt struct {
 	ReceivedAt               time.Time
 	AppliedAt                *time.Time
 	ApplyErrorCode           string
+	// NULL is a durable review barrier. New inserts omit this column so the
+	// primary database supplies UTC time; never fill it from a host clock.
+	RecoveryDueAt   *time.Time `gorm:"default:(UTC_TIMESTAMP(3))"`
+	RecoveryVersion uint64
 }
 
 func (QueryReceipt) TableName() string { return "video_query_receipts" }

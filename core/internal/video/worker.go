@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
@@ -22,15 +21,22 @@ func (s *Service) ProcessOnce(ctx context.Context) (err error) {
 	m := s.metrics()
 	finish := m.startCycle()
 	defer func() { finish(err) }()
-	if err := s.recoverResponseInbox(ctx); err != nil {
+	if err := s.processPersistedEvidenceOnce(ctx); err != nil {
 		return err
 	}
-	if err := s.recoverOperations(ctx); err != nil {
-		return err
-	}
-	if err := s.recoverQueryReceipts(ctx); err != nil {
-		return err
-	}
+	return s.processDispatchOnce(ctx)
+}
+
+// ProcessDispatchOnce performs dispatch and polling independently of the
+// persisted-evidence loop, so a slow upstream cannot block local recovery.
+func (s *Service) ProcessDispatchOnce(ctx context.Context) (err error) {
+	finish := s.metrics().startCycleKind(workerCycleDispatch)
+	defer func() { finish(err) }()
+	return s.processDispatchOnce(ctx)
+}
+
+func (s *Service) processDispatchOnce(ctx context.Context) error {
+	m := s.metrics()
 	var ops []Operation
 	// Pick at most one eligible operation per provider scope/action. Waiting
 	// cancels and an account's backlog cannot monopolize the bounded batch.
@@ -128,101 +134,6 @@ func (s *Service) recoveryOperationCandidates(ctx context.Context) *gorm.DB {
 	return supportedOperationRuntime(s.authorityQuery(ctx).Table("video_operations AS o").Select("o.*").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)").Where("(o.status IN ? AND o.receipt_ref <> '' AND o.receipt_applied_at IS NULL) OR (o.status = ? AND o.lease_until <= UTC_TIMESTAMP(3)) OR "+late,
 		[]string{"in_flight", "unknown"}, "in_flight", "create_task", len("create_task"), "needs_review", len("needs_review"), executionIdentityReviewCode, len(executionIdentityReviewCode),
 		string(ark.OutcomeAccepted), len(ark.OutcomeAccepted), string(ark.OutcomeRejected), len(ark.OutcomeRejected), string(ark.OutcomeUnknown), len(ark.OutcomeUnknown))
-}
-
-func (s *Service) recoverOperations(ctx context.Context) error {
-	var rows []Operation
-	if err := s.recoveryOperationCandidates(ctx).Order("o.updated_at, o.id").Limit(30).Find(&rows).Error; err != nil {
-		return err
-	}
-	for _, op := range rows {
-		if op.ReceiptRef != "" && op.Kind != "create_task" {
-			if err := s.applyMutationReceipt(ctx, op); err == nil {
-				continue
-			} else if errors.Is(err, videoruntime.ErrUnsupported) {
-				continue
-			}
-		}
-		if op.ReceiptRef != "" && op.Kind == "create_task" {
-			if err := s.applyCreateReceipt(ctx, op); err == nil {
-				continue
-			} else {
-				// A refused NotSent is not proof of no charge. Once its exact
-				// legacy claim expires, the diagnostic may retain that receipt
-				// behind review; real accepted/rejected/unknown evidence keeps
-				// using this reducer without an input-expiry requirement.
-				isolated, isolationErr := s.isolateInvalidCreateExecution(ctx, op, err)
-				if isolationErr != nil {
-					return isolationErr
-				}
-				if isolated {
-					continue
-				}
-				if !permanentCreateExecutionIdentityError(err) {
-					return err // Never reinterpret DB/context failure as an expired claim.
-				}
-				if errors.Is(err, videoruntime.ErrUnsupported) {
-					continue
-				}
-			}
-		}
-		if op.Status != "in_flight" {
-			continue
-		}
-		if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			t, st, e := loadTask(tx, op.OrgID, op.ResourceID, true)
-			if e != nil {
-				return e
-			}
-			if e = requireCurrentOperationRuntimeTx(tx, st, op); e != nil {
-				return e
-			}
-			if e = requireNoExecutionAttemptTx(tx, op.OrgID, op.ID); e != nil {
-				return e
-			}
-			var current Operation
-			if e = locked(tx).Where("org_id = ? AND id = ? AND resource_id = ?", op.OrgID, op.ID, op.ResourceID).Take(&current).Error; e != nil {
-				return e
-			}
-			now, e := authorityTimeTx(tx)
-			if e != nil {
-				return e
-			}
-			if current.Version != op.Version || current.Status != "in_flight" || current.AttemptID != op.AttemptID || current.LeaseUntil == nil || current.LeaseUntil.After(now) {
-				return nil
-			}
-			result := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ? AND status = ? AND attempt_id = ?", op.OrgID, op.ID, op.Version, "in_flight", op.AttemptID).Updates(map[string]any{"status": "unknown", "error_code": "submission_uncertain", "updated_at": now})
-			if result.Error != nil || result.RowsAffected == 0 {
-				return result.Error
-			}
-			previous := t.Status
-			if op.Kind == "create_task" && !terminal(t.Status) {
-				t.Status = "submission_unknown"
-				if e = tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Update("status", t.Status).Error; e != nil {
-					return e
-				}
-			}
-			st.SyncState = "needs_review"
-			if !financialFinal(st.BillingState) {
-				st.BillingState = "pending_usage"
-			}
-			review := now.Add(time.Hour)
-			if e = tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"sync_state": st.SyncState, "billing_state": st.BillingState, "review_due_at": review, "updated_at": now}).Error; e != nil {
-				return e
-			}
-			return appendEventTx(tx, &t, &st, "task.submission_unknown", previous, t.Status, st.CreateRequestID, "", now)
-		}); err != nil {
-			isolated, isolationErr := s.isolateInvalidCreateExecution(ctx, op, err)
-			if isolationErr != nil {
-				return isolationErr
-			}
-			if isolated {
-				continue
-			}
-			return err
-		}
-	}
-	return nil
 }
 
 // A shared DB gate limits aggregate account traffic even if more than one
@@ -526,7 +437,13 @@ func (s *Service) persistResponse(ctx context.Context, t task.Task, op Operation
 }
 
 func (s *Service) applyCreateReceipt(ctx context.Context, op Operation) error {
-	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	_, err := s.applyCreateReceiptProgress(ctx, op)
+	return err
+}
+
+func (s *Service) applyCreateReceiptProgress(ctx context.Context, op Operation) (recoveryDisposition, error) {
+	disposition := recoveryUnchanged
+	err := s.recoveryDB(ctx).Transaction(func(tx *gorm.DB) error {
 		t, st, err := loadTask(tx, op.OrgID, op.ResourceID, true)
 		if err != nil {
 			return err
@@ -570,8 +487,16 @@ func (s *Service) applyCreateReceipt(ctx context.Context, op Operation) error {
 		if err != nil {
 			return err
 		}
-		return s.applyCreateResultTx(tx, t, st, current, op, st.CreateRequestID, now)
+		if err := s.applyCreateResultTx(tx, t, st, current, op, st.CreateRequestID, now); err != nil {
+			return err
+		}
+		disposition = recoveryApplied
+		return nil
 	})
+	if err != nil {
+		return recoveryUnchanged, err
+	}
+	return disposition, nil
 }
 
 // applyCreateResultTx is the shared state/financial reducer. The caller must
@@ -826,230 +751,14 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 		if e = tx.Create(&Attempt{OrgID: org, TaskID: id, AttemptID: attempt, RequestID: attempt, Phase: "query_response", HTTPStatus: response.HTTPStatus, UpstreamRequestID: response.RequestID, EvidenceRef: ref, ObservedAt: received}).Error; e != nil {
 			return e
 		}
-		return tx.Create(&receipt).Error
+		// The primary database supplies UTC scheduling defaults; nil is reserved
+		// for a durable review barrier and must not be inserted here.
+		return tx.Omit("RecoveryDueAt", "RecoveryVersion").Create(&receipt).Error
 	})
 	if err != nil {
 		return err
 	}
 	return s.applyQueryReceipt(ctx, receipt)
-}
-
-type queryObservation struct {
-	TaskID             string     `json:"task_id"`
-	Model              string     `json:"model"`
-	Status             ark.Status `json:"status"`
-	CompletionTokens   *int64     `json:"completion_tokens"`
-	TotalTokens        *int64     `json:"total_tokens"`
-	HasError           bool       `json:"has_error"`
-	DeliveryPayloadRef string     `json:"delivery_payload_ref,omitempty"`
-}
-
-func (s *Service) recoverQueryReceipts(ctx context.Context) error {
-	var rows []QueryReceipt
-	if err := s.recoveryQueryCandidates(ctx).Order("r.received_at, r.attempt_id").Limit(40).Find(&rows).Error; err != nil {
-		return err
-	}
-	for _, row := range rows {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if err := s.applyQueryReceipt(ctx, row); err != nil {
-			s.Log.Warn("video query receipt needs recovery", "attempt_id", row.AttemptID)
-		}
-	}
-	return nil
-}
-
-func (s *Service) recoveryQueryCandidates(ctx context.Context) *gorm.DB {
-	return supportedQueryReceiptRuntime(s.DB.WithContext(ctx).Table("video_query_receipts AS r").Select("r.*").Joins("JOIN video_task_states v ON v.org_id = r.org_id AND v.task_id = r.task_id")).Where(noCreateInboxReview).Where("r.applied_at IS NULL AND r.apply_error_code <> ?", "settlement_conflict")
-}
-
-func (s *Service) applyQueryReceipt(ctx context.Context, receipt QueryReceipt) error {
-	now := s.Now().UTC()
-	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		t, st, e := LockBillingTaskTx(tx, receipt.OrgID, receipt.TaskID)
-		if e != nil {
-			return e
-		}
-		if e = locked(tx).Where("org_id = ? AND task_id = ? AND attempt_id = ?", receipt.OrgID, receipt.TaskID, receipt.AttemptID).First(&receipt).Error; e != nil {
-			return e
-		}
-		if e = requireQueryReceiptRuntime(st, receipt); e != nil {
-			return e
-		}
-		if receipt.AppliedAt != nil {
-			return nil
-		}
-		if e = requireNoCreateInboxReviewTx(tx, receipt.OrgID, receipt.TaskID); e != nil {
-			return e
-		}
-		finish := func(code string) error {
-			return tx.Model(&QueryReceipt{}).Where("org_id = ? AND task_id = ? AND attempt_id = ?", receipt.OrgID, receipt.TaskID, receipt.AttemptID).Updates(map[string]any{"applied_at": now, "apply_error_code": code}).Error
-		}
-		if st.DeletedAt != nil {
-			return finish("task_deleted")
-		}
-		if receipt.Sequence <= st.AppliedQuerySequence {
-			return finish("stale_query_response")
-		}
-		response := ark.Result{Action: ark.ActionQuery, Outcome: ark.Outcome(receipt.Outcome), HTTPStatus: receipt.HTTPStatus, RequestID: receipt.ProviderRequestID}
-		deliveryRef := ""
-		if receipt.ObservationJSON != "" {
-			var o queryObservation
-			if e = json.Unmarshal([]byte(receipt.ObservationJSON), &o); e != nil {
-				return e
-			}
-			response.Observation = &ark.Observation{TaskID: o.TaskID, Model: o.Model, Status: o.Status, Usage: ark.Usage{CompletionTokens: o.CompletionTokens, TotalTokens: o.TotalTokens}, HasError: o.HasError}
-			deliveryRef = o.DeliveryPayloadRef
-		}
-		org, id, attempt, ref := t.OrgID, t.TaskID, receipt.AttemptID, receipt.PayloadRef
-		transition := ark.ApplyObservation(ark.Status(t.Status), response)
-		if response.Observation == nil || response.Observation.TaskID != t.UpstreamTaskID || (response.Observation.Model != "" && response.Observation.Model != st.UpstreamModel) {
-			transition.NeedsReview = true
-			transition.Status = ark.Status(t.Status)
-		}
-		from := t.Status
-		t.Status = string(transition.Status)
-		applyCode := ""
-		st.SyncState = "fresh"
-		if transition.NeedsReview {
-			st.SyncState = "needs_review"
-		} else {
-			st.LastSyncedAt = &receipt.ReceivedAt
-		}
-		observation := response.Observation
-		if !transition.NeedsReview && observation != nil {
-			// Asset admission takes the tenant lock before Key/quota/ledger locks.
-			// Terminal release must use the same ordering within this transaction.
-			if terminal(t.Status) {
-				if e = s.afterAssetsTerminalTx(tx, org, id); e != nil {
-					return e
-				}
-			}
-			final := financialFinal(st.BillingState)
-			if final {
-				// An omitted or conflicting value is never permission to erase or
-				// reprice the already confirmed financial projection.
-				if observation.Usage.CompletionTokens != nil && (st.ObservedCompletionTokens == nil || *observation.Usage.CompletionTokens != *st.ObservedCompletionTokens) {
-					st.SyncState, applyCode = "needs_review", "usage_conflicts_with_settlement"
-				}
-			} else if observation.Usage.CompletionTokens != nil {
-				st.ObservedCompletionTokens = observation.Usage.CompletionTokens
-			}
-			if st.TotalTokens == nil {
-				st.TotalTokens = observation.Usage.TotalTokens
-			}
-			switch t.Status {
-			case "succeeded":
-				if !final {
-					st.BillingState = "pending_usage"
-				}
-				if !final && observation.Usage.CompletionTokens != nil {
-					settled, e := videobilling.SettleUsageTx(tx, videobilling.SettlementInput{OrgID: org, TaskID: id, Evidence: videobilling.UsageEvidence{OrgID: org, TaskID: id, EvidenceID: attempt, Source: "task_get", SourceRecordID: t.UpstreamTaskID, SourceVersion: attempt, CompletionTokens: observation.Usage.CompletionTokens, PayloadRef: ref, ObservedAt: now}, Now: now})
-					if e != nil {
-						return e
-					}
-					st.BillingState = settled.State
-					if settled.Entry != nil {
-						t.ActualTokens = *observation.Usage.CompletionTokens
-						t.CostUSD = settled.Entry.CapturedUSD
-						if !settled.Replay {
-							if e = invocation.RecordTx(tx, &invocation.Invocation{OrgID: org, UserID: t.UserID, APIKeyID: t.APIKeyID, RequestID: st.CreateRequestID, Model: t.Model, Modality: invocation.ModalityVideo, ChannelID: t.ChannelID, Provider: Provider, Status: invocation.StatusSuccess, StatusCode: 200, Attempts: 1, CompletionTokens: t.ActualTokens, CostUSD: t.CostUSD, UsageSource: invocation.UsageSourceUpstream, Protocol: "ark_v3", CreatedAt: now}); e != nil {
-								return e
-							}
-						}
-					}
-				}
-				if deliveryRef != "" {
-					st.ResultPayloadRef = deliveryRef
-					if receipt.HasVideo {
-						st.ArtifactStatus = "ready"
-					}
-				}
-			case "failed", "cancelled", "expired":
-				if t.Status == "cancelled" {
-					if e = tx.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND kind = ? AND status IN ? AND runtime_version = ? AND adapter_version = ? AND protocol_contract_version = ?", org, id, "cancel_task", []string{"pending", "unknown", "in_flight"}, st.RuntimeVersion, st.AdapterVersion, st.ProtocolContractVersion).Updates(map[string]any{"status": "confirmed", "updated_at": now}).Error; e != nil {
-						return e
-					}
-				}
-				if final {
-					break
-				}
-				if strings.Contains(","+st.NoChargeStatuses+",", ","+t.Status+",") && (observation.Usage.CompletionTokens == nil || *observation.Usage.CompletionTokens == 0) {
-					released, e := videobilling.ReleaseConfirmedTx(tx, videobilling.ReleaseInput{OrgID: org, TaskID: id, EvidenceID: ref, Reason: videobilling.ReleaseProviderNoCharge, Confirmed: true, Now: now})
-					if e != nil {
-						return e
-					}
-					st.BillingState = released.State
-				} else {
-					st.BillingState = "pending_usage"
-					st.SyncState = "needs_review"
-				}
-			}
-			if e = s.afterObservationTx(tx, &t, &st, receipt.HasVideo, receipt.HasLastFrame, now); e != nil {
-				return e
-			}
-		}
-		updates := map[string]any{"status": t.Status, "actual_tokens": t.ActualTokens, "cost_usd": t.CostUSD}
-		if terminal(t.Status) && t.FinishedAt == nil {
-			updates["finished_at"] = now
-		}
-		if e = tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", org, id).Updates(updates).Error; e != nil {
-			return e
-		}
-		stateUpdates := map[string]any{"billing_state": st.BillingState, "sync_state": st.SyncState, "artifact_status": st.ArtifactStatus, "result_payload_ref": st.ResultPayloadRef, "observed_completion_tokens": st.ObservedCompletionTokens, "total_tokens": st.TotalTokens, "last_synced_at": st.LastSyncedAt, "updated_at": now, "applied_query_sequence": receipt.Sequence, "row_version": st.RowVersion + 1}
-		if receipt.Sequence == st.QuerySequence {
-			stateUpdates["query_lease_until"] = nil
-		}
-		if e = tx.Model(&State{}).Where("org_id = ? AND task_id = ?", org, id).Updates(stateUpdates).Error; e != nil {
-			return e
-		}
-		if transition.NeedsReview {
-			applyCode = "observation_needs_review"
-		}
-		if e = appendEventTx(tx, &t, &st, "task.status_changed", from, t.Status, attempt, ref, now); e != nil {
-			return e
-		}
-		return finish(applyCode)
-	})
-	if err == nil {
-		return nil
-	}
-	// The response transaction already committed. A settlement/event failure
-	// cannot remove the evidence, and recovery can retry it without another GET.
-	code := "query_apply_failed"
-	if errors.Is(err, videoruntime.ErrUnsupported) {
-		code = "runtime_contract_unsupported"
-	} else if errors.Is(err, errCreateInboxReview) {
-		code = "create_identity_review"
-	} else if errors.Is(err, videobilling.ErrConflict) {
-		code = "settlement_conflict"
-	}
-	markErr := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Keep the same State -> receipt lock order as application. A concurrent
-		// successful replay must not be overwritten by a late diagnostic write.
-		var state State
-		if e := locked(tx).Where("org_id = ? AND task_id = ?", receipt.OrgID, receipt.TaskID).Take(&state).Error; e != nil {
-			return e
-		}
-		var current QueryReceipt
-		if e := locked(tx).Where("org_id = ? AND task_id = ? AND attempt_id = ?", receipt.OrgID, receipt.TaskID, receipt.AttemptID).Take(&current).Error; e != nil {
-			return e
-		}
-		if current.AppliedAt != nil {
-			return nil
-		}
-		if current.ApplyErrorCode != code {
-			if e := tx.Model(&QueryReceipt{}).Where("org_id = ? AND task_id = ? AND attempt_id = ?", receipt.OrgID, receipt.TaskID, receipt.AttemptID).Update("apply_error_code", code).Error; e != nil {
-				return e
-			}
-		}
-		if state.DeletedAt == nil && state.SyncState != "needs_review" {
-			return tx.Model(&State{}).Where("org_id = ? AND task_id = ?", receipt.OrgID, receipt.TaskID).Update("sync_state", "needs_review").Error
-		}
-		return nil
-	})
-	return errors.Join(err, markErr)
 }
 
 func isNotFound(err error) bool {
