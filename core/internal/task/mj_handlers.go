@@ -253,6 +253,6 @@ func (s *Service) HandleMJImage(c *gin.Context) {
 		taskErr(c, http.StatusNotFound, "no image for this task")
 		return
 	}
-	guarded := relay.NewGuardedClient(2*time.Minute, relay.AllowPrivateFromDB(s.DB))
+	guarded := relay.NewGuardedMediaClient(2*time.Minute, relay.AllowPrivateFromDB(s.DB))
 	s.proxyDirectContent(c, t, guarded)
 }

@@ -117,7 +117,7 @@ func NewService(db *gorm.DB, kr *crypto.Keyring, log *slog.Logger) *Service {
 	return &Service{
 		DB:          db,
 		Keyring:     kr,
-		Client:      &http.Client{Timeout: 2 * time.Minute},
+		Client:      relay.NewUpstreamClient(2 * time.Minute),
 		Log:         log,
 		Now:         time.Now,
 		TaskTimeout: defaultTaskTimeout,
