@@ -3,8 +3,6 @@ package video
 import (
 	"errors"
 	"time"
-
-	"github.com/laiai/laiai-next/core/internal/identity"
 )
 
 var (
@@ -18,16 +16,15 @@ type CatalogSubjectRef struct{ OrgID, KeyID uint64 }
 
 // CatalogObservation is an observation, never a reusable send permission.
 type CatalogObservation struct {
-	CheckedAt        time.Time      `json:"-"`
-	Models           []CatalogModel `json:"data"`
-	validatedSubject bool
-	modelLimits      string
+	CheckedAt time.Time      `json:"-"`
+	Models    []CatalogModel `json:"data"`
+	subject   officialActionSubject
 }
 
 // AllowsModel reuses the same authenticated RR subject for the generic host
 // projection. A zero-value observation denies every model.
 func (o CatalogObservation) AllowsModel(model string) bool {
-	return o.validatedSubject && identity.LegacyModelAllowed(o.modelLimits, model)
+	return o.subject.allowsModel(model)
 }
 
 type CatalogModel struct {

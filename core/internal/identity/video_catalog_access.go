@@ -3,9 +3,9 @@ package identity
 import (
 	"context"
 	"errors"
-	"strings"
 	"unicode/utf8"
 
+	"github.com/laiai/laiai-next/core/internal/routinggroup"
 	"gorm.io/gorm"
 )
 
@@ -18,15 +18,7 @@ var (
 // LegacyModelAllowed is only the legacy whitelist predicate, not authentication
 // or a decision to enable a grouped key. Callers must validate that separately.
 func LegacyModelAllowed(modelLimits, model string) bool {
-	if strings.TrimSpace(modelLimits) == "" {
-		return true
-	}
-	for _, entry := range strings.Split(modelLimits, ",") {
-		if strings.TrimSpace(entry) == model {
-			return true
-		}
-	}
-	return false
+	return routinggroup.LegacyModelAllowed(modelLimits, model)
 }
 
 // ReadVideoBillingGroupTx reads the legacy billing group, not a routing group.

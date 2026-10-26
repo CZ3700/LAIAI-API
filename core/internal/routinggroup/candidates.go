@@ -1,7 +1,7 @@
 package routinggroup
 
-// This read-only candidate layer is not admission or a sending permit. No
-// production route consumes it, and grouped API keys remain disabled.
+// These read-only observations are not admission or a sending permit.
+// Grouped API keys remain disabled in production authentication and admission.
 import (
 	"context"
 	"errors"
@@ -150,15 +150,38 @@ type candidateSnapshot struct {
 }
 
 func (r *CandidateResolver) readCandidateSnapshot(ctx context.Context, tx *gorm.DB, ref CandidateSubjectRef, at time.Time) (candidateSnapshot, error) {
+	snapshot, err := r.readMembershipSnapshot(ctx, tx, ref, at)
+	if err != nil {
+		return candidateSnapshot{}, err
+	}
+	if snapshot.subject.Mode == "legacy" {
+		return candidateSnapshot{}, ErrCandidatesLegacyMode
+	}
+	return snapshot, nil
+}
+
+func (r *CandidateResolver) readMembershipSnapshot(ctx context.Context, tx *gorm.DB, ref CandidateSubjectRef, at time.Time) (candidateSnapshot, error) {
 	var out candidateSnapshot
 	subject, err := r.Subjects.ReadCandidateSubject(ctx, tx, ref, at)
+	if contextErr := ctx.Err(); contextErr != nil {
+		return out, candidatesFailure(contextErr)
+	}
 	if err != nil {
 		return out, candidatesFailure(err)
 	}
-	if err = validateCandidateSubject(ref, subject); err != nil {
+	// Only this local validator's exact legacy sentinel denotes a fully
+	// validated legacy subject. Reader errors are never treated as that branch.
+	if err = validateCandidateSubject(ref, subject); err != nil && err != ErrCandidatesLegacyMode {
 		return out, err
 	}
+	if subject.RoutingGroupID != nil {
+		groupID := *subject.RoutingGroupID
+		subject.RoutingGroupID = &groupID
+	}
 	out.subject = subject
+	if subject.Mode == "legacy" {
+		return out, nil
+	}
 	q, cancel, err := candidateSelect(ctx, tx, "id, owner_org_id, status, policy_version")
 	if err != nil {
 		return candidateSnapshot{}, candidatesFailure(err)
@@ -227,12 +250,20 @@ func (r *CandidateResolver) readCandidateSnapshot(ctx context.Context, tx *gorm.
 		}
 		ids = append(ids, b.ChannelID)
 	}
-	out.channels, err = r.Channels.ReadPublishedChannels(ctx, tx, ids)
+	channels, err := r.Channels.ReadPublishedChannels(ctx, tx, ids)
+	if contextErr := ctx.Err(); contextErr != nil {
+		return candidateSnapshot{}, candidatesFailure(contextErr)
+	}
 	if err != nil {
 		return candidateSnapshot{}, candidatesFailure(err)
 	}
-	if err = validatePublishedCandidateFacts(ids, out.channels); err != nil {
+	if err = validatePublishedCandidateFacts(ids, channels); err != nil {
 		return candidateSnapshot{}, err
+	}
+	out.channels = make([]PublishedChannelFacts, len(channels))
+	for i, channel := range channels {
+		out.channels[i] = channel
+		out.channels[i].Models = append([]string{}, channel.Models...)
 	}
 	if err = ctx.Err(); err != nil {
 		return candidateSnapshot{}, candidatesFailure(err)
