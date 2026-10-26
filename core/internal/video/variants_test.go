@@ -50,7 +50,20 @@ func variantVideoFixture(t *testing.T) (*fixture, ProviderScope, AssetMediaRegis
 		must(t, f.s.DB.Save(&cfg).Error)
 		minimumVersion := model + "-" + base.PricingVersion
 		minimum := videobilling.MinimumRuleSet{Model: model, Version: minimumVersion, SourceURL: "https://docs.volcengine.com/fixture-only", EvidenceHash: strings.Repeat("b", 64), ObservedAt: f.now, VerifiedAt: f.now, VerifiedBy: 77}
-		cells := []videobilling.MinimumRuleCell{{Resolution: "480p", Ratio: "16:9", OutputDurationMS: 4000, FPS: 24, MinimumTokens: 70308}, {Resolution: "720p", Ratio: "16:9", OutputDurationMS: 4000, FPS: 24, MinimumTokens: 151200}}
+		requestCells := []videobilling.MinimumRuleCell{{Resolution: "480p", Ratio: "16:9", OutputDurationMS: 4000, FPS: 24, MinimumTokens: 70308}, {Resolution: "720p", Ratio: "16:9", OutputDurationMS: 4000, FPS: 24, MinimumTokens: 151200}}
+		cells := append([]videobilling.MinimumRuleCell(nil), requestCells...)
+		// Keep both actual 4s request floors. Additional configured durations
+		// reuse these synthetic values only to satisfy full publication coverage.
+		for _, requestCell := range requestCells {
+			for duration := cap.MinDuration; duration <= cap.MaxDuration; duration++ {
+				if int64(duration)*1000 == requestCell.OutputDurationMS {
+					continue
+				}
+				cell := requestCell
+				cell.OutputDurationMS = int64(duration) * 1000
+				cells = append(cells, cell)
+			}
+		}
 		must(t, f.s.DB.Transaction(func(tx *gorm.DB) error { _, e := videobilling.PublishMinimumTx(tx, minimum, cells); return e }))
 		for _, resolution := range cap.Resolutions {
 			for _, input := range []bool{false, true} {

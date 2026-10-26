@@ -364,7 +364,7 @@ func TestMySQLDraftMetadataAndLicenseRevalidation(t *testing.T) {
 
 func TestMySQLRawVideoUsesAggregateUpperBound(t *testing.T) {
 	f := mysqlFixture(t)
-	scope, _ := assetTestSetup(t, f)
+	scope, cap := assetTestSetup(t, f)
 	var rule videobilling.PricingRule
 	must(t, f.s.DB.Where("provider_scope_id = ?", scope.ID).First(&rule).Error)
 	rule.ID = 0
@@ -376,8 +376,17 @@ func TestMySQLRawVideoUsesAggregateUpperBound(t *testing.T) {
 	if _, err := f.s.Estimate(f.key.OrgID, in); !errors.Is(err, videobilling.ErrPricingUnavailable) {
 		t.Fatalf("missing versioned minimum evidence must reject admission: %v", err)
 	}
+	// Publication covers every configured duration. Keep the actual 5s request
+	// floor unchanged; the other durations use the same synthetic test floor.
+	cells := []videobilling.MinimumRuleCell{{Resolution: "720p", Ratio: "16:9", OutputDurationMS: 5000, FPS: 24, MinimumTokens: 1000000}}
+	for duration := cap.MinDuration; duration <= cap.MaxDuration; duration++ {
+		if duration == 5 {
+			continue
+		}
+		cells = append(cells, videobilling.MinimumRuleCell{Resolution: "720p", Ratio: "16:9", OutputDurationMS: int64(duration) * 1000, FPS: 24, MinimumTokens: 1000000})
+	}
 	must(t, f.s.DB.Transaction(func(tx *gorm.DB) error {
-		_, err := videobilling.PublishMinimumTx(tx, videobilling.MinimumRuleSet{Model: ark.Model20, Version: rule.MinimumRuleVersion, SourceURL: "https://docs.volcengine.com/fixture-only", EvidenceHash: strings.Repeat("a", 64), ObservedAt: f.now, VerifiedAt: f.now, VerifiedBy: 77}, []videobilling.MinimumRuleCell{{Resolution: "720p", Ratio: "16:9", OutputDurationMS: 5000, FPS: 24, MinimumTokens: 1000000}})
+		_, err := videobilling.PublishMinimumTx(tx, videobilling.MinimumRuleSet{Model: ark.Model20, Version: rule.MinimumRuleVersion, SourceURL: "https://docs.volcengine.com/fixture-only", EvidenceHash: strings.Repeat("a", 64), ObservedAt: f.now, VerifiedAt: f.now, VerifiedBy: 77}, cells)
 		return err
 	}))
 	quote, err := f.s.Estimate(f.key.OrgID, in)

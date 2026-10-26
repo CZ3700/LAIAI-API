@@ -564,48 +564,5 @@ func (s *Server) publishVideoQuota(c *gin.Context) {
 	s.videoAdminReply(c, e)
 }
 func validateVideoCapability(cfg video.ModelConfig, cap ark.Capability, bounds map[string]video.Dimensions) error {
-	maxDuration := 15
-	if cfg.PublicModel == ark.Model25 {
-		maxDuration = 30
-	}
-	if cfg.PricingVersion == "" || len(cfg.Version) > 64 || len(cap.Version) > 64 || !ark.ValidUpstreamModel(cfg.PublicModel, cap.UpstreamModel) || cap.MinDuration < 4 || cap.MaxDuration > maxDuration || cap.MaxDuration < cap.MinDuration || cap.FPS <= 0 || cap.FPS > 120 || !videoContains(cap.Resolutions, cap.DefaultResolution) || !videoContains(cap.Ratios, cap.DefaultRatio) || cfg.MaxInputVideoDurationMS < 0 {
-		return video.ErrInvalid
-	}
-	if ark.Is20Variant(cfg.PublicModel) {
-		profile, err := arkverification.Load(cfg.PublicModel)
-		if err != nil || cfg.MaxInputVideoDurationMS > profile.MaxInputVideoDurationMS || cap.VideoInput && cfg.MaxInputVideoDurationMS != profile.MaxInputVideoDurationMS {
-			return video.ErrInvalid
-		}
-		// Raw reference URLs are metered at the official aggregate duration
-		// bound. A smaller administrative value must not under-reserve them.
-		for _, resolution := range cap.Resolutions {
-			for _, ratio := range cap.Ratios {
-				d, ok := profile.Bounds[resolution+"/"+ratio]
-				got, exists := bounds[resolution+"/"+ratio]
-				if !ok || !exists || got.Width != d.Width || got.Height != d.Height {
-					return video.ErrInvalid
-				}
-			}
-		}
-	}
-	for _, resolution := range cap.Resolutions {
-		for _, ratio := range cap.Ratios {
-			d, ok := bounds[resolution+"/"+ratio]
-			if !ok || d.Width <= 0 || d.Height <= 0 || d.Width > 16384 || d.Height > 16384 {
-				return video.ErrInvalid
-			}
-		}
-	}
-	seen := map[string]bool{}
-	for _, status := range strings.Split(cfg.NoChargeStatuses, ",") {
-		if status == "" {
-			continue
-		}
-		if seen[status] || (status != "failed" && status != "cancelled" && status != "expired") {
-			return video.ErrInvalid
-		}
-		seen[status] = true
-	}
-	_, e := ark.Normalize(ark.CreateRequest{Model: cfg.PublicModel, Content: []ark.ContentItem{{Type: "text", Text: "capability validation"}}}, cap, ark.Bindings{})
-	return e
+	return video.ValidatePublicationCapability(cfg, cap, bounds)
 }

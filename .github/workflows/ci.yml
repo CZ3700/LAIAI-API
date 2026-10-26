@@ -139,6 +139,10 @@ jobs:
         run: go -C core test -race ./internal/server -run '^(TestMySQLRoutingOrgAdmin|TestRoutingOrgAdmin)' -count=1 -timeout=10m -v
       - name: Bounded routing candidates preserve closed grouped-key gates
         run: go -C core test -race -p 1 ./internal/identity ./internal/relay ./internal/routinggroup ./internal/server -run '^(TestCandidates|TestRoutingCandidate|TestRoutingPublished|TestMySQLRoutingCandidates)' -count=2 -timeout=10m -v
+      - name: Official video catalog shared publication and isolated snapshot acceptance
+        run: |
+          go -C core test -race -p 1 ./internal/identity ./internal/relay ./internal/videobilling ./internal/video ./internal/server -run '^(TestVideoCatalog|TestCatalogPublication|TestPublication)' -count=1 -timeout=10m -v
+          go -C core test -race -p 1 ./internal/video ./internal/server -run '^TestMySQLVideoCatalog' -count=2 -timeout=15m -v
       - name: Ark concurrency and Linux storage checks
         run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=20m
       - name: Primary database scheduling and lease authority

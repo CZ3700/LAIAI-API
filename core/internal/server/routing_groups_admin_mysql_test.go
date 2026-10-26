@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -60,21 +61,40 @@ func routingAdminMySQLDatabase(t *testing.T) *gorm.DB {
 	if !regexp.MustCompile(`^ark_test_rgadmin_[0-9a-f]{24}$`).MatchString(name) {
 		t.Fatal("invalid private test schema")
 	}
-	admin, err := sql.Open("mysql", config.FormatDSN())
+	// DDL keeps its existing 10s context budget. Its socket must not cut that
+	// budget short; the private business pool below retains all 5s timeouts.
+	adminConfig := config.Clone()
+	adminConfig.ReadTimeout = 15 * time.Second
+	adminConnector, err := mysqlDriver.NewConnector(adminConfig)
 	if err != nil {
 		t.Fatal("cannot open test schema administration connection")
 	}
+	// Unlike a FormatDSN round trip, the connector retains the Discard logger.
+	admin := sql.OpenDB(adminConnector)
 	var pool *sql.DB
 	created := false
 	t.Cleanup(func() {
 		if pool != nil {
-			_ = pool.Close()
+			before := pool.Stats()
+			t.Logf("private schema pool before close: in_use=%d open=%d idle=%d", before.InUse, before.OpenConnections, before.Idle)
+			started := time.Now()
+			closeErr := pool.Close()
+			after := pool.Stats()
+			t.Logf("private schema pool after close: in_use=%d open=%d idle=%d elapsed_ms=%d result=%s",
+				after.InUse, after.OpenConnections, after.Idle,
+				time.Since(started).Milliseconds(), routingAdminCleanupErrorClass(closeErr))
+			if closeErr != nil {
+				t.Errorf("cannot close private routing test pool: %s", routingAdminCleanupErrorClass(closeErr))
+			}
 		}
 		if created {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if _, err := admin.ExecContext(ctx, "DROP DATABASE `"+name+"`"); err != nil {
-				t.Error("cannot remove this invocation's private routing test schema")
+			started := time.Now()
+			_, dropErr := admin.ExecContext(ctx, "DROP DATABASE `"+name+"`")
+			t.Logf("private schema drop: elapsed_ms=%d result=%s", time.Since(started).Milliseconds(), routingAdminCleanupErrorClass(dropErr))
+			cancel()
+			if dropErr != nil {
+				t.Errorf("cannot remove this invocation's private routing test schema: %s", routingAdminCleanupErrorClass(dropErr))
 			}
 		}
 		_ = admin.Close()
@@ -100,6 +120,45 @@ func routingAdminMySQLDatabase(t *testing.T) *gorm.DB {
 		t.Fatal("tracked migrations failed in private routing schema")
 	}
 	return db
+}
+
+// Diagnostic output must never contain a driver error, DSN, address or SQL.
+func routingAdminCleanupErrorClass(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context_canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "context_deadline"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "network_timeout"
+	}
+	return "database_error"
+}
+
+func TestRoutingAdminMySQLCleanupErrorClass(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"success", nil, "ok"},
+		{"cancel", fmt.Errorf("synthetic private context: %w", context.Canceled), "context_canceled"},
+		{"deadline", fmt.Errorf("synthetic private context: %w", context.DeadlineExceeded), "context_deadline"},
+		{"socket", &net.OpError{Op: "read", Err: &net.DNSError{Err: "synthetic private address", IsTimeout: true}}, "network_timeout"},
+		{"driver", &mysqlDriver.MySQLError{Number: 1205, Message: "synthetic private SQL"}, "database_error"},
+		{"other", errors.New("synthetic private DSN"), "database_error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := routingAdminCleanupErrorClass(tc.err); got != tc.want {
+				t.Fatalf("unsafe or incorrect cleanup diagnostic classification: got=%q want=%q", got, tc.want)
+			}
+		})
+	}
 }
 
 type routingAdminDenyTransport struct{ calls atomic.Uint64 }

@@ -101,8 +101,23 @@ func (s *Service) plan(tx *gorm.DB, org uint64, in ark.CreateRequest) (createPla
 	if p.scope.Region != "cn-beijing" || p.scope.AccountRef == "" || p.scope.ProjectName == "" {
 		return p, ErrCapability
 	}
-	var cap ark.Capability
-	if json.Unmarshal([]byte(p.config.CapabilityJSON), &cap) != nil || cap.PublicModel != in.Model {
+	publication, err := ParsePublicationCapability(p.config)
+	if err != nil || p.config.PublicModel != in.Model {
+		return p, ErrCapability
+	}
+	cap := publication.cap
+	channels, err := relay.ReadVideoCatalogChannelsTx(tx.Statement.Context, tx, []uint64{p.config.ChannelID})
+	if err != nil {
+		return p, catalogError(tx.Statement.Context, err)
+	}
+	if len(channels) != 1 {
+		return p, ErrCapability
+	}
+	channel := channels[0]
+	if s.AllowTestEndpoint {
+		channel.OfficialArkEndpoint = true
+	}
+	if channel.ID != p.config.ChannelID || !PublicationChannelUsable(channel) {
 		return p, ErrCapability
 	}
 	effectiveInput, bindings, resources, err := s.taskBindingsTx(tx, org, in, p.scope, cap)
@@ -115,10 +130,7 @@ func (s *Service) plan(tx *gorm.DB, org uint64, in ark.CreateRequest) (createPla
 		return p, err
 	}
 	p.normalized = normalized
-	var dims map[string]Dimensions
-	if json.Unmarshal([]byte(p.config.BoundsJSON), &dims) != nil {
-		return p, ErrCapability
-	}
+	dims := publication.bounds
 	dimension, ok := dims[normalized.Parameters.Resolution+"/"+normalized.Parameters.Ratio]
 	if !ok || dimension.Width <= 0 || dimension.Height <= 0 {
 		return p, ErrCapability
@@ -168,19 +180,42 @@ func (s *Service) plan(tx *gorm.DB, org uint64, in ark.CreateRequest) (createPla
 	if normalized.SourceDraftID != "" {
 		mode = "draft_conversion"
 	}
-	rule, err := videobilling.ResolvePricingTx(tx, videobilling.PricingKey{ProviderScopeID: p.scope.ID, Model: in.Model, Mode: mode, Resolution: effective.Resolution, InputVideo: normalized.HasInputVideo, ServiceTier: effective.ServiceTier, Draft: effective.Draft}, s.Now().UTC())
+	cell := PublicationCell{Mode: mode, Resolution: effective.Resolution, InputVideo: normalized.HasInputVideo, ServiceTier: effective.ServiceTier, Draft: effective.Draft}
+	if !publication.Supports(cell) {
+		return p, ErrCapability
+	}
+	pricingKey := videobilling.PricingKey{ProviderScopeID: p.scope.ID, Model: in.Model, Mode: mode, Resolution: effective.Resolution, InputVideo: normalized.HasInputVideo, ServiceTier: effective.ServiceTier, Draft: effective.Draft}
+	rule, err := videobilling.ResolvePricingTx(tx, pricingKey, s.Now().UTC())
 	if err != nil {
 		return p, err
 	}
 	if rule.Version != p.config.PricingVersion {
 		return p, ErrCapability
 	}
+	publicationContext, err := publication.BillingContext(p.scope)
+	if err != nil {
+		return p, ErrCapability
+	}
+	if err = videobilling.ValidatePublishedRuleTx(tx.Statement.Context, tx, rule, pricingKey, p.config.PricingVersion, publicationContext); err != nil {
+		return p, err
+	}
+	billingGroup, err := identity.ReadVideoBillingGroupTx(tx.Statement.Context, tx, org)
+	if err != nil {
+		return p, catalogError(tx.Statement.Context, err)
+	}
+	ratios, err := relay.ReadVideoCatalogRatiosTx(tx.Statement.Context, tx, billingGroup, []string{in.Model})
+	if err != nil {
+		return p, catalogError(tx.Statement.Context, err)
+	}
+	if len(ratios) != 1 || ratios[0].Model != in.Model || !ratios[0].Ratio.IsPositive() {
+		return p, ErrUnavailable
+	}
 	canonical, err := json.Marshal(in)
 	if err != nil {
 		return p, ErrInvalid
 	}
 	p.canonical = canonical
-	meter := videobilling.MeteringInput{InputVideo: normalized.HasInputVideo, InputDurationMS: inputDuration, OutputDurationMS: duration, OutputFrames: frames, Width: dimension.Width, Height: dimension.Height, FPSNumerator: int64(effective.FramesPerSecond), FPSDenominator: 1, BoundsVerified: cap.Verified, CapabilityVersion: cap.Version, ParentDraftTaskID: normalized.SourceDraftID, EffectiveRatio: relay.EffectiveRatio(tx, org, in.Model), FXUSDPerCNY: fx, FXVersion: p.scope.FXVersion, FXObservedAt: p.scope.FXObservedAt}
+	meter := videobilling.MeteringInput{InputVideo: normalized.HasInputVideo, InputDurationMS: inputDuration, OutputDurationMS: duration, OutputFrames: frames, Width: dimension.Width, Height: dimension.Height, FPSNumerator: int64(effective.FramesPerSecond), FPSDenominator: 1, BoundsVerified: cap.Verified, CapabilityVersion: cap.Version, ParentDraftTaskID: normalized.SourceDraftID, EffectiveRatio: ratios[0].Ratio, FXUSDPerCNY: fx, FXVersion: p.scope.FXVersion, FXObservedAt: p.scope.FXObservedAt}
 	meter.InputDurationSource, meter.InputVideoCount = inputSource, inputVideoCount
 	p.quote, err = videobilling.QuoteWithMinimumTx(tx, rule, meter, videobilling.MinimumContext{Resolution: effective.Resolution, Ratio: effective.Ratio, Ratios: cap.Ratios, MinDuration: cap.MinDuration, MaxDuration: cap.MaxDuration, AutomaticDuration: effective.Duration == -1})
 	if err != nil {
@@ -285,10 +320,8 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		if e = locked(tx).Where("id = ? AND status = ?", p.config.ChannelID, 1).First(&ch).Error; e != nil {
 			return ErrUnavailable
 		}
-		if !s.AllowTestEndpoint && strings.TrimRight(ch.BaseURL, "/") != "https://ark.cn-beijing.volces.com/api/v3" {
-			return ErrCapability
-		}
-		if ch.Provider != "volcengine" && ch.Provider != "modelark" {
+		channelFacts := relay.VideoCatalogChannel{ID: ch.ID, PlatformOwned: ch.OwnerOrgID == 0, Enabled: ch.Status == 1, Provider: ch.Provider, OfficialArkEndpoint: s.AllowTestEndpoint || strings.TrimRight(ch.BaseURL, "/") == "https://ark.cn-beijing.volces.com/api/v3"}
+		if ch.ID != p.config.ChannelID || !PublicationChannelUsable(channelFacts) {
 			return ErrCapability
 		}
 		var active int64

@@ -82,22 +82,10 @@ func containsPrice(v []string, s string) bool {
 	return false
 }
 func priceCellSupported(c pricingCell, cap ark.Capability) bool {
-	if !cap.Enabled || !cap.Verified || !containsPrice(cap.Resolutions, c.Resolution) || c.ServiceTier != "default" || c.InputVideo && !cap.VideoInput {
-		return false
-	}
-	if c.Draft {
-		return cap.Draft && cap.PublicModel == ark.Model25 && c.Resolution == "480p" && c.Mode == "generate"
-	}
-	switch c.Mode {
-	case "generate":
-		return true
-	case "edit", "extend":
-		return c.InputVideo && containsPrice(cap.OmniReferenceTaskTypes, c.Mode)
-	case "draft_conversion":
-		return cap.DraftConversion && c.Resolution == "1080p"
-	default:
-		return false
-	}
+	return video.PublicationCellSupported(video.PublicationCell{
+		Mode: c.Mode, Resolution: c.Resolution, InputVideo: c.InputVideo,
+		ServiceTier: c.ServiceTier, Draft: c.Draft,
+	}, cap)
 }
 func priceMatrix(cap ark.Capability, prices []videobilling.PricingRule) []pricingCell {
 	resolutions := []string{"480p", "720p", "1080p", "4k"}

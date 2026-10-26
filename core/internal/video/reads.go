@@ -4,15 +4,13 @@ import (
 	"crypto/hmac"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/laiai/laiai-next/core/internal/ark"
-	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/task"
-	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 )
@@ -222,37 +220,23 @@ func (s *Service) HandleBilling(c *gin.Context) {
 
 func (s *Service) HandleModels(c *gin.Context) {
 	key := requestKey(c)
-	var configs []ModelConfig
-	if e := s.DB.Order("public_model").Find(&configs).Error; e != nil {
-		respondError(c, e)
+	if key == nil {
+		apiError(c, 403, "forbidden")
 		return
 	}
-	data := []gin.H{}
-	for _, cfg := range configs {
-		if !key.AllowsModel(cfg.PublicModel) {
-			continue
+	observation, err := s.Catalog(c.Request.Context(), CatalogSubjectRef{OrgID: key.OrgID, KeyID: key.ID})
+	if err != nil {
+		if errors.Is(err, ErrCatalogDenied) {
+			apiError(c, 403, "forbidden")
+		} else {
+			apiError(c, 503, "provider_unavailable")
 		}
-		var cap ark.Capability
-		if json.Unmarshal([]byte(cfg.CapabilityJSON), &cap) != nil {
-			continue
-		}
-		var rules []videobilling.PricingRule
-		if e := s.DB.Where("model = ? AND provider_scope_id = ? AND version = ? AND enabled = ? AND effective_from <= ? AND (effective_until IS NULL OR effective_until > ?)", cfg.PublicModel, cfg.ProviderScopeID, cfg.PricingVersion, true, s.Now(), s.Now()).Find(&rules).Error; e != nil {
-			respondError(c, e)
-			return
-		}
-		prices := []gin.H{}
-		formula := ""
-		for _, p := range rules {
-			formula = p.FormulaVersion
-			prices = append(prices, publicPrice(p, p.RetailUSDPer1M.Mul(relay.EffectiveRatio(s.DB, key.OrgID, cfg.PublicModel)).String()))
-		}
-		portraitAssets := false
-		if s.Assets != nil {
-			runtime, e := s.assetScopeTx(s.DB.WithContext(c.Request.Context()), key.OrgID, cfg.ProviderScopeID, videoasset.Scope{}, false)
-			portraitAssets = e == nil && runtime.ExecutionRetentionConsent && runtime.Capabilities.Portrait
-		}
-		data = append(data, gin.H{"id": cfg.PublicModel, "enabled": cfg.Enabled && cap.Enabled, "verified": cfg.VerifiedAt != nil && cap.Verified, "capability_version": cap.Version, "pricing_version": cfg.PricingVersion, "billing_rule_version": formula, "capabilities": gin.H{"resolutions": cap.Resolutions, "max_duration_seconds": cap.MaxDuration, "automatic_duration": cap.AutomaticDuration, "frames": cap.Frames, "input_video": cap.VideoInput, "input_audio": cap.AudioInput, "draft": cap.Draft, "portrait_assets": portraitAssets}, "prices": prices})
+		return
 	}
-	c.JSON(200, gin.H{"data": data})
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(200, gin.H{"data": observation.Models, "catalog": gin.H{
+		"contract": "official-video-catalog-v1", "checked_at": observation.CheckedAt,
+		"assurance": "catalog_observation", "grouped_key_issuance_enabled": false,
+		"not_checked": []string{"request_content", "asset_authorization", "balance", "quota", "rate_limit", "concurrency", "provider_health"},
+	}})
 }
