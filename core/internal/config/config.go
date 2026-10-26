@@ -16,22 +16,23 @@ import (
 )
 
 type Config struct {
-	DSN                       string          // LAIAI_DSN，必填
-	ListenAddr                string          // LAIAI_LISTEN_ADDR，默认 :8080
-	AuthSecret                []byte          // LAIAI_AUTH_SECRET，必填且 >= 32 字符（session token HMAC）
-	AdminToken                []byte          // LAIAI_ADMIN_TOKEN，可选；设置则须 >= 32 字符，未设置 admin API 整组禁用
-	Keyring                   *crypto.Keyring // LAIAI_DATA_KEYS + LAIAI_DATA_KEY_ACTIVE，可选；未设置则渠道管理/relay 禁用
-	VideoHMACSecret           []byte
-	VideoResponseInboxEnabled bool // LAIAI_VIDEO_RESPONSE_INBOX, default false; only controls new attempt registration
-	VideoPortraitCallbackURL  string
-	VideoPortraitReturnURL    string
-	VideoMediaRoot            string
-	VideoMediaPublicBaseURL   string
-	VideoMediaSigningKey      []byte
-	VideoMediaFFProbePath     string
-	VideoMediaScanCommand     []string
-	RedisAddr                 string // LAIAI_REDIS_ADDR，可选（跨实例限流需要；空=退化进程内限流）
-	RedisPassword             string // LAIAI_REDIS_PASSWORD，可选（compose 的 redis 启用 requirepass）
+	DSN                               string          // LAIAI_DSN，必填
+	ListenAddr                        string          // LAIAI_LISTEN_ADDR，默认 :8080
+	AuthSecret                        []byte          // LAIAI_AUTH_SECRET，必填且 >= 32 字符（session token HMAC）
+	AdminToken                        []byte          // LAIAI_ADMIN_TOKEN，可选；设置则须 >= 32 字符，未设置 admin API 整组禁用
+	Keyring                           *crypto.Keyring // LAIAI_DATA_KEYS + LAIAI_DATA_KEY_ACTIVE，可选；未设置则渠道管理/relay 禁用
+	VideoHMACSecret                   []byte
+	VideoResponseInboxEnabled         bool // LAIAI_VIDEO_RESPONSE_INBOX, default false; only controls new attempt registration
+	VideoMutationResponseInboxEnabled bool // LAIAI_VIDEO_MUTATION_RESPONSE_INBOX, default false; independent cancel/delete producer gate
+	VideoPortraitCallbackURL          string
+	VideoPortraitReturnURL            string
+	VideoMediaRoot                    string
+	VideoMediaPublicBaseURL           string
+	VideoMediaSigningKey              []byte
+	VideoMediaFFProbePath             string
+	VideoMediaScanCommand             []string
+	RedisAddr                         string // LAIAI_REDIS_ADDR，可选（跨实例限流需要；空=退化进程内限流）
+	RedisPassword                     string // LAIAI_REDIS_PASSWORD，可选（compose 的 redis 启用 requirepass）
 	// 规模化（读副本 + 连接池可调，扩容旋钮）：
 	// LAIAI_DSN_REPLICAS：逗号分隔的只读副本 DSN，空=无副本（所有读走主库，行为不变）。
 	//   🚨 只把分析/用量历史/排行/公开价目这类「非金钱、容延迟」的只读路由到副本；余额/quota/hold
@@ -79,6 +80,14 @@ func Load() (*Config, error) {
 		c.VideoResponseInboxEnabled = true
 	default:
 		return nil, fmt.Errorf("config: LAIAI_VIDEO_RESPONSE_INBOX must be exactly true or false when set")
+	}
+	switch os.Getenv("LAIAI_VIDEO_MUTATION_RESPONSE_INBOX") {
+	case "", "false":
+		c.VideoMutationResponseInboxEnabled = false
+	case "true":
+		c.VideoMutationResponseInboxEnabled = true
+	default:
+		return nil, fmt.Errorf("config: LAIAI_VIDEO_MUTATION_RESPONSE_INBOX must be exactly true or false when set")
 	}
 	// open conns 最小 1：database/sql 中 0 = 无上限，高负载会打爆 MySQL max_connections（与旧默认相反）。
 	if c.DBMaxOpenConns, perr = getenvInt("LAIAI_DB_MAX_OPEN_CONNS", 50, 1); perr != nil {
