@@ -210,7 +210,7 @@ func TestMySQLResponsePersistenceCancelledCallerStillRetriesEvidence(t *testing.
 	}
 	// Applying under the cancelled caller is optional; a current background
 	// consumer must complete from the durable response without another POST.
-	f.now = f.now.Add(4 * time.Minute)
+	expireFixtureOperationLease(t, f.s.DB, runtimeWorkerCreateOperation(t, f, v.ID))
 	responsePersistencePrioritizeInbox(t, f, r)
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	if responseInboxApp(t, f, r).State != "applied" || responseInboxFunds(t, f, v.ID) != before || f.posts.Load() != 1 {

@@ -19,6 +19,9 @@ func (s *Service) applyClaimedCreateInbox(ctx context.Context, claim Operation, 
 }
 
 func (s *Service) recoverResponseInbox(ctx context.Context) error {
+	if s.DB.Dialector.Name() != "mysql" {
+		return ErrUnavailable
+	}
 	if err := s.recoverExpiredInboxAttempts(ctx); err != nil {
 		return err
 	}
@@ -37,9 +40,6 @@ func (s *Service) recoverResponseInbox(ctx context.Context) error {
 			// Back off only the exact progress version selected by this scan, so a
 			// concurrent successful consumer's marker cannot be overwritten.
 			updates := map[string]any{"next_attempt_at": gorm.Expr("DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 30 SECOND)"), "version": gorm.Expr("version + 1")}
-			if s.DB.Dialector.Name() != "mysql" {
-				updates["next_attempt_at"] = s.Now().UTC().Add(30 * time.Second)
-			}
 			if e := s.DB.WithContext(ctx).Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ? AND state IN ?", row.OrgID, row.ReceiptID, row.Version, []string{"pending", "blocked"}).Updates(updates).Error; e != nil {
 				return e
 			}
@@ -61,13 +61,14 @@ func (s *Service) responseInboxCandidates(ctx context.Context) *gorm.DB {
 		Joins("JOIN video_execution_attempts ea ON ea.attempt_id = r.attempt_id AND ea.org_id = r.org_id AND ea.task_id = r.task_id AND ea.operation_id = r.operation_id").
 		Joins("JOIN video_operations o ON o.id = ea.operation_id AND o.org_id = ea.org_id AND o.resource_id = ea.task_id").
 		Joins("JOIN video_task_states v ON v.task_id = ea.task_id AND v.org_id = ea.org_id")
+	if s.DB.Dialector.Name() != "mysql" {
+		db.AddError(ErrUnavailable)
+		return db
+	}
 	db = supportedInboxRuntime(db).Where("ap.state IN ? AND r.storage_protocol = ea.storage_protocol AND r.action = ea.action AND r.runtime_version = ea.runtime_version AND r.adapter_version = ea.adapter_version AND r.protocol_contract_version = ea.protocol_contract_version AND r.billing_schema_version = ea.billing_schema_version AND r.execution_schema_version = ea.execution_schema_version AND r.observation_schema_version = ea.observation_schema_version", []string{"pending", "blocked"}).
 		Where("r.provider_scope_id = ea.provider_scope_id AND r.credential_snapshot_id = ea.credential_snapshot_id AND r.billing_snapshot_id = ea.billing_snapshot_id AND r.evidence_hmac_version = ea.evidence_hmac_version").
-		Where("o.status IN ? OR (o.status = ? AND o.lease_until <= ?)", []string{"unknown", "confirmed", "rejected"}, "in_flight", s.Now().UTC())
-	if s.DB.Dialector.Name() == "mysql" {
-		return db.Where("ap.next_attempt_at <= UTC_TIMESTAMP(3)")
-	}
-	return db.Where("ap.next_attempt_at <= ?", s.Now().UTC())
+		Where("o.status IN ? OR (o.status = ? AND o.lease_until <= UTC_TIMESTAMP(3))", []string{"unknown", "confirmed", "rejected"}, "in_flight")
+	return db.Where("ap.next_attempt_at <= UTC_TIMESTAMP(3)")
 }
 
 func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID string, claim *Operation) error {
@@ -99,7 +100,6 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 		if err := tx.Where("org_id = ? AND attempt_id = ? AND operation_id = ? AND task_id = ?", org, receipt.AttemptID, op.ID, t.TaskID).Take(&attempt).Error; err != nil {
 			return err
 		}
-		now := s.Now().UTC()
 		mark := func(state, code string, cause error) error {
 			applyErr = cause
 			// Completed or quarantined progress must not return to automatic
@@ -115,7 +115,7 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 			if err != nil {
 				return err
 			}
-			return tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": state, "error_code": code, "version": app.Version + 1, "next_attempt_at": due.Add(30 * time.Second), "updated_at": now}).Error
+			return tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": state, "error_code": code, "version": app.Version + 1, "next_attempt_at": due.Add(30 * time.Second), "updated_at": due}).Error
 		}
 		if err := s.validateResponseInboxTx(tx, attempt, receipt); err != nil {
 			return mark("blocked", "response_identity_unavailable", err)
@@ -135,14 +135,63 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 		if attempt.RuntimeVersion != st.RuntimeVersion || attempt.AdapterVersion != st.AdapterVersion || attempt.ProtocolContractVersion != st.ProtocolContractVersion || attempt.BillingSchemaVersion != st.BillingSchemaVersion || attempt.ProviderScopeID != st.ProviderScopeID || attempt.CredentialSnapshotID != st.CredentialSnapshotID || attempt.BillingSnapshotID != st.BillingSnapshotID || attempt.InputPayloadRef != st.EffectivePayloadRef || op.PayloadRef != attempt.InputPayloadRef {
 			return mark("blocked", "runtime_contract_unsupported", videoruntime.ErrUnsupported)
 		}
-		if err := s.validateExecutionAttemptInputTx(tx, attempt); err != nil {
-			if errors.Is(err, ErrConflict) {
-				return mark("review", "execution_identity_conflict", err)
+		// Gather input and sibling diagnostics before taking the final lease
+		// observation. These reads can wait; an expired sender must not newly
+		// quarantine the task after a permission check made before the wait.
+		diagnosticState, diagnosticCode, diagnosticErr := func() (string, string, error) {
+			if err := s.validateExecutionAttemptInputTx(tx, attempt); err != nil {
+				if errors.Is(err, ErrConflict) {
+					return "review", "execution_identity_conflict", err
+				}
+				return "blocked", "execution_identity_unavailable", err
 			}
-			return mark("blocked", "execution_identity_unavailable", err)
+			if op.AttemptID != attempt.AttemptID || op.Kind != attempt.Action {
+				return "review", "attempt_identity_conflict", ErrConflict
+			}
+			// A second definite result must be compared even after the first one
+			// reached confirmed/rejected or this application's AppliedAt is set.
+			var definite []ResponseInbox
+			if err := tx.Select("outcome", "upstream_task_id").Where("org_id = ? AND attempt_id = ? AND outcome IN ?", org, attempt.AttemptID, []string{string(ark.OutcomeAccepted), string(ark.OutcomeRejected), string(ark.OutcomeNotSent)}).Find(&definite).Error; err != nil {
+				return "", "", err
+			}
+			conflict := false
+			for i := 1; i < len(definite); i++ {
+				if !equivalentCreateResult(definite[0].Outcome, definite[0].UpstreamTaskID, definite[i].Outcome, definite[i].UpstreamTaskID) {
+					conflict = true
+					break
+				}
+			}
+			if op.Status == "confirmed" || op.Status == "rejected" {
+				for _, result := range definite {
+					if !equivalentCreateResult(op.ReceivedOutcome, op.ReceivedTaskID, result.Outcome, result.UpstreamTaskID) {
+						conflict = true
+						break
+					}
+				}
+			}
+			if conflict {
+				return "review", "response_evidence_conflict", ErrConflict
+			}
+			// Completed/tombstoned observations keep their existing precedence.
+			// Only a live reducer candidate needs the create quarantine read.
+			if app.State != "applied" && app.State != "review" && op.Status != "confirmed" && op.Status != "rejected" && !(op.Status == "unknown" && op.ReceiptAppliedAt != nil && receipt.Outcome == string(ark.OutcomeUnknown)) && st.DeletedAt == nil && t.UpstreamTaskID == "" && !terminal(t.Status) && !financialFinal(st.BillingState) {
+				if err := requireNoCreateInboxReviewTx(tx, org, t.TaskID); err != nil {
+					if errors.Is(err, errCreateInboxReview) {
+						return "review", "create_identity_review", err
+					}
+					return "", "", err
+				}
+			}
+			return "", "", nil
+		}()
+		if diagnosticErr != nil && diagnosticState == "" {
+			return diagnosticErr
 		}
-		if op.AttemptID != attempt.AttemptID || op.Kind != attempt.Action {
-			return mark("review", "attempt_identity_conflict", ErrConflict)
+		// Identity/runtime reads may wait. Check the primary's clock only after
+		// those reads and the current task/state/operation/application locks.
+		now, err := authorityTimeTx(tx)
+		if err != nil {
+			return err
 		}
 		// A stale producer may preserve evidence/progress, but cannot diagnose
 		// task state or apply a conflicting response with its expired claim.
@@ -161,34 +210,13 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 		} else if op.Status != "confirmed" && op.Status != "rejected" && op.Status != "unknown" && !(op.Status == "in_flight" && op.LeaseUntil != nil && !op.LeaseUntil.After(now)) {
 			return mark("pending", "claim_active", ErrConflict)
 		}
-		// A second definite result must be compared even after the first one
-		// reached confirmed/rejected or this application's AppliedAt is set.
-		var definite []ResponseInbox
-		if err := tx.Select("outcome", "upstream_task_id").Where("org_id = ? AND attempt_id = ? AND outcome IN ?", org, attempt.AttemptID, []string{string(ark.OutcomeAccepted), string(ark.OutcomeRejected), string(ark.OutcomeNotSent)}).Find(&definite).Error; err != nil {
-			return err
-		}
-		conflict := false
-		for i := 1; i < len(definite); i++ {
-			if !equivalentCreateResult(definite[0].Outcome, definite[0].UpstreamTaskID, definite[i].Outcome, definite[i].UpstreamTaskID) {
-				conflict = true
-				break
-			}
-		}
-		if op.Status == "confirmed" || op.Status == "rejected" {
-			for _, result := range definite {
-				if !equivalentCreateResult(op.ReceivedOutcome, op.ReceivedTaskID, result.Outcome, result.UpstreamTaskID) {
-					conflict = true
-					break
-				}
-			}
-		}
-		if conflict {
-			if st.DeletedAt == nil && st.SyncState != "needs_review" {
+		if diagnosticErr != nil {
+			if diagnosticCode == "response_evidence_conflict" && st.DeletedAt == nil && st.SyncState != "needs_review" {
 				if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", org, t.TaskID).Update("sync_state", "needs_review").Error; err != nil {
 					return err
 				}
 			}
-			return mark("review", "response_evidence_conflict", ErrConflict)
+			return mark(diagnosticState, diagnosticCode, diagnosticErr)
 		}
 		if app.State == "applied" {
 			return nil
@@ -212,14 +240,6 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 		}
 		if t.UpstreamTaskID != "" || terminal(t.Status) || financialFinal(st.BillingState) {
 			return mark("review", "task_fact_conflict", ErrConflict)
-		}
-		// A different receipt must not bypass a quarantine already established
-		// for this task, even if temporarily corrupt metadata was later repaired.
-		if err := requireNoCreateInboxReviewTx(tx, org, t.TaskID); err != nil {
-			if errors.Is(err, errCreateInboxReview) {
-				return mark("review", "create_identity_review", err)
-			}
-			return err
 		}
 		current := op
 		current.ReceivedOutcome, current.ReceivedTaskID, current.HTTPStatus = receipt.Outcome, receipt.UpstreamTaskID, receipt.HTTPStatus
@@ -255,11 +275,14 @@ func equivalentCreateResult(outcome, taskID, otherOutcome, otherTaskID string) b
 // An expired registered attempt without a response is not an unsent request.
 // Keep its immutable identity and all reservations; never requeue its POST.
 func (s *Service) recoverExpiredInboxAttempts(ctx context.Context) error {
+	if s.DB.Dialector.Name() != "mysql" {
+		return ErrUnavailable
+	}
 	var attempts []ExecutionAttempt
 	q := supportedInboxRuntime(s.DB.WithContext(ctx).Table("video_execution_attempts ea").Select("ea.*").
 		Joins("JOIN video_operations o ON o.id = ea.operation_id AND o.org_id = ea.org_id AND o.resource_id = ea.task_id").
 		Joins("JOIN video_task_states v ON v.org_id = ea.org_id AND v.task_id = ea.task_id")).
-		Where("v.deleted_at IS NULL AND o.attempt_id = ea.attempt_id AND o.status = ? AND o.lease_until <= ?", "in_flight", s.Now().UTC()).
+		Where("v.deleted_at IS NULL AND o.attempt_id = ea.attempt_id AND o.status = ? AND o.lease_until <= UTC_TIMESTAMP(3)", "in_flight").
 		Where("NOT EXISTS (SELECT 1 FROM video_response_inbox r WHERE r.org_id = ea.org_id AND r.attempt_id = ea.attempt_id)")
 	if err := q.Order("o.lease_until, ea.attempt_id").Limit(30).Scan(&attempts).Error; err != nil {
 		return err
@@ -271,11 +294,10 @@ func (s *Service) recoverExpiredInboxAttempts(ctx context.Context) error {
 				return err
 			}
 			var op Operation
-			if err := locked(tx).Where("org_id = ? AND id = ?", attempt.OrgID, attempt.OperationID).Take(&op).Error; err != nil {
+			if err := locked(tx).Where("org_id = ? AND id = ? AND resource_id = ?", attempt.OrgID, attempt.OperationID, attempt.TaskID).Take(&op).Error; err != nil {
 				return err
 			}
-			now := s.Now().UTC()
-			if op.Status != "in_flight" || op.AttemptID != attempt.AttemptID || op.LeaseUntil == nil || op.LeaseUntil.After(now) {
+			if op.Status != "in_flight" || op.Version != attempt.OperationClaimVersion || op.AttemptID != attempt.AttemptID || op.Kind != attempt.Action || op.LeaseUntil == nil {
 				return nil
 			}
 			var responses int64
@@ -287,6 +309,13 @@ func (s *Service) recoverExpiredInboxAttempts(ctx context.Context) error {
 			}
 			if err := requireCurrentOperationRuntimeTx(tx, st, op); err != nil {
 				return err
+			}
+			now, err := authorityTimeTx(tx)
+			if err != nil {
+				return err
+			}
+			if op.LeaseUntil.After(now) {
+				return nil
 			}
 			if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ?", op.OrgID, op.ID, op.Version).Updates(map[string]any{"status": "unknown", "error_code": "submission_uncertain", "updated_at": now}).Error; err != nil {
 				return err

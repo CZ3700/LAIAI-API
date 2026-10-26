@@ -51,7 +51,6 @@ func TestMySQLResponseInboxStaleProducerCannotApplyConflictOrDowngradeAppliedRec
 
 	// A current recovery consumer independently acquires application authority
 	// and detects the contradiction without replacing the first binding.
-	f.now = f.now.Add(4 * time.Minute)
 	responseInboxMakeDue(t, f, conflicting)
 	// Other suites retain their own retryable receipts in the shared MySQL
 	// database. This test exercises recovery authority, not queue fairness:

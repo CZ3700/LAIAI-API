@@ -141,7 +141,7 @@ func (s *Service) refreshDelivery(ctx context.Context, t task.Task, st State) er
 		if current.ResultPayloadRef != st.ResultPayloadRef {
 			return ErrConflict
 		}
-		allowed, e := s.rateTx(tx, st.ProviderScopeID, "query", now)
+		allowed, e := s.rateTx(tx, st.ProviderScopeID, "query")
 		if e != nil {
 			return e
 		}

@@ -233,7 +233,7 @@ func TestMySQLRuntimeCandidateFiltersPrecedeAllBatchLimits(t *testing.T) {
 	})
 	for _, blocked := range []string{"state", "snapshot", "operation", "receipt"} {
 		t.Run(blocked, func(t *testing.T) {
-			must(t, f.s.DB.Model(&State{}).Where("org_id = ?", f.key.OrgID).Updates(map[string]any{"runtime_version": videoruntime.RuntimeV1, "adapter_version": videoruntime.AdapterV1, "protocol_contract_version": videoruntime.ProtocolV1, "billing_schema_version": videoruntime.BillingV1, "next_poll_at": f.now.Add(-time.Minute), "query_lease_until": nil}).Error)
+			must(t, f.s.DB.Model(&State{}).Where("org_id = ?", f.key.OrgID).Updates(map[string]any{"runtime_version": videoruntime.RuntimeV1, "adapter_version": videoruntime.AdapterV1, "protocol_contract_version": videoruntime.ProtocolV1, "billing_schema_version": videoruntime.BillingV1, "next_poll_at": gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND)"), "query_lease_until": nil}).Error)
 			must(t, f.s.DB.Model(&videobilling.Snapshot{}).Where("org_id = ?", f.key.OrgID).Update("billing_schema_version", videoruntime.BillingV1).Error)
 			must(t, f.s.DB.Model(&Operation{}).Where("org_id = ?", f.key.OrgID).Updates(map[string]any{"runtime_version": videoruntime.RuntimeV1, "adapter_version": videoruntime.AdapterV1, "protocol_contract_version": videoruntime.ProtocolV1}).Error)
 			must(t, f.s.DB.Model(&QueryReceipt{}).Where("org_id = ?", f.key.OrgID).Update("observation_schema_version", 1).Error)
@@ -262,7 +262,7 @@ func TestMySQLRuntimeCandidateFiltersPrecedeAllBatchLimits(t *testing.T) {
 				if len(operations) != 1 || operations[0].ResourceID != validID {
 					t.Fatal("unsupported operations consumed ROW_NUMBER or batch", len(operations))
 				}
-				must(t, f.s.DB.Model(&Operation{}).Where("org_id = ?", f.key.OrgID).Updates(map[string]any{"status": "in_flight", "lease_until": f.now.Add(-time.Minute)}).Error)
+				must(t, f.s.DB.Model(&Operation{}).Where("org_id = ?", f.key.OrgID).Updates(map[string]any{"status": "in_flight", "lease_until": gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND)")}).Error)
 				operations = nil
 				must(t, f.s.recoveryOperationCandidates(ctx).Where("o.org_id = ?", f.key.OrgID).Order("o.updated_at, o.id").Limit(30).Find(&operations).Error)
 				if len(operations) != 1 || operations[0].ResourceID != validID {

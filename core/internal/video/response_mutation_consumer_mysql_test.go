@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/ledger"
@@ -140,7 +139,7 @@ func TestMySQLResponseMutationStaleClaimCannotApplyOrResurrect(t *testing.T) {
 			case "version":
 				m.recoverable(t, claim)
 			case "lease":
-				m.now = claim.LeaseUntil.Add(time.Millisecond)
+				expireFixtureOperationLease(t, m.s.DB, claim)
 			case "new_attempt":
 				must(t, m.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", m.key.OrgID, claim.ID).Updates(map[string]any{"attempt_id": "other_" + claim.AttemptID, "status": "unknown", "version": claim.Version + 1}).Error)
 			case "deleted":

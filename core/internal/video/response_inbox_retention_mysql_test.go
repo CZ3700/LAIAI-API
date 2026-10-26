@@ -24,10 +24,11 @@ func TestMySQLResponseInboxRestartRecoversAfterRealPayloadPurge(t *testing.T) {
 		t.Run(string(outcome), func(t *testing.T) {
 			f := mysqlFixture(t)
 			v := f.create(t, "inbox-restart-after-purge")
-			attempt, _ := responseInboxRegister(t, f, v.ID)
+			attempt, claim := responseInboxRegister(t, f, v.ID)
 			r := responseInboxAppend(t, f, attempt, responseInboxResult(outcome, "up_"+v.ID))
 			before := responseInboxFunds(t, f, v.ID)
 			reads := responseInboxCount(t, f, &invocation.VideoPayloadAccess{}, "org_id = ?", f.key.OrgID)
+			expireFixtureOperationLease(t, f.s.DB, claim)
 			f.now = f.now.Add(31 * 24 * time.Hour)
 
 			// The lifecycle function is production code. Scope only its candidate

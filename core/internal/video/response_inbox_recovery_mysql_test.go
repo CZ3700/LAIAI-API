@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/invocation"
@@ -21,17 +20,19 @@ func TestMySQLResponseInboxLegacyAndNewQueuesExcludeUnknownProtocolBeforeLimit(t
 	// would starve the supported receipt deliberately placed behind them.
 	for i := range 31 {
 		v := f.create(t, fmt.Sprintf("inbox-future-protocol-%d", i))
-		attempt, _ := responseInboxRegister(t, f, v.ID)
+		attempt, fixtureClaim := responseInboxRegister(t, f, v.ID)
+		expireFixtureOperationLease(t, f.s.DB, fixtureClaim)
 		r := responseInboxAppend(t, f, attempt, responseInboxResult(ark.OutcomeAccepted, "up_"+v.ID))
 		must(t, f.s.DB.Model(&ExecutionAttempt{}).Where("org_id = ? AND attempt_id = ?", attempt.OrgID, attempt.AttemptID).Update("storage_protocol", "future-inbox").Error)
 		must(t, f.s.DB.Model(&ResponseInbox{}).Where("org_id = ? AND receipt_id = ?", r.OrgID, r.ReceiptID).Update("storage_protocol", "future-inbox").Error)
-		must(t, f.s.DB.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ?", r.OrgID, r.ReceiptID).Update("next_attempt_at", f.now.Add(-2*time.Hour)).Error)
+		must(t, f.s.DB.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ?", r.OrgID, r.ReceiptID).Update("next_attempt_at", gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 2 HOUR)")).Error)
 		unsupported = append(unsupported, r)
 	}
 	newTask := f.create(t, "inbox-supported-behind-future")
 	newAttempt, newOp := responseInboxRegister(t, f, newTask.ID)
+	expireFixtureOperationLease(t, f.s.DB, newOp)
 	supported := responseInboxAppend(t, f, newAttempt, responseInboxResult(ark.OutcomeAccepted, "up_"+newTask.ID))
-	must(t, f.s.DB.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ?", supported.OrgID, supported.ReceiptID).Update("next_attempt_at", f.now.Add(-time.Hour)).Error)
+	must(t, f.s.DB.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ?", supported.OrgID, supported.ReceiptID).Update("next_attempt_at", gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 HOUR)")).Error)
 
 	// Produce a genuine legacy HTTP receipt whose application rolls back.
 	// It must be recovered by the legacy reducer only, without a second POST.
@@ -62,7 +63,6 @@ func TestMySQLResponseInboxLegacyAndNewQueuesExcludeUnknownProtocolBeforeLimit(t
 		t.Fatal("legacy fixture acquired new-protocol ownership or lost its receipt")
 	}
 	before := responseInboxFunds(t, f, newTask.ID)
-	f.now = f.now.Add(4 * time.Minute)
 
 	var legacy []Operation
 	must(t, f.s.recoveryOperationCandidates(context.Background()).Where("o.org_id = ?", f.key.OrgID).Order("o.updated_at, o.id").Limit(30).Find(&legacy).Error)
@@ -101,17 +101,18 @@ func TestMySQLResponseInboxExpiredTombstonesDoNotStarveLiveAttempts(t *testing.T
 	var deleted []ExecutionAttempt
 	for i := range 31 {
 		v := f.create(t, fmt.Sprintf("inbox-expired-tombstone-%d", i))
-		attempt, _ := responseInboxRegister(t, f, v.ID)
+		attempt, fixtureClaim := responseInboxRegister(t, f, v.ID)
+		expireFixtureOperationLease(t, f.s.DB, fixtureClaim)
 		must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Update("deleted_at", f.now).Error)
 		// Sort all deleted attempts before the valid candidate at the same
 		// expiry boundary, independent of their random attempt identifiers.
-		must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", f.key.OrgID, attempt.OperationID).Update("lease_until", f.now.Add(time.Minute)).Error)
+		must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ? AND attempt_id = ?", f.key.OrgID, attempt.OperationID, fixtureClaim.Version, fixtureClaim.AttemptID).UpdateColumn("lease_until", gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 2 SECOND)")).Error)
 		deleted = append(deleted, attempt)
 	}
 	v := f.create(t, "inbox-live-after-tombstones")
-	_, _ = responseInboxRegister(t, f, v.ID)
+	_, liveClaim := responseInboxRegister(t, f, v.ID)
+	expireFixtureOperationLease(t, f.s.DB, liveClaim)
 	before := responseInboxFunds(t, f, v.ID)
-	f.now = f.now.Add(4 * time.Minute)
 	must(t, f.s.recoverExpiredInboxAttempts(context.Background()))
 	if runtimeWorkerCreateOperation(t, f, v.ID).Status != "unknown" {
 		t.Fatal("deleted attempts consumed the expired-attempt recovery limit")
@@ -135,7 +136,6 @@ func TestMySQLResponseInboxDifferentCurrentAttemptCannotTakeOldEvidence(t *testi
 	replacement, err := randomID("att_")
 	must(t, err)
 	must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", op.OrgID, op.ID).Updates(map[string]any{"attempt_id": replacement, "version": op.Version + 1, "status": "unknown"}).Error)
-	f.now = f.now.Add(4 * time.Minute)
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	var row task.Task
 	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Take(&row).Error)
@@ -151,18 +151,19 @@ func TestMySQLResponseInboxTemporaryBlockersBackOffAndAllowNextBatch(t *testing.
 	inputs := map[string]bool{}
 	for i := range 30 {
 		v := f.create(t, fmt.Sprintf("inbox-retryable-blocker-%d", i))
-		attempt, _ := responseInboxRegister(t, f, v.ID)
+		attempt, fixtureClaim := responseInboxRegister(t, f, v.ID)
+		expireFixtureOperationLease(t, f.s.DB, fixtureClaim)
 		r := responseInboxAppend(t, f, attempt, responseInboxResult(ark.OutcomeAccepted, "up_"+v.ID))
-		must(t, f.s.DB.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ?", r.OrgID, r.ReceiptID).Update("next_attempt_at", f.now.Add(-2*time.Hour)).Error)
+		must(t, f.s.DB.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ?", r.OrgID, r.ReceiptID).Update("next_attempt_at", gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 2 HOUR)")).Error)
 		inputs[attempt.InputPayloadRef] = true
 		blocked = append(blocked, r)
 	}
 	v := f.create(t, "inbox-after-retryable-blockers")
-	attempt, _ := responseInboxRegister(t, f, v.ID)
+	attempt, fixtureClaim := responseInboxRegister(t, f, v.ID)
+	expireFixtureOperationLease(t, f.s.DB, fixtureClaim)
 	valid := responseInboxAppend(t, f, attempt, responseInboxResult(ark.OutcomeAccepted, "up_"+v.ID))
-	must(t, f.s.DB.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ?", valid.OrgID, valid.ReceiptID).Update("next_attempt_at", f.now.Add(-time.Hour)).Error)
+	must(t, f.s.DB.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ?", valid.OrgID, valid.ReceiptID).Update("next_attempt_at", gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 HOUR)")).Error)
 	before := responseInboxFunds(t, f, v.ID)
-	f.now = f.now.Add(4 * time.Minute)
 	f.s.ResponseInboxEnabled = false
 	name := fmt.Sprintf("test:inbox-temporary-read-%d", f.key.OrgID)
 	fired := 0
@@ -225,7 +226,6 @@ func TestMySQLResponseInboxUpstreamBindingConflictStopsAutomaticReplay(t *testin
 	if app.State != "review" || app.AppliedAt != nil || app.ErrorCode != "upstream_binding_conflict" {
 		t.Fatal("binding conflict was left in the automatic retry queue")
 	}
-	f.now = f.now.Add(4 * time.Minute)
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	var row task.Task

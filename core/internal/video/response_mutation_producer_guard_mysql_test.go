@@ -38,7 +38,7 @@ func TestMySQLMutationProducerFinalGuardRejectsChangedFacts(t *testing.T) {
 				states := p.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", p.key.OrgID, p.taskID)
 				switch fault {
 				case "lease":
-					must(t, operations.Update("lease_until", p.now.Add(-time.Second)).Error)
+					expireFixtureOperationLease(t, p.s.DB, p.operation(t, op.ID))
 				case "status":
 					must(t, operations.Update("status", "unknown").Error)
 				case "version":
@@ -122,6 +122,9 @@ func TestMySQLMutationProducerActionInputUnknownOrExpiredCannotSend(t *testing.T
 				must(t, p.s.DB.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
 					if tx.Statement.Table == "invocation_payload_staging" && hit.CompareAndSwap(false, true) {
 						p.now = p.now.Add(25 * time.Hour)
+						// Keep the original two facts explicit: the real input read
+						// expires, and this producer no longer owns a live DB lease.
+						expireFixtureOperationLease(t, p.s.DB, p.operation(t, op.ID))
 					}
 				}))
 			}

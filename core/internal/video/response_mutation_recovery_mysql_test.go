@@ -135,6 +135,7 @@ func TestMySQLResponseMutationRestartAfterRealInputPurgeWithoutHistory(t *testin
 			restarted.Now = func() time.Time { return m.now }
 			restarted.Client, restarted.Gate = old.Client, old.Gate
 			m.s = restarted
+			expireFixtureOperationLease(t, m.s.DB, claim)
 			prioritizeMutationReceipt(t, m, r)
 			must(t, m.s.recoverMutationResponseInbox(context.Background()))
 			must(t, m.s.recoverMutationResponseInbox(context.Background()))
@@ -168,12 +169,23 @@ func TestMySQLResponseMutationExpiredInvalidInputDoesNotStarveSuccessor(t *testi
 			// unrelated formats. No existing row is removed or rescheduled.
 			var oldest struct{ Lease *time.Time }
 			must(t, m.s.DB.Model(&Operation{}).Select("MIN(lease_until) AS lease").Where("status = ?", "in_flight").Scan(&oldest).Error)
-			due := m.now.Add(-time.Second)
+			var dbNow time.Time
+			authorityFixtureTx(t, m.s.DB, func(tx *gorm.DB) (err error) {
+				dbNow, err = authorityFixtureNow(tx)
+				return err
+			})
+			due := dbNow.Add(-time.Second)
 			if oldest.Lease != nil && !oldest.Lease.After(due) {
 				due = oldest.Lease.Add(-time.Second)
 			}
-			must(t, m.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", m.key.OrgID, badClaim.ID).Update("lease_until", due.Add(-time.Millisecond)).Error)
-			must(t, m.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", m.key.OrgID, goodClaim.ID).Update("lease_until", due).Error)
+			for i, claim := range []Operation{badClaim, goodClaim} {
+				expireFixtureOperationLease(t, m.s.DB, claim)
+				priority := m.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ? AND resource_id = ? AND version = ? AND attempt_id = ?", claim.OrgID, claim.ID, claim.ResourceID, claim.Version, claim.AttemptID).UpdateColumn("lease_until", due.Add(time.Duration(i-1)*time.Millisecond))
+				must(t, priority.Error)
+				if priority.RowsAffected != 1 {
+					t.Fatal("fixture failed to prioritize its exact expired claim")
+				}
+			}
 			funds := m.funds(t)
 			must(t, m.s.recoverExpiredMutationAttempts(context.Background()))
 			if m.operation(t, badClaim.ID).Status != "needs_review" || n.operation(t, goodClaim.ID).Status != "unknown" || m.funds(t) != funds {

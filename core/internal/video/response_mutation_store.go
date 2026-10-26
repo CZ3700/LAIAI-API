@@ -47,7 +47,11 @@ func (s *Service) registerMutationAttemptTx(tx *gorm.DB, t task.Task, st State, 
 	if err := requireOperationRuntime(fixed, current); err != nil {
 		return out, err
 	}
-	if current.Status != "in_flight" || current.Version != op.Version || current.AttemptID != op.AttemptID || current.Kind != op.Kind || current.LeaseUntil == nil || !current.LeaseUntil.After(s.Now().UTC()) || current.PayloadRef != "" && current.PayloadRef != p.payload.PayloadID() {
+	claimTime, err := authorityTimeTx(tx)
+	if err != nil {
+		return out, err
+	}
+	if current.Status != "in_flight" || current.Version != op.Version || current.AttemptID != op.AttemptID || current.Kind != op.Kind || current.LeaseUntil == nil || !current.LeaseUntil.After(claimTime) || current.PayloadRef != "" && current.PayloadRef != p.payload.PayloadID() {
 		return out, ErrConflict
 	}
 	if current.Kind == "cancel_task" && currentTask.Status != "queued" || current.Kind == "delete_task" && (!terminal(currentTask.Status) || !financialFinal(fixed.BillingState) || fixed.DeletionOperationID != op.ID) {

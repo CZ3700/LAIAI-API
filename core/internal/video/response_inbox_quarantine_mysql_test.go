@@ -13,6 +13,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
+	"gorm.io/gorm"
 )
 
 func responseInboxAcceptWithoutHTTP(t *testing.T, f *fixture, key string) (TaskView, ExecutionAttempt, ResponseInbox) {
@@ -62,7 +63,8 @@ func TestMySQLResponseInboxReviewBlocksInFlightQuerySettlement(t *testing.T) {
 			}
 			must(t, f.s.recoverQueryReceipts(context.Background()))
 			must(t, f.s.recoverQueryReceipts(context.Background()))
-			f.now = f.now.Add(4 * time.Minute) // Past both next poll time and old query lease.
+			makeFixtureQueryDue(t, f.s.DB, f.key.OrgID, v.ID, state.QuerySequence, state.QueryLeaseUntil != nil)
+			makeFixtureProviderRateDue(t, f.s.DB, state.ProviderScopeID, "query")
 			if err := f.s.pollTask(context.Background(), f.key.OrgID, v.ID); !errors.Is(err, errCreateInboxReview) {
 				t.Fatal("new query claim did not honor the existing review barrier", err)
 			}
@@ -110,13 +112,13 @@ func TestMySQLResponseInboxReviewFiltersBothQueryQueuesBeforeLimit(t *testing.T)
 		}
 		receipt := f.receipt(t, v.ID, 1, &completion)
 		must(t, f.s.DB.Model(&QueryReceipt{}).Where("org_id = ? AND attempt_id = ?", f.key.OrgID, receipt.AttemptID).Update("received_at", f.now.Add(-5*time.Hour)).Error)
-		must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Update("next_poll_at", f.now.Add(-5*time.Hour)).Error)
+		must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Update("next_poll_at", gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 5 HOUR)")).Error)
 		quarantined = append(quarantined, v.ID)
 	}
 	healthy, _, _ := responseInboxAcceptWithoutHTTP(t, f, "inbox-healthy-after-quarantined-queries")
 	healthyReceipt := f.receipt(t, healthy.ID, 1, &completion)
 	must(t, f.s.DB.Model(&QueryReceipt{}).Where("org_id = ? AND attempt_id = ?", f.key.OrgID, healthyReceipt.AttemptID).Update("received_at", f.now.Add(-4*time.Hour)).Error)
-	must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, healthy.ID).Update("next_poll_at", f.now.Add(-4*time.Hour)).Error)
+	must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, healthy.ID).Update("next_poll_at", gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 4 HOUR)")).Error)
 	var pending []State
 	must(t, f.s.pendingQueryCandidates(context.Background()).Where("v.org_id = ?", f.key.OrgID).Order("v.next_poll_at, v.task_id").Limit(40).Scan(&pending).Error)
 	if len(pending) != 1 || pending[0].TaskID != healthy.ID {
@@ -211,7 +213,7 @@ func TestMySQLResponseInboxSiblingReviewPreventsEquivalentRejectionRelease(t *te
 	if secondApp.State != "review" || secondApp.ErrorCode != "create_identity_review" || secondApp.AppliedAt != nil {
 		t.Fatal("fresh equivalent evidence did not retain the task quarantine")
 	}
-	f.now = f.now.Add(4 * time.Minute)
+	expireFixtureOperationLease(t, f.s.DB, claim)
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	if responseInboxFunds(t, f, v.ID) != before || f.hold(t, v.ID).Status != ledger.HoldActive || responseInboxCount(t, f, &Event{}, "org_id = ? AND task_id = ?", f.key.OrgID, v.ID) != events || responseInboxApp(t, f, first).State != "review" || responseInboxApp(t, f, second).State != "review" || responseInboxCount(t, f, &ResponseInbox{}, "org_id = ? AND attempt_id = ?", f.key.OrgID, attempt.AttemptID) != 2 || f.gets.Load() != 0 || f.posts.Load() != 0 {

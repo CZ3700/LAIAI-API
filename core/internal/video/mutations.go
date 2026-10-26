@@ -203,7 +203,6 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 	var t task.Task
 	var st State
 	claimed := false
-	now := s.Now().UTC()
 	attempt, e := randomID("att_")
 	if e != nil {
 		return e
@@ -242,6 +241,10 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 			return ErrState
 		}
 		op = current
+		now, e := authorityTimeTx(tx)
+		if e != nil {
+			return e
+		}
 		if op.Kind == "cancel_task" {
 			if t.Status == "submitting" || t.Status == "submission_unknown" {
 				return nil
@@ -255,12 +258,18 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 		} else if !terminal(t.Status) || !financialFinal(st.BillingState) {
 			return ErrState
 		}
-		allowed, e := s.rateTx(tx, st.ProviderScopeID, "delete", now)
+		allowed, e := s.rateTx(tx, st.ProviderScopeID, "delete")
 		if e != nil || !allowed {
 			return e
 		}
 		if s.DispatchPaused() {
 			return ErrDispatchPaused
+		}
+		// The shared rate row may have waited for another owner. Start the
+		// fixed lease only after all claim locks have been acquired.
+		now, e = authorityTimeTx(tx)
+		if e != nil {
+			return e
 		}
 		op.Version = current.Version + 1
 		op.AttemptID = attempt
@@ -352,10 +361,14 @@ func (s *Service) applyMutationReceipt(ctx context.Context, op Operation) error 
 			}
 		}
 		if current.Kind == "cancel_task" && status == "unknown" {
+			due, e := authorityTimeTx(tx)
+			if e != nil {
+				return e
+			}
 			if !financialFinal(st.BillingState) {
 				st.BillingState = "pending_usage"
 			}
-			if e := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"next_poll_at": now, "sync_state": "needs_review", "billing_state": st.BillingState}).Error; e != nil {
+			if e := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"next_poll_at": due, "sync_state": "needs_review", "billing_state": st.BillingState}).Error; e != nil {
 				return e
 			}
 		}
