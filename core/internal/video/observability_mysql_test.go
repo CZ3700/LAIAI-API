@@ -75,7 +75,11 @@ func TestMySQLWorkerObservationAggregatesReadOnlyAndIndexed(t *testing.T) {
 	seedTask("succeeded", Provider, false)
 	seedTask("accepted", "legacy", false)
 	seedTask("accepted", Provider, true)
-	for _, cell := range []struct{ kind, status string }{{"create_task", "pending"}, {"cancel_task", "unknown"}, {"delete_task", "in_flight"}, {"secret-kind-one", "pending"}, {"secret-kind-two", "pending"}, {"create_task", "confirmed"}} {
+	for _, cell := range []struct{ kind, status string }{
+		{"create_task", "pending"}, {"cancel_task", "unknown"}, {"delete_task", "in_flight"},
+		{"secret-kind-one", "pending"}, {"secret-kind-two", "pending"}, {"create_task", "confirmed"},
+		{"create_task", "needs_review"}, {"cancel_task", "needs_review"}, {"delete_task", "needs_review"}, {"secret-kind-one", "needs_review"},
+	} {
 		id, err := randomID("op_")
 		must(t, err)
 		must(t, f.s.DB.Create(&Operation{ID: id, OrgID: f.key.OrgID, ResourceID: accepted, Kind: cell.kind, Status: cell.status, Version: 1, CreatedAt: f.now, UpdatedAt: f.now}).Error)
@@ -133,10 +137,34 @@ func TestMySQLWorkerObservationAggregatesReadOnlyAndIndexed(t *testing.T) {
 	for _, cell := range []struct {
 		kind, status string
 		delta        int64
-	}{{"create_task", "pending", 1}, {"cancel_task", "unknown", 1}, {"delete_task", "in_flight", 1}, {"other", "pending", 2}} {
+	}{
+		{"create_task", "pending", 1}, {"cancel_task", "unknown", 1}, {"delete_task", "in_flight", 1}, {"other", "pending", 2},
+		{"create_task", "needs_review", 1}, {"cancel_task", "needs_review", 1}, {"delete_task", "needs_review", 1}, {"other", "needs_review", 1},
+	} {
 		if workerOperationTotal(snapshot, cell.kind, cell.status)-workerOperationTotal(baseline, cell.kind, cell.status) != cell.delta {
 			t.Fatal("operation aggregation lost its closed enum", cell)
 		}
+	}
+	// Every persisted status, including manual-review work, must remain in the
+	// four-kind/four-status closed projection. Unknown kinds share "other";
+	// completed operations never become an additional status cell.
+	operationCells := make(map[[2]string]bool)
+	for _, cell := range snapshot.OperationCounts {
+		switch cell.Kind {
+		case "create_task", "cancel_task", "delete_task", "other":
+		default:
+			t.Fatal("operation aggregation exposed an unrecognized kind")
+		}
+		switch cell.Status {
+		case "pending", "in_flight", "unknown", "needs_review":
+		default:
+			t.Fatal("operation aggregation included a completed or unrecognized status")
+		}
+		identity := [2]string{cell.Kind, cell.Status}
+		if operationCells[identity] || cell.Count <= 0 {
+			t.Fatal("operation aggregation returned a duplicate or nonpositive cell", identity)
+		}
+		operationCells[identity] = true
 	}
 	var priorDueAtSnapshot int64
 	for _, nextAttemptAt := range priorOutboxDueTimes {
@@ -144,7 +172,7 @@ func TestMySQLWorkerObservationAggregatesReadOnlyAndIndexed(t *testing.T) {
 			priorDueAtSnapshot++
 		}
 	}
-	if len(snapshot.OperationCounts) > 12 || snapshot.QueryReceipts.RetryablePending-baseline.QueryReceipts.RetryablePending != 2 || snapshot.QueryReceipts.ConflictPending-baseline.QueryReceipts.ConflictPending != 1 || snapshot.Outbox.Pending-baseline.Outbox.Pending != 2 || snapshot.Outbox.Due-priorDueAtSnapshot != 1 {
+	if len(snapshot.OperationCounts) > 16 || snapshot.QueryReceipts.RetryablePending-baseline.QueryReceipts.RetryablePending != 2 || snapshot.QueryReceipts.ConflictPending-baseline.QueryReceipts.ConflictPending != 1 || snapshot.Outbox.Pending-baseline.Outbox.Pending != 2 || snapshot.Outbox.Due-priorDueAtSnapshot != 1 {
 		t.Fatalf("backlog counts incorrectly include completed or future work: operation_cells=%d receipts=%+v baseline_receipts=%+v outbox=%+v baseline_outbox=%+v prior_due_at_snapshot=%d database_time=%s baseline_database_time=%s", len(snapshot.OperationCounts), snapshot.QueryReceipts, baseline.QueryReceipts, snapshot.Outbox, baseline.Outbox, priorDueAtSnapshot, snapshot.DatabaseTime, baseline.DatabaseTime)
 	}
 	if priorDueAtSnapshot != baseline.Outbox.Due {

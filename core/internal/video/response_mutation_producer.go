@@ -118,6 +118,9 @@ func (s *Service) processMutationInbox(ctx context.Context, candidate Operation)
 	}
 	prepared, err := s.prepareMutationInput(ctx, t, st, preparedClaim, client.Credential)
 	if err != nil {
+		if errors.Is(err, invocation.ErrVideoExecutionAuthorityUnavailable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		return s.deferMutationPreparation(ctx, current)
 	}
 	var attempt ExecutionAttempt
@@ -199,7 +202,7 @@ func (s *Service) processMutationInbox(ctx context.Context, candidate Operation)
 		// Unknown formats/identity corruption never become a definite rejection.
 		// Expired or unavailable known input can record this producer's no-send,
 		// but only after current claim and immutable metadata are revalidated.
-		if errors.Is(err, invocation.ErrVideoExpired) || errors.Is(err, invocation.ErrVideoRetentionDenied) || errors.Is(err, invocation.ErrVideoStorage) || errors.Is(err, invocation.ErrVideoAuditUnavailable) {
+		if executionReadAllowsNotSent(err) {
 			return s.saveMutationNotSent(ctx, claim, attempt, client.Credential)
 		}
 		return err
@@ -298,77 +301,77 @@ func (s *Service) deferMutationPreparation(ctx context.Context, op Operation) er
 
 // This validation uses only bounded-context APIs for Invocation metadata and
 // snapshot identity. It neither decrypts historical evidence nor takes Key locks.
-func (s *Service) mutationSendIdentityTx(tx *gorm.DB, claim Operation, attempt ExecutionAttempt) (mutationActionInput, time.Time, error) {
+func (s *Service) mutationSendIdentityTx(tx *gorm.DB, claim Operation, attempt ExecutionAttempt) (mutationActionInput, invocation.VideoExecutionIdentity, error) {
 	var empty mutationActionInput
 	if _, err := videoruntime.ResolveActionContract(actionAttemptContract(attempt)); err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	if claim.OrgID != attempt.OrgID || claim.ID != attempt.OperationID || claim.ResourceID != attempt.TaskID || claim.Kind != attempt.Action || claim.AttemptID != attempt.AttemptID || claim.Version != attempt.OperationClaimVersion || claim.PayloadRef != attempt.InputPayloadRef || attempt.TargetUpstreamTaskID == nil {
-		return empty, time.Time{}, ErrConflict
+		return empty, invocation.VideoExecutionIdentity{}, ErrConflict
 	}
 	var stored ExecutionAttempt
 	if err := tx.Where("org_id = ? AND attempt_id = ?", attempt.OrgID, attempt.AttemptID).Take(&stored).Error; err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	if !sameExecutionAttempt(stored, attempt) {
-		return empty, time.Time{}, ErrConflict
+		return empty, invocation.VideoExecutionIdentity{}, ErrConflict
 	}
 	t, st, err := loadTask(tx, attempt.OrgID, attempt.TaskID, true)
 	if err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	if err := requireTaskRuntimeTx(tx, st); err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	if err := requireOperationRuntime(st, claim); err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	var current Operation
 	if err := locked(tx).Where("org_id = ? AND id = ? AND resource_id = ?", claim.OrgID, claim.ID, claim.ResourceID).Take(&current).Error; err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	if err := requireOperationRuntime(st, current); err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	if current.Status != "in_flight" || current.Version != claim.Version || current.AttemptID != claim.AttemptID || current.Kind != claim.Kind || current.PayloadRef != attempt.InputPayloadRef || current.LeaseUntil == nil || t.UpstreamTaskID != *attempt.TargetUpstreamTaskID || st.ProviderScopeID != attempt.ProviderScopeID || st.CredentialSnapshotID != attempt.CredentialSnapshotID || st.BillingSnapshotID != attempt.BillingSnapshotID || stateRuntime(st) != actionAttemptContract(attempt).Contract || st.CaptureHistory != attempt.CaptureHistory || st.RetentionDays != attempt.RetentionDays {
-		return empty, time.Time{}, ErrConflict
+		return empty, invocation.VideoExecutionIdentity{}, ErrConflict
 	}
 	if claim.Kind == "cancel_task" && t.Status != "queued" || claim.Kind == "delete_task" && (!terminal(t.Status) || !financialFinal(st.BillingState) || st.DeletionOperationID != claim.ID) {
-		return empty, time.Time{}, ErrState
+		return empty, invocation.VideoExecutionIdentity{}, ErrState
 	}
 	var binding UpstreamBinding
 	if err := tx.Where("provider_scope_id = ? AND upstream_task_id = ? AND OCTET_LENGTH(upstream_task_id) = ?", attempt.ProviderScopeID, t.UpstreamTaskID, len(t.UpstreamTaskID)).Take(&binding).Error; err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	if binding.OrgID != claim.OrgID || binding.TaskID != claim.ResourceID || binding.UpstreamTaskID != t.UpstreamTaskID {
-		return empty, time.Time{}, ErrConflict
+		return empty, invocation.VideoExecutionIdentity{}, ErrConflict
 	}
 	var credential CredentialSnapshot
 	if err := tx.Select("id", "org_id", "task_id", "provider_scope_id").Where("id = ? AND org_id = ? AND task_id = ? AND provider_scope_id = ?", attempt.CredentialSnapshotID, attempt.OrgID, attempt.TaskID, attempt.ProviderScopeID).Take(&credential).Error; err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	if err := s.validateMutationAttemptInputTx(tx, attempt); err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	identity, err := invocation.ReadVideoActionInputIdentityTx(tx, attempt.OrgID, attempt.InputPayloadRef)
 	if err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	var scope ProviderScope
 	if err := tx.Where("id = ?", attempt.ProviderScopeID).Take(&scope).Error; err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	// Metadata/binding reads may wait. Lease permission is checked only after
 	// them, with the Task -> State -> Operation locks still held. This does not
 	// replace the independent final SQL guard immediately before HTTP.
 	now, err := authorityTimeTx(tx)
 	if err != nil {
-		return empty, time.Time{}, err
+		return empty, invocation.VideoExecutionIdentity{}, err
 	}
 	if !current.LeaseUntil.After(now) {
-		return empty, time.Time{}, ErrConflict
+		return empty, invocation.VideoExecutionIdentity{}, ErrConflict
 	}
-	return actionInput(t, st, current, scope), identity.ExpiresAt, nil
+	return actionInput(t, st, current, scope), identity, nil
 }
 
 func (s *Service) readMutationAction(ctx context.Context, op Operation, attempt ExecutionAttempt, credential string) (mutationActionInput, error) {
@@ -381,7 +384,7 @@ func (s *Service) readMutationAction(ctx context.Context, op Operation, attempt 
 	if err != nil {
 		return mutationActionInput{}, err
 	}
-	body, err := s.Evidence.ReadForActionExecution(ctx, op.OrgID, op.PayloadRef, invocation.VideoAccess{ActorRole: invocation.VideoRoleWorker, ActorID: "video-dispatch", ReasonCode: "dispatch", OperationID: op.ID})
+	body, err := s.Evidence.ReadForActionExecutionWithDatabaseTime(ctx, op.OrgID, op.PayloadRef, invocation.VideoAccess{ActorRole: invocation.VideoRoleWorker, ActorID: "video-dispatch", ReasonCode: "dispatch", OperationID: op.ID})
 	if err != nil {
 		return mutationActionInput{}, err
 	}
@@ -464,17 +467,24 @@ func (s *Service) mutationOperationMaySend(ctx context.Context, op Operation, at
 	var input mutationActionInput
 	var expires time.Time
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var identity invocation.VideoExecutionIdentity
 		var err error
-		input, expires, err = s.mutationSendIdentityTx(tx, op, attempt)
-		return err
+		input, identity, err = s.mutationSendIdentityTx(tx, op, attempt)
+		if err != nil {
+			return err
+		}
+		window, err := invocation.CheckVideoActionExecutionWindowTx(tx, op.OrgID, attempt.InputPayloadRef)
+		if err != nil {
+			return err
+		}
+		if window.Identity != identity {
+			return ErrConflict
+		}
+		expires = window.Identity.ExpiresAt
+		return nil
 	})
 	if err != nil {
 		return deny(err)
-	}
-	// Invocation input TTL keeps its existing clock until the separate typed
-	// execution-window change. It is not the operation lease authority.
-	if !expires.After(s.Now().UTC()) {
-		return deny(ErrConflict)
 	}
 	// Metadata reads may block. This fresh query and clock check happen last;
 	// only this captured attempt can pass, never an arbitrary registered row.
@@ -485,7 +495,7 @@ func (s *Service) mutationOperationMaySend(ctx context.Context, op Operation, at
 		Joins("JOIN video_upstream_bindings ub ON ub.provider_scope_id = v.provider_scope_id AND ub.upstream_task_id = t.upstream_task_id AND ub.org_id = t.org_id AND ub.task_id = t.task_id").
 		Joins("JOIN video_provider_scopes ps ON ps.id = v.provider_scope_id").
 		Joins("JOIN video_credential_snapshots cs ON cs.id = v.credential_snapshot_id AND cs.org_id = v.org_id AND cs.task_id = v.task_id AND cs.provider_scope_id = v.provider_scope_id")).
-		Where("o.org_id = ? AND o.id = ? AND o.resource_id = ? AND o.kind = ? AND o.status = ? AND o.version = ? AND o.attempt_id = ? AND o.lease_until > UTC_TIMESTAMP(3) AND v.deleted_at IS NULL AND t.provider = ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, Provider).
+		Where("o.org_id = ? AND o.id = ? AND o.resource_id = ? AND o.kind = ? AND o.status = ? AND o.version = ? AND o.attempt_id = ? AND o.lease_until > UTC_TIMESTAMP(3) AND v.deleted_at IS NULL AND t.provider = ? AND ? > UTC_TIMESTAMP(3)", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, Provider, expires).
 		Where("ea.attempt_id = ? AND ea.operation_claim_version = ? AND ea.input_identity_hmac = ? AND ea.input_payload_ref = ? AND ea.target_upstream_task_id = ? AND t.upstream_task_id = ? AND OCTET_LENGTH(t.upstream_task_id) = ? AND OCTET_LENGTH(ub.upstream_task_id) = ?", attempt.AttemptID, attempt.OperationClaimVersion, attempt.InputIdentityHMAC, attempt.InputPayloadRef, input.TargetUpstreamTaskID, input.TargetUpstreamTaskID, len(input.TargetUpstreamTaskID), len(input.TargetUpstreamTaskID)).
 		Where("OCTET_LENGTH(ea.target_upstream_task_id) = ? AND OCTET_LENGTH(ea.input_payload_ref) = ? AND OCTET_LENGTH(ea.input_identity_hmac) = ? AND OCTET_LENGTH(ea.attempt_id) = ? AND OCTET_LENGTH(o.attempt_id) = ?", len(input.TargetUpstreamTaskID), len(attempt.InputPayloadRef), len(attempt.InputIdentityHMAC), len(attempt.AttemptID), len(op.AttemptID)).
 		Where("OCTET_LENGTH(o.id) = ? AND OCTET_LENGTH(o.resource_id) = ? AND OCTET_LENGTH(ea.operation_id) = ? AND OCTET_LENGTH(ea.task_id) = ? AND OCTET_LENGTH(t.task_id) = ? AND OCTET_LENGTH(v.task_id) = ? AND OCTET_LENGTH(ub.task_id) = ?", len(op.ID), len(op.ResourceID), len(op.ID), len(op.ResourceID), len(op.ResourceID), len(op.ResourceID), len(op.ResourceID)).
@@ -503,9 +513,6 @@ func (s *Service) mutationOperationMaySend(ctx context.Context, op Operation, at
 	}
 	if s.DispatchPaused() {
 		return deny(ErrDispatchPaused)
-	}
-	if !expires.After(s.Now().UTC()) {
-		return deny(ErrConflict)
 	}
 	s.observeGuard(op.Kind, count == 1, nil)
 	return count == 1, nil

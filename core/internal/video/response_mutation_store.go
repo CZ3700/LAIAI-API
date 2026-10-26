@@ -81,7 +81,7 @@ func (s *Service) registerMutationAttemptTx(tx *gorm.DB, t task.Task, st State, 
 	if err := s.validateResponseHashVersionTx(tx, "v1"); err != nil {
 		return out, err
 	}
-	ref, err := s.Evidence.StageTx(tx, p.payload)
+	ref, err := s.Evidence.StageExecutionTx(tx, p.payload)
 	if err != nil {
 		return out, err
 	}

@@ -70,6 +70,9 @@ type VideoPayloadInput struct {
 type PreparedVideoPayload struct {
 	metadata VideoPayload
 	staging  VideoPayloadStaging
+	// Only the fixed database-clock factories set this in-memory provenance.
+	// It is neither persisted nor included in immutable evidence/HMAC bytes.
+	executionPrepared bool
 }
 
 func (p *PreparedVideoPayload) PayloadID() string {

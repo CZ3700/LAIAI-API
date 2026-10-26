@@ -273,7 +273,7 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 			return e
 		}
 		// Encryption is local CPU work. There is no remote KMS/blob call inside T1.
-		execution, e = s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: key.OrgID, RequestID: requestID, Direction: invocation.VideoEffectiveRequest, Purpose: invocation.VideoPurposeExecution, SchemaVersion: p.runtime.ExecutionInputSchemaVersion, Body: p.normalized.Body, ExpiresAt: now.Add(24 * time.Hour), CaptureEnabled: true})
+		execution, e = s.Evidence.PrepareCreateExecutionTx(tx, invocation.VideoExecutionInput{OrgID: key.OrgID, RequestID: requestID, Body: p.normalized.Body})
 		if e != nil {
 			return e
 		}
@@ -314,7 +314,7 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		if e != nil {
 			return e
 		}
-		payload, e := s.Evidence.StageTx(tx, execution)
+		payload, e := s.Evidence.StageExecutionTx(tx, execution)
 		if e != nil {
 			return e
 		}

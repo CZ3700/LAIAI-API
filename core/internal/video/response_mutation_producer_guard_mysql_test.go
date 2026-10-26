@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -12,12 +13,14 @@ import (
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-// The staging read occurs after the real claim transaction has committed and
-// before the final send guard. Updating through another database operation in
-// its After callback gives a deterministic stale-claim boundary without forging
-// a registration, changing the input HMAC, or exposing a production test hook.
+// Only the successful, non-locking staging read in the execution reader occurs
+// after claim commit. StageExecutionTx also reads this table FOR UPDATE inside
+// the claim transaction; that earlier read must never trigger these mutations.
+// An independent connection first proves the complete committed claim/EA, then
+// changes the captured fact before the final send guard.
 func TestMySQLMutationProducerFinalGuardRejectsChangedFacts(t *testing.T) {
 	for _, fault := range []string{"lease", "status", "version", "attempt", "target", "binding", "state_runtime", "operation_runtime", "soft_delete", "pause", "delete_finances", "delete_operation"} {
 		t.Run(fault, func(t *testing.T) {
@@ -29,45 +32,88 @@ func TestMySQLMutationProducerFinalGuardRejectsChangedFacts(t *testing.T) {
 			op := p.pending(t, action)
 			before := p.funds(t)
 			var hit atomic.Bool
+			var stageLockReads atomic.Int32
+			var readerHits atomic.Int32
+			var committedPayload string
 			name := fmt.Sprintf("producer-final-guard-%d", p.key.OrgID)
 			must(t, p.s.DB.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
-				if tx.Statement.Table != "invocation_payload_staging" || !hit.CompareAndSwap(false, true) {
+				if tx.Statement.Table != "invocation_payload_staging" {
 					return
 				}
-				operations := p.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", p.key.OrgID, op.ID)
-				states := p.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", p.key.OrgID, p.taskID)
+				if _, lockedRead := tx.Statement.Clauses["FOR"]; lockedRead {
+					stageLockReads.Add(1)
+					return
+				}
+				stage, ok := tx.Statement.Dest.(*invocation.VideoPayloadStaging)
+				if !ok || tx.Error != nil || tx.RowsAffected != 1 || stage.PayloadID == "" {
+					return
+				}
+				if readerHits.Add(1) != 1 || !hit.CompareAndSwap(false, true) {
+					t.Fatal("fault callback matched more than one execution read")
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				// This handle cannot reuse the execution reader's transaction.
+				// Seeing the new immutable registration proves the claim committed;
+				// merely inspecting the callback transaction would not prove that.
+				db := p.s.DB.WithContext(ctx)
+				var committed Operation
+				must(t, db.Where("org_id = ? AND id = ? AND resource_id = ?", p.key.OrgID, op.ID, p.taskID).Take(&committed).Error)
+				if committed.Status != "in_flight" || committed.Version != op.Version+1 || committed.AttemptID == "" || committed.PayloadRef != stage.PayloadID || committed.LeaseUntil == nil {
+					t.Fatal("fault callback ran before a complete claim was independently visible")
+				}
+				var registered ExecutionAttempt
+				must(t, db.Where("org_id = ? AND task_id = ? AND operation_id = ? AND attempt_id = ?", p.key.OrgID, p.taskID, op.ID, committed.AttemptID).Take(&registered).Error)
+				if registered.InputPayloadRef != stage.PayloadID || registered.OperationClaimVersion != committed.Version || registered.ExecutionSchemaVersion != 2 || registered.InputIdentityHMAC == "" {
+					t.Fatal("fault callback did not observe the committed immutable input")
+				}
+				committedPayload = stage.PayloadID
+				operations := db.Model(&Operation{}).Where("org_id = ? AND id = ? AND resource_id = ? AND version = ? AND attempt_id = ?", p.key.OrgID, op.ID, p.taskID, committed.Version, committed.AttemptID)
+				states := db.Model(&State{}).Where("org_id = ? AND task_id = ?", p.key.OrgID, p.taskID)
+				var changed *gorm.DB
 				switch fault {
 				case "lease":
-					expireFixtureOperationLease(t, p.s.DB, p.operation(t, op.ID))
+					expireFixtureOperationLease(t, db, committed)
 				case "status":
-					must(t, operations.Update("status", "unknown").Error)
+					changed = operations.Update("status", "unknown")
 				case "version":
-					must(t, operations.Update("version", gorm.Expr("version + 1")).Error)
+					changed = operations.Update("version", gorm.Expr("version + 1"))
 				case "attempt":
-					must(t, operations.Update("attempt_id", "att_replaced_by_another_claim").Error)
+					changed = operations.Update("attempt_id", "att_replaced_by_another_claim")
 				case "target":
-					must(t, p.s.DB.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", p.key.OrgID, p.taskID).Update("upstream_task_id", "up_changed_target").Error)
+					changed = db.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", p.key.OrgID, p.taskID).Update("upstream_task_id", "up_changed_target")
 				case "binding":
-					must(t, p.s.DB.Where("org_id = ? AND task_id = ?", p.key.OrgID, p.taskID).Delete(&UpstreamBinding{}).Error)
+					changed = db.Where("org_id = ? AND task_id = ?", p.key.OrgID, p.taskID).Delete(&UpstreamBinding{})
 				case "state_runtime":
-					must(t, states.Update("runtime_version", "future-runtime").Error)
+					changed = states.Update("runtime_version", "future-runtime")
 				case "operation_runtime":
-					must(t, operations.Update("runtime_version", "future-runtime").Error)
+					changed = operations.Update("runtime_version", "future-runtime")
 				case "soft_delete":
-					must(t, states.Update("deleted_at", p.now).Error)
+					changed = states.Update("deleted_at", p.now)
 				case "pause":
 					p.s.responsePaused.Store(true)
 				case "delete_finances":
-					must(t, states.Update("billing_state", "pending_usage").Error)
+					changed = states.Update("billing_state", "pending_usage")
 				case "delete_operation":
-					must(t, states.Update("deletion_operation_id", "op_replaced_delete").Error)
+					changed = states.Update("deletion_operation_id", "op_replaced_delete")
+				}
+				if changed != nil {
+					must(t, changed.Error)
+					if changed.RowsAffected != 1 {
+						t.Fatal("fault did not change exactly one committed row")
+					}
 				}
 			}))
 			t.Cleanup(func() { _ = p.s.DB.Callback().Query().Remove(name) })
 			_ = p.s.processMutation(context.Background(), op)
 			must(t, p.s.DB.Callback().Query().Remove(name))
 			current := p.operation(t, op.ID)
-			if !hit.Load() || p.deletes.Load() != 0 || current.Status == "pending" || current.Status == "rejected" || p.funds(t) != before || responseInboxCount(t, p.fixture, &ResponseInbox{}, "org_id = ? AND operation_id = ?", p.key.OrgID, op.ID) != 0 || responseInboxCount(t, p.fixture, &Attempt{}, "org_id = ? AND operation_id = ? AND phase = ?", p.key.OrgID, op.ID, "not_sent") != 0 {
+			var successfulReads int64
+			must(t, p.s.DB.Model(&invocation.VideoPayloadAccess{}).Where("org_id = ? AND operation_id = ? AND payload_id = ? AND phase = ? AND outcome = ?", p.key.OrgID, op.ID, committedPayload, "finished", "succeeded").Count(&successfulReads).Error)
+			if stageLockReads.Load() == 0 || readerHits.Load() != 1 || !hit.Load() || successfulReads != 1 {
+				t.Fatal("test did not cross Stage, committed claim and successful execution read before the final guard")
+			}
+			if p.deletes.Load() != 0 || current.Status == "pending" || current.Status == "rejected" || p.funds(t) != before || responseInboxCount(t, p.fixture, &ResponseInbox{}, "org_id = ? AND operation_id = ?", p.key.OrgID, op.ID) != 0 || responseInboxCount(t, p.fixture, &Attempt{}, "org_id = ? AND operation_id = ? AND phase = ?", p.key.OrgID, op.ID, "not_sent") != 0 {
 				t.Fatal("lost claim sent HTTP, fabricated no-send evidence or changed funds")
 			}
 			p.execution(t, op)
@@ -100,36 +146,53 @@ func TestMySQLMutationProducerActionInputUnknownOrExpiredCannotSend(t *testing.T
 	for _, fault := range []string{"unknown_schema", "expired_during_read"} {
 		t.Run(fault, func(t *testing.T) {
 			p := newMutationProducerFixture(t, "")
-			op := p.pending(t, "cancel_task")
+			var op Operation
+			var oldAttempt ExecutionAttempt
+			var expires time.Time
+			if fault == "expired_during_read" {
+				expires = executionFixtureNow(t, p.s.DB).Add(3 * time.Second)
+				oldAttempt, op = executionOldMutationClaim(t, p.mutationConsumerFixture, "cancel_task", expires)
+			} else {
+				op = p.pending(t, "cancel_task")
+			}
 			before := p.funds(t)
 			var hit atomic.Bool
 			name := fmt.Sprintf("producer-action-input-%d", p.key.OrgID)
 			if fault == "unknown_schema" {
 				must(t, p.s.DB.Callback().Query().Before("gorm:query").Register(name, func(tx *gorm.DB) {
-					if tx.Statement.Table != "invocation_payloads" {
+					lock, ok := tx.Statement.Clauses["FOR"].Expression.(clause.Locking)
+					if tx.Statement.Table != "invocation_payloads" || !ok || lock.Strength != "SHARE" || !hit.CompareAndSwap(false, true) {
 						return
 					}
-					if _, inTx := tx.Statement.ConnPool.(gorm.TxCommitter); inTx {
-						return
-					}
-					if !hit.CompareAndSwap(false, true) {
-						return
-					}
+					// Before the short reader acquires its SHARE lock, on a
+					// second connection; never UPDATE behind our own held lock.
 					a := p.execution(t, op)
 					must(t, p.s.DB.Model(&invocation.VideoPayload{}).Where("org_id = ? AND payload_id = ?", p.key.OrgID, a.InputPayloadRef).Update("schema_version", 3).Error)
 				}))
 			} else {
 				must(t, p.s.DB.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
 					if tx.Statement.Table == "invocation_payload_staging" && hit.CompareAndSwap(false, true) {
-						p.now = p.now.Add(25 * time.Hour)
-						// Keep the original two facts explicit: the real input read
-						// expires, and this producer no longer owns a live DB lease.
-						expireFixtureOperationLease(t, p.s.DB, p.operation(t, op.ID))
+						executionWaitExpired(t, p.s.DB, expires)
+						expireFixtureOperationLease(t, p.s.DB, op)
 					}
 				}))
 			}
 			t.Cleanup(func() { _ = p.s.DB.Callback().Query().Remove(name) })
-			_ = p.s.processMutation(context.Background(), op)
+			if fault == "expired_during_read" {
+				// The new factory cannot legitimately make a short-lived input.
+				// Exercise its production reader/no-send gates with a real N-1
+				// capsule, never rewrite expires/AAD after registration.
+				executionWaitExpired(t, p.s.DB, expires.Add(-500*time.Millisecond))
+				_, err := p.s.readMutationAction(context.Background(), op, oldAttempt, "official-test-credential")
+				if !errors.Is(err, invocation.ErrVideoExpired) {
+					t.Fatal("input did not expire during its actual read", err)
+				}
+				if err := p.s.saveMutationNotSent(context.Background(), op, oldAttempt, "official-test-credential"); !errors.Is(err, ErrConflict) {
+					t.Fatal("expired claim obtained no-send permission", err)
+				}
+			} else {
+				_ = p.s.processMutation(context.Background(), op)
+			}
 			must(t, p.s.DB.Callback().Query().Remove(name))
 			current := p.operation(t, op.ID)
 			if !hit.Load() || p.deletes.Load() != 0 || current.Status != "in_flight" || p.funds(t) != before || responseInboxCount(t, p.fixture, &ResponseInbox{}, "org_id = ? AND operation_id = ?", p.key.OrgID, op.ID) != 0 {

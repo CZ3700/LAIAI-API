@@ -109,11 +109,15 @@ func TestMySQLRuntimeDeliveryRefreshRechecksAfterCredentialRead(t *testing.T) {
 	must(t, err)
 	calls := f.gets.Load()
 	holdBefore := f.hold(t, v.ID)
-	entered, resume := pauseVideoCredentialRead(t, f)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	stopped := make(chan struct{})
+	entered, resume := pauseVideoCredentialRead(t, f, cancel, stopped)
 	done := make(chan error, 1)
-	go func() { done <- f.s.refreshDelivery(ctx, row, state) }()
+	go func() {
+		defer close(stopped)
+		done <- f.s.refreshDelivery(ctx, row, state)
+	}()
 	select {
 	case <-entered:
 	case err := <-done:

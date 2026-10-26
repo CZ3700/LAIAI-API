@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"gorm.io/gorm"
@@ -34,16 +37,43 @@ func TestMySQLRuntimeFinalMetadataMustPrecedeSendPermission(t *testing.T) {
 				return string(data)
 			}
 			before := financialState()
-			prepared, invalidated := false, false
+			prepared := false
+			injections, permissionReads := 0, 0
+			countAfterInjection := false
 			name := fmt.Sprintf("test:runtime-final-metadata-%d", f.key.OrgID)
 			must(t, f.s.DB.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
-				if tx.Statement.Table == "video_credential_snapshots" {
-					prepared = true
+				sql := strings.ReplaceAll(strings.ToLower(tx.Statement.SQL.String()), "`", "")
+				if strings.Contains(sql, "count(*)") && strings.Contains(sql, "from video_operations as o") && strings.Contains(sql, "join video_task_states v") {
+					permissionReads++
+					count, ok := tx.Statement.Dest.(*int64)
+					countAfterInjection = injections == 1 && ok && *count == 0 && tx.Error == nil
 					return
 				}
-				// The transaction helper selects only these five metadata
-				// fields. Exclude the earlier typed payload read and claim.
-				if !prepared || invalidated || tx.Statement.Table != "invocation_payloads" || len(tx.Statement.Selects) != 5 || tx.Error != nil {
+				if tx.Statement.Table == "video_credential_snapshots" {
+					prepared = tx.Error == nil && tx.RowsAffected == 1
+					return
+				}
+				// After clientFor has loaded the credential, the actual final
+				// window performs a current FOR SHARE metadata read. Earlier
+				// plaintext/current reads precede that credential, and the
+				// metadata-only identity lookups have no FOR SHARE clause.
+				metadata, ok := tx.Statement.Dest.(*invocation.VideoPayload)
+				if !prepared || injections != 0 || tx.Statement.Table != "invocation_payloads" || !strings.Contains(sql, "for share") || tx.Error != nil || tx.RowsAffected != 1 || !ok || metadata.OrgID != op.OrgID || metadata.PayloadID != op.PayloadRef {
+					return
+				}
+				// Observe the committed claim and completed typed-read audit
+				// on a separate connection before mutating this locked copy.
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				outside := f.s.DB.Session(&gorm.Session{NewDB: true, Context: ctx})
+				var committed Operation
+				if err := outside.Where("org_id = ? AND id = ?", op.OrgID, op.ID).Take(&committed).Error; err != nil {
+					tx.AddError(err)
+					return
+				}
+				var audits int64
+				if err := outside.Model(&invocation.VideoPayloadAccess{}).Where("org_id = ? AND payload_id = ? AND operation_id = ? AND phase = ? AND outcome = ?", op.OrgID, op.PayloadRef, op.ID, "finished", "succeeded").Count(&audits).Error; err != nil {
+					tx.AddError(err)
 					return
 				}
 				var current Operation
@@ -52,11 +82,11 @@ func TestMySQLRuntimeFinalMetadataMustPrecedeSendPermission(t *testing.T) {
 					tx.AddError(err)
 					return
 				}
-				if current.Status != "in_flight" || current.AttemptID == "" || current.LeaseUntil == nil {
+				if current.Status != "in_flight" || current.AttemptID == "" || current.LeaseUntil == nil || current.Version != op.Version+1 || current.PayloadRef != op.PayloadRef || committed.Status != current.Status || committed.Version != current.Version || committed.AttemptID != current.AttemptID || committed.PayloadRef != current.PayloadRef || audits != 1 {
 					tx.AddError(fmt.Errorf("fault injection did not reach a claimed operation"))
 					return
 				}
-				invalidated = true
+				injections++
 				changes := map[string]any{}
 				switch invalidation {
 				case "lease_expired":
@@ -73,14 +103,17 @@ func TestMySQLRuntimeFinalMetadataMustPrecedeSendPermission(t *testing.T) {
 					// Use the same transaction because the helper already
 					// locks the operation. This deterministic injection tests
 					// the guard ordering without a competing lock timeout.
-					if err := clean.Model(&Operation{}).Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).Updates(changes).Error; err != nil {
-						tx.AddError(err)
+					changed := clean.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ? AND attempt_id = ?", f.key.OrgID, op.ID, current.Version, current.AttemptID).Updates(changes)
+					if changed.Error != nil {
+						tx.AddError(changed.Error)
+					} else if changed.RowsAffected != 1 {
+						tx.AddError(fmt.Errorf("fault injection did not update the exact claim"))
 					}
 				}
 			}))
 			t.Cleanup(func() { f.s.DB.Callback().Query().Remove(name) })
 			err := f.s.processOperation(context.Background(), op)
-			if !prepared || !invalidated {
+			if !prepared || injections != 1 || permissionReads != 1 || !countAfterInjection {
 				t.Fatal("final execution metadata fault injection did not run", err)
 			}
 			if f.posts.Load() != 0 || f.gets.Load() != 0 {

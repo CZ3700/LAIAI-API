@@ -115,14 +115,7 @@ func requireCurrentOperationRuntimeTx(tx *gorm.DB, st State, candidate Operation
 }
 
 func requireExecutionRuntimeTx(tx *gorm.DB, st State, op Operation) error {
-	if op.PayloadRef == "" || op.PayloadRef != st.EffectivePayloadRef {
-		return videoruntime.ErrUnsupported
-	}
-	d, err := videoruntime.Resolve(stateRuntime(st))
-	if err != nil {
-		return err
-	}
-	err = invocation.ValidateVideoExecutionSchemaTx(tx, st.OrgID, op.PayloadRef, d.ExecutionInputSchemaVersion)
+	_, err := readCreateExecutionIdentityTx(tx, st, op)
 	if errors.Is(err, invocation.ErrVideoSchemaUnsupported) {
 		return videoruntime.ErrUnsupported
 	}

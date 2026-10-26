@@ -90,7 +90,7 @@ func responsePersistencePrioritizeExpiredAttempt(t *testing.T, f *fixture, id st
 	}
 }
 
-func responsePersistencePauseAfterPermissionCount(t *testing.T, f *fixture) (<-chan struct{}, func()) {
+func responsePersistencePauseAfterPermissionCount(t *testing.T, f *fixture, cancel context.CancelFunc, workerStopped <-chan struct{}) (<-chan struct{}, func()) {
 	t.Helper()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var paused atomic.Bool
@@ -113,8 +113,11 @@ func responsePersistencePauseAfterPermissionCount(t *testing.T, f *fixture) (<-c
 		<-release
 	}))
 	t.Cleanup(func() {
-		resume()
-		_ = f.s.DB.Callback().Query().Remove(name)
+		if err := stopPausedVideoWorker(cancel, resume, workerStopped, 5*time.Second, func() error {
+			return f.s.DB.Callback().Query().Remove(name)
+		}); err != nil {
+			t.Error(err)
+		}
 	})
 	return entered, resume
 }
@@ -225,13 +228,19 @@ func TestMySQLResponsePersistencePauseAtFinalSendGuardStopsPreparedCalls(t *test
 			}
 			var entered <-chan struct{}
 			var resume func()
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			stopped := make(chan struct{})
 			if tc.barrier == "permission_count" {
-				entered, resume = responsePersistencePauseAfterPermissionCount(t, f)
+				entered, resume = responsePersistencePauseAfterPermissionCount(t, f, cancel, stopped)
 			} else {
-				entered, resume = pauseVideoCredentialRead(t, f)
+				entered, resume = pauseVideoCredentialRead(t, f, cancel, stopped)
 			}
 			done := make(chan error, 1)
-			go func() { done <- f.s.processOperation(context.Background(), op) }()
+			go func() {
+				defer close(stopped)
+				done <- f.s.processOperation(ctx, op)
+			}()
 			select {
 			case <-entered:
 			case err := <-done:

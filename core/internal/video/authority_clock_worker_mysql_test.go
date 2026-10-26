@@ -249,11 +249,15 @@ func TestMySQLDatabaseAuthorityFinalQueryGuard(t *testing.T) {
 				}
 				return reply(200, fmt.Sprintf(`{"id":%q,"status":%q}`, row.UpstreamTaskID, status)), nil
 			})}
-			entered, resume := pauseVideoCredentialRead(t, f)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
+			stopped := make(chan struct{})
+			entered, resume := pauseVideoCredentialRead(t, f, cancel, stopped)
 			done := make(chan error, 1)
-			go func() { done <- f.s.pollTask(ctx, f.key.OrgID, id) }()
+			go func() {
+				defer close(stopped)
+				done <- f.s.pollTask(ctx, f.key.OrgID, id)
+			}()
 			finished := false
 			defer func() {
 				resume()

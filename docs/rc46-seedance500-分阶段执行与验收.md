@@ -34,10 +34,10 @@
 | P0-0A 基线与安全 | 本执行表、UI0 契约、Go 1.26.10；发送前操作租约复核；查询候选排除有效租约 | 全量 CI、MySQL 故障回归、无重复上游 POST/DELETE、无错误退款 | PR #56 已合入 main `38b1873`，未部署生产 |
 | P0-0B 可观测与 Mock | 可控 Mock Ark、低基数调度/查询延迟/DB/回执队列指标、现状负载报告 | R0 可复跑；安全日志无正文/密钥；指标不冒充账务事实 | [PR #57](https://github.com/CZ3700/LAIAI-API/pull/57) 已合入 main `ceecb12`；未开始 R4 容量测试 |
 | P0-1A 运行时契约固定 | 复用现有 State/Operation，固定 runtime/adapter/protocol/billing-schema，未知格式安全拒绝 | 单 v1 旧新二进制交接；未知版本零发送/零资金动作；配置快照隔离 | [PR #58](https://github.com/CZ3700/LAIAI-API/pull/58) 七项门禁通过后已合入 main `fa1cfef`；未发布生产；见第 5.3 节 |
-| P0-1B R2 补充与凭据接管 | 明确拒绝/缺 ID/未知状态的完整持久化矩阵；同账号项目凭据接管与请求头隔离 | 不扩大退款依据；凭据接管需证明目标身份；多版本退役演练在实际 V2 前完成 | B1 PR #71 已合入 main f1762ff；B2a 请求头/重定向隔离R1已通过，见5.17，最终PR最新head门禁与合入待完成。B2b 同账号/项目凭据接管及多产物协议仍未完成 |
+| P0-1B R2 补充与凭据接管 | 明确拒绝/缺 ID/未知状态的完整持久化矩阵；同账号项目凭据接管与请求头隔离 | 不扩大退款依据；凭据接管需证明目标身份；多版本退役演练在实际 V2 前完成 | B1 PR #71 已合入 main f1762ff；B2a 请求头/重定向隔离R1及PR #74精确head八项CI已通过，已合main 0d445b96，见5.17。B2b 同账号/项目凭据接管及多产物协议仍未完成 |
 | P0-2A1 创建响应收件箱 | 不可变执行登记、独立响应保存、同 attempt 恢复、legacy 分流；默认关闭 | CAS/取消/删除竞态、重复/矛盾证据、无响应过期、历史关闭、真实迁移与账务不变 | [PR #59](https://github.com/CZ3700/LAIAI-API/pull/59) 七项 CI、真实二进制交接及 Mock 通过，已合入 main `9552e2b`；迁移 0128；写开关仍默认关闭 |
 | P0-2A1.1 持久化失败控制 | 同一证据有界重试、保存失败停止后续发送、关库前等待在途保存 | 不重发上游、不把未提交响应标为已保存；数据库恢复/关机故障用例 | [PR #60](https://github.com/CZ3700/LAIAI-API/pull/60) 七项 CI 全绿，已合入 main `c2cebf6`；隔离 R2 证据见第 5.6 节，A2 未完成前不开生产新写入 |
-| P0-2A2/B 故障恢复后续 | 取消/删除/交付收件箱、完整兼容演练；随后数据库时间/fence、独立结算 | A1 完成后逐批；完整 R3 崩溃点/双 Worker/超 hold、零资金差异 | A2a PR #63、A2b PR #67、A2c PR #70 已合入。B1a 隔离主库时钟矩阵及完整退出测试两轮通过；PR #72 首次CI失败后仅修旧夹具，仍须修正head的完整CI通过。B1b执行输入时钟、fence与独立结算继续后续，producer默认off |
+| P0-2A2/B 故障恢复后续 | 取消/删除/交付收件箱、完整兼容演练；随后数据库时间/fence、独立结算 | A1 完成后逐批；完整 R3 崩溃点/双 Worker/超 hold、零资金差异 | A2a PR #63、A2b PR #67、A2c PR #70 已合入。B1a PR #72 最终head 72c1604八项CI全绿，已合main9a6fd94；隔离主库矩阵与完整退出测试通过。B1b执行输入主库时钟开发及分轮回归已至dev7通过，真实N待固定、Formal D与精确head CI待验；fence与独立结算继续后续，producer默认off |
 | P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | G1-A PR #61、G1-B1 PR #64已合入；G1-B2 PR #66七项CI全绿后合入main `b21308b`，完整证据见5.9.1；分组Key仍关闭 |
 | P0-G2 全入口授权 | 同一有效模型/组解析器覆盖目录、报价、创建、重试、派发复核；撤权强校验 | 全入口拒绝矩阵；已发送任务继续查询结算；空 subset 拒绝 | A1 PR #69以head b341c3c通过七项CI后合入main 7bb78dc；真实MySQL与完整构建证据见5.12，后续能力/定价/全入口接线仍未完成，分组Key保持关闭 |
 | P0-G3 组 UI 与迁移 | 管理员影响预览、用户组选择、有效模型集合差分 | G2 全绿后才开放；不得静默改旧 Key 权限 | 待实施 |
@@ -334,6 +334,25 @@ PR #72 首次CI `40276315966` 七项通过、一项失败；完整cmd/core的旧
 
 基线 main c2557cd 的独立 R1 在 `2026-10-26T12:07:55Z` 完成。固定源包 `b157e9e663563c87392756cacbf01b624e7a937104ac169736d57f679f44bd14`（1,023文件/17overlay），Go1.26.10、MySQL8.4.9隔离专库；make vet/ci、131迁移两次/101表doctor通过。新黑盒13家族双轮（26顶层/72叶执行），ark/relay/task兼容258顶层（533叶），官方固定头MySQL2家族双轮（4顶层/6叶）及原HTTP持久化4家族双轮（8顶层/56叶）全部race通过，零fail/skip/race；需要真实凭据的Bedrock专用smoke未选入。
 
-73项证据、1,023源码和1,024运行文件逐SHA复核，runner/DB均退出0/OOM=false。证据清单SHA `d60771f63ebf9a927466fae3291f72bba6587bc604b6c91e7a7a8c51824594a7`、原日志SHA `3903d5acb7ca12c1fd71c072b51069caf126bad03892c978ea95116cd12ba890`；完整archive/runtime/原JSONL与实际覆盖详见 `rc46-请求头与重定向隔离实施契约.md` §5。代码保持受测字节，本记录仅追加验收文档，不表示已创建或合入PR；最终PR最新head仍须完整门禁。
+73项证据、1,023源码和1,024运行文件逐SHA复核，runner/DB均退出0/OOM=false。证据清单SHA `d60771f63ebf9a927466fae3291f72bba6587bc604b6c91e7a7a8c51824594a7`、原日志SHA `3903d5acb7ca12c1fd71c072b51069caf126bad03892c978ea95116cd12ba890`；完整archive/runtime/原JSONL与实际覆盖详见 `rc46-请求头与重定向隔离实施契约.md` §5。代码保持受测字节，随后PR #74精确head `debb0fc092a6e35459d4ddf7cadfb355a276343d` 已通过CI `40322332379` 全部八项，合入main `0d445b96c4e9e02368213c50484f24a26c94be83`；未发布生产。
 
 官方固定凭据/原价快照及3xx证据保存已覆盖少量真实MySQL代表，generic媒体跨站每跳清头与API同origin策略已由实际Client.Do/工厂链路验证。B2b可信同账号/项目凭据接管仍未实施，多产物协议、完整网络fence和500容量仍属后续。无官方调用、无费用、无生产部署。
+
+
+## 5.18 Key留存合并与执行输入开发回归
+
+Key账务引用留存PR #73以head e43827e86d39e0419184863590333accc954f68c通过CI40293702637全部八项后，已合入main c2557cde766838c7cd21d0c19b7cc5b1f27318d6；迁移0131只增索引。既有撤销仍生效，历史视频账务引用阻止物理删除。R1/R2完整证据见Key留存契约，未发布生产。
+
+B1b已完成执行输入factory/Stage/window/read/Purge及宿主接线的开发；dev1新增真实MySQL家族通过，但旧callback兼容失败并保留原证据。单文件修复后的dev2完整12兼容家族双轮通过（24顶层/56子测试/62叶执行），无fail/skip/race。扫描实证触发候选索引0132；当时分支接续main c2557cd/0131；后续0132及dev4–dev7实际结果见下一节，不将dev2通过视为后续门禁完成。范围、源SHA与失败记录见执行输入契约§10–14。生产仍为d7fc499，官方调用与费用为0，500在途尚未验收。
+
+## 5.19 P0-2B1b 分轮开发回归与 Formal D 前置
+
+dev4通过132重放/doctor、Invocation16家族双轮、Video新增5家族双轮、retention12家族双轮及Linux宿主18项，但完整Video229顶层16失败并出现1个真实race。按正式契约修正错误分类、claim失权、故障触发边界、worker清理及永久坏输入隔离；原失败证据不改写。
+
+dev5复用原失败库且先做完整新备份；隔离/cleanup六家族双轮只剩BadQueue的expired测试两次失败，全包未执行。测试原循环在两正常任务完成后提前结束，未覆盖第31坏条所需的下一批；窄修后dev6该家族双轮全过，完整Video237顶层236通过/1失败、572子测试全过，零race。唯一剩余是旧观测上限12；补四种needs_review精确delta、闭枚举/唯一/正计数及16上限，保留原负控与全部旧断言。
+
+B1b随后安全接续PR74已合main0d445b96，56路径先备份并保留stash，54非文档overlay原字节不变。dev7于 `2026-10-26T13:25:49Z` 成功：make vet/ci、已有库132重放两次/101表doctor、观测1家族与固定头2家族及原HTTP持久化4家族各双轮race，共14顶层/60子测试/64叶执行全PASS、零fail/skip/race。dev6的236通过家族及此前宿主/Invocation结果仅沿用其证据，不计为dev7新执行；dev7不是新一轮237家族全包。
+
+dev7源SHA `7b43bf14282bff2c04cd3a71cbb5f07834b26e25637c4f1e464fa6007f450c9d`（1054文件/56overlay），全证据archive SHA `3a2aa3c5bda15abf25efc3ffbefe7ed2bfbc9065c61f3bb09cdc785c54ee97b5`，91项清单SHA `0f9a5e9fb0eac317fa119db01f4f1363b2d07a992fa0a19c980b215809610e3a`，原日志SHA `0595dd9c977bc8c3da874b47840a56dcf26a61e078c779cdcb28832a2c391d63`。1054源/1055运行成员与relay ELF均逐SHA核验，runner及复用原DB均exited0/OOMfalse；本轮完整新逻辑备份CRC/SQL SHA已验，未restore。失败各轮、源码、原库、全部运行产物均保留，无清库或资源删除。
+
+Formal D尚未运行，N待真实提交固定，N−1固定 `9a6fd9426e33b2e1c269b6cb77a170e8890073f2`。四家族八子流双二进制和最终PR精确head CI不可由分轮开发回归替代。最后COUNT→HTTP窗口、可选uploader迟到Put、500容量及生产灰度不在本次通过结论内；官方调用、费用和本批生产部署均为0。

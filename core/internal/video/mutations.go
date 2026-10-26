@@ -7,10 +7,8 @@ import (
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
-	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
-	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"gorm.io/gorm"
 )
 
@@ -85,14 +83,7 @@ func (s *Service) Cancel(ctx context.Context, org uint64, id, requestID, key str
 			if e = requireNoExecutionAttemptTx(tx, org, create.ID); e != nil {
 				return e
 			}
-			descriptor, e := videoruntime.Resolve(stateRuntime(st))
-			if e != nil {
-				return e
-			}
-			if create.PayloadRef != st.EffectivePayloadRef {
-				return videoruntime.ErrUnsupported
-			}
-			if e = invocation.ValidateVideoExecutionSchemaTx(tx, org, create.PayloadRef, descriptor.ExecutionInputSchemaVersion); e != nil {
+			if _, e = requireCreateExecutionIdentityTx(tx, t, st, create); e != nil {
 				return e
 			}
 			changed := tx.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND kind = ? AND status = ?", org, id, "create_task", "pending").Updates(map[string]any{"status": "rejected", "error_code": "cancelled_before_dispatch", "updated_at": now})

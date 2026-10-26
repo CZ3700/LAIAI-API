@@ -104,63 +104,25 @@ func (s *VideoStore) UploadPending(ctx context.Context, workerID string, batch i
 	return uploaded, nil
 }
 
-// PurgeExpired cryptographically erases expired payloads in one transaction per
-// row while retaining metadata and access audits. Blob deletion follows a grace
-// period longer than an in-flight upload lease; failed deletes remain retryable.
-// The count measures newly expired payloads, not tombstone cleanup attempts.
+// PurgeExpired erases at most batch execution and batch non-execution
+// payloads, retaining metadata and access audits. Each execution row is checked
+// against a fresh primary database time after its metadata lock is acquired.
+// The returned count excludes tombstone cleanup and already expired rows.
 func (s *VideoStore) PurgeExpired(ctx context.Context, batch int) (int64, error) {
-	if batch < 1 || batch > 1000 {
+	if ctx == nil || batch < 1 || batch > 1000 {
 		return 0, ErrVideoInvalid
 	}
-	now := s.now().UTC().Truncate(time.Millisecond)
-	var expired []VideoPayload
-	if err := s.db.WithContext(ctx).Where("expires_at <= ? AND capture_status <> ?", now, VideoCaptureExpired).Order("expires_at, payload_id").Limit(batch).Find(&expired).Error; err != nil {
-		return 0, ErrVideoStorage
-	}
 	var count int64
-	for _, meta := range expired {
-		var changed int64
-		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			cleanup := now.Add(videoUploadLease + videoBlobTimeout)
-			updated := tx.Model(&VideoPayload{}).Where("payload_id = ? AND expires_at <= ? AND capture_status <> ?", meta.PayloadID, now, VideoCaptureExpired).
-				Updates(map[string]any{"capture_status": VideoCaptureExpired, "wrapped_key": "", "nonce": []byte{}, "cleanup_after": cleanup})
-			if updated.Error != nil {
-				return ErrVideoStorage
-			}
-			if updated.RowsAffected == 0 {
-				return nil
-			}
-			if err := tx.Where("payload_id = ?", meta.PayloadID).Delete(&VideoPayloadStaging{}).Error; err != nil {
-				return ErrVideoStorage
-			}
-			changed = updated.RowsAffected
-			return nil
-		})
+	for _, execution := range []bool{true, false} {
+		n, err := s.purgeVideoPartition(ctx, batch, execution)
+		count += n
 		if err != nil {
 			return count, err
 		}
-		count += changed
 	}
-	var cleanup []VideoPayload
-	if err := s.db.WithContext(ctx).Where("capture_status = ? AND object_deleted_at IS NULL AND cleanup_after <= ?", VideoCaptureExpired, now).
-		Order("cleanup_after, payload_id").Limit(batch).Find(&cleanup).Error; err != nil {
-		return count, ErrVideoStorage
-	}
-	for _, meta := range cleanup {
-		if meta.ObjectRef != "" {
-			if s.blobs == nil {
-				continue
-			}
-			deleteCtx, cancel := context.WithTimeout(ctx, videoBlobTimeout)
-			err := s.blobs.Delete(deleteCtx, meta.ObjectRef)
-			cancel()
-			if err != nil {
-				return count, ErrVideoStorage
-			}
-		}
-		if err := s.db.WithContext(ctx).Model(&VideoPayload{}).Where("payload_id = ? AND capture_status = ? AND object_deleted_at IS NULL", meta.PayloadID, VideoCaptureExpired).
-			Update("object_deleted_at", now).Error; err != nil {
-			return count, ErrVideoStorage
+	for _, execution := range []bool{true, false} {
+		if err := s.cleanupVideoPartition(ctx, batch, execution); err != nil {
+			return count, err
 		}
 	}
 	return count, nil
