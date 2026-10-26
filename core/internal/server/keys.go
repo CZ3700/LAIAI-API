@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/routinggroup"
+	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -205,8 +207,8 @@ func (s *Server) revokeKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"revoked": k.ID})
 }
 
-// deleteKey：DELETE /api/keys/:id/purge —— 物理删除（仅限已吊销的 key）。
-// 活跃 key 必须先吊销再删，避免误删导致在用凭证瞬间失效（吊销是软态可审计）。
+// deleteKey retains revoked Keys referenced by historical video billing.
+// Revocation stops authentication; retention allows settlement and corrections.
 func (s *Server) deleteKey(c *gin.Context) {
 	claims := mustClaims(c)
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -214,18 +216,30 @@ func (s *Server) deleteKey(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid key id")
 		return
 	}
-	k := &identity.APIKey{}
-	if err := s.db.Where("id = ? AND org_id = ?", id, claims.OrgID).First(k).Error; err != nil {
+	if id == 0 {
 		fail(c, http.StatusNotFound, "key not found")
 		return
 	}
-	if k.Status == 1 {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Second)
+	defer cancel()
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return identity.PurgeRevokedKeyTx(tx, claims.OrgID, id, videobilling.HasKeySnapshotReferenceTx)
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		fail(c, http.StatusNotFound, "key not found")
+		return
+	}
+	if errors.Is(err, identity.ErrKeyPurgeActive) {
 		fail(c, http.StatusBadRequest, "revoke the key before deleting it")
 		return
 	}
-	if err := s.db.Where("id = ? AND org_id = ?", id, claims.OrgID).Delete(&identity.APIKey{}).Error; err != nil {
-		fail(c, http.StatusInternalServerError, "delete failed")
+	if errors.Is(err, identity.ErrKeyPurgeReferenced) {
+		fail(c, http.StatusConflict, "key is retained for video billing history; revocation remains effective")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"deleted": k.ID})
+	if err != nil {
+		fail(c, http.StatusServiceUnavailable, "key deletion unavailable")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": id})
 }
