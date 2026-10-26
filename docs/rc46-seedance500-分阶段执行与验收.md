@@ -293,3 +293,7 @@ R1通过20项实际MySQL发送端两轮race、真实main生命周期SIGTERM三�
 基于main 9246c48，候选层在调用方同一真实RR事务中读取Key/主体/权益、组/授权/绑定及渠道发布模型；最多7个有界SELECT。明确返回group_membership_only，缺失、撤销、越权、过界和SQL失败分开处理；上游映射/发现模型不扩大候选。无生产入口接线、无新迁移、分组Key仍关闭。
 
 隔离R1已通过make vet/ci、130迁移重复与doctor、30个候选顶层测试各两轮race（其中9个MySQL各两轮）、29个B1/B2兼容测试（其中12个MySQL）、三领域全包race。边界、真实EXPLAIN、双连接快照、取消/超时、实际SQL失败与无资金副作用已核验。源包与日志SHA、精确范围见`rc46-路由候选解析实施契约.md`第10节；最终main整合与PR门禁继续核验。生产未变更，后续继续完整G2授权与入口接线。
+
+最终main整合R2（HEAD `5b654e3`）的make vet/ci-all与前端dist通过，但普通候选race首轮精确1MiB样本超时，整体exit=1、OOM=false；第二轮同例通过，不消除该轮失败。原因是渠道reader将SELECT的200ms子context继续用于CPU解析。窄修分离SQL子期限与调用方共同解析期限，维持SELECT200ms、resolver总1秒和所有数据上界；增加AfterQuery取消优先级与真实上下文生命周期回归。R2源包/日志/56项dist证据均保留，未改写R1验收；完整SHA及保留情况见契约§10.1。
+
+R3于2026-10-26T02:12:52Z通过：完整make vet/ci-all与真实前端dist、四包23个普通候选顶层race两轮（46次PASS）、130迁移重复/两次101表doctor及原9个真实MySQL候选顶层race两轮（18次PASS、480.091秒）。无跳过或race报告，exit=0/OOM=false，专用数据库停止。主控独立核验32项证据、978项源码和56项dist，受测代码/测试固定，随后仅补验收文档；完整SHA与R2失败证据见契约§10.1。分组Key未开放、生产未改、官方费用0；最终提交仍须最新PR CI全绿后合入。

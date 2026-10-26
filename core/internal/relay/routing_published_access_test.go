@@ -7,6 +7,7 @@ import (
 	"log"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,11 +92,103 @@ func TestRoutingPublishedChannelRawBounds(t *testing.T) {
 		}
 		ids = append(ids, uint64(i))
 	}
-	if _, err := ReadRoutingPublishedChannelsTx(context.Background(), tx, ids[:16]); err != nil {
-		t.Fatal("exact1MiB", err)
+	if got, err := ReadRoutingPublishedChannelsTx(context.Background(), tx, ids[:16]); err != nil || len(got) != 16 {
+		t.Fatal("exact1MiB", len(got), err)
+	} else {
+		for i, row := range got {
+			if row.ID != ids[i] || !reflect.DeepEqual(row.Models, []string{"a"}) {
+				t.Fatal("exact1MiB lost complete deduplicated facts", row)
+			}
+		}
 	}
 	if got, err := ReadRoutingPublishedChannelsTx(context.Background(), tx, ids); !errors.Is(err, ErrRoutingPublishedLimit) || got != nil {
 		t.Fatal("total raw limit", got, err)
+	}
+}
+
+// Observe the two real context lifetimes without replacing the SQL driver or
+// changing production deadlines. Err remains the caller's actual result.
+type routingPublishedContextProbe struct {
+	context.Context
+	query        atomic.Value
+	parseChecks  atomic.Int32
+	queryNotDone atomic.Bool
+}
+
+func (c *routingPublishedContextProbe) Err() error {
+	if value := c.query.Load(); value != nil {
+		c.parseChecks.Add(1)
+		select {
+		case <-value.(context.Context).Done():
+		default:
+			c.queryNotDone.Store(true)
+		}
+	}
+	return c.Context.Err()
+}
+
+func TestRoutingPublishedChannelParsingUsesCallerBudget(t *testing.T) {
+	db := routingPublishedDB(t)
+	tx := db.Begin()
+	defer tx.Rollback()
+	value := strings.Repeat("a,", 32768)
+	ids := make([]uint64, 16)
+	for i := range ids {
+		ids[i] = uint64(i + 10)
+		if err := tx.Exec("INSERT INTO channels(id,status,owner_org_id,models) VALUES(?,1,0,?)", ids[i], value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	caller, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	probe := &routingPublishedContextProbe{Context: caller}
+	if err := db.Callback().Query().After("gorm:query").Register("published_query_lifetime", func(q *gorm.DB) {
+		deadline, ok := q.Statement.Context.Deadline()
+		if !ok || time.Until(deadline) > 200*time.Millisecond {
+			t.Error("SELECT lost its 200ms child deadline")
+		}
+		probe.query.Store(q.Statement.Context)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadRoutingPublishedChannelsTx(probe, tx, ids)
+	if err != nil || len(got) != 16 {
+		t.Fatal("complete 1MiB facts must use the common caller budget", len(got), err)
+	}
+	if probe.parseChecks.Load() == 0 || probe.queryNotDone.Load() || caller.Err() != nil {
+		t.Fatal("SQL and parsing did not use separate bounded lifetimes", probe.parseChecks.Load(), probe.queryNotDone.Load(), caller.Err())
+	}
+}
+
+func TestRoutingPublishedChannelAfterQueryCancellationWinsOverFacts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ids  []uint64
+		bad  bool
+	}{
+		{name: "existing", ids: []uint64{1}},
+		{name: "missing", ids: []uint64{99}},
+		{name: "invalid_facts", ids: []uint64{1}, bad: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := routingPublishedDB(t)
+			tx := db.Begin()
+			defer tx.Rollback()
+			if tc.bad {
+				if err := tx.Exec("UPDATE channels SET models=? WHERE id=1", "invalid\x00model").Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if err := db.Callback().Query().After("gorm:query").Register("published_cancel_after_query", func(*gorm.DB) { cancel() }); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ReadRoutingPublishedChannelsTx(ctx, tx, tc.ids)
+			if got != nil || !errors.Is(err, context.Canceled) || errors.Is(err, ErrRoutingPublishedFacts) {
+				t.Fatal("canceled SELECT became empty or invalid facts", got, err)
+			}
+		})
 	}
 }
 func TestRoutingPublishedChannelRejectsBadNamesAndCalls(t *testing.T) {

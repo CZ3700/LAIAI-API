@@ -79,7 +79,7 @@ func ReadRoutingPublishedChannelsTx(ctx context.Context, tx *gorm.DB, ids []uint
 	if len(ids) == 0 {
 		return out, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	queryCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
 	length := "OCTET_LENGTH(models)"
 	if tx.Dialector.Name() == "sqlite" {
@@ -87,7 +87,7 @@ func ReadRoutingPublishedChannelsTx(ctx context.Context, tx *gorm.DB, ids []uint
 	}
 	columns := "id, owner_org_id, status, " + length + " AS models_bytes, CASE WHEN " + length + " <= 65536 THEN models ELSE NULL END AS models"
 	if tx.Dialector.Name() == "mysql" {
-		deadline, _ := ctx.Deadline()
+		deadline, _ := queryCtx.Deadline()
 		ms := time.Until(deadline).Milliseconds()
 		if ms < 1 {
 			return nil, context.DeadlineExceeded
@@ -100,12 +100,21 @@ func ReadRoutingPublishedChannelsTx(ctx context.Context, tx *gorm.DB, ids []uint
 		ModelsBytes    *int64
 		Models         *string
 	}
-	err := tx.Session(&gorm.Session{NewDB: true, Context: ctx, Logger: logger.Discard}).Table("channels").Select(columns).Where("id IN ?", ids).Order("id ASC").Find(&rows).Error
+	err := tx.Session(&gorm.Session{NewDB: true, Context: queryCtx, Logger: logger.Discard}).Table("channels").Select(columns).Where("id IN ?", ids).Order("id ASC").Find(&rows).Error
+	if contextErr := queryCtx.Err(); contextErr != nil {
+		err = contextErr
+	}
+	cancel()
 	if err != nil {
 		return nil, routingPublishedFailure(ctx, err)
 	}
+	// The 200ms child bounds SQL only. Parsing retains the caller's common
+	// resolver deadline instead of spending the expired SELECT allowance.
 	var total int64
 	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if row.ModelsBytes == nil || *row.ModelsBytes < 0 {
 			return nil, ErrRoutingPublishedFacts
 		}
