@@ -24,6 +24,10 @@ func TestMySQLResponseInboxRestartRecoversAfterRealPayloadPurge(t *testing.T) {
 		t.Run(string(outcome), func(t *testing.T) {
 			f := mysqlFixture(t)
 			v := f.create(t, "inbox-restart-after-purge")
+			input := executionOldCreateInput(t, f, v.ID, executionFixtureNow(t, f.s.DB).Add(-time.Second))
+			if input.ExpiresAt.After(executionFixtureNow(t, f.s.DB)) {
+				t.Fatal("old input is not database-expired")
+			}
 			attempt, claim := responseInboxRegister(t, f, v.ID)
 			r := responseInboxAppend(t, f, attempt, responseInboxResult(outcome, "up_"+v.ID))
 			before := responseInboxFunds(t, f, v.ID)

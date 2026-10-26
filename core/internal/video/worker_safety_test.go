@@ -339,7 +339,7 @@ func TestMySQLExpiredCreateLeaseWithoutReceiptNeverResends(t *testing.T) {
 
 // Pause after preparation has read the credential, before the dispatch guard.
 // This exercises the real worker path without introducing production test hooks.
-func pauseVideoCredentialRead(t *testing.T, f *fixture) (<-chan struct{}, func()) {
+func pauseVideoCredentialRead(t *testing.T, f *fixture, cancel context.CancelFunc, workerStopped <-chan struct{}) (<-chan struct{}, func()) {
 	t.Helper()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var paused atomic.Bool
@@ -353,10 +353,105 @@ func pauseVideoCredentialRead(t *testing.T, f *fixture) (<-chan struct{}, func()
 		}
 	}))
 	t.Cleanup(func() {
-		resume()
-		f.s.DB.Callback().Query().Remove(name)
+		if err := stopPausedVideoWorker(cancel, resume, workerStopped, 5*time.Second, func() error {
+			return f.s.DB.Callback().Query().Remove(name)
+		}); err != nil {
+			t.Error(err)
+		}
 	})
 	return entered, resume
+}
+
+// A timeout is a test failure, never permission to mutate GORM's callback
+// registry while a query may still be reading it. The stopped channel closes
+// only after the real worker returns and is independent of its result channel.
+func stopPausedVideoWorker(cancel context.CancelFunc, resume func(), stopped <-chan struct{}, timeout time.Duration, remove func() error) error {
+	cancel()
+	resume()
+	select {
+	case <-stopped:
+		return remove()
+	case <-time.After(timeout):
+		return errors.New("paused video worker did not stop; callback retained")
+	}
+}
+
+func TestPausedVideoWorkerCleanupWaitsBeforeRemovingCallback(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	resumed, stopped := make(chan struct{}), make(chan struct{})
+	removed, cleanupDone := make(chan struct{}), make(chan error, 1)
+	go func() {
+		cleanupDone <- stopPausedVideoWorker(cancel, func() { close(resumed) }, stopped, time.Second, func() error {
+			close(removed)
+			return nil
+		})
+	}()
+	<-resumed
+	if ctx.Err() == nil {
+		t.Fatal("cleanup resumed a sender before cancellation")
+	}
+	select {
+	case <-removed:
+		t.Fatal("callback removed before the worker exit acknowledgement")
+	default:
+	}
+	close(stopped)
+	must(t, <-cleanupDone)
+	select {
+	case <-removed:
+	default:
+		t.Fatal("joined worker retained its callback")
+	}
+	var removedOnTimeout bool
+	err := stopPausedVideoWorker(func() {}, func() {}, make(chan struct{}), time.Millisecond, func() error {
+		removedOnTimeout = true
+		return nil
+	})
+	if err == nil || removedOnTimeout {
+		t.Fatal("cleanup timeout removed a still-live worker's callback")
+	}
+}
+
+func TestMySQLCredentialPauseCleanupJoinsActualWorker(t *testing.T) {
+	f := mysqlFixture(t)
+	v := f.create(t, "credential-pause-cleanup")
+	op := runtimeWorkerCreateOperation(t, f, v.ID)
+	before := responseInboxFunds(t, f, v.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	stopped, result := make(chan struct{}), make(chan error, 1)
+	t.Run("return_while_worker_is_paused", func(t *testing.T) {
+		entered, _ := pauseVideoCredentialRead(t, f, cancel, stopped)
+		go func() {
+			defer close(stopped)
+			result <- f.s.processOperation(ctx, op)
+		}()
+		select {
+		case <-entered:
+		case err := <-result:
+			t.Fatal("actual worker missed the cleanup barrier", err)
+		case <-ctx.Done():
+			t.Fatal("actual worker did not reach the cleanup barrier")
+		}
+		// Deliberately leave without resume or reading the worker result. This
+		// exercises the same registered cleanup as a premature Fatal/timeout.
+	})
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("test cleanup returned before the actual worker stopped")
+	}
+	if f.s.DB.Callback().Query().Get(fmt.Sprintf("test:dispatch-pause-%d", f.key.OrgID)) != nil {
+		t.Fatal("completed cleanup retained its callback")
+	}
+	if f.posts.Load() != 0 || f.gets.Load() != 0 || responseInboxFunds(t, f, v.ID) != before {
+		t.Fatal("early-exit cleanup allowed HTTP or changed funds")
+	}
+	var after Operation
+	must(t, f.s.DB.Where("org_id = ? AND id = ?", op.OrgID, op.ID).Take(&after).Error)
+	if after.ReceiptRef != "" || after.ReceiptAppliedAt != nil || after.Status != "in_flight" {
+		t.Fatal("cancelled cleanup fabricated a result or terminal operation")
+	}
 }
 
 func TestMySQLOperationDispatchRequiresCurrentClaim(t *testing.T) {
@@ -391,11 +486,15 @@ func TestMySQLOperationDispatchRequiresCurrentClaim(t *testing.T) {
 					}
 					return reply(200, `{}`), nil
 				}
-				entered, resume := pauseVideoCredentialRead(t, f)
 				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer cancel()
+				stopped := make(chan struct{})
+				entered, resume := pauseVideoCredentialRead(t, f, cancel, stopped)
 				done := make(chan error, 1)
-				go func() { done <- f.s.processOperation(ctx, op) }()
+				go func() {
+					defer close(stopped)
+					done <- f.s.processOperation(ctx, op)
+				}()
 				select {
 				case <-entered:
 				case err := <-done:

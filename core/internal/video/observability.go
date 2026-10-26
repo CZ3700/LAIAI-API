@@ -391,7 +391,7 @@ const workerOperationSQL = `SELECT /*+ MAX_EXECUTION_TIME(200) */
  CASE o.kind WHEN 'create_task' THEN 'create_task' WHEN 'cancel_task' THEN 'cancel_task' WHEN 'delete_task' THEN 'delete_task' ELSE 'other' END AS kind,
  o.status, COUNT(*) AS count
  FROM video_operations o JOIN tasks t ON t.task_id=o.resource_id AND t.org_id=o.org_id
- WHERE t.provider='ark_official' AND o.status IN ('pending','in_flight','unknown')
+ WHERE t.provider='ark_official' AND o.status IN ('pending','in_flight','unknown','needs_review')
  GROUP BY CASE o.kind WHEN 'create_task' THEN 'create_task' WHEN 'cancel_task' THEN 'cancel_task' WHEN 'delete_task' THEN 'delete_task' ELSE 'other' END,o.status ORDER BY kind,o.status`
 
 const workerReceiptSQL = `SELECT /*+ MAX_EXECUTION_TIME(200) */

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"encoding/json"
-	"time"
 
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/task"
@@ -87,9 +86,7 @@ func (s *Service) prepareMutationInput(ctx context.Context, t task.Task, st Stat
 	if err != nil {
 		return nil, err
 	}
-	payload, err := s.Evidence.Prepare(invocation.VideoPayloadInput{OrgID: t.OrgID, RequestID: op.ID, AttemptID: op.AttemptID,
-		Direction: invocation.VideoEffectiveRequest, Purpose: invocation.VideoPurposeExecution, SchemaVersion: invocation.VideoActionInputSchemaVersion,
-		Body: body, ExpiresAt: s.Now().UTC().Add(24 * time.Hour), CaptureEnabled: true})
+	payload, err := s.Evidence.PrepareActionExecution(ctx, invocation.VideoExecutionInput{OrgID: t.OrgID, RequestID: op.ID, AttemptID: op.AttemptID, Body: body})
 	if err != nil {
 		return nil, err
 	}

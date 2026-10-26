@@ -53,9 +53,20 @@ func (s *Service) ProcessOnce(ctx context.Context) (err error) {
 			break
 		}
 		if err := s.processOperation(ctx, op); err != nil {
+			// Direct dispatch retains its zero-write identity denial. Only the
+			// bounded worker may quarantine a permanently bad, still-pending
+			// legacy input after the failed claim transaction has rolled back.
+			isolated, isolationErr := s.isolateInvalidCreateExecution(ctx, op, err)
+			if isolationErr != nil {
+				return isolationErr
+			}
 			m.mu.Lock()
 			m.operationErrors++
 			m.mu.Unlock()
+			if isolated {
+				s.Log.Warn("video execution input requires review", "operation_id", op.ID)
+				continue
+			}
 			s.Log.Warn("video operation needs recovery", "operation_id", op.ID)
 		}
 	}
@@ -111,7 +122,12 @@ func requireNoExecutionAttemptTx(tx *gorm.DB, org uint64, operationID string) er
 }
 
 func (s *Service) recoveryOperationCandidates(ctx context.Context) *gorm.DB {
-	return supportedOperationRuntime(s.authorityQuery(ctx).Table("video_operations AS o").Select("o.*").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)").Where("(o.status IN ? AND o.receipt_ref <> '' AND o.receipt_applied_at IS NULL) OR (o.status = ? AND o.lease_until <= UTC_TIMESTAMP(3))", []string{"in_flight", "unknown"}, "in_flight")
+	// Match the quarantine exception byte-for-byte despite the legacy PAD
+	// SPACE columns. A malformed/NotSent outcome must not occupy this queue.
+	late := "(o.kind = ? AND OCTET_LENGTH(o.kind) = ? AND o.status = ? AND OCTET_LENGTH(o.status) = ? AND o.error_code = ? AND OCTET_LENGTH(o.error_code) = ? AND o.receipt_ref <> '' AND o.receipt_applied_at IS NULL AND ((o.received_outcome = ? AND OCTET_LENGTH(o.received_outcome) = ?) OR (o.received_outcome = ? AND OCTET_LENGTH(o.received_outcome) = ?) OR (o.received_outcome = ? AND OCTET_LENGTH(o.received_outcome) = ?)))"
+	return supportedOperationRuntime(s.authorityQuery(ctx).Table("video_operations AS o").Select("o.*").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)").Where("(o.status IN ? AND o.receipt_ref <> '' AND o.receipt_applied_at IS NULL) OR (o.status = ? AND o.lease_until <= UTC_TIMESTAMP(3)) OR "+late,
+		[]string{"in_flight", "unknown"}, "in_flight", "create_task", len("create_task"), "needs_review", len("needs_review"), executionIdentityReviewCode, len(executionIdentityReviewCode),
+		string(ark.OutcomeAccepted), len(ark.OutcomeAccepted), string(ark.OutcomeRejected), len(ark.OutcomeRejected), string(ark.OutcomeUnknown), len(ark.OutcomeUnknown))
 }
 
 func (s *Service) recoverOperations(ctx context.Context) error {
@@ -130,8 +146,24 @@ func (s *Service) recoverOperations(ctx context.Context) error {
 		if op.ReceiptRef != "" && op.Kind == "create_task" {
 			if err := s.applyCreateReceipt(ctx, op); err == nil {
 				continue
-			} else if errors.Is(err, videoruntime.ErrUnsupported) {
-				continue
+			} else {
+				// A refused NotSent is not proof of no charge. Once its exact
+				// legacy claim expires, the diagnostic may retain that receipt
+				// behind review; real accepted/rejected/unknown evidence keeps
+				// using this reducer without an input-expiry requirement.
+				isolated, isolationErr := s.isolateInvalidCreateExecution(ctx, op, err)
+				if isolationErr != nil {
+					return isolationErr
+				}
+				if isolated {
+					continue
+				}
+				if !permanentCreateExecutionIdentityError(err) {
+					return err // Never reinterpret DB/context failure as an expired claim.
+				}
+				if errors.Is(err, videoruntime.ErrUnsupported) {
+					continue
+				}
 			}
 		}
 		if op.Status != "in_flight" {
@@ -180,6 +212,13 @@ func (s *Service) recoverOperations(ctx context.Context) error {
 			}
 			return appendEventTx(tx, &t, &st, "task.submission_unknown", previous, t.Status, st.CreateRequestID, "", now)
 		}); err != nil {
+			isolated, isolationErr := s.isolateInvalidCreateExecution(ctx, op, err)
+			if isolationErr != nil {
+				return isolationErr
+			}
+			if isolated {
+				continue
+			}
 			return err
 		}
 	}
@@ -219,18 +258,39 @@ func (s *Service) operationMaySend(ctx context.Context, op Operation) (bool, err
 		s.observeGuard(op.Kind, false, ErrDispatchPaused)
 		return false, ErrDispatchPaused
 	}
+	var executionExpires time.Time
 	if op.Kind == "create_task" {
 		// A failed asset/budget/input check is not permission to interpret an
 		// unknown execution format as definitely unsent. Metadata is checked
 		// before claim/refund and once more at the final send boundary.
 		err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			_, st, e := loadTask(tx, op.OrgID, op.ResourceID, false)
+			t, st, e := loadTask(tx, op.OrgID, op.ResourceID, true)
 			if e != nil {
 				return e
 			}
-			return requireCurrentOperationRuntimeTx(tx, st, op)
+			identity, e := s.requireCreateSenderIdentityTx(tx, t, st, op)
+			if e != nil {
+				return e
+			}
+			window, e := invocation.CheckVideoExecutionWindowTx(tx, op.OrgID, op.PayloadRef, identity.SchemaVersion)
+			if e != nil {
+				return e
+			}
+			if window.Identity != identity {
+				return ErrConflict
+			}
+			executionExpires = window.Identity.ExpiresAt
+			return nil
 		})
 		if err != nil {
+			if errors.Is(err, errCreateSenderClaimLost) {
+				if cause := ctx.Err(); cause != nil {
+					s.observeGuard(op.Kind, false, cause)
+					return false, cause
+				}
+				s.observeGuard(op.Kind, false, nil)
+				return false, nil
+			}
 			s.observeGuard(op.Kind, false, err)
 			return false, err
 		}
@@ -240,7 +300,9 @@ func (s *Service) operationMaySend(ctx context.Context, op Operation) (bool, err
 	// operation must not use an earlier successful check to authorize a send.
 	var count int64
 	query := supportedOperationRuntime(s.authorityQuery(ctx).Table("video_operations AS o").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("o.org_id = ? AND o.id = ? AND o.resource_id = ? AND o.kind = ? AND o.status = ? AND o.version = ? AND o.attempt_id = ? AND o.lease_until > UTC_TIMESTAMP(3) AND o.runtime_version = ? AND o.adapter_version = ? AND o.protocol_contract_version = ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, op.RuntimeVersion, op.AdapterVersion, op.ProtocolContractVersion)
-	if op.Kind != "create_task" {
+	if op.Kind == "create_task" {
+		query = query.Where("? > UTC_TIMESTAMP(3) AND o.payload_ref = ? AND OCTET_LENGTH(o.payload_ref) = ? AND v.effective_payload_ref = ? AND OCTET_LENGTH(v.effective_payload_ref) = ?", executionExpires, op.PayloadRef, len(op.PayloadRef), op.PayloadRef, len(op.PayloadRef))
+	} else {
 		// Legacy DELETE must never send for a registered action, including an
 		// unknown protocol. Only the separate captured-action guard can send it.
 		query = query.Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)")
@@ -352,6 +414,16 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 		if executionAttempt.AttemptID == "" {
 			return s.knownUnsent(ctx, t, st, op, code)
 		}
+		if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			freshTask, fixed, err := loadTask(tx, t.OrgID, t.TaskID, true)
+			if err != nil {
+				return err
+			}
+			_, err = s.requireCreateSenderIdentityTx(tx, freshTask, fixed, op)
+			return err
+		}); err != nil {
+			return err
+		}
 		// Registered work must record even a definite local no-send through
 		// its inbox, so recovery and financial idempotence use one path.
 		receipt, err := s.saveCreateResponse(ctx, executionAttempt, ark.Result{Action: ark.ActionSubmit, Outcome: ark.OutcomeNotSent, Error: &ark.Error{Code: code}}, "")
@@ -367,10 +439,10 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	if err != nil {
 		return err
 	}
-	body, err := s.Evidence.ReadForExecutionSchema(ctx, t.OrgID, op.PayloadRef, descriptor.ExecutionInputSchemaVersion, invocation.VideoAccess{ActorRole: invocation.VideoRoleWorker, ActorID: "video-dispatch", ReasonCode: "dispatch", OperationID: op.ID})
+	body, err := s.Evidence.ReadForExecutionSchemaWithDatabaseTime(ctx, t.OrgID, op.PayloadRef, descriptor.ExecutionInputSchemaVersion, invocation.VideoAccess{ActorRole: invocation.VideoRoleWorker, ActorID: "video-dispatch", ReasonCode: "dispatch", OperationID: op.ID})
 	if err != nil {
-		if errors.Is(err, invocation.ErrVideoSchemaUnsupported) {
-			return videoruntime.ErrUnsupported
+		if !executionReadAllowsNotSent(err) {
+			return err
 		}
 		return knownUnsent("execution_unavailable")
 	}
@@ -485,6 +557,15 @@ func (s *Service) applyCreateReceipt(ctx context.Context, op Operation) error {
 		if current.ReceiptAppliedAt != nil {
 			return nil
 		}
+		if current.Status == "needs_review" && current.ErrorCode == executionIdentityReviewCode {
+			switch ark.Outcome(current.ReceivedOutcome) {
+			case ark.OutcomeAccepted, ark.OutcomeRejected, ark.OutcomeUnknown:
+			default:
+				// A candidate captured before isolation cannot bypass manual
+				// review by replaying NotSent after the input is repaired.
+				return ErrConflict
+			}
+		}
 		now, err := authorityTimeTx(tx)
 		if err != nil {
 			return err
@@ -532,6 +613,9 @@ func (s *Service) applyCreateResultTx(tx *gorm.DB, t task.Task, st State, curren
 		// authorizes release; absence or lease expiry never does.
 		reason := videobilling.ReleaseProviderNoCharge
 		if response.Outcome == ark.OutcomeNotSent {
+			if _, err := requireCreateExecutionIdentityTx(tx, t, st, current); err != nil {
+				return err
+			}
 			reason = videobilling.ReleaseNotDispatched
 		}
 		if err := s.afterAssetsTerminalTx(tx, t.OrgID, t.TaskID); err != nil {
@@ -596,6 +680,9 @@ func (s *Service) knownUnsent(ctx context.Context, t task.Task, st State, op Ope
 			return e
 		}
 		if e = requireNoExecutionAttemptTx(tx, op.OrgID, op.ID); e != nil {
+			return e
+		}
+		if _, e = s.requireCreateSenderIdentityTx(tx, t, st, op); e != nil {
 			return e
 		}
 		updated := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ? AND status = ?", op.OrgID, op.ID, op.Version, "in_flight").Updates(map[string]any{"status": "rejected", "error_code": code, "updated_at": s.Now().UTC()})

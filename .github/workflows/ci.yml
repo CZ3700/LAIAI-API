@@ -126,6 +126,13 @@ jobs:
         # Includes real two-connection snapshot, read-pool cancellation and
         # a private 100K-row schema; never uses deployment credentials.
         run: go -C core test -race -p 1 ./internal/invocation ./internal/server -run '^(TestQuery|TestInvocation|TestMySQLInvocation)' -count=1 -timeout=8m
+      - name: Execution input primary-clock TTL, identity and real retention
+        # The Blob cleanup test waits the actual 150-second database grace.
+        # The separate fixed-binary handoff harness is not selected here.
+        run: >-
+          go -C core test -race -p 1 ./internal/invocation ./internal/video
+          -run '^(TestMySQLVideo(Execution|RetentionAndTTLPurge$|BlobRestartSafeUploadAndPurge$|UploadFenceAndExpiry$)|TestMySQLExecution(Input(IdentityPrecedesLocalRelease|EarlyFailureIdentityAndInbox|FinalSQLUsesDatabaseExpiry|HostClockFailuresRemainUncertain)|ActionExpiredIdentityStillControlsNotSent)$)'
+          -count=2 -timeout=15m -v
       - name: Named routing administration and bounded MySQL reads
         run: go -C core test -race -p 1 ./internal/identity ./internal/relay ./internal/routinggroup ./internal/server -run '^(TestRouting|TestGroupCreate|TestGroupInsertDuplicate|TestAdmin(Read|Preview|Select)|TestMySQLRoutingAdmin)' -count=1 -timeout=8m
       - name: Organization routing grants and default CAS
@@ -242,6 +249,47 @@ jobs:
           name: ark-mutation-compat-${{ github.sha }}-${{ github.run_attempt }}
           # Never upload the raw parent: it may retain mysql.env after a crash.
           path: ${{ runner.temp }}/ark-mutation-compat-${{ github.run_id }}-${{ github.run_attempt }}/export
+          if-no-files-found: warn
+          retention-days: 14
+
+  ark-execution-input-compat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GOPROXY: https://proxy.golang.org,direct
+      GOMAXPROCS: 3
+      GOMEMLIMIT: 4GiB
+      # The runner creates its own digest-pinned MySQL and loopback Mock.
+      # No deployment DSN, official credential or supplied old revision.
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.10'
+          cache: true
+      - name: Verify compiler and fixed previous implementation
+        run: |
+          test "$(go env GOVERSION)" = go1.26.10
+          python3 -c 'import sys; assert sys.version_info >= (3, 11)'
+          docker --host unix:///var/run/docker.sock version --format '{{.Server.Version}}'
+          git cat-file -e 9a6fd9426e33b2e1c269b6cb77a170e8890073f2^{commit}
+      - name: Execution input handoff, failure controls and raw-evidence verification
+        env:
+          EXECUTION_INPUT_REPORT_DIR: ${{ runner.temp }}/ark-execution-input-${{ github.run_id }}-${{ github.run_attempt }}
+          EXECUTION_INPUT_COMPILER: host
+        run: make ark-execution-input-compat
+      - name: Retain safe execution input compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ark-execution-input-${{ github.sha }}-${{ github.run_attempt }}
+          # Export records original/export hashes and removes synthetic secrets
+          # from text. The private parent is deliberately never uploaded.
+          path: ${{ runner.temp }}/ark-execution-input-${{ github.run_id }}-${{ github.run_attempt }}/export
           if-no-files-found: warn
           retention-days: 14
 

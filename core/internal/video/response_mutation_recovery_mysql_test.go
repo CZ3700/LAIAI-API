@@ -104,7 +104,7 @@ func TestMySQLResponseMutationRestartAfterRealInputPurgeWithoutHistory(t *testin
 			}
 			m := newMutationConsumerFixture(t, final)
 			must(t, m.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", m.key.OrgID, m.taskID).Update("capture_history", false).Error)
-			a, claim := m.register(t, action)
+			a, claim := executionOldMutationClaim(t, m, action, executionFixtureNow(t, m.s.DB).Add(-time.Second))
 			r := m.append(t, a, mutationResponse(ark.OutcomeAccepted, 200))
 			var history invocation.VideoPayload
 			must(t, m.s.DB.Where("org_id = ? AND payload_id = ?", m.key.OrgID, r.PayloadRef).Take(&history).Error)

@@ -54,6 +54,12 @@ func videoAAD(meta VideoPayload) []byte {
 }
 
 func (s *VideoStore) Prepare(input VideoPayloadInput) (*PreparedVideoPayload, error) {
+	return s.prepareAt(input, s.now().UTC().Truncate(time.Millisecond))
+}
+
+// prepareAt is private: only the legacy API or the fixed execution factories
+// choose its time. It preserves the existing envelope, AAD and correlation.
+func (s *VideoStore) prepareAt(input VideoPayloadInput, now time.Time) (*PreparedVideoPayload, error) {
 	if input.CaptureRepresentation == "" {
 		input.CaptureRepresentation = "legacy_unknown"
 	}
@@ -62,7 +68,6 @@ func (s *VideoStore) Prepare(input VideoPayloadInput) (*PreparedVideoPayload, er
 	default:
 		return nil, ErrVideoInvalid
 	}
-	now := s.now().UTC().Truncate(time.Millisecond)
 	expires := input.ExpiresAt.UTC().Truncate(time.Millisecond)
 	if input.OrgID == 0 || !videoValidID(input.RequestID, false) || !videoValidID(input.AttemptID, true) || input.SchemaVersion == 0 ||
 		!expires.After(now) || expires.After(now.Add(s.maxRetention)) {

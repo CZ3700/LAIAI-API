@@ -296,47 +296,24 @@ func TestVideoSecretRedactionAndNonJSON(t *testing.T) {
 	}
 }
 
-func TestVideoRetentionAndTTLPurge(t *testing.T) {
+// Public mixed-purpose Purge and the original execution assertions now run
+// in TestMySQLVideoRetentionAndTTLPurge against the actual primary clock.
+func TestVideoRetentionPolicy(t *testing.T) {
 	s, db, now := videoSetup(t)
 	input := videoInput(s)
 	input.CaptureEnabled = false
 	if _, err := s.Prepare(input); !errors.Is(err, ErrVideoRetentionDenied) {
 		t.Fatal(err)
 	}
-	input.Purpose = VideoPurposeHistory
-	input.Direction = VideoClientRequest
+	input.Purpose, input.Direction = VideoPurposeHistory, VideoClientRequest
 	input.Body = []byte("not stored")
 	disabled := videoStage(t, s, db, input)
 	var count int64
-	db.Model(&VideoPayloadStaging{}).Count(&count)
-	if count != 0 {
-		t.Fatal("disabled payload staged")
+	if err := db.Model(&VideoPayloadStaging{}).Count(&count).Error; err != nil || count != 0 {
+		t.Fatal("disabled payload staged", err)
 	}
 	if _, err := s.ReadForHistory(context.Background(), 1, disabled.PayloadID(), videoAccess(VideoRoleOrgReader)); !errors.Is(err, ErrVideoRetentionDenied) {
 		t.Fatal(err)
-	}
-	input = videoInput(s)
-	input.RequestID = "live"
-	p := videoStage(t, s, db, input)
-	*now = now.Add(time.Hour)
-	if plain, err := s.ReadForExecution(context.Background(), 1, p.PayloadID(), videoAccess(VideoRoleWorker)); !errors.Is(err, ErrVideoExpired) || plain != nil {
-		t.Fatal("expired readable")
-	}
-	n, err := s.PurgeExpired(context.Background(), 100)
-	if err != nil || n != 2 {
-		t.Fatalf("purge %d %v", n, err)
-	}
-	var meta VideoPayload
-	db.Where("payload_id = ?", p.PayloadID()).Take(&meta)
-	if meta.WrappedKey != "" || len(meta.Nonce) != 0 || meta.CaptureStatus != VideoCaptureExpired {
-		t.Fatal("key not erased")
-	}
-	db.Model(&VideoPayloadStaging{}).Count(&count)
-	if count != 0 {
-		t.Fatal("staging not erased")
-	}
-	if n, err := s.PurgeExpired(context.Background(), 100); err != nil || n != 0 {
-		t.Fatalf("repeat purge %d %v", n, err)
 	}
 	input = videoInput(s)
 	input.ExpiresAt = now.Add(31 * 24 * time.Hour)
@@ -392,93 +369,9 @@ func (b *videoTestBlobs) Delete(ctx context.Context, key string) error {
 	return ctx.Err()
 }
 
-func TestVideoBlobRestartSafeUploadAndPurge(t *testing.T) {
-	s, db, now := videoSetup(t)
-	blobs := &videoTestBlobs{objects: map[string][]byte{}, failPut: true}
-	s.blobs = blobs
-	p := videoStage(t, s, db, videoInput(s))
-	ctx := context.Background()
-	if _, err := s.UploadPending(ctx, "worker", 10); !errors.Is(err, ErrVideoStorage) {
-		t.Fatal(err)
-	}
-	if _, err := s.ReadForExecution(ctx, 1, p.PayloadID(), videoAccess(VideoRoleWorker)); err != nil {
-		t.Fatal("ambiguous put lost SQL staging", err)
-	}
-	*now = now.Add(2 * time.Minute)
-	if n, err := s.UploadPending(ctx, "restarted-worker", 10); err != nil || n != 1 {
-		t.Fatalf("retry %d %v", n, err)
-	}
-	if blobs.puts != 2 || len(blobs.objects) != 1 {
-		t.Fatal("idempotent object key not used")
-	}
-	if _, err := s.ReadForExecution(ctx, 1, p.PayloadID(), videoAccess(VideoRoleWorker)); err != nil {
-		t.Fatal(err)
-	}
-	var count int64
-	db.Model(&VideoPayloadStaging{}).Count(&count)
-	if count != 0 {
-		t.Fatal("stage not ACKed")
-	}
-	*now = now.Add(time.Hour)
-	if n, err := s.PurgeExpired(ctx, 10); err != nil || n != 1 {
-		t.Fatal(n, err)
-	}
-	if len(blobs.objects) != 1 {
-		t.Fatal("ignored in-flight upload grace")
-	}
-	*now = now.Add(videoUploadLease + videoBlobTimeout)
-	blobs.failDelete = true
-	if _, err := s.PurgeExpired(ctx, 10); !errors.Is(err, ErrVideoStorage) {
-		t.Fatal(err)
-	}
-	if _, err := s.PurgeExpired(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
-	if len(blobs.objects) != 0 {
-		t.Fatal("orphan ciphertext")
-	}
-}
-
-func TestVideoUploadFenceAndExpiry(t *testing.T) {
-	for _, scenario := range []string{"stolen_fence", "expired"} {
-		t.Run(scenario, func(t *testing.T) {
-			s, db, now := videoSetup(t)
-			blobs := &videoTestBlobs{objects: map[string][]byte{}}
-			s.blobs = blobs
-			p := videoStage(t, s, db, videoInput(s))
-			ctx := context.Background()
-			blobs.afterPut = func() {
-				if scenario == "expired" {
-					*now = now.Add(2 * time.Hour)
-					if _, err := s.PurgeExpired(ctx, 10); err != nil {
-						t.Fatal(err)
-					}
-				} else {
-					if err := db.Model(&VideoPayloadStaging{}).Where("payload_id = ?", p.PayloadID()).Update("fencing_token", 99).Error; err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			if n, err := s.UploadPending(ctx, "old-worker", 10); err != nil || n != 0 {
-				t.Fatal("stale worker committed", n, err)
-			}
-			var meta VideoPayload
-			db.Where("payload_id = ?", p.PayloadID()).Take(&meta)
-			if meta.CaptureStatus == VideoCaptureStored {
-				t.Fatal("stale worker ACK")
-			}
-			if scenario == "expired" {
-				*now = now.Add(videoUploadLease + videoBlobTimeout)
-				if _, err := s.PurgeExpired(ctx, 10); err != nil {
-					t.Fatal(err)
-				}
-				if len(blobs.objects) != 0 {
-					t.Fatal("post-expiry upload orphan")
-				}
-			}
-		})
-	}
-}
+// Execution Blob restart, real TTL/grace, stale upload fence and late ACK
+// regressions are in video_execution_purge_mysql_test.go. They deliberately do
+// not fall back to a host-clock SQLite purge.
 
 func TestVideoRequestLifecycleAndRecordTx(t *testing.T) {
 	s, db, now := videoSetup(t)
