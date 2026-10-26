@@ -101,6 +101,9 @@ func (c *Client) execute(action Action, req *http.Request, buildErr error) Resul
 			client.Timeout = 2 * time.Minute
 		}
 	}
+	// Fixed official headers never inherit cookies from an injected client's jar.
+	// Modify only this value copy, not the shared client used by other tasks.
+	client.Jar = nil
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req) // Exactly one application-level attempt. Never retry POST here.
 	if err != nil {

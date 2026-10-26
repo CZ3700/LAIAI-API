@@ -144,35 +144,23 @@ func ssrfDialContext(allowPrivate bool) func(ctx context.Context, network, addr 
 	return d.DialContext
 }
 
-// NewGuardedClient：给 relay 包外（task 产物代理等）复用 SSRF 拨号守卫的 HTTP 客户端。
-// 对**上游返回的不可信 URI**（如 veo LRO 的产物 URI，可能被恶意/被攻陷渠道指向内网/metadata）
-// 发服务端请求时必须用它：① 每跳拨号复检解析后 IP（DNS-rebinding-safe，metadata 恒拦）；
-// ② 跨主机重定向剥离敏感头（绝不把渠道 key 带去攻击者主机）。
-// 边界（可接受）：首跳仍把渠道凭证发给 URI 直接命名的主机——不是提权，因为产生该 URI 的渠道
-// 本就在每次 submit/query 持有该凭证，拿不到它本无权访问的东西；且合法 veo files 端点需带 key。
-// 内网/metadata 首跳由拨号守卫拦（凭证发不出去）；跨主机重定向到公网攻击者主机由 CheckRedirect 剥头。
+// NewGuardedClient protects every dial and permits only same-origin redirects.
+// API/webhook bodies and arbitrary credential headers must not cross origins.
 func NewGuardedClient(timeout time.Duration, allowPrivate bool) *http.Client {
 	return &http.Client{
 		Timeout:       timeout,
 		Transport:     &http.Transport{DialContext: ssrfDialContext(allowPrivate)},
-		CheckRedirect: ssrfCheckRedirect,
+		CheckRedirect: upstreamCheckRedirect,
 	}
 }
 
-// ssrfCheckRedirect：跨主机重定向剥离认证头（防把渠道/BYOK 凭证送去攻击者可控的公网主机；
-// 内网/metadata 首跳由拨号守卫拦）。guardedClient（advanced_custom + BYOK）与 NewGuardedClient
-// （task 产物代理）共用。
-func ssrfCheckRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) >= 5 {
-		return fmt.Errorf("ssrf: stopped after 5 redirects")
-	}
-	if len(via) > 0 && req.URL.Host != via[len(via)-1].URL.Host {
-		req.Header.Del("Authorization")
-		req.Header.Del("x-goog-api-key")
-		req.Header.Del("api-key")
-		req.Header.Del("x-api-key")
-	}
-	return nil
+// NewGuardedMediaClient is exclusively for bodyless GET/HEAD media downloads.
+// The existing provider-selected first-hop URI trust remains unchanged. After
+// crossing an origin every later hop is header-free, including a return hop.
+func NewGuardedMediaClient(timeout time.Duration, allowPrivate bool) *http.Client {
+	client := NewGuardedClient(timeout, allowPrivate)
+	client.CheckRedirect = mediaCheckRedirect
+	return client
 }
 
 // AllowPrivateFromDB：读 ext_settings.advanced_custom_allow_private（默认 false）——供 task 产物代理

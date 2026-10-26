@@ -68,7 +68,7 @@ var (
 	// token_uri 由 admin 凭证提供，信任级别与渠道 base_url 同类，走裸 client。
 	// ⚠️ 若未来把 vertex 加进 BYOK 白名单（byok.go），此处必须换 NewGuardedClient
 	// 并在 parseGCPServiceAccount 校验 token_uri 的 scheme/host——否则租户可借 token_uri SSRF。
-	gcpTokenHTTPClient = &http.Client{Timeout: 15 * time.Second}
+	gcpTokenHTTPClient = NewUpstreamClient(15 * time.Second)
 )
 
 // gcpAccessToken 用 SA 换 access token（带缓存）。now 便于测试注入；生产传 time.Now()。

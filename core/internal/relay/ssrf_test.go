@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// NewGuardedClient 跨主机重定向剥离凭证头（对抗 review 残留补锁）：302 到别的主机时，
+// Explicit media clients retain CDN redirects: when 302 changes origin,
 // 渠道 key（Authorization / x-goog-api-key 等）绝不带到第二主机。
-func TestGuardedClientRedirectStripsCredential(t *testing.T) {
+func TestGuardedMediaClientRedirectStripsCredential(t *testing.T) {
 	var bAuth, bGoog atomic.Value
 	bAuth.Store("(none)")
 	bGoog.Store("(none)")
@@ -26,7 +26,7 @@ func TestGuardedClientRedirectStripsCredential(t *testing.T) {
 	}))
 	defer srvA.Close()
 
-	cl := NewGuardedClient(5*time.Second, true) // allowPrivate=true（httptest 127.0.0.1）
+	cl := NewGuardedMediaClient(5*time.Second, true) // allowPrivate=true（httptest 127.0.0.1）
 	req, _ := http.NewRequest(http.MethodGet, srvA.URL, nil)
 	req.Header.Set("Authorization", "Bearer channel-secret")
 	req.Header.Set("x-goog-api-key", "goog-secret")

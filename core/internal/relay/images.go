@@ -207,7 +207,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 	// Replicate 方言收尾：prediction → OpenAI images 形态（超窗轮询兜底 + b64 保真下载）。
 	// 失败 = 上游错误：释放 hold 不收费（图像按张计费，失败 = 0 张，绝不按请求张数收）。
 	if channelAdapterFamily(ch) == "replicate" {
-		fixed, ferr := replicateFinalizeImages(c.Request.Context(), r.clientFor(ch), r.guardedClient(false),
+		fixed, ferr := replicateFinalizeImages(c.Request.Context(), r.clientFor(ch), r.guardedMediaClient(false),
 			strings.TrimRight(ch.BaseURL, "/"), upCred, raw, req.ResponseFormat == "b64_json", n, r.Now)
 		if ferr != nil {
 			r.release(hold.ID)

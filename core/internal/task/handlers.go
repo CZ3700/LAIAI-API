@@ -177,8 +177,8 @@ func (s *Service) HandleContent(c *gin.Context) {
 		return
 	}
 	// SSRF 守卫（对抗 review CONFIRMED HIGH）：产物 URI 可能是上游返回的不可信绝对 URL——
-	// 用带拨号复检 + 跨主机剥凭证的守卫客户端，绝不用裸 s.Client。metadata 恒拦。
-	guarded := relay.NewGuardedClient(2*time.Minute, relay.AllowPrivateFromDB(s.DB))
+	// 媒体客户端跨 origin 后每跳重建空头；绝不用 API s.Client。metadata 恒拦。
+	guarded := relay.NewGuardedMediaClient(2*time.Minute, relay.AllowPrivateFromDB(s.DB))
 
 	// 直链产物（seedance/hailuo/wan 等：ResultRef 空、ResultURL 是上游签名直链）——
 	// 服务端代理取流 + 修正 Content-Type。修复 Playground 黑屏：TOS/对象存储签名 URL 常返

@@ -108,7 +108,7 @@ type Relay struct {
 	byokAt     time.Time
 	byokRatio  decimal.Decimal
 	byokLoaded bool
-	rateRPM      int
+	rateRPM    int
 
 	// 热读缓存（WS-2）：极少变、读极热的运营配置。命中即把每请求 DB 读从 ~5 降到 0。
 	// 失效=本地写后同步 invalidate + 跨实例 Redis pub/sub（invalidate.go）；TTL 兜底。
@@ -156,7 +156,8 @@ func (r *Relay) clientFor(ch *Channel) *http.Client {
 		r.proxyClients[ch.Proxy] = r.Client // 缓存降级结果，避免反复解析
 		return r.Client
 	}
-	cl := &http.Client{Timeout: upstreamTimeout, Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
+	cl := NewUpstreamClient(upstreamTimeout)
+	cl.Transport = &http.Transport{Proxy: http.ProxyURL(pu)}
 	r.proxyClients[ch.Proxy] = cl
 	return cl
 }
@@ -176,11 +177,18 @@ func (r *Relay) guardedClient(allowPrivate bool) *http.Client {
 	if cl, ok := r.ssrfClients[allowPrivate]; ok {
 		return cl
 	}
-	// 拨号守卫拦内网/metadata 首跳；CheckRedirect 剥跨主机重定向的认证头（对抗 review 硬化：
-	// advanced_custom/BYOK 上游返回恶意跨主机 302 时不把凭证送去攻击者主机，与 NewGuardedClient 对齐）。
-	cl := &http.Client{Timeout: upstreamTimeout, Transport: &http.Transport{DialContext: ssrfDialContext(allowPrivate)}, CheckRedirect: ssrfCheckRedirect}
+	cl := NewGuardedClient(upstreamTimeout, allowPrivate)
 	r.ssrfClients[allowPrivate] = cl
 	return cl
+}
+
+// Use a value copy to retain the guarded connection pool without weakening the
+// cached API client's policy. Media redirects never use a cookie jar.
+func (r *Relay) guardedMediaClient(allowPrivate bool) *http.Client {
+	client := *r.guardedClient(allowPrivate)
+	client.CheckRedirect = mediaCheckRedirect
+	client.Jar = nil
+	return &client
 }
 
 // AdvancedAllowPrivate：导出 allow-private 策略（admin 层 probe 校验用）。
@@ -198,7 +206,7 @@ func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Lo
 	r := &Relay{
 		DB:            db,
 		Keyring:       kr,
-		Client:        &http.Client{Timeout: upstreamTimeout},
+		Client:        NewUpstreamClient(upstreamTimeout),
 		Log:           log,
 		Rec:           rec,
 		Now:           now,
@@ -568,8 +576,8 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		UserID:    key.UserID,
 		APIKeyID:  key.ID,
 		RequestID: newRequestID(),
-		Modality:  invocation.ModalityChat,   // anthropic/responses 入站方言同走本链路，同标 chat
-		Protocol:  ingressProtocol(c),        // 入站方言真实记录（排障闭环 0045）：openai|anthropic|responses
+		Modality:  invocation.ModalityChat, // anthropic/responses 入站方言同走本链路，同标 chat
+		Protocol:  ingressProtocol(c),      // 入站方言真实记录（排障闭环 0045）：openai|anthropic|responses
 	}
 	setClientMeta(inv, c)
 	c.Header("X-Request-Id", inv.RequestID)
@@ -598,7 +606,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model is required")
 		return
 	}
-	routePolicy := resolveRoutePolicy(c, key) // 路由策略（0043）：X-LAIAI-Route 头 > key 默认 > order
+	routePolicy := resolveRoutePolicy(c, key)                      // 路由策略（0043）：X-LAIAI-Route 头 > key 默认 > order
 	if code, msg, ok := r.gateKey(key, c.ClientIP(), model); !ok { // Key 精细管控（0012）
 		relayErr(c, code, msg)
 		return
@@ -905,8 +913,8 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 				return chatDone
 			}
 			r.Log.Warn("upstream unreachable", "channel", ch.ID, "attempt", attempt, "err", err)
-			r.observe(ch.ID, false)      // 健康分：网络不可达 = 渠道可靠性失败
-			r.breakerNote(ch.ID, false)  // 熔断：不可达计一次
+			r.observe(ch.ID, false)     // 健康分：网络不可达 = 渠道可靠性失败
+			r.breakerNote(ch.ID, false) // 熔断：不可达计一次
 			exclude[ch.ID] = true
 			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
 			resp = nil
@@ -1029,7 +1037,7 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 
 	// BYOK（0044）：命中自有渠道按费率结算（非 BYOK 因子恒为 1）
 	byok := r.byokFactor(ch, key.OrgID)
-	cw5m, cw1h := u.CacheWrites() // Anthropic 写缓存溢价（1.25x/2x 输入价，差额补收）
+	cw5m, cw1h := u.CacheWrites()          // Anthropic 写缓存溢价（1.25x/2x 输入价，差额补收）
 	aIn, aOut := u.AudioIn(), u.AudioOut() // 音频 token 价差补收（gpt-4o-audio 等，≈16× 文本价）
 	actual := price.ChatCost(u.PromptTokens, u.Cached(), u.CompletionTokens).
 		Add(price.CacheWriteSurcharge(cw5m, cw1h)).
