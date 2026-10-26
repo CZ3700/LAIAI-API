@@ -15,6 +15,7 @@ import (
 
 func TestMySQLResponseInboxLegacyAndNewQueuesExcludeUnknownProtocolBeforeLimit(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	var unsupported []ResponseInbox
 	// More than the consumer's batch limit: a post-LIMIT protocol check
 	// would starve the supported receipt deliberately placed behind them.
@@ -98,6 +99,7 @@ func TestMySQLResponseInboxLegacyAndNewQueuesExcludeUnknownProtocolBeforeLimit(t
 
 func TestMySQLResponseInboxExpiredTombstonesDoNotStarveLiveAttempts(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	var deleted []ExecutionAttempt
 	for i := range 31 {
 		v := f.create(t, fmt.Sprintf("inbox-expired-tombstone-%d", i))
@@ -129,6 +131,7 @@ func TestMySQLResponseInboxExpiredTombstonesDoNotStarveLiveAttempts(t *testing.T
 
 func TestMySQLResponseInboxDifferentCurrentAttemptCannotTakeOldEvidence(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	v := f.create(t, "inbox-current-attempt-replaced")
 	attempt, op := responseInboxRegister(t, f, v.ID)
 	r := responseInboxAppend(t, f, attempt, responseInboxResult(ark.OutcomeAccepted, "up_"+v.ID))
@@ -136,7 +139,7 @@ func TestMySQLResponseInboxDifferentCurrentAttemptCannotTakeOldEvidence(t *testi
 	replacement, err := randomID("att_")
 	must(t, err)
 	must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", op.OrgID, op.ID).Updates(map[string]any{"attempt_id": replacement, "version": op.Version + 1, "status": "unknown"}).Error)
-	must(t, f.s.recoverResponseInbox(context.Background()))
+	requireRecoveryCause(t, f.s.recoverResponseInbox(context.Background()), ErrConflict, 1)
 	var row task.Task
 	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Take(&row).Error)
 	app := responseInboxApp(t, f, r)
@@ -147,6 +150,7 @@ func TestMySQLResponseInboxDifferentCurrentAttemptCannotTakeOldEvidence(t *testi
 
 func TestMySQLResponseInboxTemporaryBlockersBackOffAndAllowNextBatch(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	var blocked []ResponseInbox
 	inputs := map[string]bool{}
 	for i := range 30 {
@@ -167,15 +171,16 @@ func TestMySQLResponseInboxTemporaryBlockersBackOffAndAllowNextBatch(t *testing.
 	f.s.ResponseInboxEnabled = false
 	name := fmt.Sprintf("test:inbox-temporary-read-%d", f.key.OrgID)
 	fired := 0
+	injected := errors.New("synthetic temporary execution identity read failure")
 	must(t, f.s.DB.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
 		meta, ok := tx.Statement.Dest.(*invocation.VideoPayload)
 		if ok && meta.Purpose == invocation.VideoPurposeExecution && inputs[meta.PayloadID] {
 			fired++
-			tx.AddError(errors.New("synthetic temporary execution identity read failure"))
+			tx.AddError(injected)
 		}
 	}))
 	t.Cleanup(func() { _ = f.s.DB.Callback().Query().Remove(name) })
-	must(t, f.s.recoverResponseInbox(context.Background()))
+	requireRecoveryCause(t, f.s.recoverResponseInbox(context.Background()), invocation.ErrVideoStorage, 30, injected)
 	if fired != 30 || responseInboxApp(t, f, valid).State != "pending" {
 		t.Fatal("first batch did not exercise all temporary blockers before the valid receipt")
 	}
@@ -209,6 +214,7 @@ func TestMySQLResponseInboxTemporaryBlockersBackOffAndAllowNextBatch(t *testing.
 
 func TestMySQLResponseInboxUpstreamBindingConflictStopsAutomaticReplay(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	firstTask := f.create(t, "inbox-binding-owner")
 	firstAttempt, firstOp := responseInboxRegister(t, f, firstTask.ID)
 	first := responseInboxAppend(t, f, firstAttempt, responseInboxResult(ark.OutcomeAccepted, "up_"+firstTask.ID))

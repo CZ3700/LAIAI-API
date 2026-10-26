@@ -300,8 +300,14 @@ func (s *Service) processMutation(ctx context.Context, op Operation) error {
 }
 
 func (s *Service) applyMutationReceipt(ctx context.Context, op Operation) error {
+	_, err := s.applyMutationReceiptProgress(ctx, op)
+	return err
+}
+
+func (s *Service) applyMutationReceiptProgress(ctx context.Context, op Operation) (recoveryDisposition, error) {
 	now := s.Now().UTC()
-	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	disposition := recoveryUnchanged
+	err := s.recoveryDB(ctx).Transaction(func(tx *gorm.DB) error {
 		// Include tombstones only to recognize an already applied deletion.
 		// Keep the normal Task -> State -> Operation lock order.
 		var t task.Task
@@ -366,8 +372,16 @@ func (s *Service) applyMutationReceipt(ctx context.Context, op Operation) error 
 		if e := tx.Model(&current).Updates(map[string]any{"status": status, "error_code": code, "receipt_applied_at": now, "updated_at": now}).Error; e != nil {
 			return e
 		}
-		return appendEventTx(tx, &t, &st, "task.operation_updated", t.Status, t.Status, current.AttemptID, current.ReceiptRef, now)
+		if err := appendEventTx(tx, &t, &st, "task.operation_updated", t.Status, t.Status, current.AttemptID, current.ReceiptRef, now); err != nil {
+			return err
+		}
+		disposition = recoveryApplied
+		return nil
 	})
+	if err != nil {
+		return recoveryUnchanged, err
+	}
+	return disposition, nil
 }
 
 // Operations survive soft deletion; billing and event reads use an explicit

@@ -45,15 +45,17 @@ type WorkerDuration struct {
 }
 
 type WorkerRuntimeObservation struct {
-	Scope                string           `json:"scope"`
-	DispatchPaused       bool             `json:"dispatch_paused"`
-	DispatchPauseReason  string           `json:"dispatch_pause_reason"`
-	StartedAt            time.Time        `json:"started_at"`
-	LastCycleStartedAt   *time.Time       `json:"last_cycle_started_at"`
-	LastCycleCompletedAt *time.Time       `json:"last_cycle_completed_at"`
-	LastCycleErrorAt     *time.Time       `json:"last_cycle_error_at"`
-	Counters             []WorkerCounter  `json:"counters"`
-	Durations            []WorkerDuration `json:"durations"`
+	Scope                string                          `json:"scope"`
+	DispatchPaused       bool                            `json:"dispatch_paused"`
+	DispatchPauseReason  string                          `json:"dispatch_pause_reason"`
+	StartedAt            time.Time                       `json:"started_at"`
+	LastCycleStartedAt   *time.Time                      `json:"last_cycle_started_at"`
+	LastCycleCompletedAt *time.Time                      `json:"last_cycle_completed_at"`
+	LastCycleErrorAt     *time.Time                      `json:"last_cycle_error_at"`
+	Counters             []WorkerCounter                 `json:"counters"`
+	Durations            []WorkerDuration                `json:"durations"`
+	Cycles               []WorkerCycleObservation        `json:"cycles"`
+	RecoveryLanes        []WorkerRecoveryLaneObservation `json:"recovery_lanes"`
 }
 
 type WorkerTaskCounts struct {
@@ -146,6 +148,8 @@ type workerMetrics struct {
 	startedAt                                                          time.Time
 	lastStart, lastComplete, lastError                                 time.Time
 	cyclesStarted, cyclesCompleted, cycleErrors                        uint64
+	cycleKinds                                                         [workerCycleKindCount]workerCycleCounters
+	recoveryLanes                                                      [recoveryLaneCount]workerRecoveryCounters
 	operationCandidates, queryCandidates, operationErrors, queryErrors uint64
 	guards                                                             [len(workerGuardKinds)][len(workerGuardOutcomes)]uint64
 	calls                                                              [len(workerCallKinds)][len(workerCallOutcomes)]uint64
@@ -182,23 +186,7 @@ func workerEnumIndex(value string, values []string) int {
 }
 
 func (m *workerMetrics) startCycle() func(error) {
-	started := time.Now()
-	m.mu.Lock()
-	m.cyclesStarted++
-	m.lastStart = started.UTC()
-	m.mu.Unlock()
-	return func(err error) {
-		finished := time.Now()
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		m.cyclesCompleted++
-		m.lastComplete = finished.UTC()
-		if err != nil {
-			m.cycleErrors++
-			m.lastError = finished.UTC()
-		}
-		m.timings[len(workerCallKinds)].observe(finished.Sub(started))
-	}
+	return m.startCycleKind(workerCycleCombined)
 }
 
 func (t *workerTiming) observe(elapsed time.Duration) {
@@ -265,6 +253,15 @@ func (m *workerMetrics) runtimeSnapshot() WorkerRuntimeObservation {
 		{Name: "item_errors", Kind: "operation", Value: m.operationErrors},
 		{Name: "item_errors", Kind: "query", Value: m.queryErrors},
 	}}
+	for k, kind := range workerCycleNames {
+		counter := m.cycleKinds[k]
+		out.Cycles = append(out.Cycles, WorkerCycleObservation{Kind: kind, Started: counter.started, Completed: counter.completed, Errors: counter.errors})
+	}
+	for k, kind := range recoveryLaneNames {
+		counter := m.recoveryLanes[k]
+		result := counter.result
+		out.RecoveryLanes = append(out.RecoveryLanes, WorkerRecoveryLaneObservation{Kind: kind, Cycles: counter.cycles, Errors: counter.errors, Selected: result.Selected, Applied: result.Applied, Deferred: result.Deferred, Review: result.Review, Noop: result.Noop, Failed: result.Failed})
+	}
 	for k, kind := range workerGuardKinds {
 		for o, outcome := range workerGuardOutcomes {
 			out.Counters = append(out.Counters, WorkerCounter{Name: "dispatch_guard", Kind: kind, Outcome: outcome, Value: m.guards[k][o]})

@@ -19,6 +19,7 @@ func TestMySQLResponseInboxUnknownProducerStillRetainsEvidence(t *testing.T) {
 	for _, format := range []string{"runtime", "observation_schema"} {
 		t.Run(format, func(t *testing.T) {
 			f := mysqlFixture(t)
+			executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 			v := f.create(t, "inbox-unknown-producer")
 			attempt, op := responseInboxRegister(t, f, v.ID)
 			if format == "runtime" {
@@ -86,6 +87,7 @@ func TestMySQLResponseInboxApplicationRollbackKeepsEvidenceAndReplaysOnce(t *tes
 	for _, outcome := range []ark.Outcome{ark.OutcomeAccepted, ark.OutcomeRejected} {
 		t.Run(string(outcome), func(t *testing.T) {
 			f := mysqlFixture(t)
+			executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 			v := f.create(t, "inbox-apply-rollback")
 			attempt, op := responseInboxRegister(t, f, v.ID)
 			receipt := responseInboxAppend(t, f, attempt, responseInboxResult(outcome, "up_"+v.ID))
@@ -132,6 +134,7 @@ func TestMySQLResponseInboxApplicationRollbackKeepsEvidenceAndReplaysOnce(t *tes
 
 func TestMySQLResponseInboxExpiredWithoutResponseNeverUsesLegacyOrResends(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	v := f.create(t, "inbox-no-response")
 	attempt, op := responseInboxRegister(t, f, v.ID)
 	before := responseInboxFunds(t, f, v.ID)

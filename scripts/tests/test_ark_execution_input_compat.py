@@ -17,6 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import ark_execution_input_compat as host
+import ark_execution_input_matrix as matrix
 import ark_execution_input_verify as verify
 
 
@@ -59,7 +60,8 @@ def proof(settled=False, action=False, fault=None, purged=False):
         'database_time': '2026-10-26T00:03:01Z' if purged else '2026-10-26T00:00:01Z',
         'runtime_version': 'future-runtime' if fault == 'runtime' else 'video-v1',
         'input_successful_reads': 1, 'attempt_count': 1, 'receipt_count': 1,
-        'application_state': 'pending', 'applied_at': None,
+        'application_state': 'pending', 'application_error': '', 'applied_at': None,
+        'application_next_attempt_at': '2026-10-26T00:00:01Z',
         'operation_status': 'unknown', 'task_status': 'succeeded' if settled else 'queued',
         'billing_state': 'settled' if settled else 'held',
         'oracle': {'request_body_sha256': 'f' * 64},
@@ -74,6 +76,8 @@ def family(case):
     seed['attempt_count'] = seed['receipt_count'] = 0
 
     def event(name, data, instance=writer, command=1):
+        if name == 'cycle_completed':
+            data = dict(data, http_attempts=0)
         events.append({'event': name, 'data': copy.deepcopy(data), 'instance': instance, 'cmd_id': command})
 
     event('seeded', seed)
@@ -98,17 +102,23 @@ def family(case):
         event('purged', {'before': before, 'after': persisted}, purger)
     if fault:
         first = 'first-new' if case.endswith('-new') else 'first-old'
+        if fault == 'schema':
+            persisted.update(application_state='blocked', application_error='execution_identity_unavailable')
         for command in (5, 6):
-            event('cycle_completed', {'error_class': 'none', 'barrier_reached': False, 'proof': persisted}, first, command)
+            error = 'schema_rejected' if fault == 'schema' and first == 'first-new' and command == 5 else 'none'
+            event('cycle_completed', {'error_class': error, 'barrier_reached': False, 'proof': persisted}, first, command)
     terminal = case in ('N01', 'N03-create')
     final = proof(terminal, action=action, fault=fault, purged=purge)
     if not fault:
         final['application_state'], final['applied_at'] = 'applied', '2026-10-26T00:03:02Z'
+    elif fault == 'schema':
+        final.update(application_state='blocked', application_error='execution_identity_unavailable')
     instance = {'N01': 'recovery-new', 'N03-create': 'sender-old', 'N02': 'first-new', 'N03-action': 'first-old'}.get(case)
     if instance is None:
         instance = 'second-old' if case.endswith('-new') else 'second-new'
     for command in (7, 8):
-        event('cycle_completed', {'error_class': 'none', 'barrier_reached': False, 'proof': final}, instance, command)
+        error = 'schema_rejected' if fault == 'schema' and instance == 'second-new' and command == 7 else 'none'
+        event('cycle_completed', {'error_class': error, 'barrier_reached': False, 'proof': final}, instance, command)
     return {'case_id': case, 'status': 'passed', 'seed': seed, 'final': copy.deepcopy(final)}, events
 
 
@@ -181,6 +191,104 @@ def raw_evidence(root):
     (matrix / 'matrix-passed.json').write_text(json.dumps({'status': 'passed', 'run_id': run, 'old_source': builds['old']['source'],
                                                           'new_source': builds['new']['source'], 'families': 4, 'cases': 8,
                                                           'cases_passed': list(verify.INSTANCES)}))
+
+
+class SchemaRecoveryProtocolTests(unittest.TestCase):
+    def child(self, case, role, instance, data):
+        child = matrix.Child.__new__(matrix.Child)
+        child.case, child.role, child.instance = case, role, instance
+        child.schema_rejections = 0
+        child.matrix = mock.Mock()
+        child.matrix.mock.snapshot.return_value = []
+        child.send = mock.Mock(return_value=1)
+        child.wait = mock.Mock(return_value=data)
+        return child
+
+    def cycle(self, code='schema_rejected'):
+        p = proof(action=True, fault='schema')
+        p.update(application_state='blocked', application_error='execution_identity_unavailable')
+        return {'error_class': code, 'barrier_reached': False, 'http_attempts': 0, 'proof': p}
+
+    def test_controller_schema_class_is_new_consumer_only(self):
+        for case, instance in [('N04-schema-new', 'first-new'), ('N04-schema-old', 'second-new')]:
+            with self.subTest(case=case):
+                child = self.child(case, 'new', instance, self.cycle())
+                child.cycle()
+                child.wait.return_value = self.cycle('none')
+                child.cycle()
+                self.assertEqual(child.schema_rejections, 1)
+                for code in ('none', 'operation_error', 'cancelled', 'deadline', 'unknown'):
+                    with self.subTest(code=code), self.assertRaises(RuntimeError):
+                        self.child(case, 'new', instance, self.cycle(code)).cycle()
+        for case, role, instance in [('N04-schema-old', 'old', 'first-old'),
+                                      ('N04-schema-new', 'old', 'second-old'),
+                                      ('N04-runtime-new', 'new', 'first-new'),
+                                      ('N02', 'new', 'first-new'),
+                                      ('N04-schema-new', 'new', 'writer-new')]:
+            with self.subTest(case=case, role=role, instance=instance), self.assertRaisesRegex(RuntimeError, 'cycle_error'):
+                self.child(case, role, instance, self.cycle()).cycle()
+
+    def test_controller_rejection_requires_blocked_no_http(self):
+        for field, value in [('application_state', 'pending'), ('application_error', 'other'),
+                             ('applied_at', '2026-10-26T00:03:02Z')]:
+            data = self.cycle();data['proof'][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, 'schema_rejection_state'):
+                self.child('N04-schema-new', 'new', 'first-new', data).cycle()
+        for value in (1, True, None):
+            data = self.cycle();data['http_attempts'] = value
+            with self.subTest(http=value), self.assertRaisesRegex(RuntimeError, 'schema_rejection_http'):
+                self.child('N04-schema-new', 'new', 'first-new', data).cycle()
+        child = self.child('N04-schema-new', 'new', 'first-new', self.cycle())
+        child.matrix.mock.snapshot.side_effect = [[], [{'method': 'GET'}]]
+        with self.assertRaisesRegex(RuntimeError, 'schema_rejection_http'):
+            child.cycle()
+
+    def test_controller_waits_for_real_database_due_without_rewriting(self):
+        before = self.cycle()['proof']
+        future = dict(before, database_time='2026-10-26T00:00:01Z', application_next_attempt_at='2026-10-26T00:00:31Z')
+        due = dict(future, database_time='2026-10-26T00:00:31Z')
+        child = mock.Mock(case='N04-schema-old', role='new')
+        child.inspect.side_effect = [future, due]
+        child.cycle.return_value = before
+        with mock.patch.object(matrix.time, 'monotonic', side_effect=[0, 1, 1, 1, 2, 2]), mock.patch.object(matrix.time, 'sleep') as sleep:
+            self.assertEqual(matrix.Matrix.held_unchanged_replay(None, child, before), before)
+        self.assertEqual(child.inspect.call_count, 2)
+        self.assertEqual(child.cycle.call_count, 2)
+        sleep.assert_called_once_with(.25)
+        child = mock.Mock(case='N04-schema-old', role='new')
+        child.inspect.return_value = future
+        with mock.patch.object(matrix.time, 'monotonic', side_effect=[0, 40]), self.assertRaisesRegex(RuntimeError, 'schema_recovery_due_timeout'):
+            matrix.Matrix.held_unchanged_replay(None, child, before)
+        child.cycle.assert_not_called()
+
+    def test_independent_verifier_requires_first_exact_schema_rejection(self):
+        for case, instance in [('N04-schema-new', 'first-new'), ('N04-schema-old', 'second-new')]:
+            result, events = family(case)
+            verify.verify_case_proofs(case, result, events)
+            for code in ('none', 'operation_error', 'cancelled', 'deadline'):
+                altered = copy.deepcopy(events)
+                first = next(e for e in altered if e['event'] == 'cycle_completed' and e['instance'] == instance)
+                first['data']['error_class'] = code
+                with self.subTest(case=case, code=code), self.assertRaisesRegex(ValueError, 'raw_schema_rejection_missing'):
+                    verify.verify_case_proofs(case, result, altered)
+            for changed in ('http', 'state', 'code', 'applied', 'decryption', 'barrier'):
+                altered = copy.deepcopy(events)
+                first = next(e['data'] for e in altered if e['event'] == 'cycle_completed' and e['instance'] == instance)
+                if changed == 'http':first['http_attempts'] = 1
+                elif changed == 'state':first['proof']['application_state'] = 'pending'
+                elif changed == 'code':first['proof']['application_error'] = 'other'
+                elif changed == 'applied':first['proof']['applied_at'] = '2026-10-26T00:03:02Z'
+                elif changed == 'decryption':first['proof']['input_successful_reads'] += 1
+                else:first['barrier_reached'] = True
+                with self.subTest(case=case, changed=changed), self.assertRaises(ValueError):
+                    verify.verify_case_proofs(case, result, altered)
+        for case, instance in [('N04-schema-old', 'first-old'), ('N04-schema-new', 'second-old'),
+                               ('N04-runtime-new', 'first-new'), ('N02', 'first-new')]:
+            result, events = family(case)
+            cycle = next(e for e in events if e['event'] == 'cycle_completed' and e['instance'] == instance)
+            cycle['data']['error_class'] = 'schema_rejected'
+            with self.subTest(case=case, instance=instance), self.assertRaises(ValueError):
+                verify.verify_case_proofs(case, result, events)
 
 
 class FinancialEvidenceTests(unittest.TestCase):

@@ -28,6 +28,7 @@ func mutationOneReceipt(t *testing.T, m *mutationConsumerFixture, op Operation) 
 
 func TestMySQLResponseMutationCancelledCallerStillRetriesAndSaves(t *testing.T) {
 	m := newMutationConsumerFixture(t, "")
+	executionRecoveryScope(t, m.fixture, []uint64{m.key.OrgID})
 	a, claim := m.register(t, "cancel_task")
 	funds := m.funds(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -111,6 +112,7 @@ func TestMySQLResponseMutationSaveExhaustionAndPermanentFailurePauseDispatch(t *
 	}{{"transient", 1213, 3}, {"permanent", 1146, 1}} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newMutationConsumerFixture(t, "")
+			executionRecoveryScope(t, m.fixture, []uint64{m.key.OrgID})
 			a, claim := m.register(t, "cancel_task")
 			funds := m.funds(t)
 			count := 0

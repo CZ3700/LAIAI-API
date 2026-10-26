@@ -163,32 +163,7 @@ func runCore(log *slog.Logger) (code int) {
 			log.Error("video asset console configuration invalid")
 			return 1
 		}
-		videoJobs := []struct {
-			name     string
-			interval time.Duration
-			run      func(context.Context) error
-		}{
-			{"task", 2 * time.Second, videoSvc.ProcessOnce},
-			{"assets", 5 * time.Second, videoSvc.Assets.ProcessOnce},
-			{"events", 5 * time.Second, videoSvc.ProcessOutbox},
-			{"evidence_retention", time.Minute, func(ctx context.Context) error {
-				if _, err := videoSvc.Evidence.PurgeExpired(ctx, 100); err != nil {
-					return err
-				}
-				return videoSvc.RecoverRequestLogs(time.Now().UTC())
-			}},
-		}
-		for _, job := range videoJobs {
-			jobs.goRun(func(ctx context.Context) {
-				periodic(ctx, job.interval, func(ctx context.Context) {
-					if leaderLease.IsLeader() {
-						if err := job.run(ctx); err != nil && ctx.Err() == nil {
-							log.Warn("video background job deferred", "job", job.name)
-						}
-					}
-				})
-			})
-		}
+		registerVideoJobs(jobs, videoSvc, leaderLease.IsLeader, log)
 	}
 	if cfg.Keyring != nil {
 		taskSvc = task.NewService(db, cfg.Keyring, log.With("component", "task"))

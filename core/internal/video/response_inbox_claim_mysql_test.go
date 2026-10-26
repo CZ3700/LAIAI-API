@@ -15,6 +15,7 @@ import (
 // producer the current consumer's state-changing permission.
 func TestMySQLResponseInboxStaleProducerCannotApplyConflictOrDowngradeAppliedReceipt(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	v := f.create(t, "inbox-stale-producer-conflict")
 	attempt, claim := responseInboxRegister(t, f, v.ID)
 	accepted := responseInboxAppend(t, f, attempt, responseInboxResult(ark.OutcomeAccepted, "up_"+v.ID))
@@ -67,7 +68,7 @@ func TestMySQLResponseInboxStaleProducerCannotApplyConflictOrDowngradeAppliedRec
 	if len(candidates) == 0 || candidates[0].OrgID != conflicting.OrgID || candidates[0].ReceiptID != conflicting.ReceiptID {
 		t.Fatal("fixture's contradictory receipt did not enter the first recovery batch")
 	}
-	must(t, f.s.recoverResponseInbox(context.Background()))
+	requireRecoveryCause(t, f.s.recoverResponseInbox(context.Background()), ErrConflict, 1)
 	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Take(&state).Error)
 	if responseInboxApp(t, f, conflicting).State != "review" || state.SyncState != "needs_review" || responseInboxApp(t, f, accepted).State != "applied" || responseInboxCount(t, f, &UpstreamBinding{}, "org_id = ? AND task_id = ? AND upstream_task_id = ?", f.key.OrgID, v.ID, accepted.UpstreamTaskID) != 1 || responseInboxFunds(t, f, v.ID) != beforeFunds || f.posts.Load() != 0 || f.gets.Load() != 0 {
 		t.Fatal("current recovery did not quarantine contradictory accepted facts exactly once")

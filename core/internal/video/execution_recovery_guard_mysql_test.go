@@ -1,6 +1,7 @@
 package video
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"gorm.io/gorm"
+	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
 )
 
@@ -225,15 +227,138 @@ func TestMySQLExecutionRecoveryIsolationBoundaries(t *testing.T) {
 	}
 }
 
+// Validate the complete returned cause tree, not merely errors.Is on one leaf:
+// unrelated storage, authority or cancellation failures must fail the fixture.
+// Only the coordinator's private aggregate may contain the expected sentinel.
+func requireRecoveryCause(t *testing.T, err, want error, count int, injectedStorageCause ...error) {
+	t.Helper()
+	pending := []error{err}
+	leaves, visited := 0, 0
+	for len(pending) != 0 {
+		current := pending[0]
+		pending = pending[1:]
+		visited++
+		if visited > 1024 || current == nil {
+			t.Fatal("invalid or unbounded recovery cause tree")
+		}
+		if len(injectedStorageCause) == 0 && current == want {
+			leaves++
+			continue
+		}
+		// Invocation preserves the exact injected DB cause in its safe storage
+		// wrapper. Accept only that single known cause, never an arbitrary
+		// wrapper/join that happens to match the storage sentinel.
+		if len(injectedStorageCause) == 1 && want == invocation.ErrVideoStorage && errors.Unwrap(current) == injectedStorageCause[0] && errors.Is(current, want) {
+			leaves++
+			continue
+		}
+		group, ok := current.(*persistedRecoveryErrors)
+		if !ok || group == nil || len(group.causes) == 0 {
+			t.Fatalf("unexpected recovery cause type %T", current)
+		}
+		pending = append(pending, group.causes...)
+	}
+	if leaves != count {
+		t.Fatal("recovery cause count differs from the injected records", "got", leaves, "want", count)
+	}
+}
+
+// Only bounded candidate projections are scoped. In particular a sender
+// COUNT, the locked Task/State/Operation rows and authorization reads retain
+// their exact original predicates. This fixture does not recover the whole DB.
+func executionRecoveryCandidateScope(q *gorm.DB, orgs []uint64) {
+	if _, locking := q.Statement.Clauses["FOR"]; locking {
+		return
+	}
+	projection := strings.Join(q.Statement.Selects, ",")
+	alias := q.Statement.Table
+	candidate := projection == alias+".*"
+	if alias == "o" && strings.HasPrefix(projection, "o.*, ROW_NUMBER() OVER (") {
+		candidate = true
+	}
+	if alias == "eligible" && len(q.Statement.Selects) == 0 && q.Statement.TableExpr != nil && q.Statement.TableExpr.SQL == "(?) AS eligible" {
+		candidate = true
+	}
+	switch alias {
+	case "o", "v", "ea", "ap", "r", "eligible":
+		if candidate {
+			q.Where(alias+".org_id IN ?", orgs)
+		}
+	}
+}
+
+// Dry SQL construction checks this test-only hook; it does not claim SQLite
+// implements MySQL clocks or locking. Actual MySQL tests below use the real DB.
+func TestExecutionRecoveryScopeOnlyChangesCandidateTenantPredicate(t *testing.T) {
+	var output bytes.Buffer
+	db := authorityClockUnitMySQLName(authorityClockUnitDB(t, &output)).Session(&gorm.Session{DryRun: true})
+	s := &Service{DB: db}
+	ctx := context.Background()
+	orgs := []uint64{401, 402}
+	tests := []struct {
+		name, alias string
+		candidate   bool
+		query       func() *gorm.DB
+	}{
+		{"pending", "o", true, func() *gorm.DB { return s.pendingOperationCandidates(ctx).Order("o.created_at, o.id").Limit(20) }},
+		{"legacy", "o", true, func() *gorm.DB { return s.recoveryOperationCandidates(ctx).Order("o.updated_at, o.id").Limit(30) }},
+		{"create_receipts", "ap", true, func() *gorm.DB {
+			return s.responseInboxCandidates(ctx).Order("ap.next_attempt_at, ap.receipt_id").Limit(30)
+		}},
+		{"mutation_receipts", "ap", true, func() *gorm.DB {
+			return s.mutationResponseInboxCandidates(ctx).Order("ap.next_attempt_at, ap.receipt_id").Limit(30)
+		}},
+		{"query_receipts", "r", true, func() *gorm.DB { return s.recoveryQueryCandidates(ctx).Order("r.recovery_due_at").Limit(40) }},
+		{"query_dispatch", "v", true, func() *gorm.DB { return s.pendingQueryCandidates(ctx).Order("v.next_poll_at").Limit(40) }},
+		{"ranked_dispatch", "eligible", true, func() *gorm.DB {
+			return db.Table("(?) AS eligible", s.pendingOperationCandidates(ctx)).Where("scope_rank = 1").Order("created_at, id").Limit(20)
+		}},
+		{"sender_count", "o", false, func() *gorm.DB {
+			return db.Table("video_operations AS o").Select("COUNT(*)").Where("o.id = ? AND o.version = ?", "claimed", 7)
+		}},
+		{"operation_lock", "o", false, func() *gorm.DB {
+			return db.Table("video_operations AS o").Select("o.*").Clauses(clause.Locking{Strength: "UPDATE"}).Where("o.id = ?", "claimed")
+		}},
+		{"task_lock", "tasks", false, func() *gorm.DB {
+			return db.Table("tasks").Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND task_id = ?", 999, "exact-task")
+		}},
+		{"credential_auth", "video_credential_snapshots", false, func() *gorm.DB { return db.Table("video_credential_snapshots").Where("org_id = ? AND id = ?", 999, 42) }},
+	}
+	build := func(q *gorm.DB) (string, []any) {
+		q.Statement.Dest = &[]Operation{}
+		q.Statement.BuildClauses = q.Callback().Query().Clauses
+		callbacks.BuildQuerySQL(q)
+		must(t, q.Error)
+		if q.Statement.SQL.Len() == 0 {
+			t.Fatal("SQL projection check did not build a statement")
+		}
+		return q.Statement.SQL.String(), append([]any(nil), q.Statement.Vars...)
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			plainSQL, plainVars := build(tc.query())
+			filtered := tc.query()
+			executionRecoveryCandidateScope(filtered, orgs)
+			gotSQL, gotVars := build(filtered)
+			want := tc.query()
+			if tc.candidate {
+				want = want.Where(tc.alias+".org_id IN ?", orgs)
+			}
+			wantSQL, wantVars := build(want)
+			if gotSQL != wantSQL || !reflect.DeepEqual(gotVars, wantVars) {
+				t.Fatal("fixture scope changed SQL/Vars beyond its tenant predicate")
+			}
+			if tc.candidate == (plainSQL == gotSQL && reflect.DeepEqual(plainVars, gotVars)) {
+				t.Fatal("candidate scope failed to change only intended statements")
+			}
+		})
+	}
+}
+
 func executionRecoveryScope(t *testing.T, f *fixture, orgs []uint64) {
 	t.Helper()
 	name := fmt.Sprintf("recovery-scope-%d", f.key.OrgID)
-	filter := func(q *gorm.DB) {
-		switch q.Statement.Table {
-		case "o", "v", "ea", "eligible":
-			q.Where(q.Statement.Table+".org_id IN ?", orgs)
-		}
-	}
+	filter := func(q *gorm.DB) { executionRecoveryCandidateScope(q, orgs) }
 	must(t, f.s.DB.Callback().Query().Before("gorm:query").Register(name, filter))
 	must(t, f.s.DB.Callback().Row().Before("gorm:row").Register(name, filter))
 	t.Cleanup(func() { _ = f.s.DB.Callback().Query().Remove(name); _ = f.s.DB.Callback().Row().Remove(name) })
@@ -276,7 +401,8 @@ func TestMySQLExecutionRecoveryBadQueueDoesNotStarveSuccessor(t *testing.T) {
 					t.Fatal("unlimited actual recovery selector did not expose the whole bad prefix")
 				}
 			}
-			// This is actual ProcessOnce restricted to these two fixture tenants,
+			// These are the actual independent recovery and dispatch entrypoints,
+			// restricted to these two fixture tenants,
 			// not a replacement selector: rank/order/runtime/LIMIT are unchanged.
 			f.response = func(r *http.Request) (*http.Response, error) {
 				if r.Method == http.MethodPost {
@@ -292,13 +418,28 @@ func TestMySQLExecutionRecoveryBadQueueDoesNotStarveSuccessor(t *testing.T) {
 			otherFunds := authorityFinancialFacts(t, other, cross.ID)
 			cycles, reviewed := 0, 0
 			for cycle := 0; cycle < 34; cycle++ {
-				must(t, f.s.ProcessOnce(context.Background()))
+				previousReviewed := reviewed
+				recoveryErr := f.s.ProcessPersistedEvidenceOnce(context.Background())
+				if phase == "expired" && previousReviewed < len(bad) {
+					// The runtime wrapper reports the unknown input schema using
+					// this exact sentinel. Every one of this batch's causes must
+					// be that denial; no DB/context/authority error is accepted.
+					wantCauses := min(30, len(bad)-previousReviewed)
+					requireRecoveryCause(t, recoveryErr, videoruntime.ErrUnsupported, wantCauses)
+				} else {
+					must(t, recoveryErr)
+				}
+				must(t, f.s.ProcessDispatchOnce(context.Background()))
 				cycles, reviewed = cycle+1, 0
 				for _, op := range bad {
 					got := runtimeWorkerCreateOperation(t, f, op.ResourceID)
 					if got.Status == "needs_review" && got.ErrorCode == executionIdentityReviewCode {
 						reviewed++
 					}
+				}
+				t.Log("independent recovery/dispatch cycle", "cycle", cycles, "new_review", reviewed-previousReviewed, "remaining", len(bad)-reviewed)
+				if phase == "expired" && reviewed-previousReviewed > 30 {
+					t.Fatal("recovery exceeded its real bounded batch")
 				}
 				// recoverOperations has a real LIMIT 30. Successful dispatch in
 				// that same cycle cannot prove the 31st recovery was processed.
@@ -485,7 +626,12 @@ func TestMySQLExecutionRecoveryNotSentEvidenceRequiresIdentity(t *testing.T) {
 			}
 			executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 			before := executionRecoveryFacts(t, f, v.ID, true)
-			must(t, f.s.recoverOperations(context.Background()))
+			recoveryErr := f.s.recoverOperations(context.Background())
+			if valid {
+				must(t, recoveryErr)
+			} else {
+				requireRecoveryCause(t, recoveryErr, invocation.ErrVideoSchemaUnsupported, 1)
+			}
 			after := runtimeWorkerCreateOperation(t, f, v.ID)
 			if valid {
 				if after.Status != "rejected" || after.ReceiptAppliedAt == nil || f.hold(t, v.ID).Status != ledger.HoldReleased {

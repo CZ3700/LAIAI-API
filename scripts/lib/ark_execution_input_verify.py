@@ -73,6 +73,17 @@ def durable_evidence_chain(events):
             elif operation in inputs:need(inputs[operation]==identity,'durable_chain_input_identity')
             else:inputs[operation]=identity
 
+def recovery_cycles(case,instance,cycles):
+    need(len(cycles)>=2 and all(c['barrier_reached'] is False for c in cycles),'raw_recovery_cycles')
+    if case in ('N04-schema-new','N04-schema-old') and instance in ('first-new','second-new'):
+        need(cycles[0]['error_class']=='schema_rejected','raw_schema_rejection_missing')
+        for cycle in cycles:
+            proof=cycle['proof']
+            need(cycle['error_class'] in ('schema_rejected','none'),'raw_schema_recovery_error')
+            need(proof['input']['schema']==99 and proof['application_state']=='blocked' and proof['application_error']=='execution_identity_unavailable' and proof['applied_at'] is None,'raw_schema_rejection_state')
+            if cycle['error_class']=='schema_rejected':need(type(cycle['http_attempts']) is int and cycle['http_attempts']==0,'raw_schema_rejection_http')
+    else:need(all(c['error_class']=='none' for c in cycles),'raw_recovery_cycles')
+
 def verify_case_proofs(case,result,events):
     def matching(name):return [e for e in events if e['event']==name]
     durable_evidence_chain(events)
@@ -81,7 +92,7 @@ def verify_case_proofs(case,result,events):
     final_instance={'N01':'recovery-new','N03-create':'sender-old','N02':'first-new','N03-action':'first-old'}.get(case)
     if final_instance is None:final_instance='second-'+('old' if case.endswith('-new') else 'new')
     cycles=[e['data'] for e in matching('cycle_completed') if e['instance']==final_instance]
-    need(len(cycles)>=2 and all(c['error_class']=='none' and c['barrier_reached'] is False for c in cycles),'raw_recovery_cycles')
+    recovery_cycles(case,final_instance,cycles)
     terminal=case in ('N01','N03-create')
     if terminal:
         settled_cycles=[c['proof'] for c in cycles if c['proof']['billing_state']=='settled']
@@ -128,8 +139,11 @@ def verify_case_proofs(case,result,events):
         first='first-'+('new' if case.endswith('-new') else 'old')
         first_cycles=[e['data'] for e in matching('cycle_completed') if e['instance']==first]
         need(len(first_cycles)>=2,'raw_first_unknown_recovery')
-        for cycle in first_cycles:
-            p=cycle['proof'];need(cycle['error_class']=='none' and p['application_state']!='applied' and p['applied_at'] is None,'raw_first_unknown_applied')
+        recovery_cycles(case,first,first_cycles)
+        injected=matching('unknown_injected')[0]['data']['after']
+        for cycle in first_cycles+cycles:
+            p=cycle['proof'];need(p['application_state']!='applied' and p['applied_at'] is None,'raw_first_unknown_applied')
+            need(p['input_successful_reads']==injected['input_successful_reads'],'raw_unknown_decryption')
             finance_equal(seed,p)
     if not terminal and not case.startswith('N04'):
         need(final['application_state']=='applied' and final['operation_status']=='unknown' and final['task_status']=='queued','raw_cancel_ack')

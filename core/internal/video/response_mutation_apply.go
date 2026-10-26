@@ -2,7 +2,6 @@ package video
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
@@ -27,7 +26,7 @@ func supportedMutationInboxRuntime(db *gorm.DB) *gorm.DB {
 }
 
 func (s *Service) mutationResponseInboxCandidates(ctx context.Context) *gorm.DB {
-	db := s.DB.WithContext(ctx).Table("video_receipt_applications AS ap").Select("ap.*").
+	db := s.recoveryDB(ctx).Table("video_receipt_applications AS ap").Select("ap.*").
 		Joins("JOIN video_response_inbox r ON r.receipt_id = ap.receipt_id AND r.org_id = ap.org_id AND r.task_id = ap.task_id AND r.attempt_id = ap.attempt_id").
 		Joins("JOIN video_execution_attempts ea ON ea.attempt_id = r.attempt_id AND ea.org_id = r.org_id AND ea.task_id = r.task_id AND ea.operation_id = r.operation_id").
 		Joins("JOIN video_operations o ON o.id = ea.operation_id AND o.org_id = ea.org_id AND o.resource_id = ea.task_id").
@@ -65,12 +64,18 @@ func mutationEvidenceClass(outcome string, status int) string {
 }
 
 func (s *Service) applyMutationInbox(ctx context.Context, org uint64, receiptID string, claim *Operation) error {
+	_, err := s.applyMutationInboxProgress(ctx, org, receiptID, claim)
+	return err
+}
+
+func (s *Service) applyMutationInboxProgress(ctx context.Context, org uint64, receiptID string, claim *Operation) (recoveryDisposition, error) {
+	disposition := recoveryUnchanged
 	var receipt ResponseInbox
-	if err := s.DB.WithContext(ctx).Where("org_id = ? AND receipt_id = ?", org, receiptID).Take(&receipt).Error; err != nil {
-		return err
+	if err := s.recoveryDB(ctx).Where("org_id = ? AND receipt_id = ?", org, receiptID).Take(&receipt).Error; err != nil {
+		return recoveryUnchanged, err
 	}
 	var applyErr error
-	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.recoveryDB(ctx).Transaction(func(tx *gorm.DB) error {
 		var t task.Task
 		var st State
 		var op Operation
@@ -101,14 +106,30 @@ func (s *Service) applyMutationInbox(ctx context.Context, org uint64, receiptID 
 				return err
 			}
 			if state == "review" && op.Status != "needs_review" {
-				if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ?", org, op.ID).Updates(map[string]any{"status": "needs_review", "error_code": code, "updated_at": due}).Error; err != nil {
-					return err
+				updated := tx.Model(&Operation{}).Where("org_id = ? AND id = ?", org, op.ID).Updates(map[string]any{"status": "needs_review", "error_code": code, "updated_at": due})
+				if updated.Error != nil {
+					return updated.Error
 				}
+				if updated.RowsAffected != 1 {
+					return ErrConflict
+				}
+				disposition = recoveryReview
 			}
 			if app.State == state && app.ErrorCode == code && state == "review" {
 				return nil
 			}
-			return tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": state, "error_code": code, "version": app.Version + 1, "next_attempt_at": due.Add(30 * time.Second), "updated_at": due}).Error
+			result := tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": state, "error_code": code, "version": app.Version + 1, "next_attempt_at": due.Add(30 * time.Second), "updated_at": due})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrConflict
+			}
+			disposition = recoveryDeferred
+			if state == "review" {
+				disposition = recoveryReview
+			}
+			return nil
 		}
 		if err := s.validateResponseInboxTx(tx, attempt, receipt); err != nil {
 			return mark("blocked", "response_identity_unavailable", err)
@@ -137,14 +158,14 @@ func (s *Service) applyMutationInbox(ctx context.Context, org uint64, receiptID 
 				return "review", "action_target_conflict", ErrConflict
 			}
 			if err := s.validateMutationAttemptInputTx(tx, attempt); err != nil {
-				if errors.Is(err, ErrConflict) {
+				if recoveryOnlyErrors(err, ErrConflict) {
 					return "review", "execution_identity_conflict", err
 				}
 				return "blocked", "execution_identity_unavailable", err
 			}
 			var binding UpstreamBinding
 			if err := tx.Where("provider_scope_id = ? AND upstream_task_id = ? AND OCTET_LENGTH(upstream_task_id) = ?", attempt.ProviderScopeID, *attempt.TargetUpstreamTaskID, len(*attempt.TargetUpstreamTaskID)).Take(&binding).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
+				if recoveryOnlyErrors(err, gorm.ErrRecordNotFound) {
 					return "review", "action_binding_conflict", ErrConflict
 				}
 				return "blocked", "action_binding_unavailable", err
@@ -209,7 +230,15 @@ func (s *Service) applyMutationInbox(ctx context.Context, org uint64, receiptID 
 			return nil
 		}
 		complete := func(eventID string) error {
-			return tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": "applied", "error_code": "", "version": app.Version + 1, "applied_at": now, "applied_event_id": eventID, "updated_at": now}).Error
+			result := tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": "applied", "error_code": "", "version": app.Version + 1, "applied_at": now, "applied_event_id": eventID, "updated_at": now})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrConflict
+			}
+			disposition = recoveryApplied
+			return nil
 		}
 		kind := mutationEvidenceClass(receipt.Outcome, receipt.HTTPStatus)
 		previousKind := mutationEvidenceClass(op.ReceivedOutcome, op.HTTPStatus)
@@ -267,51 +296,59 @@ func (s *Service) applyMutationInbox(ctx context.Context, org uint64, receiptID 
 		return complete(event.ID)
 	})
 	if err != nil {
-		return err
+		return recoveryUnchanged, safeRecoveryErrors(applyErr, err)
 	}
-	return applyErr
+	return disposition, applyErr
 }
 
 func (s *Service) recoverMutationResponseInbox(ctx context.Context) error {
-	if err := s.recoverExpiredMutationAttempts(ctx); err != nil {
-		return err
+	_, err := s.recoverMutationResponseInboxProgress(ctx)
+	return err
+}
+
+func (s *Service) recoverMutationResponseInboxProgress(ctx context.Context) (recoveryLaneResult, error) {
+	result, expiredErr := s.recoverExpiredMutationAttemptsProgress(ctx)
+	if err := ctx.Err(); err != nil {
+		return result, safeRecoveryErrors(expiredErr, err)
 	}
 	var rows []ReceiptApplication
 	if err := s.mutationResponseInboxCandidates(ctx).Order("ap.next_attempt_at, ap.receipt_id").Limit(30).Scan(&rows).Error; err != nil {
-		return err
+		result.Failed++
+		return result, safeRecoveryErrors(expiredErr, err)
 	}
-	for _, row := range rows {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := s.applyMutationInbox(ctx, row.OrgID, row.ReceiptID, nil); err != nil {
-			s.Log.Warn("video action inbox receipt needs recovery", "receipt_id", row.ReceiptID)
-			if err := s.DB.WithContext(ctx).Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ? AND state IN ?", row.OrgID, row.ReceiptID, row.Version, []string{"pending", "blocked"}).Updates(map[string]any{"next_attempt_at": gorm.Expr("DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 30 SECOND)"), "version": gorm.Expr("version + 1")}).Error; err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return s.recoverInboxApplications(ctx, rows, result, expiredErr, s.applyMutationInboxProgress)
 }
 
 func (s *Service) recoverExpiredMutationAttempts(ctx context.Context) error {
+	_, err := s.recoverExpiredMutationAttemptsProgress(ctx)
+	return err
+}
+
+func (s *Service) recoverExpiredMutationAttemptsProgress(ctx context.Context) (recoveryLaneResult, error) {
+	var result recoveryLaneResult
+	var failures []error
 	if s.DB.Dialector.Name() != "mysql" {
-		return ErrUnavailable
+		result.Failed++
+		return result, ErrUnavailable
 	}
 	var attempts []ExecutionAttempt
-	q := supportedMutationInboxRuntime(s.DB.WithContext(ctx).Table("video_execution_attempts ea").Select("ea.*").
+	q := supportedMutationInboxRuntime(s.recoveryDB(ctx).Table("video_execution_attempts ea").Select("ea.*").
 		Joins("JOIN video_operations o ON o.id = ea.operation_id AND o.org_id = ea.org_id AND o.resource_id = ea.task_id").
 		Joins("JOIN video_task_states v ON v.org_id = ea.org_id AND v.task_id = ea.task_id")).
 		Where("o.status = ? AND o.lease_until <= UTC_TIMESTAMP(3)", "in_flight").
 		Where("NOT EXISTS (SELECT 1 FROM video_response_inbox r WHERE r.org_id = ea.org_id AND r.attempt_id = ea.attempt_id)")
 	if err := q.Order("o.lease_until, ea.attempt_id").Limit(30).Scan(&attempts).Error; err != nil {
-		return err
+		result.Failed++
+		return result, err
 	}
+	result.Selected = int64(len(attempts))
 	for _, attempt := range attempts {
 		if err := ctx.Err(); err != nil {
-			return err
+			return result, safeRecoveryErrors(append(failures, err)...)
 		}
-		err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		disposition := recoveryUnchanged
+		var applyErr error
+		err := s.recoveryDB(ctx).Transaction(func(tx *gorm.DB) error {
 			var t task.Task
 			var st State
 			var op Operation
@@ -343,15 +380,24 @@ func (s *Service) recoverExpiredMutationAttempts(ctx context.Context) error {
 			// Only this exact known claim can be diagnosed. A permanent broken
 			// capsule is removed from automatic selection rather than starving
 			// every later receipt at the head of a recovery batch.
-			markIdentityReview := func() error {
-				return tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ? AND attempt_id = ?", op.OrgID, op.ID, op.Version, op.AttemptID).Updates(map[string]any{"status": "needs_review", "error_code": "execution_identity_conflict", "updated_at": now}).Error
+			markIdentityReview := func(cause error) error {
+				applyErr = cause
+				updated := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ? AND attempt_id = ?", op.OrgID, op.ID, op.Version, op.AttemptID).Updates(map[string]any{"status": "needs_review", "error_code": "execution_identity_conflict", "updated_at": now})
+				if updated.Error != nil {
+					return updated.Error
+				}
+				if updated.RowsAffected != 1 {
+					return ErrConflict
+				}
+				disposition = recoveryReview
+				return nil
 			}
 			if attempt.RuntimeVersion != st.RuntimeVersion || attempt.AdapterVersion != st.AdapterVersion || attempt.ProtocolContractVersion != st.ProtocolContractVersion || attempt.BillingSchemaVersion != st.BillingSchemaVersion || attempt.ProviderScopeID != st.ProviderScopeID || attempt.CredentialSnapshotID != st.CredentialSnapshotID || attempt.BillingSnapshotID != st.BillingSnapshotID || attempt.InputPayloadRef != op.PayloadRef || attempt.Action != op.Kind || attempt.TargetUpstreamTaskID == nil || *attempt.TargetUpstreamTaskID == "" || responseIdentifier(*attempt.TargetUpstreamTaskID, "", 128) != *attempt.TargetUpstreamTaskID || t.UpstreamTaskID != *attempt.TargetUpstreamTaskID {
-				return markIdentityReview()
+				return markIdentityReview(ErrConflict)
 			}
 			if err := s.validateMutationAttemptInputTx(tx, attempt); err != nil {
 				if permanentMutationIdentityError(err) {
-					return markIdentityReview()
+					return markIdentityReview(err)
 				}
 				return err
 			}
@@ -362,23 +408,32 @@ func (s *Service) recoverExpiredMutationAttempts(ctx context.Context) error {
 			if count != 0 {
 				return nil
 			}
-			if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ?", op.OrgID, op.ID, op.Version).Updates(map[string]any{"status": "unknown", "error_code": "submission_uncertain", "updated_at": now}).Error; err != nil {
+			updated := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ?", op.OrgID, op.ID, op.Version).Updates(map[string]any{"status": "unknown", "error_code": "submission_uncertain", "updated_at": now})
+			if updated.Error != nil {
+				return updated.Error
+			}
+			if updated.RowsAffected != 1 {
+				return ErrConflict
+			}
+			if err := appendEventTx(tx, &t, &st, "task.operation_updated", t.Status, t.Status, attempt.AttemptID, "", now); err != nil {
 				return err
 			}
-			return appendEventTx(tx, &t, &st, "task.operation_updated", t.Status, t.Status, attempt.AttemptID, "", now)
+			disposition = recoveryDeferred
+			return nil
 		})
-		if err != nil && !errors.Is(err, videoruntime.ErrUnsupported) && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
+		if err != nil {
+			disposition = recoveryUnchanged
 		}
+		if recoveryOnlyErrors(err, videoruntime.ErrUnsupported, gorm.ErrRecordNotFound) && ctx.Err() == nil {
+			err = nil
+		}
+		itemErr := safeRecoveryErrors(applyErr, err, ctx.Err())
+		result.record(disposition, itemErr)
+		failures = append(failures, itemErr)
 	}
-	return nil
+	return result, safeRecoveryErrors(failures...)
 }
 
 func permanentMutationIdentityError(err error) bool {
-	for _, permanent := range []error{ErrConflict, invocation.ErrVideoSchemaUnsupported, invocation.ErrVideoAccessDenied, invocation.ErrVideoNotFound, invocation.ErrVideoInvalid, invocation.ErrVideoCorrupt, gorm.ErrRecordNotFound} {
-		if errors.Is(err, permanent) {
-			return true
-		}
-	}
-	return false
+	return recoveryOnlyErrors(err, ErrConflict, invocation.ErrVideoSchemaUnsupported, invocation.ErrVideoAccessDenied, invocation.ErrVideoNotFound, invocation.ErrVideoInvalid, invocation.ErrVideoCorrupt, gorm.ErrRecordNotFound)
 }

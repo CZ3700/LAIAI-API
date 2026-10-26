@@ -1,6 +1,7 @@
 package video
 
 import (
+	"context"
 	"time"
 
 	"gorm.io/gorm"
@@ -42,6 +43,11 @@ func authorityTimeTx(tx *gorm.DB) (time.Time, error) {
 	}
 	if tx.Error != nil {
 		return time.Time{}, authorityClockFailure(tx.Error)
+	}
+	if bounded, _ := ctx.Value(recoveryClockBudgetKey{}).(bool); bounded {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, recoveryClockTimeout)
+		defer cancel()
 	}
 	var row struct{ DatabaseTime time.Time }
 	q := tx.Session(&gorm.Session{NewDB: true, Context: ctx, Logger: logger.Discard})

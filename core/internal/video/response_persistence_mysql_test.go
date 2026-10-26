@@ -76,6 +76,7 @@ func responsePersistenceOneReceipt(t *testing.T, f *fixture, taskID string) Resp
 
 func TestMySQLResponsePersistenceCommitAcknowledgementLossReplaysOneReceipt(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	f.s.ResponseInboxEnabled = true
 	v := f.create(t, "persistence-commit-ack-loss")
 	beforeFunds := responseInboxFunds(t, f, v.ID)
@@ -180,6 +181,7 @@ func TestMySQLResponsePersistencePermanentIdentityErrorDoesNotRetry(t *testing.T
 
 func TestMySQLResponsePersistenceCancelledCallerStillRetriesEvidence(t *testing.T) {
 	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
 	f.s.ResponseInboxEnabled = true
 	v := f.create(t, "persistence-cancelled-caller")
 	before := responseInboxFunds(t, f, v.ID)

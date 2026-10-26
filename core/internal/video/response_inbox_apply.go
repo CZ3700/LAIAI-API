@@ -2,7 +2,6 @@ package video
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
@@ -19,33 +18,21 @@ func (s *Service) applyClaimedCreateInbox(ctx context.Context, claim Operation, 
 }
 
 func (s *Service) recoverResponseInbox(ctx context.Context) error {
-	if s.DB.Dialector.Name() != "mysql" {
-		return ErrUnavailable
-	}
-	if err := s.recoverExpiredInboxAttempts(ctx); err != nil {
-		return err
+	_, err := s.recoverResponseInboxProgress(ctx)
+	return err
+}
+
+func (s *Service) recoverResponseInboxProgress(ctx context.Context) (recoveryLaneResult, error) {
+	result, expiredErr := s.recoverExpiredInboxAttemptsProgress(ctx)
+	if err := ctx.Err(); err != nil {
+		return result, safeRecoveryErrors(expiredErr, err)
 	}
 	var rows []ReceiptApplication
 	if err := s.responseInboxCandidates(ctx).Order("ap.next_attempt_at, ap.receipt_id").Limit(30).Scan(&rows).Error; err != nil {
-		return err
+		result.Failed++
+		return result, safeRecoveryErrors(expiredErr, err)
 	}
-	for _, row := range rows {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := s.applyCreateInbox(ctx, row.OrgID, row.ReceiptID, nil); err != nil {
-			// IDs only: no response, credentials or upstream error text.
-			s.Log.Warn("video inbox receipt needs recovery", "receipt_id", row.ReceiptID)
-			// A failed application transaction leaves the immutable inbox intact.
-			// Back off only the exact progress version selected by this scan, so a
-			// concurrent successful consumer's marker cannot be overwritten.
-			updates := map[string]any{"next_attempt_at": gorm.Expr("DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 30 SECOND)"), "version": gorm.Expr("version + 1")}
-			if e := s.DB.WithContext(ctx).Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ? AND state IN ?", row.OrgID, row.ReceiptID, row.Version, []string{"pending", "blocked"}).Updates(updates).Error; e != nil {
-				return e
-			}
-		}
-	}
-	return s.recoverMutationResponseInbox(ctx)
+	return s.recoverInboxApplications(ctx, rows, result, expiredErr, s.applyCreateInboxProgress)
 }
 
 func supportedInboxRuntime(db *gorm.DB) *gorm.DB {
@@ -56,7 +43,7 @@ func supportedInboxRuntime(db *gorm.DB) *gorm.DB {
 }
 
 func (s *Service) responseInboxCandidates(ctx context.Context) *gorm.DB {
-	db := s.DB.WithContext(ctx).Table("video_receipt_applications AS ap").Select("ap.*").
+	db := s.recoveryDB(ctx).Table("video_receipt_applications AS ap").Select("ap.*").
 		Joins("JOIN video_response_inbox r ON r.receipt_id = ap.receipt_id AND r.org_id = ap.org_id AND r.task_id = ap.task_id AND r.attempt_id = ap.attempt_id").
 		Joins("JOIN video_execution_attempts ea ON ea.attempt_id = r.attempt_id AND ea.org_id = r.org_id AND ea.task_id = r.task_id AND ea.operation_id = r.operation_id").
 		Joins("JOIN video_operations o ON o.id = ea.operation_id AND o.org_id = ea.org_id AND o.resource_id = ea.task_id").
@@ -72,12 +59,18 @@ func (s *Service) responseInboxCandidates(ctx context.Context) *gorm.DB {
 }
 
 func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID string, claim *Operation) error {
+	_, err := s.applyCreateInboxProgress(ctx, org, receiptID, claim)
+	return err
+}
+
+func (s *Service) applyCreateInboxProgress(ctx context.Context, org uint64, receiptID string, claim *Operation) (recoveryDisposition, error) {
+	disposition := recoveryUnchanged
 	var receipt ResponseInbox
-	if err := s.DB.WithContext(ctx).Where("org_id = ? AND receipt_id = ?", org, receiptID).Take(&receipt).Error; err != nil {
-		return err
+	if err := s.recoveryDB(ctx).Where("org_id = ? AND receipt_id = ?", org, receiptID).Take(&receipt).Error; err != nil {
+		return recoveryUnchanged, err
 	}
 	var applyErr error
-	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.recoveryDB(ctx).Transaction(func(tx *gorm.DB) error {
 		// Read tombstones explicitly. Saving/applying progress must not revive
 		// a deleted task, nor make an already saved response disappear.
 		var t task.Task
@@ -115,7 +108,18 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 			if err != nil {
 				return err
 			}
-			return tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": state, "error_code": code, "version": app.Version + 1, "next_attempt_at": due.Add(30 * time.Second), "updated_at": due}).Error
+			result := tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": state, "error_code": code, "version": app.Version + 1, "next_attempt_at": due.Add(30 * time.Second), "updated_at": due})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrConflict
+			}
+			disposition = recoveryDeferred
+			if state == "review" {
+				disposition = recoveryReview
+			}
+			return nil
 		}
 		if err := s.validateResponseInboxTx(tx, attempt, receipt); err != nil {
 			return mark("blocked", "response_identity_unavailable", err)
@@ -124,7 +128,7 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 			return mark("blocked", "runtime_contract_unsupported", videoruntime.ErrUnsupported)
 		}
 		if err := requireTaskRuntimeTx(tx, st); err != nil {
-			if errors.Is(err, videoruntime.ErrUnsupported) {
+			if recoveryOnlyErrors(err, videoruntime.ErrUnsupported) {
 				return mark("blocked", "runtime_contract_unsupported", err)
 			}
 			return err
@@ -140,7 +144,7 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 		// quarantine the task after a permission check made before the wait.
 		diagnosticState, diagnosticCode, diagnosticErr := func() (string, string, error) {
 			if err := s.validateExecutionAttemptInputTx(tx, attempt); err != nil {
-				if errors.Is(err, ErrConflict) {
+				if recoveryOnlyErrors(err, ErrConflict) {
 					return "review", "execution_identity_conflict", err
 				}
 				return "blocked", "execution_identity_unavailable", err
@@ -176,7 +180,7 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 			// Only a live reducer candidate needs the create quarantine read.
 			if app.State != "applied" && app.State != "review" && op.Status != "confirmed" && op.Status != "rejected" && !(op.Status == "unknown" && op.ReceiptAppliedAt != nil && receipt.Outcome == string(ark.OutcomeUnknown)) && st.DeletedAt == nil && t.UpstreamTaskID == "" && !terminal(t.Status) && !financialFinal(st.BillingState) {
 				if err := requireNoCreateInboxReviewTx(tx, org, t.TaskID); err != nil {
-					if errors.Is(err, errCreateInboxReview) {
+					if recoveryOnlyErrors(err, errCreateInboxReview) {
 						return "review", "create_identity_review", err
 					}
 					return "", "", err
@@ -212,9 +216,14 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 		}
 		if diagnosticErr != nil {
 			if diagnosticCode == "response_evidence_conflict" && st.DeletedAt == nil && st.SyncState != "needs_review" {
-				if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", org, t.TaskID).Update("sync_state", "needs_review").Error; err != nil {
-					return err
+				updated := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", org, t.TaskID).Update("sync_state", "needs_review")
+				if updated.Error != nil {
+					return updated.Error
 				}
+				if updated.RowsAffected != 1 {
+					return ErrConflict
+				}
+				disposition = recoveryReview
 			}
 			return mark(diagnosticState, diagnosticCode, diagnosticErr)
 		}
@@ -225,7 +234,15 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 			return ErrConflict
 		}
 		complete := func(eventID string) error {
-			return tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": "applied", "error_code": "", "version": app.Version + 1, "applied_at": now, "applied_event_id": eventID, "updated_at": now}).Error
+			result := tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": "applied", "error_code": "", "version": app.Version + 1, "applied_at": now, "applied_event_id": eventID, "updated_at": now})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrConflict
+			}
+			disposition = recoveryApplied
+			return nil
 		}
 		if op.Status == "confirmed" || op.Status == "rejected" {
 			// Equivalent definite or weaker unknown evidence is retained without
@@ -247,7 +264,7 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 		if err := tx.Transaction(func(applyTx *gorm.DB) error {
 			return s.applyCreateResultTx(applyTx, t, st, current, current, receiptID, now)
 		}); err != nil {
-			if errors.Is(err, ErrConflict) {
+			if recoveryOnlyErrors(err, ErrConflict) {
 				return mark("review", "upstream_binding_conflict", err)
 			}
 			return err
@@ -259,9 +276,9 @@ func (s *Service) applyCreateInbox(ctx context.Context, org uint64, receiptID st
 		return complete(event.ID)
 	})
 	if err != nil {
-		return err
+		return recoveryUnchanged, safeRecoveryErrors(applyErr, err)
 	}
-	return applyErr
+	return disposition, applyErr
 }
 
 func equivalentCreateResult(outcome, taskID, otherOutcome, otherTaskID string) bool {
@@ -275,20 +292,34 @@ func equivalentCreateResult(outcome, taskID, otherOutcome, otherTaskID string) b
 // An expired registered attempt without a response is not an unsent request.
 // Keep its immutable identity and all reservations; never requeue its POST.
 func (s *Service) recoverExpiredInboxAttempts(ctx context.Context) error {
+	_, err := s.recoverExpiredInboxAttemptsProgress(ctx)
+	return err
+}
+
+func (s *Service) recoverExpiredInboxAttemptsProgress(ctx context.Context) (recoveryLaneResult, error) {
+	var result recoveryLaneResult
+	var failures []error
 	if s.DB.Dialector.Name() != "mysql" {
-		return ErrUnavailable
+		result.Failed++
+		return result, ErrUnavailable
 	}
 	var attempts []ExecutionAttempt
-	q := supportedInboxRuntime(s.DB.WithContext(ctx).Table("video_execution_attempts ea").Select("ea.*").
+	q := supportedInboxRuntime(s.recoveryDB(ctx).Table("video_execution_attempts ea").Select("ea.*").
 		Joins("JOIN video_operations o ON o.id = ea.operation_id AND o.org_id = ea.org_id AND o.resource_id = ea.task_id").
 		Joins("JOIN video_task_states v ON v.org_id = ea.org_id AND v.task_id = ea.task_id")).
 		Where("v.deleted_at IS NULL AND o.attempt_id = ea.attempt_id AND o.status = ? AND o.lease_until <= UTC_TIMESTAMP(3)", "in_flight").
 		Where("NOT EXISTS (SELECT 1 FROM video_response_inbox r WHERE r.org_id = ea.org_id AND r.attempt_id = ea.attempt_id)")
 	if err := q.Order("o.lease_until, ea.attempt_id").Limit(30).Scan(&attempts).Error; err != nil {
-		return err
+		result.Failed++
+		return result, err
 	}
+	result.Selected = int64(len(attempts))
 	for _, attempt := range attempts {
-		err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := ctx.Err(); err != nil {
+			return result, safeRecoveryErrors(append(failures, err)...)
+		}
+		disposition := recoveryUnchanged
+		err := s.recoveryDB(ctx).Transaction(func(tx *gorm.DB) error {
 			t, st, err := loadTask(tx, attempt.OrgID, attempt.TaskID, true)
 			if err != nil {
 				return err
@@ -317,8 +348,12 @@ func (s *Service) recoverExpiredInboxAttempts(ctx context.Context) error {
 			if op.LeaseUntil.After(now) {
 				return nil
 			}
-			if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ?", op.OrgID, op.ID, op.Version).Updates(map[string]any{"status": "unknown", "error_code": "submission_uncertain", "updated_at": now}).Error; err != nil {
-				return err
+			updated := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND version = ?", op.OrgID, op.ID, op.Version).Updates(map[string]any{"status": "unknown", "error_code": "submission_uncertain", "updated_at": now})
+			if updated.Error != nil {
+				return updated.Error
+			}
+			if updated.RowsAffected != 1 {
+				return ErrConflict
 			}
 			previous := t.Status
 			if !terminal(t.Status) {
@@ -334,11 +369,21 @@ func (s *Service) recoverExpiredInboxAttempts(ctx context.Context) error {
 			if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", st.OrgID, st.TaskID).Updates(map[string]any{"sync_state": st.SyncState, "billing_state": st.BillingState, "review_due_at": now.Add(time.Hour), "updated_at": now}).Error; err != nil {
 				return err
 			}
-			return appendEventTx(tx, &t, &st, "task.submission_unknown", previous, t.Status, attempt.AttemptID, "", now)
+			if err := appendEventTx(tx, &t, &st, "task.submission_unknown", previous, t.Status, attempt.AttemptID, "", now); err != nil {
+				return err
+			}
+			disposition = recoveryDeferred
+			return nil
 		})
-		if err != nil && !errors.Is(err, videoruntime.ErrUnsupported) && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
+		if err != nil {
+			disposition = recoveryUnchanged
 		}
+		if recoveryOnlyErrors(err, videoruntime.ErrUnsupported, gorm.ErrRecordNotFound) && ctx.Err() == nil {
+			err = nil
+		}
+		itemErr := safeRecoveryErrors(err, ctx.Err())
+		result.record(disposition, itemErr)
+		failures = append(failures, itemErr)
 	}
-	return nil
+	return result, safeRecoveryErrors(failures...)
 }

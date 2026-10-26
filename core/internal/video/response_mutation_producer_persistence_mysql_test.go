@@ -21,6 +21,7 @@ func TestMySQLMutationProducerCallerCancellationSavesAndFlagOffRecovers(t *testi
 				final = "succeeded"
 			}
 			p := newMutationProducerFixture(t, final)
+			executionRecoveryScope(t, p.fixture, []uint64{p.key.OrgID})
 			op := p.pending(t, action)
 			before := p.funds(t)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -54,6 +55,7 @@ func TestMySQLMutationProducerCallerCancellationSavesAndFlagOffRecovers(t *testi
 
 func TestMySQLMutationProducerLostClaimStillSavesItsResponse(t *testing.T) {
 	p := newMutationProducerFixture(t, "")
+	executionRecoveryScope(t, p.fixture, []uint64{p.key.OrgID})
 	op := p.pending(t, "cancel_task")
 	before := p.funds(t)
 	p.respond = func(*http.Request) (*http.Response, error) {
@@ -78,6 +80,7 @@ func TestMySQLMutationProducerGETWinsBeforeDeleteResponse(t *testing.T) {
 	for _, result := range []string{"succeeded", "cancelled"} {
 		t.Run(result, func(t *testing.T) {
 			p := newMutationProducerFixture(t, "")
+			executionRecoveryScope(t, p.fixture, []uint64{p.key.OrgID})
 			op := p.pending(t, "cancel_task")
 			_, currentState := p.rows(t)
 			makeFixtureQueryDue(t, p.s.DB, p.key.OrgID, p.taskID, currentState.QuerySequence, false)
@@ -175,6 +178,7 @@ func TestMySQLMutationProducerCommitAcknowledgementLossDoesNotResend(t *testing.
 
 func TestMySQLMutationProducerSaveFailurePausesSendsButAllowsGETAndRecovery(t *testing.T) {
 	p := newMutationProducerFixture(t, "")
+	executionRecoveryScope(t, p.fixture, []uint64{p.key.OrgID})
 	op := p.pending(t, "cancel_task")
 	n := p.another(t, "producer-after-failed-save")
 	other := n.pending(t, "cancel_task")
