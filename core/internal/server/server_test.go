@@ -336,7 +336,11 @@ func TestProfileAndPassword(t *testing.T) {
 
 // 密钥硬删除：活跃 key 不可删（需先吊销），吊销后可删。
 func TestDeleteKey(t *testing.T) {
-	srv, _ := setupServer(t)
+	srv, db := setupServer(t)
+	// Purge now checks durable billing references even when video is not enabled.
+	if err := db.Exec("CREATE TABLE video_billing_snapshots(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, api_key_id INTEGER NOT NULL)").Error; err != nil {
+		t.Fatal(err)
+	}
 	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "del@example.com", "password": "longenough1"})
 	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "del@example.com", "password": "longenough1"})
 	token := login["token"].(string)
