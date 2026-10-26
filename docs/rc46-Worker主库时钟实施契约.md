@@ -354,3 +354,33 @@ Runner 为 `laiai-rc46-db-clock-runner-20261026-r2`，CID `c3001726ab91cbf50cf10
 本次证明的是限定 video 调度、锁后取时与领取/恢复授权的主库时间行为。B1b 的 execution Prepare/Stage/read/Purge 闭环尚未实施验收，历史留存与 delivery 的独立时钟仍保留；`COUNT → HTTP` 间任意暂停的非原子窗口仍未解决。无 schema 变化不代表旧、新 worker 混跑时获得相同时间保证，亦不把现有版本号当作 fence。
 
 本轮不是 400–500 并发容量、P95/P99、吞吐或独立 worker 扩容验收；没有从故障测试数量推导容量结论。仅在隔离测试库与 Mock 中运行，**生产变更 0、官方调用 0、测试费用 ¥0**。主控完成证据复核不等同已合并或已生产部署，后续提交与发布另按既定流程执行。
+
+### 10.5 PR #72 与完整退出测试的失败记录
+
+精确 head `3e21b85e267e5c72b3d2a6e526fc5a9a68f58011` 的 CI `40276315966` 为七项通过、一项失败。Ark MySQL job `121419711765` 的主库时钟测试已通过，随后完整 `cmd/core` 中真实 SIGTERM 的 retry/timeout 前置失败：旧夹具通过增加 host Now 让下一次 GET 到期，但新调度以主库时间判断，故尚未进入真实结算。该 CI 使用 MySQL 8.4.13，与本地固定 8.4.9 分开记录。原始日志 SHA256 为 `ae1d23943d17f0bd498ddb12c1769d70732898c0e349de5e54a6d03060505b18`，失败 head 不合并。
+
+仅修测试前置：第一轮真实 GET 已产生 query/applied sequence=1 且无查询租约后，在本随机私库事务中精确将该组织/任务/scope 的 `next_poll_at` 和对应 scope/query 的 `next_allowed_at` 设为主库当前时间前一秒。锁定并核验唯一行、其余字段和完整资金指纹不变，再执行原第二次真实 GET、结算及停机流程；不修改序列、状态、账务、业务租约/期限或原断言。
+
+隔离 R3 完整运行两轮，make vet/ci、130 迁移两次及 doctor 已通过，但新前置 SQL 误写物理列名 `applied_sequence`，实际模型 `AppliedQuerySequence` 和迁移0092定义为 `applied_query_sequence`。这处测试拼写被作者及主控静态审查漏过，真实 MySQL 返回1054；28次顶层执行中26通过/2失败，18次子测试中14通过/4失败，38次叶执行中34通过/4失败。仅 retry/timeout 各两轮失败，无 skip/race；不能把编译和 vet 通过当作 SQL 已验收。
+
+R3 全部55项证据、28项冻结控制、1008源文件和1009运行文件已由执行方与主控分别校验。远端 `/var/lib/laiai-artifacts/rc46-db-clock-20261026-r3`、本地 `.cache/rc46-db-clock-ci-20261026/r3/received` 原样保留；runner退出1/OOM=false，专用数据库正常停止，没有清库或删除资源。源包 SHA256 `cd264da7678fea8efa128a4294b4f707a3c70eca16dd91d90ee406b47cde6807`，证据清单 `14e8fc1259d6e9cc3c05d6944821c78df1319a2859f50388e14d0fcbb5b3610d`，日志 `51b7f97f62baaa9b380e88a100abe9190cf034e418729b01a2230ec398b5e4a1`，完整运行归档 `90085caea9563d50db1a60c2f891c099d57a80a1fff3d68e1b1f84330e757beb`；实际测试 ELF 为51,576,265字节，SHA256 `59188d224f2979dfb375ca93064852b686fa03ab1808f054fdbea2fe430a8f9d`。
+
+R4 仅更正上述一个列名，并对全部新 SQL 字段核对0062/0070/0092及实际模型；相对R3其余1007文件逐字节不变，修正后文件 SHA256 `6bd8eb0202e4f764b623e0f60c401f351463bd1861c520dbfdff968a2540825b`。完整双轮矩阵、6分钟原期限和资源门槛保持；结果按实际完成另记，不无改动重跑失败轮，不覆盖任何旧证据。
+
+### 10.6 R4 完整生命周期补充验收
+
+R4 于 `2026-10-26T06:52:22Z` 通过：相同 Go1.26.10 / MySQL8.4.9、资源和数据基线下，make vet/ci、130迁移重复及101表doctor全部成功；完整 `go -C core test -race ./cmd/core -count=2 -timeout=6m -v -json` 无筛选执行，28次顶层、18次子测试、38次叶场景全部通过，零失败/跳过/race。三个真实SIGTERM模式 response/retry/timeout 各执行两次；ChildProcess顶层在父进程中只做入口检查，其真实子进程由对应父测试启动并检查，不将入口PASS重复解释成另一次业务场景。
+
+主控独立核验56份证据、29项控制、1008源文件、1009运行文件和51,576,265字节实际生命周期测试ELF。相对R2除一个退出测试文件外，其他非文档源保持一致；相对R3只改一个物理列名。验收后只追加本契约及阶段表，最终提交其余文件必须与R4源包一致。本轮补充完整cmd/core验收，不冒称重跑了R2全部video矩阵；最新PR仍需在最终head运行全部CI。
+
+| R4 固定证据 | SHA256 |
+| --- | --- |
+| 源包 `source.tar.gz` | `46b19b27b7d9f0191bf73f13abacb5cceaba96426ede91e18ac93bdf7f0ecc43` |
+| 56文件 `evidence.sha256` | `40cbf78111262581f9ce01df802035431c41e4720c7d5596a240a020543875e3` |
+| 29控制 `SHA256SUMS` | `98b186aa89907f29b73b746065845f85bb06736b1da2d01ca1479745c574aa8c` |
+| `ci.log` | `6cef03f271f37c303ee56629786cc39615bb0c4166f4755610afc979e5a7e62a` |
+| `evidence/lifecycle.jsonl` | `ea307e0f67632cee4cc7c4c28d68474416f6a3da3ef43310f708c2e498a5d725` |
+| 完整 `runtime-workspace.tar` | `363e0206c32d9a84d1ab0314c3f502dcdf41e72d044dc5f0da128b0e6972a2cb` |
+| `evidence/core-lifecycle.test` | `9e93f5d84abaf5ca62a510bf0e1bf91afdabc574c9b5e2204dbe410ee0335894` |
+
+远端 `/var/lib/laiai-artifacts/rc46-db-clock-20261026-r4` 和本地 `.cache/rc46-db-clock-ci-20261026/r4/received` 均保留。runner `3777b8feab68944fa74f9bc152cd53a0bde056d7dc6e3e3fed3e16001e33cfb3` 退出0/OOM=false，专用数据库正常停止；未删除容器、镜像、卷、历史证据。生产未变更、官方调用和费用均为0。

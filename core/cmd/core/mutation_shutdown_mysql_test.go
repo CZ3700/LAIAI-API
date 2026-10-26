@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -40,6 +41,7 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -155,6 +157,69 @@ func mutationShutdownMoney(t *testing.T, db *gorm.DB, org uint64) string {
 	return string(encoded)
 }
 
+// Only this private fixture's already-observed query and its provider rate are
+// made due. This is an explicit scheduling precondition, not elapsed wall time
+// or permission to change the task, receipt, claim, or financial result.
+func mutationShutdownMakeQueryDue(t *testing.T, db *gorm.DB, org uint64, taskID string, scope uint64) {
+	t.Helper()
+	funds := mutationShutdownMoney(t, db, org)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var before, after video.State
+		where := "org_id = ? AND task_id = ? AND provider_scope_id = ? AND query_sequence = ? AND applied_query_sequence = ?"
+		args := []any{org, taskID, scope, 1, 1}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where(where, args...).Take(&before).Error; err != nil {
+			return err
+		}
+		if before.QueryLeaseUntil != nil {
+			return errors.New("fixture first GET still owns a query lease")
+		}
+		changed := tx.Model(&video.State{}).Where(where, args...).UpdateColumn("next_poll_at", gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND)"))
+		if changed.Error != nil {
+			return changed.Error
+		}
+		if changed.RowsAffected != 1 {
+			return errors.New("fixture query due update did not affect one observed sequence")
+		}
+		if err := tx.Where(where, args...).Take(&after).Error; err != nil {
+			return err
+		}
+		var rateBefore, rateAfter video.ProviderRate
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("scope_id = ? AND action = ?", scope, "query").Take(&rateBefore).Error; err != nil {
+			return err
+		}
+		changed = tx.Model(&video.ProviderRate{}).Where("scope_id = ? AND action = ?", scope, "query").UpdateColumn("next_allowed_at", gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND)"))
+		if changed.Error != nil {
+			return changed.Error
+		}
+		if changed.RowsAffected != 1 {
+			return errors.New("fixture query rate update did not affect one provider scope")
+		}
+		if err := tx.Where("scope_id = ? AND action = ?", scope, "query").Take(&rateAfter).Error; err != nil {
+			return err
+		}
+		var clock struct{ DatabaseTime time.Time }
+		if err := tx.Raw("SELECT UTC_TIMESTAMP(3) AS database_time").Scan(&clock).Error; err != nil {
+			return err
+		}
+		if clock.DatabaseTime.IsZero() || !after.NextPollAt.Before(clock.DatabaseTime) || !rateAfter.NextAllowedAt.Before(clock.DatabaseTime) {
+			return errors.New("fixture query or rate is not due in database time")
+		}
+		after.NextPollAt, rateAfter.NextAllowedAt = before.NextPollAt, rateBefore.NextAllowedAt
+		if !reflect.DeepEqual(after, before) || !reflect.DeepEqual(rateAfter, rateBefore) {
+			return errors.New("fixture query scheduling changed unrelated fields")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal("cannot establish exact database-due query fixture", err)
+	}
+	if mutationShutdownMoney(t, db, org) != funds {
+		t.Fatal("query due fixture changed finances before the real GET")
+	}
+}
+
 func newMutationShutdownFixture(t *testing.T, action string) mutationShutdownFixture {
 	t.Helper()
 	db, dsn, schema := mutationShutdownPrivateDB(t)
@@ -235,7 +300,7 @@ func newMutationShutdownFixture(t *testing.T, action string) mutationShutdownFix
 	}
 	var operation video.Operation
 	if action == "delete" {
-		now = now.Add(time.Minute)
+		mutationShutdownMakeQueryDue(t, db, org.ID, view.ID, scope.ID)
 		check(service.ProcessOnce(context.Background()))
 		finished, err := service.Get(org.ID, view.ID)
 		check(err)
@@ -251,8 +316,8 @@ func newMutationShutdownFixture(t *testing.T, action string) mutationShutdownFix
 	if operation.Status != "pending" {
 		t.Fatal("fixture action was not pending")
 	}
-	// The child uses its real clock. Advance-only fixture time was solely for
-	// public polling setup; reset timestamps needed for ordinary worker choice.
+	// The child uses its real clock; retain an ordinary creation timestamp for
+	// worker choice without changing the pending operation or its claim.
 	check(db.Model(&video.Operation{}).Where("id = ?", operation.ID).Update("created_at", time.Now().UTC()).Error)
 	return mutationShutdownFixture{db: db, dsn: dsn, schema: schema, taskID: view.ID, operationID: operation.ID, org: org.ID, funds: mutationShutdownMoney(t, db, org.ID)}
 }
