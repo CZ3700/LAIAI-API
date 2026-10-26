@@ -6,7 +6,7 @@ export GOTOOLCHAIN := local
 
 .PHONY: ci test vet build migrate-lint migrate-smoke help
 .PHONY: web ci-all
-.PHONY: release-check toolchain-check ark-mock-baseline ark-runtime-compat
+.PHONY: release-check toolchain-check ark-mock-baseline ark-runtime-compat ark-mutation-compat
 
 ci: vet migrate-lint test build ## 完整本地 CI gate（提交前必跑）
 
@@ -30,6 +30,12 @@ ark-mock-baseline: toolchain-check ## 独立 MySQL + 单作用域 Mock Ark 实�
 ark-runtime-compat: toolchain-check ## 真实旧/新二进制跨 expand migration 回执与资金兼容（独立 DB，无官方调用）
 	bash scripts/tests/test-ark-runtime-compat.sh
 	bash scripts/ark-runtime-compat.sh
+
+ark-mutation-compat: toolchain-check ## 固定取消删除双版本全39场景与独立证据复核（Linux/自有MySQL，无官方调用）
+	test -n "$${ARK_MUTATION_REPORT_DIR:-}"
+	python3 scripts/tests/test_ark_mutation_verify.py
+	python3 scripts/tests/test_ark_mutation_ci.py
+	sh scripts/ark-mutation-ci.sh --output "$${ARK_MUTATION_REPORT_DIR}"
 
 test: toolchain-check ## 全部测试（纯 Go sqlite，无 CGO）
 	cd core && go test ./... -count=1
