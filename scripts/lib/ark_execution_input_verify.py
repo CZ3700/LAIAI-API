@@ -37,7 +37,9 @@ def check_finance(proof,settled):
     need(digest==fingerprints['financial_all']==proof['financial_sha256'],'financial_fingerprint_digest')
     expected={'credit_usd':'100.00000000','available_usd':'99.99920000' if settled else '99.13600000','frozen_usd':'0.00000000' if settled else '0.86400000','hold_usd':'0.86400000','captured_usd':'0.00080000' if settled else '0.00000000','released_usd':'0.86320000' if settled else '0.00000000','hold_state':'captured' if settled else 'active','capture_journal_count':int(settled),'billing_entry_count':int(settled),'ledger_drift_count':0}
     for key,value in expected.items():need(proof['finance'][key]==value,'literal_finance_'+key)
-    need(proof['actual_amounts']=={'supplier_cny':'0.00460000' if settled else '0.00000000','key_used_usd':'0.00080000' if settled else '0.00000000','provider_reserved_cny':'0.00000000' if settled else '4.96800000','provider_consumed_cny':'0.00460000' if settled else '0.00000000'},'literal_supplier_quota_key')
+    # ReserveTx charges the fixed hold against the Key's budget at admission;
+    # settlement returns only the unused difference, leaving actual usage.
+    need(proof['actual_amounts']=={'supplier_cny':'0.00460000' if settled else '0.00000000','key_used_usd':'0.00080000' if settled else '0.86400000','provider_reserved_cny':'0.00000000' if settled else '4.96800000','provider_consumed_cny':'0.00460000' if settled else '0.00000000'},'literal_supplier_quota_key')
     if settled:need(proof['task_status']=='succeeded' and proof['billing_state']=='settled','literal_settled_status')
 def event_proofs(events):
     for event in events:

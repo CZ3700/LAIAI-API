@@ -6,7 +6,7 @@ The test processes run on the host; Docker is used only by this parent to own
 its digest-pinned private MySQL and optional fixed-image compiler.
 """
 from __future__ import annotations
-import argparse,base64,datetime,hashlib,io,json,os,pathlib,re,secrets,signal,subprocess,sys,tarfile,time
+import argparse,base64,datetime,hashlib,io,json,os,pathlib,re,secrets,signal,struct,subprocess,sys,tarfile,time
 from ark_execution_input_verify import verify as verify_matrix
 from ark_mutation_ci import OwnedProcess  # Existing audited host-session cleanup; no scenario reuse.
 
@@ -25,6 +25,39 @@ def need(ok,code):
 def sha(data):return hashlib.sha256(data).hexdigest()
 def write(path,value):path.write_text(json.dumps(value,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 def load(path):return json.loads(path.read_text(encoding='utf-8'))
+
+def elf_linkage(raw):
+    """Read x86-64 ELF facts without trusting file/ldd's text or exit status."""
+    need(len(raw)>=64 and raw[:7]==b'\x7fELF\x02\x01\x01','elf_header')
+    kind,machine,version=struct.unpack_from('<HHI',raw,16)
+    need(kind in (2,3) and machine==62 and version==1,'elf_target')
+    phoff=struct.unpack_from('<Q',raw,32)[0]
+    ehsize,phsize,phnum=struct.unpack_from('<HHH',raw,52)
+    need(ehsize==64 and phsize==56 and 0<phnum<65535 and phoff>=64 and phoff+phsize*phnum<=len(raw),'elf_program_headers')
+    interpreters=[];needed=0;dynamic=0;loads=0
+    for index in range(phnum):
+        ptype,_,offset,_,_,filesz,_,_=struct.unpack_from('<IIQQQQQQ',raw,phoff+index*phsize)
+        need(offset<=len(raw) and filesz<=len(raw)-offset,'elf_segment_bounds')
+        if ptype==1:loads+=1
+        if ptype==3:
+            need(filesz>1 and raw[offset+filesz-1]==0,'elf_interpreter')
+            interpreters.append(raw[offset:offset+filesz-1].decode('ascii',errors='strict'))
+        if ptype==2:
+            dynamic+=1
+            need(filesz>=16 and filesz%16==0,'elf_dynamic_bounds')
+            terminated=False
+            for position in range(offset,offset+filesz,16):
+                tag,_=struct.unpack_from('<qQ',raw,position)
+                if tag==0:terminated=True;break
+                if tag==1:needed+=1
+            need(terminated,'elf_dynamic_termination')
+    need(loads>0 and len(interpreters)<=1 and dynamic<=1,'elf_segment_shape')
+    return {'elf_class':64,'machine':'x86_64','interpreter':interpreters[0] if interpreters else None,'needed_entries':needed,'dynamic_segments':dynamic}
+
+def build_link_flags(compiler,source=None):
+    flags=['-linkmode=external','-extldflags=-static'] if compiler=='docker' else []
+    if source is not None:flags+=['-X','github.com/laiai/laiai-next/core/internal/video.executionHandoffCompiledSource='+source]
+    return ['-ldflags',' '.join(flags)] if flags else []
 def clean_environment(inherited):
     need(not any(k.startswith(('LAIAI_','ARK_TEST_','B1B_')) for k in inherited),'inherited_business_environment')
     env={key:inherited[key] for key in ('PATH','HOME','TMPDIR','GOPROXY','GOMODCACHE','GOCACHE') if key in inherited}
@@ -53,7 +86,7 @@ class Runner:
         self.deadline=time.monotonic()+args.timeout_seconds;self.compiler_containers=[];self.db=None
         self.secrets=[];self.report={'status':'running','run_id':self.run_id,'old_source':OLD,'official_calls':0,'compiler':args.compiler,'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat()}
         self.evidence=self.root/'evidence';self.evidence.mkdir()
-    def command(self,args,log=None,env=None,cwd=None,timeout=120,input_bytes=None):
+    def command(self,args,log=None,env=None,cwd=None,timeout=120,input_bytes=None,allowed_returncodes=(0,),exit_record=None):
         remaining=self.deadline-time.monotonic();need(remaining>0,'total_deadline')
         # Each command owns a new POSIX session. Until communicate has reaped
         # the direct child its PID cannot be reused; kill only that session.
@@ -71,7 +104,8 @@ class Runner:
             if log:log.write_bytes(out+err)
             raise RuntimeError('command_interrupted') from None
         if log:log.write_bytes(out+err)
-        need(process.returncode==0,'command_failed_'+(log.stem if log else 'private_tool'))
+        if exit_record:write(exit_record,{'exit_code':process.returncode})
+        need(process.returncode in allowed_returncodes,'command_failed_'+(log.stem if log else 'private_tool'))
         return out
     def source(self):
         new=self.command(['git','-C',str(ROOT),'rev-parse','HEAD']).decode().strip()
@@ -122,19 +156,35 @@ class Runner:
         for role in ('old','new'):
             need(self.compiler(['go','version'],role,role+'-go-version.log').decode().strip()==GO,'compiler_go_version')
             src=self.sources[role]['source'];binary=bin_dir/(role+'-video.test')
-            self.compiler(['go','test','-race','-c','-o',str(binary),'-ldflags','-X github.com/laiai/laiai-next/core/internal/video.executionHandoffCompiledSource='+src,'./internal/video'],role,role+'-build.log')
+            self.compiler(['go','test','-race','-c','-o',str(binary),*build_link_flags(self.args.compiler,src),'./internal/video'],role,role+'-build.log')
             self.builds[role]={'path':str(binary),'source':src,'sha256':sha(binary.read_bytes())};self.tools[role]={}
             for tool in ('migrate','schema-doctor'):
-                target=bin_dir/(role+'-'+tool);self.compiler(['go','build','-o',str(target),'./cmd/'+tool],role,role+'-'+tool+'-build.log');self.tools[role][tool]=str(target)
+                target=bin_dir/(role+'-'+tool);self.compiler(['go','build',*build_link_flags(self.args.compiler),'-o',str(target),'./cmd/'+tool],role,role+'-'+tool+'-build.log');self.tools[role][tool]=str(target)
             for tool,path in {'video':str(binary),**self.tools[role]}.items():
                 self.compiler(['go','version','-m',path],role,role+'-'+tool+'-build-info.log')
-            self.command(['ldd',str(binary)],self.evidence/(role+'-host-ldd.log'))
-            listing=self.command([str(binary),'-test.list=^TestMySQLExecutionInputBinaryHandoffProcess$'],self.evidence/(role+'-host-test-list.log'))
-            need(listing.decode().splitlines()==['TestMySQLExecutionInputBinaryHandoffProcess'],'host_elf_entrypoint')
+                if self.args.compiler=='docker':self.check_static_host_binary(path,role,tool)
+            if self.args.compiler=='host':
+                self.command(['ldd',str(binary)],self.evidence/(role+'-host-ldd.log'))
+                listing=self.command([str(binary),'-test.list=^TestMySQLExecutionInputBinaryHandoffProcess$'],self.evidence/(role+'-host-test-list.log'))
+                need(listing.decode().splitlines()==['TestMySQLExecutionInputBinaryHandoffProcess'],'host_elf_entrypoint')
         need(self.builds['old']['sha256']!=self.builds['new']['sha256'],'identical_binary')
         write(self.evidence/'build-manifest.json',self.builds)
         write(self.evidence/'build-artifacts.json',{p.name:{'bytes':p.stat().st_size,'sha256':sha(p.read_bytes())} for p in bin_dir.iterdir()})
         self.source_integrity()
+    def check_static_host_binary(self,path,role,tool):
+        prefix=role+'-'+tool+'-host'
+        raw=pathlib.Path(path).read_bytes();facts=elf_linkage(raw)
+        write(self.evidence/(prefix+'-elf.json'),dict(facts,sha256=sha(raw),bytes=len(raw),link_policy='docker_external_static'))
+        self.command(['file','--brief',path],self.evidence/(prefix+'-file.log'))
+        need(facts['interpreter'] is None and facts['needed_entries']==0,'host_elf_dynamic_dependency')
+        # Static ELF is independently established above. ldd commonly returns
+        # 1 for it; that exception never applies to a dynamically linked file.
+        self.command(['ldd',path],self.evidence/(prefix+'-ldd.log'),allowed_returncodes=(0,1),exit_record=self.evidence/(prefix+'-ldd-exit.json'))
+        if tool=='video':
+            listing=self.command([path,'-test.list=^TestMySQLExecutionInputBinaryHandoffProcess$'],self.evidence/(prefix+'-test-list.log'))
+            need(listing.decode().splitlines()==['TestMySQLExecutionInputBinaryHandoffProcess'],'host_elf_entrypoint')
+        else:
+            self.command([path,'-h'],self.evidence/(prefix+'-help.log'))
     def owned(self,entry):
         path=entry['cidfile']
         if not path.exists():return None

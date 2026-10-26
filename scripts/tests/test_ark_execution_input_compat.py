@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import struct
 import sys
 import tarfile
 import tempfile
@@ -45,7 +46,7 @@ def proof(settled=False, action=False, fault=None, purged=False):
                     'billing_entry_count': int(settled), 'ledger_drift_count': 0,
                     'quota_reservation_count': 7, 'quota_bucket_count': 7, 'release_movement_count': 0},
         'actual_amounts': {'supplier_cny': '0.00460000' if settled else '0.00000000',
-                           'key_used_usd': '0.00080000' if settled else '0.00000000',
+                           'key_used_usd': '0.00080000' if settled else '0.86400000',
                            'provider_reserved_cny': '0.00000000' if settled else '4.96800000',
                            'provider_consumed_cny': '0.00460000' if settled else '0.00000000'},
         'financial_fingerprints': prints, 'financial_sha256': prints['financial_all'],
@@ -183,6 +184,45 @@ def raw_evidence(root):
 
 
 class FinancialEvidenceTests(unittest.TestCase):
+    def test_reserved_key_budget_is_not_only_settled_spend(self):
+        for settled, expected, wrong in ((False, '0.86400000', '0.00000000'),
+                                          (True, '0.00080000', '0.86400000')):
+            with self.subTest(settled=settled):
+                value = proof(settled=settled)
+                self.assertEqual(value['actual_amounts']['key_used_usd'], expected)
+                verify.check_finance(value, settled)
+                value['actual_amounts']['key_used_usd'] = wrong
+                with self.assertRaisesRegex(ValueError, 'literal_supplier_quota_key'):
+                    verify.check_finance(value, settled)
+
+    def test_coordinated_raw_and_result_key_state_transition_rejected(self):
+        # Mutate every raw proof and corresponding result together, so raw
+        # equality alone cannot hide the wrong held/settled budget oracle.
+        for case in host.CASES:
+            states = (False, True) if case in ('N01', 'N03-create') else (False,)
+            for settled in states:
+                with self.subTest(case=case, settled=settled):
+                    result, events = family(case)
+                    touched = 0
+
+                    def corrupt(value):
+                        nonlocal touched
+                        if isinstance(value, dict):
+                            if 'actual_amounts' in value and (value.get('billing_state') == 'settled') == settled:
+                                value['actual_amounts']['key_used_usd'] = '0.86400000' if settled else '0.00000000'
+                                touched += 1
+                            for child in value.values():
+                                corrupt(child)
+                        elif isinstance(value, list):
+                            for child in value:
+                                corrupt(child)
+
+                    corrupt(result)
+                    corrupt(events)
+                    self.assertGreaterEqual(touched, 2)
+                    with self.assertRaisesRegex(ValueError, 'literal_supplier_quota_key'):
+                        verify.verify_case_proofs(case, result, events)
+
     def test_run_command_and_mock_boundary_tampering_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -425,6 +465,8 @@ class HostBoundaries(unittest.TestCase):
             self.assertIn('laiai-ci-gocache:/root/.cache/go-build', mounts)
             self.assertFalse(any('docker.sock' in mount for mount in mounts))
             self.assertIn(host.TOOL_IMAGE, argv)
+            env = [argv[index + 1] for index, value in enumerate(argv) if value == '-e']
+            self.assertIn('CGO_ENABLED=1', env)
 
     def test_failed_empty_or_partial_verification_still_exports_original(self):
         for data in (b'', b'{"status":', b'{"status":"failed"}'):
@@ -463,6 +505,174 @@ class HostBoundaries(unittest.TestCase):
         # A zombie is already terminated and can only be reaped by PID 1.
         status = Path('/proc') / str(pid) / 'stat'
         self.assertTrue(not status.exists() or status.read_text().rsplit(')', 1)[1].split()[0] == 'Z')
+
+
+def synthetic_elf(interpreter=None, needed=False, unterminated=False):
+    """ELF layout fixture only; it is never passed off as executable evidence."""
+    segments = []
+    payload = bytearray(b'\x00' * 512)
+    payload[:16] = b'\x7fELF\x02\x01\x01' + b'\x00' * 9
+    struct.pack_into('<HHIQQQIHHHHHH', payload, 16, 2, 62, 1, 0, 64, 0, 0, 64, 56,
+                     1 + int(interpreter is not None) + int(needed or unterminated), 0, 0, 0)
+    segments.append((1, 5, 0, 0, 0, len(payload), len(payload), 4096))
+    if interpreter is not None:
+        raw = interpreter.encode() + b'\x00'
+        payload[256:256 + len(raw)] = raw
+        segments.append((3, 4, 256, 0, 0, len(raw), len(raw), 1))
+    if needed or unterminated:
+        struct.pack_into('<qQqQ', payload, 384, 1 if needed else 5, 0, 5 if unterminated else 0, 0)
+        segments.append((2, 6, 384, 0, 0, 32, 32, 8))
+    for index, entry in enumerate(segments):
+        struct.pack_into('<IIQQQQQQ', payload, 64 + index * 56, *entry)
+    return bytes(payload)
+
+
+class StaticCompilerBoundaries(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def runner(self, label='run', compiler='docker'):
+        args = argparse.Namespace(output=str(self.root / label), timeout_seconds=1200, compiler=compiler)
+        with mock.patch.dict(os.environ, {'PATH': os.environ.get('PATH', '')}, clear=True):
+            return host.Runner(args)
+
+    def test_real_build_command_generation_preserves_race_and_host_adapter(self):
+        for adapter in ('docker', 'host'):
+            with self.subTest(adapter=adapter):
+                runner = self.runner(adapter, adapter)
+                runner.sources = {role: {'source': 'a' * 40 if role == 'old' else 'b' * 40,
+                                         'path': str(runner.root / (role + '-source'))} for role in ('old', 'new')}
+                builds, commands = [], []
+
+                def compile_command(argv, role, log):
+                    builds.append((list(argv), role))
+                    if argv == ['go', 'version']:
+                        return (host.GO + '\n').encode()
+                    if '-o' in argv:
+                        Path(argv[argv.index('-o') + 1]).write_bytes(synthetic_elf() + role.encode())
+                    return b''
+
+                def command(argv, *_args, **kwargs):
+                    commands.append((list(argv), kwargs))
+                    if argv == ['go', 'version']:
+                        return (host.GO + '\n').encode()
+                    if 'inspect' in argv:
+                        return ((host.TOOL_IMAGE if 'image' in argv else argv[-3]) + '\n').encode()
+                    if any(value.startswith('-test.list=') for value in argv):
+                        return b'TestMySQLExecutionInputBinaryHandoffProcess\n'
+                    return b''
+
+                with mock.patch.object(runner, 'compiler', side_effect=compile_command), \
+                        mock.patch.object(runner, 'command', side_effect=command), \
+                        mock.patch.object(runner, 'source_integrity'):
+                    runner.build()
+                compiled = [(argv, role) for argv, role in builds if '-o' in argv]
+                self.assertEqual(len(compiled), 6)
+                for argv, role in compiled:
+                    is_test = argv[1] == 'test'
+                    if is_test:
+                        self.assertIn('-race', argv)
+                        self.assertIn('-c', argv)
+                    expected = []
+                    if adapter == 'docker':
+                        expected += ['-linkmode=external', '-extldflags=-static']
+                    if is_test:
+                        expected += ['-X', 'github.com/laiai/laiai-next/core/internal/video.executionHandoffCompiledSource=' + runner.sources[role]['source']]
+                    if expected:
+                        self.assertEqual(argv[argv.index('-ldflags') + 1], ' '.join(expected))
+                    else:
+                        self.assertNotIn('-ldflags', argv)
+                ldd = [(argv, kwargs) for argv, kwargs in commands if argv[0] == 'ldd']
+                self.assertEqual(len(ldd), 6 if adapter == 'docker' else 2)
+                self.assertEqual(sum('-h' in argv for argv, _ in commands), 4 if adapter == 'docker' else 0)
+                if adapter == 'host':
+                    self.assertTrue(all('allowed_returncodes' not in kwargs for _, kwargs in ldd))
+
+    def test_independent_elf_structure_rejects_malformed_and_detects_dependencies(self):
+        static = synthetic_elf()
+        self.assertEqual(host.elf_linkage(static)['needed_entries'], 0)
+        self.assertIsNone(host.elf_linkage(static)['interpreter'])
+        self.assertEqual(host.elf_linkage(synthetic_elf('/lib/ld-musl-x86_64.so.1'))['interpreter'], '/lib/ld-musl-x86_64.so.1')
+        self.assertEqual(host.elf_linkage(synthetic_elf(needed=True))['needed_entries'], 1)
+        mutations = {'truncated': static[:63], 'wrong_magic': b'nope' + static[4:],
+                     'elf32': static[:4] + b'\x01' + static[5:],
+                     'big_endian': static[:5] + b'\x02' + static[6:],
+                     'unterminated_dynamic': synthetic_elf(unterminated=True)}
+        for name, offset, fmt, value in [('wrong_machine', 18, '<H', 3), ('ph_overflow', 32, '<Q', 4096),
+                                         ('short_phdr', 54, '<H', 48), ('missing_phdr', 56, '<H', 0),
+                                         ('segment_overflow', 96, '<Q', 1024)]:
+            raw = bytearray(static)
+            struct.pack_into(fmt, raw, offset, value)
+            mutations[name] = bytes(raw)
+        for name, raw in mutations.items():
+            with self.subTest(name=name), self.assertRaises(RuntimeError):
+                host.elf_linkage(raw)
+
+    def test_dynamic_dependency_is_rejected_before_ldd_or_actual_start(self):
+        for name, raw in [('interpreter', synthetic_elf('/lib/ld-musl-x86_64.so.1')),
+                          ('needed_without_interpreter', synthetic_elf(needed=True))]:
+            with self.subTest(name=name):
+                runner = self.runner(name)
+                binary = runner.root / 'video.test'
+                binary.write_bytes(raw)
+                with mock.patch.object(runner, 'command', return_value=b'statically linked') as command:
+                    with self.assertRaisesRegex(RuntimeError, 'host_elf_dynamic_dependency'):
+                        runner.check_static_host_binary(str(binary), 'old', 'video')
+                self.assertEqual(command.call_count, 1)
+                self.assertEqual(command.call_args.args[0][0], 'file')
+                # A misleading text tool cannot override independent ELF facts.
+                self.assertTrue((runner.evidence / 'old-video-host-elf.json').exists())
+
+    def test_static_check_requires_actual_entrypoint_and_tools_start(self):
+        runner = self.runner()
+        binary = runner.root / 'video.test'
+        binary.write_bytes(synthetic_elf())
+        calls = []
+
+        def command(argv, *args, **kwargs):
+            calls.append((argv, kwargs))
+            if any(v.startswith('-test.list=') for v in argv):
+                return b'TestMySQLExecutionInputBinaryHandoffProcess\n'
+            return b'not a dynamic executable\n'
+
+        with mock.patch.object(runner, 'command', side_effect=command):
+            runner.check_static_host_binary(str(binary), 'old', 'video')
+            runner.check_static_host_binary(str(binary), 'old', 'migrate')
+            runner.check_static_host_binary(str(binary), 'old', 'schema-doctor')
+        self.assertEqual([argv[-1] for argv, _ in calls if argv[0] == str(binary)],
+                         ['-test.list=^TestMySQLExecutionInputBinaryHandoffProcess$', '-h', '-h'])
+        for argv, kwargs in calls:
+            if argv[0] == 'ldd':
+                self.assertEqual(kwargs['allowed_returncodes'], (0, 1))
+                self.assertIsNotNone(kwargs['exit_record'])
+        with mock.patch.object(runner, 'command', return_value=b'wrong test\n'):
+            with self.assertRaisesRegex(RuntimeError, 'host_elf_entrypoint'):
+                runner.check_static_host_binary(str(binary), 'new', 'video')
+        def failed_start(argv, *args, **kwargs):
+            if argv[0] == str(binary):
+                raise RuntimeError('actual_start_failed')
+            return b''
+        with mock.patch.object(runner, 'command', side_effect=failed_start):
+            with self.assertRaisesRegex(RuntimeError, 'actual_start_failed'):
+                runner.check_static_host_binary(str(binary), 'new', 'video')
+
+    def test_real_subprocess_exit_policy_is_narrow_and_logged(self):
+        runner = self.runner()
+        for rc in (0, 1, 2):
+            log = runner.evidence / ('exit-' + str(rc) + '.log')
+            record = runner.evidence / ('exit-' + str(rc) + '.json')
+            argv = [sys.executable, '-c', 'import sys; print("local-process-control"); sys.exit(' + str(rc) + ')']
+            if rc <= 1:
+                runner.command(argv, log, allowed_returncodes=(0, 1), exit_record=record)
+            else:
+                with self.assertRaisesRegex(RuntimeError, 'command_failed'):
+                    runner.command(argv, log, allowed_returncodes=(0, 1), exit_record=record)
+            self.assertEqual(json.loads(record.read_text())['exit_code'], rc)
+            self.assertIn(b'local-process-control', log.read_bytes())
+        with self.assertRaisesRegex(RuntimeError, 'command_failed'):
+            runner.command([sys.executable, '-c', 'raise SystemExit(1)'])
 
 
 if __name__ == '__main__':
