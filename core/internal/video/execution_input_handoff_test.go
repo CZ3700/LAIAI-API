@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -52,6 +53,46 @@ const executionHandoffOldSource = "9a6fd9426e33b2e1c269b6cb77a170e8890073f2"
 // binary hash by the external verifier. No default invents a new-source SHA.
 var executionHandoffCompiledSource string
 var errExecutionHandoff = errors.New("isolated execution handoff failed")
+
+// The same test source is compiled into N-1, which has no persistedRecoveryErrors
+// declaration. Recognize only that exact project-private safe aggregate by its
+// Go identity; arbitrary wrappers must not erase database or cancellation causes.
+func executionHandoffSchemaRejected(err error) bool {
+	remaining := 128
+	var visit func(error, int) bool
+	visit = func(current error, depth int) bool {
+		remaining--
+		if current == nil || remaining < 0 || depth > 32 {
+			return false
+		}
+		if current == invocation.ErrVideoSchemaUnsupported {
+			return true
+		}
+		value := reflect.ValueOf(current)
+		if value.Kind() != reflect.Pointer || value.IsNil() {
+			return false
+		}
+		typ := value.Type().Elem()
+		if typ.PkgPath() != "github.com/laiai/laiai-next/core/internal/video" || typ.Name() != "persistedRecoveryErrors" {
+			return false
+		}
+		aggregate, ok := current.(interface{ Unwrap() []error })
+		if !ok {
+			return false
+		}
+		causes := aggregate.Unwrap()
+		if len(causes) == 0 || len(causes) > remaining {
+			return false
+		}
+		for _, cause := range causes {
+			if !visit(cause, depth+1) {
+				return false
+			}
+		}
+		return true
+	}
+	return visit(err, 0)
+}
 
 type executionHandoffCommand struct {
 	Protocol      string `json:"protocol"`
@@ -90,6 +131,7 @@ type executionHandoffHarness struct {
 	seq, commands    uint64
 	transport        *http.Transport
 	failed           atomic.Bool
+	httpAttempts     atomic.Uint64
 }
 
 func executionHandoffCase(id string) bool {
@@ -384,6 +426,7 @@ func (h *executionHandoffHarness) installHTTP() {
 		return dialer.DialContext(ctx, network, address)
 	}}
 	h.s.Client = &http.Client{Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }, Transport: a2cRoundTrip(func(r *http.Request) (*http.Response, error) {
+		h.httpAttempts.Add(1)
 		base := "/api/v3/contents/generations/tasks"
 		pathOK := r.Method == http.MethodPost && r.URL.Path == base || (r.Method == http.MethodGet || r.Method == http.MethodDelete) && r.URL.Path == base+"/"+h.e.upstream
 		if r.URL.Scheme != "https" || r.URL.Host != "ark.cn-beijing.volces.com" || r.URL.User != nil || r.URL.RawQuery != "" || r.URL.Fragment != "" || r.URL.RawPath != "" || !pathOK || r.Header.Get("Authorization") != "Bearer "+h.e.token {
@@ -556,6 +599,7 @@ func (h *executionHandoffHarness) command(c executionHandoffCommand) (bool, erro
 		go func() {
 			defer h.wg.Done()
 			defer cancel()
+			httpBefore := h.httpAttempts.Load()
 			err := h.s.ProcessOnce(ctx)
 			p, inspectErr := h.inspect()
 			code := "none"
@@ -565,6 +609,8 @@ func (h *executionHandoffHarness) command(c executionHandoffCommand) (bool, erro
 					code = "cancelled"
 				} else if errors.Is(err, context.DeadlineExceeded) {
 					code = "deadline"
+				} else if executionHandoffSchemaRejected(err) {
+					code = "schema_rejected"
 				}
 			}
 			if inspectErr != nil {
@@ -573,7 +619,7 @@ func (h *executionHandoffHarness) command(c executionHandoffCommand) (bool, erro
 			h.mu.Lock()
 			h.active = nil
 			h.mu.Unlock()
-			h.emit(c.ID, "cycle_completed", map[string]any{"error_class": code, "proof": p, "barrier_reached": cycle.reached})
+			h.emit(c.ID, "cycle_completed", map[string]any{"error_class": code, "proof": p, "barrier_reached": cycle.reached, "http_attempts": h.httpAttempts.Load() - httpBefore})
 		}()
 	case "read_action":
 		if h.e.caseID != "N03-action" || h.e.role != "old" || h.offset.Load() != 0 || h.seed.MutationKind != "cancel_task" {
@@ -823,9 +869,11 @@ func (h *executionHandoffHarness) inspect() (map[string]any, error) {
 		out["attempt_count"], out["receipt_count"] = int64(len(attempts)), int64(len(receipts))
 		out["application_state"] = ""
 		out["application_error"] = ""
+		out["application_next_attempt_at"] = nil
 		out["applied_at"] = nil
 		if len(apps) == 1 {
 			out["application_state"], out["application_error"], out["applied_at"] = apps[0].State, apps[0].ErrorCode, a2cNullableTime(apps[0].AppliedAt)
+			out["application_next_attempt_at"] = a2cTime(apps[0].NextAttemptAt)
 		}
 		if len(receipts) == 1 {
 			out["receipt_id"], out["received_outcome"] = receipts[0].ReceiptID, receipts[0].Outcome

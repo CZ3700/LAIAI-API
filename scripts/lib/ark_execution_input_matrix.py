@@ -94,7 +94,7 @@ class Child:
         self.matrix,self.case,self.role,self.instance=matrix,case,role,instance
         self.seq,self.command_id=0,0
         self.events=queue.Queue();self.pending=[];self.reader_error=None;self.lines=[]
-        self.clean_exit=False
+        self.clean_exit=False;self.schema_rejections=0
         case_dir=matrix.root/case;case_dir.mkdir(exist_ok=True)
         schema="ark_test_exec_"+matrix.run+"_"+hashlib.sha256(case.encode()).hexdigest()[:12]
         env=os.environ.copy()
@@ -141,10 +141,21 @@ class Child:
         with (self.matrix.root/(self.case+"-"+self.instance+"-commands.jsonl")).open("a",encoding="utf-8") as out:out.write(json.dumps(payload,separators=(",",":"))+"\n")
         self.process.stdin.write(json.dumps(payload,separators=(",",":"))+"\n");self.process.stdin.flush();return self.command_id
     def simple(self,command,event,**fields):return self.wait(self.send(command,**fields),event)
-    def inspect(self):return self.simple("inspect","inspected")
+    def inspect(self,seconds=30):return self.wait(self.send("inspect"),"inspected",seconds)
     def cycle(self):
+        before_http=self.matrix.mock.snapshot(self.case)
         out=self.wait(self.send("run_once"),"cycle_completed",150)
-        require(out["error_class"]=="none","cycle_error");return out["proof"]
+        schema_consumer=self.case in ("N04-schema-new","N04-schema-old") and self.role=="new" and self.instance in ("first-new","second-new")
+        if schema_consumer:
+            allowed=("schema_rejected",) if self.schema_rejections==0 else ("none","schema_rejected")
+            require(out["error_class"] in allowed,"schema_recovery_error")
+            proof=out["proof"]
+            require(out["barrier_reached"] is False and proof["input"]["schema"]==99 and proof["application_state"]=="blocked" and proof["application_error"]=="execution_identity_unavailable" and proof["applied_at"] is None,"schema_rejection_state")
+            if out["error_class"]=="schema_rejected":
+                require(type(out["http_attempts"]) is int and out["http_attempts"]==0 and self.matrix.mock.snapshot(self.case)==before_http,"schema_rejection_http")
+            self.schema_rejections+=int(out["error_class"]=="schema_rejected")
+        else:require(out["error_class"]=="none","cycle_error")
+        return out["proof"]
     def receipt(self):
         cmd=self.send("run_once",barrier="receipt_committed")
         proof=self.wait(cmd,"receipt_committed",60)
@@ -199,9 +210,23 @@ class Matrix:
             if proof["billing_state"]=="settled":settled(proof);return proof
             require(time.monotonic()<end and proof["task_status"] not in ("failed","cancelled"),"real_query_settlement_timeout");time.sleep(.2)
     def held_unchanged_replay(self,child,before):
+        if child.case in ("N04-schema-new","N04-schema-old") and child.role=="new":
+            # The old first consumer may have committed a real 30s backoff.
+            # Wait by read-only DB observations; never rewrite its due time.
+            end=time.monotonic()+40
+            while True:
+                remaining=end-time.monotonic()
+                require(remaining>0,"schema_recovery_due_timeout")
+                observed=child.inspect(seconds=min(10,remaining));due=observed["application_next_attempt_at"]
+                require(due is not None,"schema_recovery_due_missing")
+                require(time.monotonic()<end,"schema_recovery_due_timeout")
+                if utc(observed["database_time"])>=utc(due):break
+                time.sleep(min(.25,max(0,end-time.monotonic())))
         after=child.cycle();immutable(before,after);no_financial_change(before,after)
         require(after["input_successful_reads"]==before["input_successful_reads"],"recovery_decrypted_input")
-        replay=child.cycle();immutable(after,replay);no_financial_change(after,replay);return replay
+        replay=child.cycle();immutable(after,replay);no_financial_change(after,replay)
+        require(replay["input_successful_reads"]==after["input_successful_reads"],"replay_decrypted_input")
+        return replay
     def run_case(self,case):
         print("B1B_STAGE "+case+" start",flush=True)
         near=case in ("N01","N04-runtime-new","N04-runtime-old")

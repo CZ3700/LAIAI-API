@@ -1,11 +1,47 @@
 package video
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+
+	mysqlDriver "github.com/go-sql-driver/mysql"
+	"github.com/laiai/laiai-next/core/internal/invocation"
 )
+
+type executionHandoffForeignError struct{ cause error }
+
+func (*executionHandoffForeignError) Error() string {
+	return "video persisted evidence recovery failed"
+}
+func (e *executionHandoffForeignError) Unwrap() []error { return []error{e.cause} }
+
+func TestExecutionInputHandoffSchemaErrorContract(t *testing.T) {
+	if !executionHandoffSchemaRejected(invocation.ErrVideoSchemaUnsupported) {
+		t.Fatal("direct schema denial was not classified")
+	}
+	for name, err := range map[string]error{
+		"nil":         nil,
+		"typed_nil":   (*executionHandoffForeignError)(nil),
+		"foreign":     &executionHandoffForeignError{invocation.ErrVideoSchemaUnsupported},
+		"fmt_wrapper": fmt.Errorf("schema: %w", invocation.ErrVideoSchemaUnsupported),
+		"join":        errors.Join(invocation.ErrVideoSchemaUnsupported),
+		"same_text":   errors.New(invocation.ErrVideoSchemaUnsupported.Error()),
+		"database":    &mysqlDriver.MySQLError{Number: 1054},
+		"cancelled":   context.Canceled,
+		"deadline":    context.DeadlineExceeded,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if executionHandoffSchemaRejected(err) {
+				t.Fatal("unproven error was accepted as a schema rejection")
+			}
+		})
+	}
+}
 
 func TestExecutionInputHandoffProtocolContract(t *testing.T) {
 	base := `{"protocol":"execution-clock-handoff-v1","run_id":"0123456789abcdef","case_id":"N02","instance":"writer-old","cmd_id":1,"command":"run_once","barrier":"receipt_committed"}`

@@ -14,6 +14,46 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// Current-version-only aggregate cases stay outside the common N-1 harness.
+func TestExecutionInputHandoffSchemaRecoveryAggregate(t *testing.T) {
+	denied := invocation.ErrVideoSchemaUnsupported
+	for _, err := range []error{safeRecoveryErrors(denied), safeRecoveryErrors(denied, safeRecoveryErrors(denied))} {
+		if !executionHandoffSchemaRejected(err) {
+			t.Fatal("exact safe aggregate of schema denials rejected")
+		}
+	}
+	cycle := &persistedRecoveryErrors{}
+	cycle.causes = []error{cycle}
+	deep := error(denied)
+	for range 34 {
+		deep = safeRecoveryErrors(deep)
+	}
+	wide := make([]error, 128)
+	for i := range wide {
+		wide[i] = denied
+	}
+	for name, err := range map[string]error{
+		"empty":           &persistedRecoveryErrors{},
+		"typed_nil":       (*persistedRecoveryErrors)(nil),
+		"nil_leaf":        &persistedRecoveryErrors{causes: []error{denied, nil}},
+		"database_mixed":  safeRecoveryErrors(denied, errors.New("synthetic SQL failure")),
+		"cancelled_mixed": safeRecoveryErrors(denied, context.Canceled),
+		"deadline_mixed":  safeRecoveryErrors(denied, context.DeadlineExceeded),
+		"authority_mixed": safeRecoveryErrors(denied, authorityClockFailure(denied)),
+		"foreign_mixed":   safeRecoveryErrors(denied, fmt.Errorf("unknown: %w", denied)),
+		"join_mixed":      safeRecoveryErrors(denied, errors.Join(denied)),
+		"cycle":           cycle,
+		"depth":           deep,
+		"node_budget":     safeRecoveryErrors(wide...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if executionHandoffSchemaRejected(err) {
+				t.Fatal("unsafe aggregate was accepted as a schema rejection")
+			}
+		})
+	}
+}
+
 func TestRecoveryErrorClassificationRejectsForeignSemantics(t *testing.T) {
 	unknown := errors.New("private-database-marker")
 	cycle := &persistedRecoveryErrors{}
