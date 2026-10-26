@@ -248,8 +248,27 @@ func (s *Service) EstimateForKey(ctx context.Context, key *identity.APIKey, in a
 	}
 	ctx = videoasset.WithAPIKey(ctx, key)
 	var p createPlan
-	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error { var err error; p, err = s.plan(tx, key.OrgID, in); return err })
-	return p.quote, err
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		subject, err := s.readOfficialActionSubjectTx(ctx, tx, CatalogSubjectRef{OrgID: key.OrgID, KeyID: key.ID})
+		if err != nil {
+			return officialAdmissionError(err)
+		}
+		if err = requireOfficialActionSubject(subject, in.Model, officialEstimate); err != nil {
+			return err
+		}
+		p, err = s.plan(tx, key.OrgID, in)
+		if err != nil {
+			return err
+		}
+		if !officialActionDecision(subject, in.Model, p.config.ChannelID, officialEstimate, officialActionFacts{published: true}).Eligible {
+			return ErrForbidden
+		}
+		return nil
+	})
+	if err != nil {
+		return videobilling.QuoteResult{}, err
+	}
+	return p.quote, nil
 }
 
 func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, idempotency string, in ark.CreateRequest) (TaskView, bool, error) {
@@ -292,6 +311,13 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 			result = taskView(t, st)
 			replay = true
 			return s.linkCreateRequestTx(tx, key.OrgID, requestID, t, st, idem.OperationID, true)
+		}
+		subject, e := s.readOfficialActionSubjectTx(ctx, tx, CatalogSubjectRef{OrgID: key.OrgID, KeyID: key.ID})
+		if e != nil {
+			return officialAdmissionError(e)
+		}
+		if e = requireOfficialActionSubject(subject, in.Model, officialCreate); e != nil {
+			return e
 		}
 		var policy Policy
 		if e = tx.Where("org_id = ? AND async_execution_allowed = ?", key.OrgID, true).First(&policy).Error; e != nil {
@@ -338,6 +364,9 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		credentialID, ciphertext, ok := relay.SelectCredential(tx, &ch)
 		if !ok {
 			return ErrUnavailable
+		}
+		if !officialActionDecision(subject, in.Model, p.config.ChannelID, officialCreate, officialActionFacts{published: true, credential: true, policyExists: true, policy: policy}).Eligible {
+			return ErrForbidden
 		}
 		credential := CredentialSnapshot{OrgID: key.OrgID, TaskID: taskID, ProviderScopeID: p.scope.ID, SourceCredentialID: credentialID, Ciphertext: ciphertext, CreatedAt: now}
 		if e = tx.Create(&credential).Error; e != nil {

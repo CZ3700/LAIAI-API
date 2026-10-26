@@ -157,7 +157,9 @@ func TestPublicationActionsAreDistinctAndZeroObservationDenies(t *testing.T) {
 	if zero.AllowsModel(ark.Model20) {
 		t.Fatal("zero observation interpreted as unrestricted")
 	}
-	allowed := CatalogObservation{validatedSubject: true, modelLimits: "  " + ark.Model20 + " , " + ark.Model20Mini + "  "}
+	s, key := actionSubjectDB(t)
+	must(t, s.DB.Exec("UPDATE api_keys SET model_limits=? WHERE id=2", "  "+ark.Model20+" , "+ark.Model20Mini+"  ").Error)
+	allowed := CatalogObservation{subject: actionSubject(t, s, key)}
 	if !allowed.AllowsModel(ark.Model20) || !allowed.AllowsModel(ark.Model20Mini) || allowed.AllowsModel(ark.Model25) || allowed.AllowsModel(strings.ToUpper(ark.Model20)) {
 		t.Fatal("legacy exact whitelist changed")
 	}

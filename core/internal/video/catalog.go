@@ -13,6 +13,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/relay"
+	"github.com/laiai/laiai-next/core/internal/routinggroup"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -42,11 +43,11 @@ func catalogError(ctx context.Context, err error) error {
 		return context.DeadlineExceeded
 	}
 	switch {
-	case errors.Is(err, ErrCatalogInvalid), errors.Is(err, identity.ErrRoutingCandidateInvalid), errors.Is(err, identity.ErrVideoCatalogInvalid), errors.Is(err, relay.ErrVideoCatalogInvalid), errors.Is(err, videobilling.ErrCatalogTariffInvalid):
+	case errors.Is(err, routinggroup.ErrCandidatesInvalid), errors.Is(err, ErrCatalogInvalid), errors.Is(err, identity.ErrRoutingCandidateInvalid), errors.Is(err, identity.ErrVideoCatalogInvalid), errors.Is(err, relay.ErrVideoCatalogInvalid), errors.Is(err, videobilling.ErrCatalogTariffInvalid):
 		return ErrCatalogInvalid
-	case errors.Is(err, ErrCatalogDenied), errors.Is(err, identity.ErrRoutingCandidateFacts), errors.Is(err, identity.ErrVideoCatalogNotFound):
+	case errors.Is(err, routinggroup.ErrCandidatesDenied), errors.Is(err, routinggroup.ErrCandidatesInvalidFacts), errors.Is(err, ErrCatalogDenied), errors.Is(err, identity.ErrRoutingCandidateFacts), errors.Is(err, identity.ErrVideoCatalogNotFound):
 		return ErrCatalogDenied
-	case errors.Is(err, ErrCatalogLimit), errors.Is(err, identity.ErrRoutingCandidateLimit), errors.Is(err, videobilling.ErrCatalogTariffLimit):
+	case errors.Is(err, routinggroup.ErrCandidatesLimit), errors.Is(err, ErrCatalogLimit), errors.Is(err, identity.ErrRoutingCandidateLimit), errors.Is(err, videobilling.ErrCatalogTariffLimit):
 		return ErrCatalogLimit
 	default:
 		return ErrCatalogUnavailable
@@ -174,15 +175,16 @@ func (s *Service) ReadCatalogTx(ctx context.Context, tx *gorm.DB, ref CatalogSub
 	if s == nil || s.Now == nil || ref.OrgID == 0 || ref.KeyID == 0 {
 		return zero, ErrCatalogInvalid
 	}
-	at := s.Now().UTC()
-	subject, err := identity.ReadRoutingCandidateSubjectTx(ctx, tx, ref.OrgID, ref.KeyID, at)
+	subject, err := s.readOfficialActionSubjectTx(ctx, tx, ref)
+	if err != nil {
+		return zero, err
+	}
+	observed, err := subject.membership.Observation()
 	if err != nil {
 		return zero, catalogError(ctx, err)
 	}
-	if !subject.Found || !subject.KeyActive || subject.KeyExpired || !subject.PrincipalActive || subject.OrgID != ref.OrgID || subject.KeyID != ref.KeyID || subject.Mode != "legacy" || subject.RoutingGroupID != nil || subject.KeyPolicyVersion == 0 {
-		return zero, ErrCatalogDenied
-	}
-	out := CatalogObservation{CheckedAt: at, Models: []CatalogModel{}, validatedSubject: true, modelLimits: subject.ModelLimits}
+	at := observed.CheckedAt
+	out := CatalogObservation{CheckedAt: at, Models: []CatalogModel{}, subject: subject}
 	configs, err := catalogConfigs(ctx, tx)
 	if err != nil {
 		return zero, err
@@ -277,7 +279,12 @@ func (s *Service) ReadCatalogTx(ctx context.Context, tx *gorm.DB, ref CatalogSub
 			return zero, catalogError(ctx, err)
 		}
 		row.Capabilities.PortraitAssets = portraits[cfg.ProviderScopeID]
-		row.Actions = catalogActions(subject, policy, policyExists, row.Publication.Status != "blocked", channelMap[cfg.ChannelID].HasUsableCredential)
+		facts := officialActionFacts{published: row.Publication.Status != "blocked", credential: channelMap[cfg.ChannelID].HasUsableCredential, policyExists: policyExists, policy: policy}
+		row.Actions = CatalogActions{
+			ModelsRead: officialActionDecision(subject, cfg.PublicModel, cfg.ChannelID, officialModelsRead, facts),
+			Estimate:   officialActionDecision(subject, cfg.PublicModel, cfg.ChannelID, officialEstimate, facts),
+			Create:     officialActionDecision(subject, cfg.PublicModel, cfg.ChannelID, officialCreate, facts),
+		}
 		out.Models = append(out.Models, row)
 	}
 	if ctx.Err() != nil {
