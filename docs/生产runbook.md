@@ -4,7 +4,7 @@
 > 本文回答"生产上怎么配、怎么验证、出事怎么查"，不重复架构决策。
 > 创建于 2026-07-04（商用迭代指令 P1-2）；每次部署拓扑变化必须同步更新。
 
-2026-10-21 Seedance 发版准备请先读[当前线上发版方案](production-release-plan-20261021.md)：包含最新 PR 边界、0049–0121 升级评估、固定镜像切换、价格模板与新默认值区别、停写/恢复和未完成的放行门禁。该方案尚未执行远程部署，旧主机记录不能替代现场盘点。
+2026-10-25 测试机与生产机分工请先读[测试机构建与 Zot 晋级流程](zot-release-pipeline.md)：`laiai-release` 构建并在独立库验收，`laiai-pod` 只拉受测 main 的固定 digest。本文和脚本说明不替代某次实际部署记录。历史 [2026-10-21 发版方案](production-release-plan-20261021.md) 保留当时的 0049–0121 升级评估与门禁背景；每次发布仍需重新盘点运行版本与 schema。
 
 ## 1. 边缘 IP 信任链（P1-2，上线门禁）
 
@@ -68,9 +68,10 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
 
 ## 2. 部署纪律（既有约定的操作面）
 
-当前生产发布入口为 [`infra/release.sh`](../infra/release.sh)，支持 `compare/preflight/backup/build/deploy/open/release/verify/status/rollback`，使用方法见[脚本手册](production-release-cli.md)。旧 `deploy.sh` 不用于本次受控升级。脚本针对已有单 core/Caddy 的 Compose 项目执行升级，不负责从空服务器创建业务库；配置、main 审核与现场验收先准备齐。
+当前生产发布入口为 [`infra/release.sh`](../infra/release.sh)，支持 `compare/preflight/backup/build/pull/deploy/open/release/verify/status/rollback`，使用方法见[脚本手册](production-release-cli.md)。Zot 生产模式配置 `IMAGE_SOURCE=registry`，使用 `pull`；兼容保留的 `IMAGE_SOURCE=build` 才使用 `build`。旧 `deploy.sh` 不用于受控升级。脚本针对已有单 core/Caddy 的 Compose 项目执行升级，不负责从空服务器创建业务库；配置、main 审核与现场验收先准备齐。
 
-- **镜像内容锁定**：常规生产叠加 `docker-compose.prod.yml`，`MYSQL_IMAGE`/`REDIS_IMAGE` 填 RepoDigest 形式（.env.example 有取值命令）。2026-10-21 已核对的服务器源码构建方案使用明确锁住四个服务的 `local-images.yml` 替代该 overlay：core/Caddy 为已验收本地 image ID，MySQL/Redis 为现有 RepoDigest，均不自动拉取。按[服务器构建流程](server-source-build.md)保存并核对实际清单；`infra/release-manifest.sh generate/diff` 仅辅助，还需补项目过滤、完整配置与未跟踪文件检查。
+- **镜像内容锁定**：Zot 模式的 core/Caddy 必须来自受信任制品清单，绑定相同完整 main 提交与隔离验收报告。生产按 registry digest 拉取、校验平台和 OCI revision，再按本机已核验 image ID 切换，禁止可变 `latest`、生产重编译和覆盖旧 tag。测试机 `laiai-publish` 账号仅允许 `laiai/**` 的 `read/create`，禁止 `update/delete`；生产 `laiai-pull` 账号仅允许同范围的 `read`。跨机 HTTP Zot 通过已验证 SSH 隧道传输。原源码构建流程仍可显式使用，但不能中途切换模式。MySQL/Redis 保持现有镜像与卷；任何模式均保存双版本镜像、实际运行配置及恢复材料。
+- **隔离测试**：测试库、Redis、认证密钥与生产分离，不导入生产配置、不配置真实供应商凭据。先完成注册登录、余额、令牌/视频开通权限、租户隔离、迁移与前端静态产物检查；清单中的 `paid_calls` 为 0。测试报告不代替生产维护后的实际配置与账务验收。
 - **迁移**：容器 entrypoint 自动跑 `/app/migrate`（重试 ~60s，失败容器退出）；大版本前先跑
   `make migrate-smoke`（真 MySQL apply×2 幂等 + schema-doctor 漂移体检）。
 - **多副本**：`docker compose up -d --scale core=N`；core 无 container_name，Caddy dynamic a 自动跟随。

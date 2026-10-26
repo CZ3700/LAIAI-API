@@ -1,10 +1,10 @@
 # 生产发布命令
 
-入口为 `infra/release.sh`，目标分支固定为 `main`。它把版本比较、预检、加密备份、服务器源码构建、维护发布和应用回退拆为可单独执行的阶段；`release` 顺序执行完整流程，遇到缺少验收证据时会停在对应门禁。没有 GHCR 登录要求，也没有独立的前端镜像：前端在 Caddy 镜像的构建阶段执行 `npm ci`、`npm run build`，产物仍在镜像 `/srv/console`。
+入口为 `infra/release.sh`，目标分支固定为 `main`。它把版本比较、预检、加密备份、镜像准备、维护发布和应用回退拆为可单独执行的阶段；`release` 顺序执行完整流程，遇到缺少验收证据时会停在对应门禁。`IMAGE_SOURCE=registry` 使用测试机已验收、发布到 Zot 的双镜像，生产只拉取 digest；`IMAGE_SOURCE=build` 保留原有服务器源码构建方式（兼容默认值）。没有 GHCR 登录要求，也没有独立的前端镜像：前端在 Caddy 镜像的构建阶段执行 `npm ci`、`npm run build`，产物仍在镜像 `/srv/console`。
 
-**交付脚本不表示已在生产执行。** 2026-10-21 核对的生产 checkout 为 `main@e4eb84f`；本脚本依赖的 [PR #44](https://github.com/CZ3700/LAIAI-API/pull/44) 及相关功能在准备本方案时尚未合入正式 `main`。先将所需功能与本脚本合入正式 `main`，核验固定提交的 CI，再创建发布计划，不能把正在评审的功能分支直接当作 `main` 发布。既有账务差异、容量、密钥和业务验收门禁仍须完成；脚本不会因为准备了备份就自动放行这些门禁。
+**交付脚本不表示已在生产执行。** 2026-10-21 的初版方案以当时的 `main@e4eb84f` 和待合入的 [PR #44](https://github.com/CZ3700/LAIAI-API/pull/44) 为背景，不代表当前线上版本。每次发布都须重新核验 main、实际运行版本和固定提交的 CI，再创建发布计划；不能把正在评审的功能分支直接当作 main 发布。既有账务差异、容量、密钥和业务验收门禁仍须完成。
 
-配套资料：[服务器构建说明](server-source-build.md)、[当前发版计划](production-release-plan-20261021.md)、[恢复演练记录](release-rehearsal-20261021.md)、[生产 runbook](生产runbook.md)。有冲突时先核对同一版本的脚本和部署现场，不能跳过检查继续。
+配套资料：[测试机构建与 Zot 晋级](zot-release-pipeline.md)、[服务器构建说明](server-source-build.md)、[2026-10-21 发版计划](production-release-plan-20261021.md)、[恢复演练记录](release-rehearsal-20261021.md)、[生产 runbook](生产runbook.md)。有冲突时先核对同一版本的脚本和部署现场，不能跳过检查继续。
 
 ## 1. 安装与首次配置
 
@@ -31,14 +31,18 @@ bash infra/release.sh --help
 | `CADDYFILE` | 经核验的生产 Caddyfile 路径 |
 | `PUBLIC_ORIGIN` | 验收的公网 HTTPS 入口 |
 | `BACKUP_KEY_FILE` | 受限的备份加密密钥文件；密钥需有独立受限副本，不能只放在同一故障磁盘 |
-| `GO_IMAGE`、`ALPINE_IMAGE`、`NODE_IMAGE`、`CADDY_BASE_IMAGE` | 对应目标 Dockerfile 的真实基础镜像 digest；空值或浮动 tag 不能作为构建依据 |
+| `IMAGE_SOURCE` | `registry`：只拉测试机受测镜像；`build`：服务器源码构建，兼容默认值。模式进入发布计划，不能中途更换 |
+| `ARTIFACT_MANIFEST` | registry 必填，root 安全传输的受信任制品 JSON；完整文件 hash 绑定到预检计划 |
+| `REGISTRY_AUTHORITY` | registry 必填，例如隧道端点 `127.0.0.1:15000`，不含协议或路径；地址来自管理员配置，不由清单指定 |
+| `DOCKER_CONFIG` | 可显式 `export` 独立 Docker 登录目录；`config.json` 为 root 受限文件，其 hash 进入计划。生产使用 Zot 只读账号 |
+| `GO_IMAGE`、`ALPINE_IMAGE`、`NODE_IMAGE`、`CADDY_BASE_IMAGE` | 仅 build 模式要求，对应目标 Dockerfile 的真实基础镜像 digest；registry 模式不编译，不要求填写 |
 | `MIN_FREE_MB`、`MIN_AVAILABLE_MB` | 磁盘及可用内存的最低门槛；默认 8192 MiB、1024 MiB，需要根据实际备份和构建规模评估 |
 | `CHECK_HOOK` | 可选绝对路径覆盖；默认使用随入口交付的 `release/check-approval.sh`，校验 `approve` 登记的阶段证据，无需自行编程 |
 | `CI_CHECK_HOOK` | 可选绝对路径覆盖；默认使用 `release/check-github-ci.sh`，经 GitHub CLI 查询目标完整 SHA 的 `main` push CI；服务器须有可读该仓库 Actions 的既有 `gh` 授权 |
 
 2026-10-21 的服务器采样仅余约 2.35 GiB 磁盘、866 MiB 可用内存，低于上述默认门槛。脚本不会自动 `prune`、删除旧镜像或清理业务卷；先完成容量准备，再重新预检。提高资源门槛可以收紧检查，降低门槛不能证明资源已经足够。
 
-基础镜像固定引用与服务器构建的候选镜像身份不同：基础镜像使用 `repository@sha256:…`，候选 core/Caddy 使用构建后核验的本地 `sha256:…` image ID。镜像 tag 仅便于寻找，不承担最终版本锁定。MySQL、Redis 沿用原有镜像及原有卷。
+基础镜像固定引用与本机候选镜像身份不同。build 模式的基础镜像使用 `repository@sha256:…`，候选 core/Caddy 使用构建后核验的本地 `sha256:…` image ID。registry 模式先校验受测清单与远端 digest，拉取后检查平台、完整 revision 与 RepoDigests，再记录本机 image ID。跨机身份以 registry digest 为准，不能比较两台机器的 image ID 代替远端核验。镜像 tag 仅便于寻找。MySQL、Redis 沿用原有镜像及原有卷。
 
 ## 2. 参数与阶段
 
@@ -52,9 +56,10 @@ bash infra/release.sh --config /etc/laiai/release.conf approve --release 发布I
 | `compare` | 比较远端 `main`、当前运行版本以及生产 checkout；只更新 `STATE_DIR` 的独立 Git 缓存，不修改生产工作目录，不构建、不重启 |
 | `preflight` | 核查环境、版本与门禁并创建固定发布计划；使用 `--release` 复核既有计划，已构建的镜像记录不会被重写 |
 | `backup` | 为选定发布保存加密备份、原配置与旧镜像恢复材料；在线准备备份不能代替停写后的最终备份 |
-| `build` | 从计划固定的完整 SHA 串行构建 core/Caddy；即使远端 `main` 已前进，也不暗中改用新提交 |
+| `build` | 仅 build 模式：从计划固定的完整 SHA 串行构建 core/Caddy；即使远端 main 已前进，也不暗中改用新提交。registry 模式禁止此命令 |
+| `pull` | 仅 registry 模式：按受信任清单拉取 core/Caddy 固定 digest，校验完整提交、平台、受测报告与镜像身份；不编译、不重启 |
 | `deploy` | 再核验版本、镜像、配置和现场基线，进入维护流程后迁移、回填、切换并尝试放行；发现漂移或缺少证据即停止 |
-| `release` | 串行执行预检、备份、构建、部署并尝试开放入口；恢复既有计划时跳过已成功的备份/构建，已部署时转为 `open`；缺证据即停止 |
+| `release` | 串行执行预检、备份、构建或拉取、部署并尝试开放入口；恢复既有计划时跳过已成功的备份/镜像准备，已部署时转为 `open`；缺证据即停止 |
 | `verify` | 检查指定发布的运行版本、账务约束、迁移版本与 HTTPS 健康；这些检查不能代替业务验收 |
 | `status` | 查看指定发布记录和当前阶段，失败后先用此命令定位，再按失败原因处理 |
 | `rollback` | 恢复记录中的旧应用镜像及原配置；不恢复旧数据库，不执行 SQL 降级 |
@@ -80,12 +85,14 @@ bash infra/release.sh --config /etc/laiai/release.conf preflight
 RELEASE_ID='替换为预检返回的发布ID'
 bash infra/release.sh --config /etc/laiai/release.conf status --release "$RELEASE_ID"
 bash infra/release.sh --config /etc/laiai/release.conf backup --release "$RELEASE_ID"
-bash infra/release.sh --config /etc/laiai/release.conf build --release "$RELEASE_ID"
+bash infra/release.sh --config /etc/laiai/release.conf pull --release "$RELEASE_ID"
 ```
+
+上例针对 Zot registry 模式。若配置明确为旧 build 模式，最后一步使用 `build`，不能把两种命令混用。registry 模式先按[Zot 晋级流程](zot-release-pipeline.md)完成测试机验收、双镜像发布、受信任清单传输及只读登录；配置的 main 与清单完整提交必须相同。
 
 预检计划固定目标 SHA、当前应用与数据服务身份及配置基线，同时冻结现场实际运行的 Compose 配置、环境、命令、卷和网络。恢复配置不是根据旧 checkout 猜测生成；含秘密的快照保存为受限目录中的 0600 文件，并纳入加密配置备份。阶段日志只输出安全摘要。
 
-构建在独立发布目录进行，不覆盖线上 checkout、`.env`、证书或数据卷；不调用旧 `deploy.sh` 的整栈 `up --build`。构建失败不会切换应用，也不会自动清理已生成的恢复材料。
+镜像准备不覆盖线上 checkout、`.env`、证书或数据卷；不调用旧 `deploy.sh` 的整栈 `up --build`。registry 拉取失败或 build 构建失败都不会切换应用，也不会自动清理已生成的恢复材料。
 
 部署前再次核对计划。实际完成维护前验收并保存报告后，登记该阶段证据：
 
@@ -121,7 +128,7 @@ bash infra/release.sh --config /etc/laiai/release.conf open --release "$RELEASE_
 bash infra/release.sh --config /etc/laiai/release.conf release
 ```
 
-新建发布尚无绑定其 ID 的验收记录，执行会在需要批准的门禁停下，并保留发布记录。按实际阶段完成验收和 `approve` 后继续，不需要再次构建已经验证的产物。已有经审核的发布计划时：
+新建发布尚无绑定其 ID 的验收记录，执行会在需要批准的门禁停下，并保留发布记录。按实际阶段完成验收和 `approve` 后继续，不需要重新准备已经验证的镜像。已有经审核的发布计划时：
 
 ```bash
 bash infra/release.sh --config /etc/laiai/release.conf release --release "$RELEASE_ID" --yes
@@ -129,9 +136,9 @@ bash infra/release.sh --config /etc/laiai/release.conf release --release "$RELEA
 
 `release` 会尝试完成 `open`；如果候选验收尚未批准，就保持维护并以失败状态停在门禁。此时登记 `before-open` 后执行 `open`，不要用修改发布记录或换一个发布 ID 的方法跳过验收。
 
-重复 `release --release` 仅跳过已有成功记录的备份和构建；候选已经部署时直接执行放行检查。它不是任意失败后的无条件重试：迁移已开始但尚未部署时，先查看失败阶段和数据库状态，按恢复流程处理，脚本不会自动重复迁移或覆盖旧备份。
+重复 `release --release` 仅跳过已有成功记录的备份和对应模式的镜像准备（`build.ok` 或 `pull.ok`）；候选已经部署时直接执行放行检查。它不是任意失败后的无条件重试：迁移已开始但尚未部署时，先查看失败阶段和数据库状态，按恢复流程处理，脚本不会自动重复迁移或覆盖旧备份。
 
-服务器需要能够访问源码、固定基础镜像和 Go/npm 依赖；“不依赖 GHCR”不等于首次构建完全离线。完整流程包含维护窗口，不能视作零停机发布。部署过程中保留现有 MySQL、Redis 容器和卷，只切换应用服务。
+生产 registry 模式需要访问 main/CI 和受信任 Zot，不访问 Go/npm 编译依赖；Go/npm 和固定构建基础镜像由测试机准备。旧 build 模式仍需要这些构建依赖。完整流程包含维护窗口，不能视作零停机发布。部署过程中保留现有 MySQL、Redis 容器和卷，只切换应用服务。
 
 ## 5. 业务门禁与验收
 

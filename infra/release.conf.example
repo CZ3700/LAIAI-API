@@ -15,6 +15,19 @@ CADDYFILE=/opt/laiai-next/infra/Caddyfile
 PUBLIC_ORIGIN=https://laiai.ai
 BACKUP_KEY_FILE=/root/.laiai-release-backup.key
 
+# Production pulls tested digest artifacts; build retains the original source workflow.
+IMAGE_SOURCE=build
+# Registry mode requires an operator-transferred root-owned manifest (mode 0600).
+# ARTIFACT_MANIFEST=/var/lib/laiai-release/artifacts/main-<12-char-commit>.json
+# Registry authority is trusted operator configuration, never supplied by a manifest.
+# An SSH tunnel can provide this loopback endpoint without exposing registry credentials.
+# REGISTRY_AUTHORITY=127.0.0.1:15000
+# Optional dedicated root-owned Docker auth configuration (config.json mode 0600).
+# export DOCKER_CONFIG=/etc/laiai/zot/docker
+ARTIFACT_MANIFEST=
+REGISTRY_AUTHORITY=
+
+# The four build images below are required only for IMAGE_SOURCE=build.
 # 必须填写经核验的 repository@sha256:<64 位十六进制 digest>。
 # 留空会阻止构建；本示例不提供猜测值，也不自动追踪 latest/tag。
 # 当前 Dockerfile 对应 golang:1.26-alpine、alpine:3.21、node:22-alpine、caddy:2-alpine；
