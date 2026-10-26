@@ -55,15 +55,7 @@ func (k *APIKey) AllowsModel(model string) bool {
 	if !k.validLegacyRouting() {
 		return false
 	}
-	if strings.TrimSpace(k.ModelLimits) == "" {
-		return true
-	}
-	for _, m := range strings.Split(k.ModelLimits, ",") {
-		if strings.TrimSpace(m) == model {
-			return true
-		}
-	}
-	return false
+	return LegacyModelAllowed(k.ModelLimits, model)
 }
 
 // AllowsIP 返回调用方 IP 是否在白名单内（空=不限）。支持精确 IP 与 CIDR。

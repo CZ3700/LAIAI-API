@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
@@ -168,65 +170,76 @@ func loadVideoPricingProjection(tx *gorm.DB, configs []video.ModelConfig, channe
 	if len(configs) == 0 {
 		return out, nil
 	}
-	var scopes []video.ProviderScope
-	var rules []videobilling.PricingRule
-	var sets []videobilling.MinimumRuleSet
-	var cells []videobilling.MinimumRuleCell
-	models := []string{}
+	if tx == nil || tx.Statement == nil {
+		return nil, video.ErrCatalogInvalid
+	}
+	ctx := tx.Statement.Context
+	type preparedConfig struct {
+		config      video.ModelConfig
+		publication video.PublicationCapability
+	}
+	prepared := []preparedConfig{}
+	refs := []videobilling.CatalogTariffRef{}
 	scopeIDs := []uint64{}
+	seenScope := map[uint64]bool{}
 	for _, cfg := range configs {
-		models = append(models, cfg.PublicModel)
-		scopeIDs = append(scopeIDs, cfg.ProviderScopeID)
-	}
-	if e := tx.Where("id IN ?", scopeIDs).Find(&scopes).Error; e != nil {
-		return nil, e
-	}
-	// Include every active version to detect overlaps, but never scan expired
-	// historical tariffs or unrelated scopes for each public catalog request.
-	if e := tx.Where("model IN ? AND provider_scope_id IN ? AND enabled = ? AND effective_from <= ? AND (effective_until IS NULL OR effective_until > ?)", models, scopeIDs, true, now, now).Find(&rules).Error; e != nil {
-		return nil, e
-	}
-	versions := []string{}
-	for _, p := range rules {
-		if p.InputVideo && p.MinimumRuleVersion != "" {
-			versions = append(versions, p.MinimumRuleVersion)
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-	}
-	if len(versions) > 0 {
-		if e := tx.Where("model IN ? AND version IN ?", models, versions).Find(&sets).Error; e != nil {
-			return nil, e
-		}
-		ids := []uint64{}
-		for _, set := range sets {
-			ids = append(ids, set.ID)
-		}
-		if len(ids) > 0 {
-			if e := tx.Where("rule_set_id IN ?", ids).Find(&cells).Error; e != nil {
-				return nil, e
-			}
-		}
-	}
-	for _, cfg := range configs {
 		d := emptyPricing("video")
-		d.Unit = "USD/1M_video_tokens"
-		d.Status = "blocked"
-		d.Endpoints = []string{"/v1/video/generations"}
+		d.Unit, d.Status, d.Endpoints = "USD/1M_video_tokens", "blocked", []string{"/v1/video/generations"}
 		projection := videoPricingProjection{Config: cfg, Pricing: d}
-		out[cfg.PublicModel] = projection
-		if !ark.IsPublicModel(cfg.PublicModel) {
-			continue
-		}
 		if !cfg.Enabled {
 			projection.Pricing.Status = "disabled"
-			out[cfg.PublicModel] = projection
+		}
+		out[cfg.PublicModel] = projection
+		if !video.IsOfficialPublicModel(cfg.PublicModel) || !cfg.Enabled || cfg.VerifiedAt == nil || cfg.ProviderScopeID == 0 || cfg.PricingVersion == "" || len(cfg.PricingVersion) > 64 {
+			continue
+		}
+		publication, err := video.ParsePublicationCapability(cfg)
+		if errors.Is(err, video.ErrCatalogLimit) {
+			return nil, err
+		}
+		if err != nil {
 			continue
 		}
 		var cap ark.Capability
-		var bounds map[string]video.Dimensions
-		if cfg.Version == "" || cfg.VerifiedAt == nil || json.Unmarshal([]byte(cfg.CapabilityJSON), &cap) != nil || json.Unmarshal([]byte(cfg.BoundsJSON), &bounds) != nil || validateVideoCapability(cfg, cap, bounds) != nil {
+		if json.Unmarshal([]byte(cfg.CapabilityJSON), &cap) != nil || !cap.Enabled || !cap.Verified {
 			continue
 		}
 		projection.Capability = cap
+		out[cfg.PublicModel] = projection
+		prepared = append(prepared, preparedConfig{cfg, publication})
+		refs = append(refs, videobilling.CatalogTariffRef{ProviderScopeID: cfg.ProviderScopeID, Model: cfg.PublicModel, PricingVersion: cfg.PricingVersion})
+		if !seenScope[cfg.ProviderScopeID] {
+			seenScope[cfg.ProviderScopeID] = true
+			scopeIDs = append(scopeIDs, cfg.ProviderScopeID)
+		}
+	}
+	if len(prepared) == 0 {
+		return out, nil
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].ProviderScopeID != refs[j].ProviderScopeID {
+			return refs[i].ProviderScopeID < refs[j].ProviderScopeID
+		}
+		return refs[i].Model < refs[j].Model
+	})
+	sort.Slice(scopeIDs, func(i, j int) bool { return scopeIDs[i] < scopeIDs[j] })
+	var scopes []video.ProviderScope
+	if err := tx.Where("id IN ?", scopeIDs).Find(&scopes).Error; err != nil {
+		return nil, err
+	}
+	tariffs, err := videobilling.ReadCatalogTariffsTx(ctx, tx, refs, now)
+	if err != nil {
+		return nil, err
+	}
+	for _, current := range prepared {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		cfg, publication := current.config, current.publication
+		projection := out[cfg.PublicModel]
 		var scope *video.ProviderScope
 		for i := range scopes {
 			if scopes[i].ID == cfg.ProviderScopeID {
@@ -244,72 +257,43 @@ func loadVideoPricingProjection(tx *gorm.DB, configs []video.ModelConfig, channe
 				break
 			}
 		}
-		if channel == nil || channel.Status != 1 || channel.OwnerOrgID != 0 || (channel.Provider != "volcengine" && channel.Provider != "modelark") || channel.BaseURL != "https://ark.cn-beijing.volces.com/api/v3" {
+		if channel == nil || !video.PublicationChannelUsable(relay.VideoCatalogChannel{
+			ID: channel.ID, PlatformOwned: channel.OwnerOrgID == 0, Enabled: channel.Status == 1,
+			OfficialArkEndpoint: strings.TrimRight(channel.BaseURL, "/") == "https://ark.cn-beijing.volces.com/api/v3", Provider: channel.Provider,
+		}) {
 			continue
 		}
 		projection.Provider = channel.Provider
-		active := map[string][]videobilling.PricingRule{}
-		for _, p := range rules {
-			if p.Model == cfg.PublicModel && p.ProviderScopeID == cfg.ProviderScopeID && p.Enabled && !p.EffectiveFrom.After(now) && (p.EffectiveUntil == nil || p.EffectiveUntil.After(now)) {
-				k := priceCellKey(cellFromRule(p))
-				active[k] = append(active[k], p)
-			}
+		billingContext, err := publication.BillingContext(*scope)
+		if err != nil {
+			out[cfg.PublicModel] = projection
+			continue
 		}
-		for k, matching := range active {
-			if len(matching) != 1 {
+		cells := publication.Cells()
+		allMissing := len(cells) > 0
+		for _, cell := range cells {
+			key := videobilling.PricingKey{ProviderScopeID: scope.ID, Model: cfg.PublicModel, Mode: cell.Mode, Resolution: cell.Resolution, InputVideo: cell.InputVideo, ServiceTier: cell.ServiceTier, Draft: cell.Draft}
+			result, err := tariffs.Evaluate(key, billingContext)
+			if err != nil {
+				return nil, err
+			}
+			if len(result.Reasons) != 1 || result.Reasons[0] != videobilling.CatalogTariffPricingMissing {
+				allMissing = false
+			}
+			if result.Price == nil {
 				continue
 			}
-			p := matching[0]
-			c := cellFromRule(p)
-			if p.Version != cfg.PricingVersion || !priceCellSupported(c, cap) {
-				continue
-			}
-			minimum, e := videobilling.CatalogMinimumTokens(p, sets, cells, videobilling.MinimumContext{Ratios: cap.Ratios, MinDuration: cap.MinDuration, MaxDuration: cap.MaxDuration}, int64(cap.FPS))
-			if e != nil {
-				continue
-			}
-			p.MinimumTokens = minimum
-			fx, e := decimal.NewFromString(scope.FXUSDPerCNY)
-			if e != nil {
-				continue
-			}
-			valid := true
-			domain := 0
-			for _, ratio := range cap.Ratios {
-				if ratio == "adaptive" {
-					continue
-				}
-				dim := bounds[c.Resolution+"/"+ratio]
-				domain++
-				meter := videobilling.MeteringInput{InputVideo: c.InputVideo, OutputDurationMS: int64(cap.MaxDuration) * 1000, Width: dim.Width, Height: dim.Height, FPSNumerator: int64(cap.FPS), FPSDenominator: 1, BoundsVerified: true, CapabilityVersion: cap.Version, EffectiveRatio: decimal.NewFromInt(1), FXUSDPerCNY: fx, FXVersion: scope.FXVersion, FXObservedAt: scope.FXObservedAt}
-				if c.InputVideo {
-					meter.InputDurationMS = cfg.MaxInputVideoDurationMS
-				}
-				if _, e := videobilling.Quote(p, meter); e != nil {
-					valid = false
-					break
-				}
-			}
-			if !valid || domain == 0 {
-				continue
-			}
-			projection.Pricing.Combinations = append(projection.Pricing.Combinations, pricingCombination{k, p.Mode, p.Resolution, p.InputVideo, p.ServiceTier, p.Draft, p.RetailUSDPer1M.String()})
+			projection.Pricing.Combinations = append(projection.Pricing.Combinations, pricingCombination{cell.Key(), cell.Mode, cell.Resolution, cell.InputVideo, cell.ServiceTier, cell.Draft, result.Price.RetailUSDPer1M.String()})
 		}
 		sort.Slice(projection.Pricing.Combinations, func(i, j int) bool {
 			return projection.Pricing.Combinations[i].Key < projection.Pricing.Combinations[j].Key
 		})
 		if len(projection.Pricing.Combinations) > 0 {
 			projection.Pricing.Status = "published"
-			expected := 0
-			for _, c := range priceMatrix(cap, nil) {
-				if c.Available {
-					expected++
-				}
-			}
-			if len(projection.Pricing.Combinations) < expected {
+			if len(projection.Pricing.Combinations) < len(cells) {
 				projection.Pricing.Status = "partial"
 			}
-		} else if len(active) == 0 {
+		} else if allMissing {
 			projection.Pricing.Status = "missing"
 		}
 		out[cfg.PublicModel] = projection

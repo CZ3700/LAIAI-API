@@ -215,7 +215,10 @@ func TestPricingPrepareDefaultsNewRiskAndPreservesConfiguredFactor(t *testing.T)
 
 func TestPublicVideoPricingOnlyCanonicalSellableAndNoInternalFields(t *testing.T) {
 	f, db, _ := pricingCatalogFixture(t)
-	f.srv.video = &video.Service{}
+	f.srv.video = &video.Service{DB: db, Now: time.Now}
+	if e := db.Exec(`CREATE TABLE video_org_policies(org_id INTEGER PRIMARY KEY,async_execution_allowed BOOLEAN NOT NULL,capture_history BOOLEAN NOT NULL,retention_days INTEGER NOT NULL,updated_at DATETIME NOT NULL);`).Error; e != nil {
+		t.Fatal(e)
+	}
 	// A misleading generic price for an upstream alias must not bypass official admission.
 	if e := db.Create(&relay.ModelPrice{Model: "official-alias", OutputUSDPer1M: decimal.NewFromInt(1)}).Error; e != nil {
 		t.Fatal(e)
@@ -250,7 +253,7 @@ func TestPublicVideoPricingOnlyCanonicalSellableAndNoInternalFields(t *testing.T
 	if e := db.Exec("INSERT INTO organizations(id,slug,name,status) VALUES(1,'catalog','catalog',1)").Error; e != nil {
 		t.Fatal(e)
 	}
-	key, _, e := identity.IssueKey(db, identity.IssueKeyInput{OrgID: 1, ModelLimits: ark.Model20})
+	key, _, e := identity.IssueKey(db, identity.IssueKeyInput{OrgID: 1, ModelLimits: ark.Model20, Scopes: "video:read"})
 	if e != nil {
 		t.Fatal(e)
 	}

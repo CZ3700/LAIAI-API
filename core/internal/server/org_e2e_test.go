@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/laiai/laiai-next/core/internal/video"
 )
 
 // 注册 + 登录，返回 session token
@@ -183,7 +186,20 @@ func TestTeamKeysAndBillingIsolation(t *testing.T) {
 }
 
 func TestModelsListEndpoint(t *testing.T) {
-	srv, _ := setupRelayServer(t)
+	srv, db := setupRelayServer(t)
+	// SDK discovery now reads generic and video models through one catalog
+	// transaction. This legacy generic-only fixture has no configured video
+	// models, but still needs the real catalog service and its empty table.
+	if err := db.Exec(`CREATE TABLE video_model_configs(
+		public_model TEXT PRIMARY KEY, version TEXT NOT NULL, provider_scope_id INTEGER NOT NULL,
+		channel_id INTEGER NOT NULL, enabled INTEGER NOT NULL, capability_json TEXT NOT NULL,
+		pricing_version TEXT NOT NULL, no_charge_statuses TEXT NOT NULL,
+		max_input_video_duration_ms INTEGER NOT NULL, bounds_json TEXT NOT NULL,
+		verified_at DATETIME, updated_at DATETIME NOT NULL
+	)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	srv.srv.video = &video.Service{DB: db, Now: time.Now}
 	up := mockUpstreamJSON(t, 1, 1)
 	defer up.Close()
 	setupChannelAndPrice(t, srv, up.URL) // test-model 有活跃渠道
