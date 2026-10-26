@@ -13,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/invocation"
@@ -295,7 +294,9 @@ func TestMySQLMutationProducerPreparationCooldownDoesNotBlockSuccessor(t *testin
 		t.Fatal("healthy successor was not sent")
 	}
 	must(t, p.s.DB.Callback().Query().Remove(name))
-	p.now = p.now.Add(31 * time.Second)
+	expireFixturePreparationCooldown(t, p.s.DB, p.operation(t, op.ID))
+	_, currentState := p.rows(t)
+	makeFixtureProviderRateDue(t, p.s.DB, currentState.ProviderScopeID, "delete")
 	must(t, p.s.processMutation(context.Background(), op))
 	if p.deletes.Load() != 2 || p.operation(t, op.ID).ErrorCode == "action_prepare_deferred" {
 		t.Fatal("expired preparation cooldown did not permit genuine retry")

@@ -68,7 +68,7 @@ func responsePersistencePrioritizeExpiredAttempt(t *testing.T, f *fixture, id st
 		return supportedInboxRuntime(f.s.DB.WithContext(context.Background()).Table("video_execution_attempts ea").
 			Joins("JOIN video_operations o ON o.id = ea.operation_id AND o.org_id = ea.org_id AND o.resource_id = ea.task_id").
 			Joins("JOIN video_task_states v ON v.org_id = ea.org_id AND v.task_id = ea.task_id")).
-			Where("v.deleted_at IS NULL AND o.attempt_id = ea.attempt_id AND o.status = ? AND o.lease_until <= ?", "in_flight", f.now).
+			Where("v.deleted_at IS NULL AND o.attempt_id = ea.attempt_id AND o.status = ? AND o.lease_until <= UTC_TIMESTAMP(3)", "in_flight").
 			Where("NOT EXISTS (SELECT 1 FROM video_response_inbox r WHERE r.org_id = ea.org_id AND r.attempt_id = ea.attempt_id)").
 			Order("o.lease_until, ea.attempt_id")
 	}
@@ -77,7 +77,12 @@ func responsePersistencePrioritizeExpiredAttempt(t *testing.T, f *fixture, id st
 	if len(oldest) != 1 {
 		t.Fatal("fixture has no eligible response-free expired attempt")
 	}
-	must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, id, "create_task").Update("lease_until", oldest[0].LeaseUntil.Add(-time.Millisecond)).Error)
+	claim := runtimeWorkerCreateOperation(t, f, id)
+	updated := f.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ? AND resource_id = ? AND version = ? AND attempt_id = ?", claim.OrgID, claim.ID, claim.ResourceID, claim.Version, claim.AttemptID).UpdateColumn("lease_until", oldest[0].LeaseUntil.Add(-time.Millisecond))
+	must(t, updated.Error)
+	if updated.RowsAffected != 1 {
+		t.Fatal("priority fixture did not update its exact current claim")
+	}
 	var batch []ExecutionAttempt
 	must(t, query().Select("ea.*").Limit(30).Scan(&batch).Error)
 	if len(batch) == 0 || batch[0].OrgID != f.key.OrgID || batch[0].TaskID != id {
@@ -165,7 +170,7 @@ func TestMySQLResponsePersistenceExhaustionPausesAllSendingEntrypoints(t *testin
 	// Restoring database writes and disabling new inbox registrations do not
 	// clear the process latch. Existing GETs still run without dispatching any
 	// of the pending create/cancel/delete operations.
-	f.now = f.now.Add(4 * time.Minute)
+	expireFixtureOperationLease(t, f.s.DB, runtimeWorkerCreateOperation(t, f, lost.ID))
 	f.s.ResponseInboxEnabled = false
 	responsePersistencePrioritizeExpiredAttempt(t, f, lost.ID)
 	responsePersistencePrioritizeQuery(t, f, cancelTask.ID)
@@ -340,14 +345,15 @@ func TestMySQLResponsePersistencePauseStillRecoversDurableEvidence(t *testing.T)
 		}
 		return nil, errors.New("unexpected mutation during recovery")
 	}
-	f.now = f.now.Add(2 * time.Second)
+	makeFixtureTaskRateDue(t, f, lost.ID, "create")
 	failures, restore := responsePersistenceFailAppends(t, f)
 	err = f.s.processOperation(context.Background(), runtimeWorkerCreateOperation(t, f, lost.ID))
 	restore()
 	if !errors.Is(err, ErrResponseSaveUnconfirmed) || failures.Load() != 3 {
 		t.Fatal("recovery fixture did not latch a real failed response save", err)
 	}
-	f.now = f.now.Add(4 * time.Minute)
+	expireFixtureOperationLease(t, f.s.DB, runtimeWorkerCreateOperation(t, f, lost.ID))
+	expireFixtureOperationLease(t, f.s.DB, runtimeWorkerCreateOperation(t, f, inboxTask.ID))
 	f.s.ResponseInboxEnabled = false
 	responsePersistencePrioritizeInbox(t, f, inbox)
 	responsePersistencePrioritizeQuery(t, f, getTask.ID)
@@ -400,7 +406,7 @@ func TestMySQLResponsePersistenceApplicationFailureDoesNotPauseSending(t *testin
 	if !errors.Is(err, injected) || f.s.DispatchPaused() || responseInboxApp(t, f, r).State != "pending" || f.posts.Load() != 1 {
 		t.Fatal("application failure was mistaken for lost response persistence", err)
 	}
-	f.now = f.now.Add(4 * time.Minute)
+	expireFixtureOperationLease(t, f.s.DB, runtimeWorkerCreateOperation(t, f, v.ID))
 	responsePersistencePrioritizeInbox(t, f, r)
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	if responseInboxApp(t, f, r).State != "applied" || f.s.DispatchPaused() || f.posts.Load() != 1 {

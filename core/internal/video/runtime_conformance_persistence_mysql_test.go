@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/invocation"
@@ -86,7 +85,7 @@ func TestMySQLRuntimeHTTPCreatePersistence(t *testing.T) {
 				if op.LeaseUntil == nil {
 					t.Fatal("dispatch never created a real claim")
 				}
-				h.f.now = op.LeaseUntil.Add(time.Millisecond)
+				expireFixtureOperationLease(t, h.f.s.DB, op)
 				h.restart(t)
 				reads := responseInboxCount(t, h.f, &invocation.VideoPayloadAccess{}, "org_id = ?", h.f.key.OrgID)
 				apply := func() error {
@@ -177,7 +176,7 @@ func TestMySQLRuntimeHTTPNullableUsagePersistence(t *testing.T) {
 			if sample.name == "total_only" && (state.TotalTokens == nil || *state.TotalTokens != 11) {
 				t.Fatal("known total was lost while completion remained absent")
 			}
-			h.f.now = h.f.now.Add(11 * time.Second)
+			makeFixtureTaskQueryDue(t, h.f, h.id)
 			h.queryWithRecovery(t, 200, fmt.Sprintf(`{"id":%q,"status":"succeeded","usage":{"completion_tokens":0}}`, h.upstreamID))
 			h.settle(t, 0)
 			settled := h.funds(t)

@@ -111,12 +111,12 @@ func TestMySQLDeliveryLegacyReadBackfillAndExpiry(t *testing.T) {
 		t.Fatal("list refreshed or returned legacy media")
 	}
 	// Same scope's query slot is occupied by completion; denied refresh must
-	// remain local. Advancing the clock permits exactly one official GET.
+	// remain local. Expiring this exact DB rate permits one official GET.
 	w = deliveryRequest(f, r, "/v1/video/generations/"+v.ID)
 	if w.Code != 200 || f.gets.Load() != before {
 		t.Fatal("backfill bypassed query rate")
 	}
-	f.now = f.now.Add(2 * time.Second)
+	makeFixtureTaskRateDue(t, f, v.ID, "query")
 	w = deliveryRequest(f, r, "/v1/video/generations/"+v.ID)
 	var got TaskView
 	must(t, json.Unmarshal(w.Body.Bytes(), &got))
@@ -124,6 +124,9 @@ func TestMySQLDeliveryLegacyReadBackfillAndExpiry(t *testing.T) {
 		t.Fatal("backfill did not use one GET")
 	}
 	f.now = f.now.Add(25 * time.Hour)
+	// Keep the real delivery-retention clock advance; scheduling is a
+	// separate primary-time precondition, scoped to this task's provider.
+	makeFixtureTaskRateDue(t, f, v.ID, "query")
 	w = deliveryRequest(f, r, "/v1/video/generations")
 	if w.Code != 200 || strings.Contains(w.Body.String(), "content_url") || f.gets.Load() != before+1 {
 		t.Fatal("expired list capsule escaped")
@@ -170,7 +173,7 @@ func TestMySQLDeliveryRefreshDeletionAndIdentityFences(t *testing.T) {
 			f.dispatch(t, v.ID)
 			must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
 			must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Update("result_payload_ref", "").Error)
-			f.now = f.now.Add(2 * time.Second)
+			makeFixtureTaskRateDue(t, f, v.ID, "query")
 			f.response = func(*http.Request) (*http.Response, error) {
 				if mode == "deleted" {
 					must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Update("deleted_at", f.now).Error)

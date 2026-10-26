@@ -50,7 +50,7 @@ func TestMySQLHardeningFinancialFinalSurvivesLateAndMissingUsage(t *testing.T) {
 	f.dispatch(t, v.ID)
 	must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
 	// A new successful response without usage cannot clear known actual usage.
-	f.now = f.now.Add(11 * time.Second)
+	makeFixtureTaskQueryDue(t, f, v.ID)
 	f.response = func(*http.Request) (*http.Response, error) {
 		return reply(200, `{"id":"`+f.upstream(t, v.ID)+`","status":"succeeded"}`), nil
 	}

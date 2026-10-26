@@ -306,7 +306,7 @@ func TestMySQLExpiredCreateLeaseWithoutReceiptNeverResends(t *testing.T) {
 	// Simulate a process stopping after the claim transaction committed. There
 	// is no persisted proof of whether its network operation reached Ark.
 	must(t, f.s.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).Updates(map[string]any{"status": "in_flight", "version": op.Version + 1, "attempt_id": "att_" + v.ID, "lease_until": f.now.Add(3 * time.Minute)}).Error; err != nil {
+		if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).Updates(map[string]any{"status": "in_flight", "version": op.Version + 1, "attempt_id": "att_" + v.ID, "lease_until": gorm.Expr("DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 180 SECOND)")}).Error; err != nil {
 			return err
 		}
 		return tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Update("status", "submitting").Error
@@ -317,7 +317,8 @@ func TestMySQLExpiredCreateLeaseWithoutReceiptNeverResends(t *testing.T) {
 	if view.Status != "submitting" {
 		t.Fatal("unexpired lease was treated as abandoned")
 	}
-	f.now = f.now.Add(4 * time.Minute)
+	claimedLease := runtimeWorkerCreateOperation(t, f, v.ID)
+	expireFixtureOperationLease(t, f.s.DB, claimedLease)
 	must(t, f.s.recoverOperations(context.Background()))
 	must(t, f.s.recoverOperations(context.Background()))
 	must(t, f.s.processOperation(context.Background(), op))
@@ -416,8 +417,8 @@ func TestMySQLOperationDispatchRequiresCurrentClaim(t *testing.T) {
 				case "attempt":
 					updates["attempt_id"] = "att_replaced_" + v.ID
 				case "lease_expired", "lease_recovered":
-					// Equality is expired. No wall-clock sleep is needed.
-					f.now = claimed.LeaseUntil.UTC()
+					// Expire only the captured claim using database time.
+					expireFixtureOperationLease(t, f.s.DB, claimed)
 				}
 				if len(updates) > 0 {
 					must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).Updates(updates).Error)
@@ -478,7 +479,8 @@ func TestMySQLLateCreateReceiptSurvivesExpiredLeaseRecovery(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("worker did not enter its single provider request")
 	}
-	f.now = f.now.Add(4 * time.Minute)
+	claimedLease := runtimeWorkerCreateOperation(t, f, v.ID)
+	expireFixtureOperationLease(t, f.s.DB, claimedLease)
 	must(t, f.s.recoverOperations(context.Background()))
 	var recovered Operation
 	must(t, f.s.DB.Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).First(&recovered).Error)
@@ -560,7 +562,7 @@ func TestMySQLOperationDispatchGuardDatabaseFailureNeverSends(t *testing.T) {
 			if f.posts.Load() != postsBefore || deletes.Load() != 0 || after.Status != "in_flight" || after.ReceiptRef != "" || after.ReceiptAppliedAt != nil || holdAfter.Status != holdBefore.Status || !holdAfter.CapturedAmount.Equal(holdBefore.CapturedAmount) {
 				t.Fatal("permission read failure sent a request, fabricated a receipt or changed the hold")
 			}
-			f.now = after.LeaseUntil.UTC()
+			expireFixtureOperationLease(t, f.s.DB, after)
 			must(t, f.s.recoverOperations(context.Background()))
 			must(t, f.s.DB.Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).First(&after).Error)
 			must(t, f.s.processOperation(context.Background(), after))
@@ -575,19 +577,19 @@ func TestMySQLQueryCandidatesExcludeLiveLeasesBeforeBatchLimit(t *testing.T) {
 	f := mysqlFixture(t)
 	v := f.create(t, "query-candidate-after-leases")
 	f.dispatch(t, v.ID)
-	lease := f.now.Add(time.Minute)
+	lease := gorm.Expr("DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 60 SECOND)")
 	for i := 0; i < 40; i++ {
 		// A real accepted fixture supplies the supported runtime and its exact
 		// billing snapshot. Only the live lease may exclude this earlier row.
 		leased := f.create(t, fmt.Sprintf("query-leased-%02d", i))
 		must(t, f.s.DB.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, leased.ID).Updates(map[string]any{"status": "running", "upstream_task_id": "up_" + leased.ID}).Error)
-		must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, leased.ID).Updates(map[string]any{"next_poll_at": f.now.Add(-time.Minute), "query_lease_until": lease}).Error)
+		must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, leased.ID).Updates(map[string]any{"next_poll_at": gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND)"), "query_lease_until": lease}).Error)
 		must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, leased.ID, "create_task").Update("status", "confirmed").Error)
 	}
 	for _, boundary := range []string{"no_lease", "expired_lease"} {
 		var expiry any
 		if boundary == "expired_lease" {
-			expiry = f.now
+			expiry = gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND)")
 		}
 		must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Update("query_lease_until", expiry).Error)
 		var rows []State

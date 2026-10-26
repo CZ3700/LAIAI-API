@@ -41,7 +41,11 @@ func responseInboxRegister(t *testing.T, f *fixture, id string) (ExecutionAttemp
 		}
 		op.Version++
 		op.Status = "in_flight"
-		lease := f.now.Add(3 * time.Minute)
+		databaseNow, err := authorityFixtureNow(tx)
+		if err != nil {
+			return err
+		}
+		lease := databaseNow.Add(3 * time.Minute)
 		op.LeaseUntil = &lease
 		if err = tx.Model(&Operation{}).Where("org_id = ? AND id = ?", op.OrgID, op.ID).Updates(map[string]any{"status": op.Status, "version": op.Version, "attempt_id": op.AttemptID, "lease_until": lease}).Error; err != nil {
 			return err
@@ -93,7 +97,7 @@ func responseInboxApp(t *testing.T, f *fixture, receipt ResponseInbox) ReceiptAp
 func responseInboxMakeDue(t *testing.T, f *fixture, receipt ResponseInbox) {
 	t.Helper()
 	// Receipt scheduling uses DB time, independently of the fixture's
-	// deliberately advanced legacy lease clock. Avoid sleeps in recovery tests.
+	// input-retention clock. Avoid sleeps in recovery tests.
 	must(t, f.s.DB.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ?", receipt.OrgID, receipt.ReceiptID).Update("next_attempt_at", gorm.Expr("UTC_TIMESTAMP(3) - INTERVAL 1 SECOND")).Error)
 }
 
@@ -135,7 +139,7 @@ func TestMySQLResponseInboxDispatchedEvidenceSurvivesLostApplyPermission(t *test
 				case "version_changed":
 					must(t, f.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", current.OrgID, current.ID).Updates(map[string]any{"version": current.Version + 1, "status": "unknown"}).Error)
 				case "lease_expired":
-					f.now = current.LeaseUntil.UTC()
+					expireFixtureOperationLease(t, f.s.DB, current)
 				case "caller_cancelled":
 					cancel()
 				case "runtime_changed":
@@ -164,7 +168,10 @@ func TestMySQLResponseInboxDispatchedEvidenceSurvivesLostApplyPermission(t *test
 			if fault == "runtime_changed" {
 				must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Update("runtime_version", videoruntime.RuntimeV1).Error)
 			}
-			f.now = f.now.Add(4 * time.Minute)
+			currentClaim := runtimeWorkerCreateOperation(t, f, v.ID)
+			if currentClaim.LeaseUntil != nil {
+				expireFixtureOperationLease(t, f.s.DB, currentClaim)
+			}
 			f.s.ResponseInboxEnabled = false // Disabling writes must not disable recovery.
 			responseInboxMakeDue(t, f, receipt)
 			must(t, f.s.recoverResponseInbox(context.Background()))
@@ -252,7 +259,7 @@ func TestMySQLResponseInboxConflictingAcceptedEvidenceRequiresReview(t *testing.
 	if second.ReceiptID == first.ReceiptID || second.PayloadRef == first.PayloadRef {
 		t.Fatal("different evidence shared its invocation correlation or overwrote the receipt")
 	}
-	f.now = f.now.Add(4 * time.Minute)
+	responseInboxMakeDue(t, f, second)
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	var row task.Task
@@ -274,7 +281,7 @@ func TestMySQLResponseInboxUnknownThenAcceptedUsesTypedFactsWithoutHistory(t *te
 	must(t, f.s.applyClaimedCreateInbox(context.Background(), op, unknown.ReceiptID))
 	accepted := responseInboxAppend(t, f, attempt, responseInboxResult(ark.OutcomeAccepted, "up_"+v.ID))
 	reads := responseInboxCount(t, f, &invocation.VideoPayloadAccess{}, "org_id = ?", f.key.OrgID)
-	f.now = f.now.Add(4 * time.Minute)
+	responseInboxMakeDue(t, f, accepted)
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	must(t, f.s.recoverResponseInbox(context.Background()))
 	for _, receipt := range []ResponseInbox{unknown, accepted} {

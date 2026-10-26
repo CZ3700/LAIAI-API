@@ -37,20 +37,7 @@ func responseTransaction(tx *gorm.DB) error {
 }
 
 func responseDatabaseTimeTx(tx *gorm.DB) (time.Time, error) {
-	if err := responseTransaction(tx); err != nil {
-		return time.Time{}, err
-	}
-	var result struct{ DatabaseTime time.Time }
-	if tx.Dialector.Name() != "mysql" {
-		return time.Time{}, ErrUnavailable
-	}
-	if err := tx.Raw("SELECT UTC_TIMESTAMP(3) AS database_time").Scan(&result).Error; err != nil {
-		return time.Time{}, err
-	}
-	if result.DatabaseTime.IsZero() {
-		return time.Time{}, ErrUnavailable
-	}
-	return result.DatabaseTime.UTC().Truncate(time.Millisecond), nil
+	return authorityTimeTx(tx)
 }
 
 func (s *Service) validateResponseHashVersionTx(tx *gorm.DB, version string) error {

@@ -32,7 +32,7 @@ func TestMySQLMutationProducerCallerCancellationSavesAndFlagOffRecovers(t *testi
 				t.Fatal("caller cancellation discarded receipt, applied after cancellation or paused a durable save")
 			}
 			p.s.ResponseInboxEnabled, p.s.MutationResponseInboxEnabled = false, false
-			p.now = p.now.Add(4 * time.Minute)
+			expireFixtureOperationLease(t, p.s.DB, p.operation(t, op.ID))
 			prioritizeMutationReceipt(t, p.mutationConsumerFixture, r)
 			must(t, p.s.recoverMutationResponseInbox(context.Background()))
 			want := "unknown"
@@ -79,7 +79,8 @@ func TestMySQLMutationProducerGETWinsBeforeDeleteResponse(t *testing.T) {
 		t.Run(result, func(t *testing.T) {
 			p := newMutationProducerFixture(t, "")
 			op := p.pending(t, "cancel_task")
-			p.now = p.now.Add(11 * time.Second)
+			_, currentState := p.rows(t)
+			makeFixtureQueryDue(t, p.s.DB, p.key.OrgID, p.taskID, currentState.QuerySequence, false)
 			var afterGET string
 			p.respond = func(r *http.Request) (*http.Response, error) {
 				if r.Method == http.MethodGet {
@@ -195,14 +196,20 @@ func TestMySQLMutationProducerSaveFailurePausesSendsButAllowsGETAndRecovery(t *t
 	if !errors.Is(p.s.processMutation(context.Background(), other), ErrDispatchPaused) || p.deletes.Load() != 1 {
 		t.Fatal("next operation bypassed sticky pause")
 	}
-	p.now = p.now.Add(4 * time.Minute)
+	_, currentState := p.rows(t)
+	makeFixtureQueryDue(t, p.s.DB, p.key.OrgID, p.taskID, currentState.QuerySequence, false)
 	must(t, p.s.pollTask(context.Background(), p.key.OrgID, p.taskID))
 	if p.gets.Load() != 1 || p.funds(t) != before {
 		t.Fatal("pause blocked authoritative GET or changed funds")
 	}
 	// Put only this legitimate expired registration first; shared-suite rows
 	// are retained. No receipt is invented for the failed save.
-	must(t, p.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ?", p.key.OrgID, op.ID).Update("lease_until", time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)).Error)
+	current := expireFixtureOperationLease(t, p.s.DB, p.operation(t, op.ID))
+	priority := p.s.DB.Model(&Operation{}).Where("org_id = ? AND id = ? AND resource_id = ? AND version = ? AND attempt_id = ?", current.OrgID, current.ID, current.ResourceID, current.Version, current.AttemptID).UpdateColumn("lease_until", time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
+	must(t, priority.Error)
+	if priority.RowsAffected != 1 {
+		t.Fatal("fixture failed to prioritize its exact expired registration")
+	}
 	must(t, p.s.recoverMutationResponseInbox(context.Background()))
 	if p.operation(t, op.ID).Status != "unknown" || !p.s.DispatchPaused() || p.funds(t) != before || p.deletes.Load() != 1 {
 		t.Fatal("paused service did not recover no-response registration conservatively")

@@ -325,7 +325,7 @@ func TestMySQLRiskOneVarianceKeepsSharedBudgetAvailable(t *testing.T) {
 	if bucket.Blocked || !entry.AbsorbedUSD.IsPositive() || !entry.CapturedUSD.Equal(snap.HoldUSD) || !bucket.ConsumedAmount.Equal(entry.SupplierCNY) {
 		t.Fatal("variance blocked available budget or lost capped billing", bucket, entry)
 	}
-	f.now = f.now.Add(2 * time.Second)
+	makeFixtureTaskRateDue(t, f, mini.ID, "create")
 	f.dispatch(t, mini.ID)
 	view, err := f.s.Get(f.key.OrgID, mini.ID)
 	must(t, err)

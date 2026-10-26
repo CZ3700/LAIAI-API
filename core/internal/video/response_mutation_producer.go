@@ -3,6 +3,7 @@ package video
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -87,8 +88,20 @@ func (s *Service) processMutationInbox(ctx context.Context, candidate Operation)
 	if status, _, wait := mutationLocalOutcome(t, current); status != "" || wait {
 		return s.finishPendingMutationLocally(ctx, current)
 	}
-	if mutationPreparationDeferred(current, s.Now().UTC()) {
-		return nil
+	if current.ErrorCode == mutationPreparationDeferredCode {
+		// This observation only avoids unnecessary preparation. The locked
+		// claim repeats the current-operation check with a fresh primary clock.
+		var now time.Time
+		if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			var err error
+			now, err = authorityTimeTx(tx)
+			return err
+		}, &sql.TxOptions{ReadOnly: true}); err != nil {
+			return err
+		}
+		if mutationPreparationDeferred(current, now) {
+			return nil
+		}
 	}
 	if current.Kind == "delete_task" && (!terminal(t.Status) || !financialFinal(st.BillingState) || st.DeletionOperationID != current.ID) {
 		return ErrState
@@ -131,7 +144,10 @@ func (s *Service) processMutationInbox(ctx context.Context, candidate Operation)
 		if err := mutationPendingIdentity(fixed, current, lockedOp); err != nil {
 			return err
 		}
-		now := s.Now().UTC()
+		now, err := authorityTimeTx(tx)
+		if err != nil {
+			return err
+		}
 		if status, code, wait := mutationLocalOutcome(freshTask, lockedOp); status != "" || wait {
 			return mutationLocalUpdateTx(tx, lockedOp, status, code, now)
 		}
@@ -144,12 +160,17 @@ func (s *Service) processMutationInbox(ctx context.Context, candidate Operation)
 		if lockedOp.Kind == "delete_task" && (!terminal(freshTask.Status) || !financialFinal(fixed.BillingState) || fixed.DeletionOperationID != lockedOp.ID) {
 			return ErrState
 		}
-		allowed, err := s.rateTx(tx, fixed.ProviderScopeID, "delete", now)
+		allowed, err := s.rateTx(tx, fixed.ProviderScopeID, "delete")
 		if err != nil || !allowed {
 			return err
 		}
 		if s.DispatchPaused() {
 			return ErrDispatchPaused
+		}
+		// Do not spend the lease while waiting for the shared rate lock.
+		now, err = authorityTimeTx(tx)
+		if err != nil {
+			return err
 		}
 		claim = preparedClaim
 		lease := now.Add(3 * time.Minute)
@@ -213,7 +234,14 @@ func mutationLocalUpdateTx(tx *gorm.DB, op Operation, status, code string, now t
 func (s *Service) finishPendingMutationLocally(ctx context.Context, op Operation) error {
 	return s.withPendingMutation(ctx, op, func(tx *gorm.DB, t task.Task, st State, current Operation) error {
 		status, code, _ := mutationLocalOutcome(t, current)
-		return mutationLocalUpdateTx(tx, current, status, code, s.Now().UTC())
+		if status == "" {
+			return nil
+		}
+		now, err := authorityTimeTx(tx)
+		if err != nil {
+			return err
+		}
+		return mutationLocalUpdateTx(tx, current, status, code, now)
 	})
 }
 
@@ -246,7 +274,10 @@ func (s *Service) withPendingMutation(ctx context.Context, op Operation, apply f
 func (s *Service) deferMutationPreparation(ctx context.Context, op Operation) error {
 	deferred := false
 	err := s.withPendingMutation(ctx, op, func(tx *gorm.DB, t task.Task, st State, current Operation) error {
-		now := s.Now().UTC()
+		now, err := authorityTimeTx(tx)
+		if err != nil {
+			return err
+		}
 		if status, code, wait := mutationLocalOutcome(t, current); status != "" || wait {
 			return mutationLocalUpdateTx(tx, current, status, code, now)
 		}
@@ -282,7 +313,7 @@ func (s *Service) mutationSendIdentityTx(tx *gorm.DB, claim Operation, attempt E
 	if !sameExecutionAttempt(stored, attempt) {
 		return empty, time.Time{}, ErrConflict
 	}
-	t, st, err := loadTask(tx, attempt.OrgID, attempt.TaskID, false)
+	t, st, err := loadTask(tx, attempt.OrgID, attempt.TaskID, true)
 	if err != nil {
 		return empty, time.Time{}, err
 	}
@@ -293,13 +324,13 @@ func (s *Service) mutationSendIdentityTx(tx *gorm.DB, claim Operation, attempt E
 		return empty, time.Time{}, err
 	}
 	var current Operation
-	if err := tx.Where("org_id = ? AND id = ? AND resource_id = ?", claim.OrgID, claim.ID, claim.ResourceID).Take(&current).Error; err != nil {
+	if err := locked(tx).Where("org_id = ? AND id = ? AND resource_id = ?", claim.OrgID, claim.ID, claim.ResourceID).Take(&current).Error; err != nil {
 		return empty, time.Time{}, err
 	}
 	if err := requireOperationRuntime(st, current); err != nil {
 		return empty, time.Time{}, err
 	}
-	if current.Status != "in_flight" || current.Version != claim.Version || current.AttemptID != claim.AttemptID || current.Kind != claim.Kind || current.PayloadRef != attempt.InputPayloadRef || current.LeaseUntil == nil || !current.LeaseUntil.After(s.Now().UTC()) || t.UpstreamTaskID != *attempt.TargetUpstreamTaskID || st.ProviderScopeID != attempt.ProviderScopeID || st.CredentialSnapshotID != attempt.CredentialSnapshotID || st.BillingSnapshotID != attempt.BillingSnapshotID || stateRuntime(st) != actionAttemptContract(attempt).Contract || st.CaptureHistory != attempt.CaptureHistory || st.RetentionDays != attempt.RetentionDays {
+	if current.Status != "in_flight" || current.Version != claim.Version || current.AttemptID != claim.AttemptID || current.Kind != claim.Kind || current.PayloadRef != attempt.InputPayloadRef || current.LeaseUntil == nil || t.UpstreamTaskID != *attempt.TargetUpstreamTaskID || st.ProviderScopeID != attempt.ProviderScopeID || st.CredentialSnapshotID != attempt.CredentialSnapshotID || st.BillingSnapshotID != attempt.BillingSnapshotID || stateRuntime(st) != actionAttemptContract(attempt).Contract || st.CaptureHistory != attempt.CaptureHistory || st.RetentionDays != attempt.RetentionDays {
 		return empty, time.Time{}, ErrConflict
 	}
 	if claim.Kind == "cancel_task" && t.Status != "queued" || claim.Kind == "delete_task" && (!terminal(t.Status) || !financialFinal(st.BillingState) || st.DeletionOperationID != claim.ID) {
@@ -326,6 +357,16 @@ func (s *Service) mutationSendIdentityTx(tx *gorm.DB, claim Operation, attempt E
 	var scope ProviderScope
 	if err := tx.Where("id = ?", attempt.ProviderScopeID).Take(&scope).Error; err != nil {
 		return empty, time.Time{}, err
+	}
+	// Metadata/binding reads may wait. Lease permission is checked only after
+	// them, with the Task -> State -> Operation locks still held. This does not
+	// replace the independent final SQL guard immediately before HTTP.
+	now, err := authorityTimeTx(tx)
+	if err != nil {
+		return empty, time.Time{}, err
+	}
+	if !current.LeaseUntil.After(now) {
+		return empty, time.Time{}, ErrConflict
 	}
 	return actionInput(t, st, current, scope), identity.ExpiresAt, nil
 }
@@ -430,19 +471,21 @@ func (s *Service) mutationOperationMaySend(ctx context.Context, op Operation, at
 	if err != nil {
 		return deny(err)
 	}
-	if !expires.After(s.Now().UTC()) || op.LeaseUntil == nil || !op.LeaseUntil.After(s.Now().UTC()) {
+	// Invocation input TTL keeps its existing clock until the separate typed
+	// execution-window change. It is not the operation lease authority.
+	if !expires.After(s.Now().UTC()) {
 		return deny(ErrConflict)
 	}
 	// Metadata reads may block. This fresh query and clock check happen last;
 	// only this captured attempt can pass, never an arbitrary registered row.
-	query := supportedMutationInboxRuntime(s.DB.WithContext(ctx).Table("video_operations AS o").
+	query := supportedMutationInboxRuntime(s.authorityQuery(ctx).Table("video_operations AS o").
 		Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id").
 		Joins("JOIN tasks t ON t.org_id = o.org_id AND t.task_id = o.resource_id").
 		Joins("JOIN video_execution_attempts ea ON ea.org_id = o.org_id AND ea.operation_id = o.id AND ea.attempt_id = o.attempt_id").
 		Joins("JOIN video_upstream_bindings ub ON ub.provider_scope_id = v.provider_scope_id AND ub.upstream_task_id = t.upstream_task_id AND ub.org_id = t.org_id AND ub.task_id = t.task_id").
 		Joins("JOIN video_provider_scopes ps ON ps.id = v.provider_scope_id").
 		Joins("JOIN video_credential_snapshots cs ON cs.id = v.credential_snapshot_id AND cs.org_id = v.org_id AND cs.task_id = v.task_id AND cs.provider_scope_id = v.provider_scope_id")).
-		Where("o.org_id = ? AND o.id = ? AND o.resource_id = ? AND o.kind = ? AND o.status = ? AND o.version = ? AND o.attempt_id = ? AND o.lease_until > ? AND v.deleted_at IS NULL AND t.provider = ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, s.Now().UTC(), Provider).
+		Where("o.org_id = ? AND o.id = ? AND o.resource_id = ? AND o.kind = ? AND o.status = ? AND o.version = ? AND o.attempt_id = ? AND o.lease_until > UTC_TIMESTAMP(3) AND v.deleted_at IS NULL AND t.provider = ?", op.OrgID, op.ID, op.ResourceID, op.Kind, "in_flight", op.Version, op.AttemptID, Provider).
 		Where("ea.attempt_id = ? AND ea.operation_claim_version = ? AND ea.input_identity_hmac = ? AND ea.input_payload_ref = ? AND ea.target_upstream_task_id = ? AND t.upstream_task_id = ? AND OCTET_LENGTH(t.upstream_task_id) = ? AND OCTET_LENGTH(ub.upstream_task_id) = ?", attempt.AttemptID, attempt.OperationClaimVersion, attempt.InputIdentityHMAC, attempt.InputPayloadRef, input.TargetUpstreamTaskID, input.TargetUpstreamTaskID, len(input.TargetUpstreamTaskID), len(input.TargetUpstreamTaskID)).
 		Where("OCTET_LENGTH(ea.target_upstream_task_id) = ? AND OCTET_LENGTH(ea.input_payload_ref) = ? AND OCTET_LENGTH(ea.input_identity_hmac) = ? AND OCTET_LENGTH(ea.attempt_id) = ? AND OCTET_LENGTH(o.attempt_id) = ?", len(input.TargetUpstreamTaskID), len(attempt.InputPayloadRef), len(attempt.InputIdentityHMAC), len(attempt.AttemptID), len(op.AttemptID)).
 		Where("OCTET_LENGTH(o.id) = ? AND OCTET_LENGTH(o.resource_id) = ? AND OCTET_LENGTH(ea.operation_id) = ? AND OCTET_LENGTH(ea.task_id) = ? AND OCTET_LENGTH(t.task_id) = ? AND OCTET_LENGTH(v.task_id) = ? AND OCTET_LENGTH(ub.task_id) = ?", len(op.ID), len(op.ResourceID), len(op.ID), len(op.ResourceID), len(op.ResourceID), len(op.ResourceID), len(op.ResourceID)).
@@ -456,12 +499,12 @@ func (s *Service) mutationOperationMaySend(ctx context.Context, op Operation, at
 	var count int64
 	err = query.Count(&count).Error
 	if err != nil {
-		return deny(err)
+		return deny(authorityClockFailure(err))
 	}
 	if s.DispatchPaused() {
 		return deny(ErrDispatchPaused)
 	}
-	if !op.LeaseUntil.After(s.Now().UTC()) || !expires.After(s.Now().UTC()) {
+	if !expires.After(s.Now().UTC()) {
 		return deny(ErrConflict)
 	}
 	s.observeGuard(op.Kind, count == 1, nil)

@@ -32,14 +32,15 @@ func (s *Service) mutationResponseInboxCandidates(ctx context.Context) *gorm.DB 
 		Joins("JOIN video_execution_attempts ea ON ea.attempt_id = r.attempt_id AND ea.org_id = r.org_id AND ea.task_id = r.task_id AND ea.operation_id = r.operation_id").
 		Joins("JOIN video_operations o ON o.id = ea.operation_id AND o.org_id = ea.org_id AND o.resource_id = ea.task_id").
 		Joins("JOIN video_task_states v ON v.task_id = ea.task_id AND v.org_id = ea.org_id")
+	if s.DB.Dialector.Name() != "mysql" {
+		db.AddError(ErrUnavailable)
+		return db
+	}
 	db = supportedMutationInboxRuntime(db).
 		Where("ap.state IN ? AND r.storage_protocol = ea.storage_protocol AND r.action = ea.action AND r.runtime_version = ea.runtime_version AND r.adapter_version = ea.adapter_version AND r.protocol_contract_version = ea.protocol_contract_version AND r.billing_schema_version = ea.billing_schema_version AND r.execution_schema_version = ea.execution_schema_version AND r.observation_schema_version = ea.observation_schema_version", []string{"pending", "blocked"}).
 		Where("r.provider_scope_id = ea.provider_scope_id AND r.credential_snapshot_id = ea.credential_snapshot_id AND r.billing_snapshot_id = ea.billing_snapshot_id AND r.evidence_hmac_version = ea.evidence_hmac_version").
-		Where("o.status IN ? OR (o.status = ? AND o.lease_until <= ?)", []string{"unknown", "confirmed", "rejected", "needs_review"}, "in_flight", s.Now().UTC())
-	if s.DB.Dialector.Name() == "mysql" {
-		return db.Where("ap.next_attempt_at <= UTC_TIMESTAMP(3)")
-	}
-	return db.Where("ap.next_attempt_at <= ?", s.Now().UTC())
+		Where("o.status IN ? OR (o.status = ? AND o.lease_until <= UTC_TIMESTAMP(3))", []string{"unknown", "confirmed", "rejected", "needs_review"}, "in_flight")
+	return db.Where("ap.next_attempt_at <= UTC_TIMESTAMP(3)")
 }
 
 func actionAttemptContract(attempt ExecutionAttempt) videoruntime.ActionContractKey {
@@ -90,25 +91,24 @@ func (s *Service) applyMutationInbox(ctx context.Context, org uint64, receiptID 
 		if err := tx.Where("org_id = ? AND attempt_id = ? AND operation_id = ? AND task_id = ?", org, receipt.AttemptID, op.ID, t.TaskID).Take(&attempt).Error; err != nil {
 			return err
 		}
-		now := s.Now().UTC()
 		mark := func(state, code string, cause error) error {
 			applyErr = cause
 			if (app.State == "applied" || app.State == "review") && state != "review" {
 				return nil
 			}
+			due, err := authorityTimeTx(tx)
+			if err != nil {
+				return err
+			}
 			if state == "review" && op.Status != "needs_review" {
-				if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ?", org, op.ID).Updates(map[string]any{"status": "needs_review", "error_code": code, "updated_at": now}).Error; err != nil {
+				if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ?", org, op.ID).Updates(map[string]any{"status": "needs_review", "error_code": code, "updated_at": due}).Error; err != nil {
 					return err
 				}
 			}
 			if app.State == state && app.ErrorCode == code && state == "review" {
 				return nil
 			}
-			due, err := responseDatabaseTimeTx(tx)
-			if err != nil {
-				return err
-			}
-			return tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": state, "error_code": code, "version": app.Version + 1, "next_attempt_at": due.Add(30 * time.Second), "updated_at": now}).Error
+			return tx.Model(&ReceiptApplication{}).Where("org_id = ? AND receipt_id = ? AND version = ?", org, receiptID, app.Version).Updates(map[string]any{"state": state, "error_code": code, "version": app.Version + 1, "next_attempt_at": due.Add(30 * time.Second), "updated_at": due}).Error
 		}
 		if err := s.validateResponseInboxTx(tx, attempt, receipt); err != nil {
 			return mark("blocked", "response_identity_unavailable", err)
@@ -129,6 +129,69 @@ func (s *Service) applyMutationInbox(ctx context.Context, org uint64, receiptID 
 		if op.AttemptID != attempt.AttemptID || op.Kind != attempt.Action {
 			return mark("blocked", "claim_changed", ErrConflict)
 		}
+		// Finish immutable identity and conflict reads before observing lease
+		// permission. Collect diagnostics without writes: a sender whose lease
+		// elapsed during these reads must not newly quarantine the operation.
+		diagnosticState, diagnosticCode, diagnosticErr := func() (string, string, error) {
+			if attempt.TargetUpstreamTaskID == nil || *attempt.TargetUpstreamTaskID == "" || responseIdentifier(*attempt.TargetUpstreamTaskID, "", 128) != *attempt.TargetUpstreamTaskID || t.UpstreamTaskID != *attempt.TargetUpstreamTaskID {
+				return "review", "action_target_conflict", ErrConflict
+			}
+			if err := s.validateMutationAttemptInputTx(tx, attempt); err != nil {
+				if errors.Is(err, ErrConflict) {
+					return "review", "execution_identity_conflict", err
+				}
+				return "blocked", "execution_identity_unavailable", err
+			}
+			var binding UpstreamBinding
+			if err := tx.Where("provider_scope_id = ? AND upstream_task_id = ? AND OCTET_LENGTH(upstream_task_id) = ?", attempt.ProviderScopeID, *attempt.TargetUpstreamTaskID, len(*attempt.TargetUpstreamTaskID)).Take(&binding).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return "review", "action_binding_conflict", ErrConflict
+				}
+				return "blocked", "action_binding_unavailable", err
+			}
+			if binding.OrgID != org || binding.TaskID != t.TaskID || binding.UpstreamTaskID != *attempt.TargetUpstreamTaskID {
+				return "review", "action_binding_conflict", ErrConflict
+			}
+			var observations []ResponseInbox
+			if err := tx.Select("outcome", "http_status", "upstream_task_id").Where("org_id = ? AND attempt_id = ?", org, attempt.AttemptID).Find(&observations).Error; err != nil {
+				return "", "", err
+			}
+			known := ""
+			// A GET-confirmed operation has no mutation receipt yet. Its empty
+			// ReceivedOutcome is not a prior DELETE acknowledgement.
+			if op.ReceiptAppliedAt != nil && op.ReceivedOutcome != "" {
+				known = mutationEvidenceClass(op.ReceivedOutcome, op.HTTPStatus)
+			}
+			for _, observation := range observations {
+				if observation.UpstreamTaskID != "" && observation.UpstreamTaskID != *attempt.TargetUpstreamTaskID {
+					return "review", "action_target_conflict", ErrConflict
+				}
+				kind := mutationEvidenceClass(observation.Outcome, observation.HTTPStatus)
+				if kind == "" {
+					continue
+				}
+				if known != "" && known != kind {
+					return "review", "response_evidence_conflict", ErrConflict
+				}
+				known = kind
+			}
+			// Mutation review is local to the operation, never create quarantine.
+			var reviewed int64
+			if err := tx.Table("video_receipt_applications AS sibling").Joins("JOIN video_response_inbox AS evidence ON evidence.receipt_id = sibling.receipt_id AND evidence.org_id = sibling.org_id").Where("sibling.org_id = ? AND evidence.operation_id = ? AND sibling.state = ?", org, op.ID, "review").Count(&reviewed).Error; err != nil {
+				return "", "", err
+			}
+			if reviewed != 0 || op.Status == "needs_review" {
+				return "review", "operation_identity_review", ErrConflict
+			}
+			return "", "", nil
+		}()
+		if diagnosticErr != nil && diagnosticState == "" {
+			return diagnosticErr
+		}
+		now, err := authorityTimeTx(tx)
+		if err != nil {
+			return err
+		}
 		if claim != nil {
 			if claim.OrgID != org || claim.ID != op.ID || claim.ResourceID != t.TaskID || claim.Kind != op.Kind || claim.AttemptID != op.AttemptID || claim.Version != op.Version || op.Status != "in_flight" || op.LeaseUntil == nil || !op.LeaseUntil.After(now) {
 				if app.State == "applied" {
@@ -139,56 +202,8 @@ func (s *Service) applyMutationInbox(ctx context.Context, org uint64, receiptID 
 		} else if op.Status != "confirmed" && op.Status != "rejected" && op.Status != "unknown" && op.Status != "needs_review" && !(op.Status == "in_flight" && op.LeaseUntil != nil && !op.LeaseUntil.After(now)) {
 			return mark("pending", "claim_active", ErrConflict)
 		}
-		if attempt.TargetUpstreamTaskID == nil || *attempt.TargetUpstreamTaskID == "" || responseIdentifier(*attempt.TargetUpstreamTaskID, "", 128) != *attempt.TargetUpstreamTaskID || t.UpstreamTaskID != *attempt.TargetUpstreamTaskID {
-			return mark("review", "action_target_conflict", ErrConflict)
-		}
-		if err := s.validateMutationAttemptInputTx(tx, attempt); err != nil {
-			if errors.Is(err, ErrConflict) {
-				return mark("review", "execution_identity_conflict", err)
-			}
-			return mark("blocked", "execution_identity_unavailable", err)
-		}
-		var binding UpstreamBinding
-		if err := tx.Where("provider_scope_id = ? AND upstream_task_id = ? AND OCTET_LENGTH(upstream_task_id) = ?", attempt.ProviderScopeID, *attempt.TargetUpstreamTaskID, len(*attempt.TargetUpstreamTaskID)).Take(&binding).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return mark("review", "action_binding_conflict", ErrConflict)
-			}
-			return mark("blocked", "action_binding_unavailable", err)
-		}
-		if binding.OrgID != org || binding.TaskID != t.TaskID || binding.UpstreamTaskID != *attempt.TargetUpstreamTaskID {
-			return mark("review", "action_binding_conflict", ErrConflict)
-		}
-		var observations []ResponseInbox
-		if err := tx.Select("outcome", "http_status", "upstream_task_id").Where("org_id = ? AND attempt_id = ?", org, attempt.AttemptID).Find(&observations).Error; err != nil {
-			return err
-		}
-		known := ""
-		// A GET-confirmed operation has no mutation receipt yet. Its empty
-		// ReceivedOutcome must not be treated as a prior DELETE acknowledgement.
-		if op.ReceiptAppliedAt != nil && op.ReceivedOutcome != "" {
-			known = mutationEvidenceClass(op.ReceivedOutcome, op.HTTPStatus)
-		}
-		for _, observation := range observations {
-			if observation.UpstreamTaskID != "" && observation.UpstreamTaskID != *attempt.TargetUpstreamTaskID {
-				return mark("review", "action_target_conflict", ErrConflict)
-			}
-			kind := mutationEvidenceClass(observation.Outcome, observation.HTTPStatus)
-			if kind == "" {
-				continue
-			}
-			if known != "" && known != kind {
-				return mark("review", "response_evidence_conflict", ErrConflict)
-			}
-			known = kind
-		}
-		// Review belongs only to this operation: it must not block ordinary GET
-		// or select a create-task quarantine for the task's financial lifecycle.
-		var reviewed int64
-		if err := tx.Table("video_receipt_applications AS sibling").Joins("JOIN video_response_inbox AS evidence ON evidence.receipt_id = sibling.receipt_id AND evidence.org_id = sibling.org_id").Where("sibling.org_id = ? AND evidence.operation_id = ? AND sibling.state = ?", org, op.ID, "review").Count(&reviewed).Error; err != nil {
-			return err
-		}
-		if reviewed != 0 || op.Status == "needs_review" {
-			return mark("review", "operation_identity_review", ErrConflict)
+		if diagnosticErr != nil {
+			return mark(diagnosticState, diagnosticCode, diagnosticErr)
 		}
 		if app.State == "applied" {
 			return nil
@@ -280,11 +295,14 @@ func (s *Service) recoverMutationResponseInbox(ctx context.Context) error {
 }
 
 func (s *Service) recoverExpiredMutationAttempts(ctx context.Context) error {
+	if s.DB.Dialector.Name() != "mysql" {
+		return ErrUnavailable
+	}
 	var attempts []ExecutionAttempt
 	q := supportedMutationInboxRuntime(s.DB.WithContext(ctx).Table("video_execution_attempts ea").Select("ea.*").
 		Joins("JOIN video_operations o ON o.id = ea.operation_id AND o.org_id = ea.org_id AND o.resource_id = ea.task_id").
 		Joins("JOIN video_task_states v ON v.org_id = ea.org_id AND v.task_id = ea.task_id")).
-		Where("o.status = ? AND o.lease_until <= ?", "in_flight", s.Now().UTC()).
+		Where("o.status = ? AND o.lease_until <= UTC_TIMESTAMP(3)", "in_flight").
 		Where("NOT EXISTS (SELECT 1 FROM video_response_inbox r WHERE r.org_id = ea.org_id AND r.attempt_id = ea.attempt_id)")
 	if err := q.Order("o.lease_until, ea.attempt_id").Limit(30).Scan(&attempts).Error; err != nil {
 		return err
@@ -306,7 +324,10 @@ func (s *Service) recoverExpiredMutationAttempts(ctx context.Context) error {
 			if err := locked(tx).Where("org_id = ? AND id = ? AND resource_id = ?", attempt.OrgID, attempt.OperationID, attempt.TaskID).Take(&op).Error; err != nil {
 				return err
 			}
-			now := s.Now().UTC()
+			now, err := authorityTimeTx(tx)
+			if err != nil {
+				return err
+			}
 			if op.Status != "in_flight" || op.AttemptID != attempt.AttemptID || op.Version != attempt.OperationClaimVersion || op.LeaseUntil == nil || op.LeaseUntil.After(now) {
 				return nil
 			}

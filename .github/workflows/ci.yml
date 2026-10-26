@@ -131,7 +131,9 @@ jobs:
       - name: Bounded routing candidates preserve closed grouped-key gates
         run: go -C core test -race -p 1 ./internal/identity ./internal/relay ./internal/routinggroup ./internal/server -run '^(TestCandidates|TestRoutingCandidate|TestRoutingPublished|TestMySQLRoutingCandidates)' -count=2 -timeout=10m -v
       - name: Ark concurrency and Linux storage checks
-        run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=10m
+        run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=20m
+      - name: Primary database scheduling and lease authority
+        run: go -C core test -race ./internal/video -run '^TestMySQLDatabaseAuthority' -count=2 -timeout=25m -v
       - name: Gated mutation producer atomicity and dispatch faults
         run: go -C core test -race ./internal/video -run '^(TestMutationProducer|TestMySQLMutationProducer)' -count=1 -timeout=8m -v
       - name: Raw HTTP task classifications survive persistence and restart

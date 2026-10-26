@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/invocation"
@@ -37,7 +36,7 @@ func TestMySQLResponseInboxUnknownProducerStillRetainsEvidence(t *testing.T) {
 			}
 			var payload invocation.VideoPayload
 			must(t, f.s.DB.Where("org_id = ? AND payload_id = ?", f.key.OrgID, receipt.PayloadRef).First(&payload).Error)
-			f.now = f.now.Add(4 * time.Minute)
+			expireFixtureOperationLease(t, f.s.DB, op)
 			must(t, f.s.recoverResponseInbox(context.Background()))
 			if responseInboxApp(t, f, receipt).AppliedAt != nil || responseInboxFunds(t, f, v.ID) != before || responseInboxCount(t, f, &UpstreamBinding{}, "org_id = ? AND task_id = ?", f.key.OrgID, v.ID) != 0 || f.posts.Load() != 0 || f.gets.Load() != 0 {
 				t.Fatal("unsupported producer was applied, refunded or lost its evidence")
@@ -107,7 +106,7 @@ func TestMySQLResponseInboxApplicationRollbackKeepsEvidenceAndReplaysOnce(t *tes
 			if !fired || !errors.Is(err, injected) || responseInboxApp(t, f, receipt).AppliedAt != nil || responseInboxFunds(t, f, v.ID) != before || responseInboxCount(t, f, &Event{}, "org_id = ? AND task_id = ?", f.key.OrgID, v.ID) != events || responseInboxCount(t, f, &Outbox{}, "org_id = ? AND task_id = ?", f.key.OrgID, v.ID) != outbox || responseInboxCount(t, f, &ResponseInbox{}, "org_id = ? AND receipt_id = ?", f.key.OrgID, receipt.ReceiptID) != 1 {
 				t.Fatal("failed application lost evidence or partially advanced funds/events")
 			}
-			f.now = f.now.Add(4 * time.Minute)
+			expireFixtureOperationLease(t, f.s.DB, op)
 			must(t, f.s.recoverResponseInbox(context.Background()))
 			must(t, f.s.recoverResponseInbox(context.Background()))
 			app := responseInboxApp(t, f, receipt)
@@ -134,9 +133,9 @@ func TestMySQLResponseInboxApplicationRollbackKeepsEvidenceAndReplaysOnce(t *tes
 func TestMySQLResponseInboxExpiredWithoutResponseNeverUsesLegacyOrResends(t *testing.T) {
 	f := mysqlFixture(t)
 	v := f.create(t, "inbox-no-response")
-	attempt, _ := responseInboxRegister(t, f, v.ID)
+	attempt, op := responseInboxRegister(t, f, v.ID)
 	before := responseInboxFunds(t, f, v.ID)
-	f.now = f.now.Add(4 * time.Minute)
+	expireFixtureOperationLease(t, f.s.DB, op)
 	var legacy []Operation
 	must(t, f.s.recoveryOperationCandidates(context.Background()).Where("o.org_id = ?", f.key.OrgID).Find(&legacy).Error)
 	if len(legacy) != 0 {

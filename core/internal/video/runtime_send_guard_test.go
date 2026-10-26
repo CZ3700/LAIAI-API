@@ -60,9 +60,8 @@ func TestMySQLRuntimeFinalMetadataMustPrecedeSendPermission(t *testing.T) {
 				changes := map[string]any{}
 				switch invalidation {
 				case "lease_expired":
-					// Equality is expired; no wall-clock sleep or concurrent
-					// mutation of the fixture clock is required.
-					f.now = current.LeaseUntil.UTC()
+					// Set only this exact locked claim to database-expired.
+					expireFixtureOperationLease(t, clean, current)
 				case "status_unknown":
 					changes["status"] = "unknown"
 				case "attempt_replaced":

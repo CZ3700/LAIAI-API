@@ -210,6 +210,9 @@ func TestMySQLVideoUnknownAndMissingUsageNeverRefund(t *testing.T) {
 		v := f.create(t, "unknown-post-1")
 		f.dispatch(t, v.ID)
 		f.now = f.now.Add(72 * time.Hour)
+		// Retain the legacy unknown-after-72h assertion; separately make this
+		// exact database lease expired for the recovery scheduler.
+		expireFixtureOperationLease(t, f.s.DB, runtimeWorkerCreateOperation(t, f, v.ID))
 		must(t, f.s.recoverOperations(context.Background()))
 		f.dispatch(t, v.ID)
 		state, e := f.s.Get(f.key.OrgID, v.ID)
@@ -231,7 +234,7 @@ func TestMySQLVideoUnknownAndMissingUsageNeverRefund(t *testing.T) {
 			t.Fatal("missing usage refunded")
 		}
 		body = `{"id":"` + row.UpstreamTaskID + `","status":"succeeded","usage":{"completion_tokens":0}}`
-		f.now = f.now.Add(11 * time.Second)
+		makeFixtureTaskQueryDue(t, f, v.ID)
 		must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
 		state, e := f.s.Get(f.key.OrgID, v.ID)
 		must(t, e)
