@@ -5,6 +5,7 @@ export GOPROXY
 export GOTOOLCHAIN := local
 
 .PHONY: ci test vet build migrate-lint migrate-smoke help
+.PHONY: web ci-all
 .PHONY: release-check toolchain-check ark-mock-baseline ark-runtime-compat
 
 ci: vet migrate-lint test build ## 完整本地 CI gate（提交前必跑）
