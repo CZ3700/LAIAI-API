@@ -1,0 +1,953 @@
+{
+  "case_count": 26,
+  "cases": [
+    {
+      "date": null,
+      "got": 0,
+      "kind_hex": "7573616765",
+      "want": 0
+    },
+    {
+      "date": "0000-00-00 00:00:00",
+      "got": 0,
+      "kind_hex": "7573616765",
+      "want": 0
+    },
+    {
+      "date": "0001-01-01 00:00:00",
+      "got": 0,
+      "kind_hex": "7573616765",
+      "want": 0
+    },
+    {
+      "date": "0999-12-31 23:59:59.999",
+      "got": 0,
+      "kind_hex": "7573616765",
+      "want": 0
+    },
+    {
+      "date": "1000-01-01 00:00:00",
+      "got": 1,
+      "kind_hex": "7573616765",
+      "want": 1
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 1,
+      "kind_hex": "7573616765",
+      "want": 1
+    },
+    {
+      "date": "9999-12-31 23:59:59.999",
+      "got": 1,
+      "kind_hex": "7573616765",
+      "want": 1
+    },
+    {
+      "date": null,
+      "got": 0,
+      "kind_hex": "70726f76696465725f6e6f636861726765",
+      "want": 0
+    },
+    {
+      "date": "0000-00-00 00:00:00",
+      "got": 0,
+      "kind_hex": "70726f76696465725f6e6f636861726765",
+      "want": 0
+    },
+    {
+      "date": "0001-01-01 00:00:00",
+      "got": 0,
+      "kind_hex": "70726f76696465725f6e6f636861726765",
+      "want": 0
+    },
+    {
+      "date": "0999-12-31 23:59:59.999",
+      "got": 0,
+      "kind_hex": "70726f76696465725f6e6f636861726765",
+      "want": 0
+    },
+    {
+      "date": "1000-01-01 00:00:00",
+      "got": 1,
+      "kind_hex": "70726f76696465725f6e6f636861726765",
+      "want": 1
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 1,
+      "kind_hex": "70726f76696465725f6e6f636861726765",
+      "want": 1
+    },
+    {
+      "date": "9999-12-31 23:59:59.999",
+      "got": 1,
+      "kind_hex": "70726f76696465725f6e6f636861726765",
+      "want": 1
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "",
+      "want": 0
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "6E6F6E65",
+      "want": 0
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "756E6B6E6F776E",
+      "want": 0
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "5553414745",
+      "want": 0
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "5573616765",
+      "want": 0
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "757361676520",
+      "want": 0
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "757361676500",
+      "want": 0
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "70726F76696465725F6E6F63686172676520",
+      "want": 0
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "50524F56494445525F4E4F434841524745",
+      "want": 0
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "EFBD95EFBD93EFBD81EFBD87EFBD85",
+      "want": 0
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "207573616765",
+      "want": 0
+    },
+    {
+      "date": "2026-10-27 06:00:00.123",
+      "got": 0,
+      "kind_hex": "75736167650A",
+      "want": 0
+    }
+  ],
+  "columns": [
+    {
+      "CHARACTER_SET_NAME": "utf8mb4",
+      "COLLATION_NAME": "utf8mb4_bin",
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "attempt_id",
+      "COLUMN_TYPE": "varchar(64)",
+      "DATA_TYPE": "varchar",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "org_id",
+      "COLUMN_TYPE": "bigint unsigned",
+      "DATA_TYPE": "bigint",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": "utf8mb4",
+      "COLLATION_NAME": "utf8mb4_bin",
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "task_id",
+      "COLUMN_TYPE": "varchar(64)",
+      "DATA_TYPE": "varchar",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "sequence",
+      "COLUMN_TYPE": "bigint unsigned",
+      "DATA_TYPE": "bigint",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "task_row_version",
+      "COLUMN_TYPE": "bigint unsigned",
+      "DATA_TYPE": "bigint",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "http_status",
+      "COLUMN_TYPE": "int",
+      "DATA_TYPE": "int",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": "utf8mb4",
+      "COLLATION_NAME": "utf8mb4_bin",
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "outcome",
+      "COLUMN_TYPE": "varchar(32)",
+      "DATA_TYPE": "varchar",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": "utf8mb4",
+      "COLLATION_NAME": "utf8mb4_bin",
+      "COLUMN_DEFAULT": "",
+      "COLUMN_NAME": "provider_request_id",
+      "COLUMN_TYPE": "varchar(256)",
+      "DATA_TYPE": "varchar",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": "utf8mb4",
+      "COLLATION_NAME": "utf8mb4_bin",
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "observation_json",
+      "COLUMN_TYPE": "text",
+      "DATA_TYPE": "text",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": "0",
+      "COLUMN_NAME": "has_video",
+      "COLUMN_TYPE": "tinyint(1)",
+      "DATA_TYPE": "tinyint",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": "0",
+      "COLUMN_NAME": "has_last_frame",
+      "COLUMN_TYPE": "tinyint(1)",
+      "DATA_TYPE": "tinyint",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": "utf8mb4",
+      "COLLATION_NAME": "utf8mb4_bin",
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "payload_ref",
+      "COLUMN_TYPE": "varchar(64)",
+      "DATA_TYPE": "varchar",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "received_at",
+      "COLUMN_TYPE": "datetime(3)",
+      "DATA_TYPE": "datetime",
+      "DATETIME_PRECISION": 3,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "applied_at",
+      "COLUMN_TYPE": "datetime(3)",
+      "DATA_TYPE": "datetime",
+      "DATETIME_PRECISION": 3,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "YES"
+    },
+    {
+      "CHARACTER_SET_NAME": "utf8mb4",
+      "COLLATION_NAME": "utf8mb4_bin",
+      "COLUMN_DEFAULT": "",
+      "COLUMN_NAME": "apply_error_code",
+      "COLUMN_TYPE": "varchar(64)",
+      "DATA_TYPE": "varchar",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": "utf8mb4",
+      "COLLATION_NAME": "utf8mb4_0900_bin",
+      "COLUMN_DEFAULT": "ark-official-legacy-v1",
+      "COLUMN_NAME": "runtime_version",
+      "COLUMN_TYPE": "varchar(64)",
+      "DATA_TYPE": "varchar",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": "utf8mb4",
+      "COLLATION_NAME": "utf8mb4_0900_bin",
+      "COLUMN_DEFAULT": "ark-v3-v1",
+      "COLUMN_NAME": "adapter_version",
+      "COLUMN_TYPE": "varchar(64)",
+      "DATA_TYPE": "varchar",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": "utf8mb4",
+      "COLLATION_NAME": "utf8mb4_0900_bin",
+      "COLUMN_DEFAULT": "video-contract-v1",
+      "COLUMN_NAME": "protocol_contract_version",
+      "COLUMN_TYPE": "varchar(64)",
+      "DATA_TYPE": "varchar",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": "1",
+      "COLUMN_NAME": "observation_schema_version",
+      "COLUMN_TYPE": "int unsigned",
+      "DATA_TYPE": "int",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": "utc_timestamp(3)",
+      "COLUMN_NAME": "recovery_due_at",
+      "COLUMN_TYPE": "datetime(3)",
+      "DATA_TYPE": "datetime",
+      "DATETIME_PRECISION": 3,
+      "EXTRA": "DEFAULT_GENERATED",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "YES"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": "0",
+      "COLUMN_NAME": "recovery_version",
+      "COLUMN_TYPE": "bigint unsigned",
+      "DATA_TYPE": "bigint",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "generation_applied_at",
+      "COLUMN_TYPE": "datetime(3)",
+      "DATA_TYPE": "datetime",
+      "DATETIME_PRECISION": 3,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "YES"
+    },
+    {
+      "CHARACTER_SET_NAME": "utf8mb4",
+      "COLLATION_NAME": "utf8mb4_0900_bin",
+      "COLUMN_DEFAULT": "",
+      "COLUMN_NAME": "settlement_kind",
+      "COLUMN_TYPE": "varchar(24)",
+      "DATA_TYPE": "varchar",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": "ascii",
+      "COLLATION_NAME": "ascii_bin",
+      "COLUMN_DEFAULT": "",
+      "COLUMN_NAME": "settlement_evidence_sha256",
+      "COLUMN_TYPE": "char(64)",
+      "DATA_TYPE": "char",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "",
+      "GENERATION_EXPRESSION": "",
+      "IS_NULLABLE": "NO"
+    },
+    {
+      "CHARACTER_SET_NAME": null,
+      "COLLATION_NAME": null,
+      "COLUMN_DEFAULT": null,
+      "COLUMN_NAME": "settlement_shape_ready",
+      "COLUMN_TYPE": "tinyint unsigned",
+      "DATA_TYPE": "tinyint",
+      "DATETIME_PRECISION": null,
+      "EXTRA": "VIRTUAL GENERATED",
+      "GENERATION_EXPRESSION": "(case when ((`generation_applied_at` >= cast(_utf8mb4\\'1000-01-01 00:00:00\\' as datetime)) and (cast(`settlement_kind` as char charset binary) in (_binary\\'usage\\',_binary\\'provider_nocharge\\'))) then 1 else 0 end)",
+      "IS_NULLABLE": "NO"
+    }
+  ],
+  "consumer_executed": false,
+  "ddl_sha256": "ac66e37551559df567455bf3dc0db4ea0ab5facaba225ec41467689826b74e43",
+  "direct_write_error": 3105,
+  "funds_executed": false,
+  "indexes": [
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "runtime_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_phase_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 1,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "adapter_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_phase_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 2,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "protocol_contract_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_phase_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 3,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "observation_schema_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_phase_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 4,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "settlement_kind",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_phase_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 5,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "applied_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_phase_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 6,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "recovery_due_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_phase_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 7,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "received_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_phase_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 8,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "attempt_id",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_phase_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 9,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "runtime_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_recovery_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 1,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "adapter_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_recovery_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 2,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "protocol_contract_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_recovery_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 3,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "observation_schema_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_recovery_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 4,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "applied_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_recovery_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 5,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "recovery_due_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_recovery_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 6,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "received_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_recovery_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 7,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "attempt_id",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_recovery_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 8,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "runtime_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_settlement_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 1,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "adapter_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_settlement_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 2,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "protocol_contract_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_settlement_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 3,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "observation_schema_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_settlement_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 4,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "settlement_shape_ready",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_settlement_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 5,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "applied_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_settlement_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 6,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "recovery_due_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_settlement_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 7,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "received_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_settlement_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 8,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "attempt_id",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_settlement_due",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 9,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "org_id",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_task_financial_conflict",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 1,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "task_id",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_task_financial_conflict",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 2,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "apply_error_code",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_task_financial_conflict",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 3,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "attempt_id",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_task_financial_conflict",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 4,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "applied_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_unapplied",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 1,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "received_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_query_unapplied",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 2,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "runtime_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_runtime_receipt",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 1,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "adapter_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_runtime_receipt",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 2,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "protocol_contract_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_runtime_receipt",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 3,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "observation_schema_version",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_runtime_receipt",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 4,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "applied_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_runtime_receipt",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 5,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "received_at",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_runtime_receipt",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 6,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "attempt_id",
+      "EXPRESSION": null,
+      "INDEX_NAME": "idx_video_runtime_receipt",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 1,
+      "SEQ_IN_INDEX": 7,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "attempt_id",
+      "EXPRESSION": null,
+      "INDEX_NAME": "PRIMARY",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 0,
+      "SEQ_IN_INDEX": 1,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "org_id",
+      "EXPRESSION": null,
+      "INDEX_NAME": "uk_video_query_sequence",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 0,
+      "SEQ_IN_INDEX": 1,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "task_id",
+      "EXPRESSION": null,
+      "INDEX_NAME": "uk_video_query_sequence",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 0,
+      "SEQ_IN_INDEX": 2,
+      "SUB_PART": null
+    },
+    {
+      "COLLATION": "A",
+      "COLUMN_NAME": "sequence",
+      "EXPRESSION": null,
+      "INDEX_NAME": "uk_video_query_sequence",
+      "INDEX_TYPE": "BTREE",
+      "IS_VISIBLE": "YES",
+      "NON_UNIQUE": 0,
+      "SEQ_IN_INDEX": 3,
+      "SUB_PART": null
+    }
+  ],
+  "passed": true,
+  "schema": "ark_test_shape_go_20261027_r3",
+  "server": [
+    {
+      "charset_client": "utf8mb4",
+      "collation_connection": "utf8mb4_general_ci",
+      "sql_mode": "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+      "version": "8.4.9"
+    }
+  ],
+  "source_mutated": false
+}

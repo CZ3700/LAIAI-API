@@ -67,9 +67,9 @@ func queryRecoveryNew(t *testing.T) *queryRecoveryFixture {
 	if dsn == "" {
 		t.Skip("ARK_TEST_MYSQL_DSN is required for real query recovery integration")
 	}
-	cfg, err := drivermysql.ParseDSN(dsn)
-	if err != nil || cfg.DBName != "ark_test" {
-		t.Fatal("query recovery requires the ark_test control database")
+	cfg, err := parseVideoTestControlDSN(dsn)
+	if err != nil {
+		t.Fatal("query recovery requires an approved isolated control database")
 	}
 	cfg = cfg.Clone()
 	cfg.ParseTime, cfg.Loc = true, time.UTC
@@ -92,7 +92,7 @@ func queryRecoveryNew(t *testing.T) *queryRecoveryFixture {
 		if pool != nil {
 			_ = pool.Close()
 		}
-		if created {
+		if created && !t.Failed() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if _, err := admin.ExecContext(ctx, "DROP DATABASE `"+name+"`"); err != nil {
@@ -116,8 +116,8 @@ func queryRecoveryNew(t *testing.T) *queryRecoveryFixture {
 	queryRecoveryCheck(t, err)
 	ran, err := migrate.Up(db, os.DirFS("../../../migrations"))
 	queryRecoveryCheck(t, err)
-	if len(ran) != 133 || ran[len(ran)-1] != "0133_video_query_recovery_progress" {
-		t.Fatal("query recovery fixture requires the complete tracked 0133 schema")
+	if len(ran) != 135 || ran[len(ran)-1] != "0135_video_query_settlement_shape" {
+		t.Fatal("query recovery fixture requires the complete tracked 0135 schema")
 	}
 	db, err = ledger.EnableActivityTracking(db)
 	queryRecoveryCheck(t, err)

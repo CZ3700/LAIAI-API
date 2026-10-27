@@ -62,8 +62,8 @@ func mysqlFixture(t *testing.T) *fixture {
 	}
 	// Refuse accidental use against a non-test database. Migrations are applied
 	// explicitly by CI/setup, never by ORM or destructive test resets.
-	if !strings.Contains(dsn, "/ark_test?") {
-		t.Fatal("integration requires the dedicated ark_test database")
+	if _, err := parseVideoTestControlDSN(dsn); err != nil {
+		t.Fatal("integration requires an approved isolated control database")
 	}
 	db, e := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: logger.Discard})
 	if e != nil {

@@ -1,0 +1,567 @@
+{
+  "schema_version": 1,
+  "test_stages": {
+    "s2_pure": {
+      "repeats": 2,
+      "packages": {
+        "github.com/laiai/laiai-next/core/internal/videoruntime": [
+          "TestActionContractRejectsEveryUnregisteredCombination",
+          "TestActionContractStableIndependentDescriptor",
+          "TestQueryApplicationDescriptorGoldens",
+          "TestQueryApplicationRequiresExactContractAndSchema",
+          "TestQueryApplicationV2ActionFormatsStayClosed",
+          "TestResolveExactContractAndStableDescriptor",
+          "TestResolveRejectsEmptyUnknownAndMixedContracts",
+          "TestValidateBillingSchemaRequiresExplicitVersion"
+        ],
+        "github.com/laiai/laiai-next/core/internal/videobilling": [
+          "TestInitialSettlementReadCallerTransactionAndSafeFailures",
+          "TestInitialSettlementReadExactFactsAndOpaqueCopy",
+          "TestInitialSettlementReadPreservesReviewedAdjustment",
+          "TestInitialSettlementReadPublicWritersAndCompare",
+          "TestInitialSettlementReadReferenceAndRollback"
+        ],
+        "github.com/laiai/laiai-next/core/internal/video": [
+          "TestQueryFinancialBarrierCASAndRollback",
+          "TestQueryFinancialBarrierPreservesPinProgress",
+          "TestQueryGenerationFinancialComparisonUsesOriginalPin",
+          "TestQueryGenerationRequiresTrustedObservation",
+          "TestQueryPhaseCapturedRuntimeCannotChange",
+          "TestQueryPhaseClosedCombinations",
+          "TestQueryPhaseSQLKeepsOneBoundedClosedQueue",
+          "TestQueryPhaseTokenBindsCurrentFacts",
+          "TestQueryReceiptDigestIndependentLiteral",
+          "TestQueryReceiptDigestMatchesPreS2Encoding",
+          "TestQueryReceiptDigestOriginalFieldsStayBound",
+          "TestQueryReceiptDigestPreservesMarshalFailure",
+          "TestQueryRecoveryCountsDoNotTurnFailureIntoNoop",
+          "TestQueryRecoveryDatabaseClockFailsClosed",
+          "TestQueryRecoveryDecoderAndClosedErrorTree",
+          "TestQueryRecoveryEvidenceDigestCoversDurableFields",
+          "TestQuerySettlementBarrierRetainsDamagedMarker",
+          "TestQuerySettlementConflictSurvivesCompatibilityDiagnostics",
+          "TestQuerySettlementEvidenceBindingsAndValidation",
+          "TestQuerySettlementEvidenceClosedErrors",
+          "TestQuerySettlementEvidenceIndependentLiterals",
+          "TestQuerySettlementNewPhaseExcludedFromV1Digest",
+          "TestQuerySettlementRoundRejectsNonPrimaryAndCancellation",
+          "TestRecoveryCommittedDispositionAndFailureAreIndependent",
+          "TestRecoveryErrorClassificationRejectsForeignSemantics",
+          "TestRecoveryErrorsHideMessagesAndPreserveEveryCause",
+          "TestRecoveryLaneDeadlineDoesNotStarveNextLane",
+          "TestRecoveryParentCancellationStopsBeforeNextLane"
+        ]
+      },
+      "exact_children": {
+        "github.com/laiai/laiai-next/core/internal/videoruntime": {
+          "TestActionContractRejectsEveryUnregisteredCombination": [],
+          "TestActionContractStableIndependentDescriptor": [],
+          "TestQueryApplicationDescriptorGoldens": [
+            "V1/cancel_task",
+            "V1/delete_task",
+            "V1/runtime",
+            "V2-proposal/cancel_task",
+            "V2-proposal/delete_task",
+            "V2-proposal/runtime"
+          ],
+          "TestQueryApplicationRequiresExactContractAndSchema": [
+            "atomic_v1",
+            "generation_then_settlement_v2"
+          ],
+          "TestQueryApplicationV2ActionFormatsStayClosed": [],
+          "TestResolveExactContractAndStableDescriptor": [],
+          "TestResolveRejectsEmptyUnknownAndMixedContracts": [],
+          "TestValidateBillingSchemaRequiresExplicitVersion": []
+        },
+        "github.com/laiai/laiai-next/core/internal/videobilling": {
+          "TestInitialSettlementReadCallerTransactionAndSafeFailures": [
+            "1",
+            "2",
+            "3",
+            "4"
+          ],
+          "TestInitialSettlementReadExactFactsAndOpaqueCopy": [
+            "hold",
+            "negative",
+            "reason_padding",
+            "reason_unknown",
+            "released_with_zero",
+            "settled_null",
+            "snapshot",
+            "state_padding",
+            "state_unknown"
+          ],
+          "TestInitialSettlementReadPreservesReviewedAdjustment": [],
+          "TestInitialSettlementReadPublicWritersAndCompare": [
+            "absent",
+            "missing_usage",
+            "not_dispatched",
+            "provider_nocharge",
+            "usage_positive",
+            "usage_zero"
+          ],
+          "TestInitialSettlementReadReferenceAndRollback": []
+        },
+        "github.com/laiai/laiai-next/core/internal/video": {
+          "TestQueryFinancialBarrierCASAndRollback": [
+            "cancelled",
+            "overflow",
+            "pin_identity",
+            "rollback",
+            "stale_phase",
+            "stale_version"
+          ],
+          "TestQueryFinancialBarrierPreservesPinProgress": [
+            "already_closed",
+            "applied",
+            "pending",
+            "review"
+          ],
+          "TestQueryGenerationFinancialComparisonUsesOriginalPin": [
+            "different_kind",
+            "different_status",
+            "different_usage",
+            "missing_usage",
+            "same"
+          ],
+          "TestQueryGenerationRequiresTrustedObservation": [
+            "has_error",
+            "http_error",
+            "missing",
+            "missing_time",
+            "negative_total",
+            "negative_usage",
+            "nocharge",
+            "positive",
+            "unknown_outcome",
+            "unknown_status",
+            "wrong_model",
+            "wrong_target",
+            "zero"
+          ],
+          "TestQueryPhaseCapturedRuntimeCannotChange": [],
+          "TestQueryPhaseClosedCombinations": [
+            "b",
+            "b_bad_digest",
+            "complete",
+            "g",
+            "g_partial",
+            "generation_year_one",
+            "generation_zero",
+            "mixed",
+            "none_unfinished",
+            "pin_missing",
+            "pin_padded",
+            "review",
+            "schema",
+            "snapshot_schema",
+            "unknown",
+            "v1_ignores_s2"
+          ],
+          "TestQueryPhaseSQLKeepsOneBoundedClosedQueue": [],
+          "TestQueryPhaseTokenBindsCurrentFacts": [
+            "applied",
+            "fixed_scope",
+            "generated",
+            "kind",
+            "pin",
+            "raw",
+            "review",
+            "stored_hash",
+            "version"
+          ],
+          "TestQueryReceiptDigestIndependentLiteral": [],
+          "TestQueryReceiptDigestMatchesPreS2Encoding": [
+            "full",
+            "legacy_invalid_utf8",
+            "nanoseconds_timezone",
+            "unknown_raw_evidence",
+            "unsigned_max",
+            "zero"
+          ],
+          "TestQueryReceiptDigestOriginalFieldsStayBound": [
+            "AdapterVersion",
+            "AppliedAt",
+            "ApplyErrorCode",
+            "AttemptID",
+            "HTTPStatus",
+            "HasLastFrame",
+            "HasVideo",
+            "ObservationJSON",
+            "ObservationSchemaVersion",
+            "OrgID",
+            "Outcome",
+            "PayloadRef",
+            "ProtocolContractVersion",
+            "ProviderRequestID",
+            "ReceivedAt",
+            "RecoveryDueAt",
+            "RecoveryVersion",
+            "RuntimeVersion",
+            "Sequence",
+            "TaskID",
+            "TaskRowVersion"
+          ],
+          "TestQueryReceiptDigestPreservesMarshalFailure": [],
+          "TestQueryRecoveryCountsDoNotTurnFailureIntoNoop": [
+            "applied",
+            "deferred_after_failure",
+            "diagnostic_failure",
+            "existing_review_barrier",
+            "metadata_failure",
+            "replay",
+            "review_after_failure"
+          ],
+          "TestQueryRecoveryDatabaseClockFailsClosed": [],
+          "TestQueryRecoveryDecoderAndClosedErrorTree": [
+            "authority",
+            "bare_external_json",
+            "bare_sentinel",
+            "cancelled",
+            "conflict",
+            "create_quarantine",
+            "cyclic_safe_wrapper",
+            "deadline",
+            "empty_safe_wrapper",
+            "external_join",
+            "fmt_wrapper",
+            "invalid_kind",
+            "mixed_permanent",
+            "nil",
+            "other",
+            "quarantine_cancel",
+            "safe_conflict",
+            "safe_external_join",
+            "safe_nested",
+            "sql",
+            "syntax",
+            "type",
+            "unknown_conflict",
+            "unknown_multi",
+            "unknown_quarantine",
+            "unknown_wrapper"
+          ],
+          "TestQueryRecoveryEvidenceDigestCoversDurableFields": [
+            "AdapterVersion",
+            "AppliedAt",
+            "ApplyErrorCode",
+            "AttemptID",
+            "HTTPStatus",
+            "HasLastFrame",
+            "HasVideo",
+            "ObservationJSON",
+            "ObservationSchemaVersion",
+            "OrgID",
+            "Outcome",
+            "PayloadRef",
+            "ProtocolContractVersion",
+            "ProviderRequestID",
+            "ReceivedAt",
+            "RecoveryDueAt",
+            "RecoveryVersion",
+            "RuntimeVersion",
+            "Sequence",
+            "TaskID",
+            "TaskRowVersion"
+          ],
+          "TestQuerySettlementBarrierRetainsDamagedMarker": [],
+          "TestQuerySettlementConflictSurvivesCompatibilityDiagnostics": [
+            "legacy_v1",
+            "unknown_state_known_v2"
+          ],
+          "TestQuerySettlementEvidenceBindingsAndValidation": [
+            "attempt",
+            "bad_sha",
+            "channel",
+            "credential",
+            "error",
+            "invalid_utf8",
+            "kind",
+            "missing",
+            "negative",
+            "nocharge",
+            "org",
+            "public_model",
+            "queued",
+            "raw_evidence",
+            "request",
+            "scope",
+            "snapshot",
+            "target",
+            "target#01",
+            "task",
+            "uppercase_sha",
+            "upstream_model",
+            "zero_snapshot"
+          ],
+          "TestQuerySettlementEvidenceClosedErrors": [
+            "authority",
+            "ctx",
+            "fmt",
+            "join",
+            "kind",
+            "nil",
+            "sentinel",
+            "sql",
+            "typed_nil",
+            "wrapper"
+          ],
+          "TestQuerySettlementEvidenceIndependentLiterals": [
+            "missing_usage",
+            "provider_nocharge",
+            "usage_100",
+            "usage_zero"
+          ],
+          "TestQuerySettlementNewPhaseExcludedFromV1Digest": [],
+          "TestQuerySettlementRoundRejectsNonPrimaryAndCancellation": [],
+          "TestRecoveryCommittedDispositionAndFailureAreIndependent": [],
+          "TestRecoveryErrorClassificationRejectsForeignSemantics": [
+            "authority_wrapped_known",
+            "cyclic_private",
+            "database",
+            "empty_private",
+            "foreign_join",
+            "foreign_wrapper",
+            "mixed_cancel",
+            "mixed_database",
+            "mixed_deadline",
+            "nested_authority",
+            "nil",
+            "nil_private"
+          ],
+          "TestRecoveryErrorsHideMessagesAndPreserveEveryCause": [],
+          "TestRecoveryLaneDeadlineDoesNotStarveNextLane": [],
+          "TestRecoveryParentCancellationStopsBeforeNextLane": []
+        }
+      }
+    },
+    "s2_migrations": {
+      "repeats": 2,
+      "packages": {
+        "github.com/laiai/laiai-next/core/internal/migrate": [
+          "TestMySQLVideoQuerySettlementMigrationPreservesAndReplays",
+          "TestMySQLVideoQuerySettlementShapeMigrationGuard"
+        ]
+      },
+      "exact_children": {
+        "github.com/laiai/laiai-next/core/internal/migrate": {
+          "TestMySQLVideoQuerySettlementMigrationPreservesAndReplays": [
+            "resume_after_0_statements",
+            "resume_after_1_statements",
+            "resume_after_2_statements"
+          ],
+          "TestMySQLVideoQuerySettlementShapeMigrationGuard": [
+            "fresh_134_to_135",
+            "whole_ddl_unrecorded_replay",
+            "recorded_exact",
+            "unrecorded_same_name_plain_column",
+            "unrecorded_same_name_wrong_expression",
+            "unrecorded_index_only",
+            "unrecorded_missing_index",
+            "unrecorded_wrong_index",
+            "recorded_missing_index",
+            "recorded_wrong_index",
+            "recorded_wrong_expression",
+            "recorded_source_collation_drift",
+            "recorded_missing_column"
+          ]
+        }
+      }
+    },
+    "s2_initial": {
+      "repeats": 2,
+      "packages": {
+        "github.com/laiai/laiai-next/core/internal/videobilling": [
+          "TestMySQLInitialSettlementCurrentReadAndRetainedLocks",
+          "TestMySQLInitialSettlementExactIdentityAndSafeFailure",
+          "TestMySQLInitialSettlementPublicWinnersAndAdjustment"
+        ]
+      },
+      "exact_children": {
+        "github.com/laiai/laiai-next/core/internal/videobilling": {
+          "TestMySQLInitialSettlementCurrentReadAndRetainedLocks": [],
+          "TestMySQLInitialSettlementExactIdentityAndSafeFailure": [
+            "entry_task_pad",
+            "hold_mismatch",
+            "initial_key_pad",
+            "reason_pad",
+            "settled_missing_usage",
+            "snapshot_mismatch",
+            "snapshot_task_pad",
+            "state_pad"
+          ],
+          "TestMySQLInitialSettlementPublicWinnersAndAdjustment": []
+        }
+      }
+    },
+    "s2_phase": {
+      "repeats": 2,
+      "packages": {
+        "github.com/laiai/laiai-next/core/internal/video": [
+          "TestMySQLQueryPhaseClosedMarkerExcludesBothGenerationModes",
+          "TestMySQLQueryPhaseRejectsInvalidGenerationDatesBeforeLimit"
+        ]
+      },
+      "exact_children": {
+        "github.com/laiai/laiai-next/core/internal/video": {
+          "TestMySQLQueryPhaseClosedMarkerExcludesBothGenerationModes": [],
+          "TestMySQLQueryPhaseRejectsInvalidGenerationDatesBeforeLimit": []
+        }
+      }
+    },
+    "s2_generation": {
+      "repeats": 2,
+      "packages": {
+        "github.com/laiai/laiai-next/core/internal/video": [
+          "TestMySQLQueryGenerationConfirmsMatchingCancellation",
+          "TestMySQLQueryGenerationFinancialConflictRejectsLaterOriginalUsage",
+          "TestMySQLQueryGenerationLateEvidenceAndPinReview",
+          "TestMySQLQueryGenerationMixedCandidatesAndDefaultV1",
+          "TestMySQLQueryGenerationObservabilitySkewAndBudgets",
+          "TestMySQLQueryGenerationObservationExactTaskIdentity",
+          "TestMySQLQueryGenerationOldTokenCannotOverwriteSettlementPhaseOrReview",
+          "TestMySQLQueryGenerationPhaseAndZeroFinancialWrites",
+          "TestMySQLQueryGenerationTaskBarrierSurvivesVersionDamage",
+          "TestMySQLQueryGenerationTransactionRollback"
+        ]
+      },
+      "exact_children": {
+        "github.com/laiai/laiai-next/core/internal/video": {
+          "TestMySQLQueryGenerationConfirmsMatchingCancellation": [],
+          "TestMySQLQueryGenerationFinancialConflictRejectsLaterOriginalUsage": [],
+          "TestMySQLQueryGenerationLateEvidenceAndPinReview": [
+            "compatible_pin",
+            "conflicting_terminal",
+            "conflicting_usage",
+            "deleted_initial",
+            "late_usage",
+            "review_missing",
+            "review_same"
+          ],
+          "TestMySQLQueryGenerationMixedCandidatesAndDefaultV1": [],
+          "TestMySQLQueryGenerationObservabilitySkewAndBudgets": [],
+          "TestMySQLQueryGenerationOldTokenCannotOverwriteSettlementPhaseOrReview": [],
+          "TestMySQLQueryGenerationPhaseAndZeroFinancialWrites": [
+            "failed_usage",
+            "missing",
+            "nocharge",
+            "positive",
+            "zero"
+          ],
+          "TestMySQLQueryGenerationTaskBarrierSurvivesVersionDamage": [
+            "corrupt_to_v1",
+            "original"
+          ],
+          "TestMySQLQueryGenerationTransactionRollback": [
+            "event",
+            "phase",
+            "state_cas"
+          ],
+          "TestMySQLQueryGenerationObservationExactTaskIdentity": []
+        }
+      }
+    },
+    "s2_settlement": {
+      "repeats": 2,
+      "packages": {
+        "github.com/laiai/laiai-next/core/internal/video": [
+          "TestMySQLQuerySettlementAbsentThenReplayRollsBack",
+          "TestMySQLQuerySettlementAfterHistoryPurge",
+          "TestMySQLQuerySettlementBadDigestQueueProgress",
+          "TestMySQLQuerySettlementClockAndDiagnosticBudgets",
+          "TestMySQLQuerySettlementConcurrentConsumers",
+          "TestMySQLQuerySettlementDamagedClosedMarkerStillBlocks",
+          "TestMySQLQuerySettlementFinancialTransactionRollback",
+          "TestMySQLQuerySettlementFutureNullAndCancellation",
+          "TestMySQLQuerySettlementGenerationRace",
+          "TestMySQLQuerySettlementInitialWinnersAndTombstone",
+          "TestMySQLQuerySettlementMoneyAndReplay",
+          "TestMySQLQuerySettlementProgressWhileDispatchHTTPBlocked",
+          "TestMySQLQuerySettlementRoundDatabaseBudget"
+        ]
+      },
+      "exact_children": {
+        "github.com/laiai/laiai-next/core/internal/video": {
+          "TestMySQLQuerySettlementAbsentThenReplayRollsBack": [],
+          "TestMySQLQuerySettlementAfterHistoryPurge": [],
+          "TestMySQLQuerySettlementBadDigestQueueProgress": [],
+          "TestMySQLQuerySettlementClockAndDiagnosticBudgets": [
+            "clock_200ms",
+            "diagnostic_1s",
+            "diagnostic_remaining_parent"
+          ],
+          "TestMySQLQuerySettlementConcurrentConsumers": [],
+          "TestMySQLQuerySettlementDamagedClosedMarkerStillBlocks": [],
+          "TestMySQLQuerySettlementFinancialTransactionRollback": [
+            "completion",
+            "event",
+            "initial",
+            "invocation",
+            "key",
+            "ledger",
+            "outbox",
+            "quota"
+          ],
+          "TestMySQLQuerySettlementFutureNullAndCancellation": [
+            "cancel_after_initial",
+            "cancelled",
+            "future",
+            "invalid_phase",
+            "null"
+          ],
+          "TestMySQLQuerySettlementGenerationRace": [
+            "generation_first",
+            "settlement_first"
+          ],
+          "TestMySQLQuerySettlementInitialWinnersAndTombstone": [
+            "adjusted_then_deleted",
+            "different_release_reason",
+            "different_tokens",
+            "same_tokens_other_source"
+          ],
+          "TestMySQLQuerySettlementMoneyAndReplay": [
+            "nocharge",
+            "overhold",
+            "positive",
+            "zero"
+          ],
+          "TestMySQLQuerySettlementProgressWhileDispatchHTTPBlocked": [],
+          "TestMySQLQuerySettlementRoundDatabaseBudget": [
+            "shorter_parent",
+            "whole_round_2s"
+          ]
+        }
+      }
+    },
+    "s2_host": {
+      "repeats": 2,
+      "packages": {
+        "github.com/laiai/laiai-next/core/cmd/core": [
+          "TestMySQLQuerySettlementJobTrackedDrain"
+        ]
+      },
+      "exact_children": {
+        "github.com/laiai/laiai-next/core/cmd/core": {
+          "TestMySQLQuerySettlementJobTrackedDrain": [
+            "cancel_in_candidate",
+            "completed"
+          ]
+        }
+      }
+    }
+  },
+  "timeouts": {
+    "s2_pure": "10m",
+    "s2_migrations": "15m",
+    "s2_initial": "15m",
+    "s2_phase": "10m",
+    "s2_generation": "25m",
+    "s2_settlement": "25m",
+    "s2_host": "5m"
+  },
+  "origin": {
+    "source_archive_sha256": "a91936ce63c4fd0fde374a1ae807d51edc033ba96fa278e4f75f412288737d48",
+    "catalog_sha256": "75508cd063423f99990fd390805d6692f9b8cb9b518103ed1423c550e6af436c",
+    "note": "Selectors only; this is not evidence that the current commit passed."
+  }
+}

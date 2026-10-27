@@ -96,16 +96,17 @@ func TestQueryRecoveryEvidenceDigestCoversDurableFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	mutable := map[string]bool{"AppliedAt": true, "ApplyErrorCode": true, "RecoveryDueAt": true, "RecoveryVersion": true}
-	typ := reflect.TypeOf(row)
+	typ := reflect.TypeOf(queryReceiptBeforeS2{})
 	for index := 0; index < typ.NumField(); index++ {
 		field := typ.Field(index)
 		t.Run(field.Name, func(t *testing.T) {
 			// Storage fields must never silently disappear behind a JSON DTO tag.
-			if field.Tag.Get("json") != "" {
+			currentField, ok := reflect.TypeOf(row).FieldByName(field.Name)
+			if !ok || currentField.Type != field.Type || currentField.Tag.Get("json") != "" {
 				t.Fatal("evidence hashing requires explicit review of new JSON tags")
 			}
 			copy := row
-			value := reflect.ValueOf(&copy).Elem().Field(index)
+			value := reflect.ValueOf(&copy).Elem().FieldByName(field.Name)
 			switch value.Kind() {
 			case reflect.String:
 				value.SetString(value.String() + "changed")

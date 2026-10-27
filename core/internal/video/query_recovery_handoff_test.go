@@ -380,7 +380,7 @@ func TestMySQLQueryRecoveryBinaryHandoffProcess(t *testing.T) {
 		t.Fatal("compiled source role does not match available production entry points")
 	}
 	cfg, _ := mysqlDriver.ParseDSN(e.dsn)
-	h.emit(0, "ready", map[string]any{"schema": cfg.DBName, "migration_max": 133, "has_persisted_consumer": persisted, "has_dispatch_consumer": dispatch, "task_count": len(h.seed.Tasks)})
+	h.emit(0, "ready", map[string]any{"schema": cfg.DBName, "migration_max": 135, "has_persisted_consumer": persisted, "has_dispatch_consumer": dispatch, "task_count": len(h.seed.Tasks)})
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 4096), 4097)
 	for scanner.Scan() {
@@ -461,7 +461,7 @@ func (h *queryHandoffHarness) initialize() error {
 		return err
 	}
 	var version string
-	if err = h.verify.Raw("SELECT MAX(version) FROM schema_migrations").Scan(&version).Error; err != nil || version != "0133_video_query_recovery_progress" {
+	if err = h.verify.Raw("SELECT MAX(version) FROM schema_migrations").Scan(&version).Error; err != nil || version != "0135_video_query_settlement_shape" {
 		return errQueryHandoff
 	}
 	h.db, err = ledger.EnableActivityTracking(h.db)

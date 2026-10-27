@@ -1,0 +1,1597 @@
+{
+  "Migration": "0135_video_query_settlement_shape",
+  "SQLSHA256": "ac66e37551559df567455bf3dc0db4ea0ab5facaba225ec41467689826b74e43",
+  "Columns": [
+    {
+      "ColumnName": "attempt_id",
+      "DataType": "varchar",
+      "ColumnType": "varchar(64)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "utf8mb4",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "utf8mb4_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "org_id",
+      "DataType": "bigint",
+      "ColumnType": "bigint unsigned",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "task_id",
+      "DataType": "varchar",
+      "ColumnType": "varchar(64)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "utf8mb4",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "utf8mb4_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "sequence",
+      "DataType": "bigint",
+      "ColumnType": "bigint unsigned",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "task_row_version",
+      "DataType": "bigint",
+      "ColumnType": "bigint unsigned",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "http_status",
+      "DataType": "int",
+      "ColumnType": "int",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "outcome",
+      "DataType": "varchar",
+      "ColumnType": "varchar(32)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "utf8mb4",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "utf8mb4_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "provider_request_id",
+      "DataType": "varchar",
+      "ColumnType": "varchar(256)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": true
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "utf8mb4",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "utf8mb4_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "observation_json",
+      "DataType": "text",
+      "ColumnType": "text",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "utf8mb4",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "utf8mb4_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "has_video",
+      "DataType": "tinyint",
+      "ColumnType": "tinyint(1)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "0",
+        "Valid": true
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "has_last_frame",
+      "DataType": "tinyint",
+      "ColumnType": "tinyint(1)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "0",
+        "Valid": true
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "payload_ref",
+      "DataType": "varchar",
+      "ColumnType": "varchar(64)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "utf8mb4",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "utf8mb4_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "received_at",
+      "DataType": "datetime",
+      "ColumnType": "datetime(3)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 3,
+        "Valid": true
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "applied_at",
+      "DataType": "datetime",
+      "ColumnType": "datetime(3)",
+      "IsNullable": "YES",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 3,
+        "Valid": true
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "apply_error_code",
+      "DataType": "varchar",
+      "ColumnType": "varchar(64)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": true
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "utf8mb4",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "utf8mb4_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "runtime_version",
+      "DataType": "varchar",
+      "ColumnType": "varchar(64)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "ark-official-legacy-v1",
+        "Valid": true
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "utf8mb4",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "utf8mb4_0900_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "adapter_version",
+      "DataType": "varchar",
+      "ColumnType": "varchar(64)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "ark-v3-v1",
+        "Valid": true
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "utf8mb4",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "utf8mb4_0900_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "protocol_contract_version",
+      "DataType": "varchar",
+      "ColumnType": "varchar(64)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "video-contract-v1",
+        "Valid": true
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "utf8mb4",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "utf8mb4_0900_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "observation_schema_version",
+      "DataType": "int",
+      "ColumnType": "int unsigned",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "1",
+        "Valid": true
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "recovery_due_at",
+      "DataType": "datetime",
+      "ColumnType": "datetime(3)",
+      "IsNullable": "YES",
+      "ColumnDefault": {
+        "String": "utc_timestamp(3)",
+        "Valid": true
+      },
+      "Extra": "DEFAULT_GENERATED",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 3,
+        "Valid": true
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "recovery_version",
+      "DataType": "bigint",
+      "ColumnType": "bigint unsigned",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "0",
+        "Valid": true
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "generation_applied_at",
+      "DataType": "datetime",
+      "ColumnType": "datetime(3)",
+      "IsNullable": "YES",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 3,
+        "Valid": true
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "ColumnName": "settlement_kind",
+      "DataType": "varchar",
+      "ColumnType": "varchar(24)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": true
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "utf8mb4",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "utf8mb4_0900_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "settlement_evidence_sha256",
+      "DataType": "char",
+      "ColumnType": "char(64)",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": true
+      },
+      "Extra": "",
+      "GenerationExpression": "",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "ascii",
+        "Valid": true
+      },
+      "CollationName": {
+        "String": "ascii_bin",
+        "Valid": true
+      }
+    },
+    {
+      "ColumnName": "settlement_shape_ready",
+      "DataType": "tinyint",
+      "ColumnType": "tinyint unsigned",
+      "IsNullable": "NO",
+      "ColumnDefault": {
+        "String": "",
+        "Valid": false
+      },
+      "Extra": "VIRTUAL GENERATED",
+      "GenerationExpression": "(case when ((`generation_applied_at` >= cast(_utf8mb4\\'1000-01-01 00:00:00\\' as datetime)) and (cast(`settlement_kind` as char charset binary) in (_binary\\'usage\\',_binary\\'provider_nocharge\\'))) then 1 else 0 end)",
+      "DatetimePrecision": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "CharacterSetName": {
+        "String": "",
+        "Valid": false
+      },
+      "CollationName": {
+        "String": "",
+        "Valid": false
+      }
+    }
+  ],
+  "Indexes": [
+    {
+      "IndexName": "idx_video_query_phase_due",
+      "NonUnique": 1,
+      "SeqInIndex": 1,
+      "ColumnName": {
+        "String": "runtime_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_phase_due",
+      "NonUnique": 1,
+      "SeqInIndex": 2,
+      "ColumnName": {
+        "String": "adapter_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_phase_due",
+      "NonUnique": 1,
+      "SeqInIndex": 3,
+      "ColumnName": {
+        "String": "protocol_contract_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_phase_due",
+      "NonUnique": 1,
+      "SeqInIndex": 4,
+      "ColumnName": {
+        "String": "observation_schema_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_phase_due",
+      "NonUnique": 1,
+      "SeqInIndex": 5,
+      "ColumnName": {
+        "String": "settlement_kind",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_phase_due",
+      "NonUnique": 1,
+      "SeqInIndex": 6,
+      "ColumnName": {
+        "String": "applied_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_phase_due",
+      "NonUnique": 1,
+      "SeqInIndex": 7,
+      "ColumnName": {
+        "String": "recovery_due_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_phase_due",
+      "NonUnique": 1,
+      "SeqInIndex": 8,
+      "ColumnName": {
+        "String": "received_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_phase_due",
+      "NonUnique": 1,
+      "SeqInIndex": 9,
+      "ColumnName": {
+        "String": "attempt_id",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_recovery_due",
+      "NonUnique": 1,
+      "SeqInIndex": 1,
+      "ColumnName": {
+        "String": "runtime_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_recovery_due",
+      "NonUnique": 1,
+      "SeqInIndex": 2,
+      "ColumnName": {
+        "String": "adapter_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_recovery_due",
+      "NonUnique": 1,
+      "SeqInIndex": 3,
+      "ColumnName": {
+        "String": "protocol_contract_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_recovery_due",
+      "NonUnique": 1,
+      "SeqInIndex": 4,
+      "ColumnName": {
+        "String": "observation_schema_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_recovery_due",
+      "NonUnique": 1,
+      "SeqInIndex": 5,
+      "ColumnName": {
+        "String": "applied_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_recovery_due",
+      "NonUnique": 1,
+      "SeqInIndex": 6,
+      "ColumnName": {
+        "String": "recovery_due_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_recovery_due",
+      "NonUnique": 1,
+      "SeqInIndex": 7,
+      "ColumnName": {
+        "String": "received_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_recovery_due",
+      "NonUnique": 1,
+      "SeqInIndex": 8,
+      "ColumnName": {
+        "String": "attempt_id",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_settlement_due",
+      "NonUnique": 1,
+      "SeqInIndex": 1,
+      "ColumnName": {
+        "String": "runtime_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_settlement_due",
+      "NonUnique": 1,
+      "SeqInIndex": 2,
+      "ColumnName": {
+        "String": "adapter_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_settlement_due",
+      "NonUnique": 1,
+      "SeqInIndex": 3,
+      "ColumnName": {
+        "String": "protocol_contract_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_settlement_due",
+      "NonUnique": 1,
+      "SeqInIndex": 4,
+      "ColumnName": {
+        "String": "observation_schema_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_settlement_due",
+      "NonUnique": 1,
+      "SeqInIndex": 5,
+      "ColumnName": {
+        "String": "settlement_shape_ready",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_settlement_due",
+      "NonUnique": 1,
+      "SeqInIndex": 6,
+      "ColumnName": {
+        "String": "applied_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_settlement_due",
+      "NonUnique": 1,
+      "SeqInIndex": 7,
+      "ColumnName": {
+        "String": "recovery_due_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_settlement_due",
+      "NonUnique": 1,
+      "SeqInIndex": 8,
+      "ColumnName": {
+        "String": "received_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_settlement_due",
+      "NonUnique": 1,
+      "SeqInIndex": 9,
+      "ColumnName": {
+        "String": "attempt_id",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_task_financial_conflict",
+      "NonUnique": 1,
+      "SeqInIndex": 1,
+      "ColumnName": {
+        "String": "org_id",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_task_financial_conflict",
+      "NonUnique": 1,
+      "SeqInIndex": 2,
+      "ColumnName": {
+        "String": "task_id",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_task_financial_conflict",
+      "NonUnique": 1,
+      "SeqInIndex": 3,
+      "ColumnName": {
+        "String": "apply_error_code",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_task_financial_conflict",
+      "NonUnique": 1,
+      "SeqInIndex": 4,
+      "ColumnName": {
+        "String": "attempt_id",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_unapplied",
+      "NonUnique": 1,
+      "SeqInIndex": 1,
+      "ColumnName": {
+        "String": "applied_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_query_unapplied",
+      "NonUnique": 1,
+      "SeqInIndex": 2,
+      "ColumnName": {
+        "String": "received_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_runtime_receipt",
+      "NonUnique": 1,
+      "SeqInIndex": 1,
+      "ColumnName": {
+        "String": "runtime_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_runtime_receipt",
+      "NonUnique": 1,
+      "SeqInIndex": 2,
+      "ColumnName": {
+        "String": "adapter_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_runtime_receipt",
+      "NonUnique": 1,
+      "SeqInIndex": 3,
+      "ColumnName": {
+        "String": "protocol_contract_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_runtime_receipt",
+      "NonUnique": 1,
+      "SeqInIndex": 4,
+      "ColumnName": {
+        "String": "observation_schema_version",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_runtime_receipt",
+      "NonUnique": 1,
+      "SeqInIndex": 5,
+      "ColumnName": {
+        "String": "applied_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_runtime_receipt",
+      "NonUnique": 1,
+      "SeqInIndex": 6,
+      "ColumnName": {
+        "String": "received_at",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "idx_video_runtime_receipt",
+      "NonUnique": 1,
+      "SeqInIndex": 7,
+      "ColumnName": {
+        "String": "attempt_id",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "PRIMARY",
+      "NonUnique": 0,
+      "SeqInIndex": 1,
+      "ColumnName": {
+        "String": "attempt_id",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "uk_video_query_sequence",
+      "NonUnique": 0,
+      "SeqInIndex": 1,
+      "ColumnName": {
+        "String": "org_id",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "uk_video_query_sequence",
+      "NonUnique": 0,
+      "SeqInIndex": 2,
+      "ColumnName": {
+        "String": "task_id",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    },
+    {
+      "IndexName": "uk_video_query_sequence",
+      "NonUnique": 0,
+      "SeqInIndex": 3,
+      "ColumnName": {
+        "String": "sequence",
+        "Valid": true
+      },
+      "Collation": {
+        "String": "A",
+        "Valid": true
+      },
+      "SubPart": {
+        "Int64": 0,
+        "Valid": false
+      },
+      "IndexType": "BTREE",
+      "IsVisible": "YES",
+      "Expression": {
+        "String": "",
+        "Valid": false
+      }
+    }
+  ]
+}

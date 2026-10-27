@@ -201,7 +201,7 @@ func queryRecoveryMigrationDatabase(t *testing.T) *gorm.DB {
 		if pool != nil {
 			_ = pool.Close()
 		}
-		if created {
+		if created && !t.Failed() {
 			ctx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 			defer stop()
 			if _, err := admin.ExecContext(ctx, "DROP DATABASE `"+name+"`"); err != nil {
@@ -334,9 +334,10 @@ func queryRecoveryAssertWriters(t *testing.T, db *gorm.DB) {
 		row := video.QueryReceipt{AttemptID: fmt.Sprintf("query-new-orm-%d", index), OrgID: 1, TaskID: "runtime-qrecovery-0", Sequence: uint64(21 + index), TaskRowVersion: 7,
 			RuntimeVersion: videoruntime.RuntimeV1, AdapterVersion: videoruntime.AdapterV1, ProtocolContractVersion: videoruntime.ProtocolV1, ObservationSchemaVersion: 1,
 			HTTPStatus: 200, Outcome: "accepted", ObservationJSON: `{}`, PayloadRef: "evidence", ReceivedAt: lower}
-		writer := db
+		// This fixture targets schema 133: explicitly retain its old writer columns.
+		writer := db.Omit("GenerationAppliedAt", "SettlementKind", "SettlementEvidenceSHA256")
 		if explicitOmit {
-			writer = db.Omit("RecoveryDueAt", "RecoveryVersion")
+			writer = db.Omit("RecoveryDueAt", "RecoveryVersion", "GenerationAppliedAt", "SettlementKind", "SettlementEvidenceSHA256")
 		}
 		if err := writer.Create(&row).Error; err != nil {
 			t.Fatal("current ORM receipt writer failed")

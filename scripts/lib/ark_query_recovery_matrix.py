@@ -140,7 +140,7 @@ class Child:
         self.thread.start()
         ready = self.wait('ready', 0, 30)
         keys(ready['data'], ('schema', 'migration_max', 'has_persisted_consumer', 'has_dispatch_consumer', 'task_count'), 'ready_shape')
-        need(ready['data']['schema'] == matrix.schemas[case] and ready['data']['migration_max'] == 133 and
+        need(ready['data']['schema'] == matrix.schemas[case] and ready['data']['migration_max'] == 135 and
              ready['data']['has_persisted_consumer'] is (self.role == 'new') and
              ready['data']['has_dispatch_consumer'] is (self.role == 'new'), 'ready_role')
 

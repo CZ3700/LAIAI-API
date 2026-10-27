@@ -76,8 +76,8 @@ func mutationShutdownPrivateDB(t *testing.T) (*gorm.DB, string, string) {
 		t.Skip("ARK_TEST_MYSQL_DSN required for real mutation shutdown integration")
 	}
 	cfg, err := mysqlDriver.ParseDSN(dsn)
-	if err != nil || cfg.DBName != "ark_test" {
-		t.Fatal("mutation shutdown requires the isolated ark_test connection")
+	if err != nil || (cfg.DBName != "ark_test" && !regexp.MustCompile(`^ark_test_s2_compat_[a-z0-9]{1,24}$`).MatchString(cfg.DBName)) {
+		t.Fatal("mutation shutdown requires an approved isolated control database")
 	}
 	var nonce [12]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
@@ -97,7 +97,7 @@ func mutationShutdownPrivateDB(t *testing.T) (*gorm.DB, string, string) {
 		if pool != nil {
 			_ = pool.Close()
 		}
-		if created {
+		if created && !t.Failed() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if _, err := admin.ExecContext(ctx, "DROP DATABASE `"+name+"`"); err != nil {

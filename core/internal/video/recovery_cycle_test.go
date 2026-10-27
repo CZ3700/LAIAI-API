@@ -50,7 +50,7 @@ func TestRecoveryLaneDeadlineDoesNotStarveNextLane(t *testing.T) {
 		t.Fatal("lane timeout either vanished or prevented healthy recovery")
 	}
 	observation := s.metrics().runtimeSnapshot()
-	if len(observation.RecoveryLanes) != 4 || observation.RecoveryLanes[0].Failed != 1 || observation.RecoveryLanes[0].Errors != 1 || observation.RecoveryLanes[3].Applied != 2 || observation.RecoveryLanes[3].Errors != 0 {
+	if len(observation.RecoveryLanes) != 5 || observation.RecoveryLanes[0].Failed != 1 || observation.RecoveryLanes[0].Errors != 1 || observation.RecoveryLanes[3].Applied != 2 || observation.RecoveryLanes[3].Errors != 0 || observation.RecoveryLanes[4].Selected != 0 || observation.RecoveryLanes[4].Errors != 0 {
 		t.Fatal("recovery outcomes are not bounded and independently observable")
 	}
 }
