@@ -130,6 +130,8 @@ interface VideoTask {
   status: 'queued' | 'running' | 'succeeded' | 'failed' | string
   fail_reason?: string
   result_url?: string
+  content?: { video_url?: string }
+  usage?: { completion_tokens?: number | null; total_tokens?: number | null }
   cost_usd?: string
   completion_tokens?: number
 }
@@ -534,7 +536,7 @@ async function pollVideoOnce(context = videoContext) {
     if (task.status === 'succeeded') {
       stopVideoPolling()
       forgetTrackedTask()
-      // 终态详情：轮询响应含 result_url 与实际结算费用
+      // 终态详情：官方查询形状（content.video_url / usage）
       recordDetail(currentDetailEpoch, `/v1/video/generations/${id}`, resp.status, performance.now(), { poll: true }, JSON.stringify(task, null, 2))
       await loadVideoResult(task, context)
     } else if (task.status === 'failed') {
@@ -559,18 +561,20 @@ let lastVideoLoadErr = ''
 
 async function loadVideoResult(task: VideoTask, context: RequestContext) {
   if (!currentVideoContext(context)) return
-  if (!task.result_url) {
+  // 官方单查形状只有 content.video_url；result_url 仅为旧会话兜底。
+  const resultURL = task.content?.video_url ?? task.result_url
+  if (!resultURL) {
     videoError.value = t('play.videoNoResult')
     return
   }
   lastVideoLoadErr = ''
-  const direct = /^https?:\/\//i.test(task.result_url)
-  if (direct && (await tryVideoBlob(task.result_url, context))) return
+  const direct = /^https?:\/\//i.test(resultURL)
+  if (direct && (await tryVideoBlob(resultURL, context))) return
   if (!currentVideoContext(context)) return
   if (await tryVideoBlob(`/v1/video/generations/${encodeURIComponent(task.id)}/content`, context, true)) return
   if (!currentVideoContext(context)) return
   if (direct) {
-    videoSrc.value = task.result_url // 兜底：能播就播；拒播时 @error 触发下载提示
+    videoSrc.value = resultURL // 兜底：能播就播；拒播时 @error 触发下载提示
     return
   }
   videoError.value = lastVideoLoadErr || t('play.videoNoResult')

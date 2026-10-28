@@ -120,7 +120,7 @@
             }
           }
         },
-        "description": "安全错误。素材接口非法 JSON/缺少幂等键/非法网址为 400；任务参数或幂等键非法通常为 422；\n401=Key 无效；403=权限或真人业务许可不足；\n任务接口的素材校验错误映射为 403 forbidden、409 invalid_state 或 422 unsupported_capability；\n素材接口独立返回 authorization_required、resource_in_use、group_not_empty 等安全错误码。\n404=资源不存在或跨组织；409=幂等冲突/状态冲突；410=产物已过期；\n413=请求体超限；422=未验证或不支持的模型参数/素材组合；429=Token 配额/限流/并发限制；\n402=余额不足；500=素材服务内部失败；502/503=服务不可用。已接受的提交结果未知通过任务状态表达，\n不使用误导性的失败结果允许客户任意重新创建。错误 message 不包含上游原文、凭证或 PII。\n",
+        "description": "安全错误。素材接口非法 JSON/缺少幂等键/非法网址为 400；任务参数或幂等键非法通常为 422；\n401=Key 无效；403=权限或真人业务许可不足；\n任务接口的素材校验错误映射为 403 forbidden、409 invalid_state 或 422 unsupported_capability；\n素材接口独立返回 authorization_required、resource_in_use、group_not_empty 等安全错误码。\n404=资源不存在或跨组织；409=幂等冲突/状态冲突；410=产物已过期；\n413=请求体超限；422=未验证或不支持的模型参数/素材组合；429=Token 配额/限流/并发限制；\n402=余额不足；500=素材服务内部失败；502/503=服务不可用（503 亦含平台侧\n真人认证回调未配置的 provider_unavailable，属可重试的服务端状态）。已接受的提交结果未知通过任务状态表达，\n不使用误导性的失败结果允许客户任意重新创建。错误 message 不包含上游原文、凭证或 PII。\n",
         "headers": {
           "X-Request-Id": {
             "description": "平台请求 ID",
@@ -189,181 +189,6 @@
         "required": [
           "completion_tokens",
           "total_tokens"
-        ],
-        "type": "object"
-      },
-      "Asset": {
-        "additionalProperties": false,
-        "properties": {
-          "create_operation": {
-            "$ref": "#/components/schemas/Operation"
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "delete_operation": {
-            "$ref": "#/components/schemas/Operation",
-            "description": "已受理删除的安全回执；刷新页面仍保留，unknown 不允许再次派发删除。"
-          },
-          "deletion_block_reason": {
-            "description": "当前删除受限的安全原因码；提交时重新检查状态、权限及任务引用。",
-            "type": "string"
-          },
-          "deletion_mode": {
-            "description": "依据素材固定所属项目计算，不能用当前默认项目权限替代。",
-            "enum": [
-              "official",
-              "local_failed",
-              "blocked"
-            ],
-            "type": "string"
-          },
-          "group_id": {
-            "$ref": "#/components/schemas/GroupId"
-          },
-          "id": {
-            "$ref": "#/components/schemas/AssetId"
-          },
-          "media_type": {
-            "$ref": "#/components/schemas/MediaType"
-          },
-          "name": {
-            "maxLength": 64,
-            "type": "string"
-          },
-          "reference": {
-            "description": "仅 ready 时提供的本平台素材引用。",
-            "pattern": "^asset://asset_[A-Za-z0-9_-]+$",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "creating",
-              "processing",
-              "ready",
-              "needs_review",
-              "failed",
-              "deleting"
-            ],
-            "type": "string"
-          },
-          "updated_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "version": {
-            "description": "当前资源版本；PATCH 时提交为 expected_version，版本过期返回 409。",
-            "minimum": 1,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "group_id",
-          "media_type",
-          "name",
-          "status",
-          "version",
-          "created_at",
-          "updated_at"
-        ],
-        "type": "object"
-      },
-      "AssetGroup": {
-        "additionalProperties": false,
-        "properties": {
-          "asset_count": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "authorization_last_verified_at": {
-            "description": "最近核实业务许可的时间；未知时省略，与 H5 链接创建/到期时间不同。",
-            "format": "date-time",
-            "type": "string"
-          },
-          "authorization_status": {
-            "description": "本平台可审计业务许可记录或经核官方信号，只读。GetAssetGroup 的基本信息不能证明实时未撤销。\nH5 成功不等于永久业务许可；真人组上传和使用时重新验证，无法确认仍有效则拒绝引用。\n",
-            "enum": [
-              "not_required",
-              "authorized",
-              "expired",
-              "revoked",
-              "needs_review"
-            ],
-            "type": "string"
-          },
-          "authorization_valid_until": {
-            "description": "可审计业务许可截止时间；未知时省略，不能解读为永久授权。",
-            "format": "date-time",
-            "type": "string"
-          },
-          "create_operation": {
-            "$ref": "#/components/schemas/Operation",
-            "description": "本地创建操作的安全回执；导入组或无本地创建操作时省略。unknown 表示结果待核验，不能视为失败或再次提交。"
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "delete_operation": {
-            "$ref": "#/components/schemas/Operation"
-          },
-          "deletion_block_reason": {
-            "description": "当前删除受限的安全原因码；正式提交时仍重新校验。空字符串表示投影无阻塞。",
-            "type": "string"
-          },
-          "deletion_mode": {
-            "enum": [
-              "official",
-              "local_failed",
-              "blocked"
-            ],
-            "type": "string"
-          },
-          "id": {
-            "$ref": "#/components/schemas/GroupId"
-          },
-          "kind": {
-            "enum": [
-              "virtual",
-              "real_person"
-            ],
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "creating",
-              "ready",
-              "needs_review",
-              "failed",
-              "deleting"
-            ],
-            "type": "string"
-          },
-          "updated_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "version": {
-            "description": "当前资源版本；PATCH 的 expected_version 必须来自最近 GET 或列表，不能自行递增猜测。",
-            "minimum": 1,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "kind",
-          "name",
-          "status",
-          "asset_count",
-          "authorization_status",
-          "version",
-          "created_at",
-          "updated_at"
         ],
         "type": "object"
       },
@@ -1192,6 +1017,101 @@
           }
         ]
       },
+      "OfficialTaskOperation": {
+        "additionalProperties": false,
+        "description": "官方形状的任务取消/删除受理回执；接受不等于完成，以 operation_id 查询统一操作资源。",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/TaskId"
+          },
+          "operation_id": {
+            "pattern": "^op_[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "cancelling",
+              "deleting"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "operation_id"
+        ],
+        "type": "object"
+      },
+      "OfficialTaskQuery": {
+        "additionalProperties": false,
+        "description": "官方查询任务形状。status 取值为平台生命周期枚举（含 accepted/submitting/submission_unknown\n平台提交阶段），不是官方四态原样映射。billing_state/sync_state/artifact_status/deletion_state\n等平台扩展不在本响应。\n",
+        "properties": {
+          "content": {
+            "additionalProperties": false,
+            "description": "仅在已取得官方产物链接时出现。",
+            "properties": {
+              "video_url": {
+                "description": "官方视频直链；保留签名参数，访问时不得附带 Gateway Key。",
+                "format": "uri",
+                "pattern": "^https://",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "created_at": {
+            "description": "任务受理时间，Unix 秒。",
+            "type": "integer"
+          },
+          "id": {
+            "$ref": "#/components/schemas/TaskId"
+          },
+          "model": {
+            "$ref": "#/components/schemas/PublicModel"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "updated_at": {
+            "description": "最近状态更新时间，Unix 秒。",
+            "type": "integer"
+          },
+          "usage": {
+            "additionalProperties": false,
+            "description": "仅在已观察到官方用量时出现；字段缺失为 null，不以零或估算代填。",
+            "properties": {
+              "completion_tokens": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "total_tokens": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "completion_tokens",
+              "total_tokens"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "model",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "Operation": {
         "additionalProperties": false,
         "properties": {
@@ -1251,103 +1171,6 @@
           "status",
           "resource_id",
           "poll_url",
-          "created_at"
-        ],
-        "type": "object"
-      },
-      "PortraitAuthorization": {
-        "additionalProperties": false,
-        "allOf": [
-          {
-            "else": {
-              "not": {
-                "required": [
-                  "group_id"
-                ]
-              }
-            },
-            "if": {
-              "properties": {
-                "status": {
-                  "const": "succeeded"
-                }
-              }
-            },
-            "then": {
-              "required": [
-                "group_id"
-              ]
-            }
-          },
-          {
-            "else": {
-              "not": {
-                "required": [
-                  "authorization_url"
-                ]
-              }
-            },
-            "if": {
-              "properties": {
-                "status": {
-                  "const": "pending"
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "expires_at": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "authorization_url"
-              ]
-            }
-          }
-        ],
-        "properties": {
-          "authorization_url": {
-            "description": "仅 pending 返回的官方 H5 授权 URL，禁止写入普通日志或事件 DTO。",
-            "format": "uri",
-            "pattern": "^https://",
-            "type": "string"
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "expires_at": {
-            "description": "H5 认证凭证到期时间；官方有效 30 分钟且单次认证，创建未完成为 null，与肖像授权期限独立。",
-            "format": "date-time",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "group_id": {
-            "$ref": "#/components/schemas/GroupId"
-          },
-          "session_id": {
-            "$ref": "#/components/schemas/SessionId"
-          },
-          "status": {
-            "description": "创建结果未知不得盲重发官方请求；沿原会话意图核对并重放同一平台 session_id。",
-            "enum": [
-              "creating",
-              "submission_unknown",
-              "pending",
-              "succeeded",
-              "failed",
-              "expired"
-            ],
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id",
-          "status",
-          "expires_at",
           "created_at"
         ],
         "type": "object"
@@ -1512,6 +1335,371 @@
         },
         "type": "object"
       },
+      "RpcAssetGroupItem": {
+        "additionalProperties": false,
+        "properties": {
+          "AssetCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "Id": {
+            "$ref": "#/components/schemas/GroupId"
+          },
+          "Name": {
+            "type": "string"
+          },
+          "Status": {
+            "$ref": "#/components/schemas/RpcGroupStatus"
+          }
+        },
+        "required": [
+          "Id",
+          "Name",
+          "Status",
+          "AssetCount"
+        ],
+        "type": "object"
+      },
+      "RpcAssetItem": {
+        "additionalProperties": false,
+        "properties": {
+          "AssetType": {
+            "$ref": "#/components/schemas/MediaType"
+          },
+          "GroupId": {
+            "$ref": "#/components/schemas/GroupId"
+          },
+          "Id": {
+            "$ref": "#/components/schemas/AssetId"
+          },
+          "Status": {
+            "$ref": "#/components/schemas/RpcAssetStatus"
+          }
+        },
+        "required": [
+          "Id",
+          "GroupId",
+          "AssetType",
+          "Status"
+        ],
+        "type": "object"
+      },
+      "RpcAssetStatus": {
+        "description": "平台素材状态取值（形状按官方，取值为平台语义）。",
+        "enum": [
+          "creating",
+          "processing",
+          "ready",
+          "needs_review",
+          "failed",
+          "deleting"
+        ],
+        "type": "string"
+      },
+      "RpcCreateAssetGroupResult": {
+        "additionalProperties": false,
+        "properties": {
+          "Id": {
+            "$ref": "#/components/schemas/GroupId"
+          },
+          "Name": {
+            "type": "string"
+          },
+          "Status": {
+            "$ref": "#/components/schemas/RpcGroupStatus"
+          }
+        },
+        "required": [
+          "Id",
+          "Name",
+          "Status"
+        ],
+        "type": "object"
+      },
+      "RpcCreateAssetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "AssetType": {
+            "$ref": "#/components/schemas/MediaType"
+          },
+          "GroupId": {
+            "$ref": "#/components/schemas/GroupId"
+          },
+          "Id": {
+            "$ref": "#/components/schemas/AssetId"
+          },
+          "Status": {
+            "$ref": "#/components/schemas/RpcAssetStatus"
+          }
+        },
+        "required": [
+          "Id",
+          "GroupId",
+          "AssetType",
+          "Status"
+        ],
+        "type": "object"
+      },
+      "RpcCreatePortraitResult": {
+        "additionalProperties": false,
+        "properties": {
+          "SessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "Status": {
+            "$ref": "#/components/schemas/RpcPortraitStatus"
+          }
+        },
+        "required": [
+          "SessionId",
+          "Status"
+        ],
+        "type": "object"
+      },
+      "RpcDeleteResult": {
+        "additionalProperties": false,
+        "properties": {
+          "Id": {
+            "description": "平台资源 ID（ag_/asset_）。",
+            "type": "string"
+          },
+          "Status": {
+            "const": "deleting",
+            "type": "string"
+          }
+        },
+        "required": [
+          "Id",
+          "Status"
+        ],
+        "type": "object"
+      },
+      "RpcEnvelope": {
+        "additionalProperties": false,
+        "description": "Volcengine RPC 官方响应信封。RequestId 为平台请求 ID（与 X-Request-Id 头一致）；\nAction 对应官方接口动作名。Result 内字段为 PascalCase。\n",
+        "properties": {
+          "ResponseMetadata": {
+            "additionalProperties": false,
+            "properties": {
+              "Action": {
+                "type": "string"
+              },
+              "Region": {
+                "const": "cn-beijing",
+                "type": "string"
+              },
+              "RequestId": {
+                "type": "string"
+              },
+              "Service": {
+                "const": "ark",
+                "type": "string"
+              },
+              "Version": {
+                "const": "2024-01-01",
+                "type": "string"
+              }
+            },
+            "required": [
+              "RequestId",
+              "Action",
+              "Version",
+              "Service",
+              "Region"
+            ],
+            "type": "object"
+          },
+          "Result": {
+            "description": "官方动作结果，字段 PascalCase；具体结构由各接口的 Result schema 约束。",
+            "type": "object"
+          }
+        },
+        "required": [
+          "ResponseMetadata",
+          "Result"
+        ],
+        "type": "object"
+      },
+      "RpcGetAssetGroupResult": {
+        "additionalProperties": false,
+        "properties": {
+          "AssetCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "CreatedAt": {
+            "description": "Unix 秒。",
+            "type": "integer"
+          },
+          "Id": {
+            "$ref": "#/components/schemas/GroupId"
+          },
+          "Name": {
+            "type": "string"
+          },
+          "Status": {
+            "$ref": "#/components/schemas/RpcGroupStatus"
+          },
+          "UpdatedAt": {
+            "description": "Unix 秒。",
+            "type": "integer"
+          },
+          "Version": {
+            "description": "平台扩展字段（官方无此字段）；PATCH expected_version 乐观锁的读取来源。",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "Id",
+          "Name",
+          "Status",
+          "AssetCount",
+          "Version",
+          "CreatedAt",
+          "UpdatedAt"
+        ],
+        "type": "object"
+      },
+      "RpcGetAssetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "AssetType": {
+            "$ref": "#/components/schemas/MediaType"
+          },
+          "CreatedAt": {
+            "description": "Unix 秒。",
+            "type": "integer"
+          },
+          "GroupId": {
+            "$ref": "#/components/schemas/GroupId"
+          },
+          "Id": {
+            "$ref": "#/components/schemas/AssetId"
+          },
+          "Status": {
+            "$ref": "#/components/schemas/RpcAssetStatus"
+          },
+          "URL": {
+            "description": "平台素材引用 asset://asset_...；仅 ready 后非空，此前为空字符串。",
+            "type": "string"
+          },
+          "UpdatedAt": {
+            "description": "Unix 秒。",
+            "type": "integer"
+          },
+          "Version": {
+            "description": "平台扩展字段（官方无此字段）；PATCH expected_version 乐观锁的读取来源。",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "Id",
+          "GroupId",
+          "AssetType",
+          "Status",
+          "URL",
+          "Version",
+          "CreatedAt",
+          "UpdatedAt"
+        ],
+        "type": "object"
+      },
+      "RpcGetPortraitResult": {
+        "additionalProperties": false,
+        "properties": {
+          "CreatedAt": {
+            "description": "Unix 秒。",
+            "type": "integer"
+          },
+          "GroupId": {
+            "$ref": "#/components/schemas/GroupId",
+            "description": "仅 succeeded 时出现；本组织真人素材组映射。"
+          },
+          "H5URL": {
+            "description": "仅 pending 且为创建会话的原 Key 时出现；官方 H5 授权页短期敏感 URL，禁止写入普通日志。",
+            "format": "uri",
+            "pattern": "^https://",
+            "type": "string"
+          },
+          "SessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "Status": {
+            "$ref": "#/components/schemas/RpcPortraitStatus"
+          }
+        },
+        "required": [
+          "SessionId",
+          "Status",
+          "CreatedAt"
+        ],
+        "type": "object"
+      },
+      "RpcGroupStatus": {
+        "description": "平台素材组状态取值（形状按官方，取值为平台语义）。",
+        "enum": [
+          "creating",
+          "ready",
+          "needs_review",
+          "failed",
+          "deleting"
+        ],
+        "type": "string"
+      },
+      "RpcListAssetGroupsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "Items": {
+            "items": {
+              "$ref": "#/components/schemas/RpcAssetGroupItem"
+            },
+            "type": "array"
+          },
+          "NextCursor": {
+            "description": "空字符串表示末页；非空时作为 cursor 参数继续翻页。",
+            "type": "string"
+          }
+        },
+        "required": [
+          "Items",
+          "NextCursor"
+        ],
+        "type": "object"
+      },
+      "RpcListAssetsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "Items": {
+            "items": {
+              "$ref": "#/components/schemas/RpcAssetItem"
+            },
+            "type": "array"
+          },
+          "NextCursor": {
+            "description": "空字符串表示末页；非空时作为 cursor 参数继续翻页。",
+            "type": "string"
+          }
+        },
+        "required": [
+          "Items",
+          "NextCursor"
+        ],
+        "type": "object"
+      },
+      "RpcPortraitStatus": {
+        "description": "平台授权会话状态取值；创建结果未知不得盲重发官方请求。",
+        "enum": [
+          "creating",
+          "submission_unknown",
+          "pending",
+          "succeeded",
+          "failed",
+          "expired"
+        ],
+        "type": "string"
+      },
       "SafeError": {
         "additionalProperties": false,
         "properties": {
@@ -1595,6 +1783,7 @@
       },
       "Task": {
         "additionalProperties": false,
+        "description": "平台任务扩展 DTO；当前仅任务列表接口（平台扩展，官方无列表接口）返回。官方形状的单查用 OfficialTaskQuery。",
         "properties": {
           "artifact_status": {
             "description": "结果链接状态独立于生成与账务状态；ready 表示已取得官方链接，不承诺永久有效或平台托管。取件失败不改变已核实生成成功事实。",
@@ -1897,9 +2086,9 @@
     }
   },
   "info": {
-    "description": "LAIAI 平台数据面接口。使用平台 Bearer API Key；接口能力受模型、组织权限及部署配置约束。文本/图片请求使用相应兼容协议；官方 Seedance 使用本文件 /v1/video 下的严格异步任务契约，不能套用旧厂商参数透传和统一退款语义。模型列表与预估返回当前可用能力和客户价格；文档不代表生产账号已经开通。金额采用 USD 十进制字符串。",
-    "title": "LAIAI Gateway API",
-    "version": "1.1.0"
+    "description": "按当前集成代码校正；不是上线公告。示例均为说明性示例，不是火山官方真机验证证据。\n沿用平台 /v1/video/generations，使用平台 Gateway Bearer Key。平台模型、任务、素材组、\n素材、授权会话 ID 均由平台管理；客户端不得提交火山 Key、上游任务/素材/组 ID 或任意 provider_params。\n所有资源读取与引用强制 org_id 隔离，资源 ID 不构成授权。一个下游客户应有独立组织边界；\n素材按组织和创建者隔离；同一具名用户的多个 Key 可访问本人资源，无具名用户的 Key 各自隔离。\nGET 列表仅查询授权的平台记录，不开放上游全账户枚举；共享项目配置不共享客户资源。\n网关、模型能力、客户价格、供应商预算、路由与租户执行保留策略均须显式配置。\nSeedance 视频及尾帧直接返回官方 HTTPS 签名地址，平台不存储或代理媒体字节。\n结果链接有效期由上游决定；读取任务时使用平台 Key，访问结果链接时不得附带平台 Key。\n未配置默认禁用；标准 2.0/2.5 与 2.0 Fast/Mini 出现在契约中不代表账号已取得官方能力或模型已上线。\nGET 要求 video:read，POST/PATCH/DELETE（含预估）要求 video:write；video:* 或 * 覆盖二者。\nPOST 创建、取消、素材创建、授权创建、素材 PATCH 和单素材 DELETE 要求 Idempotency-Key；唯一作用域为\n(org_id, HTTP method, normalized canonical resource path, HMAC-SHA256(Idempotency-Key))。\n路径包含实际资源 ID；哈希针对幂等键而非 Gateway Key。同组织 Key 轮换不会重新派单，\n但 pending 真人会话的 H5 URL 仅创建该会话的原 Key 可读取；换 Key 重放可能返回 403。\n同键同规范化请求返回原资源或操作；同键不同请求为 409。首次资源创建返回 202；重放返回原业务结果，\n不重新提交上游或重复冻结。幂等键与请求体分别计算服务端 HMAC，并使用不同的域标签；\n不落明文密钥，仅保存摘要及密钥版本引用。服务端 HMAC 密钥不能直接替换，需显式迁移，不能因换密钥再次派单。\n平台先持久化请求意图、请求 HMAC 和幂等记录，再执行可能计费的操作。\n上游提交结果不确定进入 submission_unknown，禁止自动跨渠道重发及按本地超时退款。\n原始上游 ID、凭证、成本、内部路由和原始错误不对客户公开。金额采用十进制字符串，币种 USD。\nbilling 是客户账单，供应商成本和对账差异属于内部账。任务状态、账单状态和删除状态相互独立。\n所有写入前校验错误均无生成提交；操作已被接受后发生的网络不确定性通过任务或操作状态查询。\n核心请求元数据、状态事件和账务证据必须持久化；敏感 payload 按 Invocation Store 的加密、\n保留期和解密审计边界保存。本文档不承诺将原文请求或账单成本直接暴露为 events。\n火山体系接口的响应按官方原生形状原路返回：任务提交/查询/取消/删除采用官方 data-plane\nJSON 形状（字段名小写下划线）；素材组、素材与真人授权采用官方 RPC 信封\n{ResponseMetadata:{RequestId,Action,Version,Service,Region},Result:{...}}（Result 内字段\n为 PascalCase）。形状对齐官方，取值仍为平台语义：ID 是平台 ID（非上游 cgt-/官方组 ID），\n任务 status 取平台生命周期枚举（含 accepted/submitting/submission_unknown 平台阶段），\n时间戳为 Unix 秒。平台账务、准入、幂等与审计全部保留。\n",
+    "title": "LAIAI Seedance 视频 API 实现契约",
+    "version": "1.0.0-integration"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2616,7 +2805,7 @@
     },
     "/v1/video/asset-groups": {
       "get": {
-        "description": "仅查询本组织平台库，不透传火山账户全局列表。",
+        "description": "仅查询本组织平台库，不透传火山账户全局列表。返回火山 RPC 官方信封，Action=ListAssetGroups；\nResult.Items 为 PascalCase 素材组条目，NextCursor 非空时继续翻页，空字符串表示末页。\n",
         "operationId": "listVideoAssetGroups",
         "parameters": [
           {
@@ -2630,44 +2819,52 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "data": {
-                      "items": {
-                        "$ref": "#/components/schemas/AssetGroup"
-                      },
-                      "type": "array"
-                    },
-                    "next_cursor": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    }
+                "example": {
+                  "ResponseMetadata": {
+                    "Action": "ListAssetGroups",
+                    "Region": "cn-beijing",
+                    "RequestId": "req_example002",
+                    "Service": "ark",
+                    "Version": "2024-01-01"
                   },
-                  "required": [
-                    "data",
-                    "next_cursor"
-                  ],
-                  "type": "object"
+                  "Result": {
+                    "Items": [
+                      {
+                        "AssetCount": 2,
+                        "Id": "ag_example001",
+                        "Name": "品牌虚拟素材",
+                        "Status": "ready"
+                      }
+                    ],
+                    "NextCursor": ""
+                  }
+                },
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/RpcEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "Result": {
+                          "$ref": "#/components/schemas/RpcListAssetGroupsResult"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
-            "description": "素材组分页"
+            "description": "官方信封的素材组分页"
           },
           "default": {
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "列出当前组织的素材组",
+        "summary": "列出当前组织的素材组（官方 ListAssetGroups 信封）",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "post": {
@@ -2712,12 +2909,38 @@
           "202": {
             "content": {
               "application/json": {
+                "example": {
+                  "ResponseMetadata": {
+                    "Action": "CreateAssetGroup",
+                    "Region": "cn-beijing",
+                    "RequestId": "req_example001",
+                    "Service": "ark",
+                    "Version": "2024-01-01"
+                  },
+                  "Result": {
+                    "Id": "ag_example001",
+                    "Name": "品牌虚拟素材",
+                    "Status": "creating"
+                  }
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/AssetGroup"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/RpcEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "Result": {
+                          "$ref": "#/components/schemas/RpcCreateAssetGroupResult"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
-            "description": "素材组已持久化受理",
+            "description": "素材组已持久化受理；火山 RPC 官方信封，Action=CreateAssetGroup。",
             "headers": {
               "Idempotency-Replayed": {
                 "$ref": "#/components/headers/IdempotencyReplayed"
@@ -2734,17 +2957,12 @@
         "summary": "创建虚拟素材组",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
     "/v1/video/asset-groups/{group_id}": {
       "delete": {
-        "description": "当前只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。\ncascade=true、真人组或未启用删除能力均返回 422 unsupported_capability，不支持级联删除。\n有在途任务引用返回 409 resource_in_use。不会仅删除平台映射而留下未知上游结果。\n检查组内素材、在途引用并设置 deleting 屏障必须在同一事务锁内完成；\n素材新增和任务引用也检查该屏障，避免检查通过后新建素材或引用的竞态。\n首次接受 202，同一删除操作重复请求返回该操作，已确认删除后重复请求 204；跨组织 404。\n删除保留资源墓碑及审计证据，不删除历史任务或账务事实。\n",
+        "description": "当前只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。\ncascade=true、真人组或未启用删除能力均返回 422 unsupported_capability，不支持级联删除。\n有在途任务引用返回 409 resource_in_use。不会仅删除平台映射而留下未知上游结果。\n检查组内素材、在途引用并设置 deleting 屏障必须在同一事务锁内完成；\n素材新增和任务引用也检查该屏障，避免检查通过后新建素材或引用的竞态。\n首次接受 202；同一幂等键重复请求返回同一受理结果，已确认删除后重复请求 204；跨组织 404。\n删除保留资源墓碑及审计证据，不删除历史任务或账务事实。\n",
         "operationId": "deleteVideoAssetGroup",
         "parameters": [
           {
@@ -2759,7 +2977,44 @@
         ],
         "responses": {
           "202": {
-            "$ref": "#/components/responses/OperationAccepted"
+            "content": {
+              "application/json": {
+                "example": {
+                  "ResponseMetadata": {
+                    "Action": "DeleteAssetGroup",
+                    "Region": "cn-beijing",
+                    "RequestId": "req_example004",
+                    "Service": "ark",
+                    "Version": "2024-01-01"
+                  },
+                  "Result": {
+                    "Id": "ag_example001",
+                    "Status": "deleting"
+                  }
+                },
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/RpcEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "Result": {
+                          "$ref": "#/components/schemas/RpcDeleteResult"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "官方信封受理回执，Action=DeleteAssetGroup，Result.Status 恒为 deleting；完成确认以重新 GET 为主（确认删除后重复请求 204）。",
+            "headers": {
+              "Idempotency-Replayed": {
+                "$ref": "#/components/headers/IdempotencyReplayed"
+              }
+            }
           },
           "204": {
             "description": "素材组删除已完成。"
@@ -2774,38 +3029,59 @@
         "summary": "删除素材组",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "get": {
+        "description": "火山 RPC 官方信封，Action=GetAssetGroup；CreatedAt/UpdatedAt 为 Unix 秒。\nVersion 为平台扩展字段（官方无此字段），是 PATCH expected_version 乐观锁的读取来源；\nauthorization_status 等其余平台扩展不在本响应。\n",
         "operationId": "getVideoAssetGroup",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "ResponseMetadata": {
+                    "Action": "GetAssetGroup",
+                    "Region": "cn-beijing",
+                    "RequestId": "req_example003",
+                    "Service": "ark",
+                    "Version": "2024-01-01"
+                  },
+                  "Result": {
+                    "AssetCount": 2,
+                    "CreatedAt": 1792713600,
+                    "Id": "ag_example001",
+                    "Name": "品牌虚拟素材",
+                    "Status": "ready",
+                    "UpdatedAt": 1792713700,
+                    "Version": 3
+                  }
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/AssetGroup"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/RpcEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "Result": {
+                          "$ref": "#/components/schemas/RpcGetAssetGroupResult"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
-            "description": "素材组状态与素材数量"
+            "description": "官方信封的素材组状态与素材数量"
           },
           "default": {
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "查询素材组",
+        "summary": "查询素材组（官方 GetAssetGroup 信封）",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -2870,17 +3146,12 @@
         "summary": "异步编辑素材组名称与说明",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
     "/v1/video/assets": {
       "get": {
-        "description": "仅查询本组织平台库；不回显原始上传 URL 或上游素材 ID。",
+        "description": "仅查询本组织平台库；不回显原始上传 URL 或上游素材 ID。返回火山 RPC 官方信封，\nAction=ListAssets；NextCursor 空字符串表示末页。列表条目不含 Version；\nPATCH expected_version 从单查 GET 的平台扩展字段 Version 读取。\n",
         "operationId": "listVideoAssets",
         "parameters": [
           {
@@ -2901,44 +3172,52 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "data": {
-                      "items": {
-                        "$ref": "#/components/schemas/Asset"
-                      },
-                      "type": "array"
-                    },
-                    "next_cursor": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    }
+                "example": {
+                  "ResponseMetadata": {
+                    "Action": "ListAssets",
+                    "Region": "cn-beijing",
+                    "RequestId": "req_example006",
+                    "Service": "ark",
+                    "Version": "2024-01-01"
                   },
-                  "required": [
-                    "data",
-                    "next_cursor"
-                  ],
-                  "type": "object"
+                  "Result": {
+                    "Items": [
+                      {
+                        "AssetType": "image",
+                        "GroupId": "ag_example001",
+                        "Id": "asset_example001",
+                        "Status": "ready"
+                      }
+                    ],
+                    "NextCursor": ""
+                  }
+                },
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/RpcEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "Result": {
+                          "$ref": "#/components/schemas/RpcListAssetsResult"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
-            "description": "素材分页"
+            "description": "官方信封的素材分页"
           },
           "default": {
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "列出当前组织的素材",
+        "summary": "列出当前组织的素材（官方 ListAssets 信封）",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "post": {
@@ -2989,12 +3268,39 @@
           "202": {
             "content": {
               "application/json": {
+                "example": {
+                  "ResponseMetadata": {
+                    "Action": "CreateAsset",
+                    "Region": "cn-beijing",
+                    "RequestId": "req_example005",
+                    "Service": "ark",
+                    "Version": "2024-01-01"
+                  },
+                  "Result": {
+                    "AssetType": "image",
+                    "GroupId": "ag_example001",
+                    "Id": "asset_example001",
+                    "Status": "creating"
+                  }
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/Asset"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/RpcEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "Result": {
+                          "$ref": "#/components/schemas/RpcCreateAssetResult"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
-            "description": "素材已持久化受理",
+            "description": "素材已持久化受理；火山 RPC 官方信封，Action=CreateAsset。",
             "headers": {
               "Idempotency-Replayed": {
                 "$ref": "#/components/headers/IdempotencyReplayed"
@@ -3011,17 +3317,12 @@
         "summary": "提交素材入库及校验",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
     "/v1/video/assets/{asset_id}": {
       "delete": {
-        "description": "需要有效 Idempotency-Key。正式删除需要资源原属项目显式启用 DeleteAssets 能力，\n已有上游映射且处于允许删除的 ready/failed 状态；未启用返回 422 unsupported_capability。\n明确创建被拒、从未取得官方 ID 且无未决操作或任务引用的本地失败记录，可清理并返回 204；不会调用官方删除。\n存在在途任务引用为 409 resource_in_use；在途修改/删除或状态冲突为 409 invalid_state。\n受理返回 202 操作，按 poll_url 确认完成；已受理删除回读原操作，未知结果不能盲重发。\n不存在、跨组织或已删除可能返回 404，因此重复请求的 404 不是删除成功证据。\n",
+        "description": "需要有效 Idempotency-Key。正式删除需要资源原属项目显式启用 DeleteAssets 能力，\n已有上游映射且处于允许删除的 ready/failed 状态；未启用返回 422 unsupported_capability。\n明确创建被拒、从未取得官方 ID 且无未决操作或任务引用的本地失败记录，可清理并返回 204；不会调用官方删除。\n存在在途任务引用为 409 resource_in_use；在途修改/删除或状态冲突为 409 invalid_state。\n受理返回 202 官方信封（Result.Status 恒为 deleting），响应不再内嵌操作对象；\n完成确认以重新 GET 为主：素材已删除回读 404，已确认删除的空组重复删除返回 204。未知结果不能盲重发。\n不存在、跨组织或已删除可能返回 404，因此重复请求的 404 不是删除成功证据。\n",
         "operationId": "deleteVideoAsset",
         "parameters": [
           {
@@ -3030,10 +3331,47 @@
         ],
         "responses": {
           "202": {
-            "$ref": "#/components/responses/OperationAccepted"
+            "content": {
+              "application/json": {
+                "example": {
+                  "ResponseMetadata": {
+                    "Action": "DeleteAsset",
+                    "Region": "cn-beijing",
+                    "RequestId": "req_example008",
+                    "Service": "ark",
+                    "Version": "2024-01-01"
+                  },
+                  "Result": {
+                    "Id": "asset_example001",
+                    "Status": "deleting"
+                  }
+                },
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/RpcEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "Result": {
+                          "$ref": "#/components/schemas/RpcDeleteResult"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "官方信封受理回执，Action=DeleteAsset，Result.Status 恒为 deleting；完成确认以重新 GET 为主（已删除素材回读 404）。",
+            "headers": {
+              "Idempotency-Replayed": {
+                "$ref": "#/components/headers/IdempotencyReplayed"
+              }
+            }
           },
           "204": {
-            "description": "处理时已确认删除完成；后续请求也可能在资源预检时返回 404，应保留原操作 ID。"
+            "description": "处理时已确认删除完成；后续请求也可能在资源预检时返回 404，不能据 404 额外推断。"
           },
           "404": {
             "$ref": "#/components/responses/Error"
@@ -3051,38 +3389,60 @@
         "summary": "异步删除单个素材（能力门控）",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "get": {
+        "description": "火山 RPC 官方信封，Action=GetAsset；CreatedAt/UpdatedAt 为 Unix 秒。\nURL 为平台素材引用（asset://asset_...），仅 status=ready 后非空，此前为空字符串。\nVersion 为平台扩展字段（官方无此字段），是 PATCH expected_version 乐观锁的读取来源。\n",
         "operationId": "getVideoAsset",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "ResponseMetadata": {
+                    "Action": "GetAsset",
+                    "Region": "cn-beijing",
+                    "RequestId": "req_example007",
+                    "Service": "ark",
+                    "Version": "2024-01-01"
+                  },
+                  "Result": {
+                    "AssetType": "image",
+                    "CreatedAt": 1792713600,
+                    "GroupId": "ag_example001",
+                    "Id": "asset_example001",
+                    "Status": "ready",
+                    "URL": "asset://asset_example001",
+                    "UpdatedAt": 1792713700,
+                    "Version": 2
+                  }
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/Asset"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/RpcEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "Result": {
+                          "$ref": "#/components/schemas/RpcGetAssetResult"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
-            "description": "素材状态"
+            "description": "官方信封的素材状态"
           },
           "default": {
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "查询素材状态",
+        "summary": "查询素材状态（官方 GetAsset 信封）",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3142,11 +3502,6 @@
         "summary": "异步编辑素材名称",
         "tags": [
           "Assets"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -3175,17 +3530,12 @@
         "summary": "预估任务 Token、客户费用与冻结额",
         "tags": [
           "Models"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
     "/v1/video/generations": {
       "get": {
-        "description": "仅查询本组织平台数据库；默认不包含已软删除任务。游标不可跨组织使用。",
+        "description": "仅查询本组织平台数据库；默认不包含已软删除任务。游标不可跨组织使用。\n列表是平台扩展（官方无对应列表接口），返回平台 Task DTO；官方形状的单任务查询用 GET /generations/{task_id}。\n",
         "operationId": "listVideoTasks",
         "parameters": [
           {
@@ -3246,11 +3596,6 @@
         "summary": "列出当前组织的视频任务",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "post": {
@@ -3269,24 +3614,23 @@
             "content": {
               "application/json": {
                 "example": {
-                  "artifact_status": "pending",
-                  "billing_state": "reserved",
-                  "created_at": "2026-10-15T08:00:00Z",
-                  "deletion_state": "none",
-                  "id": "task_example001",
-                  "last_synced_at": null,
-                  "model": "seedance-2.0",
-                  "status": "accepted",
-                  "sync_state": "fresh",
-                  "updated_at": "2026-10-15T08:00:00Z",
-                  "usage": null
+                  "id": "task_example001"
                 },
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "$ref": "#/components/schemas/TaskId"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ],
+                  "type": "object"
                 }
               }
             },
-            "description": "任务已持久化受理；可能尚未取得上游创建结果。",
+            "description": "官方 Submit 形状：仅 {\"id\": \"<平台 task_ ID>\"}。幂等重放同一形状与同一 ID\n（Idempotency-Replayed: true），不退回平台全量 DTO；账务/同步/产物等平台扩展\n请分别查询 /billing、/events 与列表接口。\n",
             "headers": {
               "Idempotency-Replayed": {
                 "$ref": "#/components/headers/IdempotencyReplayed"
@@ -3309,11 +3653,6 @@
         "summary": "创建视频任务",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -3323,7 +3662,24 @@
         "operationId": "deleteVideoTask",
         "responses": {
           "202": {
-            "$ref": "#/components/responses/OperationAccepted"
+            "content": {
+              "application/json": {
+                "example": {
+                  "id": "task_example001",
+                  "operation_id": "op_example001",
+                  "status": "deleting"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/OfficialTaskOperation"
+                }
+              }
+            },
+            "description": "官方形状受理回执 {id, status:\"deleting\", operation_id}；完成与否以 operations 资源为准。",
+            "headers": {
+              "Idempotency-Replayed": {
+                "$ref": "#/components/headers/IdempotencyReplayed"
+              }
+            }
           },
           "204": {
             "description": "当前组织任务的删除已经完成，无响应体。"
@@ -3338,39 +3694,43 @@
         "summary": "删除已结束且账务已落定的视频任务",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "get": {
-        "description": "返回平台最近同步状态，last_synced_at 表示最后一次成功上游同步时间。\n查询不产生新的生成任务，也不额外收生成费。不存在、跨组织或已完成软删除均返回 404。\n本地观察超时保持可核对状态，不凭观察超时将任务宣告 failed 或自动全退。\n",
+        "description": "按官方查询任务形状返回 id/model/status/content/usage；时间戳为 Unix 秒整数。\nstatus 取值为平台生命周期枚举（accepted/submitting/submission_unknown 为平台提交阶段，\n其余为已核实生成状态），不是官方四态原样映射。\ncontent.video_url 仅在已取得官方产物链接时出现；usage 仅在已观察到官方用量时出现，\n其内字段缺失为 null，不以 0 或估算代填。\nbilling_state、sync_state、artifact_status、deletion_state 等平台扩展不在本响应，\n分别查询 /billing、/events 与列表接口。查询不产生新的生成任务，也不额外收生成费。\n不存在、跨组织或已完成软删除均返回 404。本地观察超时保持可核对状态，\n不凭观察超时将任务宣告 failed 或自动全退。\n",
         "operationId": "getVideoTask",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "content": {
+                    "video_url": "https://ark-cdn.example.invalid/video.mp4?Expires=..."
+                  },
+                  "created_at": 1792713600,
+                  "id": "task_example001",
+                  "model": "seedance-2.0",
+                  "status": "succeeded",
+                  "updated_at": 1792713700,
+                  "usage": {
+                    "completion_tokens": 123,
+                    "total_tokens": 999
+                  }
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "$ref": "#/components/schemas/OfficialTaskQuery"
                 }
               }
             },
-            "description": "任务状态"
+            "description": "官方 Query 形状的任务状态"
           },
           "default": {
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "查询视频任务",
+        "summary": "查询视频任务（官方 Query 形状）",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3401,11 +3761,6 @@
         "summary": "查询单任务客户账单",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3421,7 +3776,7 @@
         }
       ],
       "post": {
-        "description": "accepted 且事务确认尚未派单可在同一事务内标 cancelled、释放冻结并确认取消操作。\nsubmitting/submission_unknown 可返回 202 记录取消意愿，查明前不得发上游 DELETE 或释放冻结。\n已确认 queued 时有条件调用官方 DELETE，running 返回 409 invalid_state。\n请求不得包含非空 body。接受操作不等于取消成功；按 operation.poll_url 查询统一操作资源。\nqueued 可能在 DELETE 前变成 succeeded；官方 DELETE 此时可能删除成功记录。\n因此 DELETE 返回 200 加随后 GET 404 不是取消成功或零费用证据，须进入 operation=unknown 待核对。\n仅本地未派单的原子取消或充分官方取消证据才能转 cancelled 并释放冻结。\n同 Idempotency-Key 重放原操作；不同幂等键对已 cancelled 的任务返回已确认操作且不重复退款。\n",
+        "description": "accepted 且事务确认尚未派单可在同一事务内标 cancelled、释放冻结并确认取消操作。\nsubmitting/submission_unknown 可返回 202 记录取消意愿，查明前不得发上游 DELETE 或释放冻结。\n已确认 queued 时有条件调用官方 DELETE，running 返回 409 invalid_state。\n请求不得包含非空 body。接受操作不等于取消成功；按返回的 operation_id 查询统一操作资源。\nqueued 可能在 DELETE 前变成 succeeded；官方 DELETE 此时可能删除成功记录。\n因此 DELETE 返回 200 加随后 GET 404 不是取消成功或零费用证据，须进入 operation=unknown 待核对。\n仅本地未派单的原子取消或充分官方取消证据才能转 cancelled 并释放冻结。\n同 Idempotency-Key 重放原操作；不同幂等键对已 cancelled 的任务返回已确认操作且不重复退款。\n",
         "operationId": "cancelVideoTask",
         "parameters": [
           {
@@ -3430,7 +3785,24 @@
         ],
         "responses": {
           "202": {
-            "$ref": "#/components/responses/OperationAccepted"
+            "content": {
+              "application/json": {
+                "example": {
+                  "id": "task_example001",
+                  "operation_id": "op_example001",
+                  "status": "cancelling"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/OfficialTaskOperation"
+                }
+              }
+            },
+            "description": "官方形状受理回执 {id, status:\"cancelling\", operation_id}；按 operation_id 查询统一操作资源。",
+            "headers": {
+              "Idempotency-Replayed": {
+                "$ref": "#/components/headers/IdempotencyReplayed"
+              }
+            }
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
@@ -3442,11 +3814,6 @@
         "summary": "请求取消视频任务",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -3518,11 +3885,6 @@
         "summary": "获取成功任务的视频或尾帧直链",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3580,11 +3942,6 @@
         "summary": "查询任务安全事件",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3627,11 +3984,6 @@
         "summary": "查询当前组织可见的视频模型及能力版本",
         "tags": [
           "Models"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
@@ -3657,11 +4009,6 @@
         "summary": "查询取消或删除操作",
         "tags": [
           "Tasks"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3725,11 +4072,6 @@
         "summary": "列出当前组织的授权会话摘要",
         "tags": [
           "PortraitAuthorization"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "post": {
@@ -3777,20 +4119,51 @@
           "202": {
             "content": {
               "application/json": {
+                "example": {
+                  "ResponseMetadata": {
+                    "Action": "CreateVisualValidateSession",
+                    "Region": "cn-beijing",
+                    "RequestId": "req_example009",
+                    "Service": "ark",
+                    "Version": "2024-01-01"
+                  },
+                  "Result": {
+                    "SessionId": "pas_example001",
+                    "Status": "creating"
+                  }
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/PortraitAuthorization"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/RpcEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "Result": {
+                          "$ref": "#/components/schemas/RpcCreatePortraitResult"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
-            "description": "会话创建已持久化受理；creating/submission_unknown 尚未获得可用 H5 地址，pending 等待本人完成授权。",
+            "description": "会话创建已持久化受理；火山 RPC 官方信封，Action=CreateVisualValidateSession。\ncreating/submission_unknown 尚未获得可用 H5 地址，pending 等待本人完成授权。\n",
             "headers": {
               "Idempotency-Replayed": {
                 "$ref": "#/components/headers/IdempotencyReplayed"
               }
             }
           },
+          "400": {
+            "description": "请求非法。缺 Idempotency-Key 头时 message 明确点名该头；\ncallback_url 与组织预登记回跳地址不匹配时 message 明确要求先完成登记。\n"
+          },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "503": {
+            "description": "provider_unavailable（retryable）——平台侧真人认证固定回调入口尚未配置，\n属于服务端状态而非请求错误；配置完成后重试即可，请求本身无需修改。\n"
           },
           "default": {
             "$ref": "#/components/responses/Error"
@@ -3799,41 +4172,58 @@
         "summary": "创建真人 H5 授权会话",
         "tags": [
           "PortraitAuthorization"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       }
     },
     "/v1/video/portrait-authorizations/{session_id}": {
       "get": {
-        "description": "状态只由平台核实官方结果后更新；succeeded 返回平台 group_id。\npending 会话仅创建该会话的原 Key 可经审计读取有效 authorization_url，其他 Key 返回 403。\n同一原 Key 在有效 pending 状态可再次 GET；官方认证凭证仍限一次认证。已失效或完成后不返回 URL。\n未核实官方撤销/删除会话能力前不开放 DELETE；素材组删除也不等于撤销本人授权。\n",
+        "description": "火山 RPC 官方信封，Action=GetVisualValidateResult；CreatedAt 为 Unix 秒。\n状态只由平台核实官方结果后更新；succeeded 时 Result 附 GroupId（本组织 ag_ 映射）。\npending 会话仅创建该会话的原 Key 可经审计读取有效 H5URL，其他 Key 返回 403。\n同一原 Key 在有效 pending 状态可再次 GET；官方认证凭证仍限一次认证。已失效或完成后不返回 H5URL。\nH5URL 属敏感短期 URL，禁止写入普通日志。\n未核实官方撤销/删除会话能力前不开放 DELETE；素材组删除也不等于撤销本人授权。\n",
         "operationId": "getPortraitAuthorization",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "ResponseMetadata": {
+                    "Action": "GetVisualValidateResult",
+                    "Region": "cn-beijing",
+                    "RequestId": "req_example010",
+                    "Service": "ark",
+                    "Version": "2024-01-01"
+                  },
+                  "Result": {
+                    "CreatedAt": 1792713600,
+                    "H5URL": "https://visual.example.invalid/session?token=...",
+                    "SessionId": "pas_example001",
+                    "Status": "pending"
+                  }
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/PortraitAuthorization"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/RpcEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "Result": {
+                          "$ref": "#/components/schemas/RpcGetPortraitResult"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
-            "description": "授权会话及已核实结果"
+            "description": "官方信封的授权会话及已核实结果"
           },
           "default": {
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "查询真人授权会话",
+        "summary": "查询真人授权会话（官方 GetVisualValidateResult 信封）",
         "tags": [
           "PortraitAuthorization"
-        ],
-        "security": [
-          {
-            "GatewayKey": []
-          }
         ]
       },
       "parameters": [
@@ -3887,11 +4277,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "security": [
-          {
-            "GatewayKey": []
-          }
-        ],
+        "security": [],
         "summary": "官方 H5 浏览器回跳入口（不供客户主动构造调用）",
         "tags": [
           "PortraitAuthorization"
@@ -3946,5 +4332,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "68c56e17c0b5e66ed9fdf2e0e1d4a82176b4dd274f41d918c348672c6ff04250"
+  "x-seedance-source-sha256": "23a0d4c3cae9a4b0a6909d9231156ec9f96bef6feaca2d375efef4fd231778dd"
 }

@@ -63,6 +63,19 @@ test('deletion waits for financial finality and never treats an unknown task as 
   assert.equal(flow.canDelete({ status: 'unknown', billing_state: 'settled' }), false)
 })
 
+test('official single-task shape drives gating via billing state and content.video_url', () => {
+  // 官方单查无 billing_state/artifact_status：账务终局来自 billing 接口的 state。
+  assert.equal(flow.canDelete({ status: 'succeeded' }, 'settled'), true)
+  assert.equal(flow.canDelete({ status: 'succeeded' }, 'pending_usage'), false)
+  assert.equal(flow.canDelete({ status: 'succeeded' }, null), false)
+  assert.equal(flow.shouldPoll({ status: 'succeeded' }, 'pending_usage'), true)
+  // 产物链接回来且账务终局后停止；链接未回继续观察。
+  assert.equal(flow.shouldPoll({ status: 'succeeded', content: { video_url: 'https://media.example/v.mp4' } }, 'settled'), false)
+  assert.equal(flow.shouldPoll({ status: 'succeeded' }, 'settled'), true)
+  assert.equal(flow.shouldPoll({ status: 'failed' }, 'settled'), false)
+  assert.equal(flow.shouldPoll({ status: 'cancelled' }, null), false)
+})
+
 test('Seedance component translations compile and preserve the same keys', async () => {
   const compiled = await build({
     entryPoints: [fileURLToPath(new URL('./messages.ts', import.meta.url))], bundle: true, format: 'esm', write: false,

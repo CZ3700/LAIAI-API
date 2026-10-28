@@ -28,6 +28,12 @@ info:
     所有写入前校验错误均无生成提交；操作已被接受后发生的网络不确定性通过任务或操作状态查询。
     核心请求元数据、状态事件和账务证据必须持久化；敏感 payload 按 Invocation Store 的加密、
     保留期和解密审计边界保存。本文档不承诺将原文请求或账单成本直接暴露为 events。
+    火山体系接口的响应按官方原生形状原路返回：任务提交/查询/取消/删除采用官方 data-plane
+    JSON 形状（字段名小写下划线）；素材组、素材与真人授权采用官方 RPC 信封
+    {ResponseMetadata:{RequestId,Action,Version,Service,Region},Result:{...}}（Result 内字段
+    为 PascalCase）。形状对齐官方，取值仍为平台语义：ID 是平台 ID（非上游 cgt-/官方组 ID），
+    任务 status 取平台生命周期枚举（含 accepted/submitting/submission_unknown 平台阶段），
+    时间戳为 Unix 秒。平台账务、准入、幂等与审计全部保留。
 servers:
   - url: https://api.example.invalid
     description: 占位域名；调用时替换为已部署平台域名。
@@ -105,7 +111,10 @@ paths:
         $ref: '#/components/requestBodies/TaskCreate'
       responses:
         '202':
-          description: 任务已持久化受理；可能尚未取得上游创建结果。
+          description: |
+            官方 Submit 形状：仅 {"id": "<平台 task_ ID>"}。幂等重放同一形状与同一 ID
+            （Idempotency-Replayed: true），不退回平台全量 DTO；账务/同步/产物等平台扩展
+            请分别查询 /billing、/events 与列表接口。
           headers:
             Location:
               description: 平台任务查询路径
@@ -116,19 +125,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Task'
+                type: object
+                additionalProperties: false
+                required: [id]
+                properties:
+                  id:
+                    $ref: '#/components/schemas/TaskId'
               example:
                 id: task_example001
-                model: seedance-2.0
-                status: accepted
-                billing_state: reserved
-                created_at: '2026-10-15T08:00:00Z'
-                updated_at: '2026-10-15T08:00:00Z'
-                last_synced_at: null
-                usage: null
-                sync_state: fresh
-                artifact_status: pending
-                deletion_state: none
         '409':
           $ref: '#/components/responses/Conflict'
         default:
@@ -137,7 +141,9 @@ paths:
       tags: [Tasks]
       operationId: listVideoTasks
       summary: 列出当前组织的视频任务
-      description: 仅查询本组织平台数据库；默认不包含已软删除任务。游标不可跨组织使用。
+      description: |
+        仅查询本组织平台数据库；默认不包含已软删除任务。游标不可跨组织使用。
+        列表是平台扩展（官方无对应列表接口），返回平台 Task DTO；官方形状的单任务查询用 GET /generations/{task_id}。
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
@@ -173,18 +179,35 @@ paths:
     get:
       tags: [Tasks]
       operationId: getVideoTask
-      summary: 查询视频任务
+      summary: 查询视频任务（官方 Query 形状）
       description: |
-        返回平台最近同步状态，last_synced_at 表示最后一次成功上游同步时间。
-        查询不产生新的生成任务，也不额外收生成费。不存在、跨组织或已完成软删除均返回 404。
-        本地观察超时保持可核对状态，不凭观察超时将任务宣告 failed 或自动全退。
+        按官方查询任务形状返回 id/model/status/content/usage；时间戳为 Unix 秒整数。
+        status 取值为平台生命周期枚举（accepted/submitting/submission_unknown 为平台提交阶段，
+        其余为已核实生成状态），不是官方四态原样映射。
+        content.video_url 仅在已取得官方产物链接时出现；usage 仅在已观察到官方用量时出现，
+        其内字段缺失为 null，不以 0 或估算代填。
+        billing_state、sync_state、artifact_status、deletion_state 等平台扩展不在本响应，
+        分别查询 /billing、/events 与列表接口。查询不产生新的生成任务，也不额外收生成费。
+        不存在、跨组织或已完成软删除均返回 404。本地观察超时保持可核对状态，
+        不凭观察超时将任务宣告 failed 或自动全退。
       responses:
         '200':
-          description: 任务状态
+          description: 官方 Query 形状的任务状态
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Task'
+                $ref: '#/components/schemas/OfficialTaskQuery'
+              example:
+                id: task_example001
+                model: seedance-2.0
+                status: succeeded
+                created_at: 1792713600
+                updated_at: 1792713700
+                content:
+                  video_url: https://ark-cdn.example.invalid/video.mp4?Expires=...
+                usage:
+                  completion_tokens: 123
+                  total_tokens: 999
         default:
           $ref: '#/components/responses/Error'
     delete:
@@ -200,7 +223,18 @@ paths:
         删除不退款，不物理删除账务或安全审计记录。完成后任务 GET 返回 404，账单和安全事件按保留策略可查。
       responses:
         '202':
-          $ref: '#/components/responses/OperationAccepted'
+          description: 官方形状受理回执 {id, status:"deleting", operation_id}；完成与否以 operations 资源为准。
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficialTaskOperation'
+              example:
+                id: task_example001
+                status: deleting
+                operation_id: op_example001
         '204':
           description: 当前组织任务的删除已经完成，无响应体。
         '409':
@@ -218,7 +252,7 @@ paths:
         accepted 且事务确认尚未派单可在同一事务内标 cancelled、释放冻结并确认取消操作。
         submitting/submission_unknown 可返回 202 记录取消意愿，查明前不得发上游 DELETE 或释放冻结。
         已确认 queued 时有条件调用官方 DELETE，running 返回 409 invalid_state。
-        请求不得包含非空 body。接受操作不等于取消成功；按 operation.poll_url 查询统一操作资源。
+        请求不得包含非空 body。接受操作不等于取消成功；按返回的 operation_id 查询统一操作资源。
         queued 可能在 DELETE 前变成 succeeded；官方 DELETE 此时可能删除成功记录。
         因此 DELETE 返回 200 加随后 GET 404 不是取消成功或零费用证据，须进入 operation=unknown 待核对。
         仅本地未派单的原子取消或充分官方取消证据才能转 cancelled 并释放冻结。
@@ -227,7 +261,18 @@ paths:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '202':
-          $ref: '#/components/responses/OperationAccepted'
+          description: 官方形状受理回执 {id, status:"cancelling", operation_id}；按 operation_id 查询统一操作资源。
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficialTaskOperation'
+              example:
+                id: task_example001
+                status: cancelling
+                operation_id: op_example001
         '409':
           $ref: '#/components/responses/Conflict'
         default:
@@ -390,14 +435,22 @@ paths:
                   maxLength: 300
       responses:
         '202':
-          description: 素材组已持久化受理
+          description: 素材组已持久化受理；火山 RPC 官方信封，Action=CreateAssetGroup。
           headers:
             Idempotency-Replayed:
               $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AssetGroup'
+                allOf:
+                  - $ref: '#/components/schemas/RpcEnvelope'
+                  - type: object
+                    properties:
+                      Result:
+                        $ref: '#/components/schemas/RpcCreateAssetGroupResult'
+              example:
+                ResponseMetadata: {RequestId: req_example001, Action: CreateAssetGroup, Version: '2024-01-01', Service: ark, Region: cn-beijing}
+                Result: {Id: ag_example001, Name: 品牌虚拟素材, Status: creating}
         '409':
           $ref: '#/components/responses/Conflict'
         default:
@@ -405,27 +458,31 @@ paths:
     get:
       tags: [Assets]
       operationId: listVideoAssetGroups
-      summary: 列出当前组织的素材组
-      description: 仅查询本组织平台库，不透传火山账户全局列表。
+      summary: 列出当前组织的素材组（官方 ListAssetGroups 信封）
+      description: |
+        仅查询本组织平台库，不透传火山账户全局列表。返回火山 RPC 官方信封，Action=ListAssetGroups；
+        Result.Items 为 PascalCase 素材组条目，NextCursor 非空时继续翻页，空字符串表示末页。
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
-          description: 素材组分页
+          description: 官方信封的素材组分页
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required: [data, next_cursor]
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/AssetGroup'
-                  next_cursor:
-                    type: [string, 'null']
+                allOf:
+                  - $ref: '#/components/schemas/RpcEnvelope'
+                  - type: object
+                    properties:
+                      Result:
+                        $ref: '#/components/schemas/RpcListAssetGroupsResult'
+              example:
+                ResponseMetadata: {RequestId: req_example002, Action: ListAssetGroups, Version: '2024-01-01', Service: ark, Region: cn-beijing}
+                Result:
+                  Items:
+                    - {Id: ag_example001, Name: 品牌虚拟素材, Status: ready, AssetCount: 2}
+                  NextCursor: ''
         default:
           $ref: '#/components/responses/Error'
   /v1/video/asset-groups/{group_id}:
@@ -464,14 +521,26 @@ paths:
     get:
       tags: [Assets]
       operationId: getVideoAssetGroup
-      summary: 查询素材组
+      summary: 查询素材组（官方 GetAssetGroup 信封）
+      description: |
+        火山 RPC 官方信封，Action=GetAssetGroup；CreatedAt/UpdatedAt 为 Unix 秒。
+        Version 为平台扩展字段（官方无此字段），是 PATCH expected_version 乐观锁的读取来源；
+        authorization_status 等其余平台扩展不在本响应。
       responses:
         '200':
-          description: 素材组状态与素材数量
+          description: 官方信封的素材组状态与素材数量
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AssetGroup'
+                allOf:
+                  - $ref: '#/components/schemas/RpcEnvelope'
+                  - type: object
+                    properties:
+                      Result:
+                        $ref: '#/components/schemas/RpcGetAssetGroupResult'
+              example:
+                ResponseMetadata: {RequestId: req_example003, Action: GetAssetGroup, Version: '2024-01-01', Service: ark, Region: cn-beijing}
+                Result: {Id: ag_example001, Name: 品牌虚拟素材, Status: ready, AssetCount: 2, Version: 3, CreatedAt: 1792713600, UpdatedAt: 1792713700}
         default:
           $ref: '#/components/responses/Error'
     delete:
@@ -484,7 +553,7 @@ paths:
         有在途任务引用返回 409 resource_in_use。不会仅删除平台映射而留下未知上游结果。
         检查组内素材、在途引用并设置 deleting 屏障必须在同一事务锁内完成；
         素材新增和任务引用也检查该屏障，避免检查通过后新建素材或引用的竞态。
-        首次接受 202，同一删除操作重复请求返回该操作，已确认删除后重复请求 204；跨组织 404。
+        首次接受 202；同一幂等键重复请求返回同一受理结果，已确认删除后重复请求 204；跨组织 404。
         删除保留资源墓碑及审计证据，不删除历史任务或账务事实。
       parameters:
         - name: cascade
@@ -495,7 +564,22 @@ paths:
             default: false
       responses:
         '202':
-          $ref: '#/components/responses/OperationAccepted'
+          description: 官方信封受理回执，Action=DeleteAssetGroup，Result.Status 恒为 deleting；完成确认以重新 GET 为主（确认删除后重复请求 204）。
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/RpcEnvelope'
+                  - type: object
+                    properties:
+                      Result:
+                        $ref: '#/components/schemas/RpcDeleteResult'
+              example:
+                ResponseMetadata: {RequestId: req_example004, Action: DeleteAssetGroup, Version: '2024-01-01', Service: ark, Region: cn-beijing}
+                Result: {Id: ag_example001, Status: deleting}
         '204':
           description: 素材组删除已完成。
         '409':
@@ -543,14 +627,22 @@ paths:
                   description: 可选素材名称；64 字符是平台契约限制。
       responses:
         '202':
-          description: 素材已持久化受理
+          description: 素材已持久化受理；火山 RPC 官方信封，Action=CreateAsset。
           headers:
             Idempotency-Replayed:
               $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Asset'
+                allOf:
+                  - $ref: '#/components/schemas/RpcEnvelope'
+                  - type: object
+                    properties:
+                      Result:
+                        $ref: '#/components/schemas/RpcCreateAssetResult'
+              example:
+                ResponseMetadata: {RequestId: req_example005, Action: CreateAsset, Version: '2024-01-01', Service: ark, Region: cn-beijing}
+                Result: {Id: asset_example001, GroupId: ag_example001, AssetType: image, Status: creating}
         '409':
           $ref: '#/components/responses/Conflict'
         default:
@@ -558,8 +650,11 @@ paths:
     get:
       tags: [Assets]
       operationId: listVideoAssets
-      summary: 列出当前组织的素材
-      description: 仅查询本组织平台库；不回显原始上传 URL 或上游素材 ID。
+      summary: 列出当前组织的素材（官方 ListAssets 信封）
+      description: |
+        仅查询本组织平台库；不回显原始上传 URL 或上游素材 ID。返回火山 RPC 官方信封，
+        Action=ListAssets；NextCursor 空字符串表示末页。列表条目不含 Version；
+        PATCH expected_version 从单查 GET 的平台扩展字段 Version 读取。
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
@@ -569,20 +664,22 @@ paths:
             $ref: '#/components/schemas/GroupId'
       responses:
         '200':
-          description: 素材分页
+          description: 官方信封的素材分页
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required: [data, next_cursor]
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Asset'
-                  next_cursor:
-                    type: [string, 'null']
+                allOf:
+                  - $ref: '#/components/schemas/RpcEnvelope'
+                  - type: object
+                    properties:
+                      Result:
+                        $ref: '#/components/schemas/RpcListAssetsResult'
+              example:
+                ResponseMetadata: {RequestId: req_example006, Action: ListAssets, Version: '2024-01-01', Service: ark, Region: cn-beijing}
+                Result:
+                  Items:
+                    - {Id: asset_example001, GroupId: ag_example001, AssetType: image, Status: ready}
+                  NextCursor: ''
         default:
           $ref: '#/components/responses/Error'
   /v1/video/assets/{asset_id}:
@@ -620,14 +717,26 @@ paths:
     get:
       tags: [Assets]
       operationId: getVideoAsset
-      summary: 查询素材状态
+      summary: 查询素材状态（官方 GetAsset 信封）
+      description: |
+        火山 RPC 官方信封，Action=GetAsset；CreatedAt/UpdatedAt 为 Unix 秒。
+        URL 为平台素材引用（asset://asset_...），仅 status=ready 后非空，此前为空字符串。
+        Version 为平台扩展字段（官方无此字段），是 PATCH expected_version 乐观锁的读取来源。
       responses:
         '200':
-          description: 素材状态
+          description: 官方信封的素材状态
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Asset'
+                allOf:
+                  - $ref: '#/components/schemas/RpcEnvelope'
+                  - type: object
+                    properties:
+                      Result:
+                        $ref: '#/components/schemas/RpcGetAssetResult'
+              example:
+                ResponseMetadata: {RequestId: req_example007, Action: GetAsset, Version: '2024-01-01', Service: ark, Region: cn-beijing}
+                Result: {Id: asset_example001, GroupId: ag_example001, AssetType: image, Status: ready, URL: 'asset://asset_example001', Version: 2, CreatedAt: 1792713600, UpdatedAt: 1792713700}
         default:
           $ref: '#/components/responses/Error'
     delete:
@@ -639,15 +748,31 @@ paths:
         已有上游映射且处于允许删除的 ready/failed 状态；未启用返回 422 unsupported_capability。
         明确创建被拒、从未取得官方 ID 且无未决操作或任务引用的本地失败记录，可清理并返回 204；不会调用官方删除。
         存在在途任务引用为 409 resource_in_use；在途修改/删除或状态冲突为 409 invalid_state。
-        受理返回 202 操作，按 poll_url 确认完成；已受理删除回读原操作，未知结果不能盲重发。
+        受理返回 202 官方信封（Result.Status 恒为 deleting），响应不再内嵌操作对象；
+        完成确认以重新 GET 为主：素材已删除回读 404，已确认删除的空组重复删除返回 204。未知结果不能盲重发。
         不存在、跨组织或已删除可能返回 404，因此重复请求的 404 不是删除成功证据。
       parameters:
         - $ref: '#/components/parameters/AssetIdempotencyKey'
       responses:
         '202':
-          $ref: '#/components/responses/OperationAccepted'
+          description: 官方信封受理回执，Action=DeleteAsset，Result.Status 恒为 deleting；完成确认以重新 GET 为主（已删除素材回读 404）。
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/RpcEnvelope'
+                  - type: object
+                    properties:
+                      Result:
+                        $ref: '#/components/schemas/RpcDeleteResult'
+              example:
+                ResponseMetadata: {RequestId: req_example008, Action: DeleteAsset, Version: '2024-01-01', Service: ark, Region: cn-beijing}
+                Result: {Id: asset_example001, Status: deleting}
         '204':
-          description: 处理时已确认删除完成；后续请求也可能在资源预检时返回 404，应保留原操作 ID。
+          description: 处理时已确认删除完成；后续请求也可能在资源预检时返回 404，不能据 404 额外推断。
         '409':
           $ref: '#/components/responses/Conflict'
         '422':
@@ -698,14 +823,24 @@ paths:
                   description: 必须精确匹配组织预登记的 HTTPS 回跳地址。
       responses:
         '202':
-          description: 会话创建已持久化受理；creating/submission_unknown 尚未获得可用 H5 地址，pending 等待本人完成授权。
+          description: |
+            会话创建已持久化受理；火山 RPC 官方信封，Action=CreateVisualValidateSession。
+            creating/submission_unknown 尚未获得可用 H5 地址，pending 等待本人完成授权。
           headers:
             Idempotency-Replayed:
               $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PortraitAuthorization'
+                allOf:
+                  - $ref: '#/components/schemas/RpcEnvelope'
+                  - type: object
+                    properties:
+                      Result:
+                        $ref: '#/components/schemas/RpcCreatePortraitResult'
+              example:
+                ResponseMetadata: {RequestId: req_example009, Action: CreateVisualValidateSession, Version: '2024-01-01', Service: ark, Region: cn-beijing}
+                Result: {SessionId: pas_example001, Status: creating}
         '400':
           description: |
             请求非法。缺 Idempotency-Key 头时 message 明确点名该头；
@@ -754,19 +889,29 @@ paths:
     get:
       tags: [PortraitAuthorization]
       operationId: getPortraitAuthorization
-      summary: 查询真人授权会话
+      summary: 查询真人授权会话（官方 GetVisualValidateResult 信封）
       description: |
-        状态只由平台核实官方结果后更新；succeeded 返回平台 group_id。
-        pending 会话仅创建该会话的原 Key 可经审计读取有效 authorization_url，其他 Key 返回 403。
-        同一原 Key 在有效 pending 状态可再次 GET；官方认证凭证仍限一次认证。已失效或完成后不返回 URL。
+        火山 RPC 官方信封，Action=GetVisualValidateResult；CreatedAt 为 Unix 秒。
+        状态只由平台核实官方结果后更新；succeeded 时 Result 附 GroupId（本组织 ag_ 映射）。
+        pending 会话仅创建该会话的原 Key 可经审计读取有效 H5URL，其他 Key 返回 403。
+        同一原 Key 在有效 pending 状态可再次 GET；官方认证凭证仍限一次认证。已失效或完成后不返回 H5URL。
+        H5URL 属敏感短期 URL，禁止写入普通日志。
         未核实官方撤销/删除会话能力前不开放 DELETE；素材组删除也不等于撤销本人授权。
       responses:
         '200':
-          description: 授权会话及已核实结果
+          description: 官方信封的授权会话及已核实结果
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PortraitAuthorization'
+                allOf:
+                  - $ref: '#/components/schemas/RpcEnvelope'
+                  - type: object
+                    properties:
+                      Result:
+                        $ref: '#/components/schemas/RpcGetPortraitResult'
+              example:
+                ResponseMetadata: {RequestId: req_example010, Action: GetVisualValidateResult, Version: '2024-01-01', Service: ark, Region: cn-beijing}
+                Result: {SessionId: pas_example001, Status: pending, CreatedAt: 1792713600, H5URL: 'https://visual.example.invalid/session?token=...'}
         default:
           $ref: '#/components/responses/Error'
   /v1/video/portrait-callback:
@@ -1211,9 +1356,67 @@ components:
           properties:
             id:
               $ref: '#/components/schemas/TaskId'
+    OfficialTaskQuery:
+      type: object
+      additionalProperties: false
+      required: [id, model, status, created_at, updated_at]
+      description: |
+        官方查询任务形状。status 取值为平台生命周期枚举（含 accepted/submitting/submission_unknown
+        平台提交阶段），不是官方四态原样映射。billing_state/sync_state/artifact_status/deletion_state
+        等平台扩展不在本响应。
+      properties:
+        id:
+          $ref: '#/components/schemas/TaskId'
+        model:
+          $ref: '#/components/schemas/PublicModel'
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        created_at:
+          type: integer
+          description: 任务受理时间，Unix 秒。
+        updated_at:
+          type: integer
+          description: 最近状态更新时间，Unix 秒。
+        content:
+          type: object
+          additionalProperties: false
+          description: 仅在已取得官方产物链接时出现。
+          properties:
+            video_url:
+              type: string
+              format: uri
+              pattern: '^https://'
+              description: 官方视频直链；保留签名参数，访问时不得附带 Gateway Key。
+        usage:
+          type: object
+          additionalProperties: false
+          required: [completion_tokens, total_tokens]
+          description: 仅在已观察到官方用量时出现；字段缺失为 null，不以零或估算代填。
+          properties:
+            completion_tokens:
+              type: [integer, 'null']
+              minimum: 0
+            total_tokens:
+              type: [integer, 'null']
+              minimum: 0
+    OfficialTaskOperation:
+      type: object
+      additionalProperties: false
+      required: [id, status, operation_id]
+      description: 官方形状的任务取消/删除受理回执；接受不等于完成，以 operation_id 查询统一操作资源。
+      properties:
+        id:
+          $ref: '#/components/schemas/TaskId'
+        status:
+          type: string
+          enum: [cancelling, deleting]
+        operation_id:
+          type: string
+          pattern: '^op_[A-Za-z0-9_-]+$'
     Task:
       type: object
       additionalProperties: false
+      description: 平台任务扩展 DTO；当前仅任务列表接口（平台扩展，官方无列表接口）返回。官方形状的单查用 OfficialTaskQuery。
       required: [id, model, status, billing_state, usage, sync_state, artifact_status, created_at, updated_at, last_synced_at, deletion_state]
       properties:
         id:
@@ -1600,102 +1803,212 @@ components:
           $ref: '#/components/schemas/TaskStatus'
         to_status:
           $ref: '#/components/schemas/TaskStatus'
-    AssetGroup:
+    RpcEnvelope:
       type: object
       additionalProperties: false
-      required: [id, kind, name, status, asset_count, authorization_status, version, created_at, updated_at]
+      required: [ResponseMetadata, Result]
+      description: |
+        Volcengine RPC 官方响应信封。RequestId 为平台请求 ID（与 X-Request-Id 头一致）；
+        Action 对应官方接口动作名。Result 内字段为 PascalCase。
       properties:
-        version:
-          type: integer
-          minimum: 1
-          description: 当前资源版本；PATCH 的 expected_version 必须来自最近 GET 或列表，不能自行递增猜测。
-        id:
+        ResponseMetadata:
+          type: object
+          additionalProperties: false
+          required: [RequestId, Action, Version, Service, Region]
+          properties:
+            RequestId:
+              type: string
+            Action:
+              type: string
+            Version:
+              type: string
+              const: '2024-01-01'
+            Service:
+              type: string
+              const: ark
+            Region:
+              type: string
+              const: cn-beijing
+        Result:
+          type: object
+          description: 官方动作结果，字段 PascalCase；具体结构由各接口的 Result schema 约束。
+    RpcGroupStatus:
+      type: string
+      enum: [creating, ready, needs_review, failed, deleting]
+      description: 平台素材组状态取值（形状按官方，取值为平台语义）。
+    RpcAssetStatus:
+      type: string
+      enum: [creating, processing, ready, needs_review, failed, deleting]
+      description: 平台素材状态取值（形状按官方，取值为平台语义）。
+    RpcCreateAssetGroupResult:
+      type: object
+      additionalProperties: false
+      required: [Id, Name, Status]
+      properties:
+        Id:
           $ref: '#/components/schemas/GroupId'
-        kind:
+        Name:
           type: string
-          enum: [virtual, real_person]
-        name:
+        Status:
+          $ref: '#/components/schemas/RpcGroupStatus'
+    RpcGetAssetGroupResult:
+      type: object
+      additionalProperties: false
+      required: [Id, Name, Status, AssetCount, Version, CreatedAt, UpdatedAt]
+      properties:
+        Id:
+          $ref: '#/components/schemas/GroupId'
+        Name:
           type: string
-        status:
-          type: string
-          enum: [creating, ready, needs_review, failed, deleting]
-        create_operation:
-          $ref: '#/components/schemas/Operation'
-          description: 本地创建操作的安全回执；导入组或无本地创建操作时省略。unknown 表示结果待核验，不能视为失败或再次提交。
-        delete_operation:
-          $ref: '#/components/schemas/Operation'
-        deletion_mode:
-          type: string
-          enum: [official, local_failed, blocked]
-        deletion_block_reason:
-          type: string
-          description: 当前删除受限的安全原因码；正式提交时仍重新校验。空字符串表示投影无阻塞。
-        authorization_status:
-          type: string
-          enum: [not_required, authorized, expired, revoked, needs_review]
-          description: |
-            本平台可审计业务许可记录或经核官方信号，只读。GetAssetGroup 的基本信息不能证明实时未撤销。
-            H5 成功不等于永久业务许可；真人组上传和使用时重新验证，无法确认仍有效则拒绝引用。
-        authorization_last_verified_at:
-          type: string
-          format: date-time
-          description: 最近核实业务许可的时间；未知时省略，与 H5 链接创建/到期时间不同。
-        authorization_valid_until:
-          type: string
-          format: date-time
-          description: 可审计业务许可截止时间；未知时省略，不能解读为永久授权。
-        asset_count:
+        Status:
+          $ref: '#/components/schemas/RpcGroupStatus'
+        AssetCount:
           type: integer
           minimum: 0
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-    Asset:
-      type: object
-      additionalProperties: false
-      required: [id, group_id, media_type, name, status, version, created_at, updated_at]
-      properties:
-        version:
+        Version:
           type: integer
           minimum: 1
-          description: 当前资源版本；PATCH 时提交为 expected_version，版本过期返回 409。
-        id:
-          $ref: '#/components/schemas/AssetId'
-        group_id:
+          description: 平台扩展字段（官方无此字段）；PATCH expected_version 乐观锁的读取来源。
+        CreatedAt:
+          type: integer
+          description: Unix 秒。
+        UpdatedAt:
+          type: integer
+          description: Unix 秒。
+    RpcAssetGroupItem:
+      type: object
+      additionalProperties: false
+      required: [Id, Name, Status, AssetCount]
+      properties:
+        Id:
           $ref: '#/components/schemas/GroupId'
-        media_type:
+        Name:
+          type: string
+        Status:
+          $ref: '#/components/schemas/RpcGroupStatus'
+        AssetCount:
+          type: integer
+          minimum: 0
+    RpcListAssetGroupsResult:
+      type: object
+      additionalProperties: false
+      required: [Items, NextCursor]
+      properties:
+        Items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RpcAssetGroupItem'
+        NextCursor:
+          type: string
+          description: 空字符串表示末页；非空时作为 cursor 参数继续翻页。
+    RpcCreateAssetResult:
+      type: object
+      additionalProperties: false
+      required: [Id, GroupId, AssetType, Status]
+      properties:
+        Id:
+          $ref: '#/components/schemas/AssetId'
+        GroupId:
+          $ref: '#/components/schemas/GroupId'
+        AssetType:
           $ref: '#/components/schemas/MediaType'
-        name:
+        Status:
+          $ref: '#/components/schemas/RpcAssetStatus'
+    RpcGetAssetResult:
+      type: object
+      additionalProperties: false
+      required: [Id, GroupId, AssetType, Status, URL, Version, CreatedAt, UpdatedAt]
+      properties:
+        Id:
+          $ref: '#/components/schemas/AssetId'
+        GroupId:
+          $ref: '#/components/schemas/GroupId'
+        AssetType:
+          $ref: '#/components/schemas/MediaType'
+        Status:
+          $ref: '#/components/schemas/RpcAssetStatus'
+        URL:
           type: string
-          maxLength: 64
-        status:
+          description: 平台素材引用 asset://asset_...；仅 ready 后非空，此前为空字符串。
+        Version:
+          type: integer
+          minimum: 1
+          description: 平台扩展字段（官方无此字段）；PATCH expected_version 乐观锁的读取来源。
+        CreatedAt:
+          type: integer
+          description: Unix 秒。
+        UpdatedAt:
+          type: integer
+          description: Unix 秒。
+    RpcAssetItem:
+      type: object
+      additionalProperties: false
+      required: [Id, GroupId, AssetType, Status]
+      properties:
+        Id:
+          $ref: '#/components/schemas/AssetId'
+        GroupId:
+          $ref: '#/components/schemas/GroupId'
+        AssetType:
+          $ref: '#/components/schemas/MediaType'
+        Status:
+          $ref: '#/components/schemas/RpcAssetStatus'
+    RpcListAssetsResult:
+      type: object
+      additionalProperties: false
+      required: [Items, NextCursor]
+      properties:
+        Items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RpcAssetItem'
+        NextCursor:
           type: string
-          enum: [creating, processing, ready, needs_review, failed, deleting]
-        reference:
+          description: 空字符串表示末页；非空时作为 cursor 参数继续翻页。
+    RpcDeleteResult:
+      type: object
+      additionalProperties: false
+      required: [Id, Status]
+      properties:
+        Id:
           type: string
-          pattern: '^asset://asset_[A-Za-z0-9_-]+$'
-          description: 仅 ready 时提供的本平台素材引用。
-        create_operation:
-          $ref: '#/components/schemas/Operation'
-        delete_operation:
-          $ref: '#/components/schemas/Operation'
-          description: 已受理删除的安全回执；刷新页面仍保留，unknown 不允许再次派发删除。
-        deletion_mode:
+          description: 平台资源 ID（ag_/asset_）。
+        Status:
           type: string
-          enum: [official, local_failed, blocked]
-          description: 依据素材固定所属项目计算，不能用当前默认项目权限替代。
-        deletion_block_reason:
+          const: deleting
+    RpcPortraitStatus:
+      type: string
+      enum: [creating, submission_unknown, pending, succeeded, failed, expired]
+      description: 平台授权会话状态取值；创建结果未知不得盲重发官方请求。
+    RpcCreatePortraitResult:
+      type: object
+      additionalProperties: false
+      required: [SessionId, Status]
+      properties:
+        SessionId:
+          $ref: '#/components/schemas/SessionId'
+        Status:
+          $ref: '#/components/schemas/RpcPortraitStatus'
+    RpcGetPortraitResult:
+      type: object
+      additionalProperties: false
+      required: [SessionId, Status, CreatedAt]
+      properties:
+        SessionId:
+          $ref: '#/components/schemas/SessionId'
+        Status:
+          $ref: '#/components/schemas/RpcPortraitStatus'
+        CreatedAt:
+          type: integer
+          description: Unix 秒。
+        GroupId:
+          $ref: '#/components/schemas/GroupId'
+          description: 仅 succeeded 时出现；本组织真人素材组映射。
+        H5URL:
           type: string
-          description: 当前删除受限的安全原因码；提交时重新检查状态、权限及任务引用。
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
+          format: uri
+          pattern: '^https://'
+          description: 仅 pending 且为创建会话的原 Key 时出现；官方 H5 授权页短期敏感 URL，禁止写入普通日志。
     PortraitAuthorizationSummary:
       type: object
       additionalProperties: false
@@ -1725,53 +2038,6 @@ components:
           else:
             not:
               required: [group_id]
-    PortraitAuthorization:
-      type: object
-      additionalProperties: false
-      required: [session_id, status, expires_at, created_at]
-      properties:
-        session_id:
-          $ref: '#/components/schemas/SessionId'
-        status:
-          type: string
-          enum: [creating, submission_unknown, pending, succeeded, failed, expired]
-          description: 创建结果未知不得盲重发官方请求；沿原会话意图核对并重放同一平台 session_id。
-        authorization_url:
-          type: string
-          format: uri
-          pattern: '^https://'
-          description: 仅 pending 返回的官方 H5 授权 URL，禁止写入普通日志或事件 DTO。
-        expires_at:
-          type: [string, 'null']
-          format: date-time
-          description: H5 认证凭证到期时间；官方有效 30 分钟且单次认证，创建未完成为 null，与肖像授权期限独立。
-        created_at:
-          type: string
-          format: date-time
-        group_id:
-          $ref: '#/components/schemas/GroupId'
-      allOf:
-        - if:
-            properties:
-              status:
-                const: succeeded
-          then:
-            required: [group_id]
-          else:
-            not:
-              required: [group_id]
-        - if:
-            properties:
-              status:
-                const: pending
-          then:
-            required: [authorization_url]
-            properties:
-              expires_at:
-                type: string
-          else:
-            not:
-              required: [authorization_url]
     SafeErrorCode:
       type: string
       enum: [invalid_request, unauthenticated, forbidden, insufficient_scope, video_execution_not_enabled, not_found, idempotency_conflict, invalid_state, insufficient_balance, quota_exceeded, rate_limited, unsupported_capability, invalid_asset, authorization_required, authorization_expired, group_not_empty, resource_in_use, content_expired, content_not_ready, provider_unavailable, submission_uncertain, generation_failed, cancellation_failed, deletion_failed, internal_error]

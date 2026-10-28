@@ -207,24 +207,39 @@ test('video creation and cancellation preserve required idempotency and empty ca
   assert.equal(cancel.request, undefined)
   assert.ok(!/--data|-d |Content-Type/.test(curlFor(cancel)))
   assert.equal(byID('video-submit').request.model, 'seedance-2.0')
-  assert.equal(byID('video-submit').response.status, 'accepted')
-  assert.equal(byID('video-submit').response.usage, null)
-  assert.ok(!Object.hasOwn(byID('task-get').response, 'result_url'))
-  assert.ok(!Object.hasOwn(byID('task-get').response, 'cost_usd'))
+  assert.deepEqual(byID('video-submit').response, { id: 'task_example001' })
+  const receipt = byID('task-cancel-call').response
+  assert.match(receipt.id, /^task_/)
+  assert.equal(receipt.status, 'cancelling')
+  assert.match(receipt.operation_id, /^op_/)
+  assert.equal(byID('task-delete-call').response.status, 'deleting')
+  const queried = byID('task-get').response
+  assert.ok(!Object.hasOwn(queried, 'result_url'))
+  assert.ok(!Object.hasOwn(queried, 'cost_usd'))
+  for (const field of ['billing_state', 'sync_state', 'artifact_status', 'deletion_state', 'content_url']) {
+    assert.ok(!Object.hasOwn(queried, field), `single task GET must stay official-shaped: ${field}`)
+  }
 })
 
 test('video result examples return upstream URLs and do not send platform credentials to the media download', () => {
   const queried = byID('task-get').response
-  assert.match(queried.content_url, /^https:\/\//)
-  assert.equal(queried.content.video_url, queried.content_url)
+  assert.equal(queried.status, 'succeeded')
+  assert.ok(Number.isInteger(queried.created_at))
+  assert.match(queried.content.video_url, /^https:\/\//)
+  assert.equal(byID('content-video').response.url, queried.content.video_url)
   for (const [id, kind] of [['content-video', 'video'], ['content-last-frame', 'last_frame']]) {
     const example = byID(id)
-    assert.deepEqual(example.response, {url: queried.content[kind === 'video' ? 'video_url' : 'last_frame_url'], kind, source: 'upstream'})
+    assert.deepEqual(Object.keys(example.response), ['url', 'kind', 'source'])
+    assert.equal(example.response.kind, kind)
+    assert.equal(example.response.source, 'upstream')
+    assert.match(example.response.url, /^https:\/\//)
     assert.match(curlFor(example), /Authorization: Bearer \$LAIAI_KEY/)
     assert.equal(example.responseText, undefined)
   }
   const download = curlFor(byID('direct-video-download'))
   assert.match(download, /TASK_JSON=\$\(curl[^\n]+\$BASE_URL\/v1\/video\/generations\/\$TASK_ID/)
+  assert.match(download, /jq -er '\.content\.video_url/)
+  assert.doesNotMatch(download, /content_url/)
   const mediaRequest = download.slice(download.lastIndexOf('curl '))
   assert.match(mediaRequest, /--proto '=https' "\$VIDEO_URL" --output generated-video\.mp4/)
   assert.doesNotMatch(mediaRequest, /Authorization|LAIAI_KEY|--location-trusted/)
@@ -235,15 +250,25 @@ test('video result examples return upstream URLs and do not send platform creden
 
 test('asset examples obtain versions, use platform IDs and submit guarded mutations', () => {
   for (const [read, edit] of [['asset-get', 'asset-rename'], ['group-get', 'group-rename']]) {
-    assert.equal(byID(edit).request.expected_version, byID(read).response.version)
+    assert.equal(byID(edit).request.expected_version, byID(read).response.Result.Version)
     assert.ok(byID(edit).idempotency)
   }
-  assert.match(byID('asset-get').response.reference, /^asset:\/\/asset_/)
-  assert.match(byID('portrait-get').response.session_id, /^pas_/)
+  assert.match(byID('asset-get').response.Result.URL, /^asset:\/\/asset_/)
+  assert.match(byID('portrait-get').response.Result.SessionId, /^pas_/)
   assert.ok(byID('asset-delete-call').idempotency)
-  assert.equal(byID('asset-delete-call').response.kind, 'DeleteAsset')
-  assert.equal(spec.paths['/v1/video/assets/{asset_id}'].delete.responses['202'].$ref, '#/components/responses/OperationAccepted')
-  for (const name of ['Asset', 'AssetGroup']) assert.ok(spec.components.schemas[name].required.includes('version'))
+  assert.equal(byID('asset-delete-call').response.ResponseMetadata.Action, 'DeleteAsset')
+  assert.equal(byID('asset-delete-call').response.Result.Status, 'deleting')
+  for (const id of ['asset-create-call', 'group-create-call', 'asset-list', 'group-list']) {
+    const metadata = byID(id).response.ResponseMetadata
+    assert.equal(metadata.Version, '2024-01-01')
+    assert.equal(metadata.Service, 'ark')
+    assert.equal(metadata.Region, 'cn-beijing')
+    assert.match(metadata.RequestId, /./)
+  }
+  const accepted = spec.paths['/v1/video/assets/{asset_id}'].delete.responses['202']
+  assert.ok(!accepted.$ref, 'asset DELETE 202 must document the inline official envelope')
+  assert.equal(accepted.content['application/json'].schema.allOf[0].$ref, '#/components/schemas/RpcEnvelope')
+  for (const name of ['RpcGetAssetResult', 'RpcGetAssetGroupResult']) assert.ok(spec.components.schemas[name].required.includes('Version'), `${name} must expose Version for PATCH optimistic locking`)
 })
 
 test('asset guide documents upstream URL registration and creator isolation without promising local media scans', () => {

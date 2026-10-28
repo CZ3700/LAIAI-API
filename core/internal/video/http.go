@@ -335,7 +335,8 @@ func (s *Service) HandleCreate(c *gin.Context) {
 		}
 		c.Header("Location", "/v1/video/generations/"+result.ID)
 		c.Header("Idempotency-Replayed", "true")
-		c.JSON(202, result)
+		// 重放必须与首次创建同形状（官方 {"id": ...}），不能退回平台全量 DTO。
+		c.JSON(202, gin.H{"id": result.ID})
 		return
 	}
 	ent, e := identity.LoadEntitlements(s.DB, key.OrgID)
