@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"gorm.io/gorm"
 	"reflect"
@@ -239,8 +238,15 @@ func TestQuerySettlementConflictSurvivesCompatibilityDiagnostics(t *testing.T) {
 		t.Run(map[bool]string{false: "legacy_v1", true: "unknown_state_known_v2"}[unsupported], func(t *testing.T) {
 			var output bytes.Buffer
 			db := authorityClockUnitDB(t, &output)
-			if err := db.AutoMigrate(&task.Task{}, &State{}, &QueryReceipt{}); err != nil {
-				t.Fatal(err)
+			// 红线 5 禁用 AutoMigrate；列集与 task.Task/State/QueryReceipt 模型一一对应。
+			for _, ddl := range []string{
+				"CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,org_id INTEGER,user_id INTEGER,api_key_id INTEGER,model TEXT,channel_id INTEGER,provider TEXT,status TEXT,fail_reason TEXT,upstream_task_id TEXT,result_url TEXT,result_ref TEXT,hold_id INTEGER,credential_id INTEGER,est_tokens INTEGER,actual_tokens INTEGER,cost_usd NUMERIC,price_out_usd_per_1m NUMERIC,price_per_call_usd NUMERIC,hold_amount_usd NUMERIC,group_ratio NUMERIC,submitted_at DATETIME,started_at DATETIME,finished_at DATETIME)",
+				"CREATE TABLE video_task_states (task_id TEXT PRIMARY KEY,org_id INTEGER,create_request_id TEXT,provider_scope_id INTEGER,credential_snapshot_id INTEGER,provider_base_url TEXT,config_version TEXT,capability_version TEXT,runtime_version TEXT,adapter_version TEXT,protocol_contract_version TEXT,billing_schema_version TEXT,upstream_model TEXT,no_charge_statuses TEXT,billing_state TEXT,capture_history INTEGER,retention_days INTEGER,sync_state TEXT,artifact_status TEXT,effective_payload_ref TEXT,response_payload_ref TEXT,result_payload_ref TEXT,total_tokens INTEGER,observed_completion_tokens INTEGER,billing_snapshot_id INTEGER,idempotency_record_id INTEGER,parent_draft_task_id TEXT,row_version INTEGER,query_sequence INTEGER,applied_query_sequence INTEGER,query_lease_until DATETIME,event_sequence INTEGER,last_synced_at DATETIME,next_poll_at DATETIME,review_due_at DATETIME,deleted_at DATETIME,deletion_operation_id TEXT,created_at DATETIME,updated_at DATETIME,settlement_receipt_id TEXT)",
+				"CREATE TABLE video_query_receipts (attempt_id TEXT PRIMARY KEY,org_id INTEGER,task_id TEXT,sequence INTEGER,task_row_version INTEGER,runtime_version TEXT,adapter_version TEXT,protocol_contract_version TEXT,observation_schema_version INTEGER,http_status INTEGER,outcome TEXT,provider_request_id TEXT,observation_json TEXT,has_video INTEGER,has_last_frame INTEGER,payload_ref TEXT,received_at DATETIME,applied_at DATETIME,apply_error_code TEXT,recovery_due_at DATETIME,recovery_version INTEGER,generation_applied_at DATETIME,settlement_kind TEXT,settlement_evidence_sha256 TEXT)",
+			} {
+				if err := db.Exec(ddl).Error; err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := db.Exec("CREATE TABLE video_billing_snapshots (id INTEGER,org_id INTEGER,task_id TEXT,billing_schema_version TEXT)").Error; err != nil {
 				t.Fatal(err)
