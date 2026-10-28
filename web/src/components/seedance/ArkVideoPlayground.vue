@@ -13,7 +13,9 @@ const props = defineProps<{ model: string; apiKey: string }>()
 const emit = defineEmits<{ locked: [value: boolean] }>()
 const { t } = useSeedanceI18n()
 const auth = useAuth()
-interface Task { id: string; model: string; status: string; billing_state: string; artifact_status: string; content_url?: string; content?: { video_url?: string; last_frame_url?: string }; usage?: { completion_tokens: number | null; total_tokens: number | null }; deletion_state?: string }
+// 单个任务 GET 为官方数据面形状：无 billing_state/artifact_status/content_url；
+// billing_state 由 /billing 的 state 补充，产物状态由 content.video_url 是否出现判断。
+interface Task { id: string; model?: string; status: string; billing_state?: string; artifact_status?: string; content?: { video_url?: string; last_frame_url?: string }; usage?: { completion_tokens: number | null; total_tokens: number | null }; deletion_state?: string }
 interface Quote { reserved_amount: string; estimated_tokens: number; pricing_version: string; billing_rule_version: string; capability_version: string }
 interface Model { id: string; enabled: boolean; verified: boolean; capabilities: { resolutions: string[]; max_duration_seconds: number; automatic_duration: boolean; input_video: boolean; input_audio: boolean } }
 const prompt = ref('')
@@ -36,8 +38,9 @@ const requestID = ref('')
 const submitted = ref<unknown>(null)
 const received = ref<unknown>(null)
 const responseStatus = ref<number | null>(null)
-const mediaReady = computed(() => task.value?.status === 'succeeded' && task.value.artifact_status === 'ready' && task.value.deletion_state !== 'deleted')
-const src = computed(() => mediaReady.value ? safeMediaURL(task.value?.content?.video_url ?? task.value?.content_url) : '')
+const mediaReady = computed(() => task.value?.status === 'succeeded' && !!task.value?.content?.video_url && task.value.deletion_state !== 'deleted')
+const src = computed(() => mediaReady.value ? safeMediaURL(task.value?.content?.video_url) : '')
+const artifactLabel = computed(() => task.value?.artifact_status ?? (task.value?.status === 'succeeded' ? (task.value?.content?.video_url ? 'ready' : 'pending') : '—'))
 const lastFrameURL = computed(() => mediaReady.value ? safeMediaURL(task.value?.content?.last_frame_url) : '')
 const copiedURL = ref(false)
 const showDetails = ref(false)
@@ -152,7 +155,7 @@ async function poll() {
     if (current !== epoch) return
     if (b.ok) billing.value = bill
     const mutationPending = cancelOperation.value && !['confirmed', 'rejected'].includes(cancelOperation.value.status)
-    if (!shouldPoll(data) && !mutationPending) { stop(); sessionStorage.removeItem(storeKey.value) }
+    if (!shouldPoll(data, billing.value?.state) && !mutationPending) { stop(); sessionStorage.removeItem(storeKey.value) }
   } catch (e) { if (current === epoch) error.value = (e as Error).message }
   finally { if (pollingRequest === request) pollingRequest = null }
 }
@@ -184,7 +187,7 @@ function restore() {
   try {
     const value = JSON.parse(sessionStorage.getItem(storeKey.value) ?? 'null')
     if (value?.model === props.model && /^task_[a-zA-Z0-9_-]+$/.test(value.id) && props.apiKey) {
-      task.value = { id: value.id, model: value.model, status: 'accepted', billing_state: 'reserved', artifact_status: 'pending' }; requestID.value = value.request_id ?? ''; start()
+      task.value = { id: value.id, model: value.model, status: 'accepted' }; requestID.value = value.request_id ?? ''; start()
     }
   } catch { sessionStorage.removeItem(storeKey.value) }
 }
@@ -192,7 +195,7 @@ watch([prompt, image, video, audio, duration, resolution, ratio], () => { quote.
 watch(src, () => { copiedURL.value = false })
 watch(() => [auth.orgId, props.model, props.apiKey], () => { clearPrivate(); void loadModels(); restore() })
 onMounted(() => { void loadModels(); restore() })
-onActivated(() => { if (task.value && shouldPoll(task.value)) start() })
+onActivated(() => { if (task.value && shouldPoll(task.value, billing.value?.state)) start() })
 onDeactivated(closeDetails)
 onBeforeUnmount(clearPrivate)
 </script>
@@ -213,8 +216,8 @@ onBeforeUnmount(clearPrivate)
     <p v-if="error" role="alert" class="break-words text-sm text-danger">{{ error }}</p>
     <p v-if="uncertain" role="status" class="text-sm text-warn">{{ t('seedance.uncertain') }}</p>
     <div v-if="quote" class="space-y-2 rounded border border-line p-4 text-sm"><p>{{ t('seedance.quoteAmount', { currency: displayCurrencyCode() }) }}: <strong class="font-mono">{{ fmtUsd(quote.reserved_amount, { precision: 6 }) }}</strong></p><p>{{ t('seedance.priceVersion') }}: {{ quote.pricing_version }}</p><p>{{ t('seedance.quoteNotice') }}</p><button type="button" class="btn-primary" :disabled="locked" @click="submit">{{ t('seedance.confirm') }}</button></div>
-    <div class="flex flex-wrap gap-2"><button v-if="uncertain" type="button" class="btn-primary" :disabled="busy" @click="submit">{{ t('seedance.retry') }}</button><button v-else type="button" class="btn-primary" :disabled="locked || !prompt.trim() || !apiKey || !capabilities?.enabled || !capabilities.verified" @click="estimate">{{ t(busy ? 'seedance.loading' : 'seedance.quote') }}</button><button v-if="task" type="button" class="btn-ghost" :disabled="busy" @click="poll">{{ t('seedance.refresh') }}</button><button v-if="active" type="button" class="btn-ghost" :disabled="busy || !!cancelOperation" @click="mutate('cancel')">{{ t('seedance.cancel') }}</button><button v-if="task && canDelete(task)" type="button" class="btn-ghost" :disabled="busy || !!cancelOperation && !['confirmed', 'rejected'].includes(cancelOperation.status)" @click="mutate('delete')">{{ t('seedance.remove') }}</button></div>
-    <div v-if="task" class="space-y-2 rounded border border-line p-4 text-sm"><p class="break-all font-mono">{{ task.id }}</p><p>{{ t('seedance.generationState') }}: {{ task.status }} · {{ t('seedance.billing') }}: {{ task.billing_state }} · {{ t('seedance.artifact') }}: {{ task.artifact_status }}</p><p v-if="cancelOperation" class="break-all">{{ cancelOperation.operation_id }} · {{ cancelOperation.status }}</p><p v-if="task.status === 'succeeded' && task.artifact_status === 'pending'">{{ t('seedance.artifactWaiting') }}</p><p v-if="task.billing_state === 'pending_usage'">{{ t('seedance.billingWaiting') }}</p><p>{{ t('seedance.videoTokens') }}: {{ billing?.billable_tokens ?? t('seedance.pending') }}</p><p>{{ t('seedance.inputTokens') }}</p><p v-if="billing">{{ t('seedance.reserved') }}: {{ fmtUsd(billing.reserved_amount) }} · {{ t('seedance.settled') }}: {{ billing.settled_amount == null ? t('seedance.pending') : fmtUsd(billing.settled_amount) }} · {{ t('seedance.released') }}: {{ fmtUsd(billing.released_amount) }}</p></div>
+    <div class="flex flex-wrap gap-2"><button v-if="uncertain" type="button" class="btn-primary" :disabled="busy" @click="submit">{{ t('seedance.retry') }}</button><button v-else type="button" class="btn-primary" :disabled="locked || !prompt.trim() || !apiKey || !capabilities?.enabled || !capabilities.verified" @click="estimate">{{ t(busy ? 'seedance.loading' : 'seedance.quote') }}</button><button v-if="task" type="button" class="btn-ghost" :disabled="busy" @click="poll">{{ t('seedance.refresh') }}</button><button v-if="active" type="button" class="btn-ghost" :disabled="busy || !!cancelOperation" @click="mutate('cancel')">{{ t('seedance.cancel') }}</button><button v-if="task && canDelete(task, billing?.state)" type="button" class="btn-ghost" :disabled="busy || !!cancelOperation && !['confirmed', 'rejected'].includes(cancelOperation.status)" @click="mutate('delete')">{{ t('seedance.remove') }}</button></div>
+    <div v-if="task" class="space-y-2 rounded border border-line p-4 text-sm"><p class="break-all font-mono">{{ task.id }}</p><p>{{ t('seedance.generationState') }}: {{ task.status }} · {{ t('seedance.billing') }}: {{ billing?.state ?? '—' }} · {{ t('seedance.artifact') }}: {{ artifactLabel }}</p><p v-if="cancelOperation" class="break-all">{{ cancelOperation.operation_id }} · {{ cancelOperation.status }}</p><p v-if="task.status === 'succeeded' && !task.content?.video_url">{{ t('seedance.artifactWaiting') }}</p><p v-if="billing?.state === 'pending_usage'">{{ t('seedance.billingWaiting') }}</p><p>{{ t('seedance.videoTokens') }}: {{ billing?.billable_tokens ?? t('seedance.pending') }}</p><p>{{ t('seedance.inputTokens') }}</p><p v-if="billing">{{ t('seedance.reserved') }}: {{ fmtUsd(billing.reserved_amount) }} · {{ t('seedance.settled') }}: {{ billing.settled_amount == null ? t('seedance.pending') : fmtUsd(billing.settled_amount) }} · {{ t('seedance.released') }}: {{ fmtUsd(billing.released_amount) }}</p></div>
     <div v-if="src" class="space-y-3 rounded border border-line p-4 text-sm">
       <p class="text-muted">{{ t('seedance.directMediaNotice') }}</p>
       <video :key="`${task?.id}:${src}`" :src="src" controls playsinline preload="metadata" class="w-full rounded border border-line bg-black" />

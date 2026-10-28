@@ -138,13 +138,37 @@ func testMySQLArkConfigurationPublicationAndPublicRoutes(t *testing.T, model, up
 	call("POST", "/v1/video/generations", plain, request, 409)
 	request["expected_pricing_version"] = in.Configuration.PricingVersion
 	created := call("POST", "/v1/video/generations", plain, request, 202)
-	var view video.TaskView
+	// 创建响应为官方数据面形状 {"id": ...}；受理与冻结状态改经单查与 billing 核实。
+	var view struct {
+		ID string `json:"id"`
+	}
 	arkBillMust(t, json.Unmarshal(created.Body.Bytes(), &view))
-	if view.ID == "" || view.Status != "accepted" || view.BillingState != "reserved" {
-		t.Fatalf("bad create view %+v", view)
+	if !strings.HasPrefix(view.ID, "task_") {
+		t.Fatalf("bad create response %s", created.Body.String())
+	}
+	query := call("GET", "/v1/video/generations/"+view.ID, plain, nil, 200)
+	var taskState struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	arkBillMust(t, json.Unmarshal(query.Body.Bytes(), &taskState))
+	if taskState.ID != view.ID || taskState.Status != "accepted" {
+		t.Fatalf("bad official query %+v", taskState)
+	}
+	billed := call("GET", "/v1/video/generations/"+view.ID+"/billing", plain, nil, 200)
+	var bill struct {
+		State string `json:"state"`
+	}
+	arkBillMust(t, json.Unmarshal(billed.Body.Bytes(), &bill))
+	if bill.State != "reserved" {
+		t.Fatalf("bad billing state %+v", bill)
 	}
 	repeated := call("POST", "/v1/video/generations", plain, request, 202)
-	if repeated.Header().Get("Idempotency-Replayed") != "true" {
+	var replay struct {
+		ID string `json:"id"`
+	}
+	arkBillMust(t, json.Unmarshal(repeated.Body.Bytes(), &replay))
+	if replay.ID != view.ID || repeated.Header().Get("Idempotency-Replayed") != "true" {
 		t.Fatal("replay failed")
 	}
 	var before []videobilling.QuotaBucket

@@ -168,6 +168,21 @@ func (s *Service) httpError(c *gin.Context, err error) {
 func replayHeader(c *gin.Context, replayed bool) {
 	c.Header("Idempotency-Replayed", strconv.FormatBool(replayed))
 }
+
+// rpcEnvelope 按 Volcengine OpenAPI 官方响应信封组装 ResponseMetadata + Result；
+// RequestId 即平台请求 ID，与 X-Request-Id 头一致。
+func rpcEnvelope(c *gin.Context, action string, result gin.H) gin.H {
+	return gin.H{
+		"ResponseMetadata": gin.H{
+			"RequestId": c.GetString("video_request_id"),
+			"Action":    action,
+			"Version":   "2024-01-01",
+			"Service":   "ark",
+			"Region":    "cn-beijing",
+		},
+		"Result": result,
+	}
+}
 func requireIdempotency(c *gin.Context) bool {
 	// 契约（OpenAPI 评审稿）要求所有创建请求携带 Idempotency-Key；此前缺头只落
 	// 笼统的 invalid_request "The request is invalid."，客户无从排查（2026-10-28 反馈）。
@@ -219,19 +234,11 @@ func (s *Service) createGroupHTTP(c *gin.Context) {
 	replayHeader(c, replayed)
 	c.Header("Location", "/v1/video/asset-groups/"+dto.ID)
 	// 火山官方接口格式原路返回：ResponseMetadata + Result
-	c.JSON(202, gin.H{
-		"ResponseMetadata": gin.H{
-			"Action":  "CreateAssetGroup",
-			"Region":  "cn-beijing",
-			"Service": "ark",
-			"Version": "2024-01-01",
-		},
-		"Result": gin.H{
-			"Id":     dto.ID,
-			"Name":   dto.Name,
-			"Status": dto.Status,
-		},
-	})
+	c.JSON(202, rpcEnvelope(c, "CreateAssetGroup", gin.H{
+		"Id":     dto.ID,
+		"Name":   dto.Name,
+		"Status": dto.Status,
+	}))
 }
 func (s *Service) getGroupHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)
@@ -244,22 +251,16 @@ func (s *Service) getGroupHTTP(c *gin.Context) {
 		return
 	}
 	// 火山官方接口格式原路返回
-	c.JSON(200, gin.H{
-		"ResponseMetadata": gin.H{
-			"Action":  "GetAssetGroup",
-			"Region":  "cn-beijing",
-			"Service": "ark",
-			"Version": "2024-01-01",
-		},
-		"Result": gin.H{
-			"Id":         dto.ID,
-			"Name":       dto.Name,
-			"Status":     dto.Status,
-			"AssetCount": dto.AssetCount,
-			"CreatedAt":  dto.CreatedAt.Unix(),
-			"UpdatedAt":  dto.UpdatedAt.Unix(),
-		},
-	})
+	c.JSON(200, rpcEnvelope(c, "GetAssetGroup", gin.H{
+		"Id":         dto.ID,
+		"Name":       dto.Name,
+		"Status":     dto.Status,
+		"AssetCount": dto.AssetCount,
+		// Version 是平台扩展字段（官方无此字段）：PATCH expected_version 乐观锁的唯一读取来源。
+		"Version":   dto.Version,
+		"CreatedAt": dto.CreatedAt.Unix(),
+		"UpdatedAt": dto.UpdatedAt.Unix(),
+	}))
 }
 func (s *Service) listGroupsHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)
@@ -285,18 +286,10 @@ func (s *Service) listGroupsHTTP(c *gin.Context) {
 			"AssetCount": g.AssetCount,
 		})
 	}
-	c.JSON(200, gin.H{
-		"ResponseMetadata": gin.H{
-			"Action":  "ListAssetGroups",
-			"Region":  "cn-beijing",
-			"Service": "ark",
-			"Version": "2024-01-01",
-		},
-		"Result": gin.H{
-			"Items":      items,
-			"NextCursor": next,
-		},
-	})
+	c.JSON(200, rpcEnvelope(c, "ListAssetGroups", gin.H{
+		"Items":      items,
+		"NextCursor": next,
+	}))
 }
 func (s *Service) deleteGroupHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, true)
@@ -320,18 +313,10 @@ func (s *Service) deleteGroupHTTP(c *gin.Context) {
 		c.Status(http.StatusNoContent)
 		return
 	}
-	c.JSON(202, gin.H{
-		"ResponseMetadata": gin.H{
-			"Action":  "DeleteAssetGroup",
-			"Region":  "cn-beijing",
-			"Service": "ark",
-			"Version": "2024-01-01",
-		},
-		"Result": gin.H{
-			"Id":     dto.ID,
-			"Status": "deleting",
-		},
-	})
+	c.JSON(202, rpcEnvelope(c, "DeleteAssetGroup", gin.H{
+		"Id":     dto.ID,
+		"Status": "deleting",
+	}))
 }
 func (s *Service) createAssetHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, true)
@@ -354,20 +339,12 @@ func (s *Service) createAssetHTTP(c *gin.Context) {
 	replayHeader(c, replayed)
 	c.Header("Location", "/v1/video/assets/"+dto.ID)
 	// 火山官方接口格式原路返回
-	c.JSON(202, gin.H{
-		"ResponseMetadata": gin.H{
-			"Action":  "CreateAsset",
-			"Region":  "cn-beijing",
-			"Service": "ark",
-			"Version": "2024-01-01",
-		},
-		"Result": gin.H{
-			"Id":        dto.ID,
-			"GroupId":   dto.GroupID,
-			"AssetType": dto.MediaType,
-			"Status":    dto.Status,
-		},
-	})
+	c.JSON(202, rpcEnvelope(c, "CreateAsset", gin.H{
+		"Id":        dto.ID,
+		"GroupId":   dto.GroupID,
+		"AssetType": dto.MediaType,
+		"Status":    dto.Status,
+	}))
 }
 func (s *Service) getAssetHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)
@@ -379,23 +356,17 @@ func (s *Service) getAssetHTTP(c *gin.Context) {
 		s.httpError(c, err)
 		return
 	}
-	c.JSON(200, gin.H{
-		"ResponseMetadata": gin.H{
-			"Action":  "GetAsset",
-			"Region":  "cn-beijing",
-			"Service": "ark",
-			"Version": "2024-01-01",
-		},
-		"Result": gin.H{
-			"Id":        dto.ID,
-			"GroupId":   dto.GroupID,
-			"AssetType": dto.MediaType,
-			"Status":    dto.Status,
-			"URL":       dto.Reference,
-			"CreatedAt": dto.CreatedAt.Unix(),
-			"UpdatedAt": dto.UpdatedAt.Unix(),
-		},
-	})
+	c.JSON(200, rpcEnvelope(c, "GetAsset", gin.H{
+		"Id":        dto.ID,
+		"GroupId":   dto.GroupID,
+		"AssetType": dto.MediaType,
+		"Status":    dto.Status,
+		"URL":       dto.Reference,
+		// Version 是平台扩展字段（官方无此字段）：PATCH expected_version 乐观锁的唯一读取来源。
+		"Version":   dto.Version,
+		"CreatedAt": dto.CreatedAt.Unix(),
+		"UpdatedAt": dto.UpdatedAt.Unix(),
+	}))
 }
 func (s *Service) listAssetsHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)
@@ -421,18 +392,10 @@ func (s *Service) listAssetsHTTP(c *gin.Context) {
 			"Status":    a.Status,
 		})
 	}
-	c.JSON(200, gin.H{
-		"ResponseMetadata": gin.H{
-			"Action":  "ListAssets",
-			"Region":  "cn-beijing",
-			"Service": "ark",
-			"Version": "2024-01-01",
-		},
-		"Result": gin.H{
-			"Items":      items,
-			"NextCursor": next,
-		},
-	})
+	c.JSON(200, rpcEnvelope(c, "ListAssets", gin.H{
+		"Items":      items,
+		"NextCursor": next,
+	}))
 }
 func (s *Service) deleteAssetHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, true)
@@ -448,18 +411,10 @@ func (s *Service) deleteAssetHTTP(c *gin.Context) {
 		c.Status(204)
 		return
 	}
-	c.JSON(202, gin.H{
-		"ResponseMetadata": gin.H{
-			"Action":  "DeleteAsset",
-			"Region":  "cn-beijing",
-			"Service": "ark",
-			"Version": "2024-01-01",
-		},
-		"Result": gin.H{
-			"Id":     dto.ID,
-			"Status": "deleting",
-		},
-	})
+	c.JSON(202, rpcEnvelope(c, "DeleteAsset", gin.H{
+		"Id":     dto.ID,
+		"Status": "deleting",
+	}))
 }
 func (s *Service) createPortraitHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, true)
@@ -482,18 +437,10 @@ func (s *Service) createPortraitHTTP(c *gin.Context) {
 	replayHeader(c, replayed)
 	c.Header("Location", "/v1/video/portrait-authorizations/"+dto.ID)
 	// 火山官方接口格式原路返回
-	c.JSON(202, gin.H{
-		"ResponseMetadata": gin.H{
-			"Action":  "CreateVisualValidateSession",
-			"Region":  "cn-beijing",
-			"Service": "ark",
-			"Version": "2024-01-01",
-		},
-		"Result": gin.H{
-			"SessionId": dto.ID,
-			"Status":    dto.Status,
-		},
-	})
+	c.JSON(202, rpcEnvelope(c, "CreateVisualValidateSession", gin.H{
+		"SessionId": dto.ID,
+		"Status":    dto.Status,
+	}))
 }
 func (s *Service) getPortraitHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)
@@ -518,15 +465,7 @@ func (s *Service) getPortraitHTTP(c *gin.Context) {
 	if dto.AuthorizationURL != "" {
 		result["H5URL"] = dto.AuthorizationURL
 	}
-	c.JSON(200, gin.H{
-		"ResponseMetadata": gin.H{
-			"Action":  "GetVisualValidateResult",
-			"Region":  "cn-beijing",
-			"Service": "ark",
-			"Version": "2024-01-01",
-		},
-		"Result": result,
-	})
+	c.JSON(200, rpcEnvelope(c, "GetVisualValidateResult", result))
 }
 func (s *Service) listPortraitsHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)

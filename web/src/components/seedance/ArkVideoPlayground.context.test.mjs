@@ -39,7 +39,8 @@ const built = await build({
 const {default: ArkVideoPlayground} = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`)
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return {promise, resolve, reject} }
 function json(value, status = 200, headers = {}) { return new Response(JSON.stringify(value), {status, headers: {'Content-Type': 'application/json', ...headers}}) }
-function task(id, values = {}) { return {id, model: 'seedance-2.0', status: 'running', billing_state: 'reserved', artifact_status: 'pending', ...values} }
+// 官方数据面形状：单查/创建响应无 billing_state、artifact_status、content_url。
+function task(id, values = {}) { return {id, model: 'seedance-2.0', status: 'running', ...values} }
 async function until(predicate) { const end = performance.now() + 3000; while (performance.now() < end) { if (predicate()) return; await delay(5) } assert.fail('condition timed out') }
 async function harness(t) {
   const originals = Object.fromEntries(['window', 'sessionStorage', 'fetch', '__arkHarness'].map(key => [key, globalThis[key]]))
@@ -116,14 +117,14 @@ test('switching Key during operation polling aborts the old credentials and star
 
 test('changing credentials clears visible direct links and late task results cannot restore them', async t => {
   const h = await harness(t), old = deferred()
-  h.vm.task.value = task('task_old', {status: 'succeeded', artifact_status: 'ready', content_url: 'https://provider.example/old.mp4'})
+  h.vm.task.value = task('task_old', {status: 'succeeded', content: {video_url: 'https://provider.example/old.mp4'}})
   assert.equal(h.vm.src.value, 'https://provider.example/old.mp4')
   h.respond = () => old.promise
   const previous = h.vm.poll()
   h.props.apiKey = 'fixture-key-B'
   await vue.nextTick()
   assert.equal(h.vm.src.value, '')
-  old.resolve(json(task('task_old', {status: 'succeeded', artifact_status: 'ready', content_url: 'https://provider.example/old.mp4'})))
+  old.resolve(json(task('task_old', {status: 'succeeded', content: {video_url: 'https://provider.example/old.mp4'}})))
   await previous
   assert.equal(h.vm.src.value, '')
   assert.equal(h.vm.task.value, null)
@@ -131,7 +132,7 @@ test('changing credentials clears visible direct links and late task results can
 
 test('a terminal old poll awaiting billing cannot stop the new org timer or restore its links', async t => {
   const h = await harness(t), bill = deferred(), current = deferred()
-  h.respond = call => call.path.endsWith('task_old') ? json(task('task_old', {status: 'succeeded', billing_state: 'settled', artifact_status: 'ready', content_url: 'https://provider.example/old.mp4'}))
+  h.respond = call => call.path.endsWith('task_old') ? json(task('task_old', {status: 'succeeded', content: {video_url: 'https://provider.example/old.mp4'}}))
     : call.path === '/v1/video/generations/task_old/billing' ? bill.promise
     : call.path.endsWith('task_new') ? current.promise : json({})
   h.vm.task.value = task('task_old')
@@ -156,8 +157,8 @@ test('submitting another task takes observation ownership and clears the previou
   const h = await harness(t), oldBill = deferred(), current = deferred()
   h.respond = call => {
     if (call.path === '/v1/video/estimates') return json({reserved_amount: '0.125', pricing_version: 'price-kept'})
-    if (call.path === '/v1/video/generations') return json(task('task_new', {status: 'accepted'}), 202)
-    if (call.path.endsWith('task_old')) return json(task('task_old', {status: 'succeeded', billing_state: 'settled', artifact_status: 'ready', content_url: 'https://provider.example/old.mp4'}))
+    if (call.path === '/v1/video/generations') return json({id: 'task_new'}, 202)
+    if (call.path.endsWith('task_old')) return json(task('task_old', {status: 'succeeded', content: {video_url: 'https://provider.example/old.mp4'}}))
     if (call.path === '/v1/video/generations/task_old/billing') return oldBill.promise
     if (call.path.endsWith('task_new')) return current.promise
     return json({})
@@ -193,7 +194,7 @@ test('unmount aborts polling and discards a late direct result link', async t =>
   const requests = h.calls.filter(call => call.path.includes('task_old'))
   h.unmounted.forEach(fn => fn())
   assert.ok(requests.every(call => call.options.signal.aborted))
-  oldPoll.resolve(json(task('task_old', {status: 'succeeded', artifact_status: 'ready', content_url: 'https://provider.example/old.mp4'})))
+  oldPoll.resolve(json(task('task_old', {status: 'succeeded', content: {video_url: 'https://provider.example/old.mp4'}})))
   await poll
   assert.equal(h.vm.task.value, null)
   assert.equal(h.vm.src.value, '')
@@ -204,9 +205,9 @@ test('actual Ark setup estimates, submits and uses the provider link directly wi
   const h = await harness(t)
   h.respond = call => {
     if (call.path === '/v1/video/estimates') return json({reserved_amount: '0.125', estimated_tokens: 1000, pricing_version: 'price-kept', billing_rule_version: 'rule-kept', capability_version: 'cap-kept'})
-    if (call.path === '/v1/video/generations') return json(task('task_created', {status: 'accepted'}), 202, {'X-Request-Id': 'request-fixture'})
-    if (call.path.endsWith('/billing')) return json({billable_tokens: 900, reserved_amount: '0.125', settled_amount: '0.1', released_amount: '0.025'})
-    return json(task('task_created', {status: 'succeeded', billing_state: 'settled', artifact_status: 'ready', content_url: 'https://provider.example/video.mp4?sig=kept%2Fexactly', content: {video_url: 'https://provider.example/video.mp4?sig=kept%2Fexactly', last_frame_url: 'https://provider.example/last.jpg'}}))
+    if (call.path === '/v1/video/generations') return json({id: 'task_created'}, 202, {'X-Request-Id': 'request-fixture'})
+    if (call.path.endsWith('/billing')) return json({state: 'settled', billable_tokens: 900, reserved_amount: '0.125', settled_amount: '0.1', released_amount: '0.025'})
+    return json(task('task_created', {status: 'succeeded', content: {video_url: 'https://provider.example/video.mp4?sig=kept%2Fexactly', last_frame_url: 'https://provider.example/last.jpg'}}))
   }
   h.vm.prompt.value = 'A local fixture prompt'
   await vue.nextTick()
@@ -231,8 +232,8 @@ test('actual Ark setup estimates, submits and uses the provider link directly wi
 
 test('refresh replaces a signed link and rejects another task response or unsafe media URLs', async t => {
   const h = await harness(t)
-  h.vm.task.value = task('task_current', {status: 'succeeded', billing_state: 'settled', artifact_status: 'ready', content_url: 'https://provider.example/old.mp4'})
-  let result = task('task_current', {status: 'succeeded', billing_state: 'settled', artifact_status: 'ready', content: {video_url: 'https://provider.example/new.mp4', last_frame_url: 'javascript:alert(1)'}})
+  h.vm.task.value = task('task_current', {status: 'succeeded', content: {video_url: 'https://provider.example/old.mp4'}})
+  let result = task('task_current', {status: 'succeeded', content: {video_url: 'https://provider.example/new.mp4', last_frame_url: 'javascript:alert(1)'}})
   h.respond = call => call.path.endsWith('/billing') ? json({}) : json(result)
   await h.vm.poll()
   assert.equal(h.vm.src.value, 'https://provider.example/new.mp4')
@@ -256,7 +257,7 @@ test('uncertain task submission retries the original idempotency key and authori
   let attempts = 0
   h.respond = call => {
     if (call.path === '/v1/video/estimates') return json({reserved_amount: '0.125', pricing_version: 'price-kept'})
-    if (call.path === '/v1/video/generations') { if (++attempts === 1) throw new Error('response lost'); return json(task('task_retry')) }
+    if (call.path === '/v1/video/generations') { if (++attempts === 1) throw new Error('response lost'); return json({id: 'task_retry'}, 202) }
     return call.path.endsWith('/billing') ? json({}) : json(task('task_retry'))
   }
   h.vm.prompt.value = 'Fixture'

@@ -63,25 +63,15 @@ export TASK_ID="$(jq -r '.id // empty' create-response.json)"
 
 请先确认预估和创建响应成功，再使用返回 ID。预估不锁价、不冻结；创建重新检查价格版本、能力、预算、余额和租户策略。`max_charge_usd` 限制创建时所需冻结额，不是后续审计调整的金额锁。模型列表中的价格是本组织客户售价，不能当作供应商成本；标签不是完整匹配规则，请用预估核对具体输入。
 
-当前创建响应示意（非真实生成结果）：
+当前创建响应示意（非真实生成结果；官方数据面形状仅返回 id）：
 
 ```json
 {
-  "id": "task_example001",
-  "model": "seedance-2.0",
-  "status": "accepted",
-  "billing_state": "reserved",
-  "usage": null,
-  "sync_state": "fresh",
-  "artifact_status": "pending",
-  "created_at": "2026-10-16T08:00:00Z",
-  "updated_at": "2026-10-16T08:00:00Z",
-  "last_synced_at": null,
-  "deletion_state": "none"
+  "id": "task_example001"
 }
 ```
 
-`usage: null` 表示没有核实实际用量。获得部分官方用量后可能为 `{"completion_tokens": 123, "total_tokens": null}`，不能把缺失值当作零，也不能假定两个 Token 字段相等。任务、账单、同步和产物状态独立；`artifact_status=ready` 只表示已取得上游结果链接，不代表平台托管或链接永久有效。
+创建响应与单个任务 GET 均为官方数据面形状（小写字段、`created_at`/`updated_at` 为 Unix 秒）。平台账务、同步、产物等扩展状态由任务列表 DTO 与 billing、events 等平台扩展接口读取。任务 GET 在成功后可含 `content.video_url` 与 `usage`；`usage` 中字段可能为 `null`（如 `{"completion_tokens": 123, "total_tokens": null}`），不能把缺失值当作零，也不能假定两个 Token 字段相等。取得上游结果链接不代表平台托管或链接永久有效。
 
 ## 查询、列表、事件和账单
 
@@ -110,14 +100,14 @@ curl -fsS "$BASE_URL/v1/video/generations/$TASK_ID/billing" \
 
 调整分录的 `amount` 均为非负数：credit 减少净费用，debit 增加净费用；`settled_amount` 是调整后的净额。不要覆盖历史 capture，也不要把 release 等同于退回已扣费用。人工调整可能独立于原 Token 计价公式，应结合 entries 与净额核对。单价可能超过 8 位小数，最终 USD 账款使用 8 位小数；无需把供应商汇率、采购折扣再次乘入客户账单。
 
-成功任务可返回 `content_url`（视频直链）及 `content.video_url`、`content.last_frame_url`（后者仅在官方提供时存在）。任务 DTO 不返回 `effective_parameters`、原始错误、上游 ID 或内嵌取消/删除操作。事件不返回 prompt、媒体 URL、H5 URL 或供应商成本。软删除任务后，账单与安全事件仍按账务保留策略查询，任务链接不能再通过详情回填。
+成功任务查询返回 `content.video_url`（火山视频直链）。官方形状不包含 `content_url` 或尾帧字段；尾帧地址经 `/content?kind=last_frame` 读取。任务响应不返回 `effective_parameters`、原始错误、上游 ID 或内嵌取消/删除操作。事件不返回 prompt、媒体 URL、H5 URL 或供应商成本。软删除任务后，账单与安全事件仍按账务保留策略查询，任务链接不能再通过详情回填。
 
 ## 取消、删除和产物
 
 产物读取、取消和删除是按任务状态选择的独立示例，不应对同一个任务依次执行所有命令。成功任务需在删除前取得结果链接。`/content` 是需要 Gateway Key 的链接 JSON 接口，返回 `{"url":"https://…","kind":"video","source":"upstream"}`，不返回媒体二进制，也不通过 302 跳转到火山。随后直接访问结果 URL，**不得附带 Gateway Bearer Key**：
 
 ```bash
-# 成功且 artifact_status=ready 时读取链接 JSON。
+# 任务成功且产物链接就绪时读取链接 JSON。
 curl -fsS "$BASE_URL/v1/video/generations/$TASK_ID/content" \
   -H "Authorization: Bearer $GATEWAY_KEY" > video-link.json
 VIDEO_URL="$(jq -er '.url' video-link.json)"
@@ -145,13 +135,13 @@ curl -sS -X DELETE "$BASE_URL/v1/video/generations/$TASK_ID" \
   -H "Authorization: Bearer $GATEWAY_KEY"
 ```
 
-未派单的 accepted 任务可原子取消并释放冻结；submitting/submission_unknown 只能记录取消意愿等待核对。确认 queued 后才有条件向官方发送 DELETE，running 返回 `409 invalid_state`。DELETE 成功响应加随后 GET 404 不能证明已经取消或零费用，queued→succeeded 的竞争仍可能存在。
+未派单的 accepted 任务可原子取消并释放冻结；submitting/submission_unknown 只能记录取消意愿等待核对。确认 queued 后才有条件向官方发送 DELETE，running 返回 `409 invalid_state`。任务取消/删除受理回执为官方形状 `{"id": "...", "status": "cancelling" | "deleting", "operation_id": "..."}`。DELETE 成功响应加随后 GET 404 不能证明已经取消或零费用，queued→succeeded 的竞争仍可能存在。
 
 任务取消/删除操作状态为 `pending/in_flight/unknown/confirmed/rejected`；素材操作发送态使用 `sending`。只有 confirmed 表示确认完成。任务操作响应不提供 `completed_at` 和 `error`；素材操作可提供。素材 `kind` 为 `UpdateAsset`、`UpdateAssetGroup`、`DeleteAsset`、`DeleteAssetGroup` 等动作名；任务为 `cancel_task/delete_task`。没有公开的创建操作列表。
 
 首次任务删除返回 `202` 操作，已经完成的重复删除返回 `204`。本地 cancelled 或未取得上游 ID 的可删除终态仅软删除；其他允许终态按官方删除结果确认。删除不退款，任务 GET 随后为 404，不抹除账单。交付链接未就绪返回 409，已过交付保留期返回 410。签名链接的实际有效期由火山控制，可能早于平台交付信息过期；平台不承诺刷新签名或永久可下载，客户端应及时保存需要保留的结果。
 
-浏览器可将 `content_url` 直接用于 `<video src>` 和打开／下载链接；不要携带平台 Key `fetch` 外站后转成 Blob。跨域下载的文件名、是否打开新标签及播放能力由浏览器和火山响应决定。签名 URL 具有临时访问能力，不应写入普通日志、公开分享或存进业务状态表。
+浏览器可将 `content.video_url` 直接用于 `<video src>` 和打开／下载链接；不要携带平台 Key `fetch` 外站后转成 Blob。跨域下载的文件名、是否打开新标签及播放能力由浏览器和火山响应决定。签名 URL 具有临时访问能力，不应写入普通日志、公开分享或存进业务状态表。
 
 平台仅在 Invocation Store 保存最小加密 `delivery` 胶囊，包含经过安全校验的结果 URL，不包含视频字节、完整请求或上游响应。每份胶囊最多保留 24 小时，且不超过任务创建时记录的 `RetentionDays` 边界；这与受理后 24 小时的执行正文边界分别计算。单任务详情或 `/content` 可在该任务保留边界内，通过受限官方 GET 重新取得结果链接并建立新的胶囊，读取已有胶囊不会延长其期限。胶囊受组织隔离及解密审计约束，与可关闭的原文历史用途分离。无法取得有效链接时不伪装成平台已托管的媒体，也不保证官方重新查询能续签地址。
 
@@ -189,7 +179,7 @@ curl -fsS --get "$BASE_URL/v1/video/assets" \
   --data-urlencode "group_id=$GROUP_ID" --data-urlencode 'limit=20'
 ```
 
-只有素材 `status=ready` 时返回可用于任务的 `reference: asset://asset_...`，creating/processing 不可引用。创建任务时会检查组织、官方账号/区域/项目、状态与许可，并在同一事务锁定引用。例如将创建请求 content 改为：
+素材与素材组接口按火山官方 RPC 信封返回：`ResponseMetadata`（`RequestId` 为平台请求 ID）+ `Result`（PascalCase 字段，`CreatedAt`/`UpdatedAt` 为 Unix 秒）。只有素材 GET `Result.Status=ready` 时 `Result.URL` 返回可用于任务的 `asset://asset_...` 引用；creating/processing 时为空字符串，不可引用。创建任务时会检查组织、官方账号/区域/项目、状态与许可，并在同一事务锁定引用。例如将创建请求 content 改为：
 
 ```json
 [
@@ -198,7 +188,7 @@ curl -fsS --get "$BASE_URL/v1/video/assets" \
 ]
 ```
 
-单素材删除需要显式启用 DeleteAssets 能力及有效 `Idempotency-Key`，素材须处于允许状态且没有在途任务引用。素材组删除仅允许显式启用能力的虚拟空组，非空为 409，真人组、能力未开或 `cascade=true` 为 422。当前不能使用级联删除。受理后以操作 confirmed 为完成依据；单素材已删除后的重复 DELETE 可能返回 404，不能据此推断操作成功。组已经确认删除的重复请求返回 204。
+单素材删除需要显式启用 DeleteAssets 能力及有效 `Idempotency-Key`，素材须处于允许状态且没有在途任务引用。素材组删除仅允许显式启用能力的虚拟空组，非空为 409，真人组、能力未开或 `cascade=true` 为 422。当前不能使用级联删除。受理回执为官方信封（`Result.Status` 恒为 `deleting`），响应不再内嵌操作对象；完成确认以重新 GET 为主，单素材已删除后的重复 DELETE 可能返回 404，不能据此推断删除成功。组已经确认删除的重复请求返回 204。
 
 ```bash
 curl -sS -X DELETE "$BASE_URL/v1/video/assets/$ASSET_ID" \
@@ -212,19 +202,19 @@ curl -sS -X DELETE "$BASE_URL/v1/video/asset-groups/$GROUP_ID?cascade=false" \
 
 ## 编辑素材与版本冲突
 
-公开素材/组 GET 和列表返回 `version`。编辑前读取当前版本，作为 PATCH 的 `expected_version`；不要猜测、固定为 1 或自行递增。版本过期、有在途操作或状态不符时返回 409；重新读取后由业务决定新修改，并使用新的幂等键。素材只支持名称；组可同时提交说明，均须开启 Update 能力。
+公开素材/组 GET 的 `Result` 返回 `Version`（平台扩展字段，官方无此字段；列表项不携带）。编辑前读取当前版本，作为 PATCH 的 `expected_version`；不要猜测、固定为 1 或自行递增。版本过期、有在途操作或状态不符时返回 409；重新读取后由业务决定新修改，并使用新的幂等键。素材只支持名称；组可同时提交说明，均须开启 Update 能力。
 
 ```bash
 curl -fsS "$BASE_URL/v1/video/assets/$ASSET_ID" \
   -H "Authorization: Bearer $GATEWAY_KEY" > asset.json
-jq '{name:"更新后的素材名称", expected_version:.version}' asset.json > asset-patch.json
+jq '{name:"更新后的素材名称", expected_version:.Result.Version}' asset.json > asset-patch.json
 curl -sS -X PATCH "$BASE_URL/v1/video/assets/$ASSET_ID" \
   -H "Authorization: Bearer $GATEWAY_KEY" -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: your-asset-rename-operation' --data-binary @asset-patch.json
 
 curl -fsS "$BASE_URL/v1/video/asset-groups/$GROUP_ID" \
   -H "Authorization: Bearer $GATEWAY_KEY" > group.json
-jq '{name:"更新后的组名称", description:"更新说明", expected_version:.version}' group.json > group-patch.json
+jq '{name:"更新后的组名称", description:"更新说明", expected_version:.Result.Version}' group.json > group-patch.json
 curl -sS -X PATCH "$BASE_URL/v1/video/asset-groups/$GROUP_ID" \
   -H "Authorization: Bearer $GATEWAY_KEY" -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: your-group-rename-operation' --data-binary @group-patch.json
@@ -249,7 +239,7 @@ curl -fsS "$BASE_URL/v1/video/portrait-authorizations?limit=20" \
   -H "Authorization: Bearer $GATEWAY_KEY"
 ```
 
-creating 尚无 H5 URL；pending 时只有创建该会话的原 Key 可经审计 GET `authorization_url`，其他 Key 为 403。原 Key 可以在有效 pending 期间再次查询，但官方凭证只用于一次认证。列表永不返回 H5 URL。不得将该 URL、回调 state 或凭证写入普通日志。
+creating 尚无 H5 URL；pending 时只有创建该会话的原 Key 可经审计 GET 在 `Result.H5URL` 取得，其他 Key 为 403。原 Key 可以在有效 pending 期间再次查询，但官方凭证只用于一次认证。列表永不返回 H5 URL。不得将该 URL、回调 state 或凭证写入普通日志。
 
 浏览器应通过官方 H5 跳回平台固定 `/v1/video/portrait-callback`，不要手工调用或拼接该入口。它消费有效的一次性 state 并 303 到登记地址；客户端 `GroupId`、`resultCode`、截图或回跳本身不改变授权状态。平台后续通过官方查询确认身份流程；succeeded 返回本组织 `ag_...` 映射。
 

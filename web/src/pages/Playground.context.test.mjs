@@ -192,7 +192,7 @@ test('late media body is discarded, download aborted, and existing Blob revoked 
   await until(() => !h.vm.restoringContext.value)
   h.response = call => call.method === 'POST' ? json({ id: 'task_B', status: 'queued' })
     : call.url.startsWith('https:') ? new Response('fixture B')
-    : json({ id: 'task_B', status: 'succeeded', result_url: 'https://media.invalid/B.mp4' })
+    : json({ id: 'task_B', status: 'succeeded', content: { video_url: 'https://media.invalid/B.mp4' } })
   prepareVideo(h)
   await h.vm.submitVideo()
   await until(() => !!h.vm.videoSrc.value)

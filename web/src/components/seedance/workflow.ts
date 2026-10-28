@@ -1,7 +1,9 @@
 export function isOfficialSeedance(model: string) { return /seedance[-_]?2/i.test(model) }
 export function generationActive(status: string) { return ['accepted', 'submitting', 'submission_unknown', 'queued', 'running'].includes(status) }
-export function canDelete(task: { status: string; billing_state?: string; deletion_state?: string }) {
-  return ['succeeded', 'failed', 'cancelled', 'expired'].includes(task.status) && ['settled', 'released', 'adjusted'].includes(task.billing_state ?? '') && task.deletion_state !== 'deleted'
+// 单个任务 GET 为官方数据面形状，不再携带 billing_state/artifact_status；
+// 账务终局改由 billing 接口的 state 传入（列表 DTO 仍可直接用 task.billing_state）。
+export function canDelete(task: { status: string; billing_state?: string; deletion_state?: string }, billingState?: string | null) {
+  return ['succeeded', 'failed', 'cancelled', 'expired'].includes(task.status) && ['settled', 'released', 'adjusted'].includes(billingState ?? task.billing_state ?? '') && task.deletion_state !== 'deleted'
 }
 export function createBody(input: { model: string; prompt: string; image: string; video: string; audio: string; duration: string; resolution: string; ratio: string }) {
   const content: Record<string, unknown>[] = [{ type: 'text', text: input.prompt.trim() }]
@@ -15,10 +17,13 @@ export function createBody(input: { model: string; prompt: string; image: string
   if (input.ratio !== 'default') body.ratio = input.ratio
   return body
 }
-export function shouldPoll(task: { status: string; artifact_status?: string; billing_state?: string }) {
+export function shouldPoll(task: { status: string; artifact_status?: string; billing_state?: string; content?: { video_url?: string } }, billingState?: string | null) {
   if (generationActive(task.status)) return true
-  if (['reserved', 'pending_usage'].includes(task.billing_state ?? '')) return true
-  return task.status === 'succeeded' && ['pending', 'downloading'].includes(task.artifact_status ?? '')
+  if (['reserved', 'pending_usage'].includes(billingState ?? task.billing_state ?? '')) return true
+  if (task.status !== 'succeeded') return false
+  // 官方形状无 artifact_status：产物链接（content.video_url）尚未回来时继续观察。
+  if (task.artifact_status !== undefined) return ['pending', 'downloading'].includes(task.artifact_status)
+  return !task.content?.video_url
 }
 export function authorizedRequest(body: Record<string, unknown>, quote: { reserved_amount: string; pricing_version: string }) {
   if (!/^(0|[1-9]\d*)(\.\d{1,8})?$/.test(quote.reserved_amount) || !quote.pricing_version) throw new Error('Invalid quote')
