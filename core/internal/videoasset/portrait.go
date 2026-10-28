@@ -19,7 +19,12 @@ type portraitSecret struct {
 
 func (s *Service) CreatePortrait(ctx context.Context, c CreateContext, input PortraitCreate) (PortraitDTO, bool, error) {
 	ctx = WithCaller(ctx, c)
-	if !validCreate(c) || !safeName(input.Name, 64, false) || !safeName(input.Description, 300, false) || !validHTTPS(input.CallbackURL, 2048) || s.options.ResolveCallback == nil || s.options.ResolveCallbackByID == nil || !validPlatformCallback(s.options.PlatformCallbackURL) {
+	// 平台侧配置缺失与客户请求格式错误必须分流：混在同一个 invalid_request
+	// 里会把"网关没配好"伪装成"客户请求不合法"（2026-10-28 两个生产 400 的根因）。
+	if s.options.ResolveCallback == nil || s.options.ResolveCallbackByID == nil || !validPlatformCallback(s.options.PlatformCallbackURL) {
+		return PortraitDTO{}, false, ErrUnconfigured
+	}
+	if !validCreate(c) || !safeName(input.Name, 64, false) || !safeName(input.Description, 300, false) || !validHTTPS(input.CallbackURL, 2048) {
 		return PortraitDTO{}, false, ErrInvalid
 	}
 	if old, found, err := s.replay(s.db.WithContext(ctx), c, "/v1/video/portrait-authorizations", bodyJSON(input)); err != nil {
@@ -37,7 +42,7 @@ func (s *Service) CreatePortrait(ctx context.Context, c CreateContext, input Por
 	}
 	target, err := s.options.ResolveCallback(ctx, c.OrgID, input.CallbackURL)
 	if err != nil || !validID(target.ID) || target.URL != input.CallbackURL {
-		return PortraitDTO{}, false, ErrInvalid
+		return PortraitDTO{}, false, ErrCallbackNotRegistered
 	}
 	id, err := newID("pas_")
 	if err != nil {

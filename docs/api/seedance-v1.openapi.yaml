@@ -706,8 +706,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PortraitAuthorization'
+        '400':
+          description: |
+            请求非法。缺 Idempotency-Key 头时 message 明确点名该头；
+            callback_url 与组织预登记回跳地址不匹配时 message 明确要求先完成登记。
         '409':
           $ref: '#/components/responses/Conflict'
+        '503':
+          description: |
+            provider_unavailable（retryable）——平台侧真人认证固定回调入口尚未配置，
+            属于服务端状态而非请求错误；配置完成后重试即可，请求本身无需修改。
         default:
           $ref: '#/components/responses/Error'
     get:
@@ -889,7 +897,8 @@ components:
         素材接口独立返回 authorization_required、resource_in_use、group_not_empty 等安全错误码。
         404=资源不存在或跨组织；409=幂等冲突/状态冲突；410=产物已过期；
         413=请求体超限；422=未验证或不支持的模型参数/素材组合；429=Token 配额/限流/并发限制；
-        402=余额不足；500=素材服务内部失败；502/503=服务不可用。已接受的提交结果未知通过任务状态表达，
+        402=余额不足；500=素材服务内部失败；502/503=服务不可用（503 亦含平台侧
+        真人认证回调未配置的 provider_unavailable，属可重试的服务端状态）。已接受的提交结果未知通过任务状态表达，
         不使用误导性的失败结果允许客户任意重新创建。错误 message 不包含上游原文、凭证或 PII。
       headers:
         X-Request-Id:

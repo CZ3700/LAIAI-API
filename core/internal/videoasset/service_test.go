@@ -616,10 +616,10 @@ func TestHTTPContractRejectsForgeryAndUnknownFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/video/portrait-authorizations/"+portrait.ID+"?GroupId=forged&resultCode=0", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"status":"creating"`) || strings.Contains(rec.Body.String(), "forged") {
-		t.Fatal("client callback forged success", rec.Body.String())
-	}
-	if _, _, err := s.CreatePortrait(context.Background(), createContext("evil"), PortraitCreate{CallbackURL: "https://evil.example/return"}); !errors.Is(err, ErrInvalid) {
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"Status":"creating"`) || strings.Contains(rec.Body.String(), "forged") {
+			t.Fatal("client callback forged success", rec.Body.String())
+		}
+	if _, _, err := s.CreatePortrait(context.Background(), createContext("evil"), PortraitCreate{CallbackURL: "https://evil.example/return"}); !errors.Is(err, ErrCallbackNotRegistered) {
 		t.Fatal("unregistered callback accepted")
 	}
 }
