@@ -22,6 +22,14 @@ var (
 	ErrNotEmpty      = errors.New("video asset: group not empty")
 	ErrStorage       = errors.New("video asset: storage unavailable")
 	ErrSecret        = errors.New("video asset: secret unavailable")
+	// ErrUnconfigured marks platform-side configuration gaps (portrait return
+	// callback not installed). It is a server state, never a client mistake,
+	// and must not surface as the client-blaming invalid_request envelope.
+	ErrUnconfigured = errors.New("video asset: gateway callback configuration missing")
+	// ErrCallbackNotRegistered marks a callback_url that does not exactly match
+	// a pre-registered HTTPS target for the organization. Distinct from
+	// ErrInvalid so the response can name the actual offending field.
+	ErrCallbackNotRegistered = errors.New("video asset: callback target not registered")
 	// ErrExecutionPolicy is a local configuration classification, never an
 	// upstream credential or permission error. Console diagnostics may expose
 	// the corresponding safe action without revealing account configuration.

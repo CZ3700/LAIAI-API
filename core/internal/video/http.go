@@ -366,7 +366,8 @@ func (s *Service) HandleCreate(c *gin.Context) {
 	} else {
 		c.Header("Idempotency-Replayed", "false")
 	}
-	c.JSON(202, result)
+	// 火山官方接口格式原路返回：提交响应仅含 {"id": "<task_id>"}
+	c.JSON(202, gin.H{"id": result.ID})
 }
 func (s *Service) HandleGet(c *gin.Context) {
 	key := requestKey(c)
@@ -381,7 +382,26 @@ func (s *Service) HandleGet(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "private, no-store")
-	c.JSON(200, v)
+	// 火山官方接口格式原路返回：包含 id, model, status, content, usage 等原生字段
+	queryResp := gin.H{
+		"id":         t.TaskID,
+		"model":      t.Model,
+		"status":     t.Status,
+		"created_at": st.CreatedAt.Unix(),
+		"updated_at": st.UpdatedAt.Unix(),
+	}
+	if v.ContentURL != "" {
+		queryResp["content"] = gin.H{
+			"video_url": v.ContentURL,
+		}
+	}
+	if st.TotalTokens != nil || st.ObservedCompletionTokens != nil {
+		queryResp["usage"] = gin.H{
+			"total_tokens":      st.TotalTokens,
+			"completion_tokens": st.ObservedCompletionTokens,
+		}
+	}
+	c.JSON(200, queryResp)
 }
 func (s *Service) HandleCancel(c *gin.Context) {
 	if b, e := io.ReadAll(io.LimitReader(c.Request.Body, 2)); e != nil || len(bytes.TrimSpace(b)) > 0 {
@@ -397,7 +417,8 @@ func (s *Service) HandleCancel(c *gin.Context) {
 		c.Header("Idempotency-Replayed", "true")
 	}
 	c.Set("video_operation_id", v.ID)
-	c.JSON(202, v)
+	// 火山官方格式返回：包含任务 id 与状态
+	c.JSON(202, gin.H{"id": c.Param("id"), "status": "cancelling", "operation_id": v.ID})
 }
 func (s *Service) HandleDelete(c *gin.Context) {
 	v, done, e := s.Delete(c.Request.Context(), requestKey(c).OrgID, c.Param("id"), c.GetString("video_request_id"))
@@ -410,7 +431,8 @@ func (s *Service) HandleDelete(c *gin.Context) {
 		return
 	}
 	c.Set("video_operation_id", v.ID)
-	c.JSON(202, v)
+	// 火山官方格式返回
+	c.JSON(202, gin.H{"id": c.Param("id"), "status": "deleting", "operation_id": v.ID})
 }
 func (s *Service) HandleOperation(c *gin.Context) {
 	v, e := s.GetOperation(requestKey(c).OrgID, c.Param("operation_id"))

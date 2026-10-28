@@ -29,24 +29,33 @@ func Decode(r io.Reader, maxBytes int64) (CreateRequest, error) {
 	if !uniqueJSON(b) {
 		return out, failure("invalid_request", "invalid or duplicate JSON fields", "body", 400)
 	}
-	obj, ok := closedObject(b, createFields)
-	if !ok {
-		return out, failure("invalid_request", "unknown, null, or invalid request fields", "body", 422)
+	obj, badKey, reason := inspectClosedObject(b, createFields)
+	if reason != "" {
+		if reason == "null_value" {
+			return out, failure("invalid_request", "field '"+badKey+"' must not be null", badKey, 422)
+		}
+		if reason == "unknown_field" {
+			return out, failure("invalid_request", "unrecognized field '"+badKey+"'; only official Ark fields are accepted", badKey, 422)
+		}
+		return out, failure("invalid_request", "invalid request body format", "body", 422)
 	}
 	if _, ok := obj["model"]; !ok {
-		return out, failure("invalid_request", "model is required", "model", 422)
+		return out, failure("invalid_request", "field 'model' is required", "model", 422)
 	}
 	var content []json.RawMessage
 	if json.Unmarshal(obj["content"], &content) != nil || len(content) == 0 || len(content) > 51 {
 		return out, failure("invalid_request", "content must contain between 1 and 51 items", "content", 422)
 	}
-	for _, raw := range content {
-		item, valid := closedObject(raw, []string{"type", "text", "image_url", "video_url", "audio_url", "draft_task", "role"})
-		if !valid {
+	for idx, raw := range content {
+		item, badContentKey, contentReason := inspectClosedObject(raw, []string{"type", "text", "image_url", "video_url", "audio_url", "draft_task", "role"})
+		if contentReason != "" {
+			if contentReason == "unknown_field" {
+				return out, failure("invalid_request", "unrecognized field '"+badContentKey+"' in content["+string(rune('0'+idx))+"]", "content", 422)
+			}
 			return out, failure("invalid_request", "invalid content fields", "content", 422)
 		}
 		var kind string
-		if json.Unmarshal(item["type"], &kind) != nil {
+		if json.Unmarshal(item["type"], &kind) != nil || kind == "" {
 			return out, failure("invalid_request", "content type is required", "content", 422)
 		}
 		allowed := []string{"type", kind}
@@ -54,10 +63,10 @@ func Decode(r io.Reader, maxBytes int64) (CreateRequest, error) {
 			allowed = append(allowed, "role")
 		}
 		if !contains([]string{"text", "image_url", "video_url", "audio_url", "draft_task"}, kind) {
-			return out, failure("invalid_request", "unsupported content type", "content", 422)
+			return out, failure("invalid_request", "unsupported content type '"+kind+"'", "content", 422)
 		}
-		if _, valid := closedObject(raw, allowed); !valid {
-			return out, failure("invalid_request", "content fields do not match its type", "content", 422)
+		if _, badKey, extraReason := inspectClosedObject(raw, allowed); extraReason != "" {
+			return out, failure("invalid_request", "field '"+badKey+"' is not allowed for content type '"+kind+"'", "content", 422)
 		}
 		if role, present := item["role"]; present {
 			var value string
@@ -73,7 +82,7 @@ func Decode(r io.Reader, maxBytes int64) (CreateRequest, error) {
 				}
 				fields, good := closedObject(ref, []string{key})
 				if !good || len(fields) != 1 {
-					return out, failure("invalid_request", "invalid content reference", "content", 422)
+					return out, failure("invalid_request", "invalid content reference in '"+name+"'", "content", 422)
 				}
 			}
 		}
@@ -88,6 +97,22 @@ func Decode(r io.Reader, maxBytes int64) (CreateRequest, error) {
 		}
 	}
 	return out, nil
+}
+
+func inspectClosedObject(raw []byte, allowed []string) (map[string]json.RawMessage, string, string) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return nil, "", "invalid_json"
+	}
+	for key, value := range obj {
+		if !contains(allowed, key) {
+			return nil, key, "unknown_field"
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return nil, key, "null_value"
+		}
+	}
+	return obj, "", ""
 }
 
 func closedObject(raw []byte, allowed []string) (map[string]json.RawMessage, bool) {

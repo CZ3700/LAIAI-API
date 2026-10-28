@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // RegisterRoutes expects a group mounted at /v1/video. Its parent middleware
@@ -36,6 +37,7 @@ func (s *Service) auth(c *gin.Context, write bool) (CreateContext, bool) {
 	raw, exists := c.Get("video_key")
 	key, ok := raw.(*identity.APIKey)
 	if !exists || !ok || key == nil || key.OrgID == 0 || key.ID == 0 {
+		c.Set("video_error", "unauthenticated")
 		c.AbortWithStatusJSON(401, gin.H{"error": SafeError{Code: "unauthenticated", Message: "Authentication is required."}, "request_id": c.GetString("video_request_id")})
 		return CreateContext{}, false
 	}
@@ -46,6 +48,7 @@ func (s *Service) auth(c *gin.Context, write bool) (CreateContext, bool) {
 		}
 	}
 	if !allowed {
+		c.Set("video_error", "forbidden")
 		c.AbortWithStatusJSON(403, gin.H{"error": SafeError{Code: "forbidden", Message: "The key lacks this video permission."}, "request_id": c.GetString("video_request_id")})
 		return CreateContext{}, false
 	}
@@ -127,6 +130,14 @@ func (s *Service) httpError(c *gin.Context, err error) {
 		status = 422
 		code = "unsupported_capability"
 		message = "This capability is not enabled."
+	case errors.Is(err, ErrUnconfigured):
+		status = 503
+		code = "provider_unavailable"
+		message = "Portrait authorization is not configured on this gateway yet."
+	case errors.Is(err, ErrCallbackNotRegistered):
+		status = 400
+		code = "invalid_request"
+		message = "callback_url must exactly match an HTTPS return address registered for this organization."
 	case errors.Is(err, ErrConflict):
 		status = 409
 		code = "invalid_state"
@@ -148,10 +159,26 @@ func (s *Service) httpError(c *gin.Context, err error) {
 		code = "resource_in_use"
 		message = "The resource is referenced by an active task."
 	}
-	c.AbortWithStatusJSON(status, gin.H{"error": SafeError{Code: code, Message: message, Retryable: false}, "request_id": c.GetString("video_request_id")})
+	// video_error 供父级 video 中间件落 api_request_logs.safe_error_code；
+	// 此前资产网关从不设置该键，后台视频请求日志里错误码恒为空（2026-10-28 生产复现）。
+	c.Set("video_error", code)
+	retryable := status == 429 || status == 503
+	c.AbortWithStatusJSON(status, gin.H{"error": SafeError{Code: code, Message: message, Retryable: retryable}, "request_id": c.GetString("video_request_id")})
 }
 func replayHeader(c *gin.Context, replayed bool) {
 	c.Header("Idempotency-Replayed", strconv.FormatBool(replayed))
+}
+func requireIdempotency(c *gin.Context) bool {
+	// 契约（OpenAPI 评审稿）要求所有创建请求携带 Idempotency-Key；此前缺头只落
+	// 笼统的 invalid_request "The request is invalid."，客户无从排查（2026-10-28 反馈）。
+	// 与服务层 validCreate 同规则：非空、≤128、无控制字符。
+	key := c.GetHeader("Idempotency-Key")
+	if len(key) == 0 || len(key) > 128 || strings.IndexFunc(key, unicode.IsControl) >= 0 {
+		c.Set("video_error", "invalid_request")
+		c.AbortWithStatusJSON(400, gin.H{"error": SafeError{Code: "invalid_request", Message: "The Idempotency-Key header is required for this request.", Retryable: false}, "request_id": c.GetString("video_request_id")})
+		return false
+	}
+	return true
 }
 func pageParams(c *gin.Context) (int, string, error) {
 	limit := 20
@@ -176,6 +203,9 @@ func (s *Service) createGroupHTTP(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !requireIdempotency(c) {
+		return
+	}
 	var input GroupCreate
 	if err := decodeBody(c, &input); err != nil {
 		s.httpError(c, err)
@@ -188,7 +218,20 @@ func (s *Service) createGroupHTTP(c *gin.Context) {
 	}
 	replayHeader(c, replayed)
 	c.Header("Location", "/v1/video/asset-groups/"+dto.ID)
-	c.JSON(202, dto)
+	// 火山官方接口格式原路返回：ResponseMetadata + Result
+	c.JSON(202, gin.H{
+		"ResponseMetadata": gin.H{
+			"Action":  "CreateAssetGroup",
+			"Region":  "cn-beijing",
+			"Service": "ark",
+			"Version": "2024-01-01",
+		},
+		"Result": gin.H{
+			"Id":     dto.ID,
+			"Name":   dto.Name,
+			"Status": dto.Status,
+		},
+	})
 }
 func (s *Service) getGroupHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)
@@ -200,7 +243,23 @@ func (s *Service) getGroupHTTP(c *gin.Context) {
 		s.httpError(c, err)
 		return
 	}
-	c.JSON(200, dto)
+	// 火山官方接口格式原路返回
+	c.JSON(200, gin.H{
+		"ResponseMetadata": gin.H{
+			"Action":  "GetAssetGroup",
+			"Region":  "cn-beijing",
+			"Service": "ark",
+			"Version": "2024-01-01",
+		},
+		"Result": gin.H{
+			"Id":         dto.ID,
+			"Name":       dto.Name,
+			"Status":     dto.Status,
+			"AssetCount": dto.AssetCount,
+			"CreatedAt":  dto.CreatedAt.Unix(),
+			"UpdatedAt":  dto.UpdatedAt.Unix(),
+		},
+	})
 }
 func (s *Service) listGroupsHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)
@@ -217,7 +276,27 @@ func (s *Service) listGroupsHTTP(c *gin.Context) {
 		s.httpError(c, err)
 		return
 	}
-	pageResponse(c, data, next)
+	items := make([]gin.H, 0, len(data))
+	for _, g := range data {
+		items = append(items, gin.H{
+			"Id":         g.ID,
+			"Name":       g.Name,
+			"Status":     g.Status,
+			"AssetCount": g.AssetCount,
+		})
+	}
+	c.JSON(200, gin.H{
+		"ResponseMetadata": gin.H{
+			"Action":  "ListAssetGroups",
+			"Region":  "cn-beijing",
+			"Service": "ark",
+			"Version": "2024-01-01",
+		},
+		"Result": gin.H{
+			"Items":      items,
+			"NextCursor": next,
+		},
+	})
 }
 func (s *Service) deleteGroupHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, true)
@@ -241,11 +320,25 @@ func (s *Service) deleteGroupHTTP(c *gin.Context) {
 		c.Status(http.StatusNoContent)
 		return
 	}
-	c.JSON(202, dto)
+	c.JSON(202, gin.H{
+		"ResponseMetadata": gin.H{
+			"Action":  "DeleteAssetGroup",
+			"Region":  "cn-beijing",
+			"Service": "ark",
+			"Version": "2024-01-01",
+		},
+		"Result": gin.H{
+			"Id":     dto.ID,
+			"Status": "deleting",
+		},
+	})
 }
 func (s *Service) createAssetHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, true)
 	if !ok {
+		return
+	}
+	if !requireIdempotency(c) {
 		return
 	}
 	var input AssetCreate
@@ -260,7 +353,21 @@ func (s *Service) createAssetHTTP(c *gin.Context) {
 	}
 	replayHeader(c, replayed)
 	c.Header("Location", "/v1/video/assets/"+dto.ID)
-	c.JSON(202, dto)
+	// 火山官方接口格式原路返回
+	c.JSON(202, gin.H{
+		"ResponseMetadata": gin.H{
+			"Action":  "CreateAsset",
+			"Region":  "cn-beijing",
+			"Service": "ark",
+			"Version": "2024-01-01",
+		},
+		"Result": gin.H{
+			"Id":        dto.ID,
+			"GroupId":   dto.GroupID,
+			"AssetType": dto.MediaType,
+			"Status":    dto.Status,
+		},
+	})
 }
 func (s *Service) getAssetHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)
@@ -272,7 +379,23 @@ func (s *Service) getAssetHTTP(c *gin.Context) {
 		s.httpError(c, err)
 		return
 	}
-	c.JSON(200, dto)
+	c.JSON(200, gin.H{
+		"ResponseMetadata": gin.H{
+			"Action":  "GetAsset",
+			"Region":  "cn-beijing",
+			"Service": "ark",
+			"Version": "2024-01-01",
+		},
+		"Result": gin.H{
+			"Id":        dto.ID,
+			"GroupId":   dto.GroupID,
+			"AssetType": dto.MediaType,
+			"Status":    dto.Status,
+			"URL":       dto.Reference,
+			"CreatedAt": dto.CreatedAt.Unix(),
+			"UpdatedAt": dto.UpdatedAt.Unix(),
+		},
+	})
 }
 func (s *Service) listAssetsHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)
@@ -289,7 +412,27 @@ func (s *Service) listAssetsHTTP(c *gin.Context) {
 		s.httpError(c, err)
 		return
 	}
-	pageResponse(c, data, next)
+	items := make([]gin.H, 0, len(data))
+	for _, a := range data {
+		items = append(items, gin.H{
+			"Id":        a.ID,
+			"GroupId":   a.GroupID,
+			"AssetType": a.MediaType,
+			"Status":    a.Status,
+		})
+	}
+	c.JSON(200, gin.H{
+		"ResponseMetadata": gin.H{
+			"Action":  "ListAssets",
+			"Region":  "cn-beijing",
+			"Service": "ark",
+			"Version": "2024-01-01",
+		},
+		"Result": gin.H{
+			"Items":      items,
+			"NextCursor": next,
+		},
+	})
 }
 func (s *Service) deleteAssetHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, true)
@@ -305,11 +448,25 @@ func (s *Service) deleteAssetHTTP(c *gin.Context) {
 		c.Status(204)
 		return
 	}
-	c.JSON(202, dto)
+	c.JSON(202, gin.H{
+		"ResponseMetadata": gin.H{
+			"Action":  "DeleteAsset",
+			"Region":  "cn-beijing",
+			"Service": "ark",
+			"Version": "2024-01-01",
+		},
+		"Result": gin.H{
+			"Id":     dto.ID,
+			"Status": "deleting",
+		},
+	})
 }
 func (s *Service) createPortraitHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, true)
 	if !ok {
+		return
+	}
+	if !requireIdempotency(c) {
 		return
 	}
 	var input PortraitCreate
@@ -324,7 +481,19 @@ func (s *Service) createPortraitHTTP(c *gin.Context) {
 	}
 	replayHeader(c, replayed)
 	c.Header("Location", "/v1/video/portrait-authorizations/"+dto.ID)
-	c.JSON(202, dto)
+	// 火山官方接口格式原路返回
+	c.JSON(202, gin.H{
+		"ResponseMetadata": gin.H{
+			"Action":  "CreateVisualValidateSession",
+			"Region":  "cn-beijing",
+			"Service": "ark",
+			"Version": "2024-01-01",
+		},
+		"Result": gin.H{
+			"SessionId": dto.ID,
+			"Status":    dto.Status,
+		},
+	})
 }
 func (s *Service) getPortraitHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)
@@ -337,7 +506,27 @@ func (s *Service) getPortraitHTTP(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	c.JSON(200, dto)
+	// 火山官方接口格式原路返回
+	result := gin.H{
+		"SessionId": dto.ID,
+		"Status":    dto.Status,
+		"CreatedAt": dto.CreatedAt.Unix(),
+	}
+	if dto.GroupID != nil {
+		result["GroupId"] = *dto.GroupID
+	}
+	if dto.AuthorizationURL != "" {
+		result["H5URL"] = dto.AuthorizationURL
+	}
+	c.JSON(200, gin.H{
+		"ResponseMetadata": gin.H{
+			"Action":  "GetVisualValidateResult",
+			"Region":  "cn-beijing",
+			"Service": "ark",
+			"Version": "2024-01-01",
+		},
+		"Result": result,
+	})
 }
 func (s *Service) listPortraitsHTTP(c *gin.Context) {
 	auth, ok := s.auth(c, false)
