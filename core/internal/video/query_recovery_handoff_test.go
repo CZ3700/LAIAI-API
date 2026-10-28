@@ -1221,6 +1221,8 @@ func (h *queryHandoffHarness) directApply() (map[string]any, error) {
 	beforeHTTP := h.http
 	order := []string{}
 	updates := 0
+	receiptReads := 0
+	conflictProbes := 0
 	current := false
 	invalid := false
 	const hook = "test:query-handoff-null-barrier"
@@ -1235,6 +1237,18 @@ func (h *queryHandoffHarness) directApply() (map[string]any, error) {
 		if tx.Statement.Table != "video_query_receipts" {
 			return
 		}
+		if probe, ok := tx.Statement.Dest.(*struct{ AttemptID string }); ok {
+			// The settlement barrier probes for a committed financial-conflict
+			// marker with a bounded current read (attempt_id projection only).
+			// It is not the receipt's own locked read; a probe that actually
+			// returns a marker must invalidate the plain-barrier expectation.
+			if probe.AttemptID != "" {
+				invalid = true
+				return
+			}
+			conflictProbes++
+			return
+		}
 		row, ok := tx.Statement.Dest.(*QueryReceipt)
 		if !ok || tx.Error != nil || row.AttemptID != receipt.AttemptID || row.OrgID != org || row.TaskID != item.TaskID {
 			invalid = true
@@ -1245,6 +1259,7 @@ func (h *queryHandoffHarness) directApply() (map[string]any, error) {
 			invalid = true
 			return
 		}
+		receiptReads++
 		current = true
 	}); err != nil {
 		return nil, err
@@ -1256,7 +1271,7 @@ func (h *queryHandoffHarness) directApply() (map[string]any, error) {
 	applyErr := h.s.applyQueryReceipt(ctx, receipt)
 	queryRemove := h.db.Callback().Query().Remove(hook)
 	updateRemove := h.db.Callback().Update().Remove(hook)
-	if applyErr == nil || ctx.Err() != nil || queryRemove != nil || updateRemove != nil || invalid || !current || updates != 0 || h.http != beforeHTTP || !reflect.DeepEqual(order, []string{"tasks", "video_task_states", "video_query_receipts"}) {
+	if applyErr == nil || ctx.Err() != nil || queryRemove != nil || updateRemove != nil || invalid || !current || receiptReads != 1 || conflictProbes != 1 || updates != 0 || h.http != beforeHTTP || !reflect.DeepEqual(order, []string{"tasks", "video_task_states", "video_query_receipts", "video_query_receipts"}) {
 		return nil, errQueryHandoff
 	}
 	if !queryHandoffPlainBarrierCause(applyErr) {
