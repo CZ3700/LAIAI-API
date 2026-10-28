@@ -18,7 +18,7 @@ func (s *Service) requireCurrentTaskRuntime(ctx context.Context, captured State)
 		return err
 	}
 	var count int64
-	err := supportedTaskRuntime(s.DB.WithContext(ctx).Table("video_task_states AS v")).Where("v.org_id = ? AND v.task_id = ? AND v.billing_snapshot_id = ?", captured.OrgID, captured.TaskID, captured.BillingSnapshotID).Count(&count).Error
+	err := supportedTaskRuntime(s.DB.WithContext(ctx).Table("video_task_states AS v")).Where("v.org_id = ? AND v.task_id = ? AND v.billing_snapshot_id = ?", captured.OrgID, captured.TaskID, captured.BillingSnapshotID).Where("v.runtime_version = ? AND v.adapter_version = ? AND v.protocol_contract_version = ? AND v.billing_schema_version = ?", captured.RuntimeVersion, captured.AdapterVersion, captured.ProtocolContractVersion, captured.BillingSchemaVersion).Count(&count).Error
 	if err != nil {
 		return err
 	}
@@ -76,9 +76,9 @@ func requireQueryReceiptRuntime(st State, receipt QueryReceipt) error {
 // The migration uses NO PAD, case-sensitive version columns to make SQL's
 // comparison agree with Resolve (including empty/trailing-space values).
 func supportedTaskRuntime(db *gorm.DB) *gorm.DB {
-	c := videoruntime.LegacyV1()
+	v1, v2 := videoruntime.LegacyV1(), videoruntime.GenerationSettlementV2()
 	return videobilling.WithTaskSnapshotContract(db).
-		Where("v.runtime_version = ? AND v.adapter_version = ? AND v.protocol_contract_version = ? AND v.billing_schema_version = ?", c.RuntimeVersion, c.AdapterVersion, c.ProtocolContractVersion, c.BillingSchemaVersion)
+		Where("((v.runtime_version = ? AND v.adapter_version = ? AND v.protocol_contract_version = ? AND v.billing_schema_version = ?) OR (v.runtime_version = ? AND v.adapter_version = ? AND v.protocol_contract_version = ? AND v.billing_schema_version = ?))", v1.RuntimeVersion, v1.AdapterVersion, v1.ProtocolContractVersion, v1.BillingSchemaVersion, v2.RuntimeVersion, v2.AdapterVersion, v2.ProtocolContractVersion, v2.BillingSchemaVersion)
 }
 
 func supportedOperationRuntime(db *gorm.DB) *gorm.DB {

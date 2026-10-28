@@ -54,10 +54,11 @@ const (
 	recoveryMutationInbox
 	recoveryLegacyOperations
 	recoveryQueryReceipts
+	recoveryQuerySettlement
 	recoveryLaneCount
 )
 
-var recoveryLaneNames = [...]string{"create_inbox", "mutation_inbox", "legacy_operations", "query_receipts"}
+var recoveryLaneNames = [...]string{"create_inbox", "mutation_inbox", "legacy_operations", "query_receipts", "query_settlement"}
 
 type recoveryLane struct {
 	kind recoveryLaneKind
@@ -117,10 +118,11 @@ const (
 	workerCycleCombined workerCycleKind = iota
 	workerCycleRecovery
 	workerCycleDispatch
+	workerCycleSettlement
 	workerCycleKindCount
 )
 
-var workerCycleNames = [...]string{"combined", "recovery", "dispatch"}
+var workerCycleNames = [...]string{"combined", "recovery", "dispatch", "settlement"}
 
 type workerCycleCounters struct{ started, completed, errors uint64 }
 

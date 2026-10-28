@@ -30,6 +30,12 @@ func ApplyBillingSettlementTx(tx *gorm.DB, org uint64, id, requestID, evidenceRe
 	if err != nil {
 		return err
 	}
+	return applyBillingSettlementLockedTx(tx, t, st, requestID, evidenceRef, result, now)
+}
+
+// The caller already holds Task -> State, before the billing Key locks. Keep
+// the public bridge's projection semantics without re-entering the lock order.
+func applyBillingSettlementLockedTx(tx *gorm.DB, t task.Task, st State, requestID, evidenceRef string, result videobilling.SettlementResult, now time.Time) error {
 	if result.Replay {
 		return nil
 	}
@@ -45,10 +51,10 @@ func ApplyBillingSettlementTx(tx *gorm.DB, org uint64, id, requestID, evidenceRe
 		update["actual_tokens"] = *result.Entry.CompletionTokens
 		st.ObservedCompletionTokens = result.Entry.CompletionTokens
 	}
-	if err = tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", org, id).Updates(update).Error; err != nil {
+	if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(update).Error; err != nil {
 		return err
 	}
-	if err = tx.Model(&State{}).Where("org_id = ? AND task_id = ?", org, id).Updates(map[string]any{"billing_state": st.BillingState, "observed_completion_tokens": st.ObservedCompletionTokens, "updated_at": now}).Error; err != nil {
+	if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"billing_state": st.BillingState, "observed_completion_tokens": st.ObservedCompletionTokens, "updated_at": now}).Error; err != nil {
 		return err
 	}
 	return appendEventTx(tx, &t, &st, "billing.settled", t.Status, t.Status, requestID, evidenceRef, now)

@@ -67,6 +67,12 @@ func Up(db *gorm.DB, fsys fs.FS) ([]string, error) {
 
 // up 是迁移主体（被 Up 在持有 advisory lock 后调用；SQLite 直接调）。
 func up(db *gorm.DB, fsys fs.FS) ([]string, error) {
+	return upWithSettlementShapeProfile(db, fsys, nil)
+}
+
+// The optional profile is only an internal test seam. Up uses the reviewed,
+// compile-time 0135 profile; no caller configuration or environment can bypass it.
+func upWithSettlementShapeProfile(db *gorm.DB, fsys fs.FS, profile *settlementShapeProfile) ([]string, error) {
 	if err := ensureTable(db); err != nil {
 		return nil, err
 	}
@@ -88,6 +94,20 @@ func up(db *gorm.DB, fsys fs.FS) ([]string, error) {
 	var ran []string
 	for _, f := range files {
 		version := strings.TrimSuffix(f, ".sql")
+		var shapeGuard *settlementShapeGuard
+		if version == settlementShapeMigration {
+			raw, readErr := fs.ReadFile(fsys, f)
+			if readErr != nil {
+				return ran, fmt.Errorf("migrate: read %s: %w", f, readErr)
+			}
+			shapeGuard, err = newSettlementShapeGuard(raw, profile)
+			if err != nil {
+				return ran, err
+			}
+			if err = shapeGuard.before(db, applied[version]); err != nil {
+				return ran, err
+			}
+		}
 		if applied[version] {
 			continue
 		}
@@ -111,9 +131,19 @@ func up(db *gorm.DB, fsys fs.FS) ([]string, error) {
 					// 跳过该语句，使未记录版本的 re-run 幂等完成剩余语句并补记版本。安全前提：迁移是
 					// schema 唯一权威（红线禁 AutoMigrate），故「已存在」只可能源于本迁移的前次半应用。
 					if isAlreadyExists(err) {
+						if shapeGuard != nil {
+							if err := shapeGuard.after(tx); err != nil {
+								return err
+							}
+						}
 						continue
 					}
 					return fmt.Errorf("migrate: %s statement %d: %w", f, i+1, err)
+				}
+			}
+			if shapeGuard != nil {
+				if err := shapeGuard.after(tx); err != nil {
+					return err
 				}
 			}
 			return tx.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, CURRENT_TIMESTAMP)", version).Error

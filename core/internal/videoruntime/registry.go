@@ -11,6 +11,7 @@ import (
 
 const (
 	RuntimeV1              = "ark-official-legacy-v1"
+	RuntimeV2              = "ark-official-generation-settlement-v2"
 	AdapterV1              = "ark-v3-v1"
 	ProtocolV1             = "video-contract-v1"
 	BillingV1              = "usd-decimal-v1"
@@ -53,10 +54,19 @@ func LegacyV1() Contract {
 	}
 }
 
+// GenerationSettlementV2 separates generation application from settlement.
+// It shares the wire adapter and billing schema, not V1's atomic query policy.
+func GenerationSettlementV2() Contract {
+	return Contract{
+		RuntimeVersion: RuntimeV2, AdapterVersion: AdapterV1,
+		ProtocolContractVersion: ProtocolV1, BillingSchemaVersion: BillingV1,
+	}
+}
+
 // Resolve requires the exact four-part contract. There is no latest, partial
 // match, alias, trimming, case folding, or dynamic registration path.
 func Resolve(contract Contract) (Descriptor, error) {
-	if contract != LegacyV1() {
+	if contract != LegacyV1() && contract != GenerationSettlementV2() {
 		return Descriptor{}, ErrUnsupported
 	}
 	d := Descriptor{

@@ -438,6 +438,15 @@ func runtimeHandoffHistoricalProjection(table string, columns []string, values [
 		if table == "video_query_receipts" && (column == "recovery_due_at" || column == "recovery_version") {
 			continue
 		}
+		// Migrations 0134/0135 add settlement columns, not old-writer evidence.
+		// Old binaries fingerprint before these columns exist; keep the hash
+		// byte-identical and guard the defaults in the settlement shape tests.
+		if table == "video_task_states" && column == "settlement_receipt_id" {
+			continue
+		}
+		if table == "video_query_receipts" && (column == "generation_applied_at" || column == "settlement_kind" || column == "settlement_evidence_sha256" || column == "settlement_shape_ready") {
+			continue
+		}
 		if values[i] == nil {
 			projection[column] = nil
 		} else {

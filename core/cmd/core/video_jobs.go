@@ -19,6 +19,7 @@ func registerVideoJobs(jobs *mainJobs, service *video.Service, isLeader func() b
 	}{
 		{"task_dispatch", 2 * time.Second, service.ProcessDispatchOnce},
 		{"task_recovery", 2 * time.Second, service.ProcessPersistedEvidenceOnce},
+		{"task_settlement", 2 * time.Second, service.ProcessSettlementOnce},
 		{"assets", 5 * time.Second, service.Assets.ProcessOnce},
 		{"events", 5 * time.Second, service.ProcessOutbox},
 		{"evidence_retention", time.Minute, func(ctx context.Context) error {

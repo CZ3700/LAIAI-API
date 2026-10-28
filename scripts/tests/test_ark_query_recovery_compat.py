@@ -181,7 +181,7 @@ def render(evidence, cases):
                 events.append(dict(protocol=audit.PROTOCOL, run_id=RUN, case_id=case, instance=instance,
                                    role=role, source=builds[role]['source'], pid=pid,
                                    seq=len(events)+1, cmd_id=cid, event=kind, data=data))
-            event('ready', 0, dict(schema='ark_test_qhandoff_'+case[-1]*24, migration_max=133,
+            event('ready', 0, dict(schema='ark_test_qhandoff_'+case[-1]*24, migration_max=135,
                                   has_persisted_consumer=role == 'new', has_dispatch_consumer=role == 'new', task_count=0))
             for art in [a for a in artifacts if a['instance'] == instance]:
                 commands.append(art['_command'])
@@ -274,15 +274,18 @@ class QueryRecoveryHostTests(unittest.TestCase):
                 with self.assertRaises(ValueError): self.audit_data(data)
 
     def test_raw_lifecycle_and_mock_command_tampering_rejected(self):
-        for mode in ('run', 'source', 'stop_ack', 'forced', 'partial', 'result', 'mock_command', 'unknown_case', 'go_fail', 'same_binary', 'three_cases', 'missing_done'):
+        for mode in ('run', 'source', 'stop_ack', 'forced', 'partial', 'result', 'mock_command', 'unknown_case', 'go_fail', 'same_binary', 'three_cases', 'missing_done', 'schema_before_expand', 'schema_prior_134', 'schema_future'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory); render(root, self.data()); mat = root/'matrix'
-                if mode in ('run', 'source', 'stop_ack', 'go_fail', 'missing_done'):
+                if mode in ('run', 'source', 'stop_ack', 'go_fail', 'missing_done', 'schema_before_expand', 'schema_prior_134', 'schema_future'):
                     path = mat/'P02-old-consumer.log'
                     raw = path.read_text()
                     if mode == 'run': raw = raw.replace(RUN, 'f'*16)
                     elif mode == 'source': raw = raw.replace(audit.OLD, NEW)
                     elif mode == 'stop_ack': raw = raw.replace('"event": "drained"', '"event": "command_done"')
+                    elif mode == 'schema_before_expand': raw = raw.replace('"migration_max": 135', '"migration_max": 133')
+                    elif mode == 'schema_prior_134': raw = raw.replace('"migration_max": 135', '"migration_max": 134')
+                    elif mode == 'schema_future': raw = raw.replace('"migration_max": 135', '"migration_max": 136')
                     elif mode == 'missing_done': raw = '\n'.join(line for line in raw.splitlines() if '"event": "command_done"' not in line)+'\n'
                     else: raw += '    --- FAIL: hidden (0.01s)\n'
                     path.write_text(raw, newline='\n')

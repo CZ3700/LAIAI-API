@@ -16,11 +16,13 @@ type queryCompatibilityAttempt struct {
 	identity   queryRecoveryAttempt
 	contract   videoruntime.Contract
 	snapshotID uint64
+	progress   queryRecoveryPhaseState
+	raw        queryReceiptDigestV1
 }
 
 func knownQueryReceiptFormat(row QueryReceipt) bool {
-	c := videoruntime.LegacyV1()
-	return row.RuntimeVersion == c.RuntimeVersion && row.AdapterVersion == c.AdapterVersion && row.ProtocolContractVersion == c.ProtocolContractVersion && row.ObservationSchemaVersion == videoruntime.ObservationSchemaV1
+	_, err := videoruntime.ResolveQueryApplication(videoruntime.Contract{RuntimeVersion: row.RuntimeVersion, AdapterVersion: row.AdapterVersion, ProtocolContractVersion: row.ProtocolContractVersion, BillingSchemaVersion: videoruntime.BillingV1}, row.ObservationSchemaVersion)
+	return err == nil
 }
 
 // Caller has already obtained the current Task and State locks, and observed a
@@ -44,7 +46,7 @@ func observeQueryCompatibilityTx(tx *gorm.DB, row task.Task, state State, reques
 		return queryCompatibilityAttempt{}, nil
 	}
 	identity, err := observeQueryRecovery(current)
-	return queryCompatibilityAttempt{identity: identity, contract: stateRuntime(state), snapshotID: state.BillingSnapshotID}, err
+	return queryCompatibilityAttempt{identity: identity, contract: stateRuntime(state), snapshotID: state.BillingSnapshotID, progress: queryPhaseState(state, current), raw: queryReceiptDigestProjection(current)}, err
 }
 
 func (s *Service) recordQueryCompatibilityFailure(ctx context.Context, observed queryCompatibilityAttempt, cause error) (queryRecoveryResult, error) {
@@ -79,12 +81,18 @@ func (s *Service) recordQueryCompatibilityFailure(ctx context.Context, observed 
 		if current.OrgID != id.orgID || current.TaskID != id.taskID || current.AttemptID != id.attemptID {
 			return ErrConflict
 		}
+		if current.ApplyErrorCode == queryFinancialConflictCode {
+			return errQueryFinancialConflict
+		}
 		if !knownQueryReceiptFormat(current) || current.AppliedAt != nil || current.RecoveryDueAt == nil || current.RecoveryVersion != id.version {
 			return nil
 		}
 		digest, err := queryEvidenceDigest(current)
 		if err != nil {
 			return err
+		}
+		if current.RuntimeVersion == videoruntime.RuntimeV2 && (queryPhaseState(state, current) != observed.progress || queryReceiptDigestProjection(current) != observed.raw) {
+			return ErrConflict
 		}
 		if digest != id.evidence {
 			return ErrConflict

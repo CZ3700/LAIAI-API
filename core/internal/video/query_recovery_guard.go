@@ -2,13 +2,13 @@ package video
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"math"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/videobilling"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -56,6 +56,7 @@ const (
 	queryCauseObservation
 	queryCauseSettlement
 	queryCauseCreateReview
+	queryCauseSettlementEvidence
 )
 
 // A positive classification requires a closed error tree. A matching JSON or
@@ -72,6 +73,12 @@ func classifyQueryRecoveryCause(err error) queryRecoveryCause {
 		if decoded, ok := current.(*queryObservationDecodeError); ok {
 			if decoded != nil && (decoded.kind == queryJSONSyntax || decoded.kind == queryJSONType) {
 				return queryCauseObservation
+			}
+			return queryCauseTemporary
+		}
+		if invalid, ok := current.(*querySettlementEvidenceError); ok {
+			if invalid != nil && invalid.kind >= querySettlementIdentityInvalid && invalid.kind <= querySettlementObservationInvalid {
+				return queryCauseSettlementEvidence
 			}
 			return queryCauseTemporary
 		}
@@ -123,19 +130,10 @@ type queryRecoveryAttempt struct {
 	version           uint64
 	evidence          [32]byte
 	valid             bool
-}
-
-func queryEvidenceDigest(row QueryReceipt) ([32]byte, error) {
-	// Exclude only mutable application/progress fields. All durable evidence,
-	// including TaskRowVersion and both artifact-presence flags, remains bound.
-	row.AppliedAt, row.RecoveryDueAt = nil, nil
-	row.ApplyErrorCode, row.RecoveryVersion = "", 0
-	row.ReceivedAt = row.ReceivedAt.UTC()
-	raw, err := json.Marshal(row)
-	if err != nil {
-		return [32]byte{}, safeRecoveryErrors(err)
-	}
-	return sha256.Sum256(raw), nil
+	phase             queryApplyPhase
+	progress          queryRecoveryPhaseState
+	fixed             querySettlementEvidenceCanonical
+	raw               queryReceiptDigestV1
 }
 
 func observeQueryRecovery(row QueryReceipt) (queryRecoveryAttempt, error) {
@@ -163,9 +161,16 @@ func (s *Service) recordQueryRecoveryFailure(ctx context.Context, observed query
 	if !observed.valid || cause == nil {
 		return result, nil
 	}
+	if observed.phase != 0 {
+		return s.recordQueryPhaseRecoveryFailure(ctx, observed, cause)
+	}
 	// A cancelled/expired application cannot authorize permanent review, even
 	// if its original decoding failure also remains in the error tree.
 	kind := classifyQueryRecoveryCause(cause)
+	// The B-only integrity error has no permanent meaning for a V1 token.
+	if kind == queryCauseSettlementEvidence {
+		kind = queryCauseTemporary
+	}
 	phase, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	err := s.DB.Session(&gorm.Session{NewDB: true, Context: phase, Logger: logger.Discard}).Transaction(func(tx *gorm.DB) error {
@@ -180,8 +185,14 @@ func (s *Service) recordQueryRecoveryFailure(ctx context.Context, observed query
 		if task.OrgID != observed.orgID || task.TaskID != observed.taskID || current.OrgID != observed.orgID || current.TaskID != observed.taskID || current.AttemptID != observed.attemptID {
 			return ErrConflict
 		}
+		if current.ApplyErrorCode == queryFinancialConflictCode {
+			return errQueryFinancialConflict
+		}
 		if err = requireQueryReceiptRuntime(state, current); err != nil {
 			return err
+		}
+		if state.RuntimeVersion != videoruntime.RuntimeV1 {
+			return videoruntime.ErrUnsupported
 		}
 		if current.AppliedAt != nil || current.RecoveryDueAt == nil || current.RecoveryVersion != observed.version {
 			return nil
@@ -245,6 +256,126 @@ func (s *Service) recordQueryRecoveryFailure(ctx context.Context, observed query
 		}
 		result.code = code
 		result.disposition = queryRecoveryReview
+		if due != nil {
+			result.disposition = queryRecoveryDeferred
+		}
+		return nil
+	})
+	if err != nil {
+		return queryRecoveryResult{disposition: queryRecoveryFailed}, safeRecoveryErrors(err, phase.Err())
+	}
+	return result, nil
+}
+
+// Phase diagnostics use a second bounded transaction, preserving the original
+// receipt and pin. A permanent decision requires the identical current evidence
+// to fail the same private validator again; caller errors alone are insufficient.
+func (s *Service) recordQueryPhaseRecoveryFailure(ctx context.Context, observed queryRecoveryAttempt, cause error) (queryRecoveryResult, error) {
+	result := queryRecoveryResult{disposition: queryRecoveryNoop}
+	if err := ctx.Err(); err != nil {
+		return result, safeRecoveryErrors(err)
+	}
+	if !observed.valid || cause == nil || (observed.phase != queryPhaseGenerationV2 && observed.phase != queryPhaseSettlementV2) {
+		return result, ErrConflict
+	}
+	kind := classifyQueryRecoveryCause(cause)
+	// Generic billing conflicts never create the V2 task financial barrier.
+	if kind == queryCauseSettlement {
+		kind = queryCauseTemporary
+	}
+	phase, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	err := s.DB.Session(&gorm.Session{NewDB: true, Context: phase, Logger: logger.Discard}).Transaction(func(tx *gorm.DB) error {
+		t, st, err := LockBillingTaskTx(tx, observed.orgID, observed.taskID)
+		if err != nil {
+			return err
+		}
+		var current QueryReceipt
+		if err = locked(tx).Where("org_id = ? AND task_id = ? AND attempt_id = ?", observed.orgID, observed.taskID, observed.attemptID).Take(&current).Error; err != nil {
+			return err
+		}
+		if err = phase.Err(); err != nil {
+			return err
+		}
+		if current.OrgID != observed.orgID || current.TaskID != observed.taskID || current.AttemptID != observed.attemptID {
+			return ErrConflict
+		}
+		if err = requireQueryReceiptRuntime(st, current); err != nil {
+			return err
+		}
+		if current.AppliedAt != nil || current.RecoveryDueAt == nil || current.RecoveryVersion != observed.version {
+			return nil
+		}
+		fresh, err := observeQueryPhaseRecovery(t, st, current)
+		if err != nil {
+			return err
+		}
+		if !queryPhaseTokenMatches(observed, fresh) {
+			return ErrConflict
+		}
+		if err = requireNoTaskSettlementConflictTx(tx, st); err != nil {
+			return err
+		}
+		quarantine := requireNoCreateInboxReviewTx(tx, current.OrgID, current.TaskID)
+		if kind == queryCauseCreateReview {
+			if quarantine == nil {
+				return nil
+			}
+			if quarantine != errCreateInboxReview {
+				return quarantine
+			}
+		} else if quarantine != nil {
+			return quarantine
+		}
+		code := "query_apply_failed"
+		permanent := false
+		switch kind {
+		case queryCauseObservation:
+			_, again := decodeQueryObservation(current.ObservationJSON)
+			if classifyQueryRecoveryCause(again) != queryCauseObservation {
+				return ErrConflict
+			}
+			code = "query_observation_invalid"
+			permanent = true
+		case queryCauseSettlementEvidence:
+			if observed.phase != queryPhaseSettlementV2 {
+				return ErrConflict
+			}
+			_, again := readQuerySettlementEvidence(t, st, current)
+			if classifyQueryRecoveryCause(again) != queryCauseSettlementEvidence {
+				return ErrConflict
+			}
+			code = querySettlementEvidenceInvalidCode
+			permanent = true
+		case queryCauseCreateReview:
+			code = "create_identity_review"
+		}
+		now, err := queryRecoveryTimeTx(tx)
+		if err != nil {
+			return err
+		}
+		if err = phase.Err(); err != nil {
+			return err
+		}
+		var due *time.Time
+		if !permanent {
+			next := now.Add(30 * time.Second)
+			due = &next
+		}
+		q := tx.Model(&QueryReceipt{}).Where("org_id = ? AND task_id = ? AND attempt_id = ? AND recovery_version = ? AND applied_at IS NULL AND recovery_due_at IS NOT NULL", observed.orgID, observed.taskID, observed.attemptID, observed.version)
+		write := queryPhaseCAS(q, observed).Updates(map[string]any{"apply_error_code": code, "recovery_due_at": due, "recovery_version": observed.version + 1})
+		if write.Error != nil {
+			return write.Error
+		}
+		if write.RowsAffected != 1 {
+			return ErrConflict
+		}
+		if st.DeletedAt == nil && st.SyncState != "needs_review" {
+			if err = tx.Model(&State{}).Where("org_id = ? AND task_id = ?", observed.orgID, observed.taskID).Update("sync_state", "needs_review").Error; err != nil {
+				return err
+			}
+		}
+		result = queryRecoveryResult{disposition: queryRecoveryReview, code: code}
 		if due != nil {
 			result.disposition = queryRecoveryDeferred
 		}

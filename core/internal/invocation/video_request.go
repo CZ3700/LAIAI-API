@@ -179,7 +179,7 @@ func RecordTx(tx *gorm.DB, input *Invocation) error {
 	row.CreatedAt = row.CreatedAt.UTC().Truncate(time.Millisecond)
 	result := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "request_id"}}, DoNothing: true}).Create(&row)
 	if result.Error != nil {
-		return ErrVideoStorage
+		return videoStorageFailure(result.Error)
 	}
 	if result.RowsAffected > 0 {
 		return nil

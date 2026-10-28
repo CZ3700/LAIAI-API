@@ -39,7 +39,7 @@ type ActionDescriptor struct {
 func ResolveActionContract(key ActionContractKey) (ActionDescriptor, error) {
 	if key.StorageProtocol != ActionStorageProtocolV1 ||
 		(key.Action != ActionCancelTask && key.Action != ActionDeleteTask) ||
-		key.Contract != LegacyV1() || key.ExecutionInputSchemaVersion != ActionExecutionInputSchemaV2 ||
+		(key.Contract != LegacyV1() && key.Contract != GenerationSettlementV2()) || key.ExecutionInputSchemaVersion != ActionExecutionInputSchemaV2 ||
 		key.ObservationSchemaVersion != ObservationSchemaV1 || key.DeliverySchemaVersion != 0 {
 		return ActionDescriptor{}, ErrUnsupported
 	}

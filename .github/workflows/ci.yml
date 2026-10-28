@@ -6,7 +6,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, 'codex/ark-*', 'codex/maas-*', 'codex/model-*', 'codex/seedance-*']
+    branches: [main, 'codex/ark-*', 'codex/maas-*', 'codex/model-*', 'codex/seedance-*', 'codex/rc46-*']
 
 permissions:
   contents: read
@@ -34,6 +34,68 @@ jobs:
         run: make ci
         env:
           GOPROXY: https://proxy.golang.org,direct
+
+  exact-head-ci:
+    # Supplement the existing merge-commit CI; this is not Formal acceptance.
+    runs-on: ubuntu-latest
+    env:
+      EXACT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.EXACT_HEAD }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind checkout to the actual submitted commit
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess
+          expected = os.environ['EXACT_HEAD']
+          assert re.fullmatch(r'[0-9a-f]{40}', expected), 'invalid actual commit'
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == expected, 'checkout is not the actual submitted commit'
+          assert subprocess.check_output(['git', 'cat-file', '-t', actual], text=True).strip() == 'commit'
+          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], check=True)
+          target = pathlib.Path(os.environ['RUNNER_TEMP']) / 'exact-head-provenance.json'
+          target.write_text(json.dumps({'commit': actual, 'event': os.environ['GITHUB_EVENT_NAME'],
+              'repository': os.environ['GITHUB_REPOSITORY'], 'run_id': os.environ['GITHUB_RUN_ID'],
+              'status': 'source_verified', 'formal_cases_executed': 0}, indent=2) + '\n', encoding='utf-8')
+          PY
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.work
+          cache: true
+      - name: Verify installed Go security baseline
+        run: |
+          sh scripts/tests/test-go-toolchain.sh
+          sh scripts/check-go-toolchain.sh
+      - name: make ci on the actual submitted commit
+        run: make ci
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+      - name: Bind successful build and preserve its actual output identity
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], check=True)
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == os.environ['EXACT_HEAD'], 'commit changed during CI'
+          binary = pathlib.Path('relay/relay')
+          assert binary.is_file() and not binary.is_symlink() and binary.stat().st_size > 0, 'relay build output missing'
+          target = pathlib.Path(os.environ['RUNNER_TEMP']) / 'exact-head-provenance.json'
+          value = json.loads(target.read_text(encoding='utf-8'))
+          assert value['commit'] == actual and value['status'] == 'source_verified'
+          value.update(status='make_ci_passed', build_output={'path': 'relay/relay',
+              'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(), 'bytes': binary.stat().st_size})
+          target.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
+          PY
+      - name: Retain actual-commit provenance only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exact-head-${{ env.EXACT_HEAD }}
+          path: ${{ runner.temp }}/exact-head-provenance.json
+          if-no-files-found: warn
 
   web:
     runs-on: ubuntu-latest
@@ -100,6 +162,8 @@ jobs:
           cache: true
       - name: Verify installed Go security baseline
         run: sh scripts/check-go-toolchain.sh
+      - name: Consumer selector coverage and fail-closed evidence controls
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_ark_s2_consumer_ci.py
       - name: Seedance template upgrade preserves existing data
         run: go -C core test ./internal/arkpricetemplate -run TestMySQL -count=1 -timeout=5m
       - name: Runtime expand migration and interrupted replay preserve old data
@@ -121,7 +185,9 @@ jobs:
       - name: Ark MySQL transaction and HTTP integration
         # These packages share fixtures and model configuration in ark_test.
         # Keep package fixtures isolated while retaining in-test concurrency.
-        run: go -C core test -p 1 ./internal/video ./internal/videoasset ./internal/server -run 'TestMySQL|TestArkBillMySQL' -count=1 -timeout=10m
+        run: |
+          skip_pattern=$(python3 scripts/ark-s2-consumer-ci.py --skip video)
+          go -C core test -p 1 ./internal/video ./internal/videoasset ./internal/server -run 'TestMySQL|TestArkBillMySQL' -skip "$skip_pattern" -count=1 -timeout=10m
       - name: Billing admin and control-plane lifecycle regressions
         run: go -C core test -race ./internal/server -run '^(TestArkBillMySQL|TestAuthRateLimit$|TestRealtime(WriteDeadlineDoS|IdleTimeout)$)' -count=1 -timeout=3m
       - name: Invocation snapshot queries, exact totals and bounded CSV
@@ -149,7 +215,9 @@ jobs:
           go -C core test -race -p 1 ./internal/identity ./internal/relay ./internal/videobilling ./internal/video ./internal/server -run '^(TestVideoCatalog|TestCatalogPublication|TestPublication)' -count=1 -timeout=10m -v
           go -C core test -race -p 1 ./internal/video ./internal/server -run '^TestMySQLVideoCatalog' -count=2 -timeout=15m -v
       - name: Ark concurrency and Linux storage checks
-        run: go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -count=1 -timeout=20m
+        run: |
+          skip_pattern=$(python3 scripts/ark-s2-consumer-ci.py --skip race)
+          go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -skip "$skip_pattern" -count=1 -timeout=20m
       - name: Primary database scheduling and lease authority
         run: go -C core test -race ./internal/video -run '^TestMySQLDatabaseAuthority' -count=2 -timeout=25m -v
       - name: Gated mutation producer atomicity and dispatch faults
@@ -170,7 +238,48 @@ jobs:
           -count=2 -timeout=15m -v
       - name: Main lifecycle HTTP and real mutation SIGTERM drain checks
         # Mutation and independent recovery hosts each use their own private schema.
-        run: go -C core test -race ./cmd/core -count=2 -timeout=6m -v
+        run: |
+          skip_pattern=$(python3 scripts/ark-s2-consumer-ci.py --skip host)
+          go -C core test -race ./cmd/core -skip "$skip_pattern" -count=2 -timeout=6m -v
+
+      # The original recovery migration step remains above, unchanged.
+      # These exact catalogs exclude dedicated Formal binary handoff adapters.
+      - name: Consumer phase contracts, double race run
+        env:
+          ARK_S2_CONSUMER_REPORT_DIR: ${{ runner.temp }}/ark-s2-consumer
+        run: python3 scripts/ark-s2-consumer-ci.py --stage s2_pure
+      - name: Generation expand and 0135 shape guard, double MySQL run
+        env:
+          ARK_S2_CONSUMER_REPORT_DIR: ${{ runner.temp }}/ark-s2-consumer
+        run: python3 scripts/ark-s2-consumer-ci.py --stage s2_migrations
+      - name: Initial settlement reads, double MySQL run
+        env:
+          ARK_S2_CONSUMER_REPORT_DIR: ${{ runner.temp }}/ark-s2-consumer
+        run: python3 scripts/ark-s2-consumer-ci.py --stage s2_initial
+      - name: Query phase isolation, double MySQL run
+        env:
+          ARK_S2_CONSUMER_REPORT_DIR: ${{ runner.temp }}/ark-s2-consumer
+        run: python3 scripts/ark-s2-consumer-ci.py --stage s2_phase
+      - name: Generation-only transaction and observability, double MySQL run
+        env:
+          ARK_S2_CONSUMER_REPORT_DIR: ${{ runner.temp }}/ark-s2-consumer
+        run: python3 scripts/ark-s2-consumer-ci.py --stage s2_generation
+      - name: Settlement money, rollback and bounded queues, double MySQL run
+        env:
+          ARK_S2_CONSUMER_REPORT_DIR: ${{ runner.temp }}/ark-s2-consumer
+        run: python3 scripts/ark-s2-consumer-ci.py --stage s2_settlement
+      - name: Settlement host tracked drain, double MySQL run
+        env:
+          ARK_S2_CONSUMER_REPORT_DIR: ${{ runner.temp }}/ark-s2-consumer
+        run: python3 scripts/ark-s2-consumer-ci.py --stage s2_host
+      - name: Retain consumer exact-selector evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ark-s2-consumer-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ark-s2-consumer
+          if-no-files-found: warn
+          retention-days: 14
 
   ark-mock-baseline:
     runs-on: ubuntu-latest

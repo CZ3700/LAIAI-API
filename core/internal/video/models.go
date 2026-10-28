@@ -68,6 +68,7 @@ type State struct {
 	DeletionOperationID      string
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
+	SettlementReceiptID      *string `gorm:"column:settlement_receipt_id"`
 }
 
 func (State) TableName() string { return "video_task_states" }
@@ -250,8 +251,11 @@ type QueryReceipt struct {
 	ApplyErrorCode           string
 	// NULL is a durable review barrier. New inserts omit this column so the
 	// primary database supplies UTC time; never fill it from a host clock.
-	RecoveryDueAt   *time.Time `gorm:"default:(UTC_TIMESTAMP(3))"`
-	RecoveryVersion uint64
+	RecoveryDueAt            *time.Time `gorm:"default:(UTC_TIMESTAMP(3))"`
+	RecoveryVersion          uint64
+	GenerationAppliedAt      *time.Time `gorm:"column:generation_applied_at"`
+	SettlementKind           string     `gorm:"column:settlement_kind"`
+	SettlementEvidenceSHA256 string     `gorm:"column:settlement_evidence_sha256"`
 }
 
 func (QueryReceipt) TableName() string { return "video_query_receipts" }

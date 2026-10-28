@@ -2,6 +2,8 @@
 
 启动日期：2026-10-25。输入方案为用户本机 `D:/workspace/laiai/docs/NewAPI-rc46内核升级与Seedance-500并发实施方案.md` v2.2（原文不属于基线提交，保留在用户工作树）。用户要求已从方案评审转为分阶段实施；方案中旧的“本轮仅文档”描述不再作为执行限制。架构以 `整体架构设计.md` 为准。
 
+**2026-10-27优先级调整：** 用户要求优先完成Seedance 500在途验收并部署生产测试，其余计划后排。当前唯一主线为S2收尾、独立Worker/容量调度、500 Mock验收、Zot镜像和生产灰度。协议转换、通用计价及非必要UI等保留现有工作并暂停新增实施；本条覆盖下文历史的并行优先级，详见[Seedance 500在途优先交付计划](Seedance-500在途优先交付计划.md)。不降低资金、权限、兼容或容量验收门槛。
+
 ## 1. 固定基线与执行纪律
 
 - 应用基线：main `d7fc49949c44b7e0dbfbf95384dafd15df13dadf`；首批分支 `codex/rc46-p0-baseline`。
@@ -40,12 +42,12 @@
 | P0-2A2/B 故障恢复后续 | 取消/删除/交付收件箱、完整兼容演练；随后数据库时间/fence、独立结算 | A1 完成后逐批；完整 R3 崩溃点/双 Worker/超 hold、零资金差异 | A2a PR #63、A2b PR #67、A2c PR #70 已合入。B1a PR #72 最终head 72c1604八项CI全绿，已合main9a6fd94；隔离主库矩阵与完整退出测试通过。B1b PR #75 的 N2=43884b8 已通过 Formal r2 四家族八case及精确head九项CI，合main a34a46c；fence与独立结算继续后续，producer默认off |
 | P0-G1 组数据与兼容 | 组/渠道绑定/组织授权/Key 模式与版本；历史 legacy | 真 MySQL expand migration；BYOK 隔离；新组 Key 仍关闭 | G1-A PR #61、G1-B1 PR #64已合入；G1-B2 PR #66七项CI全绿后合入main `b21308b`，完整证据见5.9.1；分组Key仍关闭 |
 | P0-G2 全入口授权 | 同一有效模型/组解析器覆盖目录、报价、创建、重试、派发复核；撤权强校验 | 全入口拒绝矩阵；已发送任务继续查询结算；空 subset 拒绝 | A1 PR #69 已合入；A2 官方目录/共同发布规则通过 R12 完整隔离验收，见5.20，精确提交 CI 待核验。全入口分组授权仍未完成，分组 Key 保持关闭 |
-| P0-G3 组 UI 与迁移 | 管理员影响预览、用户组选择、有效模型集合差分 | G2 全绿后才开放；不得静默改旧 Key 权限 | 待实施 |
+| P0-G3 组 UI 与迁移 | 管理员影响预览、用户组选择、有效模型集合差分 | G2 全绿后才开放；不得静默改旧 Key 权限 | 后排；500生产测试前不新增实施 |
 | P0-UI1 日志改进 | 共用 FilterSpec、全条件日志合计、列表/导出一致、后台日志组件、请求竞态保护 | R8 的 237 条跨页夹具、角色/币种/时间/导出/抽屉测试 | UI1-A1 PR #62、A2a PR #65、A2b PR #68已合入；A2b最终709d0e3七项CI全绿、R3实际完整构建通过，另有真实HTTP/MySQL浏览器19项及344前端测试；未部署生产 |
-| P0-3 独立 Worker | DB 租约领取/心跳、共享账户容量、外部预留、组织公平队列、查询平滑、Redis 故障策略 | P0-1/2 完成；R4 逐档 + R5 故障；多副本无超发 | 待实施 |
-| P0-4 500 验收与迁移 | GET 缓存/ETag、容量管理、备份演练、版本/镜像回滚、500 Mock 报告 | 500 在途≥60分钟；时效 p95≤30秒/p99≤60秒；R6 回滚 | 待实施 |
-| P1-A 协议与 UsageFacts | 纯 Go 转换层；先 Chat→Anthropic 请求抽取；presence/source 累计/增量事实 | R1 语义差分/大请求 bench；不发送第二份付费请求；账务接入另 PR | 待实施，可并行 |
-| P1-B/C/UI2-3 | 通用版本化定价、敏感操作认证、Usage 统一口径、任务运营视图 | 对应完整权限/资金/过滤门禁 | 待实施 |
+| P0-3 独立 Worker | DB 租约领取/心跳、共享账户容量、外部预留、组织公平队列、查询平滑、Redis 故障策略 | S2及直接安全依赖完成；R4逐档 + R5故障；多副本无超发 | 最高优先级；契约审计与S2收尾并行，随后实现 |
+| P0-4 500 验收与迁移 | GET 缓存/ETag、容量管理、备份演练、版本/镜像回滚、500 Mock 报告 | 500 在途≥60分钟；时效 p95≤30秒/p99≤60秒；R6 回滚 | 最高优先级；通过后Zot发布并生产灰度测试 |
+| P1-A 协议与 UsageFacts | 纯 Go 转换层；先 Chat→Anthropic 请求抽取；presence/source 累计/增量事实 | R1 语义差分/大请求 bench；不发送第二份付费请求；账务接入另 PR | 后排；A1已取得Linux开发门禁，A1提交/A2新增实施暂停并保全 |
+| P1-B/C/UI2-3 | 通用版本化定价、敏感操作认证、Usage 统一口径、任务运营视图 | 对应完整权限/资金/过滤门禁 | 后排；仅500主线必需观测保留 |
 | P2 | 表达式/插件、ClickHouse、OTel 等扩展 | 真实瓶颈与收益证据，不抢占 P0 | 暂缓 |
 
 ## 4. 第一批具体变更与非目标
@@ -58,7 +60,7 @@
 
 ## 5. 并行分工与提交纪律
 
-2026-10-26 起由当前主控进程持续负责监工、依赖排序与决策，阶段完成后自动进入下一个已授权阶段。开发线按文件归属并行；主控负责合并前独立审查、故障验收、CI、分支与 PR。外部配额或长时灰度缺证据时如实记录，继续其他不依赖该条件的工作，不把等待项标成完成。
+2026-10-26 起由当前主控进程持续负责监工、依赖排序与决策，阶段完成后自动进入下一个已授权阶段。2026-10-27按用户最新指令，将并行资源集中到Seedance 500直接依赖；外部配额或长时灰度缺证据时先推进本主线内其他独立工作，不自动恢复后排协议/UI研发。开发线按文件归属并行；主控负责合并前独立审查、故障验收、CI、分支与 PR，不把等待项标成完成。
 
 - 主线负责架构、执行表、隔离 MySQL/Mock 验证、整合评审与 PR；同一批仅基于明确 main SHA。
 - Worker 线只改 `video` 操作与相关回归，工具链线只改 Go/构建器/门禁，UI0 线只写契约。避免多人同时改同一账务或迁移文件。
@@ -402,3 +404,73 @@ dev5于 `2026-10-26T19:41:54Z` 全部通过：make vet/ci、133迁移两轮及�
 源1120文件/17overlay，源包SHA `b74bcf248708c3b92a5021276e15c4714d6c84828af10b858b20d8346e195637`；113项证据清单SHA `09b48b92010e785a38f71ac2e28a6751f8b728c7c50a4ca852837873c5f83b03`。runner/数据库退出0，无OOM。详细原始计数、运行归档及边界见 `rc46-官方动作主体观察实施契约.md` §10。最终只增验收文档和动作专项CI，14个Go文件保持受测原字节；精确PR CI与合入仍待完成。
 
 S2的协议/阶段底座及生成、结算消费者已进入集成测试，真实资金回滚、并发与旧新兼容尚待验收；独立Worker、500在途及生产灰度未完成。分组Key仍关闭，生产保持原版本，本轮没有官方调用费用。
+
+后续合入记录：PR #78 head `1076d963405b73e631def0e1929791f1434ae937` 的 CI `40411731083` 十项成功后已合入 main `1e6efc04d88b67932c5987957007759724fcd005`。S2 消费者候选已在独立 `codex/rc46-generation-consumer` 分支接续此基线，保留旧开发树和原始失败证据；候选尚未提交或发布。
+
+## 5.23 P0-S2 生成与结算分离开发回归（未验收）
+
+`rc46-s2-20261027-dev3` 于 `2026-10-27T04:25:58Z` 退出1，未发生OOM；专用MySQL随后正常退出0。源包 SHA256 `1cad6d16bb9d477106e3865e1059091fe75e38bafa4f0c4caa4830a5d62e45da`（1139文件/50覆盖路径）。make vet/ci、纯逻辑两轮race、134迁移重放及doctor、迁移专项、初次结算读取与阶段标记专项均通过；生成阶段两轮出现两类失败，后续结算、宿主及旧版兼容阶段未执行，不计通过。
+
+1. 事务回滚测试在进入故障注入点之前就因素材引用外键失败。候选复用正式测试中的同组织素材组、素材及所有权种子，保留三个故障注入点、真实引用释放UPDATE、金额、阶段及回滚断言，不删除或绕过外键。
+2. 4096个历史任务、每任务8份回执的聚合测试发现历史任务全表扫描。只读诊断在两个保留的失败schema确认：`tasks.task_id` 为 `utf8mb4_unicode_ci`，状态表对应列为 `utf8mb4_bin`。原终态分支的任务查找为 ALL/key=NULL（预估4118行）；按目标索引排序规则查找并保留二进制字节及org残余条件后，变为 eq_ref/uk_tasks_task_id（预估1行）。活动分支保持原范围/唯一索引路径；大小写、尾空格与跨组织对照均拒绝。此为真实EXPLAIN证据，不能代替完整聚合耗时验收。
+
+候选修复同类七处外层任务JOIN及支持契约子查询的精确身份判断，并增加独立MySQL身份回归。原4096×8规模、五条聚合SQL、单条200ms、整轮1秒及账务/无网络断言保持。原始skew测试字节未改；完整race、结算和兼容门禁仍待执行。
+
+dev3完整证据包 SHA256 `a73e06fe9ea739fb46f6bfa77eaee99486b6a28614f0d02d69dd939ba9cf6cd6`，104项证据清单 SHA256 `870aa21cd4c557fc445d07381bf2600969d8a4239806612525f40864f14e992f`。1139源码/1140运行成员和57项控制文件已独立逐项校验；失败库、源包及日志保留。诊断仅短暂启动同一精确受控测试DB、执行只读元数据/EXPLAIN后停止，无表写入或资源删除。
+
+正式N/C/P/D二进制交接的14场景控制器已准备，准备脚本完成本地边界检查；尚无真实C/P固定提交、正式ELF和正式矩阵通过证据。生产在 `2026-10-27T04:23:06Z` 只读核对仍为 `d7fc49949c44b7e0dbfbf95384dafd15df13dadf`，core健康。官方调用及费用为0；不宣称新版生产、500在途或灰度达标。
+
+## 5.24 S2 integrated-r1 实际结果与修复（未通过）
+
+源包 `7320995e3acb77c5f6d43740978b13c29fd289d2e6116b39b677ae8b833de6bd`（1163文件、基线main `1e6efc04`）在laiai-release完成make vet/ci、134迁移双次及doctor。生成阶段10顶层测试各两轮，20顶层/34子例/46叶执行全部通过，无skip/race；此前事务夹具与聚合索引修复首次获得完整生成双轮证据。
+
+结算阶段13顶层各两轮，26次顶层中22通过、4失败，56次子例中52通过、4失败；两轮均复现 Key/Invocation 回滚分类和 BadDigestQueueProgress 索引窗口问题。runner于 `2026-10-27T05:59:50Z` 退出1、OOM=false；数据库于05:59:52正常退出0。宿主、V1及宿主兼容阶段因前序失败未运行；这些结果不构成S2验收。
+
+完整证据归档 SHA256 `d9c605134622adbf2c15074d078fb9fbdf03dbc2d30b738671197ecd5581cb91`，58项证据、1163源成员、1164运行成员已逐项校验。运行包 SHA256 `f1a5db83fd5ffb55bf3545ee86b311435d71f30693b76b93e6db7f5a7d48f71d`；仅额外生成relay ELF。旧两份失败schema及行数保持，新增六份失败schema保留；没有删除资源或调用官方API。
+
+Key回滚用例的故障注入未覆盖实际tx.Exec更新，补精确Raw回调；Invocation.RecordTx改为复用现有固定文本错误包装保留底层1054。新增本地回归以1054/1213两类驱动错误验证原因保留、固定格式、调用方前置写回滚，已在独立冻结源副本通过；真实MySQL原八边界与两轮结算仍须重跑。
+
+只读EXPLAIN ANALYZE确认队列原查询实际扫描1064行（512非法kind、512缺G、40待处理），原估算1526超过既定1108窗口。optimizer trace显示phase索引可用且估算555行，但成本及排序选择改用旧索引；显式合同常量和分kind UNION均未解决。保留3072背景、40上限与2秒预算，继续窄结构修复；不靠删除背景、FORCE INDEX或提高门槛过关。
+
+P1-A1独立Linux R3已在S2释放锁后于 `2026-10-27T05:59:54Z` 启动，尚未以此记录声明通过。生产未变更；C/P固定提交、完整14场景、独立Worker及500长测继续后续。
+
+## 5.25 S2 integrated-r2：G/B通过，兼容观测待修复复验
+
+源包 `a91936ce63c4fd0fde374a1ae807d51edc033ba96fa278e4f75f412288737d48` 在laiai-release完成make vet/ci、135迁移两次及doctor。严格原始JSONL复核：纯测试82顶层/424子执行，迁移6/38，initial6/16，phase4/0，G20/34，B26/56，后台结算任务2/4，七阶段均零失败、跳过或race。此前Key/Invocation回滚与坏摘要候选索引问题本轮均通过。
+
+V1兼容23顶层/20子执行中，22顶层及全部子执行通过，`TestMySQLWorkerObservationBlockedContractsAreIndependentAndIndexed` 失败：任务阻断统计8而原期望6，操作与回执独立统计正确。新增reserved分支误包含已删除非终态；旧“完成且无待结”夹具仍使用reserved。窄修限定新增分支为四种生成终态，把已完成夹具改为settled，并补全终态/已删除/未知状态对照。保留原pending_usage与未知合同阻断、精确身份、索引和时间门槛；受影响的两项G观测、完整V1兼容及未执行宿主兼容须复验，不以修改期望值代替修复。
+
+复验使用新的 `ark_test_s2_compat_r3` 基础测试库，旧 `ark_test` 和失败私库保留。只为本轮会使用的三个测试helper增加精确测试库命名空间；先解析DSN的真实DBName，拒绝凭据或参数中伪装的库名，14个纯边界子例已通过。原随机私库、身份、金额与期限校验不变；旧共享库前后须完整逻辑dump摘要相等。
+
+runner于 `2026-10-27T08:30:08.712577898Z` 退出1、无OOM；原数据库于 `08:30:15.703572399Z` 正常退出0。全部87份原始证据、1173源码和1175运行文件已独立逐项核验，完整归档SHA `5eb069bdd904787087cea0f46570eb4c1585a67cb08807b875dd4832caea99e7`。失败库与原始日志保留。r2整体仍为失败，host兼容未运行；14场景、500容量及生产发布均未完成，官方调用与费用0。
+
+## 5.26 S2 compatibility-r3 实际结果（选定检查通过，非完整验收）
+
+固定源树 `8e7780e5956d4baabdbb692d3add1415fcba044f`、1179个源码文件，在laiai-release独立测试容器完成 `make vet`、`make ci`、135项迁移重放/doctor、S2 observation race 2轮、V1兼容 race、host compatibility race。严格原始JSONL复核计数：observation 2个顶层测试各2轮，V1兼容23个顶层/20个子测试，host兼容1个顶层；全部零失败、零跳过。`selected_regression_passed=true`，但 `full_s2_acceptance=false`，本结果不替代此前Formal14、W1/W2/W3集成或500在途负载验收。
+
+测试 runner 于 `2026-10-27T09:27:49.154725073Z` 以退出码0结束，隔离MySQL于 `09:27:57.661498059Z` 正常退出0；均无OOM。新建schema `ark_test_s2_compat_r3`，原始失败schema保持不变。1179源码、运行归档、76项终端证据及3个ELF运行产物均经本地独立SHA/成员清单复核；证据归档 SHA256 `db361b9ff3fc3a2daff58c8f6eb770a6fb2f4576220f74008616948483893782`（72,529,315 bytes）。官方调用和费用为0，未修改生产。
+
+下一门仍是W1容量、W2多worker、W3速率/phase集成在一个精确冻结树上的真实MySQL、Redis和跨进程/单次wire验收；随后才运行500 Mock分阶段长测、Zot digest发布及生产灰度。任何一项未通过均不得标注500可用或部署生产。
+
+## 5.27 S2 候选补丁隔离复验（0d55890 七阶段全绿，验收项1完成）
+
+候选补丁 `.cache/seedance500-s2-src-20261027/.codex-s2-candidate.patch`（SHA-256 `ebb51052a7936f82d6d82ad54f310350b7b27d010bdec1533bb202f11f4d84aa`，87 文件，两份副本逐字节一致，不含任何 0136 编号迁移）在 main `1e6efc0` 上干净应用，提交为 `0d558901274ea910885be3e7332e13df7a80343c`。2026-10-28 在 laiai-release 独立容器（go1.26.10 linux/amd64，运行镜像 `sha256:224d5fb0…`）加专用 MySQL 8.4.9（`sha256:1487abff…`，参数对齐既往轮次：skip-log-bin/redo 64M/buffer 128M/max packet 64M，另加 `--innodb-flush-log-at-trx-commit=2` 纯性能参数）上零修改运行正式 `scripts/ark-s2-consumer-ci.py` 七阶段：s2_pure 41 顶层（16.1s）、s2_migrations 2（867.4s）、s2_initial 3（153.5s）、s2_phase 2（109.4s）、s2_generation 10（1238.6s）、s2_settlement 13（1370.6s）、s2_host 1（88.3s），全部 `-race -p 1 -count=2` 双轮，合计 72 顶层/144 顶层执行/638 叶执行，0 失败、0 跳过；make vet、make ci（无 DSN）、135 迁移重放×2 与 schema-doctor 同轮通过。s2_settlement 的 26 顶层/68 叶计数与 integrated-r2 通过口径完全一致；账务/Key 配额/预算一致性由 MoneyAndReplay、FinancialTransactionRollback（quota/ledger/key/initial/invocation/event/outbox/completion）等家族在上述执行中实际断言。
+
+过程失败轮证据全部保留：r1 s2_initial 首轮私有库迁移 78/135 瞬态失败（schema `ark_test_initial_c29353c6340710231cfdca9a` 保留），复跑双轮全过；r2–r5 s2_settlement 四次撞 catalog 25m 超时（panic 时在跑测试仅执行 4–44 秒，已执行测试 0 断言失败），根因为默认 binlog 开启加全新库冷缓存，按既往轮次参数重建库后 r6 通过；全程未修改受测代码、选择器或超时。候选测试可观测性缺陷待修：`core/internal/videobilling/initial_settlement_read_mysql_test.go:90` 的 `t.Fatal` 未携带迁移错误。证据归档于 laiai-release `/var/lib/laiai-artifacts/rc46-s2-reverify-20261028-r1/`（evidence 30 项）与本地 `.cache/seedance500-s2-reverify-20261028/VERIFICATION-RECORD.md`。官方调用与费用为 0，未修改生产。
+
+边界：本节完成的是隔离 MySQL 复跑与账务/配额一致性核验（验收项1）。14 场景旧新二进制交接、精确提交 GitHub CI、独立 PR 与合入门禁、W1 容量/W2 多 Worker/W3 速率集成、10→500 在途 Mock 阶梯与 500 稳态、Zot digest 固定与测试部署仍依次在后；任何一项未通过不得标注 500 可用或部署生产。
+
+## 5.28 S2 候选提交仓库与隔离站构建（PR #79，验收项2推进）
+
+候选分支 `codex/rc46-generation-consumer`（PR #79，base main）按精确提交推进：`0d55890`（候选补丁 87 文件）→ `3bea529`（§5.27 复验记录）→ `140f3ab`（query_phase 单测 AutoMigrate 改显式 DDL，红线 5 转绿）→ `eafab22` / `e77d8d5`（两项旧新二进制交接 harness 修复，均仅 `_test.go`，+25/−1，生产代码与 `140f3ab` 逐字节一致）。
+
+140f3ab 轮 CI（run `40622949412`）11 项 job 中 9 绿 2 红：ci、exact-head-ci、redline、web、release-tools、ark-mysql（七阶段含 query recovery expand/interrupted replay 全过）、ark-mock-baseline、ark-mutation-compat、ark-execution-input-compat 通过；ark-runtime-compat 与 ark-query-recovery-compat 失败，根因与修复如下，均非生产逻辑缺陷：
+
+1. ark-runtime-compat：runtime 交接指纹对九表 `SELECT *` 求哈希，旧二进制（`ceecb12`）在 0134/0135 迁移前计算、新二进制在迁移后计算，新增结算列必然破坏逐字节相等。沿 0127/0133 先例在 `runtimeHandoffHistoricalProjection` 排除 `settlement_receipt_id`、`generation_applied_at`、`settlement_kind`、`settlement_evidence_sha256`、`settlement_shape_ready`（`eafab22`）；默认值语义由 settlement 形状测试单独把守。
+2. ark-query-recovery-compat：P03 new-guard `direct_apply` 失败于 null-barrier 钩子。证据（artifact `matrix-failed.json` + P03 三个实例 cycle 快照）显示进入 direct_apply 时回执 `applied_at/recovery_due_at` 均 NULL、`recovery_version=2`，本应命中纯屏障 `errQueryRecoveryReview`；但候选 `applyQueryReceiptProgress` 新增的 `requireNoTaskSettlementConflictTx` 会先对 `video_query_receipts` 追加一次 FOR UPDATE marker 探针（Dest 为匿名结构体），触发钩子 `invalid` 并使锁序 `[tasks, video_task_states, video_query_receipts]` 断言失败。该锁读为 S2 设计必需（防 RR 快照漏检已提交 `query_financial_conflict` 屏障，候选自身冲突诊断测试依赖此顺序），故更新钩子契约为：回执当前读恰好一次、空探针恰好一次、期望锁迹精确固化为 `[tasks, video_task_states, video_query_receipts, video_query_receipts]`，零 UPDATE/零 HTTP/纯屏障错误类断言全部保留（`e77d8d5`）；verify python 对 direct_result 的键集断言未动。
+
+e77d8d5 轮 CI（run `40629642550`）：首轮 10/11 绿——上述两项修复双双转绿（ark-runtime-compat、ark-query-recovery-compat 含 P01–P04 全矩阵），ci/exact-head-ci/redline/web/release-tools/ark-mock-baseline/ark-mutation-compat/ark-execution-input-compat 亦绿；ark-mysql 首轮失败于既有测试 `TestCatalogPublicationReadLimitsAndInvalidArgs`（videobilling，d0506e7 引入，非候选文件）：`catalogTariffSelectColumns` 对每次目录读取设 200ms 硬预算（context deadline + MySQL `MAX_EXECUTION_TIME` hint，超时一律映射 `ErrCatalogTariffUnavailable`），257 行边界读取在 `-race` 六包并行压同一 CI MySQL 时撞预算，误报为语义错误；同代码同步骤在 140f3ab 轮通过即为对照。经 `rerun-failed-jobs` attempt 2 复跑 ark-mysql 全绿，run 结论 success（11/11）。该 200ms 超时映射使负载尖峰可伪装成目录语义失败，属上游既有可观测性缺陷，已记录待议，不阻塞本候选。
+
+同轮完成线上同构构建：laiai-release 经正式 `stage.py` 管线（config `/etc/laiai/stage-rc46-140f3ab.json`，mode 600）对 `140f3ab` 执行 build→deploy→test→publish。隔离站 `laiai-stage-140f3abec148`（127.0.0.1:18085）九项检查全过（health/前端/迁移重放/schema_doctor/注册登录/余额/视频key同意/租户隔离/key吊销），`paid_calls=0`，schema 135 无漂移；镜像已发布 Zot（127.0.0.1:5000）：`laiai/core@sha256:1e397ab0856517351715b687e7b0da6e1ce6eada0cb8a60dfc082a62b3e7be72`、`laiai/caddy@sha256:56b22fae17e48bfc8f671bc2e124ff2eb2be9c426d007adb84184c5d91c80cd0`，manifest `/var/lib/laiai-artifacts/codex-rc46-generation-consumer-91982c45-140f3abec148/artifact.json`。因 e77d8d5 相对 140f3ab 仅测试文件差异，已发布镜像的生产字节与 PR 头一致，无需重建；若 PR 头再移入生产变更则须重走 build→test→publish。r7 轮 `s2_pure ×2 -race` 在 140f3ab 复证通过（证据 `/var/lib/laiai-artifacts/rc46-s2-reverify-20261028-r7/`）。
+
+边界：PR #79 的 CI 门禁已在 e77d8d5 全绿（含 14 场景交接矩阵的 CI 部分），是否合入 main 属独立决策；W1 容量/W2 多 Worker/W3 速率集成、10→500 在途 Mock 阶梯与 500 稳态、测试部署未开始；生产 laiai-pod 保持 `d7fc499` 未动，本轮官方调用与费用 0。
