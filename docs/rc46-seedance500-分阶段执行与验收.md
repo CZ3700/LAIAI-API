@@ -451,3 +451,11 @@ runner于 `2026-10-27T08:30:08.712577898Z` 退出1、无OOM；原数据库于 `0
 测试 runner 于 `2026-10-27T09:27:49.154725073Z` 以退出码0结束，隔离MySQL于 `09:27:57.661498059Z` 正常退出0；均无OOM。新建schema `ark_test_s2_compat_r3`，原始失败schema保持不变。1179源码、运行归档、76项终端证据及3个ELF运行产物均经本地独立SHA/成员清单复核；证据归档 SHA256 `db361b9ff3fc3a2daff58c8f6eb770a6fb2f4576220f74008616948483893782`（72,529,315 bytes）。官方调用和费用为0，未修改生产。
 
 下一门仍是W1容量、W2多worker、W3速率/phase集成在一个精确冻结树上的真实MySQL、Redis和跨进程/单次wire验收；随后才运行500 Mock分阶段长测、Zot digest发布及生产灰度。任何一项未通过均不得标注500可用或部署生产。
+
+## 5.27 S2 候选补丁隔离复验（0d55890 七阶段全绿，验收项1完成）
+
+候选补丁 `.cache/seedance500-s2-src-20261027/.codex-s2-candidate.patch`（SHA-256 `ebb51052a7936f82d6d82ad54f310350b7b27d010bdec1533bb202f11f4d84aa`，87 文件，两份副本逐字节一致，不含任何 0136 编号迁移）在 main `1e6efc0` 上干净应用，提交为 `0d558901274ea910885be3e7332e13df7a80343c`。2026-10-28 在 laiai-release 独立容器（go1.26.10 linux/amd64，运行镜像 `sha256:224d5fb0…`）加专用 MySQL 8.4.9（`sha256:1487abff…`，参数对齐既往轮次：skip-log-bin/redo 64M/buffer 128M/max packet 64M，另加 `--innodb-flush-log-at-trx-commit=2` 纯性能参数）上零修改运行正式 `scripts/ark-s2-consumer-ci.py` 七阶段：s2_pure 41 顶层（16.1s）、s2_migrations 2（867.4s）、s2_initial 3（153.5s）、s2_phase 2（109.4s）、s2_generation 10（1238.6s）、s2_settlement 13（1370.6s）、s2_host 1（88.3s），全部 `-race -p 1 -count=2` 双轮，合计 72 顶层/144 顶层执行/638 叶执行，0 失败、0 跳过；make vet、make ci（无 DSN）、135 迁移重放×2 与 schema-doctor 同轮通过。s2_settlement 的 26 顶层/68 叶计数与 integrated-r2 通过口径完全一致；账务/Key 配额/预算一致性由 MoneyAndReplay、FinancialTransactionRollback（quota/ledger/key/initial/invocation/event/outbox/completion）等家族在上述执行中实际断言。
+
+过程失败轮证据全部保留：r1 s2_initial 首轮私有库迁移 78/135 瞬态失败（schema `ark_test_initial_c29353c6340710231cfdca9a` 保留），复跑双轮全过；r2–r5 s2_settlement 四次撞 catalog 25m 超时（panic 时在跑测试仅执行 4–44 秒，已执行测试 0 断言失败），根因为默认 binlog 开启加全新库冷缓存，按既往轮次参数重建库后 r6 通过；全程未修改受测代码、选择器或超时。候选测试可观测性缺陷待修：`core/internal/videobilling/initial_settlement_read_mysql_test.go:90` 的 `t.Fatal` 未携带迁移错误。证据归档于 laiai-release `/var/lib/laiai-artifacts/rc46-s2-reverify-20261028-r1/`（evidence 30 项）与本地 `.cache/seedance500-s2-reverify-20261028/VERIFICATION-RECORD.md`。官方调用与费用为 0，未修改生产。
+
+边界：本节完成的是隔离 MySQL 复跑与账务/配额一致性核验（验收项1）。14 场景旧新二进制交接、精确提交 GitHub CI、独立 PR 与合入门禁、W1 容量/W2 多 Worker/W3 速率集成、10→500 在途 Mock 阶梯与 500 稳态、Zot digest 固定与测试部署仍依次在后；任何一项未通过不得标注 500 可用或部署生产。
