@@ -730,7 +730,15 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 		}
 		// This typed whitelist is the only unencrypted response projection. URLs,
 		// raw provider errors and arbitrary fields remain in Invocation Store.
-		meta, e := json.Marshal(queryObservation{TaskID: o.TaskID, Model: o.Model, Status: o.Status, CompletionTokens: o.Usage.CompletionTokens, TotalTokens: o.Usage.TotalTokens, HasError: o.HasError, DeliveryPayloadRef: delivery.PayloadID()})
+		meta, e := json.Marshal(queryObservation{
+			TaskID: o.TaskID, Model: o.Model, Status: o.Status,
+			CompletionTokens: o.Usage.CompletionTokens, TotalTokens: o.Usage.TotalTokens,
+			Resolution: o.Resolution, Ratio: o.Ratio, Duration: o.Duration, Frames: o.Frames,
+			FramesPerSecond: o.FramesPerSecond, Seed: o.Seed, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt,
+			ServiceTier: o.ServiceTier, ExecutionExpiresAfter: o.ExecutionExpiresAfter,
+			GenerateAudio: o.GenerateAudio, Draft: o.Draft, Priority: o.Priority,
+			HasError: o.HasError, DeliveryPayloadRef: delivery.PayloadID(),
+		})
 		if e != nil {
 			return e
 		}

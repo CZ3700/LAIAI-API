@@ -377,13 +377,23 @@ func (s *Service) HandleGet(c *gin.Context) {
 		respondError(c, e)
 		return
 	}
-	v, e := s.deliveryView(c.Request.Context(), t, st, fmt.Sprint(key.ID), true)
+	ctx := c.Request.Context()
+	v, e := s.deliveryView(ctx, t, st, fmt.Sprint(key.ID), true)
 	if e != nil {
 		respondError(c, e)
 		return
 	}
+	t, st, e = loadTask(s.DB.WithContext(ctx), key.OrgID, c.Param("id"), false)
+	if e != nil {
+		respondError(c, e)
+		return
+	}
+	observation, e := s.latestAppliedQueryObservation(ctx, st, t.UpstreamTaskID)
+	if e != nil {
+		respondError(c, ErrUnavailable)
+		return
+	}
 	c.Header("Cache-Control", "private, no-store")
-	// 火山官方接口格式原路返回：包含 id, model, status, content, usage 等原生字段
 	queryResp := gin.H{
 		"id":         t.TaskID,
 		"model":      t.Model,
@@ -391,16 +401,60 @@ func (s *Service) HandleGet(c *gin.Context) {
 		"created_at": st.CreatedAt.Unix(),
 		"updated_at": st.UpdatedAt.Unix(),
 	}
-	if v.ContentURL != "" {
-		queryResp["content"] = gin.H{
-			"video_url": v.ContentURL,
+	if observation.CreatedAt != nil {
+		queryResp["created_at"] = *observation.CreatedAt
+	}
+	if observation.UpdatedAt != nil {
+		queryResp["updated_at"] = *observation.UpdatedAt
+	}
+	if v.ContentURL != "" || (v.Content != nil && v.Content.LastFrameURL != "") {
+		content := gin.H{}
+		if v.ContentURL != "" {
+			content["video_url"] = v.ContentURL
 		}
+		if v.Content != nil && v.Content.LastFrameURL != "" {
+			content["last_frame_url"] = v.Content.LastFrameURL
+		}
+		queryResp["content"] = content
 	}
 	if st.TotalTokens != nil || st.ObservedCompletionTokens != nil {
 		queryResp["usage"] = gin.H{
 			"total_tokens":      st.TotalTokens,
 			"completion_tokens": st.ObservedCompletionTokens,
 		}
+	}
+	if observation.Seed != nil {
+		queryResp["seed"] = *observation.Seed
+	}
+	if observation.Resolution != "" {
+		queryResp["resolution"] = observation.Resolution
+	}
+	if observation.Ratio != "" {
+		queryResp["ratio"] = observation.Ratio
+	}
+	if observation.Duration != nil {
+		queryResp["duration"] = *observation.Duration
+	}
+	if observation.Frames != nil {
+		queryResp["frames"] = *observation.Frames
+	}
+	if observation.FramesPerSecond != nil {
+		queryResp["framespersecond"] = *observation.FramesPerSecond
+	}
+	if observation.ServiceTier != "" {
+		queryResp["service_tier"] = observation.ServiceTier
+	}
+	if observation.ExecutionExpiresAfter != nil {
+		queryResp["execution_expires_after"] = *observation.ExecutionExpiresAfter
+	}
+	if observation.GenerateAudio != nil {
+		queryResp["generate_audio"] = *observation.GenerateAudio
+	}
+	if observation.Draft != nil {
+		queryResp["draft"] = *observation.Draft
+	}
+	if observation.Priority != nil {
+		queryResp["priority"] = *observation.Priority
 	}
 	c.JSON(200, queryResp)
 }

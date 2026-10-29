@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"errors"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/videoruntime"
@@ -10,13 +11,49 @@ import (
 )
 
 type queryObservation struct {
-	TaskID             string     `json:"task_id"`
-	Model              string     `json:"model"`
-	Status             ark.Status `json:"status"`
-	CompletionTokens   *int64     `json:"completion_tokens"`
-	TotalTokens        *int64     `json:"total_tokens"`
-	HasError           bool       `json:"has_error"`
-	DeliveryPayloadRef string     `json:"delivery_payload_ref,omitempty"`
+	TaskID                string     `json:"task_id"`
+	Model                 string     `json:"model"`
+	Status                ark.Status `json:"status"`
+	CompletionTokens      *int64     `json:"completion_tokens"`
+	TotalTokens           *int64     `json:"total_tokens"`
+	Resolution            string     `json:"resolution,omitempty"`
+	Ratio                 string     `json:"ratio,omitempty"`
+	Duration              *int64     `json:"duration,omitempty"`
+	Frames                *int64     `json:"frames,omitempty"`
+	FramesPerSecond       *int64     `json:"framespersecond,omitempty"`
+	Seed                  *int64     `json:"seed,omitempty"`
+	CreatedAt             *int64     `json:"created_at,omitempty"`
+	UpdatedAt             *int64     `json:"updated_at,omitempty"`
+	ServiceTier           string     `json:"service_tier,omitempty"`
+	ExecutionExpiresAfter *int64     `json:"execution_expires_after,omitempty"`
+	GenerateAudio         *bool      `json:"generate_audio,omitempty"`
+	Draft                 *bool      `json:"draft,omitempty"`
+	Priority              *int64     `json:"priority,omitempty"`
+	HasError              bool       `json:"has_error"`
+	DeliveryPayloadRef    string     `json:"delivery_payload_ref,omitempty"`
+}
+
+func (s *Service) latestAppliedQueryObservation(ctx context.Context, st State, upstreamTaskID string) (queryObservation, error) {
+	if st.AppliedQuerySequence == 0 {
+		return queryObservation{}, nil
+	}
+	var receipt QueryReceipt
+	err := s.DB.WithContext(ctx).Where("org_id = ? AND task_id = ? AND sequence = ? AND outcome = ? AND http_status >= ? AND http_status < ? AND apply_error_code = '' AND (applied_at IS NOT NULL OR generation_applied_at IS NOT NULL)", st.OrgID, st.TaskID, st.AppliedQuerySequence, string(ark.OutcomeAccepted), 200, 300).Take(&receipt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return queryObservation{}, nil
+	}
+	if err != nil {
+		return queryObservation{}, safeRecoveryErrors(err)
+	}
+	observation, err := decodeQueryObservation(receipt.ObservationJSON)
+	if err != nil {
+		return queryObservation{}, safeRecoveryErrors(err)
+	}
+	validStatus := observation.Status == ark.StatusQueued || observation.Status == ark.StatusRunning || observation.Status == ark.StatusSucceeded || observation.Status == ark.StatusFailed || observation.Status == ark.StatusCancelled || observation.Status == ark.StatusExpired
+	if !validStatus || observation.HasError || observation.TaskID == "" || observation.TaskID != upstreamTaskID || (observation.Model != "" && observation.Model != st.UpstreamModel) {
+		return queryObservation{}, nil
+	}
+	return observation, nil
 }
 
 func (s *Service) recoveryQueryCandidates(ctx context.Context) *gorm.DB {

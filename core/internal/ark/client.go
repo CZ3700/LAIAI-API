@@ -208,24 +208,28 @@ func ParseResponse(action Action, resp *http.Response, maxBytes int64) Result {
 
 func parseObservation(fields map[string]json.RawMessage) (*Observation, *Error) {
 	var p struct {
-		ID            string          `json:"id"`
-		Model         string          `json:"model"`
-		Status        string          `json:"status"`
-		Content       json.RawMessage `json:"content"`
-		Usage         json.RawMessage `json:"usage"`
-		Error         json.RawMessage `json:"error"`
-		Resolution    string          `json:"resolution"`
-		Ratio         string          `json:"ratio"`
-		Duration      *int64          `json:"duration"`
-		Frames        *int64          `json:"frames"`
-		FPS           *int64          `json:"framespersecond"`
-		Seed          *int64          `json:"seed"`
-		CreatedAt     *int64          `json:"created_at"`
-		UpdatedAt     *int64          `json:"updated_at"`
-		GenerateAudio *bool           `json:"generate_audio"`
+		ID                    string          `json:"id"`
+		Model                 string          `json:"model"`
+		Status                string          `json:"status"`
+		Content               json.RawMessage `json:"content"`
+		Usage                 json.RawMessage `json:"usage"`
+		Error                 json.RawMessage `json:"error"`
+		Resolution            string          `json:"resolution"`
+		Ratio                 string          `json:"ratio"`
+		Duration              *int64          `json:"duration"`
+		Frames                *int64          `json:"frames"`
+		FPS                   *int64          `json:"framespersecond"`
+		Seed                  *int64          `json:"seed"`
+		CreatedAt             *int64          `json:"created_at"`
+		UpdatedAt             *int64          `json:"updated_at"`
+		ServiceTier           string          `json:"service_tier"`
+		ExecutionExpiresAfter *int64          `json:"execution_expires_after"`
+		GenerateAudio         *bool           `json:"generate_audio"`
+		Draft                 *bool           `json:"draft"`
+		Priority              *int64          `json:"priority"`
 	}
 	filtered := map[string]json.RawMessage{}
-	for _, k := range []string{"id", "model", "status", "content", "usage", "error", "resolution", "ratio", "duration", "frames", "framespersecond", "seed", "created_at", "updated_at", "generate_audio"} {
+	for _, k := range []string{"id", "model", "status", "content", "usage", "error", "resolution", "ratio", "duration", "frames", "framespersecond", "seed", "created_at", "updated_at", "service_tier", "execution_expires_after", "generate_audio", "draft", "priority"} {
 		if v, ok := fields[k]; ok {
 			filtered[k] = v
 		}
@@ -234,7 +238,7 @@ func parseObservation(fields map[string]json.RawMessage) (*Observation, *Error) 
 	if json.Unmarshal(b, &p) != nil || p.Status == "" {
 		return nil, failure("invalid_upstream_response", "upstream task observation is malformed", "", 502)
 	}
-	o := &Observation{TaskID: p.ID, Model: p.Model, RawStatus: p.Status, Resolution: p.Resolution, Ratio: p.Ratio, Duration: p.Duration, Frames: p.Frames, FramesPerSecond: p.FPS, Seed: p.Seed, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, GenerateAudio: p.GenerateAudio}
+	o := &Observation{TaskID: p.ID, Model: p.Model, RawStatus: p.Status, Resolution: p.Resolution, Ratio: p.Ratio, Duration: p.Duration, Frames: p.Frames, FramesPerSecond: p.FPS, Seed: p.Seed, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, ServiceTier: p.ServiceTier, ExecutionExpiresAfter: p.ExecutionExpiresAfter, GenerateAudio: p.GenerateAudio, Draft: p.Draft, Priority: p.Priority}
 	if contains([]string{"queued", "running", "succeeded", "failed", "cancelled", "expired"}, p.Status) {
 		o.Status = Status(p.Status)
 	}
@@ -271,10 +275,18 @@ func parseObservation(fields map[string]json.RawMessage) (*Observation, *Error) 
 			}
 		}
 	}
-	for _, n := range []*int64{o.Duration, o.Frames, o.FramesPerSecond, o.CreatedAt, o.UpdatedAt} {
+	for _, n := range []*int64{o.CreatedAt, o.UpdatedAt, o.Seed} {
 		if n != nil && *n < 0 {
 			return nil, failure("invalid_upstream_response", "upstream numeric metadata is invalid", "", 502)
 		}
+	}
+	for _, n := range []*int64{o.Duration, o.Frames, o.FramesPerSecond, o.ExecutionExpiresAfter} {
+		if n != nil && *n < 0 {
+			return nil, failure("invalid_upstream_response", "upstream task parameter is invalid", "", 502)
+		}
+	}
+	if (o.Duration != nil && o.Frames != nil) || (o.Priority != nil && (*o.Priority < 0 || *o.Priority > 9)) {
+		return nil, failure("invalid_upstream_response", "upstream task parameters are invalid", "", 502)
 	}
 	o.HasError = len(p.Error) > 0 && string(p.Error) != "null" && string(p.Error) != "{}"
 	return o, nil

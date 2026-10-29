@@ -1045,12 +1045,18 @@
       },
       "OfficialTaskQuery": {
         "additionalProperties": false,
-        "description": "官方查询任务形状。status 取值为平台生命周期枚举（含 accepted/submitting/submission_unknown\n平台提交阶段），不是官方四态原样映射。billing_state/sync_state/artifact_status/deletion_state\n等平台扩展不在本响应。\n",
+        "description": "官方查询任务形状。status 取值为平台生命周期枚举（含 accepted/submitting/submission_unknown\n平台提交阶段），不是官方四态原样映射。billing_state/sync_state/artifact_status/deletion_state\n等平台扩展不在本响应。",
         "properties": {
           "content": {
             "additionalProperties": false,
             "description": "仅在已取得官方产物链接时出现。",
             "properties": {
+              "last_frame_url": {
+                "description": "创建时请求尾帧且上游返回时出现的尾帧直链；访问时不得附带 Gateway Key。",
+                "format": "uri",
+                "pattern": "^https://",
+                "type": "string"
+              },
               "video_url": {
                 "description": "官方视频直链；保留签名参数，访问时不得附带 Gateway Key。",
                 "format": "uri",
@@ -1064,11 +1070,57 @@
             "description": "任务受理时间，Unix 秒。",
             "type": "integer"
           },
+          "draft": {
+            "description": "是否为 Draft 视频。",
+            "type": "boolean"
+          },
+          "duration": {
+            "description": "官方实际视频时长（秒）；当未使用 frames 时条件返回。",
+            "type": "integer"
+          },
+          "execution_expires_after": {
+            "description": "提交后执行过期阈值（秒）；超时后任务状态为 expired。",
+            "type": "integer"
+          },
+          "frames": {
+            "description": "官方实际帧数；与 duration 互斥，仅上游返回时出现。",
+            "type": "integer"
+          },
+          "framespersecond": {
+            "description": "官方实际帧率；仅上游返回时出现。",
+            "type": "integer"
+          },
+          "generate_audio": {
+            "description": "是否生成同步音频。",
+            "type": "boolean"
+          },
           "id": {
             "$ref": "#/components/schemas/TaskId"
           },
           "model": {
             "$ref": "#/components/schemas/PublicModel"
+          },
+          "priority": {
+            "description": "执行优先级，数值越大优先级越高。",
+            "maximum": 9,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ratio": {
+            "description": "官方实际生成宽高比；仅上游返回时出现。",
+            "type": "string"
+          },
+          "resolution": {
+            "description": "官方实际生成分辨率；仅上游返回时出现。",
+            "type": "string"
+          },
+          "seed": {
+            "description": "官方实际使用的随机种子；仅上游返回时出现。",
+            "type": "integer"
+          },
+          "service_tier": {
+            "description": "实际处理任务使用的服务等级。",
+            "type": "string"
           },
           "status": {
             "$ref": "#/components/schemas/TaskStatus"
@@ -3697,7 +3749,7 @@
         ]
       },
       "get": {
-        "description": "按官方查询任务形状返回 id/model/status/content/usage；时间戳为 Unix 秒整数。\nstatus 取值为平台生命周期枚举（accepted/submitting/submission_unknown 为平台提交阶段，\n其余为已核实生成状态），不是官方四态原样映射。\ncontent.video_url 仅在已取得官方产物链接时出现；usage 仅在已观察到官方用量时出现，\n其内字段缺失为 null，不以 0 或估算代填。\nbilling_state、sync_state、artifact_status、deletion_state 等平台扩展不在本响应，\n分别查询 /billing、/events 与列表接口。查询不产生新的生成任务，也不额外收生成费。\n不存在、跨组织或已完成软删除均返回 404。本地观察超时保持可核对状态，\n不凭观察超时将任务宣告 failed 或自动全退。\n",
+        "description": "按官方查询任务形状返回 id/model/status/content/usage；时间戳为 Unix 秒整数。\nstatus 取值为平台生命周期枚举（accepted/submitting/submission_unknown 为平台提交阶段，\n其余为已核实生成状态），不是官方四态原样映射。\ncontent.video_url 仅在已取得官方产物链接时出现；usage 仅在已观察到官方用量时出现，\n其内字段缺失为 null，不以 0 或估算代填。seed、resolution、ratio、duration、frames、\nframespersecond、service_tier、execution_expires_after、generate_audio、draft、priority\n仅在上游返回且观察已应用时回显；duration 与 frames 按创建模式互斥，字段缺失不推断默认值。\nbilling_state、sync_state、artifact_status、deletion_state 等平台扩展不在本响应，\n分别查询 /billing、/events 与列表接口。查询不产生新的生成任务，也不额外收生成费。\n不存在、跨组织或已完成软删除均返回 404。本地观察超时保持可核对状态，\n不凭观察超时将任务宣告 failed 或自动全退。",
         "operationId": "getVideoTask",
         "responses": {
           "200": {
@@ -3707,14 +3759,24 @@
                   "content": {
                     "video_url": "https://ark-cdn.example.invalid/video.mp4?Expires=..."
                   },
-                  "created_at": 1792713600,
+                  "created_at": 1779348818,
+                  "draft": false,
+                  "duration": 5,
+                  "execution_expires_after": 172800,
+                  "framespersecond": 24,
+                  "generate_audio": true,
                   "id": "task_example001",
                   "model": "seedance-2.0",
+                  "priority": 0,
+                  "ratio": "16:9",
+                  "resolution": "720p",
+                  "seed": 78674,
+                  "service_tier": "default",
                   "status": "succeeded",
-                  "updated_at": 1792713700,
+                  "updated_at": 1779348874,
                   "usage": {
-                    "completion_tokens": 123,
-                    "total_tokens": 999
+                    "completion_tokens": 108900,
+                    "total_tokens": 108900
                   }
                 },
                 "schema": {
@@ -4332,5 +4394,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "23a0d4c3cae9a4b0a6909d9231156ec9f96bef6feaca2d375efef4fd231778dd"
+  "x-seedance-source-sha256": "4845e262fe67073d2c7ef8820433d25766087d8e28828fa4617993866e666836"
 }

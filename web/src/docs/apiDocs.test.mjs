@@ -147,6 +147,10 @@ test('served video specification records current canonical contract digest', () 
   const hash = createHash('sha256').update(canonical.replaceAll('\r\n', '\n')).digest('hex')
   assert.equal(spec['x-seedance-source-sha256'], hash, 'regenerate public OpenAPI after changing canonical video contract')
   assert.equal(spec.components.schemas.ReservationMetering.properties.input_token_semantics.const, 'not_projected_separately_completion_tokens_authoritative')
+  const query = spec.components.schemas.OfficialTaskQuery
+  for (const field of ['seed', 'resolution', 'ratio', 'duration', 'frames', 'framespersecond', 'service_tier', 'execution_expires_after', 'generate_audio', 'draft', 'priority']) assert.ok(query.properties[field], `OfficialTaskQuery missing ${field}`)
+  assert.equal(query.properties.priority.maximum, 9)
+  assert.ok(query.properties.content.properties.last_frame_url)
   assert.ok(!JSON.stringify(spec.paths).includes('failures refund in full'))
   assert.ok(!JSON.stringify(spec.paths).includes('Any extra top-level params'))
   assert.match(spec.components.schemas.Billing.properties.pricing_snapshot.description, /首次实扣=MIN\(实际量计算金额, reserved_amount\)/)
@@ -225,6 +229,9 @@ test('video result examples return upstream URLs and do not send platform creden
   const queried = byID('task-get').response
   assert.equal(queried.status, 'succeeded')
   assert.ok(Number.isInteger(queried.created_at))
+  for (const [field, value] of Object.entries({ seed: 78674, resolution: '720p', ratio: '16:9', duration: 5, framespersecond: 24, service_tier: 'default', execution_expires_after: 172800, generate_audio: true, draft: false, priority: 0 })) {
+    assert.equal(queried[field], value, `official query field ${field}`)
+  }
   assert.match(queried.content.video_url, /^https:\/\//)
   assert.equal(byID('content-video').response.url, queried.content.video_url)
   for (const [id, kind] of [['content-video', 'video'], ['content-last-frame', 'last_frame']]) {

@@ -1,7 +1,10 @@
 package video
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -17,6 +20,7 @@ func TestMySQLOfficialVideoResponseFormats(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.POST("/v1/video/generations", f.s.Middleware(), f.s.HandleCreate)
+	r.GET("/v1/video/generations", f.s.Middleware(), f.s.HandleList)
 	r.GET("/v1/video/generations/:id", f.s.Middleware(), f.s.HandleGet)
 	r.POST("/v1/video/generations/:id/cancel", f.s.Middleware(), f.s.HandleCancel)
 
@@ -67,7 +71,17 @@ func TestMySQLOfficialVideoResponseFormats(t *testing.T) {
 		t.Fatalf("replay diverged from official submit shape: %s", replay.Body.String())
 	}
 
-	// 3. 单查：官方 Query 形状（id/model/status/created_at/updated_at，时间戳为 Unix 秒）。
+	// 3. 让真实上游 Query 回执携带官方可选参数，再经 HTTP 单查验证透传。
+	f.dispatch(t, submit["id"].(string))
+	f.response = func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			return reply(200, `{"id":"`+f.upstream(t, submit["id"].(string))+`","model":"doubao-seedance-2-0-260128","status":"running","created_at":1779348818,"updated_at":1779348874,"seed":78674,"resolution":"720p","ratio":"16:9","duration":5,"framespersecond":24,"service_tier":"default","execution_expires_after":172800,"generate_audio":true,"draft":false,"priority":0}`), nil
+		}
+		return nil, errors.New("unexpected fixture request")
+	}
+	must(t, f.s.pollTask(context.Background(), f.key.OrgID, submit["id"].(string)))
+
+	// 4. 单查：官方 Query 形状含可选字段，时间戳为 Unix 秒整数。
 	detail := call("GET", "/v1/video/generations/"+submit["id"].(string), "")
 	if detail.Code != 200 {
 		t.Fatalf("get %d: %s", detail.Code, detail.Body.String())
@@ -81,17 +95,52 @@ func TestMySQLOfficialVideoResponseFormats(t *testing.T) {
 	if query["model"] != "seedance-2.0" {
 		t.Fatalf("model mismatch: %s", detail.Body.String())
 	}
-	if _, isNumber := query["created_at"].(float64); !isNumber {
-		t.Fatalf("created_at must be unix seconds: %s", detail.Body.String())
+	if query["created_at"] != float64(1779348818) || query["updated_at"] != float64(1779348874) {
+		t.Fatalf("upstream Unix-second timestamps were not preserved: %s", detail.Body.String())
+	}
+	want := map[string]any{"seed": float64(78674), "resolution": "720p", "ratio": "16:9", "duration": float64(5), "framespersecond": float64(24), "service_tier": "default", "execution_expires_after": float64(172800), "generate_audio": true, "draft": false, "priority": float64(0)}
+	for field, value := range want {
+		if query[field] != value {
+			t.Fatalf("official field %s = %#v, want %#v: %s", field, query[field], value, detail.Body.String())
+		}
 	}
 	for _, legacy := range []string{"billing_state", "sync_state", "artifact_status", "deletion_state", "last_synced_at"} {
 		if _, leaked := query[legacy]; leaked {
 			t.Fatalf("platform DTO field %s leaked into official query: %s", legacy, detail.Body.String())
 		}
 	}
+	listed := decode(t, call("GET", "/v1/video/generations", "").Body.String())
+	listTask := listed["data"].([]any)[0].(map[string]any)
+	for _, field := range []string{"seed", "resolution", "ratio", "duration", "frames", "framespersecond", "service_tier", "execution_expires_after", "generate_audio", "draft", "priority"} {
+		if _, leaked := listTask[field]; leaked {
+			t.Fatalf("official-only field %s leaked into platform list DTO: %#v", field, listTask)
+		}
+	}
 
-	// 4. 取消：官方形状 + operation_id，完成与否以 operations 资源为准。
-	cancel := call("POST", "/v1/video/generations/"+submit["id"].(string)+"/cancel", "official-cancel-1")
+	// A later applied observation without optional values must not retain values
+	// from the earlier receipt.
+	makeFixtureTaskQueryDue(t, f, submit["id"].(string))
+	f.response = func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			return reply(200, `{"id":"`+f.upstream(t, submit["id"].(string))+`","model":"doubao-seedance-2-0-260128","status":"running"}`), nil
+		}
+		return nil, errors.New("unexpected fixture request")
+	}
+	must(t, f.s.pollTask(context.Background(), f.key.OrgID, submit["id"].(string)))
+	detail = call("GET", "/v1/video/generations/"+submit["id"].(string), "")
+	query = decode(t, detail.Body.String())
+	for _, field := range []string{"seed", "resolution", "ratio", "duration", "frames", "framespersecond", "service_tier", "execution_expires_after", "generate_audio", "draft", "priority"} {
+		if _, present := query[field]; present {
+			t.Fatalf("omitted optional field %s remained in query response: %s", field, detail.Body.String())
+		}
+	}
+
+	// 5. 取消：另建仍处于 queued 的任务验证官方回执形状。
+	f.response = nil
+	cancelledCreate := call("POST", "/v1/video/generations", "official-cancel-task")
+	cancelTask := decode(t, cancelledCreate.Body.String())
+	f.dispatch(t, cancelTask["id"].(string))
+	cancel := call("POST", "/v1/video/generations/"+cancelTask["id"].(string)+"/cancel", "official-cancel-1")
 	if cancel.Code != 202 {
 		t.Fatalf("cancel %d: %s", cancel.Code, cancel.Body.String())
 	}

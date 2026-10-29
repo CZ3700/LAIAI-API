@@ -34,6 +34,32 @@ func TestHistoricalOfficialFixtures(t *testing.T) {
 	}
 	if r := ParseResponse(ActionQuery, response(200, succeeded), 0); r.Outcome != OutcomeAccepted || r.Observation.Usage.CompletionTokens == nil || *r.Observation.Usage.CompletionTokens != 87300 || r.Observation.Status != StatusSucceeded {
 		t.Fatalf("success: %+v", r)
+	} else {
+		o := r.Observation
+		if o.Seed == nil || *o.Seed != 91074 || o.Resolution != "720p" || o.Ratio != "16:9" || o.Duration == nil || *o.Duration != 4 || o.FramesPerSecond == nil || *o.FramesPerSecond != 24 || o.ServiceTier != "default" || o.ExecutionExpiresAfter == nil || *o.ExecutionExpiresAfter != 172800 || o.GenerateAudio == nil || *o.GenerateAudio || o.Draft == nil || *o.Draft || o.Priority == nil || *o.Priority != 0 {
+			t.Fatalf("official query parameters were lost: %+v", o)
+		}
+	}
+}
+
+func TestQueryParameterValidationAndOptionalValues(t *testing.T) {
+	body := `{"id":"cgt-test","status":"succeeded","generate_audio":false,"draft":false,"priority":0}`
+	parsed := ParseResponse(ActionQuery, response(200, body), 0)
+	if parsed.Outcome != OutcomeAccepted || parsed.Observation.GenerateAudio == nil || *parsed.Observation.GenerateAudio || parsed.Observation.Draft == nil || *parsed.Observation.Draft || parsed.Observation.Priority == nil || *parsed.Observation.Priority != 0 {
+		t.Fatalf("explicit false/zero fields were lost: %+v", parsed)
+	}
+	for _, body := range []string{
+		`{"id":"cgt-test","status":"succeeded","duration":"5"}`,
+		`{"id":"cgt-test","status":"succeeded","framespersecond":24.5}`,
+		`{"id":"cgt-test","status":"succeeded","execution_expires_after":"172800"}`,
+		`{"id":"cgt-test","status":"succeeded","priority":-1}`,
+		`{"id":"cgt-test","status":"succeeded","priority":10}`,
+		`{"id":"cgt-test","status":"succeeded","duration":5,"frames":120}`,
+	} {
+		parsed := ParseResponse(ActionQuery, response(200, body), 0)
+		if parsed.Outcome != OutcomeUnknown || parsed.Observation != nil {
+			t.Errorf("invalid query parameters were accepted: %s", body)
+		}
 	}
 }
 
