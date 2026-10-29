@@ -1,6 +1,7 @@
 package videoasset
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -96,6 +97,42 @@ func TestPortraitUnregisteredCallbackNamesRegistration(t *testing.T) {
 	}
 }
 
+func TestPortraitFailedHTTPReadReturnsSafeProviderDiagnostics(t *testing.T) {
+	s, _, _, provider := setup(t)
+	provider.denyPortrait = true
+	router, _ := portraitGatewayTestRouter(s)
+	created := portraitPost(router, `{"callback_url":"https://customer.example/return","name":"本人素材授权"}`, "idem-portrait-denied")
+	if created.Code != http.StatusAccepted {
+		t.Fatalf("create returned %d %s", created.Code, created.Body.String())
+	}
+	var envelope struct {
+		Result struct {
+			SessionID string `json:"SessionId"`
+		} `json:"Result"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &envelope); err != nil || envelope.Result.SessionID == "" {
+		t.Fatalf("missing session id: %s (%v)", created.Body.String(), err)
+	}
+	if err := s.ProcessOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/video/portrait-authorizations/"+envelope.Result.SessionID, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get failed portrait returned %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"Status":"failed"`, `"code":"provider_permission_denied"`, `"ProviderHttpStatus":403`, `"UpstreamRequestId":"permission-denied-request"`, `"CreateRequestId":"req-portrait-http"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %s from safe diagnostics: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "raw provider detail") || strings.Contains(body, "fixture-secret") || strings.Contains(body, "h5-fixture-secret") {
+		t.Fatal("raw upstream text or credentials leaked through portrait response")
+	}
+}
+
 // 已配置 + 已登记回调 + 幂等键齐全的请求应进入正常受理（202 creating），
 // 确保错误分流没有破坏合法路径。
 func TestPortraitConfiguredHappyPathStillAccepted(t *testing.T) {
@@ -105,7 +142,7 @@ func TestPortraitConfiguredHappyPathStillAccepted(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("valid create returned %d %s", rec.Code, rec.Body.String())
 	}
-		if !strings.Contains(rec.Body.String(), `"Status":"creating"`) {
-			t.Fatalf("expected creating session: %s", rec.Body.String())
-		}
+	if !strings.Contains(rec.Body.String(), `"Status":"creating"`) {
+		t.Fatalf("expected creating session: %s", rec.Body.String())
+	}
 }

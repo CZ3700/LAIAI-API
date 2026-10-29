@@ -132,6 +132,23 @@ func (s *Service) GetPortrait(ctx context.Context, org uint64, id string, keyID 
 		return PortraitDTO{}, ErrStorage
 	}
 	dto := PortraitDTO{ID: p.ID, Status: p.SessionStatus, ExpiresAt: p.SessionExpiresAt, CreatedAt: p.CreatedAt}
+	if p.SessionStatus == "failed" || p.SessionStatus == "submission_unknown" {
+		var operation Operation
+		err := s.db.WithContext(ctx).Where("org_id = ? AND operation_id = ? AND resource_type = ? AND resource_id = ? AND action = ?", org, p.CreateOperationID, "portrait", p.ID, "CreateVisualValidateSession").Take(&operation).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return PortraitDTO{}, ErrStorage
+		}
+		if err == nil {
+			dto.Error = safeOperationError(operation.SafeErrorCode)
+			if validID(operation.RequestID) {
+				dto.RequestID = operation.RequestID
+			}
+			if identifier.MatchString(operation.UpstreamRequestID) {
+				dto.UpstreamRequestID = operation.UpstreamRequestID
+			}
+			dto.ProviderHTTPStatus = operation.HTTPStatus
+		}
+	}
 	if p.SessionStatus == "succeeded" {
 		dto.GroupID = p.GroupID
 	}
