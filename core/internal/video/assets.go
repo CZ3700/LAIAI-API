@@ -26,8 +26,13 @@ import (
 // account routing and verified media are explicit administrator-owned rows.
 type AssetIntegrationOptions struct {
 	PlatformCallbackURL string
-	MaxLicenseAge       time.Duration
-	Client              *videoasset.ManagementClient
+	// ConsoleReturnURL is the platform-owned verified console return page
+	// (cfg.VideoPortraitReturnURL). It is the only URL eligible for the
+	// shared-default callback fallback; tenant-registered return pages never
+	// resolve across organizations.
+	ConsoleReturnURL string
+	MaxLicenseAge    time.Duration
+	Client           *videoasset.ManagementClient
 }
 
 type AssetScopeConfig struct {
@@ -227,6 +232,7 @@ func (s *Service) ConfigureAssets(options AssetIntegrationOptions) error {
 	}
 	mac := hmac.New(sha256.New, s.Secret)
 	_, _ = mac.Write([]byte("video-asset-integration-hmac:v1"))
+	s.consoleReturnURL = options.ConsoleReturnURL
 	a, err := videoasset.NewService(s.DB, s.Keyring, s.Evidence, videoasset.Options{
 		Now: func() time.Time { return s.Now().UTC() }, ResolveScope: s.resolveAssetRuntime,
 		VerifyMedia: s.verifyRegisteredAssetMedia, ResolveCallback: s.resolveAssetCallbackURL,
@@ -530,30 +536,14 @@ func (s *Service) RegisterAssetCallback(ctx context.Context, actor *identity.Use
 func (s *Service) assetCallback(ctx context.Context, org uint64, lookup string, byID bool) (videoasset.CallbackTarget, error) {
 	var out videoasset.CallbackTarget
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		q := locked(tx).Where("org_id = ? AND revoked_at IS NULL AND expires_at > ?", org, s.Now().UTC())
-		if byID {
-			if !assetID(lookup) {
-				return ErrInvalid
-			}
-			q = q.Where("id = ?", lookup)
-		} else {
-			if !assetHTTPS(lookup) {
-				return ErrInvalid
-			}
-			q = q.Where("url_hmac = ?", s.assetURLHash(org, "callback", lookup))
+		row, input, err := s.ownCallbackTx(tx, org, lookup, byID)
+		if errors.Is(err, errCallbackUnregistered) {
+			row, input, err = s.sharedCallbackTx(tx, lookup, byID)
 		}
-		var row AssetCallbackRegistry
-		if q.Order("created_at DESC, id DESC").First(&row).Error != nil {
-			return ErrForbidden
-		}
-		var input AssetCallbackRegistration
-		if err := s.assetOpen("callback", org, row.ID, 1, row.ValueCipher, &input); err != nil {
+		if err != nil {
 			return err
 		}
-		if input.ID != row.ID || input.OrgID != org || !input.ExpiresAt.Equal(row.ExpiresAt) || input.EvidenceRef != row.EvidenceRef || !assetHTTPS(input.URL) || s.assetURLHash(org, "callback", input.URL) != row.URLHMAC || !byID && input.URL != lookup {
-			return ErrUnavailable
-		}
-		if err := s.assetAuditTx(tx, org, "registered_callback", row.ID, "callback_resolved", row.EvidenceRef, "gateway"); err != nil {
+		if err := s.assetAuditTx(tx, row.OrgID, "registered_callback", row.ID, "callback_resolved", input.EvidenceRef, "gateway"); err != nil {
 			return ErrUnavailable
 		}
 		out = videoasset.CallbackTarget{ID: row.ID, URL: input.URL}
@@ -563,6 +553,81 @@ func (s *Service) assetCallback(ctx context.Context, org uint64, lookup string, 
 		return videoasset.CallbackTarget{}, err
 	}
 	return out, nil
+}
+
+// errCallbackUnregistered marks a clean "no active row for this tenant"
+// lookup — the only callback failure eligible for the shared-default
+// fallback. Tampered or undecryptable rows keep failing closed instead.
+var errCallbackUnregistered = errors.New("callback not registered for tenant")
+
+func (s *Service) ownCallbackTx(tx *gorm.DB, org uint64, lookup string, byID bool) (AssetCallbackRegistry, AssetCallbackRegistration, error) {
+	var row AssetCallbackRegistry
+	var input AssetCallbackRegistration
+	q := locked(tx).Where("org_id = ? AND revoked_at IS NULL AND expires_at > ?", org, s.Now().UTC())
+	if byID {
+		if !assetID(lookup) {
+			return row, input, ErrInvalid
+		}
+		q = q.Where("id = ?", lookup)
+	} else {
+		if !assetHTTPS(lookup) {
+			return row, input, ErrInvalid
+		}
+		q = q.Where("url_hmac = ?", s.assetURLHash(org, "callback", lookup))
+	}
+	if q.Order("created_at DESC, id DESC").First(&row).Error != nil {
+		return row, input, errCallbackUnregistered
+	}
+	if err := s.assetOpen("callback", org, row.ID, 1, row.ValueCipher, &input); err != nil {
+		return row, input, err
+	}
+	if input.ID != row.ID || input.OrgID != org || !input.ExpiresAt.Equal(row.ExpiresAt) || input.EvidenceRef != row.EvidenceRef || !assetHTTPS(input.URL) || s.assetURLHash(org, "callback", input.URL) != row.URLHMAC || !byID && input.URL != lookup {
+		return row, input, ErrUnavailable
+	}
+	return row, input, nil
+}
+
+// sharedCallbackTx lets tenants without their own registration resolve the
+// console return page, mirroring how the shared default inherits scope and
+// async consent. Only the exact configured console return URL is shareable —
+// tenant-specific return pages stay strictly per-organization, so the scan
+// never exposes another tenant's URL to a caller that did not ask for the
+// platform one. The registry holds at most one row per registering org, so
+// the scan stays bounded.
+func (s *Service) sharedCallbackTx(tx *gorm.DB, lookup string, byID bool) (AssetCallbackRegistry, AssetCallbackRegistration, error) {
+	var row AssetCallbackRegistry
+	var input AssetCallbackRegistration
+	if s.consoleReturnURL == "" || (!byID && lookup != s.consoleReturnURL) {
+		return row, input, ErrForbidden
+	}
+	var shared AssetSharedDefault
+	if err := tx.Where("id = 1").Take(&shared).Error; err != nil || !shared.Enabled || !shared.AllowAsync {
+		return row, input, ErrForbidden
+	}
+	q := locked(tx).Where("revoked_at IS NULL AND expires_at > ?", s.Now().UTC())
+	if byID {
+		if !assetID(lookup) {
+			return row, input, ErrInvalid
+		}
+		q = q.Where("id = ?", lookup)
+	}
+	var rows []AssetCallbackRegistry
+	if err := q.Order("created_at DESC, id DESC").Find(&rows).Error; err != nil {
+		return row, input, ErrUnavailable
+	}
+	for _, candidate := range rows {
+		var opened AssetCallbackRegistration
+		if err := s.assetOpen("callback", candidate.OrgID, candidate.ID, 1, candidate.ValueCipher, &opened); err != nil {
+			return row, input, err
+		}
+		if opened.ID != candidate.ID || opened.OrgID != candidate.OrgID || !opened.ExpiresAt.Equal(candidate.ExpiresAt) || opened.EvidenceRef != candidate.EvidenceRef || !assetHTTPS(opened.URL) || s.assetURLHash(candidate.OrgID, "callback", opened.URL) != candidate.URLHMAC {
+			return row, input, ErrUnavailable
+		}
+		if opened.URL == s.consoleReturnURL {
+			return candidate, opened, nil
+		}
+	}
+	return row, input, ErrForbidden
 }
 func (s *Service) resolveAssetCallbackURL(ctx context.Context, org uint64, raw string) (videoasset.CallbackTarget, error) {
 	return s.assetCallback(ctx, org, raw, false)
