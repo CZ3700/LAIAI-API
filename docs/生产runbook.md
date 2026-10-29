@@ -75,6 +75,10 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
   `make migrate-smoke`（真 MySQL apply×2 幂等 + schema-doctor 漂移体检）。
 - **多副本**：`docker compose up -d --scale core=N`；core 无 container_name，Caddy dynamic a 自动跟随。
 - **Redis 上线约束**（架构 §4.4）：多实例前必须配 `LAIAI_REDIS_ADDR`——模型级限流否则退化为每副本独立计数。
+- **数据库本机回环访问**（排查/Navicat 用）：compose 里 mysql 只绑 `127.0.0.1:${MYSQL_HOST_PORT:-3306}`
+  （绝不写 `3306:3306`）。客户端经 SSH 隧道接入：FinalShell → 连接属性 → 隧道 → 本地转发，
+  监听 `13306`，目标 `127.0.0.1:3306`；Navicat 连 `127.0.0.1:13306`，账号密码取 `infra/.env`。
+  宿主 3306 被占用时在 `.env` 设 `MYSQL_HOST_PORT` 换端口（改后需 `up -d mysql` 重建）。
 
 ## 3. 支付上线门禁（P1-3，未完成项跟踪）
 
