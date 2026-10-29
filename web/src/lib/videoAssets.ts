@@ -5,7 +5,25 @@ export interface AssetCapabilities { ready:boolean; project?:string; scope_id?:s
 export interface AssetOperation { operation_id:string;kind:string;resource_id:string;status:string;poll_url?:string;request_id?:string;error?:{code:string;message:string;retryable:boolean};completed_at?:string|null }
 export interface AssetGroup { id:string;kind:string;name:string;description:string;status:string;asset_count:number;authorization_status:string;version:number;source:string;last_synced_at?:string;portrait_session_id?:string;deletion_mode?:'official'|'local_failed'|'blocked';deletion_block_reason?:string;create_operation?:AssetOperation;delete_operation?:AssetOperation }
 export interface VideoAsset { id:string;group_id:string;media_type:string;name:string;status:string;stage:string;version:number;bytes:number;duration_ms:number;error_code?:string;reference?:string;preview_url?:string;source_available?:boolean;created_at:string;source:string;create_operation?:AssetOperation;delete_operation?:AssetOperation;deletion_mode?:'official'|'local_failed'|'blocked';deletion_block_reason?:string;provider_status?:'active'|'processing'|'failed'|'unknown';media_verification_status?:'verified'|'unverified';generation_status?:'ready'|'blocked';generation_block_reason?:string }
-export interface Portrait { session_id:string;status:string;authorization_url?:string;expires_at?:string;group_id?:string }
+export interface Portrait { session_id:string;status:string;authorization_url?:string;expires_at?:string;group_id?:string;error?:{code:string;message:string;retryable:boolean};request_id?:string;upstream_request_id?:string;provider_http_status?:number }
+const portraitErrors:Record<string,string>={
+ provider_permission_denied:'火山拒绝了真人认证请求。请管理员检查该账号、项目及真人认证接口权限。',
+ provider_authentication_failed:'火山未通过素材管理账号身份验证，请管理员核对管理凭据。',
+ provider_rejected:'火山拒绝了真人认证请求，请管理员核对账号项目配置。',
+ provider_rate_limited:'火山真人认证接口触发限流，请稍后再试。',
+ provider_timeout:'火山真人认证请求超时，结果需要核验。请先查询当前会话状态。',
+ provider_unavailable:'暂时无法确认火山真人认证请求结果，请先查询当前会话状态。',
+ provider_response_invalid:'火山返回内容未通过安全校验，未能完成真人认证。',
+ unsupported_capability:'当前管理版本未启用真人认证能力。',
+ callback_unavailable:'真人认证回调配置不可用，请管理员检查回调配置。',
+ dispatch_policy_rejected:'当前组织执行策略不允许发起真人认证。',
+}
+export function portraitFailureText(portrait:Portrait){
+ if(portrait.status==='submission_unknown'||portrait.error?.code==='submission_uncertain')return '请求结果尚未确认，请勿重复发起；先查询会话状态并联系管理员核对。'
+ return portrait.error?.code?(portraitErrors[portrait.error.code]??'真人认证未成功，请联系管理员并提供请求 ID。'):''
+}
+export function validPortraitDiagnosticID(value:unknown):value is string{return typeof value==='string'&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value)}
+export function validPortraitHTTPStatus(value:unknown):value is number{return typeof value==='number'&&Number.isInteger(value)&&value>=100&&value<=599}
 export interface Page<T> {data:T[];total:number;next_cursor?:string}
 export interface SyncJob {id:string;status:string;phase:string;pages:number;items:number;error_code?:string;scope_id?:string;project?:string;kind?:string;mode?:string;request_id?:string;http_status?:number;upstream_request_id?:string;attempts?:number;retry_count?:number;next_attempt_at?:string}
 export interface SyncReadback {job_id:string;state:'idle'|'pending'|'complete';error:string}

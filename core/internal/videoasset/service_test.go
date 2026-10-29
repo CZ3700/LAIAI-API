@@ -51,6 +51,7 @@ type fakeProvider struct {
 	mu                   sync.Mutex
 	calls                map[string]int
 	unknown              bool
+	denyPortrait         bool
 	assetStatus, project string
 	groupByAsset         map[string]string
 }
@@ -89,6 +90,10 @@ func (f *fakeProvider) roundTrip(r *http.Request) (*http.Response, error) {
 	case "UpdateAsset", "UpdateAssetGroup":
 		result["Id"] = body["Id"]
 	case "CreateVisualValidateSession":
+		if f.denyPortrait {
+			data := bodyJSON(map[string]any{"ResponseMetadata": map[string]any{"RequestId": "permission-denied-request", "Action": action, "Version": managementVersion, "Service": "ark", "Region": "cn-beijing", "Error": map[string]string{"Code": "PermissionDenied", "Message": "raw provider detail must not escape"}}, "Result": nil})
+			return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(bytes.NewReader(data)), Header: http.Header{}, Request: r}, nil
+		}
 		f.callbackURL = body["CallbackURL"]
 		result = map[string]any{"BytedToken": "byted-fixture-secret", "H5Link": "https://verify.volcengine.com/session?ticket=h5-fixture-secret", "CallbackURL": body["CallbackURL"]}
 	case "GetVisualValidateResult":
@@ -450,6 +455,37 @@ func TestDeleteBarrierAndUnsupportedAssetDelete(t *testing.T) {
 	}
 	if provider.calls["DeleteAssetGroup"] != 1 {
 		t.Fatal("duplicate group deletion")
+	}
+}
+
+func TestFailedPortraitReturnsSafeProviderErrorWithoutRawBody(t *testing.T) {
+	s, db, _, provider := setup(t)
+	ctx := context.Background()
+	provider.denyPortrait = true
+	c := createContext("portrait-permission-denied")
+	created, _, err := s.CreatePortrait(ctx, c, PortraitCreate{CallbackURL: "https://customer.example/return"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := s.GetPortrait(ctx, 1, created.ID, c.KeyID, false)
+	if err != nil || failed.Status != "failed" || failed.Error == nil {
+		t.Fatal(failed, err)
+	}
+	if failed.Error.Code != "provider_permission_denied" || failed.ProviderHTTPStatus != http.StatusForbidden || failed.UpstreamRequestID != "permission-denied-request" || failed.RequestID != c.RequestID {
+		t.Fatalf("missing safe failure diagnostics: %+v", failed)
+	}
+	if strings.Contains(failed.Error.Message, "raw provider detail") {
+		t.Fatal("raw provider error leaked through portrait DTO")
+	}
+	var operation Operation
+	if err := db.Where("resource_id = ? AND action = ?", created.ID, "CreateVisualValidateSession").Take(&operation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if operation.RequestID != failed.RequestID || operation.UpstreamRequestID != failed.UpstreamRequestID || operation.SafeErrorCode != failed.Error.Code {
+		t.Fatalf("portrait diagnostics do not match safe operation row: %+v / %+v", failed, operation)
 	}
 }
 

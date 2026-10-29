@@ -462,6 +462,12 @@ func (s *Service) getPortraitHTTP(c *gin.Context) {
 	if dto.GroupID != nil {
 		result["GroupId"] = *dto.GroupID
 	}
+	if dto.Error != nil {
+		result["Error"] = dto.Error
+		result["CreateRequestId"] = dto.RequestID
+		result["UpstreamRequestId"] = dto.UpstreamRequestID
+		result["ProviderHttpStatus"] = dto.ProviderHTTPStatus
+	}
 	if dto.AuthorizationURL != "" {
 		result["H5URL"] = dto.AuthorizationURL
 	}

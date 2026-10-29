@@ -289,12 +289,16 @@ type AssetDTO struct {
 	UpdatedAt           time.Time     `json:"updated_at"`
 }
 type PortraitDTO struct {
-	ID               string     `json:"session_id"`
-	Status           string     `json:"status"`
-	GroupID          *string    `json:"group_id,omitempty"`
-	AuthorizationURL string     `json:"authorization_url,omitempty"`
-	ExpiresAt        *time.Time `json:"expires_at"`
-	CreatedAt        time.Time  `json:"created_at"`
+	ID                 string     `json:"session_id"`
+	Status             string     `json:"status"`
+	GroupID            *string    `json:"group_id,omitempty"`
+	AuthorizationURL   string     `json:"authorization_url,omitempty"`
+	ExpiresAt          *time.Time `json:"expires_at"`
+	CreatedAt          time.Time  `json:"created_at"`
+	Error              *SafeError `json:"error,omitempty"`
+	RequestID          string     `json:"request_id,omitempty"`
+	UpstreamRequestID  string     `json:"upstream_request_id,omitempty"`
+	ProviderHTTPStatus int        `json:"provider_http_status,omitempty"`
 }
 type SafeError struct {
 	Code      string `json:"code"`
