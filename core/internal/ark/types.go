@@ -167,7 +167,11 @@ type Observation struct {
 	Duration, Frames, FramesPerSecond *int64
 	Seed                              *int64
 	CreatedAt, UpdatedAt              *int64
+	ServiceTier                       string
+	ExecutionExpiresAfter             *int64
 	GenerateAudio                     *bool
+	Draft                             *bool
+	Priority                          *int64
 	HasError                          bool
 }
 

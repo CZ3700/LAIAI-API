@@ -71,7 +71,7 @@ export TASK_ID="$(jq -r '.id // empty' create-response.json)"
 }
 ```
 
-创建响应与单个任务 GET 均为官方数据面形状（小写字段、`created_at`/`updated_at` 为 Unix 秒）。平台账务、同步、产物等扩展状态由任务列表 DTO 与 billing、events 等平台扩展接口读取。任务 GET 在成功后可含 `content.video_url` 与 `usage`；`usage` 中字段可能为 `null`（如 `{"completion_tokens": 123, "total_tokens": null}`），不能把缺失值当作零，也不能假定两个 Token 字段相等。取得上游结果链接不代表平台托管或链接永久有效。
+创建响应与单个任务 GET 均为官方数据面形状（小写字段、`created_at`/`updated_at` 为 Unix 秒）。平台账务、同步、产物等扩展状态由任务列表 DTO 与 billing、events 等平台扩展接口读取。任务 GET 可在上游实际返回且查询观察已应用时回显 `seed`、`resolution`、`ratio`、`duration`、`frames`、`framespersecond`、`service_tier`、`execution_expires_after`、`generate_audio`、`draft`、`priority`；`duration` 和 `frames` 按生成模式互斥。可选字段缺失不代表平台推断或补入默认值，布尔 `false` 与优先级 `0` 是有效回显。成功结果还可含 `content.video_url` 与 `usage`；`usage` 中字段可能为 `null`（如 `{"completion_tokens": 123, "total_tokens": null}`），不能把缺失值当作零，也不能假定两个 Token 字段相等。取得上游结果链接不代表平台托管或链接永久有效。
 
 ## 查询、列表、事件和账单
 

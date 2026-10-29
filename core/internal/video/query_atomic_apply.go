@@ -43,7 +43,14 @@ func (s *Service) applyQueryAtomicTx(tx *gorm.DB, taskRow *task.Task, stateRow *
 			if decodeErr != nil {
 				return decodeErr
 			}
-			response.Observation = &ark.Observation{TaskID: o.TaskID, Model: o.Model, Status: o.Status, Usage: ark.Usage{CompletionTokens: o.CompletionTokens, TotalTokens: o.TotalTokens}, HasError: o.HasError}
+			response.Observation = &ark.Observation{
+				TaskID: o.TaskID, Model: o.Model, Status: o.Status,
+				Usage:      ark.Usage{CompletionTokens: o.CompletionTokens, TotalTokens: o.TotalTokens},
+				Resolution: o.Resolution, Ratio: o.Ratio, Duration: o.Duration, Frames: o.Frames,
+				FramesPerSecond: o.FramesPerSecond, Seed: o.Seed, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt,
+				ServiceTier: o.ServiceTier, ExecutionExpiresAfter: o.ExecutionExpiresAfter,
+				GenerateAudio: o.GenerateAudio, Draft: o.Draft, Priority: o.Priority, HasError: o.HasError,
+			}
 			deliveryRef = o.DeliveryPayloadRef
 		}
 		org, id, attempt, ref := t.OrgID, t.TaskID, receipt.AttemptID, receipt.PayloadRef

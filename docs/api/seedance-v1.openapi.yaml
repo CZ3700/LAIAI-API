@@ -185,7 +185,9 @@ paths:
         status 取值为平台生命周期枚举（accepted/submitting/submission_unknown 为平台提交阶段，
         其余为已核实生成状态），不是官方四态原样映射。
         content.video_url 仅在已取得官方产物链接时出现；usage 仅在已观察到官方用量时出现，
-        其内字段缺失为 null，不以 0 或估算代填。
+        其内字段缺失为 null，不以 0 或估算代填。seed、resolution、ratio、duration、frames、
+        framespersecond、service_tier、execution_expires_after、generate_audio、draft、priority
+        仅在上游返回且观察已应用时回显；duration 与 frames 按创建模式互斥，字段缺失不推断默认值。
         billing_state、sync_state、artifact_status、deletion_state 等平台扩展不在本响应，
         分别查询 /billing、/events 与列表接口。查询不产生新的生成任务，也不额外收生成费。
         不存在、跨组织或已完成软删除均返回 404。本地观察超时保持可核对状态，
@@ -206,8 +208,18 @@ paths:
                 content:
                   video_url: https://ark-cdn.example.invalid/video.mp4?Expires=...
                 usage:
-                  completion_tokens: 123
-                  total_tokens: 999
+                  completion_tokens: 108900
+                  total_tokens: 108900
+                seed: 78674
+                resolution: 720p
+                ratio: '16:9'
+                duration: 5
+                framespersecond: 24
+                service_tier: default
+                execution_expires_after: 172800
+                generate_audio: true
+                draft: false
+                priority: 0
         default:
           $ref: '#/components/responses/Error'
     delete:
@@ -1387,6 +1399,11 @@ components:
               format: uri
               pattern: '^https://'
               description: 官方视频直链；保留签名参数，访问时不得附带 Gateway Key。
+            last_frame_url:
+              type: string
+              format: uri
+              pattern: '^https://'
+              description: 创建时请求尾帧且上游返回时出现的尾帧直链；访问时不得附带 Gateway Key。
         usage:
           type: object
           additionalProperties: false
@@ -1399,6 +1416,41 @@ components:
             total_tokens:
               type: [integer, 'null']
               minimum: 0
+        seed:
+          type: integer
+          description: 官方实际使用的随机种子；仅上游返回时出现。
+        resolution:
+          type: string
+          description: 官方实际生成分辨率；仅上游返回时出现。
+        ratio:
+          type: string
+          description: 官方实际生成宽高比；仅上游返回时出现。
+        duration:
+          type: integer
+          description: 官方实际视频时长（秒）；当未使用 frames 时条件返回。
+        frames:
+          type: integer
+          description: 官方实际帧数；与 duration 互斥，仅上游返回时出现。
+        framespersecond:
+          type: integer
+          description: 官方实际帧率；仅上游返回时出现。
+        service_tier:
+          type: string
+          description: 实际处理任务使用的服务等级。
+        execution_expires_after:
+          type: integer
+          description: 提交后执行过期阈值（秒）；超时后任务状态为 expired。
+        generate_audio:
+          type: boolean
+          description: 是否生成同步音频。
+        draft:
+          type: boolean
+          description: 是否为 Draft 视频。
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 9
+          description: 执行优先级，数值越大优先级越高。
     OfficialTaskOperation:
       type: object
       additionalProperties: false

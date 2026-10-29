@@ -21,7 +21,16 @@ func queryGenerationEvidence(t task.Task, st State, row QueryReceipt) (queryObse
 		if err != nil {
 			return observation, ark.Transition{}, "", false, err
 		}
-		response.Observation = &ark.Observation{TaskID: observation.TaskID, Model: observation.Model, Status: observation.Status, Usage: ark.Usage{CompletionTokens: observation.CompletionTokens, TotalTokens: observation.TotalTokens}, HasError: observation.HasError}
+		response.Observation = &ark.Observation{
+			TaskID: observation.TaskID, Model: observation.Model, Status: observation.Status,
+			Usage:      ark.Usage{CompletionTokens: observation.CompletionTokens, TotalTokens: observation.TotalTokens},
+			Resolution: observation.Resolution, Ratio: observation.Ratio, Duration: observation.Duration,
+			Frames: observation.Frames, FramesPerSecond: observation.FramesPerSecond, Seed: observation.Seed,
+			CreatedAt: observation.CreatedAt, UpdatedAt: observation.UpdatedAt,
+			ServiceTier: observation.ServiceTier, ExecutionExpiresAfter: observation.ExecutionExpiresAfter,
+			GenerateAudio: observation.GenerateAudio, Draft: observation.Draft, Priority: observation.Priority,
+			HasError: observation.HasError,
+		}
 	}
 	transition := ark.ApplyObservation(ark.Status(t.Status), response)
 	matched := response.Observation != nil && observation.TaskID == t.UpstreamTaskID && t.UpstreamTaskID != "" && (observation.Model == "" || observation.Model == st.UpstreamModel)
