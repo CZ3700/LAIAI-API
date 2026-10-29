@@ -13,7 +13,8 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set in .env}
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./mysql/my.cnf:/etc/mysql/conf.d/laiai.cnf:ro
+      # Existing releases may keep this source under a versioned immutable path.
+      - ${MYSQL_CONFIG_FILE:-./mysql/my.cnf}:/etc/mysql/conf.d/laiai.cnf:ro
     # 仅绑宿主机回环：供 SSH 隧道（FinalShell/Navicat）访问线上库。
     # 绝不写 "3306:3306"（= 0.0.0.0，公网直连生产库）；本地开发用 local overlay 重置掉
     ports:
