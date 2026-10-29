@@ -144,7 +144,7 @@ func runCore(log *slog.Logger) (code int) {
 		videoSvc.MutationResponseInboxEnabled = cfg.VideoMutationResponseInboxEnabled
 		// Seedance delivers the provider's signed result URLs. Generated media
 		// never passes through platform storage or a background transfer worker.
-		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL}); err != nil {
+		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL, ConsoleReturnURL: cfg.VideoPortraitReturnURL}); err != nil {
 			log.Error("video asset configuration invalid")
 			return 1
 		}

@@ -50,6 +50,10 @@ type Service struct {
 	// Endpoint overrides exist for injected httptest clients only. Production
 	// configuration uses the fixed mainland official endpoint.
 	AllowTestEndpoint bool
+	// Set by ConfigureAssets. The platform console return page; with the
+	// shared default enabled, tenants without their own registration resolve
+	// exactly this URL from the shared callback registry.
+	consoleReturnURL string
 }
 
 func NewService(db *gorm.DB, kr *crypto.Keyring, secret []byte, log *slog.Logger) (*Service, error) {
