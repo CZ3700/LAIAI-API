@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/laiai/laiai-next/core/internal/crypto"
 )
@@ -31,8 +32,17 @@ type Config struct {
 	VideoMediaSigningKey              []byte
 	VideoMediaFFProbePath             string
 	VideoMediaScanCommand             []string
-	RedisAddr                         string // LAIAI_REDIS_ADDR，可选（跨实例限流需要；空=退化进程内限流）
-	RedisPassword                     string // LAIAI_REDIS_PASSWORD，可选（compose 的 redis 启用 requirepass）
+	// 去水印处理（LAIAI_VIDEO_WATERMARK_*，全部可选；总开关在管理后台 DB 标志）：
+	// 处理管线只在媒体存储已配置时接线；ffmpeg 参数默认复刻文档命令。
+	VideoWatermarkFilter        string        // 显式滤镜串覆盖；空=按源分辨率推导（720p 原样复刻）
+	VideoWatermarkFFmpeg        string        // 默认 ffmpeg
+	VideoWatermarkFFProbe       string        // 默认 ffprobe
+	VideoWatermarkTimeout       time.Duration // 单次处理超时，默认 10m
+	VideoWatermarkConcurrency   int           // 并行 ffmpeg 数，默认 2
+	VideoWatermarkMaxBytes      int64         // 输入大小上限，默认 200MB
+	VideoWatermarkRetentionDays int           // 产物保留天数，默认 30
+	RedisAddr                   string        // LAIAI_REDIS_ADDR，可选（跨实例限流需要；空=退化进程内限流）
+	RedisPassword               string        // LAIAI_REDIS_PASSWORD，可选（compose 的 redis 启用 requirepass）
 	// 规模化（读副本 + 连接池可调，扩容旋钮）：
 	// LAIAI_DSN_REPLICAS：逗号分隔的只读副本 DSN，空=无副本（所有读走主库，行为不变）。
 	//   🚨 只把分析/用量历史/排行/公开价目这类「非金钱、容延迟」的只读路由到副本；余额/quota/hold
@@ -172,6 +182,9 @@ func Load() (*Config, error) {
 	if err := c.loadVideoMedia(); err != nil {
 		return nil, err
 	}
+	if err := c.loadVideoWatermark(); err != nil {
+		return nil, err
+	}
 	c.SMTPPort = 587
 	if v := os.Getenv("LAIAI_SMTP_PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -208,6 +221,46 @@ func (c *Config) loadVideoMedia() error {
 		}
 	}
 	return nil
+}
+
+// loadVideoWatermark reads the deferred watermark-removal knobs. Everything is
+// optional: the pipeline only exists when the media store is configured, the
+// superadmin toggle gates it at runtime, and unset knobs fall back to
+// defaults that reproduce the operator tool's command.
+func (c *Config) loadVideoWatermark() error {
+	var err error
+	c.VideoWatermarkFilter = os.Getenv("LAIAI_VIDEO_WATERMARK_FILTER")
+	c.VideoWatermarkFFmpeg = getenvDefault("LAIAI_VIDEO_WATERMARK_FFMPEG", "ffmpeg")
+	c.VideoWatermarkFFProbe = getenvDefault("LAIAI_VIDEO_WATERMARK_FFPROBE", "ffprobe")
+	c.VideoWatermarkTimeout, err = time.ParseDuration(getenvDefault("LAIAI_VIDEO_WATERMARK_TIMEOUT", "10m"))
+	if err != nil {
+		return fmt.Errorf("config: LAIAI_VIDEO_WATERMARK_TIMEOUT must be a Go duration: %w", err)
+	}
+	c.VideoWatermarkConcurrency, err = getenvInt("LAIAI_VIDEO_WATERMARK_CONCURRENCY", 2, 1)
+	if err != nil {
+		return err
+	}
+	c.VideoWatermarkMaxBytes, err = getenvInt64("LAIAI_VIDEO_WATERMARK_MAX_BYTES", 200_000_000, 1)
+	if err != nil {
+		return err
+	}
+	c.VideoWatermarkRetentionDays, err = getenvInt("LAIAI_VIDEO_WATERMARK_RETENTION_DAYS", 30, 1)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func getenvInt64(key string, def, min int64) (int64, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < min {
+		return 0, fmt.Errorf("config: %s must be an integer >= %d", key, min)
+	}
+	return n, nil
 }
 
 func getenvDefault(key, def string) string {

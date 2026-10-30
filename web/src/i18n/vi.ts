@@ -3,6 +3,8 @@ import { keyVideoMessages } from './keyVideo'
 import { currencyMessages } from './currency'
 import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
+import modelLimitsMessages from './modelLimits'
+import watermarkToggleMessages from './watermarkToggle'
 import en, { type Messages } from './en'
 
 export default {
@@ -11,6 +13,7 @@ export default {
   currency: currencyMessages['vi'],
   pricingAdmin: pricingRedesignAdminMessages['vi'].pricingAdmin,
   catalog: modelCatalogMessages['vi'],
+modelLimits: modelLimitsMessages,  watermark: watermarkToggleMessages,
   pricingx: {
     "title": "Định giá theo nhà cung cấp",
     "intro": "Danh sách nhà cung cấp khớp với phần thiết lập kênh. Chọn nhà cung cấp và kênh để cấu hình giá cho các mô hình đã kết nối.",

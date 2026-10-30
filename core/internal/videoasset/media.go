@@ -105,6 +105,24 @@ func publicDial(ctx context.Context, network, address string) (net.Conn, error) 
 	d := net.Dialer{Timeout: 10 * time.Second}
 	return d.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 }
+
+// StoreVideo persists an internally generated video artifact (the watermark
+// processor output) under a caller-chosen media id. It runs the same
+// storage + probe pass as tenant uploads so a broken encode can never be
+// served; the caller owns the id (media_ prefixed) and its retention record.
+func (m *MediaStore) StoreVideo(ctx context.Context, id string, r io.Reader) (int64, error) {
+	evidence, err := m.write(ctx, id, "video", r)
+	if err != nil {
+		return 0, err
+	}
+	return evidence.ByteSize, nil
+}
+
+// SignedURL builds the expiring tenant-bound public URL for a stored media id.
+func (m *MediaStore) SignedURL(org uint64, id string, expires time.Time) string {
+	return m.url(org, id, expires)
+}
+
 func (m *MediaStore) path(id string) (string, error) {
 	if !validID(id) || !strings.HasPrefix(id, "media_") {
 		return "", ErrInvalid

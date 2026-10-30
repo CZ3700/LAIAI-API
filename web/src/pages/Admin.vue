@@ -611,7 +611,10 @@ watch(tab, (v) => {
   if (v === 'users' && usageByUser.value.length === 0) void loadUsageByUser().catch(showError)
   if (v === 'audit' && audit.value.length === 0) void loadAudit().catch(showError)
   if (v === 'channels') void loadHealth().catch(showError) // health 并入 channels
-  if (v === 'videolimits' && vml.value.length === 0) void loadModelLimits().catch(showError)
+  if (v === 'videolimits') {
+    if (vml.value.length === 0) void loadModelLimits().catch(showError)
+    void loadWatermark().catch(showError)
+  }
 })
 
 // —— 渠道健康看板（M2，只读可观测；不反馈选路）——
@@ -1060,6 +1063,24 @@ async function saveModelLimit(m: VideoModelLimit) {
     vmlError.value = errorMessage(e, t('common.error'))
     if (e instanceof ApiError && e.status === 401) unlocked.value = false
   } finally { vmlBusy.value = '' }
+}
+
+// —— 去水印处理开关（后台运行时标志；管线需媒体存储 + ffmpeg 已接线）——
+const wm = ref({ enabled: false, configured: false })
+const wmBusy = ref(false)
+async function loadWatermark() {
+  try {
+    wm.value = await adminApi<{ enabled: boolean; configured: boolean }>('GET', '/api/admin/video/watermark')
+  } catch (e) { vmlError.value = errorMessage(e, t('common.error')) }
+}
+async function toggleWatermark() {
+  wmBusy.value = true
+  try {
+    wm.value = await adminApi<{ enabled: boolean; configured: boolean }>('PUT', '/api/admin/video/watermark', { enabled: !wm.value.enabled })
+  } catch (e) {
+    vmlError.value = errorMessage(e, t('common.error'))
+    if (e instanceof ApiError && e.status === 401) unlocked.value = false
+  } finally { wmBusy.value = false }
 }
 
 // —— 组织 ——
@@ -1916,6 +1937,19 @@ onMounted(async () => {
       <!-- 支付渠道总览：渠道卡片 + 回调地址 + 路由预览 -->
       <template v-if="tab === 'videolimits'">
         <div class="space-y-6">
+          <div class="rounded-lg border border-line p-4">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <p class="text-sm font-medium">{{ t('watermark.title') }}</p>
+                <p class="mt-1 text-xs text-muted">{{ t('watermark.intro') }}</p>
+                <p class="mt-1 text-xs text-muted">{{ t('watermark.hint') }}</p>
+                <p v-if="!wm.configured" class="mt-1 text-xs text-danger">{{ t('watermark.notConfigured') }}</p>
+              </div>
+              <button class="btn-primary shrink-0 text-xs" :disabled="wmBusy || !wm.configured" @click="toggleWatermark">
+                {{ wmBusy ? t('common.loading') : (wm.enabled ? t('watermark.enabled') : t('watermark.disabled')) }}
+              </button>
+            </div>
+          </div>
           <div class="flex items-center justify-between">
             <p class="text-sm text-muted">{{ t('modelLimits.intro') }}</p>
             <button class="btn-ghost !py-1.5 text-xs" @click="loadModelLimits">{{ t('common.refresh') }}</button>

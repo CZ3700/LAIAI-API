@@ -3,6 +3,8 @@ import { keyVideoMessages } from './keyVideo'
 import { currencyMessages } from './currency'
 import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
+import modelLimitsMessages from './modelLimits'
+import watermarkToggleMessages from './watermarkToggle'
 import en, { type Messages } from './en'
 
 export default {
@@ -11,6 +13,7 @@ export default {
   currency: currencyMessages['ru'],
   pricingAdmin: pricingRedesignAdminMessages['ru'].pricingAdmin,
   catalog: modelCatalogMessages['ru'],
+modelLimits: modelLimitsMessages,  watermark: watermarkToggleMessages,
   pricingx: {
     "title": "Цены по поставщикам",
     "intro": "Список поставщиков совпадает со списком в настройках каналов. Выберите поставщика и канал, чтобы настроить цены подключённых моделей.",

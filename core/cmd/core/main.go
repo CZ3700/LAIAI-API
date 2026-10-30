@@ -25,6 +25,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/video"
 	"github.com/laiai/laiai-next/core/internal/videoasset"
+	"github.com/laiai/laiai-next/core/internal/watermark"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -162,6 +163,24 @@ func runCore(log *slog.Logger) (code int) {
 		if err = videoSvc.Assets.ConfigureConsole(videoasset.ConsoleOptions{CallbackURL: cfg.VideoPortraitReturnURL, Media: mediaStore}); err != nil {
 			log.Error("video asset console configuration invalid")
 			return 1
+		}
+		// Deferred watermark removal: only wired when media storage exists —
+		// the superadmin console toggle gates it at runtime, and the user
+		// facing video address stays one field either way.
+		if mediaStore != nil {
+			videoSvc.Watermark = &watermark.Coordinator{
+				DB: db, Resolver: videoSvc, Media: mediaStore,
+				Download: &http.Client{Timeout: 5 * time.Minute},
+				Processor: watermark.Processor{
+					FFmpeg: cfg.VideoWatermarkFFmpeg, FFProbe: cfg.VideoWatermarkFFProbe,
+					Filter: cfg.VideoWatermarkFilter, Timeout: cfg.VideoWatermarkTimeout,
+				},
+				MaxBytes:    cfg.VideoWatermarkMaxBytes,
+				Retention:   time.Duration(cfg.VideoWatermarkRetentionDays) * 24 * time.Hour,
+				Concurrency: cfg.VideoWatermarkConcurrency,
+			}
+			jobs.goRun(func(ctx context.Context) { videoSvc.Watermark.Run(ctx) })
+			log.Info("watermark removal worker wired (runtime toggle in admin console)")
 		}
 		registerVideoJobs(jobs, videoSvc, leaderLease.IsLeader, log)
 	}

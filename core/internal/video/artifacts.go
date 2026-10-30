@@ -302,6 +302,9 @@ func (s *Service) deliveryView(ctx context.Context, t task.Task, st State, actor
 	} else {
 		v.ArtifactStatus = "pending"
 	}
+	// A ready watermark-processed copy transparently replaces the delivered
+	// address; the response shape stays a single URL field.
+	s.watermarkDelivery(t.OrgID, t.TaskID, &v)
 	return v, nil
 }
 
