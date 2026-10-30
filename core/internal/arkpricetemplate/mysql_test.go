@@ -235,8 +235,11 @@ func seedTemplateMySQLBusinessRows(t *testing.T, db *gorm.DB) {
 			if err != nil {
 				return err
 			}
-			cfg := video.ModelConfig{PublicModel: model, Version: uid, ProviderScopeID: scope.ID, ChannelID: channel.ID, Enabled: false, CapabilityJSON: string(capability), PricingVersion: uid, NoChargeStatuses: "failed,cancelled", MaxInputVideoDurationMS: profile.MaxInputVideoDurationMS, BoundsJSON: string(bounds), VerifiedAt: &now, UpdatedAt: now}
-			if err := tx.Create(&cfg).Error; err != nil {
+			// 显式列清单：base 迁移只装到 0119（模板安装时代），结构体后续新增的
+			// 列（如 0136 的 max_concurrent_tasks/create_rpm）不在该时代的表里，
+			// 结构体整字段 INSERT 会撞 Unknown column。种子按 0120 前的表形状写。
+			cfg := map[string]any{"public_model": model, "version": uid, "provider_scope_id": scope.ID, "channel_id": channel.ID, "enabled": false, "capability_json": string(capability), "pricing_version": uid, "no_charge_statuses": "failed,cancelled", "max_input_video_duration_ms": profile.MaxInputVideoDurationMS, "bounds_json": string(bounds), "verified_at": now, "updated_at": now}
+			if err := tx.Table("video_model_configs").Create(&cfg).Error; err != nil {
 				return err
 			}
 			createdModels = append(createdModels, model)
