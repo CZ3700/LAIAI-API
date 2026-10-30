@@ -471,6 +471,8 @@ func safeCode(err error) string {
 		return "idempotency_conflict"
 	case errors.Is(err, ErrState):
 		return "invalid_state"
+	case errors.Is(err, ErrDraftExpired):
+		return "content_expired"
 	case errors.Is(err, ErrCapability):
 		return "unsupported_capability"
 	case errors.Is(err, ErrForbidden):

@@ -121,6 +121,9 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if p.Draft && !cap.Draft {
 		return unsupported("draft")
 	}
+	if p.Draft && (in.Model != Model25 || p.Resolution != "480p") {
+		return unsupported("resolution")
+	}
 	if p.ExecutionExpiresAfter <= 0 || p.ExecutionExpiresAfter < cap.MinExecutionExpiresAfter || p.ExecutionExpiresAfter > cap.MaxExecutionExpiresAfter {
 		return unsupported("execution_expires_after")
 	}
