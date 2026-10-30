@@ -259,7 +259,7 @@ def read_child(root, case, instance, run, builds, exit_row):
     need(ready['event'] == 'ready' and ready['cmd_id'] == 0 and sum(e['event'] == 'ready' for e in events) == 1, 'ready_event')
     keys(ready['data'], ('schema', 'migration_max', 'has_persisted_consumer', 'has_dispatch_consumer', 'task_count'), 'ready_shape')
     need(re.fullmatch(r'ark_test_qhandoff_[0-9a-f]{24}', ready['data']['schema']) is not None and
-         ready['data']['migration_max'] == 135 and ready['data']['has_persisted_consumer'] is (role == 'new') and
+         ready['data']['migration_max'] == 136 and ready['data']['has_persisted_consumer'] is (role == 'new') and
          ready['data']['has_dispatch_consumer'] is (role == 'new'), 'real_role_interface')
     integer(ready['data']['task_count'], 0, 42)
     artifacts = []
