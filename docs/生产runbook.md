@@ -75,6 +75,21 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
   `make migrate-smoke`（真 MySQL apply×2 幂等 + schema-doctor 漂移体检）。
 - **多副本**：`docker compose up -d --scale core=N`；core 无 container_name，Caddy dynamic a 自动跟随。
 - **Redis 上线约束**（架构 §4.4）：多实例前必须配 `LAIAI_REDIS_ADDR`——模型级限流否则退化为每副本独立计数。
+## 部署纪律：/etc/laiai/video.env 必须并入容器环境
+
+官方视频网关的接线条件是 `LAIAI_VIDEO_HMAC_SECRET` 非空（main.go 里为空即不装配
+video.Service，seedance 官方模型一律 503 provider_unavailable）。该密钥与
+`LAIAI_VIDEO_PORTRAIT_CALLBACK_URL` / `LAIAI_VIDEO_PORTRAIT_RETURN_URL` 持久保存在
+**/etc/laiai/video.env**（release 流程按此注入；"Preserve across releases" 红线）。
+
+手动 `docker compose up -d core` 只读 infra/.env——**.env 缺这些变量时视频网关会静默
+不装配**。2026-10-30 事故即因此产生（重建容器后 503 无法创建任务）。这四个变量现已
+并入 infra/.env；今后任何手工重建容器前，先：
+
+    diff <(sed 's/=.*/=/' /etc/laiai/video.env) <(sed 's/=.*/=/' /opt/laiai-next/infra/.env)
+
+缺哪个补哪个，再 up。HMAC secret 绝不轮换生成新值——旧值参与 payload 幂等 HMAC。
+
 ## 视频模型级受理限额（0136 起）
 
 Seedance 视频模型按火山官方方式逐模型限流，superadmin 在后台 **Admin → 视频模型限额** 设置，
