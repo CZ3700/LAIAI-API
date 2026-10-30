@@ -520,7 +520,10 @@ export default {
     revokeConfirm: 'Hủy lời mời đang chờ này?',
     personal: 'Cá nhân',
   },
-  admin: {"grpSectionTitle":"Hệ số nhóm","healthSectionTitle":"Tình trạng kênh",
+  admin: {
+  "videolimits": "Giới hạn mô hình video",
+  "chMaxTasks": "Giới hạn tác vụ đồng thời",
+  "chMaxTasksHint": "Số tác vụ đồng thời tối đa mỗi kênh. 0 = chưa đặt (mặc định 3).","grpSectionTitle":"Hệ số nhóm","healthSectionTitle":"Tình trạng kênh",
     title: 'Quản trị',
     token: 'Mã quản trị',
     tokenHint: 'Gửi dưới dạng X-Admin-Token. Chỉ lưu trong tab trình duyệt này.',

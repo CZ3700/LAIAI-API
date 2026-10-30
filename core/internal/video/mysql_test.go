@@ -40,6 +40,7 @@ type allowGate struct{}
 
 func (allowGate) GateKey(*identity.APIKey, string, string) (int, string, bool) { return 200, "", true }
 func (allowGate) AllowModelRate(uint64, string) (bool, int)                    { return true, 0 }
+func (allowGate) AllowModelCreateRPM(string, int) bool                         { return true }
 func reply(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}
 }

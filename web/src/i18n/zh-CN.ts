@@ -579,7 +579,10 @@ export default {
     revokeConfirm: '撤销这条待确认邀请？',
     personal: '个人',
   },
-  admin: {"grpSectionTitle":"分组倍率","healthSectionTitle":"渠道健康",
+  admin: {
+  "videolimits": "视频模型限额",
+  "chMaxTasks": "任务并发上限",
+  "chMaxTasksHint": "该渠道允许的最大在途任务数。0 = 未设置（运行时按 3 兜底）。","grpSectionTitle":"分组倍率","healthSectionTitle":"渠道健康",
     title: '管理',
     token: '管理令牌',
     tokenHint: '以 X-Admin-Token 发送，仅保存在当前浏览器标签页。',

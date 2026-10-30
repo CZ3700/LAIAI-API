@@ -418,20 +418,21 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 }
 
 type updateChannelReq struct {
-	BaseURL          *string            `json:"base_url"`
-	APIKey           *string            `json:"api_key"` // 省略=不改凭证
-	Models           []string           `json:"models"`
-	Weight           *int               `json:"weight"`
-	Priority         *int               `json:"priority"`
-	StrictResponse   *bool              `json:"strict_response"`
-	ModelMapping     *map[string]string `json:"model_mapping"`      // 指针区分"不改"与"清空"
-	Proxy            *string            `json:"proxy"`              // 指针区分"不改"与"清空代理"
-	ParamOverride    *string            `json:"param_override"`     // 指针区分"不改"与"清空"（0033）
-	HeaderOverride   *string            `json:"header_override"`    // 同上
-	CredentialMode   *string            `json:"credential_mode"`    // random|polling|weighted（0034）
-	Converter        *string            `json:"converter"`          // 格式转换器（0036）
-	UpstreamPath     *string            `json:"upstream_path"`      // 自定义端点路径（0036）
-	ModelSyncEnabled *bool              `json:"model_sync_enabled"` // 周期自动检测上游模型（0037）
+	BaseURL            *string            `json:"base_url"`
+	APIKey             *string            `json:"api_key"` // 省略=不改凭证
+	Models             []string           `json:"models"`
+	Weight             *int               `json:"weight"`
+	Priority           *int               `json:"priority"`
+	StrictResponse     *bool              `json:"strict_response"`
+	ModelMapping       *map[string]string `json:"model_mapping"`        // 指针区分"不改"与"清空"
+	Proxy              *string            `json:"proxy"`                // 指针区分"不改"与"清空代理"
+	ParamOverride      *string            `json:"param_override"`       // 指针区分"不改"与"清空"（0033）
+	HeaderOverride     *string            `json:"header_override"`      // 同上
+	CredentialMode     *string            `json:"credential_mode"`      // random|polling|weighted（0034）
+	Converter          *string            `json:"converter"`            // 格式转换器（0036）
+	UpstreamPath       *string            `json:"upstream_path"`        // 自定义端点路径（0036）
+	ModelSyncEnabled   *bool              `json:"model_sync_enabled"`   // 周期自动检测上游模型（0037）
+	MaxConcurrentTasks *int               `json:"max_concurrent_tasks"` // 任务并发总闸；0=未设（运行时兜底 3）
 }
 
 // adminUpdateChannel：PUT /api/admin/channels/:id —— 编辑渠道（部署冒烟暴露的高频缺口）。
@@ -484,6 +485,13 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 	}
 	if req.ModelSyncEnabled != nil {
 		updates["model_sync_enabled"] = b2i8(*req.ModelSyncEnabled)
+	}
+	if req.MaxConcurrentTasks != nil {
+		if *req.MaxConcurrentTasks < 0 || *req.MaxConcurrentTasks > 10000 {
+			fail(c, http.StatusBadRequest, "max_concurrent_tasks must be within 0..10000")
+			return
+		}
+		updates["max_concurrent_tasks"] = *req.MaxConcurrentTasks
 	}
 	// advanced_custom（0036）：converter/upstream_path 变更 + SSRF 复核。converter 或 base_url
 	// 任一改动即按（现有 provider + 生效 converter + 生效 base_url）重跑校验，防改配置绕过 SSRF。
@@ -637,8 +645,9 @@ func (s *Server) adminListChannels(c *gin.Context) {
 			"id": ch.ID, "name": ch.Name, "provider": ch.Provider,
 			"base_url": ch.BaseURL, "models": ch.Models, "model_count": modelCount,
 			"weight": ch.Weight, "priority": ch.Priority,
-			"strict_response": ch.EnforcesStrictResponse(),
-			"model_mapping":   ch.ModelMapping, "calls": total, "status": ch.Status,
+			"max_concurrent_tasks": ch.MaxConcurrentTasks,
+			"strict_response":      ch.EnforcesStrictResponse(),
+			"model_mapping":        ch.ModelMapping, "calls": total, "status": ch.Status,
 			"success_rate": successRate, "avg_latency_ms": q.AvgDuration, "errors": q.Errors,
 			"proxy": ch.Proxy,
 			// override 配置回显给编辑表单（值本身非凭证——凭证只经 {{credential}} 占位符注入）

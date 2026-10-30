@@ -520,7 +520,10 @@ export default {
     revokeConfirm: 'Отменить это ожидающее приглашение?',
     personal: 'Личное',
   },
-  admin: {"grpSectionTitle":"Групповые коэффициенты","healthSectionTitle":"Здоровье каналов",
+  admin: {
+  "videolimits": "Лимиты видеомоделей",
+  "chMaxTasks": "Лимит параллельных задач",
+  "chMaxTasksHint": "Макс. параллельных задач на канал. 0 = не задано (по умолчанию 3).","grpSectionTitle":"Групповые коэффициенты","healthSectionTitle":"Здоровье каналов",
     title: 'Администрирование',
     token: 'Админ-токен',
     tokenHint: 'Отправляется как X-Admin-Token. Хранится только в этой вкладке.',

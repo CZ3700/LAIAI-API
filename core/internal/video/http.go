@@ -57,7 +57,7 @@ func publicErrorCode(code string, status int) string {
 	switch code {
 	case "insufficient_scope", "video_execution_not_enabled", "runtime_contract_unsupported":
 		return code
-	case "invalid_request", "unauthenticated", "forbidden", "not_found", "idempotency_conflict", "invalid_state", "insufficient_balance", "quota_exceeded", "rate_limited", "unsupported_capability", "invalid_asset", "authorization_required", "authorization_expired", "group_not_empty", "resource_in_use", "content_expired", "content_not_ready", "provider_unavailable", "submission_uncertain", "generation_failed", "cancellation_failed", "deletion_failed", "internal_error":
+	case "invalid_request", "unauthenticated", "forbidden", "not_found", "idempotency_conflict", "invalid_state", "insufficient_balance", "quota_exceeded", "rate_limited", "model_rate_limit", "model_concurrency_limit", "unsupported_capability", "invalid_asset", "authorization_required", "authorization_expired", "group_not_empty", "resource_in_use", "content_expired", "content_not_ready", "provider_unavailable", "submission_uncertain", "generation_failed", "cancellation_failed", "deletion_failed", "internal_error":
 		return code
 	}
 	switch status {
@@ -104,6 +104,10 @@ func respondError(c *gin.Context, err error) {
 		apiError(c, 422, "unsupported_capability")
 	case errors.Is(err, task.ErrConcurrencyLimit):
 		apiError(c, 429, "concurrency_limit")
+	case errors.Is(err, ErrModelConcurrencyLimit):
+		apiError(c, 429, "model_concurrency_limit")
+	case errors.Is(err, ErrModelRateLimit):
+		apiError(c, 429, "model_rate_limit")
 	case errors.Is(err, videobilling.ErrQuotaExceeded):
 		apiError(c, 429, "quota_exceeded")
 	case errors.Is(err, ledger.ErrInsufficientBalance):
@@ -354,6 +358,13 @@ func (s *Service) HandleCreate(c *gin.Context) {
 	}
 	if ok, _ := s.Gate.AllowModelRate(key.OrgID, in.Model); !ok {
 		apiError(c, 429, "rate_limit")
+		return
+	}
+	// 平台级 per-model 受理 RPM（火山官方式 create_task_rpm 镜像；0=不限）。
+	// 拒绝发生在受理事务之前：无 DB 写、无冻结、请求不出网。
+	if limit := s.modelCreateRPM(in.Model); limit > 0 && !s.Gate.AllowModelCreateRPM(in.Model, limit) {
+		c.Header("Retry-After", "60")
+		apiError(c, 429, "model_rate_limit")
 		return
 	}
 	result, replay, err := s.Create(c.Request.Context(), key, c.GetString("video_request_id"), c.GetHeader("Idempotency-Key"), in)

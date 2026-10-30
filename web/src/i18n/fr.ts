@@ -520,7 +520,10 @@ export default {
     revokeConfirm: 'Annuler cette invitation en attente ?',
     personal: 'Personnel',
   },
-  admin: {"grpSectionTitle":"Ratios de groupe","healthSectionTitle":"Santé des canaux",
+  admin: {
+  "videolimits": "Limites des modèles vidéo",
+  "chMaxTasks": "Limite de tâches simultanées",
+  "chMaxTasksHint": "Tâches simultanées max par canal. 0 = non défini (repli : 3).","grpSectionTitle":"Ratios de groupe","healthSectionTitle":"Santé des canaux",
     title: 'Administration',
     token: "Jeton d'administration",
     tokenHint: 'Envoyé comme X-Admin-Token. Conservé uniquement dans cet onglet.',

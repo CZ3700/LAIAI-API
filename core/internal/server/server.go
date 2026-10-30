@@ -304,6 +304,9 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				su.GET("/video/models/:model/pricing/reference-candidates", s.getArkReferenceCandidates)
 				s.registerArkRequestLogs(videoConsoleOrg, su)
 				su.GET("/video/worker-observability", s.getArkWorkerObservability)
+				// 视频模型级受理限额（火山官方式 per-model 并发/RPM，superadmin）。
+				su.GET("/video/model-limits", s.adminListModelLimits)
+				su.PUT("/video/model-limits/:model", s.adminSetModelLimits)
 				// 跨租户全平台调用明细（org_id/user_id/model/cost）：限 superadmin（P2-3）
 				su.GET("/invocations", s.adminListInvocations)
 				su.GET("/invocations/export", func(c *gin.Context) { s.handleInvocationExportV1(c, true) })

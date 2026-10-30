@@ -26,7 +26,7 @@ func catalogLocalDB(t *testing.T) *gorm.DB {
 	pool.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = pool.Close() })
 	for _, ddl := range []string{
-		`CREATE TABLE video_model_configs(public_model TEXT PRIMARY KEY,version TEXT,provider_scope_id INTEGER,channel_id INTEGER,enabled BOOLEAN,capability_json TEXT,pricing_version TEXT,no_charge_statuses TEXT,max_input_video_duration_ms INTEGER,bounds_json TEXT,verified_at DATETIME,updated_at DATETIME)`,
+		`CREATE TABLE video_model_configs(public_model TEXT PRIMARY KEY,version TEXT,provider_scope_id INTEGER,channel_id INTEGER,enabled BOOLEAN,capability_json TEXT,pricing_version TEXT,no_charge_statuses TEXT,max_concurrent_tasks INTEGER DEFAULT 0,create_rpm INTEGER DEFAULT 0,max_input_video_duration_ms INTEGER,bounds_json TEXT,verified_at DATETIME,updated_at DATETIME)`,
 		`CREATE TABLE video_asset_org_routes(org_id INTEGER,provider_scope_id INTEGER,scope_version INTEGER,enabled BOOLEAN,default_route BOOLEAN,updated_at DATETIME,PRIMARY KEY(org_id,provider_scope_id))`,
 		`CREATE TABLE video_asset_shared_defaults(id INTEGER PRIMARY KEY,revision INTEGER,provider_scope_id INTEGER,scope_version INTEGER,enabled BOOLEAN,allow_async BOOLEAN,updated_by INTEGER,updated_at DATETIME)`,
 		`CREATE TABLE video_asset_scope_configs(provider_scope_id INTEGER,version INTEGER,account_ref TEXT,region TEXT,project_name TEXT,capabilities_json TEXT,credential_cipher TEXT,enabled BOOLEAN,created_by INTEGER,created_at DATETIME,updated_at DATETIME,PRIMARY KEY(provider_scope_id,version))`,

@@ -520,7 +520,10 @@ export default {
     revokeConfirm: 'ยกเลิกคำเชิญที่รอดำเนินการนี้?',
     personal: 'ส่วนตัว',
   },
-  admin: {"grpSectionTitle":"อัตราส่วนกลุ่ม","healthSectionTitle":"สุขภาพช่องทาง",
+  admin: {
+  "videolimits": "ขีดจำกัดโมเดลวิดีโอ",
+  "chMaxTasks": "ขีดจำกัดงานพร้อมกัน",
+  "chMaxTasksHint": "จำนวนงานพร้อมกันสูงสุดต่อช่องทาง 0 = ยังไม่ได้ตั้ง (ค่าเริ่มต้น 3)","grpSectionTitle":"อัตราส่วนกลุ่ม","healthSectionTitle":"สุขภาพช่องทาง",
     title: 'ผู้ดูแลระบบ',
     token: 'โทเคนผู้ดูแล',
     tokenHint: 'ส่งเป็น X-Admin-Token เก็บไว้ในแท็บเบราว์เซอร์นี้เท่านั้น',

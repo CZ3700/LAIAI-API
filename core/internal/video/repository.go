@@ -25,6 +25,12 @@ var (
 	ErrCapability      = errors.New("video: unsupported capability")
 	ErrForbidden       = errors.New("video: forbidden")
 	ErrExecutionPolicy = errors.New("video: organization execution not enabled")
+	// 模型级受理闸（对齐火山官方 per-model 配额）：
+	//   ErrModelConcurrencyLimit：该模型在途任务已达 video_model_configs.max_concurrent_tasks（0=不启用）。
+	//   ErrModelRateLimit：该模型平台受理窗口（create_rpm/分钟，0=不限）已满。
+	// 两者都在受理事务/受理入口拒绝，请求不出网、不建任务行、不冻结余额。
+	ErrModelConcurrencyLimit = errors.New("video: model concurrency limit reached")
+	ErrModelRateLimit        = errors.New("video: model create rpm limit reached")
 )
 
 func randomID(prefix string) (string, error) {

@@ -31,6 +31,7 @@ interface Channel {
   model_count: number
   weight: number
   priority: number
+  max_concurrent_tasks: number
   strict_response: boolean
   model_mapping: string
   calls: number
@@ -118,14 +119,14 @@ function showError(e: unknown) {
 const { t, d } = useI18n()
 
 // —— tabs ——
-const tab = ref<'overview' | 'analytics' | 'health' | 'channels' | 'payments' | 'prices' | 'groups' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
+const tab = ref<'overview' | 'analytics' | 'health' | 'channels' | 'videolimits' | 'payments' | 'prices' | 'groups' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
 
 // 标签分级（对标后端 RBAC）：资金/系统/定价类仅 superadmin 可见，admin 看运营类。
 // 减法：analytics 并入 overview（同页展示运营分析）、health 并入 channels（渠道+健康同看）、
 // groups 并入 prices（都是定价配置，分组倍率区块用 isSuperadmin 守住原超管权限边界）。12→9。
-const ALL_TABS = ['overview', 'channels', 'payments', 'prices', 'orgs', 'users', 'logs', 'settings', 'audit'] as const
+const ALL_TABS = ['overview', 'channels', 'videolimits', 'payments', 'prices', 'orgs', 'users', 'logs', 'settings', 'audit'] as const
 // logs（全局调用明细）跨租户 → superadmin-only（配合后端 P2-3 把 /invocations 收归超管）
-const SUPER_ONLY_TABS = new Set(['payments', 'settings', 'logs'])
+const SUPER_ONLY_TABS = new Set(['videolimits', 'payments', 'settings', 'logs'])
 const canReadLogs = computed(() => { adminToken.revision.value; return auth.isSuperadmin || adminToken.get() !== '' })
 const visibleTabs = computed(() => ALL_TABS.filter((tb) => tb === 'logs' ? canReadLogs.value : auth.isSuperadmin || !SUPER_ONLY_TABS.has(tb)))
 function requestedTab(value: unknown): typeof ALL_TABS[number] {
@@ -610,6 +611,7 @@ watch(tab, (v) => {
   if (v === 'users' && usageByUser.value.length === 0) void loadUsageByUser().catch(showError)
   if (v === 'audit' && audit.value.length === 0) void loadAudit().catch(showError)
   if (v === 'channels') void loadHealth().catch(showError) // health 并入 channels
+  if (v === 'videolimits' && vml.value.length === 0) void loadModelLimits().catch(showError)
 })
 
 // —— 渠道健康看板（M2，只读可观测；不反馈选路）——
@@ -925,7 +927,7 @@ function linesToMapping(lines: string): Record<string, string> {
 
 // —— 编辑渠道 ——
 const editing = ref<Channel | null>(null)
-const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, strict_response: true, mapping: '', proxy: '', param_override: '', header_override: '', credential_mode: 'random', converter: '', upstream_path: '', model_sync_enabled: false })
+const editForm = ref({ base_url: '', models: '', api_key: '', weight: 1, priority: 0, max_concurrent_tasks: 0, strict_response: true, mapping: '', proxy: '', param_override: '', header_override: '', credential_mode: 'random', converter: '', upstream_path: '', model_sync_enabled: false })
 const editBusy = ref(false)
 const editError = ref('') // 弹窗内错误（页面顶部横幅会被弹窗遮罩盖住，校验 400 必须在弹窗里可见）
 
@@ -976,6 +978,7 @@ function openEdit(ch: Channel) {
     api_key: '', // 留空=保留原凭证
     weight: ch.weight,
     priority: ch.priority,
+    max_concurrent_tasks: ch.max_concurrent_tasks ?? 0,
     strict_response: ch.strict_response,
     mapping: mappingToLines(ch.model_mapping),
     proxy: ch.proxy,
@@ -997,6 +1000,7 @@ async function saveEdit() {
       models: editForm.value.models.split(',').map((m) => m.trim()).filter(Boolean),
       weight: editForm.value.weight,
       priority: editForm.value.priority,
+      max_concurrent_tasks: Math.max(0, Math.trunc(Number(editForm.value.max_concurrent_tasks) || 0)),
       strict_response: editForm.value.strict_response,
       model_mapping: linesToMapping(editForm.value.mapping), // 空对象 = 清空映射
       proxy: editForm.value.proxy, // 空串 = 清空代理（直连）
@@ -1020,6 +1024,42 @@ async function saveEdit() {
   } finally {
     editBusy.value = false
   }
+}
+
+
+// —— 视频模型限额（火山官方式 per-model 并发/RPM；后端 su 组，0=不限制）——
+interface VideoModelLimit {
+  model: string
+  published: boolean
+  enabled: boolean
+  channel_id: number
+  channel_name: string
+  max_concurrent_tasks: number
+  create_rpm: number
+  updated_at: string | null
+}
+const vml = ref<VideoModelLimit[]>([])
+const vmlBusy = ref('')
+const vmlError = ref('')
+async function loadModelLimits() {
+  try {
+    vml.value = (await adminApi<{ models: VideoModelLimit[] }>('GET', '/api/admin/video/model-limits')).models
+    vmlError.value = ''
+  } catch (e) { vmlError.value = errorMessage(e, t('common.error')) }
+}
+async function saveModelLimit(m: VideoModelLimit) {
+  vmlBusy.value = m.model
+  try {
+    await adminApi('PUT', `/api/admin/video/model-limits/${m.model}`, {
+      max_concurrent_tasks: Math.max(0, Math.trunc(Number(m.max_concurrent_tasks) || 0)),
+      create_rpm: Math.max(0, Math.trunc(Number(m.create_rpm) || 0)),
+    })
+    vmlError.value = ''
+    await loadModelLimits()
+  } catch (e) {
+    vmlError.value = errorMessage(e, t('common.error'))
+    if (e instanceof ApiError && e.status === 401) unlocked.value = false
+  } finally { vmlBusy.value = '' }
 }
 
 // —— 组织 ——
@@ -1712,6 +1752,11 @@ onMounted(async () => {
               </div>
             </div>
             <div>
+              <label class="label" for="edit-max-tasks">{{ t('admin.chMaxTasks') }}</label>
+              <input id="edit-max-tasks" v-model.number="editForm.max_concurrent_tasks" class="input" type="number" min="0" max="10000" />
+              <p class="mt-1 text-xs text-muted">{{ t('admin.chMaxTasksHint') }}</p>
+            </div>
+            <div>
               <label class="label" for="edit-mapping">{{ t('admin.chMapping') }}</label>
               <textarea
                 id="edit-mapping"
@@ -1869,6 +1914,54 @@ onMounted(async () => {
       </template>
 
       <!-- 支付渠道总览：渠道卡片 + 回调地址 + 路由预览 -->
+      <template v-if="tab === 'videolimits'">
+        <div class="space-y-6">
+          <div class="flex items-center justify-between">
+            <p class="text-sm text-muted">{{ t('modelLimits.intro') }}</p>
+            <button class="btn-ghost !py-1.5 text-xs" @click="loadModelLimits">{{ t('common.refresh') }}</button>
+          </div>
+          <p v-if="vmlError" class="text-sm text-danger">{{ vmlError }}</p>
+          <div class="data-table-wrap">
+            <table class="table w-full text-sm whitespace-nowrap">
+              <thead>
+                <tr class="border-b border-line text-left text-muted">
+                  <th class="px-4 py-3 font-medium">{{ t('modelLimits.model') }}</th>
+                  <th class="px-4 py-3 font-medium">{{ t('modelLimits.channel') }}</th>
+                  <th class="px-4 py-3 font-medium">{{ t('keys.status') }}</th>
+                  <th class="px-4 py-3 font-medium">{{ t('modelLimits.concurrent') }}</th>
+                  <th class="px-4 py-3 font-medium">{{ t('modelLimits.createRpm') }}</th>
+                  <th class="px-4 py-3"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="m in vml" :key="m.model" class="border-b border-line last:border-0">
+                  <td class="px-4 py-2.5 font-mono text-xs">{{ m.model }}</td>
+                  <td class="px-4 py-2.5 text-xs text-muted">{{ m.channel_name || `#${m.channel_id}` }}</td>
+                  <td class="px-4 py-2.5">
+                    <span class="rounded-full px-2.5 py-0.5 text-xs font-medium"
+                      :class="!m.published ? 'bg-muted/15 text-muted' : (m.enabled ? 'bg-ok/15 text-ok' : 'bg-muted/15 text-muted')">
+                      {{ !m.published ? t('modelLimits.unpublished') : (m.enabled ? t('modelLimits.enabled') : t('modelLimits.disabled')) }}
+                    </span>
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <input v-model.number="m.max_concurrent_tasks" class="input !w-28" type="number" min="0" max="100000" :disabled="!m.published" />
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <input v-model.number="m.create_rpm" class="input !w-28" type="number" min="0" max="1000000" :disabled="!m.published" />
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <button class="btn-primary !py-1 text-xs" :disabled="!m.published || vmlBusy === m.model" @click="saveModelLimit(m)">
+                      {{ vmlBusy === m.model ? t('common.loading') : t('common.confirm') }}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="text-xs text-muted">{{ t('modelLimits.hint') }}</p>
+        </div>
+      </template>
+
       <template v-if="tab === 'payments'">
         <div class="space-y-6">
           <div class="flex items-center justify-between">

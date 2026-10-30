@@ -580,7 +580,10 @@ export default {
     revokeConfirm: '撤銷這條待確認邀請？',
     personal: '個人',
   },
-  admin: {"grpSectionTitle":"分組倍率","healthSectionTitle":"渠道健康",
+  admin: {
+  "videolimits": "影片模型限额",
+  "chMaxTasks": "任務並行上限",
+  "chMaxTasksHint": "該渠道允許的最大在途任務數。0 = 未設置（運行時按 3 兜底）。","grpSectionTitle":"分組倍率","healthSectionTitle":"渠道健康",
     title: '管理',
     token: '管理權杖',
     tokenHint: '以 X-Admin-Token 發送，僅保存在目前瀏覽器分頁。',

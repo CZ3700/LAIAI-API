@@ -93,6 +93,17 @@ func (r *Relay) allowKeyRate(keyID uint64, limit int) bool {
 	return r.allowWindowed(fmt.Sprintf("k:%d", keyID), limit)
 }
 
+// AllowModelCreateRPM：平台级每模型受理 RPM（task.Gate，火山官方 create_task_rpm 的
+// 我方镜像；视频受理侧按 video_model_configs.create_rpm 调用）。bucket `vm:<model>`
+// 与租户级 `m:`/key 级 `k:` 共用同一 allowWindowed 状态（Redis 跨实例或进程内），
+// 不另建第二套窗口。0=不限。
+func (r *Relay) AllowModelCreateRPM(model string, limit int) bool {
+	if limit <= 0 {
+		return true
+	}
+	return r.allowWindowed(fmt.Sprintf("vm:%s", model), limit)
+}
+
 // allowWindowed：固定 60s 窗口计数（bucket 为限流维度标识）。Redis 跨实例，未配则进程内；
 // fail-open（限流是保护、不是收费闸）。
 func (r *Relay) allowWindowed(bucket string, limit int) bool {

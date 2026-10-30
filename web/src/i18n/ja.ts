@@ -519,7 +519,10 @@ export default {
     revokeConfirm: 'この保留中の招待を取り消しますか？',
     personal: '個人',
   },
-  admin: {"grpSectionTitle":"グループ倍率","healthSectionTitle":"チャネル健全性",
+  admin: {
+  "videolimits": "動画モデル制限",
+  "chMaxTasks": "チャネル同時タスク上限",
+  "chMaxTasksHint": "チャネルの最大同時タスク数。0 = 未設定（実行時は 3 で代替）。","grpSectionTitle":"グループ倍率","healthSectionTitle":"チャネル健全性",
     title: '管理',
     token: '管理トークン',
     tokenHint: 'X-Admin-Token として送信。このブラウザタブにのみ保存されます。',

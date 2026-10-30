@@ -520,7 +520,10 @@ export default {
     revokeConfirm: 'Batalkan jemputan tertunda ini?',
     personal: 'Peribadi',
   },
-  admin: {"grpSectionTitle":"Nisbah kumpulan","healthSectionTitle":"Kesihatan saluran",
+  admin: {
+  "videolimits": "Had model video",
+  "chMaxTasks": "Had tugasan serentak",
+  "chMaxTasksHint": "Had tugasan serentak maksimum bagi setiap saluran. 0 = tidak ditetapkan (sandaran 3).","grpSectionTitle":"Nisbah kumpulan","healthSectionTitle":"Kesihatan saluran",
     title: 'Pentadbir',
     token: 'Token pentadbir',
     tokenHint: 'Dihantar sebagai X-Admin-Token. Disimpan dalam tab pelayar ini sahaja.',

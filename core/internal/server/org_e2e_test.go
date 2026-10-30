@@ -194,6 +194,7 @@ func TestModelsListEndpoint(t *testing.T) {
 		public_model TEXT PRIMARY KEY, version TEXT NOT NULL, provider_scope_id INTEGER NOT NULL,
 		channel_id INTEGER NOT NULL, enabled INTEGER NOT NULL, capability_json TEXT NOT NULL,
 		pricing_version TEXT NOT NULL, no_charge_statuses TEXT NOT NULL,
+		max_concurrent_tasks INTEGER NOT NULL DEFAULT 0, create_rpm INTEGER NOT NULL DEFAULT 0,
 		max_input_video_duration_ms INTEGER NOT NULL, bounds_json TEXT NOT NULL,
 		verified_at DATETIME, updated_at DATETIME NOT NULL
 	)`).Error; err != nil {
