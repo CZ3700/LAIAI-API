@@ -27,6 +27,7 @@ func (arkConfigGate) GateKey(*identity.APIKey, string, string) (int, string, boo
 	return 0, "", true
 }
 func (arkConfigGate) AllowModelRate(uint64, string) (bool, int) { return true, 1000 }
+func (arkConfigGate) AllowModelCreateRPM(string, int) bool { return true }
 
 func TestVideoAdminRejectsAmbiguousJSON(t *testing.T) {
 	for _, body := range []string{`{"Version":"a","version":"b"}`, `{"Version":"a","nested":{"x":1,"x":2}}`, `{"unknown":1}`, `{"Version":"a"} {}`} {

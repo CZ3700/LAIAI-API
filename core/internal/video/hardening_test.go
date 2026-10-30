@@ -189,6 +189,7 @@ func (g *denyCountingGate) AllowModelRate(uint64, string) (bool, int) {
 	g.calls.Add(1)
 	return false, 0
 }
+func (g *denyCountingGate) AllowModelCreateRPM(string, int) bool { return true }
 
 func TestMySQLHardeningHTTPReplayBeforeAdmission(t *testing.T) {
 	f := mysqlFixture(t)
@@ -263,7 +264,7 @@ func TestPublicErrorCodeContract(t *testing.T) {
 		code   string
 		status int
 		want   string
-	}{{"invalid_api_key", 401, "unauthenticated"}, {"ip_not_allowed", 403, "forbidden"}, {"audit_unavailable", 503, "provider_unavailable"}, {"concurrency_limit", 429, "rate_limited"}, {"request_too_large", 413, "invalid_request"}, {"artifact_not_ready", 409, "content_not_ready"}, {"expired", 410, "content_expired"}, {"arbitrary_provider_error", 500, "internal_error"}} {
+	}{{"invalid_api_key", 401, "unauthenticated"}, {"ip_not_allowed", 403, "forbidden"}, {"audit_unavailable", 503, "provider_unavailable"}, {"concurrency_limit", 429, "rate_limited"}, {"model_rate_limit", 429, "model_rate_limit"}, {"model_concurrency_limit", 429, "model_concurrency_limit"}, {"request_too_large", 413, "invalid_request"}, {"artifact_not_ready", 409, "content_not_ready"}, {"expired", 410, "content_expired"}, {"arbitrary_provider_error", 500, "internal_error"}} {
 		if got := publicErrorCode(tc.code, tc.status); got != tc.want {
 			t.Fatalf("%s -> %s, want %s", tc.code, got, tc.want)
 		}

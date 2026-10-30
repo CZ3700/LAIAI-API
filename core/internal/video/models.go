@@ -10,14 +10,20 @@ const Provider = "ark_official"
 
 // ModelConfig is operator-controlled. It must never contain credentials.
 type ModelConfig struct {
-	PublicModel             string `gorm:"primaryKey;column:public_model"`
-	Version                 string
-	ProviderScopeID         uint64
-	ChannelID               uint64
-	Enabled                 bool
-	CapabilityJSON          string `gorm:"column:capability_json"`
-	PricingVersion          string
-	NoChargeStatuses        string
+	PublicModel      string `gorm:"primaryKey;column:public_model"`
+	Version          string
+	ProviderScopeID  uint64
+	ChannelID        uint64
+	Enabled          bool
+	CapabilityJSON   string `gorm:"column:capability_json"`
+	PricingVersion   string
+	NoChargeStatuses string
+	// 受理闸上限（0136，火山官方式 per-model 配额；0 = 不启用，回退渠道总闸）：
+	// MaxConcurrentTasks 在受理事务内按 model 计数在途任务（配置行锁保证无竞态）；
+	// CreateRPM 为平台级每分钟受理上限（复用 relay 固定 60s 窗口）。均为
+	// admission-side，不触碰 worker 派发。
+	MaxConcurrentTasks      int `gorm:"column:max_concurrent_tasks"`
+	CreateRPM               int `gorm:"column:create_rpm"`
 	MaxInputVideoDurationMS int64
 	BoundsJSON              string `gorm:"column:bounds_json"`
 	VerifiedAt              *time.Time

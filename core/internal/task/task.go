@@ -73,6 +73,10 @@ func (Task) TableName() string { return "tasks" }
 type Gate interface {
 	GateKey(key *identity.APIKey, clientIP, model string) (code int, msg string, ok bool)
 	AllowModelRate(orgID uint64, model string) (ok bool, rpm int)
+	// AllowModelCreateRPM：平台级 (model) 受理窗口——火山官方 create_task_rpm 的我方
+	// 镜像，保护上游账号配额；与 AllowModelRate 的 (org,model) 租户限流正交。
+	// limit<=0 = 不限（直接放行，不产生窗口状态）。
+	AllowModelCreateRPM(model string, limit int) bool
 }
 
 // Notifier：任务终态通知（§4.9 Notify）。task 包不依赖 notify 包（避免跨 bounded context），

@@ -58,6 +58,7 @@ func (phaseAdminGate) GateKey(*identity.APIKey, string, string) (int, string, bo
 	return 200, "", true
 }
 func (phaseAdminGate) AllowModelRate(uint64, string) (bool, int) { return true, 0 }
+func (phaseAdminGate) AllowModelCreateRPM(string, int) bool { return true }
 
 type phaseAdminTransport func(*http.Request) (*http.Response, error)
 

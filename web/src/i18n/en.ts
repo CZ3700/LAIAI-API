@@ -580,7 +580,10 @@ const messages = {
     revokeConfirm: 'Cancel this pending invitation?',
     personal: 'Personal',
   },
-  admin: {"grpSectionTitle":"Group ratios","healthSectionTitle":"Channel health",
+  admin: {
+  "videolimits": "Video model limits",
+  "chMaxTasks": "Task concurrency cap",
+  "chMaxTasksHint": "Max in-flight tasks on this channel. 0 = unset (runtime fallback 3).","grpSectionTitle":"Group ratios","healthSectionTitle":"Channel health",
     title: 'Admin',
     token: 'Admin token',
     tokenHint: 'Sent as X-Admin-Token. Kept in this browser tab only.',

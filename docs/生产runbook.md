@@ -75,6 +75,38 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
   `make migrate-smoke`（真 MySQL apply×2 幂等 + schema-doctor 漂移体检）。
 - **多副本**：`docker compose up -d --scale core=N`；core 无 container_name，Caddy dynamic a 自动跟随。
 - **Redis 上线约束**（架构 §4.4）：多实例前必须配 `LAIAI_REDIS_ADDR`——模型级限流否则退化为每副本独立计数。
+## 部署纪律：/etc/laiai/video.env 必须并入容器环境
+
+官方视频网关的接线条件是 `LAIAI_VIDEO_HMAC_SECRET` 非空（main.go 里为空即不装配
+video.Service，seedance 官方模型一律 503 provider_unavailable）。该密钥与
+`LAIAI_VIDEO_PORTRAIT_CALLBACK_URL` / `LAIAI_VIDEO_PORTRAIT_RETURN_URL` 持久保存在
+**/etc/laiai/video.env**（release 流程按此注入；"Preserve across releases" 红线）。
+
+手动 `docker compose up -d core` 只读 infra/.env——**.env 缺这些变量时视频网关会静默
+不装配**。2026-10-30 事故即因此产生（重建容器后 503 无法创建任务）。这四个变量现已
+并入 infra/.env；今后任何手工重建容器前，先：
+
+    diff <(sed 's/=.*/=/' /etc/laiai/video.env) <(sed 's/=.*/=/' /opt/laiai-next/infra/.env)
+
+缺哪个补哪个，再 up。HMAC secret 绝不轮换生成新值——旧值参与 payload 幂等 HMAC。
+
+## 视频模型级受理限额（0136 起）
+
+Seedance 视频模型按火山官方方式逐模型限流，superadmin 在后台 **Admin → 视频模型限额** 设置，
+或 `GET/PUT /api/admin/video/model-limits/:model`（写操作入 audit_logs）。
+
+- **语义**：`max_concurrent_tasks` = 该公共模型在途任务上限（受理事务内按 model 计数，
+  配置行锁保证无竞态）；`create_rpm` = 平台级每分钟受理上限（固定 60s 窗口，Redis 跨实例）。
+  两者 **0 = 不限制**。超限返回 429（`model_concurrency_limit` / `model_rate_limit`，
+  带 Retry-After），请求不出网、不建任务行、不冻结余额。
+- **三层关系**：模型闸 ⊂ 渠道总闸（`channels.max_concurrent_tasks`，编辑渠道弹窗可改，
+  0 兜底 3）⊂ 派发间隔闸（`video_provider_rates` 每 scope 每 action 保守 1 req/s）。
+  取更严者生效；改限并发即时生效，RPM 经 5s 缓存生效。
+- **应急回退**：`UPDATE video_model_configs SET max_concurrent_tasks = 0, create_rpm = 0;`
+  或把渠道 `max_concurrent_tasks` 调大——均为即时生效，无需重启。
+- **当前值（2026-10-30 上线）**：seedance-2.5 = 20 并发 / 30 RPM；seedance-2.0 = 10 / 20；
+  fast/mini 未限；渠道 11 总闸 60。
+
 - **数据库本机回环访问**（排查/Navicat 用）：compose 里 mysql 只绑 `127.0.0.1:${MYSQL_HOST_PORT:-3306}`
   （绝不写 `3306:3306`）。客户端经 SSH 隧道接入：FinalShell → 连接属性 → 隧道 → 本地转发，
   监听 `13306`，目标 `127.0.0.1:3306`；Navicat 连 `127.0.0.1:13306`，账号密码取 `infra/.env`。

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -54,6 +55,9 @@ type Service struct {
 	// shared default enabled, tenants without their own registration resolve
 	// exactly this URL from the shared callback registry.
 	consoleReturnURL string
+	// 受理侧 CreateRPM 的热读缓存（model_limits.go）；并发闸不走缓存。
+	limitMu    sync.Mutex
+	limitCache modelLimitCache
 }
 
 func NewService(db *gorm.DB, kr *crypto.Keyring, secret []byte, log *slog.Logger) (*Service, error) {
@@ -364,6 +368,19 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		}
 		if active >= int64(limit) {
 			return task.ErrConcurrencyLimit
+		}
+		// 模型级并发闸（火山官方式 per-model 配额，0=不启用）：按公共模型计数在途任务，
+		// 渠道总闸之外的第二个维度——不同模型互不挤占。p.config 行在 plan() 内已 FOR
+		// UPDATE 锁定，同模型的并发受理在此串行化，count-then-act 无竞态。计数与模型
+		// 上限取锁内权威值，渠道闸与模型闸取更严者生效。
+		if p.config.MaxConcurrentTasks > 0 {
+			var modelActive int64
+			if e = tx.Model(&task.Task{}).Where("model = ? AND status IN ?", in.Model, []string{"accepted", "submitting", "submission_unknown", "queued", "running"}).Count(&modelActive).Error; e != nil {
+				return e
+			}
+			if modelActive >= int64(p.config.MaxConcurrentTasks) {
+				return ErrModelConcurrencyLimit
+			}
 		}
 		credentialID, ciphertext, ok := relay.SelectCredential(tx, &ch)
 		if !ok {

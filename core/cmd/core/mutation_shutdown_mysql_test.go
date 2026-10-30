@@ -61,6 +61,7 @@ func (mutationShutdownGate) GateKey(*identity.APIKey, string, string) (int, stri
 	return 200, "", true
 }
 func (mutationShutdownGate) AllowModelRate(uint64, string) (bool, int) { return true, 0 }
+func (mutationShutdownGate) AllowModelCreateRPM(string, int) bool { return true }
 
 type mutationShutdownFixture struct {
 	db                               *gorm.DB
