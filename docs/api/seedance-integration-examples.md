@@ -247,18 +247,63 @@ H5 succeeded 后，素材组的 `authorization_status` 仍可能为 `needs_revie
 
 任务创建/预估发现素材许可不足返回 `403 forbidden`，素材状态冲突为 `409 invalid_state`，未启用能力为 `422 unsupported_capability`；素材管理接口还使用 `authorization_required`、`resource_in_use`、`group_not_empty` 等专用安全错误码。按 HTTP 码和 `error.code` 处理，不解析错误文案或盲目重试。
 
-## Draft 转正式任务
+## Seedance 2.5 样片与正式视频
 
-仅当平台确实启用 Seedance 2.5 Draft 与转换能力时使用。先创建 `draft:true` 的任务，等待该父任务 succeeded；转换需同组织、同模型/能力版本及官方账号/区域/项目，父任务未软删除，继承素材当前仍获许可。父请求原文到期不影响合法的参数白名单继承。
+仅当模型目录列出已发布的 480p Draft 与 1080p `draft_conversion` 组合时使用。两步是独立任务、分别预估和计费；生成样片不会自动生成正式视频。Draft 按普通 480p 视频计费，转正式按 1080p 视频计费，参考视频计价类别由第一步的输入决定。以下示例沿用前文的 `BASE_URL`、`GATEWAY_KEY`，每一步使用不同的幂等键。规则依据[火山方舟 Seedance 2.5 样片模式教程](https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-5)。
+
+第一步创建 480p 样片，保存返回的平台 `task_` ID，并查询到 `succeeded` 及 `content.video_url` 后预览样片。
 
 ```bash
-export DRAFT_TASK_ID='task_REPLACE_WITH_SUCCEEDED_DRAFT_ID'
-curl -sS "$BASE_URL/v1/video/generations" \
+cat > draft-request.json <<'JSON'
+{
+  "model": "seedance-2.5",
+  "content": [{"type": "text", "text": "女孩抱着狐狸，镜头缓缓拉远，头发被风吹动。"}],
+  "duration": 5,
+  "resolution": "480p",
+  "draft": true
+}
+JSON
+
+curl -fsS "$BASE_URL/v1/video/estimates" \
   -H "Authorization: Bearer $GATEWAY_KEY" -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: your-draft-conversion-operation' \
-  --data "{\"model\":\"seedance-2.5\",\"content\":[{\"type\":\"draft_task\",\"draft_task\":{\"id\":\"$DRAFT_TASK_ID\"}}],\"resolution\":\"1080p\"}"
+  --data-binary @draft-request.json > draft-estimate.json
+jq --slurpfile quote draft-estimate.json \
+  '. + {expected_pricing_version: $quote[0].pricing_version,
+        max_charge_usd: $quote[0].reserved_amount}' \
+  draft-request.json > draft-create.json
+curl -fsS "$BASE_URL/v1/video/generations" \
+  -H "Authorization: Bearer $GATEWAY_KEY" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: your-draft-creation-operation' \
+  --data-binary @draft-create.json > draft-response.json
+export DRAFT_TASK_ID="$(jq -r '.id // empty' draft-response.json)"
+curl -fsS "$BASE_URL/v1/video/generations/$DRAFT_TASK_ID" \
+  -H "Authorization: Bearer $GATEWAY_KEY"
 ```
 
-只允许一个 draft_task 内容项，不得重传 duration、frames、ratio、seed、generate_audio、omni_reference_task_type；也不能同时设置 `draft:true`。其他可选参数依当前正式任务能力解释，不默认继承全部父参数。
+第二步在确认样片满意后，使用同一模型和样片任务 ID 创建 1080p 正式视频。`draft_task` 是唯一的 `content` 内容项；提示词、素材、时长、比例、种子、音频设置和任务类型由上游自动复用，不能重传。
+
+```bash
+jq -n --arg id "$DRAFT_TASK_ID" '{
+  model: "seedance-2.5",
+  content: [{type: "draft_task", draft_task: {id: $id}}],
+  resolution: "1080p"
+}' > final-request.json
+curl -fsS "$BASE_URL/v1/video/estimates" \
+  -H "Authorization: Bearer $GATEWAY_KEY" -H 'Content-Type: application/json' \
+  --data-binary @final-request.json > final-estimate.json
+jq --slurpfile quote final-estimate.json \
+  '. + {expected_pricing_version: $quote[0].pricing_version,
+        max_charge_usd: $quote[0].reserved_amount}' \
+  final-request.json > final-create.json
+curl -fsS "$BASE_URL/v1/video/generations" \
+  -H "Authorization: Bearer $GATEWAY_KEY" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: your-draft-conversion-operation' \
+  --data-binary @final-create.json > final-response.json
+export FINAL_TASK_ID="$(jq -r '.id // empty' final-response.json)"
+curl -fsS "$BASE_URL/v1/video/generations/$FINAL_TASK_ID" \
+  -H "Authorization: Bearer $GATEWAY_KEY"
+```
+
+转换需同组织、同模型和能力版本、同官方账号/区域/项目；父任务须成功且未删除，继承素材当前仍获许可。`draft` 在第二步应省略或为 `false`。`return_last_frame`、`output_format`、`watermark`、`service_tier`、`execution_expires_after` 不会沿用样片取值，可按正式视频要求重新指定。样片 ID 从火山 `created_at` 起有有效期：2026-10-28 10:00（UTC+8）及之后创建的为 14 天，之前创建的为 7 天；过期后预估或创建正式视频返回 `410 content_expired`，不会新建任务或冻结资金。平台使用本地任务创建时间保守预检，临界任务可能略早被拒绝。父请求原文到期不影响有效期内的参数继承。正式任务另有自己的任务 ID、视频 URL 和客户账单。
 
 所有请求都应记录响应 `X-Request-Id` 便于核对。请求与响应原文只在已授权的加密 Invocation Store 内按策略保存；`capture_history=false` 不关闭必需请求元数据与账务审计，也不等于允许无需明确同意的异步执行暂存。

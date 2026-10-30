@@ -17,6 +17,10 @@ import (
 const Version = "ark-official-20261019-v1"
 const VariantVersion = "ark-official-20261019-variants-v1"
 
+// DraftVersion is opt-in so installed 2026-10-19 pricing templates and their
+// evidence hashes continue to validate against the original profile.
+const DraftVersion = "ark-official-20261030-draft-v1"
+
 type Dimensions struct {
 	Width  int64 `json:"width"`
 	Height int64 `json:"height"`
@@ -184,6 +188,41 @@ func Load(model string) (Profile, error) {
 	}
 	// The composite digest includes all verified values and every source digest;
 	// it is explicitly distinct from the raw document hashes listed in Sources.
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return Profile{}, err
+	}
+	hash := sha256.Sum256(raw)
+	p.EvidenceSHA256 = hex.EncodeToString(hash[:])
+	return p, nil
+}
+
+// LoadDraft extends only the reviewed Seedance 2.5 profile. The newly captured
+// official create API, pricing guide and tutorial establish that Draft is 480p,
+// conversion is 1080p, and each step uses the ordinary resolution rate.
+// This profile still does not authorize any account, channel, or price rule:
+// synchronization and publication remain separate audited transactions.
+func LoadDraft(model string) (Profile, error) {
+	if model != ark.Model25 {
+		return Profile{}, arkpricecatalog.ErrUnsupportedModel
+	}
+	p, err := Load(model)
+	if err != nil {
+		return Profile{}, err
+	}
+	p.Version = DraftVersion
+	p.ObservedAt = time.Date(2026, 10, 30, 10, 38, 0, 0, time.UTC)
+	p.MinimumVersion = "official-min-seedance-2.5-20261030-draft-v1"
+	p.Capability.Version = p.Version
+	p.Capability.Draft = true
+	p.Capability.DraftConversion = true
+	p.Sources = append(p.Sources,
+		Source{"official-create-api-20261030-draft", "https://ark.volcengine.com/region:cn-beijing/docs/create-video-generation-task-api.md", "a779514c668fc18272275f07351034078e5aeec9da98cb1352b11a083751f324"},
+		Source{"official-pricing-20261030-draft", "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing.md", "c93a73de8f9db86686a4499065a401c08b04dcd3b972fe51b8ff3f2c43908231"},
+		Source{"official-seedance-2-5-20261030-draft", "https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-5.md", "c978148e9b3a6c954930b0a9d2a9b597efab67b011d764b07ed875d0cd0617ec"},
+	)
+	sort.Slice(p.Sources, func(i, j int) bool { return p.Sources[i].ID < p.Sources[j].ID })
+	p.EvidenceSHA256 = ""
 	raw, err := json.Marshal(p)
 	if err != nil {
 		return Profile{}, err

@@ -22,6 +22,7 @@ var (
 	ErrNotFound        = errors.New("video: not found")
 	ErrConflict        = errors.New("video: conflict")
 	ErrState           = errors.New("video: invalid state")
+	ErrDraftExpired    = errors.New("video: draft task expired")
 	ErrCapability      = errors.New("video: unsupported capability")
 	ErrForbidden       = errors.New("video: forbidden")
 	ErrExecutionPolicy = errors.New("video: organization execution not enabled")

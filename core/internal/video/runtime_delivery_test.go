@@ -77,9 +77,13 @@ func TestMySQLRuntimeDeliveryHistoryRemainsReadable(t *testing.T) {
 			calls := f.gets.Load()
 			router := deliveryRouter(f)
 			w := deliveryRequest(f, router, "/v1/video/generations/"+v.ID)
-			var got TaskView
+			var got officialTaskQueryResponse
 			must(t, json.Unmarshal(w.Body.Bytes(), &got))
-			if w.Code != 200 || got.ID != v.ID || got.Status != "succeeded" || got.BillingState != "settled" || got.ArtifactStatus != "runtime_contract_unsupported" || got.ContentURL != "" || got.Content != nil {
+			internal, err := f.s.Get(f.key.OrgID, v.ID)
+			must(t, err)
+			if w.Code != 200 || got.ID != v.ID || got.Status != "succeeded" || got.Content != nil ||
+				internal.BillingState != "settled" || internal.ArtifactStatus != "runtime_contract_unsupported" || internal.ContentURL != "" || internal.Content != nil ||
+				strings.Contains(w.Body.String(), "billing_state") || strings.Contains(w.Body.String(), "artifact_status") {
 				t.Fatal("unsupported delivery failed to retain the persisted task projection", w.Code)
 			}
 			w = deliveryRequest(f, router, "/v1/video/generations")

@@ -46,6 +46,14 @@ type mockBaselineTask struct {
 	ReleasedUSD  string     `json:"released_usd,omitempty"`
 }
 
+type mockBaselineAPIView struct {
+	ID           string `json:"id"`
+	Status       string `json:"status"`
+	CreatedAt    int64  `json:"created_at"`
+	UpdatedAt    int64  `json:"updated_at"`
+	BillingState string `json:"-"`
+}
+
 // Separate from ordinary TestMySQL runs: ProcessOnce scans the entire DB and
 // mysqlFixture updates shared model configuration. The runner owns a fresh
 // MySQL container, and the preflight below refuses any prior task data.
@@ -126,9 +134,10 @@ func TestMySQLMockArkWorkerBaseline(t *testing.T) {
 	router := gin.New()
 	router.POST("/v1/video/generations", f.s.Middleware(), f.s.HandleCreate)
 	router.GET("/v1/video/generations/:id", f.s.Middleware(), f.s.HandleGet)
+	router.GET("/v1/video/generations/:id/billing", f.s.Middleware(), f.s.HandleBilling)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	call := func(method, path, idem string) TaskView {
+	call := func(method, path, idem string) mockBaselineAPIView {
 		t.Helper()
 		body := ""
 		if method == http.MethodPost {
@@ -149,10 +158,31 @@ func TestMySQLMockArkWorkerBaseline(t *testing.T) {
 		if w.Code != want {
 			t.Fatalf("baseline API %s returned %d, expected %d (body intentionally omitted)", method, w.Code, want)
 		}
-		var view TaskView
+		var view mockBaselineAPIView
 		must(t, json.Unmarshal(w.Body.Bytes(), &view))
 		if view.ID == "" {
 			t.Fatal("baseline API returned no task identity")
+		}
+		if method == http.MethodGet {
+			if view.CreatedAt <= 0 || view.UpdatedAt <= 0 {
+				t.Fatal("baseline task query omitted official Unix timestamps")
+			}
+			billingReq := httptest.NewRequest(http.MethodGet, path+"/billing", nil).WithContext(ctx)
+			billingReq.Header.Set("Authorization", "Bearer "+f.plain)
+			billingW := httptest.NewRecorder()
+			router.ServeHTTP(billingW, billingReq)
+			if billingW.Code != http.StatusOK {
+				t.Fatalf("baseline billing query returned %d, expected 200 (body intentionally omitted)", billingW.Code)
+			}
+			var billing struct {
+				TaskID string `json:"task_id"`
+				State  string `json:"state"`
+			}
+			must(t, json.Unmarshal(billingW.Body.Bytes(), &billing))
+			if billing.TaskID != view.ID {
+				t.Fatal("baseline billing query returned a different task")
+			}
+			view.BillingState = billing.State
 		}
 		return view
 	}

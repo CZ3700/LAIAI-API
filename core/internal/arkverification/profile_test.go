@@ -77,6 +77,30 @@ func TestReviewedProfileCoverageAndNormalizer(t *testing.T) {
 	}
 }
 
+func TestDraftProfileIsExplicitAndKeepsLegacyEvidenceStable(t *testing.T) {
+	base, err := Load(ark.Model25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := LoadDraft(ark.Model25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.Capability.Draft || base.Capability.DraftConversion || !draft.Capability.Draft || !draft.Capability.DraftConversion ||
+		draft.Version != DraftVersion || draft.Capability.Version != DraftVersion ||
+		draft.EvidenceSHA256 == base.EvidenceSHA256 || draft.MinimumVersion == base.MinimumVersion ||
+		len(draft.MinimumCells) != len(base.MinimumCells) || len(draft.Sources) != len(base.Sources)+3 {
+		t.Fatal("Draft profile did not preserve isolated provenance and minimum coverage")
+	}
+	again, err := Load(ark.Model25)
+	if err != nil || again.EvidenceSHA256 != base.EvidenceSHA256 {
+		t.Fatal("opt-in profile changed the installed legacy profile")
+	}
+	if _, err := LoadDraft(ark.Model20); err == nil {
+		t.Fatal("non-2.5 Draft profile accepted")
+	}
+}
+
 func TestReviewedPixelBoundsAndUnsupportedModels(t *testing.T) {
 	for _, model := range []string{ark.Model20, ark.Model25} {
 		p, err := Load(model)

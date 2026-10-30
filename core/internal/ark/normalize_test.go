@@ -148,6 +148,18 @@ func TestNormalizeDraftRequestContract(t *testing.T) {
 	}
 }
 
+func TestNormalizeDraftRequires480p(t *testing.T) {
+	in := textRequest(Model25)
+	in.Draft = ptr(true)
+	cap := testCapability(Model25)
+	for _, resolution := range []string{"720p", "1080p"} {
+		in.Resolution = &resolution
+		if _, err := Normalize(in, cap, Bindings{}); err == nil {
+			t.Fatalf("Draft accepted %s", resolution)
+		}
+	}
+}
+
 func TestNormalizeReferenceOnlyTaskType(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

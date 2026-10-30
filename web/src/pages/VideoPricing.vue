@@ -36,12 +36,14 @@ const selectedEvidence = ref<SourceRow[] | null>(null), showMinimum = ref(false)
 const evidenceQuery = ref(''), evidencePage = ref(1), evidencePageSize = 20
 const selectedKeys = ref<string[]>([]), bulkMode = ref('same'), bulkValue = ref(''), bulkChanges = ref<BulkChange[]>([]), bulkError = ref('')
 const verification = ref<Verification | null>(null), verificationError = ref(''), verificationOpen = ref(false), verificationReloadRequired = ref(false)
+const verificationProfile = ref<'standard' | 'draft'>('standard')
 const adoptionOpen = ref(false), adoptionRisk = ref('1'), adoptionError = ref(''), adoptionSnapshot = ref('')
 const templates = ref<PricingTemplate[]>([]), templatesLoading = ref(false), templateError = ref(''), templateOpen = ref(false)
 const templateVersion = ref(''), templateMode = ref<TemplateMode>('fill_missing'), templatePreview = ref<TemplatePreview | null>(null), templateSnapshot = ref(''), templateRef = ref<TemplateRef | null>(null)
 const prepared = ref<Prepared | null>(null), validatedBody = ref(''), validatedDraft = ref(''), previewOpen = ref(false), publishKey = ref(uuid())
 const base = computed(() => `/api/admin/video/models/${encodeURIComponent(model.value)}/pricing`)
 const verificationBase = computed(() => `/api/admin/video/models/${encodeURIComponent(model.value)}/verification`)
+const verificationReadURL = computed(() => verificationBase.value + (model.value === 'seedance-2.5' && verificationProfile.value === 'draft' ? '?profile=draft' : ''))
 const supported = computed(() => isOfficialVideoModel(model.value))
 const referenceSeries = computed(() => officialVideoSeries(model.value))
 const bindingMatches = computed(() => !props.selectedChannelId || (pricing.value?.channel_id ?? candidates.value?.config?.channel_id) === props.selectedChannelId)
@@ -77,6 +79,8 @@ const currentRisk = computed(() => {
   return values.length === 1 ? values[0]! : ''
 })
 const canSyncVerification = computed(() => auth.isSuperadmin && supported.value && bindingMatches.value && !!verification.value && !verification.value.verified && !dirty.value && !busy.value && !loading.value && !verificationReloadRequired.value)
+const draftWorkflowReady = computed(() => model.value === 'seedance-2.5' && verificationProfile.value === 'draft' && verification.value?.verified && verification.value.profile_version === 'ark-official-20261030-draft-v1')
+const draftWorkflowCell = (cell: Cell) => cell.service_tier === 'default' && (cell.mode === 'generate' && cell.resolution === '480p' && cell.draft || cell.mode === 'draft_conversion' && cell.resolution === '1080p' && !cell.draft)
 const adoptionChanges = computed<AdoptionChange[]>(() => {
   return (pricing.value?.cells ?? []).filter(cell => selectedKeys.value.includes(cellKey(cell))).flatMap(cell => {
     const cost = referenceCost(cell)
@@ -123,7 +127,7 @@ async function load() {
   void loadTemplates(generation)
   const endpoint = base.value
   try {
-    const [data, history, minimum, reference, official] = await Promise.allSettled([api<Pricing>('GET', endpoint), api<{ items: Revision[] }>('GET', `${endpoint}/revisions`), api<{ items: Minimum[] }>('GET', `${endpoint}/minimum-rules`), api<ReferenceCandidates>('GET', `${endpoint}/reference-candidates`), api<Verification>('GET', verificationBase.value)])
+    const [data, history, minimum, reference, official] = await Promise.allSettled([api<Pricing>('GET', endpoint), api<{ items: Revision[] }>('GET', `${endpoint}/revisions`), api<{ items: Minimum[] }>('GET', `${endpoint}/minimum-rules`), api<ReferenceCandidates>('GET', `${endpoint}/reference-candidates`), api<Verification>('GET', verificationReadURL.value)])
     if (generation !== loadGeneration) return
     if (reference.status === 'fulfilled' && reference.value.model === model.value) candidates.value = reference.value
     else referenceError.value = t('referenceFailed')
@@ -144,7 +148,7 @@ function inheritOfficialPricing() {
   if (!context || context.channel_id !== pricing.value.channel_id || context.config_version !== pricing.value.config_version) return
   let inherited = 0
   for (const cell of pricing.value.cells) {
-    if (cell.mode !== 'generate' || cell.service_tier !== 'default' || cell.draft || cell.enabled || cell.retail_usd_per_1m || cell.supplier_cny_per_1m) continue
+    if (!(cell.mode === 'generate' && cell.service_tier === 'default' && !cell.draft || draftWorkflowReady.value && draftWorkflowCell(cell)) || cell.enabled || cell.retail_usd_per_1m || cell.supplier_cny_per_1m) continue
     const cost = referenceCost(cell)
     if (cost === undefined) continue
     try {
@@ -278,7 +282,8 @@ async function importMinimum() {
   finally { if (current()) busy.value = false }
 }
 function referenceCost(cell: Cell) {
-  const matches = candidates.value?.prices.filter(c => cellKey(c) === cellKey(cell) && c.unit === 'CNY/1M_tokens' && c.precision === 'exact')
+  const source = draftWorkflowReady.value && draftWorkflowCell(cell) ? { ...cell, mode: 'generate', draft: false } : cell
+  const matches = candidates.value?.prices.filter(c => cellKey(c) === cellKey(source) && c.unit === 'CNY/1M_tokens' && c.precision === 'exact')
   if (matches?.length !== 1) return undefined
   try { return exactRate(matches[0]!.supplier_cny_per_1m) } catch { return undefined }
 }
@@ -354,6 +359,7 @@ watch(() => [auth.orgId, auth.token, auth.role, auth.isSuperadmin, props.selecte
   if (auth.isAuthed) void load()
 }, { flush: 'sync' })
 watch(model, () => { void load() }, { flush: 'sync' })
+watch(verificationProfile, () => { if (!busy.value && !dirty.value) void load() }, { flush: 'sync' })
 onDeactivated(() => { ++loadGeneration; clear(); loading.value = false })
 onBeforeUnmount(() => { ++loadGeneration; ++operationGeneration; if (typeof window !== 'undefined') window.removeEventListener('beforeunload', beforeUnload) })
 onMounted(() => { if (typeof window !== 'undefined') window.addEventListener('beforeunload', beforeUnload); return load() })
@@ -366,6 +372,7 @@ defineExpose({ hasUnsavedChanges: () => dirty.value, discardChanges })
     <header class="page-heading"><div><h1>{{ model }}</h1><p>{{ t('unit') }}</p></div><span class="state" :class="{ dirty }">{{ dirty ? t('dirty') : t('clean') }}</span><label v-if="!embedded">{{ t('title') }} <select v-model="model" :disabled="busy || loading || dirty"><option v-for="name in officialVideoModels" :key="name" :value="name">{{ name }}</option></select></label></header>
     <p v-if="!auth.isSuperadmin" class="message">{{ t('unauthorized') }}</p><p v-else-if="!supported" class="message">{{ t('unsupported') }}</p>
     <p v-if="error" class="message error" role="alert">{{ error }}</p><p v-if="notice" class="message success" role="status">{{ notice }}</p>
+    <label v-if="model === 'seedance-2.5' && auth.isSuperadmin && bindingMatches" class="panel">{{ t('verificationSelect') }} <select v-model="verificationProfile" :disabled="busy || loading || dirty"><option value="standard">{{ t('verificationStandard') }}</option><option value="draft">{{ t('verificationDraft') }}</option></select></label>
     <section v-if="verification && !loading && bindingMatches" class="panel verification-summary"><div><strong>{{ verification.verified ? t('verificationSynced') : t('verificationAvailable') }}</strong><p>{{ t('verificationSummary') }}</p></div><button :disabled="busy" @click="verificationOpen = true">{{ t('verificationPreview') }}</button></section>
     <p v-if="verificationError && !verificationOpen" class="message error" role="alert">{{ verificationError }}</p>
     <p v-if="loading" aria-live="polite">{{ t('loading') }}</p><p v-else-if="!bindingMatches" class="message error">{{ t('wrongBinding') }}</p>

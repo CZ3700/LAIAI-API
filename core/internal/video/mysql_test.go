@@ -55,6 +55,24 @@ type fixture struct {
 	response func(*http.Request) (*http.Response, error)
 }
 
+// HandleGet follows the official task-query shape; the platform's TaskView
+// has time.Time and billing fields that are intentionally absent from it.
+type officialTaskQueryResponse struct {
+	ID        string `json:"id"`
+	Model     string `json:"model"`
+	Status    string `json:"status"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+	Content   *struct {
+		VideoURL     string `json:"video_url"`
+		LastFrameURL string `json:"last_frame_url"`
+	} `json:"content"`
+	Usage *struct {
+		CompletionTokens *int64 `json:"completion_tokens"`
+		TotalTokens      *int64 `json:"total_tokens"`
+	} `json:"usage"`
+}
+
 func mysqlFixture(t *testing.T) *fixture {
 	t.Helper()
 	dsn := os.Getenv("ARK_TEST_MYSQL_DSN")
@@ -389,8 +407,10 @@ func TestMySQLVideoHTTPAuditAndRetention(t *testing.T) {
 	}
 	responseBody, e := f.s.Evidence.ReadForHistory(context.Background(), f.key.OrgID, log.ResponsePayloadID, invocation.VideoAccess{ActorRole: invocation.VideoRoleOrgReader, ActorID: fmt.Sprint(f.key.ID), ReasonCode: "response_test"})
 	must(t, e)
-	if !bytes.Contains(responseBody, []byte(`"billing_state":"reserved"`)) {
-		t.Fatal("client response evidence did not preserve safe DTO")
+	var submitted map[string]json.RawMessage
+	must(t, json.Unmarshal(responseBody, &submitted))
+	if len(submitted) != 1 || len(submitted["id"]) == 0 || !bytes.Equal(bytes.TrimSpace(responseBody), bytes.TrimSpace(w.Body.Bytes())) {
+		t.Fatal("client response evidence did not preserve the official submit response")
 	}
 	g.GET("/v1/video/portrait-authorizations/:session_id", func(c *gin.Context) {
 		c.JSON(200, gin.H{"session_id": c.Param("session_id"), "authorization_url": "https://identity.example.test?token=secret-h5-one-use"})

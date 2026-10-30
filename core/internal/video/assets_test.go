@@ -350,6 +350,11 @@ func TestMySQLDraftMetadataAndLicenseRevalidation(t *testing.T) {
 	if resolve(f.key.OrgID+1000000) == nil {
 		t.Fatal("cross-tenant Draft accepted")
 	}
+	must(t, f.s.DB.Model(&TaskParameters{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, parent.ID).Update("created_at", f.now.Add(-15*24*time.Hour)).Error)
+	if err := resolve(f.key.OrgID); !errors.Is(err, ErrDraftExpired) {
+		t.Fatalf("expired Draft must fail before conversion: %v", err)
+	}
+	must(t, f.s.DB.Model(&TaskParameters{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, parent.ID).Update("created_at", row.CreatedAt).Error)
 	must(t, f.s.DB.Transaction(func(tx *gorm.DB) error {
 		return f.s.Assets.RevokeLicenseTx(tx, f.key.OrgID, session, "revoke_evidence", "reviewer")
 	}))

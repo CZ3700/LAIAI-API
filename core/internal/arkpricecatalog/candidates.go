@@ -86,6 +86,42 @@ func ReferenceCandidates(model string) (Candidates, error) {
 	return referenceCandidates(c, model)
 }
 
+// DraftReferencePrices derives the four Seedance 2.5 cells from the captured
+// ordinary 480p/1080p tariff rows. Official model pricing specifies that Draft
+// is billed as ordinary 480p and conversion at the 1080p target rate, with the
+// input-video branch inherited from the original Draft request. The original
+// source rows remain attached so publication can audit the exact supplier rate.
+// https://docs.volcengine.com/docs/ark/model-pricing?lang=zh
+func DraftReferencePrices(ref Candidates) ([]ReferencePrice, error) {
+	if ref.Model != "seedance-2.5" {
+		return nil, ErrUnsupportedModel
+	}
+	byKey := make(map[string]ReferencePrice, len(ref.Prices))
+	for _, price := range ref.Prices {
+		byKey[price.Key] = price
+	}
+	out := make([]ReferencePrice, 0, 4)
+	for _, input := range []bool{false, true} {
+		for _, step := range []struct {
+			mode, resolution string
+			draft            bool
+		}{
+			{"generate", "480p", true},
+			{"draft_conversion", "1080p", false},
+		} {
+			base, ok := byKey[fmt.Sprintf("generate/%s/%t/default/false", step.resolution, input)]
+			if !ok || base.Precision != "exact" || len(base.SourceRows) == 0 {
+				return nil, fmt.Errorf("catalog: missing reviewed Draft tariff source")
+			}
+			base.Key = fmt.Sprintf("%s/%s/%t/default/%t", step.mode, step.resolution, input, step.draft)
+			base.Mode, base.Draft = step.mode, step.draft
+			base.SourceRows = append([]SourceRow(nil), base.SourceRows...)
+			out = append(out, base)
+		}
+	}
+	return out, nil
+}
+
 type candidateModelIdentity struct {
 	priceTable, minimumTable, priceView, series string
 	variant                                     bool

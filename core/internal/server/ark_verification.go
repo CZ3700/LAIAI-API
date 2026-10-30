@@ -208,7 +208,17 @@ func (s *Server) getArkVerification(c *gin.Context) {
 	if _, ok := s.videoAdminActor(c); !ok {
 		return
 	}
-	p, e := arkverification.Load(c.Param("model"))
+	var p arkverification.Profile
+	var e error
+	switch c.Query("profile") {
+	case "":
+		p, e = arkverification.Load(c.Param("model"))
+	case "draft":
+		p, e = arkverification.LoadDraft(c.Param("model"))
+	default:
+		fail(c, 422, "unknown verification profile")
+		return
+	}
 	if e != nil {
 		fail(c, 404, "official verification profile unavailable")
 		return
@@ -257,6 +267,11 @@ func (s *Server) syncArkVerification(c *gin.Context) {
 	if e != nil {
 		fail(c, 404, "official verification profile unavailable")
 		return
+	}
+	if p.Version != in.ProfileVersion {
+		if draft, draftErr := arkverification.LoadDraft(c.Param("model")); draftErr == nil && draft.Version == in.ProfileVersion {
+			p = draft
+		}
 	}
 	if p.Version != in.ProfileVersion {
 		fail(c, 409, "official verification profile changed")

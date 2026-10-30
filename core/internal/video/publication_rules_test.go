@@ -67,6 +67,43 @@ func TestPublicationCapabilityCanonicalCellsAndDetachedContext(t *testing.T) {
 	}
 }
 
+func TestDraftPublicationOnlyAdds480pPreviewAnd1080pConversion(t *testing.T) {
+	cfg := catalogTestConfig(t, ark.Model25)
+	profile, err := arkverification.LoadDraft(ark.Model25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.Capability.UpstreamModel = "doubao-seedance-2-5-260628"
+	raw, _ := json.Marshal(profile.Capability)
+	cfg.CapabilityJSON = string(raw)
+	pub, err := ParsePublicationCapability(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pub.Cells()) != 10 {
+		t.Fatalf("want 6 ordinary + 4 Draft cells, got %d", len(pub.Cells()))
+	}
+	for _, input := range []bool{false, true} {
+		for _, cell := range []PublicationCell{
+			{Mode: "generate", Resolution: "480p", InputVideo: input, ServiceTier: "default", Draft: true},
+			{Mode: "draft_conversion", Resolution: "1080p", InputVideo: input, ServiceTier: "default"},
+		} {
+			if !pub.Supports(cell) {
+				t.Fatalf("supported Draft cell rejected: %+v", cell)
+			}
+		}
+	}
+	for _, cell := range []PublicationCell{
+		{Mode: "generate", Resolution: "720p", ServiceTier: "default", Draft: true},
+		{Mode: "draft_conversion", Resolution: "720p", ServiceTier: "default"},
+		{Mode: "draft_conversion", Resolution: "1080p", ServiceTier: "default", Draft: true},
+	} {
+		if pub.Supports(cell) {
+			t.Fatalf("unsupported Draft cell admitted: %+v", cell)
+		}
+	}
+}
+
 func TestPublicationInvalidCapabilityAndVariantIdentity(t *testing.T) {
 	for _, mode := range []string{"alias", "wrong_upstream", "duplicate_resolution", "bad_bounds", "unknown_ratio", "empty_version", "frames_invalid", "input_bound"} {
 		t.Run(mode, func(t *testing.T) {

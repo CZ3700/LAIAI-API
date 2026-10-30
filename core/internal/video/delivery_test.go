@@ -118,9 +118,9 @@ func TestMySQLDeliveryLegacyReadBackfillAndExpiry(t *testing.T) {
 	}
 	makeFixtureTaskRateDue(t, f, v.ID, "query")
 	w = deliveryRequest(f, r, "/v1/video/generations/"+v.ID)
-	var got TaskView
+	var got officialTaskQueryResponse
 	must(t, json.Unmarshal(w.Body.Bytes(), &got))
-	if w.Code != 200 || got.ContentURL != testDeliveryURL || f.gets.Load() != before+1 || f.posts.Load() != 1 {
+	if w.Code != 200 || got.Content == nil || got.Content.VideoURL != testDeliveryURL || f.gets.Load() != before+1 || f.posts.Load() != 1 {
 		t.Fatal("backfill did not use one GET")
 	}
 	f.now = f.now.Add(25 * time.Hour)
@@ -132,8 +132,9 @@ func TestMySQLDeliveryLegacyReadBackfillAndExpiry(t *testing.T) {
 		t.Fatal("expired list capsule escaped")
 	}
 	w = deliveryRequest(f, r, "/v1/video/generations/"+v.ID)
+	got = officialTaskQueryResponse{}
 	must(t, json.Unmarshal(w.Body.Bytes(), &got))
-	if w.Code != 200 || got.ContentURL != testDeliveryURL || f.gets.Load() != before+2 {
+	if w.Code != 200 || got.Content == nil || got.Content.VideoURL != testDeliveryURL || f.gets.Load() != before+2 {
 		t.Fatal("expired capsule was not refreshed by detail GET")
 	}
 	var entries int64

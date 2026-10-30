@@ -100,6 +100,8 @@ func respondError(c *gin.Context, err error) {
 		apiError(c, 409, "idempotency_conflict")
 	case errors.Is(err, ErrState) || errors.Is(err, videoasset.ErrConflict) || errors.Is(err, videoasset.ErrInUse) || errors.Is(err, videoasset.ErrNotEmpty):
 		apiError(c, 409, "invalid_state")
+	case errors.Is(err, ErrDraftExpired):
+		apiError(c, 410, "content_expired")
 	case errors.Is(err, ErrCapability) || errors.Is(err, videobilling.ErrPricingUnavailable) || errors.Is(err, videoasset.ErrUnsupported):
 		apiError(c, 422, "unsupported_capability")
 	case errors.Is(err, task.ErrConcurrencyLimit):
