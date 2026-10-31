@@ -3,6 +3,8 @@ import { keyVideoMessages } from './keyVideo'
 import { currencyMessages } from './currency'
 import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
+import modelLimitsMessages from './modelLimits'
+import watermarkToggleMessages from './watermarkToggle'
 import type { Messages } from './en'
 
 export default {
@@ -11,6 +13,7 @@ export default {
   currency: currencyMessages['zh-TW'],
   pricingAdmin: pricingRedesignAdminMessages['zh-TW'].pricingAdmin,
   catalog: modelCatalogMessages['zh-TW'],
+modelLimits: modelLimitsMessages,  watermark: watermarkToggleMessages,
   pricingx: {
     "title": "按廠商配置定價",
     "intro": "廠商與渠道接入保持一致。選擇廠商和渠道，為已接入模型配置對應的計價方式。",

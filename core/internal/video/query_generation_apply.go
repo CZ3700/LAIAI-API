@@ -188,6 +188,9 @@ func (s *Service) applyQueryGenerationTx(tx *gorm.DB, t *task.Task, st *State, r
 			if receipt.HasVideo {
 				st.ArtifactStatus = "ready"
 				stateUpdates["artifact_status"] = st.ArtifactStatus
+				if err = s.watermarkRegisterTx(tx, t, st, now); err != nil {
+					return noop, err
+				}
 			}
 		}
 		stateUpdates["applied_query_sequence"] = receipt.Sequence

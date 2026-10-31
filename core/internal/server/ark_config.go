@@ -132,6 +132,8 @@ func (s *Server) registerVideoConfiguration(su *gin.RouterGroup) {
 	su.POST("/video/configurations", s.publishVideoConfiguration)
 	su.PUT("/video/orgs/:org_id/quota-policies", s.publishVideoQuota)
 	su.PUT("/video/org-policies/:org_id", s.publishVideoOrgPolicy)
+	su.GET("/video/watermark", s.getWatermarkSetting)
+	su.PUT("/video/watermark", s.putWatermarkSetting)
 	su.POST("/video/model-configs/:model/disable", func(c *gin.Context) {
 		actor, ok := s.videoAdminActor(c)
 		if !ok {

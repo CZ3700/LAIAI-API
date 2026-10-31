@@ -115,6 +115,9 @@ func (s *Service) applyQueryAtomicTx(tx *gorm.DB, taskRow *task.Task, stateRow *
 					st.ResultPayloadRef = deliveryRef
 					if receipt.HasVideo {
 						st.ArtifactStatus = "ready"
+						if e = s.watermarkRegisterTx(tx, &t, &st, now); e != nil {
+							return e
+						}
 					}
 				}
 			case "failed", "cancelled", "expired":

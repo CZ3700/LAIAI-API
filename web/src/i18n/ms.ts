@@ -3,6 +3,8 @@ import { keyVideoMessages } from './keyVideo'
 import { currencyMessages } from './currency'
 import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
+import modelLimitsMessages from './modelLimits'
+import watermarkToggleMessages from './watermarkToggle'
 import en, { type Messages } from './en'
 
 export default {
@@ -11,6 +13,7 @@ export default {
   currency: currencyMessages['ms'],
   pricingAdmin: pricingRedesignAdminMessages['ms'].pricingAdmin,
   catalog: modelCatalogMessages['ms'],
+modelLimits: modelLimitsMessages,  watermark: watermarkToggleMessages,
   pricingx: {
     "title": "Harga mengikut penyedia",
     "intro": "Senarai penyedia adalah sama dengan tetapan saluran. Pilih penyedia dan saluran untuk menetapkan harga model yang disambungkan.",
