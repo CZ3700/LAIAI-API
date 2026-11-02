@@ -116,8 +116,8 @@ func queryRecoveryNew(t *testing.T) *queryRecoveryFixture {
 	queryRecoveryCheck(t, err)
 	ran, err := migrate.Up(db, os.DirFS("../../../migrations"))
 	queryRecoveryCheck(t, err)
-	if len(ran) != 136 || ran[len(ran)-1] != "0136_video_model_limits" {
-		t.Fatal("query recovery fixture requires the complete tracked 0136 schema")
+	if len(ran) != 138 || ran[len(ran)-1] != "0138_console_log_indexes" {
+		t.Fatal("query recovery fixture requires the complete tracked 0138 schema")
 	}
 	db, err = ledger.EnableActivityTracking(db)
 	queryRecoveryCheck(t, err)
