@@ -181,7 +181,7 @@ def render(evidence, cases):
                 events.append(dict(protocol=audit.PROTOCOL, run_id=RUN, case_id=case, instance=instance,
                                    role=role, source=builds[role]['source'], pid=pid,
                                    seq=len(events)+1, cmd_id=cid, event=kind, data=data))
-            event('ready', 0, dict(schema='ark_test_qhandoff_'+case[-1]*24, migration_max=136,
+            event('ready', 0, dict(schema='ark_test_qhandoff_'+case[-1]*24, migration_max=137,
                                   has_persisted_consumer=role == 'new', has_dispatch_consumer=role == 'new', task_count=0))
             for art in [a for a in artifacts if a['instance'] == instance]:
                 commands.append(art['_command'])
@@ -283,10 +283,10 @@ class QueryRecoveryHostTests(unittest.TestCase):
                     if mode == 'run': raw = raw.replace(RUN, 'f'*16)
                     elif mode == 'source': raw = raw.replace(audit.OLD, NEW)
                     elif mode == 'stop_ack': raw = raw.replace('"event": "drained"', '"event": "command_done"')
-                    elif mode == 'schema_before_expand': raw = raw.replace('"migration_max": 136', '"migration_max": 133')
-                    elif mode == 'schema_prior_134': raw = raw.replace('"migration_max": 136', '"migration_max": 134')
-                    elif mode == 'schema_prior_135': raw = raw.replace('"migration_max": 136', '"migration_max": 135')
-                    elif mode == 'schema_future': raw = raw.replace('"migration_max": 136', '"migration_max": 137')
+                    elif mode == 'schema_before_expand': raw = raw.replace('"migration_max": 137', '"migration_max": 133')
+                    elif mode == 'schema_prior_134': raw = raw.replace('"migration_max": 137', '"migration_max": 134')
+                    elif mode == 'schema_prior_135': raw = raw.replace('"migration_max": 137', '"migration_max": 135')
+                    elif mode == 'schema_future': raw = raw.replace('"migration_max": 137', '"migration_max": 138')
                     elif mode == 'missing_done': raw = '\n'.join(line for line in raw.splitlines() if '"event": "command_done"' not in line)+'\n'
                     else: raw += '    --- FAIL: hidden (0.01s)\n'
                     path.write_text(raw, newline='\n')
