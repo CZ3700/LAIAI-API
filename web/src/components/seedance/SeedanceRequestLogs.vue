@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { fmtUsd, displayCurrencyCode } from '@/lib/money'
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, errorMessage } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
 import DetailDrawer from '@/components/DetailDrawer.vue'
 import HistoryJSON from './HistoryJSON.vue'
 import MeteringFacts from './MeteringFacts.vue'
+import { hasAbsorbedOverage, initialChargeExplanation } from './billingPresentation'
 import { useSeedanceI18n } from './messages'
 import type { BodyInfo, BodyRead, ExecutionRow, LogDetail, LogRow, Page } from './types'
 
@@ -20,6 +21,7 @@ const filter = ref({ request_id: '', task_id: '', model: '', api_key_id: '', ope
 const cursors = ref<string[]>([''])
 const next = ref<string | null>(null)
 const detail = ref<LogDetail | null>(null)
+const initialCharge = computed(() => initialChargeExplanation(detail.value?.billing))
 const selected = ref('')
 const tab = ref<'received' | 'result' | 'response'>('received')
 const reason = ref('request_debugging')
@@ -141,8 +143,11 @@ onBeforeUnmount(() => { listVersion++; close() })
               <p v-if="detail.request.deleted_at" class="text-warn">{{ t('seedance.deleted') }}</p>
               <p class="text-xs text-muted">{{ t('seedance.asOf') }}: {{ time(detail.as_of) }}</p>
               <div v-if="detail.billing" class="grid grid-cols-2 gap-3 rounded border border-line p-4 text-sm">
-                <p>{{ t('seedance.reserved') }}: {{ fmtUsd(detail.billing.reserved_amount) }}</p><p>{{ t('seedance.settled') }}: {{ detail.billing.settled_amount == null ? t('seedance.pending') : fmtUsd(detail.billing.settled_amount) }}</p><p>{{ t('seedance.released') }}: {{ fmtUsd(detail.billing.released_amount) }}</p><p>{{ t('seedance.net') }}: {{ detail.billing.net_charged_amount == null ? t('seedance.pending') : fmtUsd(detail.billing.net_charged_amount) }}</p>
-                <p>{{ t('seedance.videoTokens') }}: {{ detail.billing.billable_tokens ?? t('seedance.pending') }}</p><p>{{ t('seedance.inputTokens') }}</p><p class="break-all">{{ t('seedance.priceVersion') }}: {{ detail.billing.pricing_version }}</p><p class="break-all">{{ t('seedance.ruleVersion') }}: {{ detail.billing.billing_rule_version }}</p>
+                <p>{{ t('seedance.reserved') }}: {{ fmtUsd(detail.billing.reserved_amount) }}</p><p v-if="initialCharge">{{ t('seedance.initialCalculated') }}: {{ fmtUsd(initialCharge.calculatedUsd) }}</p>
+                <p>{{ t('seedance.initialCaptured') }}: {{ detail.billing.settled_amount == null ? t('seedance.pending') : fmtUsd(detail.billing.settled_amount) }}</p><p>{{ t('seedance.released') }}: {{ fmtUsd(detail.billing.released_amount) }}</p>
+                <p v-if="hasAbsorbedOverage(initialCharge)">{{ t('seedance.initialAbsorbed') }}: {{ fmtUsd(initialCharge!.absorbedUsd, { precision: 6 }) }}</p><p>{{ t('seedance.net') }}: {{ detail.billing.net_charged_amount == null ? t('seedance.pending') : fmtUsd(detail.billing.net_charged_amount) }}</p>
+                <p v-if="initialCharge" class="col-span-2 text-xs text-muted">{{ t(initialCharge.source === 'settlement' ? 'seedance.initialChargeNotice' : 'seedance.initialChargeRecalculatedNotice') }}</p>
+                <p>{{ t('seedance.confirmedTokens') }}: {{ detail.billing.billable_tokens ?? t('seedance.pending') }}</p><p>{{ t('seedance.inputTokens') }}</p><p class="break-all">{{ t('seedance.priceVersion') }}: {{ detail.billing.pricing_version }}</p><p class="break-all">{{ t('seedance.ruleVersion') }}: {{ detail.billing.billing_rule_version }}</p>
                 <p>{{ t('seedance.reservedTokens') }}: {{ detail.billing.estimated_tokens ?? '—' }}</p><p>{{ t('seedance.unitPrice', { currency: displayCurrencyCode() }) }}: {{ fmtUsd(detail.billing.unit_price_usd_per_1m, { precision: 6 }) }}</p>
                 <p v-for="entry in detail.billing.entries" :key="entry.entry_id" class="col-span-2">{{ entry.type }} · {{ fmtUsd(entry.amount) }} · {{ time(entry.created_at) }}</p>
               </div>
