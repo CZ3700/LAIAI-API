@@ -90,6 +90,44 @@ func finishRequestRow(r *RequestLogRow) {
 	}
 }
 
+// requestIDFilterLimit caps the pre-resolved request_id set. It bounds each
+// list page set to the newest window; deeper rows beyond the cap are not
+// reachable through the task/model filter (documented console limitation).
+const requestIDFilterLimit = 1000
+
+// requestIDsForFilter resolves the request_id set for task/model filters
+// through indexed (org_id, task_id) / (org_id, public_model) paths, newest
+// first. nil (with nil error) means "no pre-resolution needed"; an empty
+// non-nil slice means "filters cannot match anything".
+func (s *Service) requestIDsForFilter(ctx context.Context, org uint64, taskID, model string) ([]string, error) {
+	if taskID == "" && model == "" {
+		return nil, nil
+	}
+	var ids []string
+	if taskID != "" {
+		// The create request id is also resolvable from the state row even if
+		// its context write was lost (submission_unknown recovery paths).
+		err := s.DB.WithContext(ctx).Raw(
+			"SELECT request_id FROM ("+
+				"SELECT request_id, created_at FROM video_request_contexts WHERE org_id = ? AND task_id = ? "+
+				"UNION ALL SELECT create_request_id, created_at FROM video_task_states WHERE org_id = ? AND task_id = ?"+
+				") t ORDER BY created_at DESC LIMIT ?",
+			org, taskID, org, taskID, requestIDFilterLimit).Scan(&ids).Error
+		if err != nil {
+			return nil, err
+		}
+		return ids, nil
+	}
+	err := s.DB.WithContext(ctx).Raw(
+		"SELECT request_id FROM video_request_contexts WHERE org_id = ? AND public_model = ? "+
+			"ORDER BY created_at DESC LIMIT ?",
+		org, model, requestIDFilterLimit).Scan(&ids).Error
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 func (s *Service) ListRequestLogs(ctx context.Context, org uint64, f RequestLogFilter, cursor string, limit int) (RequestLogPage, error) {
 	out := RequestLogPage{Data: []RequestLogRow{}, AsOf: s.Now().UTC()}
 	if org == 0 || limit < 1 || limit > 100 || f.HTTPStatus < 0 || f.HTTPStatus > 599 {
@@ -109,11 +147,31 @@ func (s *Service) ListRequestLogs(ctx context.Context, org uint64, f RequestLogF
 	if e != nil {
 		return out, e
 	}
+	// Task/model 过滤不能落在 t.task_id / requestModelSQL 这类 COALESCE join 表达式上：
+	// 该表达式没有任何可用索引，只能倒序扫组织的全部日志行（api_request_logs 40 万行且
+	// 持续增长，单次执行秒级~分钟级并打满 CPU）。先走 (org_id, task_id) / (org_id,
+	// public_model) 索引把 request_id 集合解析出来，再按主键取日志行。
+	requestIDs, e := s.requestIDsForFilter(ctx, org, f.TaskID, f.Model)
+	if e != nil {
+		return out, e
+	}
+	if requestIDs != nil && len(requestIDs) == 0 {
+		return out, nil
+	}
 	q := requestLogQuery(s.DB.WithContext(ctx), org)
-	for _, v := range []struct{ expr, val string }{{"r.request_id", f.RequestID}, {"t.task_id", f.TaskID}, {requestModelSQL, f.Model}, {requestOperationSQL, f.Operation}, {"t.status", f.TaskStatus}, {"st.billing_state", f.BillingState}} {
+	for _, v := range []struct{ expr, val string }{{"r.request_id", f.RequestID}, {requestOperationSQL, f.Operation}, {"t.status", f.TaskStatus}, {"st.billing_state", f.BillingState}} {
 		if v.val != "" {
 			q = q.Where(v.expr+" = ?", v.val)
 		}
+	}
+	if requestIDs != nil {
+		q = q.Where("r.request_id IN ?", requestIDs)
+	}
+	if f.TaskID != "" {
+		q = q.Where("t.task_id = ?", f.TaskID)
+	}
+	if f.Model != "" {
+		q = q.Where(requestModelSQL+" = ?", f.Model)
 	}
 	if f.APIKeyID > 0 {
 		q = q.Where("r.api_key_id = ?", f.APIKeyID)
