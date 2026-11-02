@@ -11,8 +11,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// The indexed comparison on tasks uses its historical unicode collation, but
-// that lookup must never authorize a case/padding alias or another organization.
+// The indexed comparison on tasks uses the 0137 binary collation, and the
+// byte check must never authorize a case/padding alias or another organization.
 // These are aggregation-only rows, never provider or financial evidence.
 func TestMySQLQueryGenerationObservationExactTaskIdentity(t *testing.T) {
 	h := queryRecoveryNew(t)

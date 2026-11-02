@@ -379,9 +379,8 @@ func (s *Service) databaseObservation(ctx context.Context, m *workerMetrics) Wor
 
 // Five fixed aggregations. The hints cap individual SELECT execution, while
 // the context also covers pool waits, transaction start and the whole refresh.
-// tasks.task_id retains its historical unicode index collation. Lookups
-// into that index use its collation, then require exact bytes and org;
-// state lookups keep the existing binary index comparison.
+// tasks.task_id and video task identities use utf8mb4_bin from migration 0137.
+// Indexed equality narrows the join, then exact bytes and org preserve identity.
 // Only pending terminal financial work is added to the original active task
 // population. Raw JSON, credentials and resource IDs are never selected.
 const workerTaskSQL = `SELECT /*+ MAX_EXECUTION_TIME(200) */ UTC_TIMESTAMP(3) AS database_time,
@@ -396,14 +395,14 @@ const workerTaskSQL = `SELECT /*+ MAX_EXECUTION_TIME(200) */ UTC_TIMESTAMP(3) AS
  SELECT t.status,t.submitted_at FROM tasks t JOIN video_task_states v ON v.task_id=t.task_id AND CAST(v.task_id AS BINARY)=CAST(t.task_id AS BINARY) AND v.org_id=t.org_id
  WHERE t.provider='ark_official' AND t.status IN ('accepted','submitting','submission_unknown','queued','running') AND v.deleted_at IS NULL
  UNION ALL
- SELECT t.status,t.submitted_at FROM video_task_states v JOIN tasks t ON t.task_id=v.task_id COLLATE utf8mb4_unicode_ci AND CAST(t.task_id AS BINARY)=CAST(v.task_id AS BINARY) AND t.org_id=v.org_id
+ SELECT t.status,t.submitted_at FROM video_task_states v JOIN tasks t ON t.task_id=v.task_id AND CAST(t.task_id AS BINARY)=CAST(v.task_id AS BINARY) AND t.org_id=v.org_id
  WHERE v.billing_state='reserved' AND t.provider='ark_official' AND t.status IN ('succeeded','failed','cancelled','expired')
  ) populations`
 
 const workerOperationSQL = `SELECT /*+ MAX_EXECUTION_TIME(200) */
  CASE o.kind WHEN 'create_task' THEN 'create_task' WHEN 'cancel_task' THEN 'cancel_task' WHEN 'delete_task' THEN 'delete_task' ELSE 'other' END AS kind,
  o.status, COUNT(*) AS count
- FROM video_operations o JOIN tasks t ON t.task_id=o.resource_id COLLATE utf8mb4_unicode_ci AND CAST(t.task_id AS BINARY)=CAST(o.resource_id AS BINARY) AND t.org_id=o.org_id
+ FROM video_operations o JOIN tasks t ON t.task_id=o.resource_id AND CAST(t.task_id AS BINARY)=CAST(o.resource_id AS BINARY) AND t.org_id=o.org_id
  WHERE t.provider='ark_official' AND o.status IN ('pending','in_flight','unknown','needs_review')
  GROUP BY CASE o.kind WHEN 'create_task' THEN 'create_task' WHEN 'cancel_task' THEN 'cancel_task' WHEN 'delete_task' THEN 'delete_task' ELSE 'other' END,o.status ORDER BY kind,o.status`
 
@@ -446,7 +445,7 @@ func workerBlockedContractsQuery(tx *gorm.DB) *gorm.DB {
 	// joins it only after a known generation terminal, matching workerTaskSQL.
 	// Neither deletion nor an unknown status establishes a generation terminal.
 	pendingTasks := fresh().Table("video_task_states AS c").Select("c.org_id, c.task_id").
-		Joins("JOIN tasks t ON t.org_id = c.org_id AND t.task_id = c.task_id COLLATE utf8mb4_unicode_ci AND CAST(t.task_id AS BINARY) = CAST(c.task_id AS BINARY)").
+		Joins("JOIN tasks t ON t.org_id = c.org_id AND t.task_id = c.task_id AND CAST(t.task_id AS BINARY) = CAST(c.task_id AS BINARY)").
 		Where("t.provider = ? AND ((c.billing_state = ? AND (c.deleted_at IS NOT NULL OR t.status NOT IN ?)) OR (c.billing_state = ? AND t.status IN ?))", Provider, "pending_usage", active, "reserved", terminal)
 	taskCandidates := fresh().Raw("? UNION ALL ?", activeTasks, pendingTasks)
 	supportedTask := supportedTaskRuntime(fresh().Table("video_task_states AS v").Select("1")).
@@ -456,14 +455,14 @@ func workerBlockedContractsQuery(tx *gorm.DB) *gorm.DB {
 		Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).
 		Where("o.org_id = candidate.org_id AND o.id = candidate.id")
 	operations := fresh().Table("video_operations AS candidate").Select("COUNT(*)").
-		Joins("JOIN tasks t ON t.org_id = candidate.org_id AND t.task_id = candidate.resource_id COLLATE utf8mb4_unicode_ci AND CAST(t.task_id AS BINARY) = CAST(candidate.resource_id AS BINARY)").
+		Joins("JOIN tasks t ON t.org_id = candidate.org_id AND t.task_id = candidate.resource_id AND CAST(t.task_id AS BINARY) = CAST(candidate.resource_id AS BINARY)").
 		Where("t.provider = ? AND candidate.status IN ?", Provider, []string{"pending", "in_flight", "unknown"}).
 		Where("NOT EXISTS (?)", supportedOperation)
 	supportedReceipt := supportedQueryReceiptRuntime(fresh().Table("video_query_receipts AS r").Select("1").
 		Joins("JOIN video_task_states v ON v.org_id = r.org_id AND v.task_id = r.task_id")).
 		Where("r.org_id = candidate.org_id AND r.task_id = candidate.task_id AND r.attempt_id = candidate.attempt_id")
 	receipts := fresh().Table("video_query_receipts AS candidate").Select("COUNT(*)").
-		Joins("JOIN tasks t ON t.org_id = candidate.org_id AND t.task_id = candidate.task_id COLLATE utf8mb4_unicode_ci AND CAST(t.task_id AS BINARY) = CAST(candidate.task_id AS BINARY)").
+		Joins("JOIN tasks t ON t.org_id = candidate.org_id AND t.task_id = candidate.task_id AND CAST(t.task_id AS BINARY) = CAST(candidate.task_id AS BINARY)").
 		Where("t.provider = ? AND candidate.applied_at IS NULL", Provider).
 		Where("NOT EXISTS (?)", supportedReceipt)
 	return tx.Raw("SELECT /*+ MAX_EXECUTION_TIME(200) */ /* blocked_contracts */ (?) AS tasks, (?) AS operations, (?) AS query_receipts", tasks, operations, receipts)
