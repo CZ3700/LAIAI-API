@@ -245,22 +245,24 @@ type RequestBillingEntry struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 type RequestBilling struct {
-	Currency               string                `json:"currency"`
-	State                  string                `json:"state"`
-	ReservedAmount         string                `json:"reserved_amount"`
-	SettledAmount          *string               `json:"settled_amount"`
-	ReleasedAmount         string                `json:"released_amount"`
-	NetChargedAmount       *string               `json:"net_charged_amount"`
-	PricingVersion         string                `json:"pricing_version"`
-	BillingRuleVersion     string                `json:"billing_rule_version"`
-	UnitPriceUSD           string                `json:"unit_price_usd_per_1m"`
-	EstimatedTokens        int64                 `json:"estimated_tokens"`
-	BillableTokens         *int64                `json:"billable_tokens"`
-	ActualUsage            *UsageView            `json:"actual_usage"`
-	InputTokensExplanation string                `json:"input_tokens_explanation"`
-	Metering               *RequestMetering      `json:"metering"`
-	HoldBreakdown          *RequestHoldBreakdown `json:"hold_breakdown"`
-	Entries                []RequestBillingEntry `json:"entries"`
+	Currency                string                `json:"currency"`
+	State                   string                `json:"state"`
+	ReservedAmount          string                `json:"reserved_amount"`
+	SettledAmount           *string               `json:"settled_amount"`
+	InitialCalculatedAmount *string               `json:"initial_calculated_amount"`
+	InitialAbsorbedAmount   *string               `json:"initial_absorbed_amount"`
+	ReleasedAmount          string                `json:"released_amount"`
+	NetChargedAmount        *string               `json:"net_charged_amount"`
+	PricingVersion          string                `json:"pricing_version"`
+	BillingRuleVersion      string                `json:"billing_rule_version"`
+	UnitPriceUSD            string                `json:"unit_price_usd_per_1m"`
+	EstimatedTokens         int64                 `json:"estimated_tokens"`
+	BillableTokens          *int64                `json:"billable_tokens"`
+	ActualUsage             *UsageView            `json:"actual_usage"`
+	InputTokensExplanation  string                `json:"input_tokens_explanation"`
+	Metering                *RequestMetering      `json:"metering"`
+	HoldBreakdown           *RequestHoldBreakdown `json:"hold_breakdown"`
+	Entries                 []RequestBillingEntry `json:"entries"`
 }
 type RequestLogDetail struct {
 	Request RequestLogRow              `json:"request"`
@@ -336,6 +338,10 @@ func requestBilling(tx *gorm.DB, org uint64, st State) (*RequestBilling, error) 
 			b.BillableTokens = x.CompletionTokens
 		}
 		if x.State == videobilling.Settled {
+			calculated := x.CalculatedUSD.StringFixed(8)
+			absorbed := x.AbsorbedUSD.StringFixed(8)
+			b.InitialCalculatedAmount = &calculated
+			b.InitialAbsorbedAmount = &absorbed
 			b.Entries = append(b.Entries, RequestBillingEntry{ID: fmt.Sprintf("capture_%d", x.ID), Type: "capture", Amount: x.CapturedUSD.StringFixed(8), CreatedAt: x.CreatedAt})
 		}
 		released = released.Add(x.ReleasedUSD)
