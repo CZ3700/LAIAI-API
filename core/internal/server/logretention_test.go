@@ -3,11 +3,14 @@ package server
 import (
 	"context"
 	"testing"
+
+	"gorm.io/gorm"
 )
 
 // 旧日志清理：按 ext_settings 保留期删旧留新；调用日志(DATETIME) 与 审计日志(unix ms) 各自独立。
 func TestRunLogRetention(t *testing.T) {
 	srv, db := setupRelayServer(t)
+	mustExecLogSchema(t, db) // 0139 起保留清理覆盖视频/访问日志族，测试库需同构表
 	db.Exec(`INSERT INTO invocations (org_id,api_key_id,request_id,model,status,created_at) VALUES
 		(1,1,'old1','m','success','2000-01-01 00:00:00'),
 		(1,1,'new1','m','success', CURRENT_TIMESTAMP)`)
@@ -40,9 +43,78 @@ func TestRunLogRetention(t *testing.T) {
 	}
 }
 
+// 0139：控制台访问日志（14 天）与任务生命周期日志（30 天）保留期清理。
+// outbox 只删 processed 行（pending 永不删）。sqlite 测试自建所需表。
+func TestRunLogRetentionVideoTables(t *testing.T) {
+	srv, db := setupRelayServer(t)
+	mustExecLogSchema(t, db)
+	db.Exec(`INSERT INTO api_request_logs (request_id, started_at) VALUES
+		('old1', '2000-01-01 00:00:00'), ('new1', CURRENT_TIMESTAMP)`)
+	db.Exec(`INSERT INTO video_request_contexts (request_id, created_at) VALUES
+		('old1', '2000-01-01 00:00:00'), ('new1', CURRENT_TIMESTAMP)`)
+	db.Exec(`INSERT INTO video_events (event_id, created_at) VALUES
+		('evt-old', '2000-01-01 00:00:00'), ('evt-new', CURRENT_TIMESTAMP)`)
+	db.Exec(`INSERT INTO video_attempts (id, observed_at) VALUES (1, '2000-01-01 00:00:00'), (2, CURRENT_TIMESTAMP)`)
+	db.Exec(`INSERT INTO video_outbox (event_id, status, created_at) VALUES
+		('obx-old-processed', 'processed', '2000-01-01 00:00:00'),
+		('obx-old-pending', 'pending', '2000-01-01 00:00:00'),
+		('obx-new', 'processed', CURRENT_TIMESTAMP)`)
+	db.Exec(`INSERT INTO video_asset_events (event_id, created_at) VALUES
+		('ae-old', '2000-01-01 00:00:00'), ('ae-new', CURRENT_TIMESTAMP)`)
+
+	db.Exec(`INSERT INTO ext_settings (name,value) VALUES
+		('request_log_retention_days','7'),('task_log_retention_days','7')`)
+	if _, _, err := srv.srv.RunLogRetention(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		"SELECT COUNT(*) FROM api_request_logs WHERE request_id='old1'",
+		"SELECT COUNT(*) FROM video_request_contexts WHERE request_id='old1'",
+		"SELECT COUNT(*) FROM video_events WHERE event_id='evt-old'",
+		"SELECT COUNT(*) FROM video_attempts WHERE observed_at < '2020-01-01'",
+		"SELECT COUNT(*) FROM video_asset_events WHERE event_id='ae-old'",
+	} {
+		var n int64
+		db.Raw(q).Scan(&n)
+		if n != 0 {
+			t.Fatalf("old row survived: %s = %d", q, n)
+		}
+	}
+	var newRows int64
+	for _, q := range []string{
+		"SELECT COUNT(*) FROM api_request_logs WHERE request_id='new1'",
+		"SELECT COUNT(*) FROM video_request_contexts WHERE request_id='new1'",
+		"SELECT COUNT(*) FROM video_events WHERE event_id='evt-new'",
+		"SELECT COUNT(*) FROM video_outbox WHERE event_id IN ('obx-new','obx-old-pending')",
+		"SELECT COUNT(*) FROM video_asset_events WHERE event_id='ae-new'",
+	} {
+		db.Raw(q).Scan(&newRows)
+		if newRows == 0 {
+			t.Fatalf("recent/pending row deleted: %s = 0", q)
+		}
+	}
+}
+
+func mustExecLogSchema(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	for _, q := range []string{
+		`CREATE TABLE IF NOT EXISTS api_request_logs (request_id TEXT PRIMARY KEY, started_at DATETIME)`,
+		`CREATE TABLE IF NOT EXISTS video_request_contexts (request_id TEXT PRIMARY KEY, created_at DATETIME)`,
+		`CREATE TABLE IF NOT EXISTS video_events (event_id TEXT PRIMARY KEY, created_at DATETIME)`,
+		`CREATE TABLE IF NOT EXISTS video_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, observed_at DATETIME)`,
+		`CREATE TABLE IF NOT EXISTS video_outbox (event_id TEXT PRIMARY KEY, status TEXT, created_at DATETIME)`,
+		`CREATE TABLE IF NOT EXISTS video_asset_events (event_id TEXT PRIMARY KEY, created_at DATETIME)`,
+	} {
+		if err := db.Exec(q).Error; err != nil {
+			t.Fatalf("schema exec: %v", err)
+		}
+	}
+}
+
 // log_retention_days 空 → 回退到启动期 env 默认（invRetentionDefault）。
 func TestLogRetentionEnvFallback(t *testing.T) {
 	srv, db := setupRelayServer(t)
+	mustExecLogSchema(t, db)
 	srv.srv.invRetentionDefault = 7 // 模拟 env INVOCATION_RETENTION_DAYS=7
 	db.Exec(`INSERT INTO invocations (org_id,api_key_id,request_id,model,status,created_at) VALUES
 		(1,1,'old1','m','success','2000-01-01 00:00:00')`)
