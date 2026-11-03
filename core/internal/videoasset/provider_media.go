@@ -70,27 +70,17 @@ func (s *Service) registrationMedia(ctx context.Context, org uint64, raw, kind s
 	return MediaEvidence{FetchURL: raw}, nil
 }
 
-// A confirmed official image can be referenced without a platform copy. Video
-// and audio references still need trusted duration facts; zero is never used as
-// a substitute for an unknown input length in admission or billing.
+// Reference eligibility follows the official state: an active asset with a
+// provider id is usable for every media type. The measured-facts requirement
+// for audio/video made URL-mode assets (which the platform never probes, by
+// design — Volcano downloads and owns the media) permanently ineligible;
+// dropped in favor of upstream verification. Measured facts remain optional
+// console metadata surfaced as the media-verification status. Zero duration is
+// never fabricated: billing estimates keep the caller-declared duration and the
+// model's own cap.
 func referenceMediaReady(a Asset) bool {
-	if a.Status != StatusActive || a.ProviderID == nil || *a.ProviderID == "" {
-		return false
-	}
-	return a.MediaType == "image" || (a.MediaType == "video" || a.MediaType == "audio") && hasMediaFacts(a)
+	return a.Status == StatusActive && a.ProviderID != nil && *a.ProviderID != ""
 }
 
-// The list filter preserves the same media-type distinction as referenceMediaReady.
-// Measured facts are written only by the optional verified-media path. Image
-// eligibility comes from the official state, not from a fictitious local copy.
-const referenceMediaReadySQL = `video_assets.provider_id IS NOT NULL AND video_assets.provider_id <> '' AND
-(video_assets.media_type = 'image' OR
- (video_assets.metadata_version > 0 AND video_assets.immutable_object_ref <> '' AND
- LENGTH(video_assets.object_sha256) = 64 AND video_assets.verified_at IS NOT NULL AND video_assets.byte_size > 0 AND
- video_assets.duration_ms BETWEEN 2000 AND 30000 AND
- ((video_assets.media_type = 'audio' AND video_assets.byte_size <= 15000000 AND video_assets.mime IN ('audio/mpeg','audio/wav','audio/x-wav')) OR
-  (video_assets.media_type = 'video' AND video_assets.byte_size <= 200000000 AND video_assets.mime IN ('video/mp4','video/quicktime') AND
-   video_assets.width BETWEEN 300 AND 6000 AND video_assets.height BETWEEN 300 AND 6000 AND
-   video_assets.width * 10 >= video_assets.height * 4 AND video_assets.width * 2 <= video_assets.height * 5 AND
-   video_assets.width * video_assets.height BETWEEN 407696 AND 8295044 AND
-   video_assets.fps_den BETWEEN 1 AND 1000000 AND video_assets.fps_num BETWEEN 24 * video_assets.fps_den AND 60 * video_assets.fps_den))))`
+// The list filter matches referenceMediaReady.
+const referenceMediaReadySQL = `video_assets.provider_id IS NOT NULL AND video_assets.provider_id <> ''`
