@@ -74,6 +74,8 @@ def compose():
                'environment':dict(c['environments'][role]), 'volumes':[]}
             if role=='core' and c.get('compose_hmac'): service['environment']['LAIAI_VIDEO_HMAC_SECRET']=c['compose_hmac']
             for m in c['mounts'][role]:
+                if role=='core' and not candidate and m['Destination'] in ('/var/lib/laiai/video-media','/var/lib/clamav'):
+                    continue
                 if role=='caddy' and m['Destination']=='/etc/caddy/Caddyfile':
                     service['volumes']+=overlay['services']['caddy']['volumes']; continue
                 service['volumes'].append({'type':m['Type'],'source':m['Source'],'target':m['Destination'],'read_only':not m['RW']})
@@ -238,7 +240,8 @@ class StateTests(unittest.TestCase):
 
     def run_state(self, *args, value=None, ok=True):
         result = subprocess.run([sys.executable, str(STATE_PY), *map(str, args)],
-                                input=None if value is None else json.dumps(value), text=True, capture_output=True)
+                                input=None if value is None else json.dumps(value), text=True, capture_output=True,
+                                env=dict(os.environ, COMPOSE_PROJECT='infra'))
         self.assertNotIn(SECRET, result.stdout + result.stderr)
         if ok:
             self.assertEqual(result.returncode, 0, result.stderr)
