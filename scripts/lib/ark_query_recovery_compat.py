@@ -92,6 +92,12 @@ def migration_inventory_count(files, role):
     return len(names)
 
 
+def migration_head(files):
+    names = [name for name in files if re.fullmatch(r'migrations/\d{4}_[^/]+\.sql', name)]
+    need(names, 'migration_head')
+    return max(names).removeprefix('migrations/').removesuffix('.sql')
+
+
 class Runner:
     def __init__(self, args):
         self.args, self.env = args, clean_environment(os.environ)
@@ -184,9 +190,11 @@ class Runner:
             migrations = migration_inventory_count(files, role)
             self.sources[role] = dict(source=commit, path=str(directory), files=manifest,
                                       original_sha256=original, migration_count=migrations,
+                                      migration_head=migration_head(files),
                                       common_harness_sha256={p: sha(b) for p, b in common.items()})
             write(self.artifact(role + '-source-manifest.json'), manifest)
         write(self.artifact('sources.json'), self.sources)
+        write(self.artifact('evidence/sources.json'), self.sources)
 
     def compiler(self, argv, role, log):
         source = Path(self.sources[role]['path'])
@@ -340,6 +348,7 @@ class Runner:
         log = self.artifact('evidence/matrix-controller.log')
         process = OwnedProcess([sys.executable, str(ROOT / 'scripts/lib/ark_query_recovery_matrix.py'),
                                 '--run-id', self.run, '--build-manifest', str(self.evidence / 'build-manifest.json'),
+                                '--schema-head', self.sources['new']['migration_head'],
                                 '--evidence', str(self.evidence / 'matrix')], env, log)
         try:
             need(process.proc.wait(timeout=max(1, self.deadline - time.monotonic())) == 0, 'matrix_exit')

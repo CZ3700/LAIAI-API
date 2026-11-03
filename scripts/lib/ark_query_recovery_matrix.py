@@ -129,6 +129,7 @@ class Child:
         env.update(ARK_QUERY_HANDOFF_PROTOCOL=PROTOCOL, ARK_QUERY_HANDOFF_RUN=matrix.run,
                    ARK_QUERY_HANDOFF_CASE=case, ARK_QUERY_HANDOFF_INSTANCE=instance,
                    ARK_QUERY_HANDOFF_ROLE=self.role, ARK_QUERY_HANDOFF_SOURCE=matrix.builds[self.role]['source'],
+                   ARK_QUERY_HANDOFF_SCHEMA_HEAD=matrix.schema_head,
                    ARK_QUERY_HANDOFF_DIR=str(directory.resolve()), ARK_QUERY_HANDOFF_DSN=matrix.dsns[case],
                    ARK_QUERY_HANDOFF_MOCK_URL=matrix.mock.url, ARK_QUERY_HANDOFF_MOCK_TOKEN=matrix.tokens[case])
         self.process = subprocess.Popen([matrix.builds[self.role]['path'], '-test.run=^'+TEST+'$',
@@ -140,7 +141,7 @@ class Child:
         self.thread.start()
         ready = self.wait('ready', 0, 30)
         keys(ready['data'], ('schema', 'migration_max', 'has_persisted_consumer', 'has_dispatch_consumer', 'task_count'), 'ready_shape')
-        need(ready['data']['schema'] == matrix.schemas[case] and ready['data']['migration_max'] == 138 and
+        need(ready['data']['schema'] == matrix.schemas[case] and ready['data']['migration_max'] == matrix.schema_max and
              ready['data']['has_persisted_consumer'] is (self.role == 'new') and
              ready['data']['has_dispatch_consumer'] is (self.role == 'new'), 'ready_role')
 
@@ -255,6 +256,10 @@ class Matrix:
     def __init__(self, args):
         self.run = args.run_id
         need(re.fullmatch('[0-9a-f]{16}', self.run) is not None, 'run_id')
+        self.schema_head = args.schema_head
+        need(re.fullmatch(r'\d{4}_[a-z0-9_]{1,96}', self.schema_head) is not None and
+             self.schema_head[:4] >= '0138', 'schema_head')
+        self.schema_max = int(self.schema_head[:4])
         self.root = Path(args.evidence).absolute()
         need(not self.root.exists() and self.root.resolve() == self.root, 'new_matrix_output')
         self.root.mkdir(parents=True, mode=0o700)
@@ -365,6 +370,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-id', required=True)
     parser.add_argument('--build-manifest', required=True)
+    parser.add_argument('--schema-head', required=True)
     parser.add_argument('--evidence', required=True)
     args = parser.parse_args()
     matrix, success = None, False

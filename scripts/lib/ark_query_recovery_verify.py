@@ -238,7 +238,7 @@ def read_artifact(case_dir, event):
     return value
 
 
-def read_child(root, case, instance, run, builds, exit_row):
+def read_child(root, case, instance, run, builds, exit_row, schema_max):
     role = instance.split('-')[0]
     need(exit_row['case_id'] == case and exit_row['instance'] == instance and exit_row['role'] == role and
          exit_row['source'] == builds[role]['source'] and exit_row['binary_sha256'] == builds[role]['sha256'], 'child_build')
@@ -259,7 +259,7 @@ def read_child(root, case, instance, run, builds, exit_row):
     need(ready['event'] == 'ready' and ready['cmd_id'] == 0 and sum(e['event'] == 'ready' for e in events) == 1, 'ready_event')
     keys(ready['data'], ('schema', 'migration_max', 'has_persisted_consumer', 'has_dispatch_consumer', 'task_count'), 'ready_shape')
     need(re.fullmatch(r'ark_test_qhandoff_[0-9a-f]{24}', ready['data']['schema']) is not None and
-         ready['data']['migration_max'] == 138 and ready['data']['has_persisted_consumer'] is (role == 'new') and
+         ready['data']['migration_max'] == schema_max and ready['data']['has_persisted_consumer'] is (role == 'new') and
          ready['data']['has_dispatch_consumer'] is (role == 'new'), 'real_role_interface')
     integer(ready['data']['task_count'], 0, 42)
     artifacts = []
@@ -494,6 +494,17 @@ def verify(evidence):
     keys(builds, ('old', 'new'), 'build_roles')
     need(builds['old']['source'] == OLD and re.fullmatch('[0-9a-f]{40}', builds['new']['source']) is not None and builds['new']['source'] != OLD, 'real_sources')
     need(builds['old']['sha256'] != builds['new']['sha256'], 'same_binary')
+    sources = load(evidence / 'sources.json')
+    keys(sources, ('old', 'new'), 'source_roles')
+    for role, source in sources.items():
+        need(source['source'] == builds[role]['source'], 'source_build')
+        names = [name for name in source['files'] if re.fullmatch(r'migrations/\d{4}_[^/]+\.sql', name)]
+        need(len(names) == source['migration_count'] and
+             len(names) >= (132 if role == 'old' else 138), 'source_migrations')
+        head = max(names).removeprefix('migrations/').removesuffix('.sql')
+        need(head == source['migration_head'] and
+             re.fullmatch(r'\d{4}_[a-z0-9_]{1,96}', head) is not None, 'source_schema_head')
+    schema_max = int(sources['new']['migration_head'][:4])
     run = summary['run_id']
     need(re.fullmatch('[0-9a-f]{16}', run) is not None and summary['status'] == 'passed' and
          summary['cases_passed'] == list(CASES) and summary['cases'] == 4 and summary['actual_processes'] == 11 and
@@ -510,7 +521,7 @@ def verify(evidence):
     for case, instances in INSTANCES.items():
         artifacts, schema = [], None
         for instance in instances:
-            values, observed = read_child(root, case, instance, run, builds, by_child[(case, instance)])
+            values, observed = read_child(root, case, instance, run, builds, by_child[(case, instance)], schema_max)
             need(schema is None or schema == observed, 'case_schema_changed')
             schema = observed
             artifacts.extend(values)
