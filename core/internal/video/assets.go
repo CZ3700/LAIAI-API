@@ -164,6 +164,22 @@ type assetSeal struct {
 
 var assetIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
+// Ark counts Draft-task lifetime from its upstream created_at. The local
+// metadata timestamp precedes upstream creation, so using it is conservative
+// when the upstream timestamp has not been persisted in the task projection.
+var draftFourteenDayCutover = time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
+
+func draftTaskUsable(createdAt, now time.Time) bool {
+	if createdAt.IsZero() || createdAt.After(now) {
+		return false
+	}
+	lifetime := 7 * 24 * time.Hour
+	if !createdAt.Before(draftFourteenDayCutover) {
+		lifetime = 14 * 24 * time.Hour
+	}
+	return now.Before(createdAt.Add(lifetime))
+}
+
 func assetID(v string) bool { return assetIDPattern.MatchString(v) }
 func assetHTTPS(raw string) bool {
 	u, err := url.Parse(raw)
@@ -758,6 +774,9 @@ func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, 
 			var params ark.EffectiveParameters
 			if json.Unmarshal([]byte(metadata.ParametersJSON), &params) != nil || metadata.SchemaVersion != 1 || !params.Draft || parent.Status != string(ark.StatusSucceeded) || st.DeletedAt != nil || st.DeletionOperationID != "" || parent.UpstreamTaskID == "" || parent.Model != in.Model || metadata.PublicModel != in.Model || st.UpstreamModel != cap.UpstreamModel || metadata.UpstreamModel != cap.UpstreamModel || metadata.CapabilityVersion != st.CapabilityVersion || metadata.CapabilityVersion != cap.Version || st.ProviderScopeID != provider.ID || metadata.ProviderScopeID != provider.ID || metadata.AccountRef != provider.AccountRef || metadata.Region != provider.Region || metadata.ProjectName != provider.ProjectName {
 				return in, bindings, resources, ErrState
+			}
+			if !draftTaskUsable(metadata.CreatedAt, s.Now().UTC()) {
+				return in, bindings, resources, ErrDraftExpired
 			}
 			bindings.Drafts[parent.TaskID] = ark.DraftBinding{UpstreamTaskID: parent.UpstreamTaskID, PublicModel: parent.Model, CapabilityVersion: metadata.CapabilityVersion, Parameters: params, HasInputVideo: metadata.HasInputVideo}
 			resources.InputDurationMS = metadata.InputDurationMS

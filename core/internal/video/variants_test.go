@@ -189,10 +189,12 @@ func TestMySQLVariantPublicEstimateCreateDispatchSettleAndLogs(t *testing.T) {
 					if public.Code != 200 {
 						t.Fatalf("get status %d", public.Code)
 					}
-					var final TaskView
+					var final officialTaskQueryResponse
 					must(t, json.Unmarshal(public.Body.Bytes(), &final))
+					internal, err := f.s.Get(f.key.OrgID, created.ID)
+					must(t, err)
 					wantUSD := snapshot.RetailUSDPer1M.Mul(decimal.NewFromInt(actual)).Shift(-6).Round(8)
-					if final.Status != "succeeded" || final.BillingState != "settled" || final.Usage == nil || final.Usage.CompletionTokens == nil || *final.Usage.CompletionTokens != actual || !f.hold(t, created.ID).CapturedAmount.Equal(wantUSD) {
+					if final.ID != created.ID || final.Status != "succeeded" || internal.BillingState != "settled" || final.Usage == nil || final.Usage.CompletionTokens == nil || *final.Usage.CompletionTokens != actual || !f.hold(t, created.ID).CapturedAmount.Equal(wantUSD) {
 						t.Fatal("actual usage did not settle variant")
 					}
 					if strings.Contains(public.Body.String(), upstreamID) || strings.Contains(public.Body.String(), "official-test-credential") {

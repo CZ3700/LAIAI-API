@@ -42,12 +42,12 @@ function json(value, status = 200, headers = {}) { return new Response(JSON.stri
 // 官方数据面形状：单查/创建响应无 billing_state、artifact_status、content_url。
 function task(id, values = {}) { return {id, model: 'seedance-2.0', status: 'running', ...values} }
 async function until(predicate) { const end = performance.now() + 3000; while (performance.now() < end) { if (predicate()) return; await delay(5) } assert.fail('condition timed out') }
-async function harness(t) {
+async function harness(t, model = 'seedance-2.0') {
   const originals = Object.fromEntries(['window', 'sessionStorage', 'fetch', '__arkHarness'].map(key => [key, globalThis[key]]))
   const originalCreate = URL.createObjectURL, originalRevoke = URL.revokeObjectURL
   const values = new Map()
   const h = {
-    vue, auth: vue.reactive({orgId: 1}), props: vue.reactive({model: 'seedance-2.0', apiKey: 'fixture-key-A'}),
+    vue, auth: vue.reactive({orgId: 1}), props: vue.reactive({model, apiKey: 'fixture-key-A'}),
     calls: [], events: [], mounted: [], activated: [], deactivated: [], unmounted: [], intervals: new Map(), blobs: [], revoked: [], uuid: 0, timer: 0,
     respond: () => { throw new Error('Unexpected mock fetch') },
     storage: {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key)},
@@ -60,7 +60,10 @@ async function harness(t) {
   globalThis.fetch = async (path, options) => {
     const call = {path, options}
     h.calls.push(call)
-    if (path === '/v1/video/models') return json({data: [{id: 'seedance-2.0', enabled: true, verified: true, capabilities: {resolutions: ['720p'], input_video: true, input_audio: true}}]})
+    if (path === '/v1/video/models') return json({data: [{id: model, enabled: true, verified: true, capabilities: {resolutions: model === 'seedance-2.5' ? ['480p', '720p', '1080p'] : ['720p'], input_video: true, input_audio: true, draft: model === 'seedance-2.5'}, publication: {combinations: model === 'seedance-2.5' ? [
+      {mode: 'generate', resolution: '480p', input_video: false, service_tier: 'default', draft: true, status: 'published'},
+      {mode: 'draft_conversion', resolution: '1080p', input_video: false, service_tier: 'default', draft: false, status: 'published'},
+    ] : []}}]})
     return h.respond(call)
   }
   const scope = vue.effectScope()
@@ -281,4 +284,67 @@ test('authorization failure stops polling and displays the server error without 
   assert.equal(h.vm.error.value, 'task access denied')
   assert.equal(h.intervals.size, 0)
   assert.equal(h.calls.some(call => call.path.endsWith('/billing') || call.path.endsWith('/content')), false)
+})
+
+test('Seedance 2.5 sample is quoted, previewed and converted with a separate authorized request', async t => {
+  const h = await harness(t, 'seedance-2.5')
+  let creates = 0
+  h.respond = call => {
+    if (call.path === '/v1/video/estimates') return json({reserved_amount: '0.125', pricing_version: 'sample-price'})
+    if (call.path === '/v1/video/generations') return json({id: ++creates === 1 ? 'task_preview' : 'task_final'}, 202)
+    if (call.path.endsWith('/billing')) return json({state: 'settled'})
+    if (call.path.endsWith('task_preview')) return json({id: 'task_preview', model: 'seedance-2.5', status: 'succeeded', draft: true, content: {video_url: 'https://provider.example/preview.mp4'}})
+    return json({id: 'task_final', model: 'seedance-2.5', status: 'running'})
+  }
+  h.vm.prompt.value = 'Fox crosses the room'
+  h.vm.generationMode.value = 'draft'
+  await vue.nextTick()
+  assert.equal(h.vm.canEstimate.value, true)
+  await h.vm.estimate()
+  const previewQuote = h.calls.find(call => call.path === '/v1/video/estimates')
+  assert.equal(JSON.parse(previewQuote.options.body).resolution, '480p')
+  assert.equal(JSON.parse(previewQuote.options.body).draft, true)
+  await h.vm.submit()
+  await until(() => h.vm.src.value === 'https://provider.example/preview.mp4' && h.intervals.size === 0)
+  h.vm.useDraftTask()
+  await vue.nextTick()
+  assert.equal(h.vm.generationMode.value, 'convert')
+  assert.equal(h.vm.draftTaskId.value, 'task_preview')
+  assert.equal(h.vm.quote.value, null)
+  await h.vm.estimate()
+  const conversionQuote = h.calls.filter(call => call.path === '/v1/video/estimates').at(-1)
+  assert.deepEqual(JSON.parse(conversionQuote.options.body), {model: 'seedance-2.5', content: [{type: 'draft_task', draft_task: {id: 'task_preview'}}], resolution: '1080p'})
+  await h.vm.submit()
+  const submissions = h.calls.filter(call => call.path === '/v1/video/generations')
+  assert.equal(submissions.length, 2)
+  assert.notEqual(submissions[0].options.headers['Idempotency-Key'], submissions[1].options.headers['Idempotency-Key'])
+  assert.equal(JSON.parse(submissions[1].options.body).expected_pricing_version, 'sample-price')
+})
+
+test('manual sample ID works after a session; changing mode or ID clears the previous quote', async t => {
+  const h = await harness(t, 'seedance-2.5')
+  h.respond = call => call.path === '/v1/video/estimates' ? json({reserved_amount: '0.5', pricing_version: 'conversion-price'}) : json({})
+  h.vm.generationMode.value = 'convert'
+  h.vm.draftTaskId.value = 'task_from_another_session'
+  await vue.nextTick()
+  assert.equal(h.vm.canEstimate.value, true)
+  await h.vm.estimate()
+  assert.equal(h.vm.quote.value?.pricing_version, 'conversion-price')
+  h.vm.draftTaskId.value = 'task_new_sample'
+  await vue.nextTick()
+  assert.equal(h.vm.quote.value, null)
+  assert.equal(h.vm.quotedBody.value, null)
+  h.vm.generationMode.value = 'standard'
+  await vue.nextTick()
+  assert.equal(h.vm.canEstimate.value, false)
+})
+
+test('sample identity survives a query response that omits the draft flag', async t => {
+  const h = await harness(t, 'seedance-2.5')
+  h.vm.task.value = {id: 'task_existing_preview', model: 'seedance-2.5', status: 'running', draft: true}
+  h.respond = call => call.path.endsWith('/billing') ? json({state: 'settled'}) : json({id: 'task_existing_preview', model: 'seedance-2.5', status: 'succeeded', content: {video_url: 'https://provider.example/preview.mp4'}})
+  await h.vm.poll()
+  assert.equal(h.vm.task.value.draft, true)
+  h.vm.useDraftTask()
+  assert.equal(h.vm.draftTaskId.value, 'task_existing_preview')
 })

@@ -19,7 +19,35 @@ six price conditions and 486 minimum cells. All six explicit ratios and the full
 from the official create API table; larger non-16:9 areas are not overlooked.
 
 The package intentionally excludes arbitrary-ratio 2.5 edit/extend/first-frame
-and Draft workflows until their input-derived dimensions can be bounded safely.
+workflows until their input-derived dimensions can be bounded safely. The
+original 2026-10-19 profile also excludes Draft so installed pricing templates
+retain their exact evidence identity.
+
+## Opt-in Seedance 2.5 Draft profile
+
+`LoadDraft("seedance-2.5")` is a separate, explicit 2026-10-30 profile. It
+adds only 480p Draft generation and 1080p Draft conversion to the six
+enumerated-ratio generation cells. The source hashes are for the raw official
+Markdown captured on 2026-10-30 (UTC), not for this README:
+
+| Official Markdown source | SHA-256 |
+| --- | --- |
+| `https://ark.volcengine.com/region:cn-beijing/docs/create-video-generation-task-api.md` | `a779514c668fc18272275f07351034078e5aeec9da98cb1352b11a083751f324` |
+| `https://ark.volcengine.com/region:cn-beijing/docs/model-pricing.md` | `c93a73de8f9db86686a4499065a401c08b04dcd3b972fe51b8ff3f2c43908231` |
+| `https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-5.md` | `c978148e9b3a6c954930b0a9d2a9b597efab67b011d764b07ed875d0cd0617ec` |
+
+The superadmin chooses **Seedance 2.5 Draft** in the video pricing page,
+reviews the sources, and synchronizes the profile. Equivalently, GET
+`/api/admin/video/models/seedance-2.5/verification?profile=draft`, then POST
+`/api/admin/video/models/seedance-2.5/verification` with the returned
+`profile_version` and current `expected_config_version`. This operation
+publishes capability and minimum evidence, never prices. The admin then
+reviews and publishes the four separate price cells
+`generate/480p/{input_video}/default/true` and
+`draft_conversion/1080p/{input_video}/default/false`. Their supplier rates
+are derived from the captured ordinary 480p and 1080p source rows as specified
+by the official pricing guide. The provider account, channel binding,
+minimum coverage and price publication gates still apply.
 For 2.5, reference-only capabilities explicitly send `omni_reference_task_type`
 as `reference` only when the content contains reference images, videos or audio,
 so the upstream default `auto` cannot choose an unpublished editing mode.

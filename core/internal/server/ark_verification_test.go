@@ -166,6 +166,137 @@ func TestArkVerificationPreservesPricesBudgetsDefaultsAndReplay(t *testing.T) {
 	}
 }
 
+func TestArkDraftVerificationIsExplicitAndDoesNotPublishPrices(t *testing.T) {
+	f, db, tokens, _ := verificationFixture(t, ark.Model25)
+	p, err := arkverification.LoadDraft(ark.Model25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/admin/video/models/seedance-2.5/verification"
+	w, out := f.do(t, "GET", path, tokens[1], nil)
+	if w.Code != 200 || out["profile_version"] == p.Version {
+		t.Fatalf("legacy profile changed: %d %v", w.Code, out)
+	}
+	w, out = f.do(t, "GET", path+"?profile=draft", tokens[1], nil)
+	if w.Code != 200 || out["profile_version"] != p.Version || out["verified"] != false {
+		t.Fatalf("Draft profile unavailable: %d %v", w.Code, out)
+	}
+	before := verificationSnapshot(t, db, "video_pricing_rules")
+	w, out = f.do(t, "POST", path, tokens[1], map[string]string{
+		"expected_config_version": "config-v1", "profile_version": p.Version,
+	})
+	if w.Code != 200 || out["verified"] != true {
+		t.Fatalf("Draft verification rejected: %d %s", w.Code, w.Body.String())
+	}
+	var cfg video.ModelConfig
+	if err := db.Where("public_model = ?", ark.Model25).Take(&cfg).Error; err != nil {
+		t.Fatal(err)
+	}
+	var cap ark.Capability
+	if err := json.Unmarshal([]byte(cfg.CapabilityJSON), &cap); err != nil || !cap.Draft || !cap.DraftConversion {
+		t.Fatalf("Draft capability not published: %v %+v", err, cap)
+	}
+	if before != verificationSnapshot(t, db, "video_pricing_rules") {
+		t.Fatal("verification silently published Draft prices")
+	}
+}
+
+func TestArkDraftPricingPreparationAndValidationUseOfficialSourceRows(t *testing.T) {
+	f, db, tokens, _ := verificationFixture(t, ark.Model25)
+	p, err := arkverification.LoadDraft(ark.Model25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/admin/video/models/seedance-2.5/verification"
+	w, _ := f.do(t, "POST", path, tokens[1], map[string]string{
+		"expected_config_version": "config-v1", "profile_version": p.Version,
+	})
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var request pricingRequest
+	err = db.Transaction(func(tx *gorm.DB) error {
+		cfg, cap, scope, bounds, err := loadPricingContext(tx, ark.Model25, false)
+		if err != nil {
+			return err
+		}
+		current, err := currentPricingRules(tx, cfg)
+		if err != nil {
+			return err
+		}
+		cells := priceMatrix(cap, current)
+		costs := map[string]string{
+			"generate/480p/false/default/true":           "70",
+			"generate/480p/true/default/true":            "42",
+			"draft_conversion/1080p/false/default/false": "77",
+			"draft_conversion/1080p/true/default/false":  "46",
+		}
+		for i := range cells {
+			if cost, ok := costs[priceCellKey(cells[i])]; ok {
+				cells[i].Enabled = true
+				cells[i].SupplierCNYPer1M = cost
+				cells[i].RetailUSDPer1M = cost
+				if cells[i].InputVideo {
+					cells[i].MinimumRuleVersion = p.MinimumVersion
+				}
+			}
+		}
+		sources, evidence, err := resolvePricingSources(tx, cfg, cells, current)
+		if err != nil {
+			return err
+		}
+		covered := map[string]bool{}
+		for _, source := range sources.Refs {
+			if source.Kind == "official_draft_pricing" && source.RawSHA256 == "c93a73de8f9db86686a4499065a401c08b04dcd3b972fe51b8ff3f2c43908231" {
+				covered[source.CellKey] = true
+			}
+		}
+		if len(covered) != 4 {
+			t.Fatalf("four Draft price cells lack official pricing provenance: %v", covered)
+		}
+		request = pricingRequest{ExpectedConfigVersion: cfg.Version, ConfigVersion: "draft-config-v1", PricingVersion: "draft-price-v1", EvidenceHash: evidence, Cells: cells, SourceSet: &sources}
+		_, rules, preview, err := validatePricingRequestWithContext(tx, ark.Model25, request, f.srv.now().UTC(), cfg, cap, scope, bounds)
+		if err != nil {
+			return err
+		}
+		if len(preview) != 5 || len(rules) < 5 {
+			t.Fatalf("Draft prices were not previewed: %d previews, %d rules", len(preview), len(rules))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pricingPath := "/api/admin/video/models/seedance-2.5/pricing"
+	w, _ = f.do(t, "POST", pricingPath+"/validate", tokens[1], request)
+	if w.Code != 200 {
+		t.Fatalf("Draft price validation rejected: %d %s", w.Code, w.Body.String())
+	}
+	raw, _ := json.Marshal(request)
+	httpRequest := httptest.NewRequest("POST", pricingPath+"/publications", bytes.NewReader(raw))
+	httpRequest.Header.Set("Authorization", "Bearer "+tokens[1])
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Idempotency-Key", "draft-price-publication")
+	w = httptest.NewRecorder()
+	f.engine.ServeHTTP(w, httpRequest)
+	if w.Code != 200 {
+		t.Fatalf("Draft price publication rejected: %d %s", w.Code, w.Body.String())
+	}
+	var published []videobilling.PricingRule
+	if err := db.Where("model = ? AND version = ? AND enabled = ?", ark.Model25, request.PricingVersion, true).Find(&published).Error; err != nil {
+		t.Fatal(err)
+	}
+	draftCount := 0
+	for _, rule := range published {
+		if rule.Draft || rule.Mode == "draft_conversion" {
+			draftCount++
+		}
+	}
+	if draftCount != 4 {
+		t.Fatalf("published %d Draft price cells, want four", draftCount)
+	}
+}
+
 func TestArkVerificationRejectsBroaderAndNonOfficialBindings(t *testing.T) {
 	cases := map[string]func(*gorm.DB){
 		"wrong_provider": func(db *gorm.DB) { db.Model(&relay.Channel{}).Where("id=99").Update("provider", "openai") },

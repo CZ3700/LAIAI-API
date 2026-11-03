@@ -988,6 +988,70 @@ test('verification requires a clean explicit preview, posts exact versions and r
   assert.equal(h.events.some(([event]) => event === 'published'), false)
 })
 
+test('Seedance 2.5 Draft verification is an explicit profile selection', async t => {
+  const h = await harness(t, {selectedModel: 'seedance-2.5'}), fallback = h.defaultGet
+  let synced = false
+  h.defaultGet = call => call.path.endsWith('/verification?profile=draft')
+    ? {...verification(call.orgId, 'seedance-2.5'), profile_version: 'ark-official-20261030-draft-v1', verified: synced}
+    : fallback(call)
+  assert.equal(h.vm.verificationProfile.value, 'standard')
+  h.vm.verificationProfile.value = 'draft'
+  await until(() => !h.vm.loading.value && h.vm.verification.value?.profile_version === 'ark-official-20261030-draft-v1')
+  assert.ok(h.calls.some(call => call.method === 'GET' && call.path.endsWith('/verification?profile=draft')))
+  h.vm.verificationOpen.value = true
+  h.respond = call => {
+    assert.equal(call.path, '/api/admin/video/models/seedance-2.5/verification')
+    assert.equal(call.body.profile_version, 'ark-official-20261030-draft-v1')
+    synced = true
+    return {}
+  }
+  await h.vm.syncVerification()
+  assert.equal(h.vm.verification.value?.verified, true)
+  assert.equal(writes(h).length, 1)
+})
+
+test('verified Draft profile fills four price drafts from ordinary resolution rates', async t => {
+  const h = await harness(t, {selectedModel: 'seedance-2.5'}), fallback = h.defaultGet
+  const minimumVersion = 'official-min-seedance-2.5-20261030-draft-v1'
+  const priceCell = (mode, resolution, input_video, draft) => ({
+    mode, resolution, input_video, service_tier: 'default', draft,
+    available: true, enabled: false, retail_usd_per_1m: '', supplier_cny_per_1m: '',
+    risk_multiplier: '1', minimum_rule_version: '',
+  })
+  const four = [
+    priceCell('generate', '480p', false, true),
+    priceCell('generate', '480p', true, true),
+    priceCell('draft_conversion', '1080p', false, false),
+    priceCell('draft_conversion', '1080p', true, false),
+  ]
+  h.defaultGet = call => {
+    if (call.path.endsWith('/verification?profile=draft')) return {...verification(call.orgId, 'seedance-2.5'), profile_version: 'ark-official-20261030-draft-v1', minimum_version: minimumVersion, verified: true}
+    if (call.path.endsWith('/pricing')) return {...pricing(call.orgId, 'seedance-2.5'), fx_usd_per_cny: '0.14', cells: [pricing(call.orgId, 'seedance-2.5').cells[0], ...four.map(x => ({...x}))]}
+    if (call.path.endsWith('/minimum-rules')) return {items: [{version: minimumVersion}]}
+    if (call.path.endsWith('/reference-candidates')) {
+      const data = reference(call.orgId, 'seedance-2.5')
+      data.prices.push(...[
+        ['480p', false, '70'], ['480p', true, '42'],
+        ['1080p', false, '77'], ['1080p', true, '46'],
+      ].map(([resolution, input_video, supplier_cny_per_1m]) => ({
+        key: `generate/${resolution}/${input_video}/default/false`, mode: 'generate', resolution,
+        input_video, service_tier: 'default', draft: false, unit: 'CNY/1M_tokens',
+        precision: 'exact', supplier_cny_per_1m, source_rows: [],
+      })))
+      return data
+    }
+    return fallback(call)
+  }
+  h.vm.verificationProfile.value = 'draft'
+  await until(() => !h.vm.loading.value && h.vm.draftWorkflowReady.value)
+  const got = h.vm.pricing.value.cells.slice(1)
+  assert.deepEqual(got.map(cell => cell.supplier_cny_per_1m), ['70', '42', '77', '46'])
+  assert.ok(got.every(cell => !cell.enabled && cell.retail_usd_per_1m))
+  assert.equal(got[1].minimum_rule_version, minimumVersion)
+  assert.equal(got[3].minimum_rule_version, minimumVersion)
+  assert.equal(writes(h).length, 0, 'filling the local draft does not publish prices')
+})
+
 test('late official synchronization cannot reload a different model or clear that model draft', async t => {
   const h = await harness(t), response = deferred()
   h.vm.verificationOpen.value = true

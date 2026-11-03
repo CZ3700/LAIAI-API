@@ -110,6 +110,31 @@ test('search covers endpoint, parameter and model terms without changing group m
   assert.equal(searchPages('  ').length, docPages.length)
 })
 
+test('public Draft guide covers both priced requests and the conversion boundary', () => {
+  const page = docPages.find(p => p.id === 'video-draft')
+  assert.ok(page)
+  assert.ok(searchPages('样片').some(p => p.id === page.id))
+  assert.deepEqual(page.sections.map(s => s.id), ['draft-availability', 'draft-preview', 'draft-final'])
+  const preview = byID('draft-create')
+  const convert = byID('draft-final-create')
+  assert.deepEqual([preview.request.draft, preview.request.resolution, preview.request.model], [true, '480p', 'seedance-2.5'])
+  assert.deepEqual(convert.request, { model: 'seedance-2.5', content: [{ type: 'draft_task', draft_task: { id: preview.response.id } }], resolution: '1080p' })
+  assert.notEqual(preview.idempotency, convert.idempotency)
+  assert.equal(byID('draft-query').response.draft, true)
+  assert.equal(byID('draft-final-query').response.draft, false)
+  assert.match(page.sections[2].paragraphs.join('\n'), /410 content_expired/)
+  assert.equal(spec.components.schemas.ModelInfo.properties.publication.$ref, '#/components/schemas/CatalogPublication')
+  assert.equal(spec.components.schemas.CatalogPublication.properties.combinations.items.$ref, '#/components/schemas/CatalogCombination')
+  for (const path of ['/v1/video/estimates', '/v1/video/generations']) {
+    const expired = spec.paths[path].post.responses['410']
+    assert.ok(expired)
+    assert.match(expired.description, /content_expired/)
+  }
+  const create = expanded(spec.paths['/v1/video/generations'].post.requestBody).content['application/json'].schema
+  assert.throws(() => validate(create, { ...preview.request, resolution: '720p' }))
+  assert.throws(() => validate(create, { ...convert.request, duration: 5 }))
+})
+
 test('Fast and Mini document only the implemented generation envelope and retain activation prerequisites', () => {
   const models = docPages.find(page => page.id === 'video-intro').sections.find(section => section.id === 'video-models')
   for (const model of ['seedance-2.0-fast', 'seedance-2.0-mini']) {

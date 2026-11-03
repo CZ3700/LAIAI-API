@@ -100,6 +100,8 @@ func respondError(c *gin.Context, err error) {
 		apiError(c, 409, "idempotency_conflict")
 	case errors.Is(err, ErrState) || errors.Is(err, videoasset.ErrConflict) || errors.Is(err, videoasset.ErrInUse) || errors.Is(err, videoasset.ErrNotEmpty):
 		apiError(c, 409, "invalid_state")
+	case errors.Is(err, ErrDraftExpired):
+		apiError(c, 410, "content_expired")
 	case errors.Is(err, ErrCapability) || errors.Is(err, videobilling.ErrPricingUnavailable) || errors.Is(err, videoasset.ErrUnsupported):
 		apiError(c, 422, "unsupported_capability")
 	case errors.Is(err, task.ErrConcurrencyLimit):
@@ -175,6 +177,18 @@ func requestResource(c *gin.Context) (string, string) {
 	return "", ""
 }
 
+func isAssetReadRoute(method, route string) bool {
+	if method != http.MethodGet {
+		return false
+	}
+	// Asset-family status polls (console/H5 poll a single asset every few
+	// seconds — 60k+ rows/day). A successful GET carries no diagnostic value:
+	// its audit row is persisted only when it fails.
+	return strings.HasPrefix(route, "/v1/video/assets") ||
+		strings.HasPrefix(route, "/v1/video/asset-groups") ||
+		strings.HasPrefix(route, "/v1/video/portrait-authorizations")
+}
+
 func (s *Service) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID, err := randomID("")
@@ -190,6 +204,7 @@ func (s *Service) Middleware() gin.HandlerFunc {
 		if c.Request.ContentLength > 0 {
 			start.RequestBytes = c.Request.ContentLength
 		}
+		assetRead := isAssetReadRoute(c.Request.Method, c.FullPath())
 		var key *identity.APIKey
 		auth := c.GetHeader("Authorization")
 		if strings.HasPrefix(auth, "Bearer ") {
@@ -205,9 +220,13 @@ func (s *Service) Middleware() gin.HandlerFunc {
 			c.Set("video_key", key)
 			c.Request = c.Request.WithContext(videoasset.WithAPIKey(c.Request.Context(), key))
 		}
-		if err := s.DB.Transaction(func(tx *gorm.DB) error { return s.Evidence.RequestStartTx(tx, start) }); err != nil {
-			apiError(c, 503, "audit_unavailable")
-			return
+		// Successful asset reads persist no audit row at all; failures are
+		// inserted whole at request finish (see the deferred branch below).
+		if !assetRead {
+			if err := s.DB.Transaction(func(tx *gorm.DB) error { return s.Evidence.RequestStartTx(tx, start) }); err != nil {
+				apiError(c, 503, "audit_unavailable")
+				return
+			}
 		}
 		original := c.Writer
 		buffered := &auditWriter{ResponseWriter: original}
@@ -234,6 +253,30 @@ func (s *Service) Middleware() gin.HandlerFunc {
 			outcome := "completed"
 			if stream && c.GetBool("video_stream_incomplete") {
 				outcome, status = "incomplete", 0
+			}
+			c.Writer = original
+			if assetRead {
+				// Failed asset reads are persisted whole (start+finish in one
+				// transaction; no response payload or context rows exist for
+				// this path because capture was skipped at request start).
+				if status < 400 {
+					original.WriteHeader(buffered.Status())
+					_, _ = original.Write(buffered.body.Bytes())
+					return
+				}
+				if err := s.DB.Transaction(func(tx *gorm.DB) error {
+					if e := s.Evidence.RequestStartTx(tx, start); e != nil {
+						return e
+					}
+					return s.Evidence.RequestFinishTx(tx, invocation.VideoRequestFinish{RequestID: requestID, OrgID: start.OrgID, HTTPStatus: status, ResponseBytes: int64(size), SafeErrorCode: c.GetString("video_error"), Outcome: outcome, FinishedAt: s.Now().UTC()})
+				}); err != nil {
+					s.Log.Error("video request audit not persisted", "request_id", requestID)
+					apiError(c, 503, "audit_unavailable")
+					return
+				}
+				original.WriteHeader(buffered.Status())
+				_, _ = original.Write(buffered.body.Bytes())
+				return
 			}
 			finishErr := s.DB.Transaction(func(tx *gorm.DB) error {
 				if e := s.finishRequestContextTx(tx, c); e != nil {
@@ -278,9 +321,11 @@ func (s *Service) Middleware() gin.HandlerFunc {
 			apiError(c, 403, "insufficient_scope")
 			return
 		}
-		if e := s.captureReceivedRequest(c); e != nil {
-			respondError(c, e)
-			return
+		if !assetRead {
+			if e := s.captureReceivedRequest(c); e != nil {
+				respondError(c, e)
+				return
+			}
 		}
 		if h, ok := c.Get("video_route_handler"); ok {
 			h.(gin.HandlerFunc)(c)

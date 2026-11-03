@@ -363,9 +363,6 @@ func (s *Service) resolveBindingsTx(tx *gorm.DB, org uint64, scope Scope, taskID
 		if asset.Status != StatusActive || asset.ReviewState != ReviewClear || asset.ProviderID == nil || group.Status != StatusActive || group.ReviewState != ReviewClear || !sameScope(groupScope(group), scope) || asset.ScopeID != scope.ID || asset.ScopeVersion != scope.Version {
 			return nil, ErrConflict
 		}
-		if !referenceMediaReady(asset) {
-			return nil, ErrUnsupported
-		}
 		licenseVersion, err := s.authorizeGroup(tx, group, "video_generation")
 		if err != nil {
 			return nil, err

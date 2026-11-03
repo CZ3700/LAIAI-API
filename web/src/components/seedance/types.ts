@@ -8,6 +8,7 @@ export interface LogRow {
 export interface BodyInfo { availability: string; representation: string; expires_at: string | null; bytes: number }
 export interface Billing {
   currency: string; state: string; reserved_amount: string; settled_amount: string | null; released_amount: string; net_charged_amount: string | null
+  initial_calculated_amount?: string | null; initial_absorbed_amount?: string | null
   pricing_version: string; billing_rule_version: string; actual_usage: { completion_tokens: number | null; total_tokens: number | null } | null
   entries: { entry_id: string; type: string; amount: string; created_at: string }[]
   billable_tokens?: number | null; estimated_tokens?: number; unit_price_usd_per_1m?: string; metering?: Metering | null

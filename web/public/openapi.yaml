@@ -80,18 +80,53 @@
       "TaskCreate": {
         "content": {
           "application/json": {
-            "example": {
-              "content": [
-                {
-                  "text": "一只纸质小船漂过平静湖面，柔和晨光。",
-                  "type": "text"
+            "examples": {
+              "draft_conversion": {
+                "summary": "使用样片任务 ID 生成 1080p 正式视频",
+                "value": {
+                  "content": [
+                    {
+                      "draft_task": {
+                        "id": "task_example_draft"
+                      },
+                      "type": "draft_task"
+                    }
+                  ],
+                  "model": "seedance-2.5",
+                  "resolution": "1080p"
                 }
-              ],
-              "duration": 5,
-              "generate_audio": false,
-              "model": "seedance-2.0",
-              "ratio": "16:9",
-              "resolution": "720p"
+              },
+              "draft_preview": {
+                "summary": "Seedance 2.5 样片，480p",
+                "value": {
+                  "content": [
+                    {
+                      "text": "女孩抱着狐狸，镜头缓缓拉远。",
+                      "type": "text"
+                    }
+                  ],
+                  "draft": true,
+                  "duration": 5,
+                  "model": "seedance-2.5",
+                  "resolution": "480p"
+                }
+              },
+              "standard": {
+                "summary": "普通视频",
+                "value": {
+                  "content": [
+                    {
+                      "text": "一只纸质小船漂过平静湖面，柔和晨光。",
+                      "type": "text"
+                    }
+                  ],
+                  "duration": 5,
+                  "generate_audio": false,
+                  "model": "seedance-2.0",
+                  "ratio": "16:9",
+                  "resolution": "720p"
+                }
+              }
             },
             "schema": {
               "$ref": "#/components/schemas/CreateTaskRequest"
@@ -120,7 +155,7 @@
             }
           }
         },
-        "description": "安全错误。素材接口非法 JSON/缺少幂等键/非法网址为 400；任务参数或幂等键非法通常为 422；\n401=Key 无效；403=权限或真人业务许可不足；\n任务接口的素材校验错误映射为 403 forbidden、409 invalid_state 或 422 unsupported_capability；\n素材接口独立返回 authorization_required、resource_in_use、group_not_empty 等安全错误码。\n404=资源不存在或跨组织；409=幂等冲突/状态冲突；410=产物已过期；\n413=请求体超限；422=未验证或不支持的模型参数/素材组合；429=Token 配额/限流/并发限制；\n402=余额不足；500=素材服务内部失败；502/503=服务不可用（503 亦含平台侧\n真人认证回调未配置的 provider_unavailable，属可重试的服务端状态）。已接受的提交结果未知通过任务状态表达，\n不使用误导性的失败结果允许客户任意重新创建。错误 message 不包含上游原文、凭证或 PII。\n",
+        "description": "安全错误。素材接口非法 JSON/缺少幂等键/非法网址为 400；任务参数或幂等键非法通常为 422；\n401=Key 无效；403=权限或真人业务许可不足；\n任务接口的素材校验错误映射为 403 forbidden、409 invalid_state 或 422 unsupported_capability；\n素材接口独立返回 authorization_required、resource_in_use、group_not_empty 等安全错误码。\n404=资源不存在或跨组织；409=幂等冲突/状态冲突；410=产物或 Draft 任务 ID 已过期；\n413=请求体超限；422=未验证或不支持的模型参数/素材组合；429=Token 配额/限流/并发限制；\n402=余额不足；500=素材服务内部失败；502/503=服务不可用（503 亦含平台侧\n真人认证回调未配置的 provider_unavailable，属可重试的服务端状态）。已接受的提交结果未知通过任务状态表达，\n不使用误导性的失败结果允许客户任意重新创建。错误 message 不包含上游原文、凭证或 PII。\n",
         "headers": {
           "X-Request-Id": {
             "description": "平台请求 ID",
@@ -406,6 +441,156 @@
         ],
         "type": "string"
       },
+      "CatalogAction": {
+        "additionalProperties": false,
+        "properties": {
+          "eligible": {
+            "type": "boolean"
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "eligible",
+          "reason_codes"
+        ],
+        "type": "object"
+      },
+      "CatalogActions": {
+        "additionalProperties": false,
+        "properties": {
+          "create": {
+            "$ref": "#/components/schemas/CatalogAction"
+          },
+          "estimate": {
+            "$ref": "#/components/schemas/CatalogAction"
+          },
+          "models_read": {
+            "$ref": "#/components/schemas/CatalogAction"
+          }
+        },
+        "required": [
+          "models_read",
+          "estimate",
+          "create"
+        ],
+        "type": "object"
+      },
+      "CatalogCombination": {
+        "additionalProperties": false,
+        "properties": {
+          "billing_rule_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "draft": {
+            "type": "boolean"
+          },
+          "input_video": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "minimum_rule_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "generate",
+              "edit",
+              "extend",
+              "draft_conversion"
+            ],
+            "type": "string"
+          },
+          "pricing_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "resolution": {
+            "enum": [
+              "480p",
+              "720p",
+              "1080p",
+              "4k"
+            ],
+            "type": "string"
+          },
+          "service_tier": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "blocked",
+              "published"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "mode",
+          "resolution",
+          "input_video",
+          "service_tier",
+          "draft",
+          "status",
+          "reason_codes",
+          "pricing_version",
+          "billing_rule_version",
+          "minimum_rule_version"
+        ],
+        "type": "object"
+      },
+      "CatalogPublication": {
+        "additionalProperties": false,
+        "properties": {
+          "combinations": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogCombination"
+            },
+            "type": "array"
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "blocked",
+              "partial",
+              "published"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "reason_codes",
+          "combinations"
+        ],
+        "type": "object"
+      },
       "ContentItem": {
         "discriminator": {
           "mapping": {
@@ -444,6 +629,43 @@
                 "frames",
                 "duration"
               ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "draft": {
+                  "const": true
+                }
+              },
+              "required": [
+                "draft"
+              ]
+            },
+            "then": {
+              "properties": {
+                "content": {
+                  "not": {
+                    "contains": {
+                      "properties": {
+                        "type": {
+                          "const": "draft_task"
+                        }
+                      },
+                      "required": [
+                        "type"
+                      ],
+                      "type": "object"
+                    }
+                  }
+                },
+                "model": {
+                  "const": "seedance-2.5"
+                },
+                "resolution": {
+                  "const": "480p"
+                }
+              }
             }
           },
           {
@@ -604,6 +826,9 @@
                 "draft": {
                   "const": false
                 },
+                "model": {
+                  "const": "seedance-2.5"
+                },
                 "resolution": {
                   "const": "1080p"
                 }
@@ -614,7 +839,7 @@
             }
           }
         ],
-        "description": "仅开放已核实的 Ark 字段。模型级上限、支持分辨率/角色组合等由对应能力版本二次校验。\n平台禁止同时提交 frames 与 duration，二者同传返回 422；不依赖官方优先级静默改写用户意图。\nduration=-1 只有模型已验证支持自动时长时可用，冻结按该能力的最大可能产出评估。\nprompt 中旧式 --dur/--duration/--rs/--resolution/--frames 等计费参数指令及规范化变体须拒绝，\n有歧义也返回 422 并提示改用结构化字段。本版本不开放任意 provider_params。\n基于 draft_task 的正式生成只允许唯一 draft_task 内容项且 resolution 必须为 1080p；\nduration/frames/ratio/seed/generate_audio/omni_reference_task_type 不得重传，这些有效参数继承 Draft。\n转正式不能同时设置 draft:true。首尾帧模式各最多一张，尾帧须有首帧，ratio 必须为 adaptive，\n不能混入参考图片、视频或音频。2.5 edit 需要恰好一个视频、adaptive 与 duration=-1；\nextend 需要恰好一个视频与 adaptive；这些组合还受已发布能力约束。\nreturn_last_frame/output_format/watermark/service_tier/execution_expires_after 的省略不表示继承，\n按官方正式任务默认值及当前能力版本解释。未在本契约公开的回调/priority 等字段不允许透传。\n",
+        "description": "仅开放已核实的 Ark 字段。模型级上限、支持分辨率/角色组合等由对应能力版本二次校验。\n平台禁止同时提交 frames 与 duration，二者同传返回 422；不依赖官方优先级静默改写用户意图。\nduration=-1 只有模型已验证支持自动时长时可用，冻结按该能力的最大可能产出评估。\nprompt 中旧式 --dur/--duration/--rs/--resolution/--frames 等计费参数指令及规范化变体须拒绝，\n有歧义也返回 422 并提示改用结构化字段。本版本不开放任意 provider_params。\ndraft:true 仅限 Seedance 2.5，输出分辨率只支持 480p；其他分辨率返回 422。\n基于 draft_task 的正式生成只允许唯一 draft_task 内容项且 resolution 必须为 1080p；\nduration/frames/ratio/seed/generate_audio/omni_reference_task_type 不得重传，这些有效参数继承 Draft。\n转正式不能同时设置 draft:true。首尾帧模式各最多一张，尾帧须有首帧，ratio 必须为 adaptive，\n不能混入参考图片、视频或音频。2.5 edit 需要恰好一个视频、adaptive 与 duration=-1；\nextend 需要恰好一个视频与 adaptive；这些组合还受已发布能力约束。\nreturn_last_frame/output_format/watermark/service_tier/execution_expires_after 的省略不表示继承，\n按官方正式任务默认值及当前能力版本解释。未在本契约公开的回调/priority 等字段不允许透传。\n",
         "properties": {
           "content": {
             "description": "契约的通用上界；每类数量、组合和总量还受当前模型能力版本的更小上限限制，不表示官方账号已支持全部组合。",
@@ -626,6 +851,8 @@
             "type": "array"
           },
           "draft": {
+            "default": false,
+            "description": "仅 Seedance 2.5 支持；true 为 480p 预览样片，false 或省略为普通生成。样片和后续转正式分别计费。",
             "type": "boolean"
           },
           "duration": {
@@ -733,6 +960,7 @@
       },
       "DraftContent": {
         "additionalProperties": false,
+        "description": "仅引用本组织成功且在有效期内的 Seedance 2.5 样片任务；转正式时须作为唯一 content 内容项。",
         "properties": {
           "draft_task": {
             "additionalProperties": false,
@@ -909,6 +1137,9 @@
       "ModelInfo": {
         "additionalProperties": false,
         "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/CatalogActions"
+          },
           "billing_rule_version": {
             "type": "string"
           },
@@ -931,12 +1162,22 @@
                 "type": "boolean"
               },
               "max_duration_seconds": {
-                "minimum": 1,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "min_duration_seconds": {
+                "minimum": 0,
                 "type": "integer"
               },
               "portrait_assets": {
                 "description": "当前组织、该模型官方 scope 的素材路由及 Portrait 能力已启用，且允许异步执行暂存；仅表示能力可用，不代表某会话已认证或某素材已获有效业务许可。",
                 "type": "boolean"
+              },
+              "ratios": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               "resolutions": {
                 "items": {
@@ -953,7 +1194,9 @@
             },
             "required": [
               "resolutions",
+              "min_duration_seconds",
               "max_duration_seconds",
+              "ratios",
               "automatic_duration",
               "frames",
               "input_video",
@@ -982,6 +1225,9 @@
           "pricing_version": {
             "type": "string"
           },
+          "publication": {
+            "$ref": "#/components/schemas/CatalogPublication"
+          },
           "verified": {
             "description": "平台管理员发布的能力已核验标记，不代表本文档示例或 mock 测试已经完成该账号的官方真机验收。创建仍检查当前能力、价格与租户策略。",
             "type": "boolean"
@@ -995,7 +1241,9 @@
           "pricing_version",
           "billing_rule_version",
           "capabilities",
-          "prices"
+          "prices",
+          "publication",
+          "actions"
         ],
         "type": "object"
       },
@@ -3559,7 +3807,7 @@
     },
     "/v1/video/estimates": {
       "post": {
-        "description": "不提交上游、不冻结、不计生成费用。输入与创建请求一致。预估不是保证价或最终账单，\n也不是可复用的价格锁；创建时重新验证能力、参数、资产与价格并形成不可变快照。\nduration=-1、frames、输入视频和最低计费 Token 按返回的规则版本计算；frames 与 duration 同传为 422。\n无法确定安全上界或未验证的输入组合返回 422，不能静默采用任意固定上限。\n",
+        "description": "不提交上游、不冻结、不计生成费用。输入与创建请求一致。预估不是保证价或最终账单，\n也不是可复用的价格锁；创建时重新验证能力、参数、资产与价格并形成不可变快照。\nduration=-1、frames、输入视频和最低计费 Token 按返回的规则版本计算；frames 与 duration 同传为 422。\n无法确定安全上界或未验证的输入组合返回 422，不能静默采用任意固定上限。\n使用已过期的 draft_task ID 预估转正式任务返回 410 content_expired。\n",
         "operationId": "estimateVideoTask",
         "requestBody": {
           "$ref": "#/components/requestBodies/TaskCreate"
@@ -3574,6 +3822,16 @@
               }
             },
             "description": "当前配置下的预估结果，不锁价、不冻结。"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "引用的 Draft 任务 ID 已过期，返回 content_expired；不产生冻结或生成任务。"
           },
           "default": {
             "$ref": "#/components/responses/Error"
@@ -3651,7 +3909,7 @@
         ]
       },
       "post": {
-        "description": "首次受理返回 202 和平台 task_ ID。模型映射、素材引用和计费参数在受理前验证。\n不接受任意裸上游标识。asset://asset_ 引用须属于当前组织且已就绪；真人素材组须授权有效。\ndraft_task 只能引用本组织成功的 Draft，且模型、能力版本、官方账号/区域/项目一致，父任务未删除。\n原始 HTTPS 图片/音频地址直接透传官方；原始视频须有经验证的模型总输入视频时长上界，按聚合上界冻结。\n不声明外部 URL 不可变；已登记不可变素材或 asset:// 引用可使用可信测量时长。后续结算依官方用量证据。\n参数名沿 Ark 方言，平台严格按已验证模型能力允许的参数组合透传。\nHTTP 超时不等于生成失败；重试时必须复用同一 Idempotency-Key。\n",
+        "description": "首次受理返回 202 和平台 task_ ID。模型映射、素材引用和计费参数在受理前验证。\n不接受任意裸上游标识。asset://asset_ 引用须属于当前组织且已就绪；真人素材组须授权有效。\ndraft:true 仅限 Seedance 2.5 的 480p 样片；draft_task 转正式仅支持 1080p。\ndraft_task 只能引用本组织成功且未过期的 Draft，且模型、能力版本、官方账号/区域/项目一致，父任务未删除。\n2026-10-28 10:00（UTC+8）及之后创建的 Draft ID 有效期 14 天，此前的为 7 天。\n样片与正式视频是两个独立任务，分别预估、冻结和结算。\n原始 HTTPS 图片/音频地址直接透传官方；原始视频须有经验证的模型总输入视频时长上界，按聚合上界冻结。\n不声明外部 URL 不可变；已登记不可变素材或 asset:// 引用可使用可信测量时长。后续结算依官方用量证据。\n参数名沿 Ark 方言，平台严格按已验证模型能力允许的参数组合透传。\nHTTP 超时不等于生成失败；重试时必须复用同一 Idempotency-Key。\n",
         "operationId": "createVideoTask",
         "parameters": [
           {
@@ -3697,6 +3955,16 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "引用的 Draft 任务 ID 已过期，返回 content_expired；不会创建或冻结正式视频任务。"
           },
           "default": {
             "$ref": "#/components/responses/Error"
@@ -4394,5 +4662,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "4845e262fe67073d2c7ef8820433d25766087d8e28828fa4617993866e666836"
+  "x-seedance-source-sha256": "5eee19deacba247b08a71bc78961e1cf881b167d52b84159bc0e7a1049ee0a56"
 }

@@ -5,7 +5,8 @@ import { uuid } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
 import DetailDrawer from '@/components/DetailDrawer.vue'
 import { useSeedanceI18n } from './messages'
-import { authorizedRequest, canDelete, createBody, generationActive, safeMediaURL, shouldPoll } from './workflow'
+import { authorizedRequest, canDelete, createBody, generationActive, publishedCombination, safeMediaURL, shouldPoll } from './workflow'
+import type { GenerationMode, VideoCombination } from './workflow'
 import HistoryJSON from './HistoryJSON.vue'
 import type { Billing } from './types'
 
@@ -15,9 +16,9 @@ const { t } = useSeedanceI18n()
 const auth = useAuth()
 // 单个任务 GET 为官方数据面形状：无 billing_state/artifact_status/content_url；
 // billing_state 由 /billing 的 state 补充，产物状态由 content.video_url 是否出现判断。
-interface Task { id: string; model?: string; status: string; billing_state?: string; artifact_status?: string; content?: { video_url?: string; last_frame_url?: string }; usage?: { completion_tokens: number | null; total_tokens: number | null }; deletion_state?: string }
+interface Task { id: string; model?: string; status: string; draft?: boolean; created_at?: number; billing_state?: string; artifact_status?: string; content?: { video_url?: string; last_frame_url?: string }; usage?: { completion_tokens: number | null; total_tokens: number | null }; deletion_state?: string }
 interface Quote { reserved_amount: string; estimated_tokens: number; pricing_version: string; billing_rule_version: string; capability_version: string }
-interface Model { id: string; enabled: boolean; verified: boolean; capabilities: { resolutions: string[]; max_duration_seconds: number; automatic_duration: boolean; input_video: boolean; input_audio: boolean } }
+interface Model { id: string; enabled: boolean; verified: boolean; capabilities: { resolutions: string[]; max_duration_seconds: number; automatic_duration: boolean; input_video: boolean; input_audio: boolean; draft?: boolean }; publication?: { combinations: VideoCombination[] } }
 const prompt = ref('')
 const image = ref('')
 const video = ref('')
@@ -25,7 +26,18 @@ const audio = ref('')
 const duration = ref('default')
 const resolution = ref('default')
 const ratio = ref('default')
+const generationMode = ref<GenerationMode>('standard')
+const draftTaskId = ref('')
 const capabilities = ref<Model | null>(null)
+const draftPublished = computed(() => props.model === 'seedance-2.5' && !!capabilities.value?.capabilities.draft && publishedCombination(capabilities.value?.publication?.combinations, 'draft'))
+const conversionPublished = computed(() => props.model === 'seedance-2.5' && publishedCombination(capabilities.value?.publication?.combinations, 'convert'))
+const draftInputPublished = computed(() => publishedCombination(capabilities.value?.publication?.combinations, 'draft', !!video.value.trim()))
+const canEstimate = computed(() => {
+  if (!props.apiKey || !capabilities.value?.enabled || !capabilities.value.verified) return false
+  if (generationMode.value === 'convert') return conversionPublished.value && /^task_[A-Za-z0-9_-]+$/.test(draftTaskId.value.trim())
+  if (!prompt.value.trim()) return false
+  return generationMode.value !== 'draft' || draftPublished.value && draftInputPublished.value
+})
 const error = ref('')
 const busy = ref(false)
 const quote = ref<Quote | null>(null)
@@ -65,7 +77,13 @@ function errorText(data: unknown, status: number) {
   return `HTTP ${status}`
 }
 function body() {
-  return createBody({ model: props.model, prompt: prompt.value, image: image.value, video: video.value, audio: audio.value, duration: duration.value, resolution: resolution.value, ratio: ratio.value })
+  return createBody({ model: props.model, prompt: prompt.value, image: image.value, video: video.value, audio: audio.value, duration: duration.value, resolution: resolution.value, ratio: ratio.value, mode: generationMode.value, draftTaskId: draftTaskId.value })
+}
+function useDraftTask() {
+  if (!task.value || task.value.status !== 'succeeded' || !task.value.draft || !task.value.content?.video_url || !conversionPublished.value) return
+  draftTaskId.value = task.value.id
+  generationMode.value = 'convert'
+  quote.value = null; quotedBody.value = null
 }
 function stop() { if (timer) window.clearInterval(timer); timer = undefined }
 function resetObservation() {
@@ -73,7 +91,7 @@ function resetObservation() {
   pollingRequest?.controller.abort()
   pollingRequest = null
 }
-function clearPrivate() { resetObservation(); busy.value = false; quote.value = null; quotedBody.value = null; submitted.value = null; received.value = null; responseStatus.value = null; pending.value = null; uncertain.value = false; task.value = null; billing.value = null; requestID.value = ''; error.value = ''; cancelKey.value = ''; cancelOperation.value = null; capabilities.value = null; prompt.value = ''; image.value = ''; video.value = ''; audio.value = ''; duration.value = 'default'; resolution.value = 'default'; ratio.value = 'default'; showDetails.value = false; emit('locked', false) }
+function clearPrivate() { resetObservation(); busy.value = false; quote.value = null; quotedBody.value = null; submitted.value = null; received.value = null; responseStatus.value = null; pending.value = null; uncertain.value = false; task.value = null; billing.value = null; requestID.value = ''; error.value = ''; cancelKey.value = ''; cancelOperation.value = null; capabilities.value = null; prompt.value = ''; image.value = ''; video.value = ''; audio.value = ''; duration.value = 'default'; resolution.value = 'default'; ratio.value = 'default'; generationMode.value = 'standard'; draftTaskId.value = ''; showDetails.value = false; emit('locked', false) }
 async function loadModels() {
   const current = epoch
   if (!props.apiKey) return
@@ -85,7 +103,7 @@ async function loadModels() {
   } catch (e) { if (current === epoch) error.value = (e as Error).message }
 }
 async function estimate() {
-  if (!prompt.value.trim() || !props.apiKey || locked.value) return
+  if (!canEstimate.value || locked.value) return
   const current = epoch
   busy.value = true; error.value = ''; quote.value = null
   const value = body()
@@ -122,8 +140,8 @@ async function submit() {
       throw new Error(errorText(data, r.status))
     }
     if (typeof data.id !== 'string' || !data.id.startsWith('task_')) { uncertain.value = true; throw new Error(t('seedance.uncertain')) }
-    task.value = data; pending.value = null; quote.value = null
-    sessionStorage.setItem(storeKey.value, JSON.stringify({ id: data.id, request_id: requestID.value, model: props.model }))
+    task.value = generationMode.value === 'draft' ? { ...data, draft: true } : data; pending.value = null; quote.value = null
+    sessionStorage.setItem(storeKey.value, JSON.stringify({ id: data.id, request_id: requestID.value, model: props.model, draft: generationMode.value === 'draft' }))
     start()
   } catch (e) { if (current === epoch) { if (pending.value) uncertain.value = true; error.value = (e as Error).message } }
   finally { if (current === epoch) busy.value = false }
@@ -149,7 +167,7 @@ async function poll() {
     if (current !== epoch) return
     if (!r.ok) { if ([401,403,404].includes(r.status)) stop(); throw new Error(errorText(data, r.status)) }
     if (data.id !== id) throw new Error(t('seedance.unexpectedTask'))
-    task.value = data
+    task.value = { ...data, draft: typeof data.draft === 'boolean' ? data.draft : task.value?.draft }
     const b = await fetch(`/v1/video/generations/${encodeURIComponent(id)}/billing`, options)
     const bill = await b.json().catch(() => ({}))
     if (current !== epoch) return
@@ -187,11 +205,11 @@ function restore() {
   try {
     const value = JSON.parse(sessionStorage.getItem(storeKey.value) ?? 'null')
     if (value?.model === props.model && /^task_[a-zA-Z0-9_-]+$/.test(value.id) && props.apiKey) {
-      task.value = { id: value.id, model: value.model, status: 'accepted' }; requestID.value = value.request_id ?? ''; start()
+      task.value = { id: value.id, model: value.model, status: 'accepted', draft: value.draft === true }; requestID.value = value.request_id ?? ''; start()
     }
   } catch { sessionStorage.removeItem(storeKey.value) }
 }
-watch([prompt, image, video, audio, duration, resolution, ratio], () => { quote.value = null; quotedBody.value = null })
+watch([prompt, image, video, audio, duration, resolution, ratio, generationMode, draftTaskId], () => { quote.value = null; quotedBody.value = null })
 watch(src, () => { copiedURL.value = false })
 watch(() => [auth.orgId, props.model, props.apiKey], () => { clearPrivate(); void loadModels(); restore() })
 onMounted(() => { void loadModels(); restore() })
@@ -202,22 +220,27 @@ onBeforeUnmount(clearPrivate)
 
 <template>
   <div class="flex flex-1 flex-col gap-4 p-4 sm:p-5">
-    <div class="grid gap-3 sm:grid-cols-3">
+    <label v-if="model === 'seedance-2.5'" class="text-sm">{{ t('seedance.generationMode') }}<select v-model="generationMode" class="input mt-1" :disabled="locked"><option value="standard">{{ t('seedance.normalVideo') }}</option><option v-if="draftPublished" value="draft">{{ t('seedance.draftVideo') }}</option><option v-if="conversionPublished" value="convert">{{ t('seedance.convertDraft') }}</option></select></label>
+    <p v-if="model === 'seedance-2.5' && !draftPublished" class="text-xs text-muted">{{ t('seedance.draftUnavailable') }}</p>
+    <div v-if="generationMode !== 'convert'" class="grid gap-3 sm:grid-cols-3">
       <label class="text-sm">{{ t('play.videoDuration') }}<select v-model="duration" class="input mt-1" :disabled="locked"><option value="default">{{ t('seedance.defaultOption') }}</option><option v-if="capabilities?.capabilities.automatic_duration" value="-1">{{ t('seedance.automaticDuration') }}</option><option v-for="n in Array.from({ length: Math.max(0, (capabilities?.capabilities.max_duration_seconds ?? 15) - 3) }, (_, i) => i + 4)" :key="n" :value="String(n)">{{ n }}</option></select></label>
-      <label class="text-sm">{{ t('play.videoResolution') }}<select v-model="resolution" class="input mt-1" :disabled="locked"><option value="default">{{ t('seedance.defaultOption') }}</option><option v-for="r in capabilities?.capabilities.resolutions ?? []" :key="r">{{ r }}</option></select></label>
+      <label class="text-sm">{{ t('play.videoResolution') }}<span v-if="generationMode === 'draft'" class="input mt-1 block">480p</span><select v-else v-model="resolution" class="input mt-1" :disabled="locked"><option value="default">{{ t('seedance.defaultOption') }}</option><option v-for="r in capabilities?.capabilities.resolutions ?? []" :key="r">{{ r }}</option></select></label>
       <label class="text-sm">{{ t('play.videoRatio') }}<select v-model="ratio" class="input mt-1" :disabled="locked"><option value="default">{{ t('seedance.defaultOption') }}</option><option v-for="r in ['16:9','9:16','1:1','4:3','3:4','21:9']" :key="r">{{ r }}</option></select></label>
     </div>
-    <label class="text-sm">{{ t('play.videoRefImage') }}<input v-model="image" class="input mt-1" placeholder="https://… / asset://…" :disabled="locked" /></label>
-    <label v-if="capabilities?.capabilities.input_video" class="text-sm">{{ t('seedance.referenceVideo') }}<input v-model="video" class="input mt-1" placeholder="https://… / asset://…" :disabled="locked" /></label>
-    <label v-if="capabilities?.capabilities.input_audio" class="text-sm">{{ t('seedance.referenceAudio') }}<input v-model="audio" class="input mt-1" placeholder="https://… / asset://…" :disabled="locked" /></label>
-    <p class="text-xs text-muted">{{ t('seedance.mediaNotice') }}</p>
+    <template v-if="generationMode !== 'convert'"><label class="text-sm">{{ t('play.videoRefImage') }}<input v-model="image" class="input mt-1" placeholder="https://… / asset://…" :disabled="locked" /></label>
+      <label v-if="capabilities?.capabilities.input_video" class="text-sm">{{ t('seedance.referenceVideo') }}<input v-model="video" class="input mt-1" placeholder="https://… / asset://…" :disabled="locked" /></label>
+      <label v-if="capabilities?.capabilities.input_audio" class="text-sm">{{ t('seedance.referenceAudio') }}<input v-model="audio" class="input mt-1" placeholder="https://… / asset://…" :disabled="locked" /></label>
+      <p class="text-xs text-muted">{{ t('seedance.mediaNotice') }}</p>
+      <p v-if="generationMode === 'draft' && !draftInputPublished" role="status" class="text-sm text-warn">{{ t('seedance.draftInputUnavailable') }}</p>
+    </template>
+    <template v-else><label class="text-sm">{{ t('seedance.draftTaskId') }}<input v-model="draftTaskId" class="input mt-1" placeholder="task_…" :disabled="locked" /></label><p class="text-xs text-muted">{{ t('seedance.draftExpiryNotice') }}</p><p class="text-xs text-muted">{{ t('seedance.conversionNotice') }}</p></template>
     <p v-if="capabilities && (!capabilities.enabled || !capabilities.verified)" role="status" class="text-sm text-warn">{{ t('seedance.modelUnavailable') }}</p>
-    <textarea v-model="prompt" class="input min-h-28" :placeholder="t('play.videoPromptPlaceholder')" :disabled="locked" />
+    <textarea v-if="generationMode !== 'convert'" v-model="prompt" class="input min-h-28" :placeholder="t('play.videoPromptPlaceholder')" :disabled="locked" />
     <p v-if="error" role="alert" class="break-words text-sm text-danger">{{ error }}</p>
     <p v-if="uncertain" role="status" class="text-sm text-warn">{{ t('seedance.uncertain') }}</p>
     <div v-if="quote" class="space-y-2 rounded border border-line p-4 text-sm"><p>{{ t('seedance.quoteAmount', { currency: displayCurrencyCode() }) }}: <strong class="font-mono">{{ fmtUsd(quote.reserved_amount, { precision: 6 }) }}</strong></p><p>{{ t('seedance.priceVersion') }}: {{ quote.pricing_version }}</p><p>{{ t('seedance.quoteNotice') }}</p><button type="button" class="btn-primary" :disabled="locked" @click="submit">{{ t('seedance.confirm') }}</button></div>
-    <div class="flex flex-wrap gap-2"><button v-if="uncertain" type="button" class="btn-primary" :disabled="busy" @click="submit">{{ t('seedance.retry') }}</button><button v-else type="button" class="btn-primary" :disabled="locked || !prompt.trim() || !apiKey || !capabilities?.enabled || !capabilities.verified" @click="estimate">{{ t(busy ? 'seedance.loading' : 'seedance.quote') }}</button><button v-if="task" type="button" class="btn-ghost" :disabled="busy" @click="poll">{{ t('seedance.refresh') }}</button><button v-if="active" type="button" class="btn-ghost" :disabled="busy || !!cancelOperation" @click="mutate('cancel')">{{ t('seedance.cancel') }}</button><button v-if="task && canDelete(task, billing?.state)" type="button" class="btn-ghost" :disabled="busy || !!cancelOperation && !['confirmed', 'rejected'].includes(cancelOperation.status)" @click="mutate('delete')">{{ t('seedance.remove') }}</button></div>
-    <div v-if="task" class="space-y-2 rounded border border-line p-4 text-sm"><p class="break-all font-mono">{{ task.id }}</p><p>{{ t('seedance.generationState') }}: {{ task.status }} · {{ t('seedance.billing') }}: {{ billing?.state ?? '—' }} · {{ t('seedance.artifact') }}: {{ artifactLabel }}</p><p v-if="cancelOperation" class="break-all">{{ cancelOperation.operation_id }} · {{ cancelOperation.status }}</p><p v-if="task.status === 'succeeded' && !task.content?.video_url">{{ t('seedance.artifactWaiting') }}</p><p v-if="billing?.state === 'pending_usage'">{{ t('seedance.billingWaiting') }}</p><p>{{ t('seedance.videoTokens') }}: {{ billing?.billable_tokens ?? t('seedance.pending') }}</p><p>{{ t('seedance.inputTokens') }}</p><p v-if="billing">{{ t('seedance.reserved') }}: {{ fmtUsd(billing.reserved_amount) }} · {{ t('seedance.settled') }}: {{ billing.settled_amount == null ? t('seedance.pending') : fmtUsd(billing.settled_amount) }} · {{ t('seedance.released') }}: {{ fmtUsd(billing.released_amount) }}</p></div>
+    <div class="flex flex-wrap gap-2"><button v-if="uncertain" type="button" class="btn-primary" :disabled="busy" @click="submit">{{ t('seedance.retry') }}</button><button v-else type="button" class="btn-primary" :disabled="locked || !canEstimate" @click="estimate">{{ t(busy ? 'seedance.loading' : 'seedance.quote') }}</button><button v-if="task" type="button" class="btn-ghost" :disabled="busy" @click="poll">{{ t('seedance.refresh') }}</button><button v-if="active" type="button" class="btn-ghost" :disabled="busy || !!cancelOperation" @click="mutate('cancel')">{{ t('seedance.cancel') }}</button><button v-if="task && canDelete(task, billing?.state)" type="button" class="btn-ghost" :disabled="busy || !!cancelOperation && !['confirmed', 'rejected'].includes(cancelOperation.status)" @click="mutate('delete')">{{ t('seedance.remove') }}</button></div>
+    <div v-if="task" class="space-y-2 rounded border border-line p-4 text-sm"><p class="break-all font-mono">{{ task.id }}</p><p>{{ t('seedance.generationState') }}: {{ task.status }} · {{ t('seedance.billing') }}: {{ billing?.state ?? '—' }} · {{ t('seedance.artifact') }}: {{ artifactLabel }}</p><button v-if="task.status === 'succeeded' && task.draft && task.content?.video_url && conversionPublished" type="button" class="btn-primary" :disabled="locked" @click="useDraftTask">{{ t('seedance.convertThisDraft') }}</button><p v-if="cancelOperation" class="break-all">{{ cancelOperation.operation_id }} · {{ cancelOperation.status }}</p><p v-if="task.status === 'succeeded' && !task.content?.video_url">{{ t('seedance.artifactWaiting') }}</p><p v-if="billing?.state === 'pending_usage'">{{ t('seedance.billingWaiting') }}</p><p>{{ t('seedance.videoTokens') }}: {{ billing?.billable_tokens ?? t('seedance.pending') }}</p><p>{{ t('seedance.inputTokens') }}</p><p v-if="billing">{{ t('seedance.reserved') }}: {{ fmtUsd(billing.reserved_amount) }} · {{ t('seedance.settled') }}: {{ billing.settled_amount == null ? t('seedance.pending') : fmtUsd(billing.settled_amount) }} · {{ t('seedance.released') }}: {{ fmtUsd(billing.released_amount) }}</p></div>
     <div v-if="src" class="space-y-3 rounded border border-line p-4 text-sm">
       <p class="text-muted">{{ t('seedance.directMediaNotice') }}</p>
       <video :key="`${task?.id}:${src}`" :src="src" controls playsinline preload="metadata" class="w-full rounded border border-line bg-black" />

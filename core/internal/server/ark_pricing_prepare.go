@@ -9,8 +9,10 @@ import (
 	"sort"
 
 	"github.com/gin-gonic/gin"
+	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/arkpricecatalog"
 	"github.com/laiai/laiai-next/core/internal/arkpricetemplate"
+	"github.com/laiai/laiai-next/core/internal/arkverification"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/video"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
@@ -115,6 +117,27 @@ func resolvePricingSources(tx *gorm.DB, cfg video.ModelConfig, cells []pricingCe
 	if e != nil {
 		return out, "", e
 	}
+	var draftPricingSource *arkverification.Source
+	if cfg.PublicModel == ark.Model25 {
+		draftPrices, err := arkpricecatalog.DraftReferencePrices(ref)
+		if err != nil {
+			return out, "", err
+		}
+		ref.Prices = append(ref.Prices, draftPrices...)
+		profile, err := arkverification.LoadDraft(cfg.PublicModel)
+		if err != nil {
+			return out, "", err
+		}
+		for i := range profile.Sources {
+			if profile.Sources[i].ID == "official-pricing-20261030-draft" {
+				draftPricingSource = &profile.Sources[i]
+				break
+			}
+		}
+		if draftPricingSource == nil {
+			return out, "", videobilling.ErrPricingUnavailable
+		}
+	}
 	sourceMap := map[string]string{}
 	for _, s := range ref.Sources {
 		sourceMap[s.ID] = s.RawSHA256
@@ -135,6 +158,9 @@ func resolvePricingSources(tx *gorm.DB, cfg video.ModelConfig, cells []pricingCe
 	for _, c := range cells {
 		k := priceCellKey(c)
 		priceSource := false
+		if draftPricingSource != nil && (c.Draft || c.Mode == "draft_conversion") {
+			out.Refs = append(out.Refs, pricingSourceRef{Kind: "official_draft_pricing", CellKey: k, Version: arkverification.DraftVersion, SourceID: draftPricingSource.ID, RawSHA256: draftPricingSource.SHA256})
+		}
 		if p, ok := currentMap[k]; ok {
 			priceSource = true
 			out.Refs = append(out.Refs, pricingSourceRef{Kind: "current_rule", CellKey: k, Version: p.Version, SourceID: p.RuleID, RawSHA256: p.SourceHash})

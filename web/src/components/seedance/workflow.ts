@@ -5,7 +5,17 @@ export function generationActive(status: string) { return ['accepted', 'submitti
 export function canDelete(task: { status: string; billing_state?: string; deletion_state?: string }, billingState?: string | null) {
   return ['succeeded', 'failed', 'cancelled', 'expired'].includes(task.status) && ['settled', 'released', 'adjusted'].includes(billingState ?? task.billing_state ?? '') && task.deletion_state !== 'deleted'
 }
-export function createBody(input: { model: string; prompt: string; image: string; video: string; audio: string; duration: string; resolution: string; ratio: string }) {
+export type GenerationMode = 'standard' | 'draft' | 'convert'
+export interface VideoCombination { mode: string; resolution: string; input_video: boolean; service_tier: string; draft: boolean; status: string }
+export function publishedCombination(combinations: VideoCombination[] | undefined, mode: 'draft' | 'convert', inputVideo?: boolean) {
+  return (combinations ?? []).some(cell => cell.status === 'published' && cell.service_tier === 'default' &&
+    cell.mode === (mode === 'draft' ? 'generate' : 'draft_conversion') && cell.resolution === (mode === 'draft' ? '480p' : '1080p') &&
+    cell.draft === (mode === 'draft') && (inputVideo === undefined || cell.input_video === inputVideo))
+}
+export function createBody(input: { model: string; prompt: string; image: string; video: string; audio: string; duration: string; resolution: string; ratio: string; mode?: GenerationMode; draftTaskId?: string }) {
+  if (input.mode === 'convert') {
+    return { model: input.model, content: [{ type: 'draft_task', draft_task: { id: input.draftTaskId?.trim() ?? '' } }], resolution: '1080p' }
+  }
   const content: Record<string, unknown>[] = [{ type: 'text', text: input.prompt.trim() }]
   for (const kind of ['image', 'video', 'audio'] as const) {
     const url = input[kind].trim()
@@ -13,7 +23,10 @@ export function createBody(input: { model: string; prompt: string; image: string
   }
   const body: Record<string, unknown> = { model: input.model, content }
   if (input.duration !== 'default') body.duration = Number(input.duration)
-  if (input.resolution !== 'default') body.resolution = input.resolution
+  if (input.mode === 'draft') {
+    body.draft = true
+    body.resolution = '480p'
+  } else if (input.resolution !== 'default') body.resolution = input.resolution
   if (input.ratio !== 'default') body.ratio = input.ratio
   return body
 }

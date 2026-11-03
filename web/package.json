@@ -16,7 +16,7 @@
     "build": "node scripts/check-money.mjs && node scripts/check-i18n.mjs && vue-tsc -b && vite build",
     "typecheck": "vue-tsc -b",
     "preview": "vite preview",
-    "test:money": "node --test src/lib/money.test.mjs src/pages/Billing.currency.test.mjs",
+    "test:money": "node --test src/lib/money.test.mjs src/pages/Billing.currency.test.mjs src/components/seedance/billingPresentation.test.mjs",
     "check:money": "node scripts/check-money.mjs",
     "test:invocation": "node --test src/lib/invocationQuery.test.mjs src/lib/invocationQueryTransport.test.mjs src/lib/invocationConsole.acceptance.test.mjs src/components/invocation/InvocationLogPanel.test.mjs"
   },

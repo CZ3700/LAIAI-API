@@ -54,6 +54,28 @@ test('media references use the official content contract and defaults remain omi
   assert.equal(automatic.ratio, '1:1')
 })
 
+test('sample creation fixes 480p and conversion sends only the sample reference', () => {
+  const input = { model: 'seedance-2.5', prompt: 'A fox', image: '', video: '', audio: '', duration: '8', resolution: '720p', ratio: '16:9' }
+  assert.deepEqual(flow.createBody({ ...input, mode: 'draft' }), {
+    model: 'seedance-2.5', content: [{ type: 'text', text: 'A fox' }], duration: 8, resolution: '480p', ratio: '16:9', draft: true,
+  })
+  assert.deepEqual(flow.createBody({ ...input, mode: 'convert', draftTaskId: ' task_preview ' }), {
+    model: 'seedance-2.5', content: [{ type: 'draft_task', draft_task: { id: 'task_preview' } }], resolution: '1080p',
+  })
+})
+
+test('sample modes require their exact published price combination', () => {
+  const cells = [
+    { mode: 'generate', resolution: '480p', input_video: false, service_tier: 'default', draft: true, status: 'published' },
+    { mode: 'generate', resolution: '480p', input_video: true, service_tier: 'default', draft: true, status: 'blocked' },
+    { mode: 'draft_conversion', resolution: '1080p', input_video: false, service_tier: 'default', draft: false, status: 'published' },
+  ]
+  assert.equal(flow.publishedCombination(cells, 'draft', false), true)
+  assert.equal(flow.publishedCombination(cells, 'draft', true), false)
+  assert.equal(flow.publishedCombination(cells, 'convert'), true)
+  assert.equal(flow.publishedCombination(cells.slice(0, 2), 'convert'), false)
+})
+
 test('deletion waits for financial finality and never treats an unknown task as terminal', () => {
   assert.equal(flow.canDelete({ status: 'succeeded', billing_state: 'pending_usage' }), false)
   assert.equal(flow.canDelete({ status: 'submission_unknown', billing_state: 'reserved' }), false)
