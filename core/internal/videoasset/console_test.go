@@ -429,9 +429,12 @@ func TestMediaCleanupRetainsReferencedEvidence(t *testing.T) {
 	g := readyGroup(t, s, "cleanup")
 	a := readyAsset(t, s, now, g.ID, "cleanup")
 	media := &MediaStore{root: t.TempDir()}
+	media.retainObject = func(_ context.Context, id string, _ time.Time) (bool, error) {
+		return id == "media_wm_keep", nil
+	}
 	s.console.Media = media
 	old := now.Add(-48 * time.Hour)
-	for _, id := range []string{"media_keep", "media_orphan", "pending-old"} {
+	for _, id := range []string{"media_keep", "media_orphan", "media_wm_keep", "media_wm_expired", "pending-old"} {
 		p := filepath.Join(media.root, id)
 		if err := os.WriteFile(p, []byte("fixture"), 0600); err != nil {
 			t.Fatal(err)
@@ -447,10 +450,27 @@ func TestMediaCleanupRetainsReferencedEvidence(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(media.root, "media_keep")); err != nil {
 		t.Fatal("referenced evidence removed", err)
 	}
-	for _, id := range []string{"media_orphan", "pending-old"} {
+	if _, err := os.Stat(filepath.Join(media.root, "media_wm_keep")); err != nil {
+		t.Fatal("retained watermark object removed", err)
+	}
+	for _, id := range []string{"media_orphan", "media_wm_expired", "pending-old"} {
 		if _, err := os.Stat(filepath.Join(media.root, id)); !os.IsNotExist(err) {
 			t.Fatal("orphan retained", id, err)
 		}
+	}
+}
+
+func TestPublicDownloadClientRejectsPrivateTargetsAndHTTPRedirects(t *testing.T) {
+	client := PublicDownloadClient(time.Second)
+	if _, err := client.Get("https://127.0.0.1/private"); err == nil {
+		t.Fatal("private address accepted")
+	}
+	redirect, err := http.NewRequest(http.MethodGet, "http://example.com/file", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CheckRedirect(redirect, nil); err == nil {
+		t.Fatal("HTTP redirect accepted")
 	}
 }
 

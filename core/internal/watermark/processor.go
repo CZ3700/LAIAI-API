@@ -9,11 +9,9 @@ import (
 	"time"
 )
 
-// Processor wraps the ffmpeg/ffprobe pair. The filter reproduces the operator
-// tool's watermark-crop chain (scale up → slight rotate on black → centered
-// crop back to source size → setsar) parameterized by source resolution: the
-// published command hardcodes 1280x720, so other resolutions get the same
-// relative geometry instead of a distorting fixed resize.
+// Processor wraps the ffmpeg/ffprobe pair. The default filter follows the
+// operator's documented scale, slight rotation and crop back to source size.
+// It is parameterized by resolution so non-720p video keeps its aspect ratio.
 type Processor struct {
 	FFmpeg  string        // executable path, default "ffmpeg"
 	FFProbe string        // executable path, default "ffprobe"
@@ -22,16 +20,14 @@ type Processor struct {
 }
 
 const (
-	rotateRadians = "0.026179939" // 1.5°, from the operator tool
-	// The published command scales 1280x720 to 1347x758 before rotating and
-	// cropping back; keep those exact ratios for every source resolution.
-	scaleX = 1347.0 / 1280.0
-	scaleY = 758.0 / 720.0
+	rotateRadians = "0.026179939" // 1.5°, from the operator script
+	scaleX        = 1347.0 / 1280.0
+	scaleY        = 758.0 / 720.0
 )
 
-// FilterFor derives the watermark-crop filter for a source resolution. The
-// 1280x720 case reproduces the operator command byte for byte: the ink margin
-// scales with the frame (+5px/-2px at 720p).
+// FilterFor reproduces the script byte for byte at 1280x720. At other sizes,
+// it scales the geometry proportionally; the crop only restores source size
+// after rotation and does not target the provider's corner label.
 func FilterFor(w, h int) string {
 	sw, sh := int(float64(w)*scaleX+0.5), int(float64(h)*scaleY+0.5)
 	xInk := int(float64(w) * 5.0 / 1280.0)
@@ -78,11 +74,15 @@ func (p Processor) Resolution(ctx context.Context, path string) (int, int, error
 	return probe.Streams[0].Width, probe.Streams[0].Height, nil
 }
 
-// Process runs the watermark-crop chain. filter=="" derives it from the
-// probed source resolution; the audio stream is stream-copied when present.
+// Process runs the documented FFmpeg chain. An explicit filter takes priority,
+// then the configured override; otherwise the filter is derived from the
+// probed source resolution. Audio is stream-copied when present.
 func (p Processor) Process(ctx context.Context, filter, in, out string) error {
 	ctx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
+	if filter == "" {
+		filter = p.Filter
+	}
 	if filter == "" {
 		w, h, err := p.Resolution(ctx, in)
 		if err != nil {

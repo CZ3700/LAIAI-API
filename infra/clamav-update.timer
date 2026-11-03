@@ -1,0 +1,11 @@
+[Unit]
+Description=Check LAIAI ClamAV signatures four times daily
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:23:00 UTC
+RandomizedDelaySec=20min
+Persistent=true
+Unit=laiai-clamav-update.service
+
+[Install]
+WantedBy=timers.target

@@ -55,6 +55,9 @@ def snap():
 def compose():
     index=args.index('compose'); a=args[index+1:]
     positions=[i for i,v in enumerate(a) if v=='-f']; raw=pathlib.Path(a[positions[-1]+1]).read_text()
+    candidate=pathlib.Path(a[positions[-1]+1]).name=='new-compose.yml'
+    media_mounts=[{'Type':'bind','Source':'/var/lib/laiai/video-media','Destination':'/var/lib/laiai/video-media','RW':True},
+                  {'Type':'bind','Source':'/var/lib/clamav','Destination':'/var/lib/clamav','RW':False}]
     if raw.lstrip().startswith('{'): overlay=json.loads(raw)
     else:
         overlay={'services':{}}; role=None
@@ -74,6 +77,10 @@ def compose():
                 if role=='caddy' and m['Destination']=='/etc/caddy/Caddyfile':
                     service['volumes']+=overlay['services']['caddy']['volumes']; continue
                 service['volumes'].append({'type':m['Type'],'source':m['Source'],'target':m['Destination'],'read_only':not m['RW']})
+            if role=='core' and candidate:
+                for m in media_mounts:
+                    if not any(v['target']==m['Destination'] for v in service['volumes']):
+                        service['volumes'].append({'type':m['Type'],'source':m['Source'],'target':m['Destination'],'read_only':not m['RW']})
             result['services'][role]=service
         print(json.dumps(result)); return
     if 'stop' in a:
@@ -84,6 +91,7 @@ def compose():
         c['ids'][role]=hashlib.sha256((role+':'+str(generation)).encode()).hexdigest()
         if role=='core':
             c['core_running']=True
+            c['mounts']['core']=sorted(media_mounts,key=lambda m:m['Destination']) if candidate else []
             if c.get('image_mismatch'): c['images'][role]='sha256:'+'9'*64
             if c.get('running_hmac_changed'): c['environments']['core']['LAIAI_VIDEO_HMAC_SECRET']='changed-after-start-fixture-secret-0123456789'
         if role=='caddy':
@@ -285,6 +293,52 @@ class StateTests(unittest.TestCase):
         values[2]["State"]["Health"]["Status"] = "unhealthy"
         self.run_state("inspect", snapshot, value=values, ok=False)
 
+    def test_only_reviewed_core_media_and_scanner_mounts_are_allowed(self):
+        env = {
+            'core': {k: SECRET for k in ('LAIAI_DSN','LAIAI_AUTH_SECRET','LAIAI_DATA_KEYS','LAIAI_DATA_KEY_ACTIVE','LAIAI_REDIS_ADDR','LAIAI_REDIS_PASSWORD','LAIAI_VIDEO_HMAC_SECRET')},
+            'caddy': {'LAIAI_DOMAIN': 'example.test'},
+            'mysql': {k: SECRET for k in ('MYSQL_ROOT_PASSWORD','MYSQL_DATABASE','MYSQL_USER','MYSQL_PASSWORD')},
+            'redis': {'REDIS_PASSWORD': SECRET},
+        }
+        old = {role: {'image': OLD_IMAGES[role], 'mounts': [],
+                      'env_hashes': {k: hashlib.sha256(v.encode()).hexdigest() for k,v in env[role].items()}}
+               for role in OLD_IMAGES}
+        plan = self.root / 'plan.json'
+        plan.write_text(json.dumps({'snapshot': old}))
+        mounts = [
+            {'type':'bind','source':'/var/lib/clamav','target':'/var/lib/clamav','read_only':True},
+            {'type':'bind','source':'/var/lib/laiai/video-media','target':'/var/lib/laiai/video-media','read_only':False},
+        ]
+        config = {'name':'infra','services':{},'volumes':{}}
+        for role in OLD_IMAGES:
+            config['services'][role] = {'image': NEW_IMAGES.get(role,OLD_IMAGES[role]),
+                                        'pull_policy':'never','environment':env[role],
+                                        'volumes':mounts if role=='core' else []}
+        self.run_state('check-compose', plan, 'new', value=config)
+        for replacement in (
+            {'type':'bind','source':'/other','target':'/var/lib/laiai/video-media','read_only':False},
+            {'type':'bind','source':'/var/lib/clamav','target':'/var/lib/clamav','read_only':False},
+            {'type':'bind','source':'/tmp/extra','target':'/extra','read_only':False},
+        ):
+            bad = copy.deepcopy(config)
+            bad_mounts = bad['services']['core']['volumes']
+            if replacement['target']=='/extra': bad_mounts.append(replacement)
+            else: bad_mounts[next(i for i,m in enumerate(bad_mounts) if m['target']==replacement['target'])]=replacement
+            self.run_state('check-compose', plan, 'new', value=bad, ok=False)
+        current = copy.deepcopy(old)
+        current['core']['image'] = NEW_IMAGES['core']
+        current['caddy']['image'] = NEW_IMAGES['caddy']
+        current['core']['mounts'] = [
+            {'type':'bind','source':m['source'],'destination':m['target'],'rw':not m['read_only']} for m in mounts]
+        actual = self.root / 'actual.json'
+        images = self.root / 'images.json'
+        actual.write_text(json.dumps(current))
+        images.write_text(json.dumps(NEW_IMAGES))
+        self.run_state('running', plan, actual, images)
+        current['core']['mounts'][0]['rw']=True
+        actual.write_text(json.dumps(current))
+        self.run_state('running', plan, actual, images, ok=False)
+
     def test_approval_binds_stage_commit_time_and_unchanged_evidence(self):
         plan = self.root / "plan.json"
         plan.write_text(json.dumps({"commit": TARGET_SHA}))
@@ -323,6 +377,15 @@ class CLITests(unittest.TestCase):
         self.tools = self.root / "tool copy"
         (self.tools / "infra").mkdir(parents=True)
         shutil.copy(RELEASE_DIR.parent / "release.sh", self.tools / "infra/release.sh")
+        coordinator = self.tools / "infra/release.sh"
+        media_dir = self.root / 'private-media'
+        clam_dir = self.root / 'clamav-signatures'
+        media_dir.mkdir(mode=0o700)
+        os.chown(media_dir, 10001, -1)
+        clam_dir.mkdir()
+        (clam_dir / 'main.cvd').write_text('fixture')
+        (clam_dir / 'daily.cvd').write_text('fixture')
+        coordinator.write_text(coordinator.read_text().replace('/var/lib/laiai/video-media', str(media_dir)).replace('/var/lib/clamav', str(clam_dir)))
         shutil.copytree(RELEASE_DIR, self.tools / "infra/release", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         self.live = self.root / "live source"
         for f in ("infra/.env", "infra/Caddyfile", "infra/docker-compose.yml", "infra/mysql/my.cnf", "infra/redis/redis.conf"):

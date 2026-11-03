@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -114,10 +115,23 @@ func queryRecoveryNew(t *testing.T) *queryRecoveryFixture {
 	pool.SetMaxOpenConns(12)
 	db, err := gorm.Open(mysql.New(mysql.Config{Conn: pool, DSNConfig: cfg.Clone()}), &gorm.Config{Logger: logger.Discard})
 	queryRecoveryCheck(t, err)
-	ran, err := migrate.Up(db, os.DirFS("../../../migrations"))
+	migrations := os.DirFS("../../../migrations")
+	ran, err := migrate.Up(db, migrations)
 	queryRecoveryCheck(t, err)
-	if len(ran) != 135 || ran[len(ran)-1] != "0135_video_query_settlement_shape" {
-		t.Fatal("query recovery fixture requires the complete tracked 0135 schema")
+	files, err := fs.Glob(migrations, "*.sql")
+	queryRecoveryCheck(t, err)
+	if len(ran) != len(files) || len(ran) < 135 {
+		t.Fatal("query recovery fixture requires every tracked migration")
+	}
+	settlementShapeApplied := false
+	for i, file := range files {
+		if ran[i] != strings.TrimSuffix(file, ".sql") {
+			t.Fatal("query recovery fixture migration order differs from tracked files")
+		}
+		settlementShapeApplied = settlementShapeApplied || ran[i] == "0135_video_query_settlement_shape"
+	}
+	if !settlementShapeApplied {
+		t.Fatal("query recovery fixture requires the tracked 0135 settlement shape")
 	}
 	db, err = ledger.EnableActivityTracking(db)
 	queryRecoveryCheck(t, err)

@@ -34,7 +34,7 @@ type Config struct {
 	VideoMediaScanCommand             []string
 	// 去水印处理（LAIAI_VIDEO_WATERMARK_*，全部可选；总开关在管理后台 DB 标志）：
 	// 处理管线只在媒体存储已配置时接线；ffmpeg 参数默认复刻文档命令。
-	VideoWatermarkFilter        string        // 显式滤镜串覆盖；空=按源分辨率推导（720p 原样复刻）
+	VideoWatermarkFilter        string        // 显式滤镜串覆盖；空=按源分辨率推导文档脚本滤镜
 	VideoWatermarkFFmpeg        string        // 默认 ffmpeg
 	VideoWatermarkFFProbe       string        // 默认 ffprobe
 	VideoWatermarkTimeout       time.Duration // 单次处理超时，默认 10m
@@ -226,7 +226,7 @@ func (c *Config) loadVideoMedia() error {
 // loadVideoWatermark reads the deferred watermark-removal knobs. Everything is
 // optional: the pipeline only exists when the media store is configured, the
 // superadmin toggle gates it at runtime, and unset knobs fall back to
-// defaults that reproduce the operator tool's command.
+// defaults that reproduce the operator's script at 1280x720.
 func (c *Config) loadVideoWatermark() error {
 	var err error
 	c.VideoWatermarkFilter = os.Getenv("LAIAI_VIDEO_WATERMARK_FILTER")
@@ -235,6 +235,9 @@ func (c *Config) loadVideoWatermark() error {
 	c.VideoWatermarkTimeout, err = time.ParseDuration(getenvDefault("LAIAI_VIDEO_WATERMARK_TIMEOUT", "10m"))
 	if err != nil {
 		return fmt.Errorf("config: LAIAI_VIDEO_WATERMARK_TIMEOUT must be a Go duration: %w", err)
+	}
+	if c.VideoWatermarkTimeout <= 0 {
+		return fmt.Errorf("config: LAIAI_VIDEO_WATERMARK_TIMEOUT must be positive")
 	}
 	c.VideoWatermarkConcurrency, err = getenvInt("LAIAI_VIDEO_WATERMARK_CONCURRENCY", 2, 1)
 	if err != nil {

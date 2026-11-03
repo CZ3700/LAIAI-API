@@ -154,6 +154,9 @@ func runCore(log *slog.Logger) (code int) {
 				Root: cfg.VideoMediaRoot, PublicBaseURL: cfg.VideoMediaPublicBaseURL,
 				SigningKey: cfg.VideoMediaSigningKey, FFProbePath: cfg.VideoMediaFFProbePath,
 				ScanCommand: cfg.VideoMediaScanCommand,
+				RetainObject: func(ctx context.Context, id string, now time.Time) (bool, error) {
+					return watermark.RetainedMedia(db.WithContext(ctx), id, now)
+				},
 			})
 			if err != nil {
 				log.Error("private video media storage, probe or scanner unavailable")
@@ -170,7 +173,7 @@ func runCore(log *slog.Logger) (code int) {
 		if mediaStore != nil {
 			videoSvc.Watermark = &watermark.Coordinator{
 				DB: db, Resolver: videoSvc, Media: mediaStore,
-				Download: &http.Client{Timeout: 5 * time.Minute},
+				Download: videoasset.PublicDownloadClient(5 * time.Minute),
 				Processor: watermark.Processor{
 					FFmpeg: cfg.VideoWatermarkFFmpeg, FFProbe: cfg.VideoWatermarkFFProbe,
 					Filter: cfg.VideoWatermarkFilter, Timeout: cfg.VideoWatermarkTimeout,

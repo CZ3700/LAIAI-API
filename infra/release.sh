@@ -95,6 +95,10 @@ set +x
 export LIVE_DIR STATE_DIR SOURCE_REPOSITORY COMPOSE_PROJECT LIVE_ENV VIDEO_ENV CADDYFILE PUBLIC_ORIGIN
 export BACKUP_KEY_FILE MIN_FREE_MB MIN_AVAILABLE_MB HOOK_TIMEOUT CI_CHECK_HOOK CHECK_HOOK
 export GO_IMAGE ALPINE_IMAGE NODE_IMAGE CADDY_BASE_IMAGE
+# This is the reviewed core bind destination/source, never an operator-supplied
+# arbitrary path. The backup module archives it before and after maintenance.
+MEDIA_BACKUP_ROOT=/var/lib/laiai/video-media
+export MEDIA_BACKUP_ROOT
 [[ "$COMPOSE_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die 'Invalid Compose project.'
 [[ "$PUBLIC_ORIGIN" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]] || die 'PUBLIC_ORIGIN must be an HTTPS origin.'
 [[ "$SOURCE_REPOSITORY" == https://github.com/CZ3700/LAIAI-API.git || "$SOURCE_REPOSITORY" == git@github.com:CZ3700/LAIAI-API.git ]] || die 'Repository must be CZ3700/LAIAI-API without embedded credentials.'
@@ -189,6 +193,14 @@ capacity() {
   available=$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)
   log "Available archive disk=${free} MiB; Docker disk=${docker_free} MiB; RAM=${available} MiB; configured minimum=${MIN_FREE_MB}/${MIN_AVAILABLE_MB} MiB"
   ((free >= MIN_FREE_MB && docker_free >= MIN_FREE_MB && available >= MIN_AVAILABLE_MB)) || die 'Insufficient release/build capacity. No automatic cache or volume cleanup is performed.'
+}
+check_media_paths() {
+  [[ -d $MEDIA_BACKUP_ROOT && ! -L $MEDIA_BACKUP_ROOT && $(stat -c '%u:%a' -- "$MEDIA_BACKUP_ROOT") == 10001:700 ]] \
+    || die 'Private media bind must exist, be UID 10001 owned and mode 0700.'
+  [[ -d /var/lib/clamav && ! -L /var/lib/clamav ]] || die 'ClamAV signature bind is missing or unsafe.'
+  [[ ${1:-} != signatures ]] && return 0
+  [[ -f /var/lib/clamav/main.cvd || -f /var/lib/clamav/main.cld ]] || die 'ClamAV main signatures are missing.'
+  [[ -f /var/lib/clamav/daily.cvd || -f /var/lib/clamav/daily.cld ]] || die 'ClamAV daily signatures are missing.'
 }
 ci_check() {
   trusted_file "$CI_CHECK_HOOK"; [[ -x "$CI_CHECK_HOOK" ]] || die 'CI checker is not executable.'
@@ -296,7 +308,7 @@ preflight() {
   load_plan; verify_config; require_current_main; same_live
   [[ ! -f "$RUN_DIR/maintenance-started.ok" ]] || die 'A deployment already started; use status/verify/open/rollback.'
   log "Release ID: $RELEASE_ID"
-  capacity; checkout_source; ci_check
+  capacity; check_media_paths; checkout_source; ci_check
   local ref
   for ref in "$GO_IMAGE" "$ALPINE_IMAGE" "$NODE_IMAGE" "$CADDY_BASE_IMAGE"; do
     [[ "$ref" =~ ^[^[:space:]]+@sha256:[0-9a-f]{64}$ ]] || die 'All four base images need verified repository@sha256 references.'
@@ -348,11 +360,17 @@ build_stage() {
   CADDY_IMAGE=$(docker image inspect --format '{{.Id}}' "$caddy_tag")
   images_present "$CORE_IMAGE" "$CADDY_IMAGE"
   state images "$RUN_DIR/images.json" "$CORE_IMAGE" "$CADDY_IMAGE"
-  docker run --rm --pull never --network none --read-only --entrypoint sh "$CORE_IMAGE" \
+  docker run --rm --pull never --network none --read-only \
+    --mount type=bind,src="$MEDIA_BACKUP_ROOT",dst=/var/lib/laiai/video-media \
+    --mount type=bind,src=/var/lib/clamav,dst=/var/lib/clamav,readonly \
+    --entrypoint sh "$CORE_IMAGE" \
     -ec '
       test "$(id -u)" = 10001
       test -x /app/core; test -x /app/migrate; test -x /app/schema-doctor; test -x /app/backfill-funds
       test -x /app/entrypoint.sh; sh -n /app/entrypoint.sh
+      test -w /var/lib/laiai/video-media
+      command -v ffmpeg; command -v ffprobe; command -v clamscan; command -v freshclam
+      ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264
       set -- /app/migrations/*.sql
       test -f "$1"
       for migration do cat "$migration" >/dev/null; done
@@ -423,8 +441,24 @@ deploy_stage() {
   PHASE=deploy
   load_plan; require_mark preflight; require_mark backup; require_mark build
   [[ ! -f "$RUN_DIR/maintenance-started.ok" ]] || die 'A deployment already started. Inspect status; use open/rollback or manual recovery, not repeated migration.'
-  verify_config; same_live; require_current_main; ci_check; checkout_source; capacity
+  verify_config; same_live; require_current_main; ci_check; checkout_source; capacity; check_media_paths signatures
   images_present "$(state get "$RUN_DIR/images.json" core)" "$(state get "$RUN_DIR/images.json" caddy)"
+  local scanner_image
+  scanner_image=$(state get "$RUN_DIR/images.json" core)
+  # ClamAV can return success for oversized files unless its limits are
+  # explicit. Verify both detection and a clean result before maintenance.
+  docker run --rm --pull never --network none --read-only --tmpfs /tmp:size=16m \
+    --mount type=bind,src=/var/lib/clamav,dst=/var/lib/clamav,readonly \
+    --entrypoint sh "$scanner_image" -ec '
+      printf %s WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo= | base64 -d > /tmp/eicar
+      printf benign > /tmp/clean
+      set +e
+      clamscan --no-summary --database=/var/lib/clamav --max-filesize=200M --max-scansize=400M --alert-exceeds-max=yes /tmp/eicar >/dev/null 2>&1
+      infected=$?
+      set -e
+      test "$infected" -eq 1
+      clamscan --no-summary --database=/var/lib/clamav --max-filesize=200M --max-scansize=400M --alert-exceeds-max=yes /tmp/clean >/dev/null 2>&1
+    ' || die 'Candidate scanner did not reject EICAR and accept clean input.'
   (cd "$RUN_DIR/backup" && sha256sum -c checksums.sha256 >/dev/null)
   (cd "$RUN_DIR" && sha256sum -c candidate-images.tar.sha256 >/dev/null)
   compose new; check_data preflight; external_check before-maintenance

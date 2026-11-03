@@ -214,6 +214,24 @@ def render(evidence, cases):
 
 
 class QueryRecoveryHostTests(unittest.TestCase):
+    def test_migration_inventory_allows_new_releases_but_requires_recovery_schema(self):
+        old = {f'migrations/{n:04d}_fixture.sql': b'' for n in range(1, 133)}
+        recovery = {f'migrations/{n:04d}_{suffix}.sql': b'' for n, suffix in (
+            (133, 'video_query_recovery_progress'),
+            (134, 'video_query_generation_settlement'),
+            (135, 'video_query_settlement_shape'),
+        )}
+        self.assertEqual(host.migration_inventory_count(old, 'old'), 132)
+        self.assertEqual(host.migration_inventory_count(old | recovery, 'new'), 135)
+        later = old | recovery | {f'migrations/{n:04d}_later.sql': b'' for n in range(136, 142)}
+        self.assertEqual(host.migration_inventory_count(later, 'new'), 141)
+        with self.assertRaisesRegex(ValueError, 'migration_head'):
+            host.migration_inventory_count(later, 'old')
+        missing = dict(later)
+        missing.pop('migrations/0135_video_query_settlement_shape.sql')
+        with self.assertRaisesRegex(ValueError, 'migration_head'):
+            host.migration_inventory_count(missing, 'new')
+
     def data(self):
         return {case: scenario(case) for case in audit.CASES}
 

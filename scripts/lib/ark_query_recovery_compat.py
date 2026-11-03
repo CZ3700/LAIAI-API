@@ -78,6 +78,20 @@ def bridge_address(row):
     return str(address), bridge['NetworkID']
 
 
+def migration_inventory_count(files, role):
+    names = [name for name in files if re.fullmatch(r'migrations/\d{4}_[^/]+\.sql', name)]
+    if role == 'old':
+        need(len(names) == 132, 'migration_head')
+    else:
+        required = {f'migrations/{name}' for name in (
+            '0133_video_query_recovery_progress.sql',
+            '0134_video_query_generation_settlement.sql',
+            '0135_video_query_settlement_shape.sql',
+        )}
+        need(len(names) >= 135 and required.issubset(names), 'migration_head')
+    return len(names)
+
+
 class Runner:
     def __init__(self, args):
         self.args, self.env = args, clean_environment(os.environ)
@@ -165,8 +179,9 @@ class Runner:
                 target.write_bytes(raw)
                 target.chmod(modes.get(name, 0o644))
             manifest = {p: sha(b) for p, b in files.items()}
-            migrations = sum(bool(re.fullmatch(r'migrations/\d{4}_[^/]+\.sql', p)) for p in files)
-            need(migrations == (132 if role == 'old' else 135), 'migration_head')
+            # The old binary is pinned to its historical 0132 schema. New
+            # releases may add migrations after the 0135 recovery boundary.
+            migrations = migration_inventory_count(files, role)
             self.sources[role] = dict(source=commit, path=str(directory), files=manifest,
                                       original_sha256=original, migration_count=migrations,
                                       common_harness_sha256={p: sha(b) for p, b in common.items()})
@@ -302,7 +317,8 @@ class Runner:
             for repeat in (1, 2):
                 self.command([self.tools['migrate'], '-dir', directory], case + '-migration-' + str(repeat) + '.log', env=env)
             output = self.command([self.tools['schema-doctor'], '-dir', directory], case + '-doctor.log', env=env)
-            need(b'OK: schema at head (135 applied,' in output, 'schema_doctor')
+            expected = 'OK: schema at head (' + str(self.sources['new']['migration_count']) + ' applied,'
+            need(expected.encode() in output, 'schema_doctor')
 
     def wait_database(self):
         for _ in range(120):

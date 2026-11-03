@@ -9,10 +9,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/laiai/laiai-next/core/internal/invocation"
+	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"gorm.io/gorm"
 )
 
@@ -20,7 +21,7 @@ import (
 // signature in the delivery evidence expires, so it must be resolved at
 // download time, never cached in the job row.
 type Resolver interface {
-	ResolveWatermarkSource(ctx context.Context, org uint64, taskID string) (string, error)
+	ResolveWatermarkSource(ctx context.Context, org uint64, taskID string) (string, time.Time, error)
 }
 
 // MediaStorer persists the processed artifact and produces its signed delivery
@@ -78,7 +79,9 @@ func (c *Coordinator) Run(ctx context.Context) {
 		if budget <= 0 {
 			continue
 		}
-		jobs, err := Lease(c.DB, budget, c.Processor.Timeout+5*time.Minute, c.Now().UTC())
+		// Download may consume five minutes and MediaStore verification another
+		// ninety seconds after ffmpeg finishes.
+		jobs, err := Lease(c.DB, budget, c.Processor.Timeout+7*time.Minute, c.Now().UTC())
 		if err != nil {
 			continue
 		}
@@ -106,26 +109,38 @@ func (c *Coordinator) enabled() bool {
 // DeliveryURL returns the processed artifact's signed URL for a delivered
 // task, or ok=false when none is ready. The one-hour signature window covers
 // playback; refreshes get a fresh URL.
-func (c *Coordinator) DeliveryURL(org uint64, taskID string, now time.Time) (string, bool) {
-	if c == nil || c.Media == nil {
+func (c *Coordinator) DeliveryURL(org uint64, userID *uint64, taskID string, now time.Time) (string, bool) {
+	if c == nil || c.Media == nil || userID == nil {
+		return "", false
+	}
+	allowed, err := UserAllowed(c.DB, *userID)
+	if err != nil || !allowed {
 		return "", false
 	}
 	job, err := Ready(c.DB, org, taskID, now)
-	if err != nil || job == nil {
+	if err != nil || job == nil || job.UserID == nil || *job.UserID != *userID {
 		return "", false
 	}
-	url := c.Media.SignedURL(org, job.ProcessedMediaID, now.Add(time.Hour))
+	expires := now.Add(time.Hour)
+	if job.ProcessedExpiresAt != nil && job.ProcessedExpiresAt.Before(expires) {
+		expires = *job.ProcessedExpiresAt
+	}
+	url := c.Media.SignedURL(org, job.ProcessedMediaID, expires)
 	return url, url != ""
 }
 
 func (c *Coordinator) process(ctx context.Context, job Job) {
-	now := c.Now().UTC()
-	done, err := c.attempt(ctx, job)
+	done, taskDeadline, err := c.attempt(ctx, job)
 	if err != nil {
 		_ = Fail(c.DB, job, err.Error(), c.Now().UTC(), DefaultBackoff)
 		return
 	}
-	_ = Complete(c.DB, job, done, now.Add(c.RetentionOrDefault()), c.Now().UTC())
+	now := c.Now().UTC()
+	expires := now.Add(c.RetentionOrDefault())
+	if taskDeadline.Before(expires) {
+		expires = taskDeadline
+	}
+	_ = Complete(c.DB, job, done, expires, now)
 }
 
 func (c *Coordinator) RetentionOrDefault() time.Duration {
@@ -137,16 +152,16 @@ func (c *Coordinator) RetentionOrDefault() time.Duration {
 
 // attempt: resolve fresh URL → bounded download → probe+encode → store.
 // Every stage writes into the scratch dir; failures clean up after themselves.
-func (c *Coordinator) attempt(ctx context.Context, job Job) (string, error) {
+func (c *Coordinator) attempt(ctx context.Context, job Job) (string, time.Time, error) {
 	if c.Resolver == nil || c.Media == nil {
-		return "", fmt.Errorf("watermark pipeline not wired")
+		return "", time.Time{}, fmt.Errorf("watermark pipeline not wired")
 	}
-	source, err := c.Resolver.ResolveWatermarkSource(ctx, job.OrgID, job.TaskID)
+	source, deadline, err := c.Resolver.ResolveWatermarkSource(ctx, job.OrgID, job.TaskID)
 	if err != nil {
-		return "", fmt.Errorf("resolve source: %w", err)
+		return "", time.Time{}, fmt.Errorf("resolve source: %w", err)
 	}
-	if len(source) > 2048 || !httpsURL(source) {
-		return "", fmt.Errorf("source url rejected")
+	if !invocation.ValidVideoDeliveryURL(source, nil) {
+		return "", time.Time{}, fmt.Errorf("source url rejected")
 	}
 	dir := c.TempDir
 	if dir == "" {
@@ -154,30 +169,33 @@ func (c *Coordinator) attempt(ctx context.Context, job Job) (string, error) {
 	}
 	work, err := os.MkdirTemp(dir, "wm-")
 	if err != nil {
-		return "", fmt.Errorf("scratch: %w", err)
+		return "", time.Time{}, fmt.Errorf("scratch: %w", err)
 	}
 	defer os.RemoveAll(work)
 	inPath := filepath.Join(work, "in.mp4")
 	if err := c.download(ctx, source, inPath); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	outPath := filepath.Join(work, "out.mp4")
 	if err := c.Processor.Process(ctx, "", inPath, outPath); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	f, err := os.Open(outPath)
 	if err != nil {
-		return "", fmt.Errorf("open output: %w", err)
+		return "", time.Time{}, fmt.Errorf("open output: %w", err)
 	}
 	defer f.Close()
 	mediaID, err := newMediaID()
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
+	}
+	if !deadline.After(c.Now().UTC()) {
+		return "", time.Time{}, fmt.Errorf("task retention expired before storage")
 	}
 	if _, err := c.Media.StoreVideo(ctx, mediaID, f); err != nil {
-		return "", fmt.Errorf("store: %w", err)
+		return "", time.Time{}, fmt.Errorf("store: %w", err)
 	}
-	return mediaID, nil
+	return mediaID, deadline, nil
 }
 
 func (c *Coordinator) download(ctx context.Context, source, dest string) error {
@@ -189,7 +207,7 @@ func (c *Coordinator) download(ctx context.Context, source, dest string) error {
 	}
 	client := c.Download
 	if client == nil {
-		client = http.DefaultClient
+		client = videoasset.PublicDownloadClient(5 * time.Minute)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -216,10 +234,6 @@ func (c *Coordinator) download(ctx context.Context, source, dest string) error {
 		return fmt.Errorf("download: size %d out of range", size)
 	}
 	return nil
-}
-
-func httpsURL(s string) bool {
-	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
 }
 
 func newMediaID() (string, error) {

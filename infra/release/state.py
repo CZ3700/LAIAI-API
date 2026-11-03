@@ -42,6 +42,27 @@ def protected_keys(role, old):
     return keys
 
 
+def expected_mounts(role, old, candidate):
+    """Preserve old mounts; allow only the reviewed private media and AV binds."""
+    mounts = list(old['mounts'])
+    if role != 'core' or not candidate:
+        return mounts
+    additions = [
+        {'type': 'bind', 'source': '/var/lib/laiai/video-media',
+         'destination': '/var/lib/laiai/video-media', 'rw': True},
+        {'type': 'bind', 'source': '/var/lib/clamav',
+         'destination': '/var/lib/clamav', 'rw': False},
+    ]
+    for mount in additions:
+        existing = [m for m in mounts if m['destination'] == mount['destination']]
+        if existing:
+            if existing != [mount]:
+                fail('existing private media or scanner mount differs from reviewed bind')
+        else:
+            mounts.append(mount)
+    return sorted(mounts, key=lambda m: m['destination'])
+
+
 def config_hash():
     keys = ['LIVE_DIR', 'STATE_DIR', 'SOURCE_REPOSITORY', 'COMPOSE_PROJECT', 'LIVE_ENV',
             'VIDEO_ENV', 'CADDYFILE', 'PUBLIC_ORIGIN', 'BACKUP_KEY_FILE', 'GO_IMAGE',
@@ -136,9 +157,11 @@ def check_compose():
                 source = config['volumes'][source]['name']
             mounts.append({'type': mount['type'], 'source': source, 'destination': mount['target'],
                            'rw': not mount.get('read_only', False)})
-        # Only Caddy configuration is intentionally replaced; all data mounts stay exact.
+        # Caddy configuration is replaced. Only the two reviewed core binds
+        # may be introduced; all old mounts stay exact.
         keep = lambda m: not (role == 'caddy' and m['destination'] == '/etc/caddy/Caddyfile')
-        if sorted(filter(keep, mounts), key=lambda m: m['destination']) != list(filter(keep, old['mounts'])):
+        wanted = expected_mounts(role, old, sys.argv[3] != 'old')
+        if sorted(filter(keep, mounts), key=lambda m: m['destination']) != list(filter(keep, wanted)):
             fail('mount mapping changed: ' + role)
         env = service.get('environment', {})
         for key in protected_keys(role, old):
@@ -212,7 +235,8 @@ def running():
         if role in ('mysql', 'redis') and old != current:
             fail('data service/container/configuration changed: ' + role)
         keep = lambda m: not (role == 'caddy' and m['destination'] == '/etc/caddy/Caddyfile')
-        if list(filter(keep, old['mounts'])) != list(filter(keep, current['mounts'])):
+        wanted = expected_mounts(role, old, role == 'core')
+        if list(filter(keep, wanted)) != list(filter(keep, current['mounts'])):
             fail('running data mounts changed: ' + role)
         for key in protected_keys(role, old):
             if old['env_hashes'].get(key) != current['env_hashes'].get(key):
@@ -228,7 +252,9 @@ def rollback_guard():
         if role in ('mysql', 'redis') and old != current:
             fail('data service changed since this release: ' + role)
         keep = lambda m: not (role == 'caddy' and m['destination'] == '/etc/caddy/Caddyfile')
-        if list(filter(keep, old['mounts'])) != list(filter(keep, current['mounts'])):
+        candidate = role == 'core' and current['image'] == images.get('core')
+        wanted = expected_mounts(role, old, candidate)
+        if list(filter(keep, wanted)) != list(filter(keep, current['mounts'])):
             fail('running data mounts changed: ' + role)
     configs = [digest(read(Path(sys.argv[2]).parent / 'config' / name))
                for name in ('original.json', 'maintenance.json')]

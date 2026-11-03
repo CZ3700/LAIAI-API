@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Job states. A job is admitted as pending, held under a lease while the
@@ -34,11 +35,13 @@ const (
 )
 
 var ErrNotFound = errors.New("watermark job not found")
+var ErrLeaseLost = errors.New("watermark job lease lost")
 
 type Job struct {
-	ID                 int64  `gorm:"primaryKey"`
-	OrgID              uint64 `gorm:"column:org_id"`
-	TaskID             string `gorm:"column:task_id"`
+	ID                 int64   `gorm:"primaryKey"`
+	OrgID              uint64  `gorm:"column:org_id"`
+	UserID             *uint64 `gorm:"column:user_id"`
+	TaskID             string  `gorm:"column:task_id"`
 	State              string
 	Attempts           int
 	LeaseUntil         *time.Time `gorm:"column:lease_until"`
@@ -60,29 +63,53 @@ type Settings struct {
 
 func (Settings) TableName() string { return "video_watermark_settings" }
 
+type UserGrant struct {
+	UserID    uint64 `gorm:"primaryKey;column:user_id"`
+	GrantedBy uint64
+	GrantedAt time.Time
+}
+
+func (UserGrant) TableName() string { return "video_watermark_users" }
+
+func UserAllowed(db *gorm.DB, userID uint64) (bool, error) {
+	if userID == 0 {
+		return false, nil
+	}
+	var count int64
+	err := db.Model(&UserGrant{}).Where("user_id = ?", userID).Count(&count).Error
+	return count == 1, err
+}
+
 // EnabledTx reads the singleton toggle inside the caller's transaction so the
 // registration decision matches the admission transaction's snapshot.
-func EnabledTx(tx *gorm.DB) bool {
+func EnabledTx(tx *gorm.DB) (bool, error) {
 	var row Settings
 	if err := tx.Where("id = 1").Take(&row).Error; err != nil {
-		return false
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
 	}
-	return row.Enabled
+	return row.Enabled, nil
 }
 
 // RegisterTx inserts the job inside the trusted-succeeded transaction. It is
 // idempotent per task (the unique key wins on replay) and a no-op while the
 // toggle is off — the feature must stay fully bypassable.
-func RegisterTx(tx *gorm.DB, org uint64, taskID string, now time.Time) error {
-	if org == 0 || taskID == "" || !EnabledTx(tx) {
+func RegisterTx(tx *gorm.DB, org uint64, userID *uint64, taskID string, now time.Time) error {
+	if org == 0 || userID == nil || *userID == 0 || taskID == "" {
 		return nil
 	}
-	row := Job{OrgID: org, TaskID: taskID, State: StatePending, CreatedAt: now, UpdatedAt: now}
-	if err := tx.Create(&row).Error; err != nil {
-		// Replay of an already-registered task is a no-op, not a failure.
-		return nil
+	enabled, err := EnabledTx(tx)
+	if err != nil || !enabled {
+		return err
 	}
-	return nil
+	allowed, err := UserAllowed(tx, *userID)
+	if err != nil || !allowed {
+		return err
+	}
+	row := Job{OrgID: org, UserID: userID, TaskID: taskID, State: StatePending, CreatedAt: now, UpdatedAt: now}
+	return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "task_id"}}, DoNothing: true}).Create(&row).Error
 }
 
 // Lease claims up to limit due jobs atomically: the guarded UPDATE decides
@@ -93,13 +120,17 @@ func Lease(db *gorm.DB, limit int, ttl time.Duration, now time.Time) ([]Job, err
 	}
 	var due []Job
 	err := db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("state = ? OR (state = ? AND lease_until IS NOT NULL AND lease_until <= ?)", StatePending, StateProcessing, now).
+		if err := tx.Model(&Job{}).Where("state = ? AND attempts >= ? AND lease_until <= ?", StateProcessing, MaxAttempts, now).
+			Updates(map[string]any{"state": StateFailed, "lease_until": nil, "updated_at": now}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("attempts < ? AND EXISTS (SELECT 1 FROM video_watermark_users wu WHERE wu.user_id = video_watermark_jobs.user_id) AND ((state = ? AND (lease_until IS NULL OR lease_until <= ?)) OR (state = ? AND lease_until IS NOT NULL AND lease_until <= ?))", MaxAttempts, StatePending, now, StateProcessing, now).
 			Order("created_at, id").Limit(limit).Find(&due).Error; err != nil {
 			return err
 		}
 		until := now.Add(ttl)
 		for i := range due {
-			claim := tx.Model(&Job{}).Where("id = ? AND (state = ? OR (state = ? AND lease_until IS NOT NULL AND lease_until <= ?))", due[i].ID, StatePending, StateProcessing, now).
+			claim := tx.Model(&Job{}).Where("id = ? AND attempts = ? AND EXISTS (SELECT 1 FROM video_watermark_users wu WHERE wu.user_id = video_watermark_jobs.user_id) AND ((state = ? AND (lease_until IS NULL OR lease_until <= ?)) OR (state = ? AND lease_until IS NOT NULL AND lease_until <= ?))", due[i].ID, due[i].Attempts, StatePending, now, StateProcessing, now).
 				Updates(map[string]any{"state": StateProcessing, "attempts": due[i].Attempts + 1, "lease_until": until, "updated_at": now})
 			if claim.Error != nil {
 				return claim.Error
@@ -128,8 +159,15 @@ func Lease(db *gorm.DB, limit int, ttl time.Duration, now time.Time) ([]Job, err
 
 // Complete records the processed MediaStore object and its retention deadline.
 func Complete(db *gorm.DB, job Job, mediaID string, expires, now time.Time) error {
-	return db.Model(&Job{}).Where("id = ?", job.ID).
-		Updates(map[string]any{"state": StateReady, "processed_media_id": mediaID, "processed_expires_at": expires, "lease_until": nil, "last_error": nil, "updated_at": now}).Error
+	write := db.Model(&Job{}).Where("id = ? AND state = ? AND attempts = ?", job.ID, StateProcessing, job.Attempts).
+		Updates(map[string]any{"state": StateReady, "processed_media_id": mediaID, "processed_expires_at": expires, "lease_until": nil, "last_error": nil, "updated_at": now})
+	if write.Error != nil {
+		return write.Error
+	}
+	if write.RowsAffected != 1 {
+		return ErrLeaseLost
+	}
+	return nil
 }
 
 // Fail re-queues with linear backoff while attempts remain, else terminates
@@ -142,7 +180,22 @@ func Fail(db *gorm.DB, job Job, reason string, now time.Time, backoff time.Durat
 		updates["state"] = StatePending
 		updates["lease_until"] = now.Add(time.Duration(job.Attempts) * backoff)
 	}
-	return db.Model(&Job{}).Where("id = ?", job.ID).Updates(updates).Error
+	write := db.Model(&Job{}).Where("id = ? AND state = ? AND attempts = ?", job.ID, StateProcessing, job.Attempts).Updates(updates)
+	if write.Error != nil {
+		return write.Error
+	}
+	if write.RowsAffected != 1 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
+// RetainedMedia lets the shared media cleaner preserve a processed object until
+// its job's delivery deadline. Orphaned and expired objects remain collectable.
+func RetainedMedia(db *gorm.DB, mediaID string, now time.Time) (bool, error) {
+	var count int64
+	err := db.Model(&Job{}).Where("processed_media_id = ? AND state = ? AND processed_expires_at > ?", mediaID, StateReady, now).Count(&count).Error
+	return count > 0, err
 }
 
 // Ready returns the processed artifact for a delivered task, or nil. Expired

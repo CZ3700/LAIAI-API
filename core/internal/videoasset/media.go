@@ -38,12 +38,14 @@ type MediaStoreConfig struct {
 	Root, PublicBaseURL, FFProbePath string
 	SigningKey                       []byte
 	ScanCommand                      []string
+	RetainObject                     func(context.Context, string, time.Time) (bool, error)
 }
 type MediaStore struct {
 	root, base, probe string
 	key               []byte
 	scan              []string
 	client            *http.Client
+	retainObject      func(context.Context, string, time.Time) (bool, error)
 	cleanupMu         sync.Mutex
 	lastCleanup       time.Time
 }
@@ -70,7 +72,7 @@ func NewMediaStore(c MediaStoreConfig) (*MediaStore, error) {
 	}
 	sc := append([]string{scan}, c.ScanCommand[1:]...)
 	transport := &http.Transport{Proxy: nil, DialContext: publicDial, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 15 * time.Second, DisableKeepAlives: true}
-	return &MediaStore{root: root, base: strings.TrimRight(c.PublicBaseURL, "/"), probe: probe, key: append([]byte(nil), c.SigningKey...), scan: sc, client: &http.Client{Transport: transport, Timeout: 3 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	return &MediaStore{root: root, base: strings.TrimRight(c.PublicBaseURL, "/"), probe: probe, key: append([]byte(nil), c.SigningKey...), scan: sc, retainObject: c.RetainObject, client: &http.Client{Transport: transport, Timeout: 3 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 func publicIP(ip net.IP) bool {
 	a, ok := netip.AddrFromSlice(ip)
@@ -104,6 +106,21 @@ func publicDial(ctx context.Context, network, address string) (net.Conn, error) 
 	}
 	d := net.Dialer{Timeout: 10 * time.Second}
 	return d.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+}
+
+// PublicDownloadClient applies the same public-IP and HTTPS-only dial policy
+// used for tenant media fetches to provider-generated result downloads.
+func PublicDownloadClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{Proxy: nil, DialContext: publicDial, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 15 * time.Second, DisableKeepAlives: true},
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if !invocation.ValidVideoDeliveryURL(req.URL.String(), nil) {
+				return ErrInvalid
+			}
+			return nil
+		},
+	}
 }
 
 // StoreVideo persists an internally generated video artifact (the watermark
@@ -682,6 +699,15 @@ func (s *Service) cleanupMedia(ctx context.Context) error {
 		if strings.HasPrefix(name, "media_") {
 			if !validID(name) {
 				continue
+			}
+			if strings.HasPrefix(name, "media_wm_") && m.retainObject != nil {
+				retained, retainErr := m.retainObject(ctx, name, now)
+				if retainErr != nil {
+					return ErrStorage
+				}
+				if retained {
+					continue
+				}
 			}
 			var count int64
 			if s.db.WithContext(ctx).Model(&Asset{}).Where("immutable_object_ref = ?", name).Count(&count).Error != nil {
