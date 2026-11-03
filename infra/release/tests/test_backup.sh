@@ -61,7 +61,7 @@ export PATH="$TEST_ROOT/bin:$PATH"
 export MYSQL_CID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export OLD_CORE_IMAGE=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 export OLD_CADDY_IMAGE=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-export RUN_DIR LIVE_DIR LIVE_ENV VIDEO_ENV CADDYFILE BACKUP_KEY_FILE TEST_DOCKER_MODE TEST_OPENSSL_MODE
+export RUN_DIR LIVE_DIR LIVE_ENV VIDEO_ENV CADDYFILE BACKUP_KEY_FILE MEDIA_BACKUP_ROOT TEST_DOCKER_MODE TEST_OPENSSL_MODE
 case_count=0
 
 new_case() {
@@ -73,7 +73,11 @@ new_case() {
   VIDEO_ENV="$root/video configuration.env"
   CADDYFILE="$LIVE_DIR/infra/Caddyfile"
   BACKUP_KEY_FILE="$root/backup key"
+  MEDIA_BACKUP_ROOT="$root/private-media"
   mkdir -p -- "$RUN_DIR" "$LIVE_DIR/infra/mysql" "$LIVE_DIR/infra/redis"
+  install -d -m 0700 -o 10001 -g 10001 -- "$MEDIA_BACKUP_ROOT"
+  printf 'BACKUP_TEST_PRIVATE_VALUE_ABC123\n' > "$MEDIA_BACKUP_ROOT/user-upload.mp4"
+  chown 10001:10001 -- "$MEDIA_BACKUP_ROOT/user-upload.mp4"
   chmod 700 -- "$RUN_DIR"
   printf '%064d\n' 42 > "$BACKUP_KEY_FILE"
   chmod 600 -- "$BACKUP_KEY_FILE"
@@ -119,8 +123,11 @@ new_case
 run_backup
 [[ $(cat -- "$RUN_DIR/backup.ok") == verified ]]
 [[ $(stat -c '%a' -- "$RUN_DIR/database.sql.gz.enc") == 600 ]]
+[[ $(stat -c '%a' -- "$RUN_DIR/video-media.tar.gz.enc") == 600 ]]
 (cd -- "$RUN_DIR" && sha256sum --check --status checksums.sha256)
 assert_private
+"$TEST_OPENSSL" enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -pass "file:$BACKUP_KEY_FILE" -in "$RUN_DIR/video-media.tar.gz.enc" | gzip -dc | tar --list --file - > "$TEST_ROOT/media-members.txt"
+grep -Fxq './user-upload.mp4' "$TEST_ROOT/media-members.txt"
 # Verify archived configuration paths with spaces survive the stream pipeline.
 "$TEST_OPENSSL" enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -pass "file:$BACKUP_KEY_FILE" -in "$RUN_DIR/configuration.tar.gz.enc" | gzip -dc | tar --list --ignore-zeros --file - > "$TEST_ROOT/config-members.txt"
 grep -Fxq "${LIVE_ENV#/}" "$TEST_ROOT/config-members.txt"
@@ -150,6 +157,9 @@ TEST_OPENSSL_MODE=bad-decryption
 expect_failure
 new_case
 chmod 644 -- "$BACKUP_KEY_FILE"
+expect_failure
+new_case
+chmod 755 -- "$MEDIA_BACKUP_ROOT"
 expect_failure
 new_case
 printf '\n%064d\n' 42 > "$BACKUP_KEY_FILE"

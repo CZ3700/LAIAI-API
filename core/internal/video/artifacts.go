@@ -285,10 +285,16 @@ func (s *Service) deliveryView(ctx context.Context, t task.Task, st State, actor
 		} else if errors.Is(refreshErr, invocation.ErrVideoExpired) {
 			e = refreshErr
 		} else if !errors.Is(refreshErr, videoartifact.ErrSourceDeferred) && !errors.Is(refreshErr, ErrConflict) && !errors.Is(refreshErr, ErrState) {
+			if (errors.Is(e, invocation.ErrVideoExpired) || errors.Is(e, invocation.ErrVideoNotFound)) && s.watermarkFallback(ctx, t, &v) {
+				return v, nil
+			}
 			return TaskView{}, refreshErr
 		}
 	}
 	if e != nil {
+		if (errors.Is(e, invocation.ErrVideoExpired) || errors.Is(e, invocation.ErrVideoNotFound)) && s.watermarkFallback(ctx, t, &v) {
+			return v, nil
+		}
 		v.ArtifactStatus = "pending"
 		if errors.Is(e, invocation.ErrVideoExpired) {
 			v.ArtifactStatus = "expired"
@@ -302,6 +308,9 @@ func (s *Service) deliveryView(ctx context.Context, t task.Task, st State, actor
 	} else {
 		v.ArtifactStatus = "pending"
 	}
+	// A ready watermark-processed copy transparently replaces the delivered
+	// address; the response shape stays a single URL field.
+	s.watermarkDelivery(t.OrgID, t.UserID, t.TaskID, &v)
 	return v, nil
 }
 
@@ -340,5 +349,9 @@ func (s *Service) HandleContent(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "private, no-store")
-	c.JSON(200, gin.H{"url": link, "kind": kind, "source": "upstream"})
+	source := v.ContentSource
+	if source == "" || kind == "last_frame" {
+		source = "upstream"
+	}
+	c.JSON(200, gin.H{"url": link, "kind": kind, "source": source})
 }

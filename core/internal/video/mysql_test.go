@@ -388,6 +388,7 @@ func TestMySQLVideoHTTPAuditAndRetention(t *testing.T) {
 	r := gin.New()
 	g := r.Group("", f.s.Middleware())
 	g.POST("/v1/video/generations", f.s.HandleCreate)
+	g.GET("/v1/video/generations", f.s.HandleList)
 	g.GET("/v1/video/generations/:id", f.s.HandleGet)
 	req := httptest.NewRequest("POST", "/v1/video/generations", strings.NewReader(`{"model":"seedance-2.0","content":[{"type":"text","text":"test prompt private"}]}`))
 	req.Header.Set("Authorization", "Bearer "+f.plain)
@@ -426,12 +427,13 @@ func TestMySQLVideoHTTPAuditAndRetention(t *testing.T) {
 	if portraitResponse.Code != 200 {
 		t.Fatal("portrait response")
 	}
-	log = invocation.VideoRequestLog{}
-	must(t, f.s.DB.Where("request_id=?", portraitResponse.Header().Get("X-Request-Id")).First(&log).Error)
-	responseBody, e = f.s.Evidence.ReadForHistory(context.Background(), f.key.OrgID, log.ResponsePayloadID, invocation.VideoAccess{ActorRole: invocation.VideoRoleOrgReader, ActorID: fmt.Sprint(f.key.ID), ReasonCode: "response_test"})
-	must(t, e)
-	if bytes.Contains(responseBody, []byte("authorization_url")) || bytes.Contains(responseBody, []byte("secret-h5")) {
-		t.Fatal("short-lived authorization secret entered response history")
+	if !bytes.Contains(portraitResponse.Body.Bytes(), []byte("secret-h5")) {
+		t.Fatal("portrait response did not exercise one-use secret")
+	}
+	var portraitLogs int64
+	must(t, f.s.DB.Model(&invocation.VideoRequestLog{}).Where("request_id = ?", portraitResponse.Header().Get("X-Request-Id")).Count(&portraitLogs).Error)
+	if portraitLogs != 0 {
+		t.Fatal("successful portrait read persisted one-use secret response")
 	}
 	denied := httptest.NewRecorder()
 	r.ServeHTTP(denied, httptest.NewRequest("GET", "/v1/video/generations/task_missing", nil))
@@ -441,8 +443,19 @@ func TestMySQLVideoHTTPAuditAndRetention(t *testing.T) {
 	must(t, f.s.DB.Where("request_id = ?", denied.Header().Get("X-Request-Id")).First(&log).Error)
 	must(t, f.s.DB.Model(&Policy{}).Where("org_id = ?", f.key.OrgID).Update("capture_history", false).Error)
 	portraitResponse = portrait()
+	must(t, f.s.DB.Model(&invocation.VideoRequestLog{}).Where("request_id = ?", portraitResponse.Header().Get("X-Request-Id")).Count(&portraitLogs).Error)
+	if portraitLogs != 0 {
+		t.Fatal("successful portrait read persisted a row with history disabled")
+	}
+	listRequest := httptest.NewRequest("GET", "/v1/video/generations", nil)
+	listRequest.Header.Set("Authorization", "Bearer "+f.plain)
+	listResponse := httptest.NewRecorder()
+	r.ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != 200 {
+		t.Fatalf("task list with history disabled: HTTP %d", listResponse.Code)
+	}
 	log = invocation.VideoRequestLog{}
-	must(t, f.s.DB.Where("request_id=?", portraitResponse.Header().Get("X-Request-Id")).First(&log).Error)
+	must(t, f.s.DB.Where("request_id = ?", listResponse.Header().Get("X-Request-Id")).First(&log).Error)
 	if log.ResponsePayloadID == "" {
 		t.Fatal("disabled response history lost its policy descriptor")
 	}

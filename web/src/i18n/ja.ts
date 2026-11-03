@@ -3,6 +3,8 @@ import { keyVideoMessages } from './keyVideo'
 import { currencyMessages } from './currency'
 import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
+import modelLimitsMessages from './modelLimits'
+import watermarkToggleMessages from './watermarkToggle'
 import en, { type Messages } from './en'
 
 export default {
@@ -11,6 +13,7 @@ export default {
   currency: currencyMessages['ja'],
   pricingAdmin: pricingRedesignAdminMessages['ja'].pricingAdmin,
   catalog: modelCatalogMessages['ja'],
+modelLimits: modelLimitsMessages,  watermark: watermarkToggleMessages,
   pricingx: {
     "title": "プロバイダー別の料金設定",
     "intro": "プロバイダー一覧はチャネル設定と共通です。プロバイダーとチャネルを選び、接続済みモデルの料金を設定します。",

@@ -3,6 +3,8 @@ import { keyVideoMessages } from './keyVideo'
 import { currencyMessages } from './currency'
 import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
+import { zhCN as modelLimitsZhCN } from './modelLimits'
+import { zhCN as watermarkToggleZhCN } from './watermarkToggle'
 // zh-CN：一等翻译。`satisfies Messages` = 键集与 en 不一致时构建期报错
 import type { Messages } from './en'
 
@@ -12,6 +14,8 @@ export default {
   currency: currencyMessages['zh-CN'],
   pricingAdmin: pricingRedesignAdminMessages['zh-CN'].pricingAdmin,
   catalog: modelCatalogMessages['zh-CN'],
+  modelLimits: modelLimitsZhCN,
+  watermark: watermarkToggleZhCN,
   pricingx: {
     "title": "按厂商配置定价",
     "intro": "厂商与渠道接入保持一致。选择厂商和渠道，为已接入模型配置对应的计价方式。",

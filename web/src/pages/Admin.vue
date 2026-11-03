@@ -611,7 +611,10 @@ watch(tab, (v) => {
   if (v === 'users' && usageByUser.value.length === 0) void loadUsageByUser().catch(showError)
   if (v === 'audit' && audit.value.length === 0) void loadAudit().catch(showError)
   if (v === 'channels') void loadHealth().catch(showError) // health 并入 channels
-  if (v === 'videolimits' && vml.value.length === 0) void loadModelLimits().catch(showError)
+  if (v === 'videolimits') {
+    if (vml.value.length === 0) void loadModelLimits().catch(showError)
+    void loadWatermark().catch(showError)
+  }
 })
 
 // —— 渠道健康看板（M2，只读可观测；不反馈选路）——
@@ -1060,6 +1063,48 @@ async function saveModelLimit(m: VideoModelLimit) {
     vmlError.value = errorMessage(e, t('common.error'))
     if (e instanceof ApiError && e.status === 401) unlocked.value = false
   } finally { vmlBusy.value = '' }
+}
+
+// —— 去水印处理：总开关与按用户授权 ——
+interface WatermarkUser { user_id: number; email: string; display_name: string; status: number; granted_at: string }
+interface WatermarkSettings { enabled: boolean; configured: boolean; users: WatermarkUser[] }
+const wm = ref<WatermarkSettings>({ enabled: false, configured: false, users: [] })
+const wmBusy = ref(false)
+const wmUserBusy = ref(0)
+const wmSearch = ref('')
+const wmCandidates = ref<AdminUser[]>([])
+const wmSearching = ref(false)
+async function loadWatermark() {
+  try {
+    wm.value = await adminApi<WatermarkSettings>('GET', '/api/admin/video/watermark')
+  } catch (e) { vmlError.value = errorMessage(e, t('common.error')) }
+}
+async function toggleWatermark() {
+  wmBusy.value = true
+  try {
+    await adminApi('PUT', '/api/admin/video/watermark', { enabled: !wm.value.enabled })
+    await loadWatermark()
+  } catch (e) {
+    vmlError.value = errorMessage(e, t('common.error'))
+    if (e instanceof ApiError && e.status === 401) unlocked.value = false
+  } finally { wmBusy.value = false }
+}
+async function searchWatermarkUsers() {
+  const q = wmSearch.value.trim()
+  if (!q) { wmCandidates.value = []; return }
+  wmSearching.value = true
+  try {
+    wmCandidates.value = (await adminApi<{ items: AdminUser[] }>('GET', `/api/admin/users?q=${encodeURIComponent(q)}`)).items
+  } catch (e) { vmlError.value = errorMessage(e, t('common.error')) }
+  finally { wmSearching.value = false }
+}
+async function setWatermarkUser(id: number, enabled: boolean) {
+  wmUserBusy.value = id
+  try {
+    await adminApi('PUT', `/api/admin/video/watermark/users/${id}`, { enabled })
+    await loadWatermark()
+  } catch (e) { vmlError.value = errorMessage(e, t('common.error')) }
+  finally { wmUserBusy.value = 0 }
 }
 
 // —— 组织 ——
@@ -1916,6 +1961,42 @@ onMounted(async () => {
       <!-- 支付渠道总览：渠道卡片 + 回调地址 + 路由预览 -->
       <template v-if="tab === 'videolimits'">
         <div class="space-y-6">
+          <div class="rounded-lg border border-line p-4">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <p class="text-sm font-medium">{{ t('watermark.title') }}</p>
+                <p class="mt-1 text-xs text-muted">{{ t('watermark.intro') }}</p>
+                <p class="mt-1 text-xs text-muted">{{ t('watermark.hint') }}</p>
+                <p v-if="!wm.configured" class="mt-1 text-xs text-danger">{{ t('watermark.notConfigured') }}</p>
+              </div>
+              <button class="btn-primary shrink-0 text-xs" :disabled="wmBusy || !wm.configured" @click="toggleWatermark">
+                {{ wmBusy ? t('common.loading') : (wm.enabled ? t('watermark.enabled') : t('watermark.disabled')) }}
+              </button>
+            </div>
+            <div class="mt-4 border-t border-line pt-4">
+              <p class="text-sm font-medium">{{ t('watermark.usersTitle') }}</p>
+              <p class="mt-1 text-xs text-muted">{{ t('watermark.orgKeyNote') }}</p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <input v-model="wmSearch" class="input min-w-52 flex-1" :placeholder="t('watermark.searchPlaceholder')" @keyup.enter="searchWatermarkUsers" />
+                <button class="btn-ghost text-xs" :disabled="wmSearching" @click="searchWatermarkUsers">{{ wmSearching ? t('common.loading') : t('watermark.search') }}</button>
+              </div>
+              <div v-if="wmCandidates.length" class="mt-2 max-h-48 overflow-auto rounded-lg border border-line">
+                <div v-for="u in wmCandidates" :key="u.id" class="flex items-center justify-between gap-3 border-b border-line px-3 py-2 text-sm last:border-0">
+                  <span class="min-w-0 truncate">{{ u.display_name || u.email }} <span class="text-muted">{{ u.email }} · #{{ u.id }}</span></span>
+                  <button class="btn-ghost shrink-0 text-xs" :disabled="u.status !== 1 || wmUserBusy !== 0 || wm.users.some(g => g.user_id === u.id)" @click="setWatermarkUser(u.id, true)">
+                    {{ wm.users.some(g => g.user_id === u.id) ? t('watermark.selected') : u.status !== 1 ? t('watermark.userInactive') : t('watermark.addUser') }}
+                  </button>
+                </div>
+              </div>
+              <p v-if="!wm.users.length" class="mt-3 text-xs text-muted">{{ t('watermark.noUsers') }}</p>
+              <div v-else class="mt-3 space-y-2">
+                <div v-for="u in wm.users" :key="u.user_id" class="flex items-center justify-between gap-3 rounded-lg border border-line px-3 py-2 text-sm">
+                  <span class="min-w-0 truncate">{{ u.display_name || u.email }} <span class="text-muted">{{ u.email }} · #{{ u.user_id }}</span> <span v-if="u.status !== 1" class="text-danger">{{ t('watermark.userInactive') }}</span></span>
+                  <button class="btn-ghost shrink-0 text-xs" :disabled="wmUserBusy !== 0" @click="setWatermarkUser(u.user_id, false)">{{ t('watermark.removeUser') }}</button>
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="flex items-center justify-between">
             <p class="text-sm text-muted">{{ t('modelLimits.intro') }}</p>
             <button class="btn-ghost !py-1.5 text-xs" @click="loadModelLimits">{{ t('common.refresh') }}</button>

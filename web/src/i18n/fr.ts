@@ -3,6 +3,8 @@ import { keyVideoMessages } from './keyVideo'
 import { currencyMessages } from './currency'
 import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
+import modelLimitsMessages from './modelLimits'
+import watermarkToggleMessages from './watermarkToggle'
 import en, { type Messages } from './en'
 
 export default {
@@ -11,6 +13,7 @@ export default {
   currency: currencyMessages['fr'],
   pricingAdmin: pricingRedesignAdminMessages['fr'].pricingAdmin,
   catalog: modelCatalogMessages['fr'],
+modelLimits: modelLimitsMessages,  watermark: watermarkToggleMessages,
   pricingx: {
     "title": "Tarification par fournisseur",
     "intro": "La liste des fournisseurs est commune à la configuration des canaux. Choisissez un fournisseur et un canal pour définir les tarifs des modèles connectés.",

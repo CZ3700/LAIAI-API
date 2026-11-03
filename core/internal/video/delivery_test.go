@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,13 +12,86 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
+	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
+	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videoartifact"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
+	"github.com/laiai/laiai-next/core/internal/watermark"
 	"gorm.io/gorm"
 )
 
 const testDeliveryURL = "https://cdn.example.com/result.mp4?token=a%2Bb&signature=secret%2Fvalue"
+
+type deliveryWatermarkMedia struct{}
+
+func (deliveryWatermarkMedia) StoreVideo(context.Context, string, io.Reader) (int64, error) {
+	return 1, nil
+}
+func (deliveryWatermarkMedia) SignedURL(_ uint64, id string, _ time.Time) string {
+	return "https://media.example/" + id
+}
+
+func TestWatermarkDeliveryKeepsViewAddressesConsistent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE video_watermark_jobs (id INTEGER PRIMARY KEY, org_id INTEGER, user_id INTEGER, task_id TEXT, state TEXT, attempts INTEGER, lease_until DATETIME, processed_media_id TEXT, processed_expires_at DATETIME, last_error TEXT, created_at DATETIME, updated_at DATETIME); CREATE TABLE video_watermark_users (user_id INTEGER PRIMARY KEY, granted_by INTEGER, granted_at DATETIME)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	expires := now.Add(time.Hour)
+	userID := uint64(7)
+	if err := db.Create(&watermark.UserGrant{UserID: userID, GrantedBy: 1, GrantedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := watermark.Job{OrgID: 45, UserID: &userID, TaskID: "task_a", State: watermark.StateReady, ProcessedMediaID: "media_wm_local", ProcessedExpiresAt: &expires, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{DB: db, Now: func() time.Time { return now }, Watermark: &watermark.Coordinator{DB: db, Media: deliveryWatermarkMedia{}}}
+	v := TaskView{ContentURL: testDeliveryURL, Content: &invocation.VideoDelivery{VideoURL: testDeliveryURL, LastFrameURL: "https://cdn.example.com/frame.jpg"}}
+	if !s.watermarkDelivery(45, &userID, "task_a", &v) || v.ContentURL != "https://media.example/media_wm_local" || v.Content.VideoURL != v.ContentURL || v.ContentSource != "processed" || v.Content.LastFrameURL != "https://cdn.example.com/frame.jpg" {
+		t.Fatalf("inconsistent processed delivery: %+v", v)
+	}
+}
+
+func TestMySQLProcessedDeliverySurvivesSourceCapsuleExpiry(t *testing.T) {
+	f := mysqlFixture(t)
+	deliverySuccess(f)
+	v := f.create(t, "watermark-delivery-expiry")
+	f.dispatch(t, v.ID)
+	must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
+	email := "wm-" + v.ID + "@test.invalid"
+	user := identity.User{Email: email, EmailCanonical: email, PasswordHash: "test-unused", Role: identity.PlatRoleUser, Status: identity.StatusActive}
+	must(t, f.s.DB.Create(&user).Error)
+	must(t, f.s.DB.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Update("user_id", user.ID).Error)
+	must(t, f.s.DB.Create(&watermark.UserGrant{UserID: user.ID, GrantedBy: user.ID, GrantedAt: f.now}).Error)
+	f.s.Watermark = &watermark.Coordinator{DB: f.s.DB, Media: deliveryWatermarkMedia{}}
+	expires := f.now.Add(28 * 24 * time.Hour)
+	job := watermark.Job{OrgID: f.key.OrgID, UserID: &user.ID, TaskID: v.ID, State: watermark.StateReady, ProcessedMediaID: "media_wm_local", ProcessedExpiresAt: &expires, CreatedAt: f.now, UpdatedAt: f.now}
+	must(t, f.s.DB.Create(&job).Error)
+	f.now = f.now.Add(25 * time.Hour)
+	got, err := f.s.Get(f.key.OrgID, v.ID)
+	must(t, err)
+	if got.ContentURL != "https://media.example/media_wm_local" || got.Content == nil || got.Content.VideoURL != got.ContentURL || got.ArtifactStatus != "ready" {
+		t.Fatalf("processed copy unavailable after source expiry: %+v", got)
+	}
+	w := deliveryRequest(f, deliveryRouter(f), "/v1/video/generations/"+v.ID+"/content")
+	var content struct{ URL, Kind, Source string }
+	must(t, json.Unmarshal(w.Body.Bytes(), &content))
+	if w.Code != 200 || content.URL != got.ContentURL || content.Source != "processed" {
+		t.Fatalf("content endpoint did not label processed copy: %d %+v", w.Code, content)
+	}
+	f.now = f.now.Add(30 * 24 * time.Hour)
+	got, err = f.s.Get(f.key.OrgID, v.ID)
+	must(t, err)
+	if got.ContentURL != "" {
+		t.Fatal("processed copy outlived task retention")
+	}
+}
 
 func deliverySuccess(f *fixture) {
 	f.response = func(r *http.Request) (*http.Response, error) {

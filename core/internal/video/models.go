@@ -280,6 +280,7 @@ type TaskView struct {
 	DeletionState  string                    `json:"deletion_state"`
 	ContentURL     string                    `json:"content_url,omitempty"`
 	Content        *invocation.VideoDelivery `json:"content,omitempty"`
+	ContentSource  string                    `json:"-"`
 }
 type UsageView struct {
 	CompletionTokens *int64 `json:"completion_tokens"`

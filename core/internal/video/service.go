@@ -22,6 +22,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/laiai/laiai-next/core/internal/videoruntime"
+	"github.com/laiai/laiai-next/core/internal/watermark"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -38,7 +39,10 @@ type Service struct {
 	ArtifactWorker  *videoartifact.Worker
 	ArtifactService *videoartifact.Service
 	Assets          *videoasset.Service
-	workerMetrics   *workerMetrics
+	// Watermark coordinates the deferred watermark-removal pipeline; nil
+	// disables registration and delivery swapping entirely.
+	Watermark     *watermark.Coordinator
+	workerMetrics *workerMetrics
 	// Configured once before workers start. Only response append uses this pool.
 	responseDB     *gorm.DB
 	responsePaused atomic.Bool

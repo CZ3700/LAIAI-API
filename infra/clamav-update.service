@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh LAIAI ClamAV signatures using the running core image
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/laiai-clamav-update
+TimeoutStartSec=20min
+UMask=0077
+NoNewPrivileges=yes

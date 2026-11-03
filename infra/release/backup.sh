@@ -11,6 +11,7 @@ release_backup() (
 
   local item actual first_line_length
   local database_file=database.sql.gz.enc config_file=configuration.tar.gz.enc
+  local media_file=video-media.tar.gz.enc media_root=${MEDIA_BACKUP_ROOT:?Private media backup root is required}
   local image_file=images.tar
   local -a config_paths=() config_members=()
   local -A seen_paths=()
@@ -48,7 +49,7 @@ release_backup() (
     fi
   done
 
-  for item in "$database_file" "$config_file" "$image_file" ".database.partial.sql.gz.enc" ".configuration.partial.tar.gz.enc" ".images.partial.tar" .backup.verified.partial checksums.sha256 configuration-files.txt backup-summary.txt backup.ok; do
+  for item in "$database_file" "$config_file" "$media_file" "$image_file" ".database.partial.sql.gz.enc" ".configuration.partial.tar.gz.enc" ".video-media.partial.tar.gz.enc" ".images.partial.tar" .backup.verified.partial checksums.sha256 configuration-files.txt backup-summary.txt backup.ok; do
     [[ ! -e $RUN_DIR/$item && ! -L $RUN_DIR/$item ]] || die 'Backup output already exists; use a new run directory.'
   done
 
@@ -86,6 +87,24 @@ release_backup() (
   rm -- "$RUN_DIR/.configuration.partial.tar.gz.enc" 2>/dev/null || die 'Cannot finalize configuration backup record.'
   printf '%s\n' "${config_paths[@]}" > "$RUN_DIR/configuration-files.txt" || die 'Cannot write configuration backup file list.'
 
+  # The private media bind contains user uploads as well as processed copies.
+  # Back it up on every release, including the first empty-directory rollout.
+  [[ -d $media_root && ! -L $media_root && $(stat -c '%u:%a' -- "$media_root") == 10001:700 ]] \
+    || die 'Private media directory must be owned by UID 10001 with mode 0700.'
+  log 'Backing up private media into an encrypted stream.'
+  tar --create --numeric-owner --file - --directory "$media_root" . 2>/dev/null \
+    | gzip -1 2>/dev/null \
+    | openssl enc -aes-256-cbc -salt -pbkdf2 -iter 600000 -md sha256 -pass "file:$BACKUP_KEY_FILE" > "$RUN_DIR/.video-media.partial.tar.gz.enc" 2>/dev/null \
+    || die 'Private media encrypted backup failed.'
+  if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -pass "file:$BACKUP_KEY_FILE" -in "$RUN_DIR/.video-media.partial.tar.gz.enc" 2>/dev/null | gzip -t 2>/dev/null; then
+    die 'Private media backup decryption or compression verification failed.'
+  fi
+  if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -pass "file:$BACKUP_KEY_FILE" -in "$RUN_DIR/.video-media.partial.tar.gz.enc" 2>/dev/null | gzip -dc 2>/dev/null | tar --list --file - >/dev/null 2>/dev/null; then
+    die 'Private media archive content verification failed.'
+  fi
+  ln -- "$RUN_DIR/.video-media.partial.tar.gz.enc" "$RUN_DIR/$media_file" 2>/dev/null || die 'Cannot finalize private media backup.'
+  rm -- "$RUN_DIR/.video-media.partial.tar.gz.enc" 2>/dev/null || die 'Cannot finalize private media backup record.'
+
   log 'Archiving the two previous application images for rollback.'
   if ! docker image save "$OLD_CORE_IMAGE" "$OLD_CADDY_IMAGE" > "$RUN_DIR/.images.partial.tar" 2>/dev/null; then
     die 'Previous image archive failed.'
@@ -96,14 +115,14 @@ release_backup() (
   ln -- "$RUN_DIR/.images.partial.tar" "$RUN_DIR/$image_file" 2>/dev/null || die 'Cannot finalize image archive without overwriting an existing file.'
   rm -- "$RUN_DIR/.images.partial.tar" 2>/dev/null || die 'Cannot finalize previous image archive record.'
 
-  if ! (cd -- "$RUN_DIR" && sha256sum -- "$database_file" "$config_file" "$image_file" > checksums.sha256 && sha256sum --check --status checksums.sha256) 2>/dev/null; then
+  if ! (cd -- "$RUN_DIR" && sha256sum -- "$database_file" "$config_file" "$media_file" "$image_file" > checksums.sha256 && sha256sum --check --status checksums.sha256) 2>/dev/null; then
     die 'Backup checksum verification failed.'
   fi
-  printf 'format=laiai-release-backup-v1\ndatabase=container-MYSQL_DATABASE-or-laiai\nencryption=AES-256-CBC-PBKDF2-SHA256-600000\ncore_image=%s\ncaddy_image=%s\n' "$OLD_CORE_IMAGE" "$OLD_CADDY_IMAGE" > "$RUN_DIR/backup-summary.txt" || die 'Cannot write backup summary.'
+  printf 'format=laiai-release-backup-v2\ndatabase=container-MYSQL_DATABASE-or-laiai\nvideo_media=host-bind-/var/lib/laiai/video-media\nencryption=AES-256-CBC-PBKDF2-SHA256-600000\ncore_image=%s\ncaddy_image=%s\n' "$OLD_CORE_IMAGE" "$OLD_CADDY_IMAGE" > "$RUN_DIR/backup-summary.txt" || die 'Cannot write backup summary.'
   # This is a verified backup, not proof that the database can be rolled back.
   printf 'verified\n' > "$RUN_DIR/.backup.verified.partial" || die 'Cannot write backup completion record.'
   ln -- "$RUN_DIR/.backup.verified.partial" "$RUN_DIR/backup.ok" 2>/dev/null || die 'Cannot finalize backup completion record without overwriting an existing file.'
   # A leftover second link is harmless; all verified artifacts already exist.
   rm -- "$RUN_DIR/.backup.verified.partial" 2>/dev/null || :
-  log 'Encrypted database/configuration and previous image archives verified.'
+  log 'Encrypted database/configuration/private-media and previous image archives verified.'
 )

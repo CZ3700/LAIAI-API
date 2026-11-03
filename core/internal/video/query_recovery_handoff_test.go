@@ -287,7 +287,7 @@ var queryHandoffCompiledSource string
 var errQueryHandoff = errors.New("isolated query recovery handoff failed")
 
 type queryHandoffSettings struct {
-	run, caseID, instance, role, source, dir, dsn, mock, token string
+	run, caseID, instance, role, source, dir, dsn, mock, token, schemaHead string
 }
 type queryHandoffTask struct {
 	Ordinal        int    `json:"ordinal"`
@@ -329,9 +329,9 @@ type queryHandoffHarness struct {
 }
 
 func queryHandoffEnvironment() (queryHandoffSettings, error) {
-	e := queryHandoffSettings{run: os.Getenv("ARK_QUERY_HANDOFF_RUN"), caseID: os.Getenv("ARK_QUERY_HANDOFF_CASE"), instance: os.Getenv("ARK_QUERY_HANDOFF_INSTANCE"), role: os.Getenv("ARK_QUERY_HANDOFF_ROLE"), source: os.Getenv("ARK_QUERY_HANDOFF_SOURCE"), dir: os.Getenv("ARK_QUERY_HANDOFF_DIR"), dsn: os.Getenv("ARK_QUERY_HANDOFF_DSN"), mock: os.Getenv("ARK_QUERY_HANDOFF_MOCK_URL"), token: os.Getenv("ARK_QUERY_HANDOFF_MOCK_TOKEN")}
+	e := queryHandoffSettings{run: os.Getenv("ARK_QUERY_HANDOFF_RUN"), caseID: os.Getenv("ARK_QUERY_HANDOFF_CASE"), instance: os.Getenv("ARK_QUERY_HANDOFF_INSTANCE"), role: os.Getenv("ARK_QUERY_HANDOFF_ROLE"), source: os.Getenv("ARK_QUERY_HANDOFF_SOURCE"), dir: os.Getenv("ARK_QUERY_HANDOFF_DIR"), dsn: os.Getenv("ARK_QUERY_HANDOFF_DSN"), mock: os.Getenv("ARK_QUERY_HANDOFF_MOCK_URL"), token: os.Getenv("ARK_QUERY_HANDOFF_MOCK_TOKEN"), schemaHead: os.Getenv("ARK_QUERY_HANDOFF_SCHEMA_HEAD")}
 	keys := map[string]bool{}
-	for _, key := range strings.Fields("ARK_QUERY_HANDOFF_PROTOCOL ARK_QUERY_HANDOFF_RUN ARK_QUERY_HANDOFF_CASE ARK_QUERY_HANDOFF_INSTANCE ARK_QUERY_HANDOFF_ROLE ARK_QUERY_HANDOFF_SOURCE ARK_QUERY_HANDOFF_DIR ARK_QUERY_HANDOFF_DSN ARK_QUERY_HANDOFF_MOCK_URL ARK_QUERY_HANDOFF_MOCK_TOKEN") {
+	for _, key := range strings.Fields("ARK_QUERY_HANDOFF_PROTOCOL ARK_QUERY_HANDOFF_RUN ARK_QUERY_HANDOFF_CASE ARK_QUERY_HANDOFF_INSTANCE ARK_QUERY_HANDOFF_ROLE ARK_QUERY_HANDOFF_SOURCE ARK_QUERY_HANDOFF_DIR ARK_QUERY_HANDOFF_DSN ARK_QUERY_HANDOFF_MOCK_URL ARK_QUERY_HANDOFF_MOCK_TOKEN ARK_QUERY_HANDOFF_SCHEMA_HEAD") {
 		keys[key] = true
 	}
 	for _, entry := range os.Environ() {
@@ -340,7 +340,7 @@ func queryHandoffEnvironment() (queryHandoffSettings, error) {
 			return e, errQueryHandoff
 		}
 	}
-	if os.Getenv("ARK_QUERY_HANDOFF_PROTOCOL") != queryHandoffProtocol || !regexp.MustCompile(`^[0-9a-f]{16}$`).MatchString(e.run) || !regexp.MustCompile(`^P0[1-4]$`).MatchString(e.caseID) || !regexp.MustCompile(`^(old|new)-[a-z0-9-]{1,32}$`).MatchString(e.instance) || !strings.HasPrefix(e.instance, e.role+"-") || (e.role != "old" && e.role != "new") || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(e.source) || e.source != queryHandoffCompiledSource || (e.role == "old") != (e.source == queryHandoffOldSource) {
+	if os.Getenv("ARK_QUERY_HANDOFF_PROTOCOL") != queryHandoffProtocol || !regexp.MustCompile(`^[0-9a-f]{16}$`).MatchString(e.run) || !regexp.MustCompile(`^P0[1-4]$`).MatchString(e.caseID) || !regexp.MustCompile(`^(old|new)-[a-z0-9-]{1,32}$`).MatchString(e.instance) || !strings.HasPrefix(e.instance, e.role+"-") || (e.role != "old" && e.role != "new") || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(e.source) || e.source != queryHandoffCompiledSource || (e.role == "old") != (e.source == queryHandoffOldSource) || !regexp.MustCompile(`^\d{4}_[a-z0-9_]{1,96}$`).MatchString(e.schemaHead) || e.schemaHead[:4] < "0138" {
 		return e, errQueryHandoff
 	}
 	u, err := url.Parse(e.mock)
@@ -380,7 +380,8 @@ func TestMySQLQueryRecoveryBinaryHandoffProcess(t *testing.T) {
 		t.Fatal("compiled source role does not match available production entry points")
 	}
 	cfg, _ := mysqlDriver.ParseDSN(e.dsn)
-	h.emit(0, "ready", map[string]any{"schema": cfg.DBName, "migration_max": 138, "has_persisted_consumer": persisted, "has_dispatch_consumer": dispatch, "task_count": len(h.seed.Tasks)})
+	migrationMax, _ := strconv.Atoi(e.schemaHead[:4])
+	h.emit(0, "ready", map[string]any{"schema": cfg.DBName, "migration_max": migrationMax, "has_persisted_consumer": persisted, "has_dispatch_consumer": dispatch, "task_count": len(h.seed.Tasks)})
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 4096), 4097)
 	for scanner.Scan() {
@@ -461,7 +462,7 @@ func (h *queryHandoffHarness) initialize() error {
 		return err
 	}
 	var version string
-	if err = h.verify.Raw("SELECT MAX(version) FROM schema_migrations").Scan(&version).Error; err != nil || version != "0138_console_log_indexes" {
+	if err = h.verify.Raw("SELECT MAX(version) FROM schema_migrations").Scan(&version).Error; err != nil || version != h.e.schemaHead {
 		return errQueryHandoff
 	}
 	h.db, err = ledger.EnableActivityTracking(h.db)

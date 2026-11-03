@@ -3,6 +3,8 @@ import { keyVideoMessages } from './keyVideo'
 import { currencyMessages } from './currency'
 import { pricingRedesignAdminMessages } from './pricingRedesignAdmin'
 import { modelCatalogMessages } from './modelCatalogRedesign'
+import modelLimitsMessages from './modelLimits'
+import watermarkToggleMessages from './watermarkToggle'
 import en, { type Messages } from './en'
 
 export default {
@@ -11,6 +13,7 @@ export default {
   currency: currencyMessages['th'],
   pricingAdmin: pricingRedesignAdminMessages['th'].pricingAdmin,
   catalog: modelCatalogMessages['th'],
+modelLimits: modelLimitsMessages,  watermark: watermarkToggleMessages,
   pricingx: {
     "title": "ตั้งราคาตามผู้ให้บริการ",
     "intro": "รายชื่อผู้ให้บริการตรงกับหน้าตั้งค่าช่องทาง เลือกผู้ให้บริการและช่องทางเพื่อกำหนดราคาสำหรับโมเดลที่เชื่อมต่อแล้ว",

@@ -22,13 +22,16 @@ RUN cd core && \
     go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/backfill-funds ./cmd/backfill-funds
 
 FROM ${ALPINE_IMAGE}
-RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 10001 laiai
+RUN apk add --no-cache ca-certificates tzdata ffmpeg clamav-scanner && \
+    adduser -D -u 10001 laiai && \
+    install -d -m 0700 -o laiai -g laiai /var/lib/laiai/video-media
 COPY --from=builder /out/core /out/migrate /out/schema-doctor /out/backfill-funds /app/
 COPY migrations/ /app/migrations/
 COPY infra/entrypoint.sh /app/entrypoint.sh
+COPY infra/freshclam.conf /app/freshclam.conf
 # Release checkouts use umask 077; COPY retains their private file modes.
 # Normalize only runtime code, never loosen the host's release/secret files.
-RUN chmod 0755 /app/entrypoint.sh && \
+RUN chmod 0755 /app/entrypoint.sh && chmod 0644 /app/freshclam.conf && \
     find /app/migrations -type d -exec chmod 0755 {} + && \
     find /app/migrations -type f -exec chmod 0644 {} +
 USER laiai

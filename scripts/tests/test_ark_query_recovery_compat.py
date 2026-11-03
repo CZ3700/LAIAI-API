@@ -166,6 +166,12 @@ def render(evidence, cases):
     def put(path, value):
         path.write_text(json.dumps(value, sort_keys=True), encoding='utf-8')
     put(evidence / 'build-manifest.json', builds)
+    sources = {}
+    for role, count in (('old', 132), ('new', 141)):
+        names = [f'migrations/{n:04d}_fixture.sql' for n in range(1, count+1)]
+        sources[role] = dict(source=builds[role]['source'], files={name:'a'*64 for name in names},
+                             migration_count=count, migration_head=f'{count:04d}_fixture')
+    put(evidence / 'sources.json', sources)
     exits, mock = [], []
     for case, artifacts in cases.items():
         directory = root / case
@@ -181,7 +187,7 @@ def render(evidence, cases):
                 events.append(dict(protocol=audit.PROTOCOL, run_id=RUN, case_id=case, instance=instance,
                                    role=role, source=builds[role]['source'], pid=pid,
                                    seq=len(events)+1, cmd_id=cid, event=kind, data=data))
-            event('ready', 0, dict(schema='ark_test_qhandoff_'+case[-1]*24, migration_max=138,
+            event('ready', 0, dict(schema='ark_test_qhandoff_'+case[-1]*24, migration_max=141,
                                   has_persisted_consumer=role == 'new', has_dispatch_consumer=role == 'new', task_count=0))
             for art in [a for a in artifacts if a['instance'] == instance]:
                 commands.append(art['_command'])
@@ -214,6 +220,25 @@ def render(evidence, cases):
 
 
 class QueryRecoveryHostTests(unittest.TestCase):
+    def test_migration_inventory_allows_new_releases_but_requires_recovery_schema(self):
+        old = {f'migrations/{n:04d}_fixture.sql': b'' for n in range(1, 133)}
+        recovery = {f'migrations/{n:04d}_{suffix}.sql': b'' for n, suffix in (
+            (133, 'video_query_recovery_progress'),
+            (134, 'video_query_generation_settlement'),
+            (135, 'video_query_settlement_shape'),
+        )}
+        self.assertEqual(host.migration_inventory_count(old, 'old'), 132)
+        self.assertEqual(host.migration_inventory_count(old | recovery, 'new'), 135)
+        later = old | recovery | {f'migrations/{n:04d}_later.sql': b'' for n in range(136, 142)}
+        self.assertEqual(host.migration_inventory_count(later, 'new'), 141)
+        self.assertEqual(host.migration_head(later), '0141_later')
+        with self.assertRaisesRegex(ValueError, 'migration_head'):
+            host.migration_inventory_count(later, 'old')
+        missing = dict(later)
+        missing.pop('migrations/0135_video_query_settlement_shape.sql')
+        with self.assertRaisesRegex(ValueError, 'migration_head'):
+            host.migration_inventory_count(missing, 'new')
+
     def data(self):
         return {case: scenario(case) for case in audit.CASES}
 
@@ -283,11 +308,11 @@ class QueryRecoveryHostTests(unittest.TestCase):
                     if mode == 'run': raw = raw.replace(RUN, 'f'*16)
                     elif mode == 'source': raw = raw.replace(audit.OLD, NEW)
                     elif mode == 'stop_ack': raw = raw.replace('"event": "drained"', '"event": "command_done"')
-                    elif mode == 'schema_before_expand': raw = raw.replace('"migration_max": 138', '"migration_max": 133')
-                    elif mode == 'schema_prior_134': raw = raw.replace('"migration_max": 138', '"migration_max": 134')
-                    elif mode == 'schema_prior_135': raw = raw.replace('"migration_max": 138', '"migration_max": 135')
-                    elif mode == 'schema_prior_137': raw = raw.replace('"migration_max": 138', '"migration_max": 137')
-                    elif mode == 'schema_future': raw = raw.replace('"migration_max": 138', '"migration_max": 139')
+                    elif mode == 'schema_before_expand': raw = raw.replace('"migration_max": 141', '"migration_max": 133')
+                    elif mode == 'schema_prior_134': raw = raw.replace('"migration_max": 141', '"migration_max": 134')
+                    elif mode == 'schema_prior_135': raw = raw.replace('"migration_max": 141', '"migration_max": 135')
+                    elif mode == 'schema_prior_137': raw = raw.replace('"migration_max": 141', '"migration_max": 137')
+                    elif mode == 'schema_future': raw = raw.replace('"migration_max": 141', '"migration_max": 142')
                     elif mode == 'missing_done': raw = '\n'.join(line for line in raw.splitlines() if '"event": "command_done"' not in line)+'\n'
                     else: raw += '    --- FAIL: hidden (0.01s)\n'
                     path.write_text(raw, newline='\n')
