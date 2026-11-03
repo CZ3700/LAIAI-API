@@ -170,7 +170,10 @@ func TestDirectProviderUnknownCreateIsNotResubmitted(t *testing.T) {
 	}
 }
 
-func TestDirectAVRegistrationDoesNotFabricateBillingDuration(t *testing.T) {
+// URL 直连的音/视频素材没有本地实测时长：平台绝不伪造计费用时长（DurationMS
+// 保持 0、媒体验证状态保持 unverified），但引用资格以火山官方 active 状态为准
+// （A 方案 2026-11-03）。计费侧按客户端声明时长 + 模型上限兜底，见 PR 描述。
+func TestDirectAVRegistrationWithoutFactsIsReferenceable(t *testing.T) {
 	for _, kind := range []string{"video", "audio"} {
 		t.Run(kind, func(t *testing.T) {
 			s, db, now, provider := setup(t)
@@ -202,25 +205,34 @@ func TestDirectAVRegistrationDoesNotFabricateBillingDuration(t *testing.T) {
 				t.Fatal("official AV status lost", err)
 			}
 			got := page.Data[0]
-			if got.Reference != "" || got.DurationMS != 0 || got.MediaVerificationStatus != "unverified" || got.GenerationStatus != "blocked" || got.GenerationBlockReason != "media_facts_unavailable" {
-				t.Fatal("unknown AV duration presented as generation ready")
+			// 不伪造时长/事实，但官方状态就是引用资格：
+			if got.DurationMS != 0 || got.MediaVerificationStatus != "unverified" || got.GenerationStatus != "ready" || got.GenerationBlockReason != "" {
+				var row Asset
+				if err := db.Where("asset_id = ?", a.ID).Take(&row).Error; err == nil {
+					t.Log("row state:", row.Status, row.ReviewState, row.ProviderID, row.RowVersion, row.UpdatedAt)
+				t.Log("dto:", got.Status, got.Reference, got.Version, "gen:", got.GenerationStatus)
+				}
+				t.Fatal("officially active AV asset not presented as ready", got.GenerationStatus, got.GenerationBlockReason)
 			}
-			if _, err := s.ResolveBindingsTx(db, 1, testScope(), "av-task", []ReferenceInput{{AssetID: a.ID, Role: "reference_" + kind, ContentIndex: 0}}); !errors.Is(err, ErrUnsupported) {
-				t.Fatal("unknown duration did not fail explicitly before billing", err)
+			bindings, err := s.ResolveBindingsTx(db, 1, testScope(), "av-task", []ReferenceInput{{AssetID: a.ID, Role: "reference_" + kind, ContentIndex: 0}})
+			if err != nil || len(bindings) != 1 || !strings.HasPrefix(bindings[0].ProviderAssetID, "upstream-") {
+				t.Fatal("AV reference binding failed", bindings, err)
 			}
 			var refs int64
-			if err := db.Model(&TaskReference{}).Count(&refs).Error; err != nil || refs != 0 {
-				t.Fatal("unsupported media reserved a task reference", err)
+			if err := db.Model(&TaskReference{}).Where("task_id = ?", "av-task").Count(&refs).Error; err != nil || refs != 1 {
+				t.Fatalf("task reference rows = %d, want 1", refs)
 			}
 			ready, err := s.ConsoleAssets(context.Background(), 1, ListFilter{GroupID: g.ID, Status: "ready", Limit: 20})
-			if err != nil || ready.Total != 0 {
-				t.Fatal("unknown duration leaked into ready filter", err)
+			if err != nil || ready.Total != 1 {
+				t.Fatalf("ready filter lost the AV asset: total=%d err=%v", ready.Total, err)
 			}
 		})
 	}
 }
 
-func TestOptionalVerifiedAVFactsRetainReferenceEligibility(t *testing.T) {
+// A 方案（2026-11-03）：引用资格只跟随火山官方状态（active + provider id），
+// 不再被实测时长门槛卡住；实测到的时长仍随绑定透传，供报表/校验使用。
+func TestOptionalVerifiedAVFactsDoNotGateEligibility(t *testing.T) {
 	for _, kind := range []string{"video", "audio"} {
 		t.Run(kind, func(t *testing.T) {
 			s, db, now, _ := setup(t)
@@ -245,26 +257,20 @@ func TestOptionalVerifiedAVFactsRetainReferenceEligibility(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				wantReady := duration == 4000
-				if (page.Data[0].GenerationStatus == "ready") != wantReady || (filter.Total == 1) != wantReady {
-					t.Fatal("AV list filter and measured facts disagree", duration)
+				if page.Data[0].GenerationStatus != "ready" || filter.Total != 1 {
+					t.Fatal("measured duration gated eligibility", duration)
 				}
 				bindings, err := s.ResolveBindingsTx(db, 1, testScope(), "verified-av-task", []ReferenceInput{{AssetID: a.ID, Role: "reference_" + kind, ContentIndex: 0}})
-				if wantReady {
-					if err != nil || len(bindings) != 1 || bindings[0].DurationMS != 4000 {
-						t.Fatal("trusted duration lost", err)
-					}
-					if err := s.ReleaseBindingsTx(db, 1, "verified-av-task"); err != nil {
-						t.Fatal(err)
-					}
-				} else if !errors.Is(err, ErrUnsupported) {
-					t.Fatal("invalid AV facts accepted", err)
+				if err != nil || len(bindings) != 1 {
+					t.Fatal("measured duration blocked binding", err)
+				}
+				if duration == 4000 && bindings[0].DurationMS != 4000 {
+					t.Fatal("trusted duration lost", bindings[0].DurationMS)
 				}
 			}
 		})
 	}
 }
-
 func TestOptionalVerifiedURLCannotRedirectRegistrationToPrivateHost(t *testing.T) {
 	s, _, _, provider := setup(t)
 	g := readyGroup(t, s, "unsafe-verified-fetch")
