@@ -8,7 +8,8 @@ RELEASE_DATA_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 check_data() (
   set -Eeuo pipefail
   umask 077
-  local phase=${1:?check_data requires a phase} scratch rc=0
+  local phase=${1:?check_data requires a phase} carryover=${2:-0} scratch rc=0
+  [[ $carryover == 0 || $carryover == 1 ]] || die 'invalid carryover gate'
   case "$phase" in preflight|drained|post-migration|post-backfill) ;; *) die 'invalid data-check phase';; esac
   : "${MYSQL_CID:?verified MySQL container required}" "${RUN_DIR:?release run directory required}"
   [[ -d "$RUN_DIR" && ! -L "$RUN_DIR" ]] || die 'release run directory is missing or a symlink'
@@ -26,7 +27,7 @@ check_data() (
     < "$RELEASE_DATA_DIR/checks.sql" > "$scratch/rows.tsv" 2>/dev/null; then
     die "read-only database check failed at $phase; no release gate passed"
   fi
-  python3 - "$phase" "$scratch/rows.tsv" "$scratch/report.json" "$scratch/schema.txt" <<'PY' || rc=$?
+  python3 - "$phase" "$scratch/rows.tsv" "$scratch/report.json" "$scratch/schema.txt" "$carryover" <<'PY' || rc=$?
 import datetime
 import hashlib
 import json
@@ -34,7 +35,7 @@ import pathlib
 import re
 import sys
 
-phase, source, output, schema_output = sys.argv[1:]
+phase, source, output, schema_output, carryover = sys.argv[1:]
 expected = {
     "check": {"ledger_posted_vs_journal", "ledger_held_vs_active_holds",
               "journal_missing_account", "hold_missing_account", "invalid_hold_state_or_amount",
@@ -86,10 +87,11 @@ try:
     if any(item["rows"] != buckets["snapshot"][table + "_rows"] for table, item in fingerprints.items()):
         raise ValueError("incomplete funds fingerprint")
     failures = [name for name, count in buckets["check"].items() if count]
-    if phase != "preflight":
+    if phase != "preflight" and carryover != "1":
         failures += [name for name, count in buckets["drain"].items() if count]
     report = {
         "schema_version": 1, "phase": phase,
+        "carryover": carryover == "1",
         "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "passed": not failures, "blocking_checks": sorted(failures),
         "checks": buckets["check"], "warnings": buckets["warning"],

@@ -97,7 +97,21 @@ for outstanding in active_holds nonterminal_tasks unresolved_video_operations un
   expect_reject drained
   expect_reject post-migration
   expect_reject post-backfill
+  check_data drained 1 >> "$SCRATCH/result.log" 2>&1
+  check_data post-migration 1 >> "$SCRATCH/result.log" 2>&1
+  check_data post-backfill 1 >> "$SCRATCH/result.log" 2>&1
 done
+mutate_fixture metric check ledger_held_vs_active_holds 1
+if (check_data drained 1) > "$SCRATCH/rejected.log" 2>&1; then
+  die 'carryover bypassed a funds invariant'
+fi
+mutate_fixture metric drain active_holds 1
+check_data drained 1 >> "$SCRATCH/result.log" 2>&1
+python3 - "$RUN_DIR/data-drained.json" <<'PY'
+import json, pathlib, sys
+report = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert report["carryover"] and report["in_flight"]["active_holds"] == 1 and report["passed"]
+PY
 mutate_fixture missing schema
 expect_reject preflight
 mutate_fixture missing fund

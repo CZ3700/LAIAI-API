@@ -5,7 +5,7 @@ set +x
 umask 077
 TOOL_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/release" && pwd)
 export TOOL_DIR
-COMMAND='' CONFIG=/etc/laiai/release.conf RELEASE_ID='' YES=0 STAGE='' EVIDENCE=''
+COMMAND='' CONFIG=/etc/laiai/release.conf RELEASE_ID='' YES=0 STAGE='' EVIDENCE='' CARRYOVER_REQUEST=0 CARRYOVER=0
 PHASE=initialization RUN_DIR=''
 # Shared interface consumed by the sourced backup module.
 export OLD_CORE_IMAGE OLD_CADDY_IMAGE RELEASE_CONFIG_DIR
@@ -25,6 +25,8 @@ Usage: bash infra/release.sh [--config FILE] COMMAND [--release ID] [--yes]
   status       Show a release's recorded stages, without changing services.
   approve      Record reviewed external evidence for a release stage:
                --stage before-maintenance|before-open|before-rollback --evidence FILE
+  --carryover-watermark  Preflight only: preserve existing obligations for the
+               exact 0140/0141 watermark-only schema expansion.
 All mutating commands require a trusted root-owned configuration and an exclusive lock.
 --yes removes the interactive prompt; it does not bypass any validation or approval.
 EOF
@@ -58,6 +60,7 @@ while (($#)); do
         --config) CONFIG=$2;; --release) RELEASE_ID=$2;; --stage) STAGE=$2;; --evidence) EVIDENCE=$2;;
       esac; shift 2;;
     --yes) YES=1; shift;;
+    --carryover-watermark) CARRYOVER_REQUEST=1; shift;;
     -h|--help|help) usage; exit 0;;
     --*) die "Unknown option: $1";;
     *) [[ -z "$COMMAND" ]] || die 'Only one command is allowed'; COMMAND=$1; shift;;
@@ -128,8 +131,41 @@ load_plan() {
   PLAN="$RUN_DIR/plan.json"; trusted_file "$PLAN"
   ACTIVE_RUN_DIR=$RUN_DIR
   TARGET=$(get commit)
+  CARRYOVER=$(get carryover)
   [[ "$TARGET" =~ ^[0-9a-f]{40}$ ]] || die 'Invalid planned commit.'
   SOURCE_DIR="$STATE_DIR/sources/$TARGET"
+}
+business_fingerprint() {
+  # Existing task/operation/billing rows must be byte-for-byte stable while
+  # all application writers are stopped. Raw rows remain in a private pipe.
+  docker exec "$MYSQL_CID" sh -eu -c '
+    : "${MYSQL_ROOT_PASSWORD:?missing database credential}"
+    MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction \
+      --compact --skip-comments --skip-extended-insert --order-by-primary \
+      --no-create-info --skip-triggers --default-character-set=utf8mb4 \
+      --set-gtid-purged=OFF --no-tablespaces "${MYSQL_DATABASE:-laiai}" \
+      tasks video_task_states video_operations video_attempts \
+      video_execution_attempts video_response_inbox video_receipt_applications \
+      video_query_receipts video_quota_reservations video_usage_evidence \
+      video_billing_snapshots video_billing_entries video_reconciliation_items \
+      video_adjustment_proposals video_adjustment_reviews \
+      video_adjustment_applications video_events video_outbox \
+      video_request_contexts
+  ' 2>/dev/null | sha256sum | awk '{print $1}'
+}
+watermark_disabled() {
+  # Rollback to the old core is valid only before the new feature has accepted work.
+  local disabled
+  disabled=$(docker exec "$MYSQL_CID" sh -eu -c '
+    : "${MYSQL_ROOT_PASSWORD:?missing database credential}"
+    MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --batch --skip-column-names \
+      "${MYSQL_DATABASE:-laiai}" -e "SELECT
+        (SELECT COUNT(*) FROM video_watermark_settings) = 1 AND
+        (SELECT COUNT(*) FROM video_watermark_settings WHERE id = 1 AND enabled = 0) = 1 AND
+        (SELECT COUNT(*) FROM video_watermark_users) = 0 AND
+        (SELECT COUNT(*) FROM video_watermark_jobs) = 0"
+  ' 2>/dev/null) || die 'Cannot verify that watermark processing remains disabled.'
+  [[ "$disabled" == 1 ]] || die 'Watermark processing has been enabled or accepted work; old-core rollback is unsafe.'
 }
 verify_config() {
   [[ "$(state config-hash)" == "$(get config_hash)" ]] || die 'Configuration/tool/evidence hooks changed; create a fresh preflight plan.'
@@ -303,7 +339,7 @@ preflight() {
     mkdir "$RUN_DIR"
     PLAN="$RUN_DIR/plan.json"
     snapshot "$RUN_DIR/initial-snapshot.json"
-    state plan "$PLAN" "$RUN_DIR/initial-snapshot.json" "$MAIN_SHA"
+    state plan "$PLAN" "$RUN_DIR/initial-snapshot.json" "$MAIN_SHA" "$CARRYOVER_REQUEST"
   fi
   load_plan; verify_config; require_current_main; same_live
   [[ ! -f "$RUN_DIR/maintenance-started.ok" ]] || die 'A deployment already started; use status/verify/open/rollback.'
@@ -315,6 +351,7 @@ preflight() {
   done
   check_data preflight
   state schema "$RUN_DIR/schema.txt" "$SOURCE_DIR/migrations" subset
+  if (( CARRYOVER )); then state carryover-eligible "$PLAN" "$RUN_DIR/schema.txt" "$SOURCE_DIR/migrations"; fi
   if [[ ! -f "$RUN_DIR/build.ok" ]]; then
     adapt_caddy
     freeze_rollback_runtime
@@ -462,13 +499,18 @@ deploy_stage() {
   (cd "$RUN_DIR/backup" && sha256sum -c checksums.sha256 >/dev/null)
   (cd "$RUN_DIR" && sha256sum -c candidate-images.tar.sha256 >/dev/null)
   compose new; check_data preflight; external_check before-maintenance
+  if (( CARRYOVER )); then state carryover-eligible "$PLAN" "$RUN_DIR/schema.txt" "$SOURCE_DIR/migrations"; fi
   maintenance_enter
   # Existing workers may finish after ingress is closed; do not erase unknown tasks/holds.
-  check_data drained
+  check_data drained "$CARRYOVER"
   "${DC[@]}" stop -t 60 core >/dev/null
   [[ $(docker inspect --format '{{.State.Running}}' "$CORE_CID") == false ]] || die 'Old core did not stop.'
-  check_data drained
+  if (( CARRYOVER )); then
+    [[ $(docker inspect --format '{{.State.ExitCode}}:{{.State.OOMKilled}}' "$CORE_CID") == 0:false ]] || die 'Old core did not exit cleanly for carryover.'
+  fi
+  check_data drained "$CARRYOVER"
   cp "$RUN_DIR/data-drained.json" "$RUN_DIR/funds-before.json"
+  if (( CARRYOVER )); then business_fingerprint > "$RUN_DIR/business-before.sha256"; fi
   local parent=$RUN_DIR
   RELEASE_CONFIG_DIR="$parent/config"
   OLD_CORE_IMAGE=$(get snapshot.core.image); OLD_CADDY_IMAGE=$(get snapshot.caddy.image)
@@ -481,9 +523,11 @@ deploy_stage() {
   run_tool migrate -dir /app/migrations > "$RUN_DIR/migrate.log"
   run_tool migrate -dir /app/migrations >> "$RUN_DIR/migrate.log"
   run_tool schema-doctor -dir /app/migrations > "$RUN_DIR/doctor.log"
-  check_data post-migration
+  check_data post-migration "$CARRYOVER"
   state schema "$RUN_DIR/schema.txt" "$SOURCE_DIR/migrations" exact
   state funds "$RUN_DIR/funds-before.json" "$RUN_DIR/data-post-migration.json"
+  if (( CARRYOVER )); then business_fingerprint > "$RUN_DIR/business-post-migration.sha256"; state business "$PLAN" "$RUN_DIR/business-before.sha256" "$RUN_DIR/business-post-migration.sha256"; fi
+  if (( CARRYOVER )); then watermark_disabled; fi
   mark migrated
   local output iteration complete=0 cutoff
   local complete_pattern='^complete: [0-9]+ source rows projected before '
@@ -498,8 +542,10 @@ deploy_stage() {
   ((complete == 1)) || die 'Backfill iteration limit reached; remain in maintenance.'
   output=$(run_tool backfill-funds -before "$cutoff" -limit 100 -batches 100)
   [[ "$output" == "complete: 0 source rows projected before $cutoff" ]] || die 'Backfill replay was not empty.'
-  check_data post-backfill
+  check_data post-backfill "$CARRYOVER"
   state funds "$RUN_DIR/funds-before.json" "$RUN_DIR/data-post-backfill.json"
+  if (( CARRYOVER )); then business_fingerprint > "$RUN_DIR/business-post-backfill.sha256"; state business "$PLAN" "$RUN_DIR/business-before.sha256" "$RUN_DIR/business-post-backfill.sha256"; fi
+  if (( CARRYOVER )); then watermark_disabled; fi
   mark backfilled
   "${DC[@]}" up -d --no-build --no-deps --pull never --wait --wait-timeout 180 --scale core=1 core >/dev/null
   "${DC[@]}" up -d --no-build --no-deps --pull never caddy >/dev/null
@@ -558,9 +604,10 @@ rollback_stage() {
     log 'Original service resumed before any migration; no database changes were rolled back.'
     return
   fi
-  check_data drained
+  if (( CARRYOVER )); then watermark_disabled; fi
+  check_data drained "$CARRYOVER"
   "${DC[@]}" stop -t 60 core >/dev/null
-  check_data drained
+  check_data drained "$CARRYOVER"
   cat "$RUN_DIR/config/maintenance.json" > "$RUN_DIR/config/active.json"
   "${DC[@]}" up -d --no-build --no-deps --pull never --wait --wait-timeout 180 --scale core=1 core >/dev/null
   "${DC[@]}" up -d --no-build --no-deps --pull never caddy >/dev/null

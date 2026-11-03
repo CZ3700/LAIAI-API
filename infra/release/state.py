@@ -72,6 +72,7 @@ def config_hash():
     paths = [values[key] for key in ['LIVE_ENV', 'VIDEO_ENV', 'CADDYFILE', 'BACKUP_KEY_FILE',
                                     'CI_CHECK_HOOK', 'CHECK_HOOK'] if values[key]]
     paths += [str(p) for p in Path(os.environ['TOOL_DIR']).rglob('*') if p.is_file() and p.suffix in ('.sh', '.py', '.sql')]
+    paths.append(str(Path(os.environ['TOOL_DIR']).parent / 'release.sh'))
     paths += [str(Path(values['LIVE_DIR']) / 'infra' / p)
               for p in ['docker-compose.yml', 'mysql/my.cnf', 'redis/redis.conf']]
     values['files'] = {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths}
@@ -294,7 +295,10 @@ def main():
     elif command == 'plan':
         snapshot = read(sys.argv[3]); sha = sys.argv[4]
         if not re.fullmatch('[0-9a-f]{40}', sha): fail('invalid main SHA')
-        write(sys.argv[2], {'version': 1, 'commit': sha, 'config_hash': config_hash(), 'snapshot': snapshot})
+        carryover = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+        if carryover not in (0, 1): fail('invalid carryover policy')
+        write(sys.argv[2], {'version': 2, 'commit': sha, 'config_hash': config_hash(), 'snapshot': snapshot,
+                            'carryover': carryover})
     elif command == 'get':
         value = read(sys.argv[2])
         for key in sys.argv[3].split('.'): value = value[key]
@@ -328,6 +332,20 @@ def main():
         if unknown: fail('database has migrations absent from this commit')
         if sys.argv[4] == 'exact' and applied != wanted: fail('pending migrations remain')
         print(f'applied={len(applied)} target={len(wanted)} pending={len(wanted - applied)}')
+    elif command == 'carryover-eligible':
+        plan = read(sys.argv[2])
+        applied = set(Path(sys.argv[3]).read_text().splitlines())
+        wanted = {p.stem for p in Path(sys.argv[4]).glob('[0-9][0-9][0-9][0-9]_*.sql')}
+        if plan.get('carryover') != 1 or len(applied) != 139 or len(wanted) != 141 or \
+                wanted - applied != {'0140_video_watermark', '0141_video_watermark_users'} or \
+                applied - wanted:
+            fail('carryover is limited to the reviewed watermark-only schema expansion')
+    elif command == 'business':
+        plan = read(sys.argv[2])
+        if plan.get('carryover') != 1: fail('business comparison requires carryover policy')
+        before, after = Path(sys.argv[3]).read_text().strip(), Path(sys.argv[4]).read_text().strip()
+        if not re.fullmatch('[0-9a-f]{64}', before) or before != after:
+            fail('existing task and video business rows changed while writes were stopped')
     elif command == 'images':
         images = {'core': sys.argv[3], 'caddy': sys.argv[4]}
         if not all(re.fullmatch(r'sha256:[0-9a-f]{64}', v) for v in images.values()): fail('invalid image ID')

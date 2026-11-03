@@ -282,6 +282,40 @@ class StateTests(unittest.TestCase):
         after.write_text(json.dumps({"funds_fingerprint": "changed"}))
         self.run_state("funds", before, after, ok=False)
 
+    def test_carryover_requires_exact_watermark_expansion(self):
+        migrations = self.root / "migrations"
+        migrations.mkdir()
+        names = [f"{i:04d}_fixture" for i in range(1, 140)]
+        names += ["0140_video_watermark", "0141_video_watermark_users"]
+        for name in names:
+            (migrations / f"{name}.sql").write_text("fixture")
+        applied = self.root / "applied.txt"
+        applied.write_text("\n".join(names[:139]) + "\n")
+        plan = self.root / "plan.json"
+        plan.write_text(json.dumps({"carryover": 1}))
+        self.run_state("carryover-eligible", plan, applied, migrations)
+        plan.write_text(json.dumps({"carryover": 0}))
+        self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
+        plan.write_text(json.dumps({"carryover": 1}))
+        applied.write_text("\n".join(names[:138]) + "\n")
+        self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
+        applied.write_text("\n".join(names[:139]) + "\n")
+        (migrations / "0141_video_watermark_users.sql").rename(migrations / "0141_other.sql")
+        self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
+
+    def test_carryover_business_rows_must_remain_identical(self):
+        plan = self.root / "plan.json"
+        plan.write_text(json.dumps({"carryover": 1}))
+        before, after = self.root / "before.sha256", self.root / "after.sha256"
+        before.write_text("a" * 64 + "\n")
+        after.write_text("a" * 64 + "\n")
+        self.run_state("business", plan, before, after)
+        after.write_text("b" * 64 + "\n")
+        self.run_state("business", plan, before, after, ok=False)
+        plan.write_text(json.dumps({"carryover": 0}))
+        after.write_text("a" * 64 + "\n")
+        self.run_state("business", plan, before, after, ok=False)
+
     def test_inspect_stores_hashes_without_environment_secrets(self):
         values = []
         for role in OLD_IMAGES:
