@@ -98,7 +98,7 @@ func (s *Server) RunLogRetention(ctx context.Context) (invDeleted, auditDeleted 
 	if d := s.retentionDaysSetting("task_log_retention_days", 30); d > 0 {
 		cutoff := s.now().UTC().AddDate(0, 0, -d)
 		for _, spec := range [][4]string{
-			{"video_events", "event_id", "created_at", ""},
+			{"video_events", "id", "created_at", ""},
 			{"video_attempts", "id", "observed_at", ""},
 			{"video_outbox", "event_id", "created_at", "processed"},
 			{"video_asset_events", "event_id", "created_at", ""},
