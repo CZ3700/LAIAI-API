@@ -52,7 +52,7 @@ func TestRunLogRetentionVideoTables(t *testing.T) {
 		('old1', '2000-01-01 00:00:00'), ('new1', CURRENT_TIMESTAMP)`)
 	db.Exec(`INSERT INTO video_request_contexts (request_id, created_at) VALUES
 		('old1', '2000-01-01 00:00:00'), ('new1', CURRENT_TIMESTAMP)`)
-	db.Exec(`INSERT INTO video_events (event_id, created_at) VALUES
+	db.Exec(`INSERT INTO video_events (id, created_at) VALUES
 		('evt-old', '2000-01-01 00:00:00'), ('evt-new', CURRENT_TIMESTAMP)`)
 	db.Exec(`INSERT INTO video_attempts (id, observed_at) VALUES (1, '2000-01-01 00:00:00'), (2, CURRENT_TIMESTAMP)`)
 	db.Exec(`INSERT INTO video_outbox (event_id, status, created_at) VALUES
@@ -84,7 +84,7 @@ func TestRunLogRetentionVideoTables(t *testing.T) {
 	for _, q := range []string{
 		"SELECT COUNT(*) FROM api_request_logs WHERE request_id='new1'",
 		"SELECT COUNT(*) FROM video_request_contexts WHERE request_id='new1'",
-		"SELECT COUNT(*) FROM video_events WHERE event_id='evt-new'",
+		"SELECT COUNT(*) FROM video_events WHERE id='evt-new'",
 		"SELECT COUNT(*) FROM video_outbox WHERE event_id IN ('obx-new','obx-old-pending')",
 		"SELECT COUNT(*) FROM video_asset_events WHERE event_id='ae-new'",
 	} {
@@ -100,7 +100,7 @@ func mustExecLogSchema(t *testing.T, db *gorm.DB) {
 	for _, q := range []string{
 		`CREATE TABLE IF NOT EXISTS api_request_logs (request_id TEXT PRIMARY KEY, started_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS video_request_contexts (request_id TEXT PRIMARY KEY, created_at DATETIME)`,
-		`CREATE TABLE IF NOT EXISTS video_events (event_id TEXT PRIMARY KEY, created_at DATETIME)`,
+		`CREATE TABLE IF NOT EXISTS video_events (id TEXT PRIMARY KEY, created_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS video_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, observed_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS video_outbox (event_id TEXT PRIMARY KEY, status TEXT, created_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS video_asset_events (event_id TEXT PRIMARY KEY, created_at DATETIME)`,

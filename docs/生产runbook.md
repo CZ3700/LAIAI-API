@@ -75,6 +75,20 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
   `make migrate-smoke`（真 MySQL apply×2 幂等 + schema-doctor 漂移体检）。
 - **多副本**：`docker compose up -d --scale core=N`；core 无 container_name，Caddy dynamic a 自动跟随。
 - **Redis 上线约束**（架构 §4.4）：多实例前必须配 `LAIAI_REDIS_ADDR`——模型级限流否则退化为每副本独立计数。
+## 排障纪律：禁止对生产容器发信号抓栈（SIGQUIT/pprof 信号等）
+
+对 Go 容器发 `SIGQUIT`（docker kill --signal=QUIT）会让进程打印全部 goroutine 栈后
+**直接退出**（exit=2）——且经 `compose run`/部分版本创建的容器 restart 策略可能不自动
+拉起，等于人为制造全站停机（2026-11-04 事故：后台打不开约 1 小时）。
+
+排障需要 goroutine/栈信息时，**必须用同镜像起一次性分析容器**，绝不动生产容器：
+
+    docker run --rm --network <compose网络> --pid container:infra-core-1       <同镜像> sh -c '...'   # 或在 staging 复现后抓栈
+
+若确需在生产抓栈，先确认 restart 策略会自动拉起、并在低峰窗口执行，事后核对
+`docker ps` 与 healthz。CPU 类排查优先用只读手段：performance_schema digest 差值
+采样、general_log 短窗抓取（用完立即 OFF）、docker stats。
+
 ## 部署纪律：/etc/laiai/video.env 必须并入容器环境
 
 官方视频网关的接线条件是 `LAIAI_VIDEO_HMAC_SECRET` 非空（main.go 里为空即不装配
