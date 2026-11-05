@@ -148,7 +148,7 @@ func TestVariantProfilesHaveIndependentIdentityAndReviewedMinimumEvidence(t *tes
 		if err != nil {
 			t.Fatal(err)
 		}
-		if p.Version != VariantVersion || p.Capability.Version != VariantVersion || p.Capability.PublicModel != model || p.MinimumVersion != "official-min-"+model+"-20261019-v1" || versions[p.MinimumVersion] || hashes[p.EvidenceSHA256] {
+		if p.Version != VariantVersion || p.Capability.Version != VariantVersion || p.Capability.PublicModel != model || p.MinimumVersion != "official-min-"+model+"-20261105-v1" || versions[p.MinimumVersion] || hashes[p.EvidenceSHA256] {
 			t.Fatal("variant reused a standard/other variant profile identity")
 		}
 		versions[p.MinimumVersion], hashes[p.EvidenceSHA256] = true, true

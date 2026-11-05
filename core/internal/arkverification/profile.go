@@ -80,7 +80,7 @@ func Load(model string) (Profile, error) {
 	p.Version = Version
 	p.SourceURL = "https://console.volcengine.com/ark/region:cn-beijing/docs/model-pricing"
 	p.ObservedAt = time.Date(2026, 10, 19, 7, 54, 10, 0, time.UTC)
-	p.MinimumVersion = "official-min-" + model + "-20261019-v1"
+	p.MinimumVersion = "official-min-" + model + "-20261105-v1"
 	p.Sources = documentationSources()
 	if isVariant {
 		// The official tutorial explicitly includes the exact Fast and Mini IDs
@@ -88,7 +88,7 @@ func Load(model string) (Profile, error) {
 		// the standard model's already published minimum-rule identity.
 		p.Version = VariantVersion
 		p.ObservedAt = time.Date(2026, 10, 19, 10, 31, 47, 0, time.UTC)
-		p.MinimumVersion = "official-min-" + model + "-20261019-v1"
+		p.MinimumVersion = "official-min-" + model + "-20261105-v1"
 		p.Sources = append(p.Sources,
 			Source{"official-2-0-family-20261019", "https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-0.md", "1cc95eb91d8bb7f8a69965e0815ea6fff8cde90458e4d4e60d9c8b5c99e0c39e"},
 			Source{"official-query-api-20261019", "https://ark.volcengine.com/region:cn-beijing/docs/get-video-generation-task-api.md", "f7e6e434bb9cd12ba79d39b0cb2c80fbef8b56780e6efd6d95e98c4e1b9aabe8"})
@@ -235,7 +235,7 @@ func LoadDraft(model string) (Profile, error) {
 	}
 	p.Version = DraftVersion
 	p.ObservedAt = time.Date(2026, 10, 30, 10, 38, 0, 0, time.UTC)
-	p.MinimumVersion = "official-min-seedance-2.5-20261030-draft-v1"
+	p.MinimumVersion = "official-min-seedance-2.5-20261105-draft-v1"
 	p.Capability.Version = p.Version
 	p.Capability.Draft = true
 	p.Capability.DraftConversion = true

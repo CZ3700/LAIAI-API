@@ -53,10 +53,10 @@ func TestMigrationContainsExactApprovedSnapshot(t *testing.T) {
 		count, minimum int
 		hash           string
 	}{
-		"seedance-2.0":      {8, 288, "65f6ab6620475298e0e938729185eb4666c26353e6ea09f6ddfcc5a7da7149aa"},
-		"seedance-2.5":      {6, 486, "08784759213a86637f6d2723396207ede6c12f9a1e9321a2798a3606ea8b849c"},
-		"seedance-2.0-fast": {4, 144, "a388d96c01c577d452a43439867e84feefcc69e18afd04641735882bf220db8c"},
-		"seedance-2.0-mini": {4, 144, "685d24a97d430bf90fb5cd65baf1ebd25b06d8a7b14c879a33145e18a9c73652"},
+		"seedance-2.0":      {8, 288, "3817b3f527b2607ec5d3af7ce63f9fdea5ee26968f1f61c9c58d46d8917e5f9f"},
+		"seedance-2.5":      {6, 486, "3968fd29d9e6e511a30c7b59459a4f2d0a579ef0db9fcb23e109ab0244836661"},
+		"seedance-2.0-fast": {4, 144, "77dffb0816568da9ab928784a76b46a1bae4be21cf7da85526fdf06337d24b48"},
+		"seedance-2.0-mini": {4, 144, "eb2c1d43a6237ffbd75216e6757692cc34462fd0da9fbf71814ca0c49b686805"},
 	}
 	total := 0
 	for _, item := range fixtureTemplates(t) {
