@@ -111,7 +111,6 @@ func TestVariantRejectsUnverifiedCapabilitiesAndRequests(t *testing.T) {
 			{"future deployment", func(c *Capability, _ *CreateRequest) { c.UpstreamModel += "0" }},
 			{"wrong standard deployment", func(c *Capability, _ *CreateRequest) { c.UpstreamModel = "doubao-seedance-2-0-260128" }},
 			{"1080p configuration", func(c *Capability, _ *CreateRequest) { c.Resolutions = append(c.Resolutions, "1080p") }},
-			{"adaptive ratio configuration", func(c *Capability, _ *CreateRequest) { c.Ratios = append(c.Ratios, "adaptive") }},
 			{"unknown ratio configuration", func(c *Capability, _ *CreateRequest) { c.Ratios = append(c.Ratios, "5:4") }},
 			{"duplicate ratio configuration", func(c *Capability, _ *CreateRequest) { c.Ratios = append(c.Ratios, c.Ratios[0]) }},
 			{"empty ratio configuration", func(c *Capability, _ *CreateRequest) { c.Ratios = nil }},

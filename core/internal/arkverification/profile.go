@@ -14,12 +14,12 @@ import (
 	"github.com/laiai/laiai-next/core/internal/arkpricecatalog"
 )
 
-const Version = "ark-official-20261019-v1"
-const VariantVersion = "ark-official-20261019-variants-v1"
+const Version = "ark-official-20261105-v1"
+const VariantVersion = "ark-official-20261105-variants-v1"
 
 // DraftVersion is opt-in so installed 2026-10-19 pricing templates and their
 // evidence hashes continue to validate against the original profile.
-const DraftVersion = "ark-official-20261030-draft-v1"
+const DraftVersion = "ark-official-20261105-draft-v1"
 
 type Dimensions struct {
 	Width  int64 `json:"width"`
@@ -61,8 +61,11 @@ func documentationSources() []Source {
 	}
 }
 
-// Load admits reviewed generation with explicit ratios only. In particular it
-// does not claim a bound for 2.5 arbitrary-ratio editing/extension/first frames.
+// Load admits reviewed generation with the six explicit ratios plus adaptive.
+// Adaptive is official for both families (2.5 frames/edit/extend require it).
+// Its output aspect follows the input image/video, so the reviewed bound is
+// the largest measured area of the same resolution tier — a conservative
+// upper bound for holds, with settlement still driven by upstream usage.
 // Existing defaults and exact deployment identity are preserved by the server.
 func Load(model string) (Profile, error) {
 	var p Profile
@@ -102,7 +105,7 @@ func Load(model string) (Profile, error) {
 	sort.Slice(p.Sources, func(i, j int) bool { return p.Sources[i].ID < p.Sources[j].ID })
 	p.Capability = ark.Capability{
 		PublicModel: model, Version: p.Version, Enabled: true, Verified: true,
-		Resolutions: []string{"480p", "720p", "1080p"}, Ratios: []string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9"},
+		Resolutions: []string{"480p", "720p", "1080p"}, Ratios: []string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"},
 		MinDuration: 4, MaxDuration: 15, DefaultDuration: 4, DefaultResolution: "480p", DefaultRatio: "1:1", DefaultSeed: -1,
 		DefaultWatermark: true, DefaultExecutionExpiresAfter: 3600, MinExecutionExpiresAfter: 3600, MaxExecutionExpiresAfter: 259200,
 		AutomaticDuration: true, FPS: 24, MaxContentItems: 16, MaxImages: 9, MaxVideos: 3, MaxAudios: 3,
@@ -156,9 +159,23 @@ func Load(model string) (Profile, error) {
 	}
 	p.Bounds = map[string]Dimensions{}
 	for _, res := range p.Capability.Resolutions {
-		for i, ratio := range p.Capability.Ratios {
-			p.Bounds[res+"/"+ratio] = dimensions[res][i]
+		var largest Dimensions
+		explicit := 0
+		for _, ratio := range p.Capability.Ratios {
+			if ratio == "adaptive" {
+				continue
+			}
+			d := dimensions[res][explicit]
+			explicit++
+			p.Bounds[res+"/"+ratio] = d
+			if d.Width*d.Height > largest.Width*largest.Height {
+				largest = d
+			}
 		}
+		// Adaptive output follows the input aspect within the same resolution
+		// tier; the conservative hold bound is that tier's largest measured
+		// area. Settlement keeps using upstream usage, never this bound.
+		p.Bounds[res+"/adaptive"] = largest
 	}
 	seen := map[string]bool{}
 	for _, cell := range ref.Minimum.Cells {
@@ -179,6 +196,12 @@ func Load(model string) (Profile, error) {
 	}
 	for _, res := range p.Capability.Resolutions {
 		for _, ratio := range p.Capability.Ratios {
+			if ratio == "adaptive" {
+				// The official table prices explicit ratios only; adaptive is
+				// quoted from the maximum of that same explicit domain at
+				// runtime (videobilling.QuoteWithMinimumTx).
+				continue
+			}
 			for d := p.Capability.MinDuration; d <= p.Capability.MaxDuration; d++ {
 				if !seen[fmt.Sprintf("%s/%s/%d", res, ratio, d*1000)] {
 					return Profile{}, fmt.Errorf("verification: incomplete minimum domain")

@@ -148,6 +148,23 @@ Seedance 视频模型按火山官方方式逐模型限流，superadmin 在后台
 - **证据身份**：收据新列 `json:"-"`，不参与 create-v1 evidence canonical/HMAC（HMAC 与旧收据
   逐字节一致，去重与恢复语义不变）。
 
+## 自适应宽高比 adaptive（0144 起）
+
+`ratio: "adaptive"` 官方两个家族都支持（2.5 的首帧/首尾帧、视频编辑、视频延长**只允许** adaptive）。
+平台 2026-11-05 起放开：
+
+- 四个官方模型的已发布能力 Ratios 含 `adaptive`；每个分辨率一条保守像素上界
+  （取该档已审比例的**最大面积**，如 1080p=2206×946）。受理按该上界预冻结，结算仍按上游 usage，差额释放。
+- 证据链：`arkverification` profile 版本 `ark-official-20261105-v1`（variant 用 `-variants-v1`），
+  证据哈希变化 → 定价模板随之换版：迁移 0144 删除旧 `seedance-20261019-v1` 种子行并安装
+  `seedance-20261105-v1`（价格/最低量规则/FX 口径不变，仅 profile 标识更新）。
+- 上线后需逐模型应用能力 profile（旧配置不会自动扩展）：
+  `POST /api/admin/video/models/<model>/verification`，body
+  `{"expected_config_version": "<当前 version>", "profile_version": "ark-official-20261105-v1"}`
+  （fast/mini 用 `-variants-v1`；2.5 draft 用 `-draft-v1`）。需真实 superadmin 会话身份。
+- 回退：重新应用旧 profile 不可用（内容已变），需回退镜像与能力行；受理侧对 adaptive 的
+  预冻结上界偏保守属预期，不是计费错误。
+
 ## 3. 支付上线门禁（P1-3，未完成项跟踪）
 
 - 红线：**没有真实 raw callback fixture 的支付引擎不得启用**。当前唯一接近达标的是 epay

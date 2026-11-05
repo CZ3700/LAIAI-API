@@ -16,7 +16,7 @@ import (
 
 func fixtureTemplates(t *testing.T) []Template {
 	t.Helper()
-	raw, err := os.ReadFile("data/seedance-20261019-v1.json")
+	raw, err := os.ReadFile("data/seedance-20261105-v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,10 @@ func templateRecord(t *testing.T, item Template) Record {
 }
 
 func TestMigrationContainsExactApprovedSnapshot(t *testing.T) {
-	seed, err := os.ReadFile("../../../migrations/0121_seedance_pricing_template_20261019.sql")
+	// 0121 installed the 2026-10-19 profile templates. The 2026-11-05 profile
+	// revision (adaptive ratio bounds) changed the profile evidence hash, so
+	// 0144 replaces the seed rows with the same prices under new identity.
+	seed, err := os.ReadFile("../../../migrations/0144_video_pricing_template_adaptive.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,10 +53,10 @@ func TestMigrationContainsExactApprovedSnapshot(t *testing.T) {
 		count, minimum int
 		hash           string
 	}{
-		"seedance-2.0":      {8, 288, "e59ac88a663847f194743e8581ed3583ba3a628faafd282790ddf398d4da888f"},
-		"seedance-2.5":      {6, 486, "77bf4562a2c05b57f6cb0f4ca2aab099d6816e3fb42e37f16f5155c0d11ca3bb"},
-		"seedance-2.0-fast": {4, 144, "383cf5a1c291c6f816419d44d50775f9a3d1ede655c2aba86bda8672a5ea0bae"},
-		"seedance-2.0-mini": {4, 144, "8b260fcebad256d6e41eea60e67a526c8898fed7b3179712282763898f93bfd5"},
+		"seedance-2.0":      {8, 288, "65f6ab6620475298e0e938729185eb4666c26353e6ea09f6ddfcc5a7da7149aa"},
+		"seedance-2.5":      {6, 486, "08784759213a86637f6d2723396207ede6c12f9a1e9321a2798a3606ea8b849c"},
+		"seedance-2.0-fast": {4, 144, "a388d96c01c577d452a43439867e84feefcc69e18afd04641735882bf220db8c"},
+		"seedance-2.0-mini": {4, 144, "685d24a97d430bf90fb5cd65baf1ebd25b06d8a7b14c879a33145e18a9c73652"},
 	}
 	total := 0
 	for _, item := range fixtureTemplates(t) {
