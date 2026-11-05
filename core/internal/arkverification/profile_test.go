@@ -111,19 +111,23 @@ func TestReviewedPixelBoundsAndUnsupportedModels(t *testing.T) {
 			if model == ark.Model25 && res == "4k" {
 				continue
 			}
-			var max int64
+			var max, explicitArea int64
+			var largest Dimensions
 			for _, ratio := range p.Capability.Ratios {
 				d := p.Bounds[res+"/"+ratio]
 				if d.Width*d.Height > max {
 					max = d.Width * d.Height
 				}
+				if ratio != "adaptive" && d.Width*d.Height > explicitArea {
+					explicitArea, largest = d.Width*d.Height, d
+				}
 			}
 			if max != want {
 				t.Fatal(fmt.Sprintf("%s/%s unsafe area %d", model, res, max))
 			}
-		}
-		if _, ok := p.Bounds["1080p/adaptive"]; ok {
-			t.Fatal("arbitrary ratio must not inherit six-enum bound")
+			if largest.Width == 0 || p.Bounds[res+"/adaptive"] != largest {
+				t.Fatal(fmt.Sprintf("%s/%s adaptive bound is not the largest reviewed area", model, res))
+			}
 		}
 	}
 	for _, model := range []string{"seedance-1.0", "seedance-2.5-fast", "seedance-2.5-mini", "doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615"} {
@@ -148,10 +152,10 @@ func TestVariantProfilesHaveIndependentIdentityAndReviewedMinimumEvidence(t *tes
 			t.Fatal("variant reused a standard/other variant profile identity")
 		}
 		versions[p.MinimumVersion], hashes[p.EvidenceSHA256] = true, true
-		if len(p.MinimumCells) != 144 || len(p.Bounds) != 12 || len(p.Capability.Resolutions) != 2 || p.MaxInputVideoDurationMS != 15000 || p.Capability.MaxDuration != 15 || p.Capability.MinDuration != 4 || p.Capability.FPS != 24 {
+		if len(p.MinimumCells) != 144 || len(p.Bounds) != 14 || len(p.Capability.Resolutions) != 2 || p.MaxInputVideoDurationMS != 15000 || p.Capability.MaxDuration != 15 || p.Capability.MinDuration != 4 || p.Capability.FPS != 24 {
 			t.Fatal("variant capability/minimum domain incorrect")
 		}
-		for _, forbidden := range []string{"1080p/16:9", "4k/16:9", "720p/adaptive"} {
+		for _, forbidden := range []string{"1080p/16:9", "4k/16:9"} {
 			if _, ok := p.Bounds[forbidden]; ok {
 				t.Fatal("unsupported bounds admitted")
 			}

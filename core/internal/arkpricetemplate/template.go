@@ -20,7 +20,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const InitialVersion = "seedance-20261019-v1"
+const InitialVersion = "seedance-20261105-v1"
 
 var ErrInvalid = errors.New("invalid or incompatible video pricing template")
 var exactDecimal = regexp.MustCompile(`^(0|[1-9][0-9]{0,11})(\.[0-9]{1,12})?$`)

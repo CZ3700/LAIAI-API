@@ -144,7 +144,7 @@ func TestPublicationDisabledDiagnosticKeepsCapabilitiesAndVersions(t *testing.T)
 	cfg := catalogTestConfig(t, ark.Model20)
 	cfg.Enabled = false
 	row, err := catalogModel(cfg, ProviderScope{}, relay.VideoCatalogChannel{}, decimal.NewFromInt(1), videobilling.CatalogTariffSnapshot{})
-	if err != nil || row.Enabled || !row.Verified || row.Publication.Status != "blocked" || len(row.Publication.Combinations) != 8 || len(row.Capabilities.Ratios) != 6 || len(row.Prices) != 0 {
+	if err != nil || row.Enabled || !row.Verified || row.Publication.Status != "blocked" || len(row.Publication.Combinations) != 8 || len(row.Capabilities.Ratios) != 7 || len(row.Prices) != 0 {
 		t.Fatal("disabled configuration lost diagnostic shape", err)
 	}
 	for _, cell := range row.Publication.Combinations {

@@ -26,7 +26,7 @@ func seedPricingTemplates(t *testing.T, db *gorm.DB) map[string]arkpricetemplate
 	if err := db.Exec(`CREATE TABLE video_pricing_templates(id INTEGER PRIMARY KEY AUTOINCREMENT,version TEXT NOT NULL,model TEXT NOT NULL,body_hash TEXT NOT NULL,body_json TEXT NOT NULL,created_at DATETIME NOT NULL,UNIQUE(version,model));`).Error; err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join("..", "arkpricetemplate", "data", "seedance-20261019-v1.json"))
+	raw, err := os.ReadFile(filepath.Join("..", "arkpricetemplate", "data", "seedance-20261105-v1.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

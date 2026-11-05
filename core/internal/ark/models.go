@@ -52,12 +52,12 @@ func valid20VariantCapability(cap Capability) bool {
 			return false
 		}
 	}
-	if len(cap.Ratios) == 0 || len(cap.Ratios) > 6 {
+	if len(cap.Ratios) == 0 || len(cap.Ratios) > 7 {
 		return false
 	}
 	seenRatios := map[string]bool{}
 	for _, ratio := range cap.Ratios {
-		if !contains([]string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9"}, ratio) || seenRatios[ratio] {
+		if !contains([]string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"}, ratio) || seenRatios[ratio] {
 			return false
 		}
 		seenRatios[ratio] = true
