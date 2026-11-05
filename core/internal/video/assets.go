@@ -816,6 +816,11 @@ func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, 
 			bindings.Assets[b.AssetID] = ark.AssetBinding{MediaType: b.MediaType, UpstreamURI: "asset://" + b.ProviderAssetID}
 			if b.MediaType == "video" && len(bindings.Drafts) == 0 {
 				resources.InputDurationMS += b.DurationMS
+				// URL 模式的视频参考没有实测时长（平台不下载不探测）：与裸 HTTPS
+				// 输入视频同款兜底——按配置的输入时长上限计费与校验，不因缺事实拒绝。
+				if b.DurationMS <= 0 {
+					resources.HasUnverifiedVideo = true
+				}
 			}
 		}
 	}
