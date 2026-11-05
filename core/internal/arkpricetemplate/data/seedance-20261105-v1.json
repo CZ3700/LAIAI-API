@@ -11,8 +11,8 @@
     "fx_observed_at": "2026-10-16T05:53:17.446Z",
     "source_pricing_version": "price-0b9b6b35e49d9cb5a576b37b532a5827",
     "profile_version": "ark-official-20261105-v1",
-    "profile_sha256": "eb5b753da1e411428a398489d0e08e529c55cb954b3db5e7df23e5ef5c91c57f",
-    "minimum_rule_version": "official-min-seedance-2.0-20261019-v1",
+    "profile_sha256": "53f258b84e0e517256d2622ecf8fbe8a3ce97dad0344b9bd05e9f5b2f5a14c11",
+    "minimum_rule_version": "official-min-seedance-2.0-20261105-v1",
     "minimum_cell_count": 288,
     "formula_version": "ark-video-token-v1",
     "cells": [
@@ -38,7 +38,7 @@
         "retail_usd_per_1m": "4.165426956264",
         "supplier_cny_per_1m": "28",
         "risk_multiplier": "4",
-        "minimum_rule_version": "official-min-seedance-2.0-20261019-v1"
+        "minimum_rule_version": "official-min-seedance-2.0-20261105-v1"
       },
       {
         "mode": "generate",
@@ -62,7 +62,7 @@
         "retail_usd_per_1m": "4.165426956264",
         "supplier_cny_per_1m": "28",
         "risk_multiplier": "4",
-        "minimum_rule_version": "official-min-seedance-2.0-20261019-v1"
+        "minimum_rule_version": "official-min-seedance-2.0-20261105-v1"
       },
       {
         "mode": "generate",
@@ -86,7 +86,7 @@
         "retail_usd_per_1m": "4.611722701578",
         "supplier_cny_per_1m": "31",
         "risk_multiplier": "4",
-        "minimum_rule_version": "official-min-seedance-2.0-20261019-v1"
+        "minimum_rule_version": "official-min-seedance-2.0-20261105-v1"
       },
       {
         "mode": "generate",
@@ -110,7 +110,7 @@
         "retail_usd_per_1m": "2.380243975008",
         "supplier_cny_per_1m": "16",
         "risk_multiplier": "4",
-        "minimum_rule_version": "official-min-seedance-2.0-20261019-v1"
+        "minimum_rule_version": "official-min-seedance-2.0-20261105-v1"
       }
     ]
   },
@@ -126,8 +126,8 @@
     "fx_observed_at": "2026-10-16T05:53:17.446Z",
     "source_pricing_version": "price-898309783f7b19b7b87286f3240eb647",
     "profile_version": "ark-official-20261105-v1",
-    "profile_sha256": "a76ec9f2235aafc8ddae7bc6d945b1b0b97a8aa4421fe1a99c77504bf7b9eda3",
-    "minimum_rule_version": "official-min-seedance-2.5-20261019-v1",
+    "profile_sha256": "24fb80d1b47d8721c92fca7720093e6078f8b6fda7179d08182b64632a9cf605",
+    "minimum_rule_version": "official-min-seedance-2.5-20261105-v1",
     "minimum_cell_count": 486,
     "formula_version": "ark-video-token-v1",
     "cells": [
@@ -153,7 +153,7 @@
         "retail_usd_per_1m": "6.248140434396",
         "supplier_cny_per_1m": "42",
         "risk_multiplier": "4",
-        "minimum_rule_version": "official-min-seedance-2.5-20261019-v1"
+        "minimum_rule_version": "official-min-seedance-2.5-20261105-v1"
       },
       {
         "mode": "generate",
@@ -177,7 +177,7 @@
         "retail_usd_per_1m": "6.248140434396",
         "supplier_cny_per_1m": "42",
         "risk_multiplier": "4",
-        "minimum_rule_version": "official-min-seedance-2.5-20261019-v1"
+        "minimum_rule_version": "official-min-seedance-2.5-20261105-v1"
       },
       {
         "mode": "generate",
@@ -201,7 +201,7 @@
         "retail_usd_per_1m": "6.843201428148",
         "supplier_cny_per_1m": "46",
         "risk_multiplier": "4",
-        "minimum_rule_version": "official-min-seedance-2.5-20261019-v1"
+        "minimum_rule_version": "official-min-seedance-2.5-20261105-v1"
       }
     ]
   },
@@ -217,8 +217,8 @@
     "fx_observed_at": "2026-10-16T05:53:17.446Z",
     "source_pricing_version": "variant-fast-20261019-v1-price",
     "profile_version": "ark-official-20261105-variants-v1",
-    "profile_sha256": "6f06476245327bb9ae57353ed359dcdb4dc01b437835d651a8044341fdd60854",
-    "minimum_rule_version": "official-min-seedance-2.0-fast-20261019-v1",
+    "profile_sha256": "961e1ba10699dec7fe33698eb87537d95425dfd0c56f36fa4382bac58b7d3b8f",
+    "minimum_rule_version": "official-min-seedance-2.0-fast-20261105-v1",
     "minimum_cell_count": 144,
     "formula_version": "ark-video-token-v1",
     "cells": [
@@ -244,7 +244,7 @@
         "retail_usd_per_1m": "3.272835465636",
         "supplier_cny_per_1m": "22",
         "risk_multiplier": "4",
-        "minimum_rule_version": "official-min-seedance-2.0-fast-20261019-v1"
+        "minimum_rule_version": "official-min-seedance-2.0-fast-20261105-v1"
       },
       {
         "mode": "generate",
@@ -268,7 +268,7 @@
         "retail_usd_per_1m": "3.272835465636",
         "supplier_cny_per_1m": "22",
         "risk_multiplier": "4",
-        "minimum_rule_version": "official-min-seedance-2.0-fast-20261019-v1"
+        "minimum_rule_version": "official-min-seedance-2.0-fast-20261105-v1"
       }
     ]
   },
@@ -284,8 +284,8 @@
     "fx_observed_at": "2026-10-16T05:53:17.446Z",
     "source_pricing_version": "variant-mini-20261019-v1-price",
     "profile_version": "ark-official-20261105-variants-v1",
-    "profile_sha256": "d51c0a14d35778053e3ef043772d3ee8f960eb9f9793a67cf712534641173e06",
-    "minimum_rule_version": "official-min-seedance-2.0-mini-20261019-v1",
+    "profile_sha256": "19d88289d92858acdc5a0e2c85b6877493dd4fd45e676fa9471eac46f9cf6c64",
+    "minimum_rule_version": "official-min-seedance-2.0-mini-20261105-v1",
     "minimum_cell_count": 144,
     "formula_version": "ark-video-token-v1",
     "cells": [
@@ -311,7 +311,7 @@
         "retail_usd_per_1m": "2.082713478132",
         "supplier_cny_per_1m": "14",
         "risk_multiplier": "4",
-        "minimum_rule_version": "official-min-seedance-2.0-mini-20261019-v1"
+        "minimum_rule_version": "official-min-seedance-2.0-mini-20261105-v1"
       },
       {
         "mode": "generate",
@@ -335,7 +335,7 @@
         "retail_usd_per_1m": "2.082713478132",
         "supplier_cny_per_1m": "14",
         "risk_multiplier": "4",
-        "minimum_rule_version": "official-min-seedance-2.0-mini-20261019-v1"
+        "minimum_rule_version": "official-min-seedance-2.0-mini-20261105-v1"
       }
     ]
   }
