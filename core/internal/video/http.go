@@ -512,6 +512,22 @@ func (s *Service) HandleGet(c *gin.Context) {
 	if observation.Priority != nil {
 		queryResp["priority"] = *observation.Priority
 	}
+	if t.Status == "failed" {
+		// 官方 GET 失败任务带 error 字段。code 用 create 操作上记录的上游拒绝码
+		// （无则安全兜底）；message 用 org 隔离的 tasks.fail_reason（上游原文）。
+		var code string
+		if e := s.DB.WithContext(ctx).Model(&Operation{}).Select("error_code").
+			Where("org_id = ? AND resource_id = ? AND kind = ?", t.OrgID, t.TaskID, "create_task").
+			Order("created_at DESC").Limit(1).Scan(&code).Error; e != nil || code == "" {
+			code = "task_failed"
+		}
+		message := t.FailReason
+		if message == "" {
+			// 修复前的存量失败任务没有记录原因：明确告知，避免空白错误信息。
+			message = "task failed; the provider rejection reason was not recorded"
+		}
+		queryResp["error"] = gin.H{"code": code, "message": message}
+	}
 	c.JSON(200, queryResp)
 }
 func (s *Service) HandleCancel(c *gin.Context) {

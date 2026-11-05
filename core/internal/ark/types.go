@@ -14,12 +14,18 @@ const (
 )
 
 // Error is safe to return or log; Message never contains upstream free text.
+// UpstreamCode/UpstreamMessage carry the provider's own error envelope
+// ({"error":{"code","message"}}) for definite rejections. They are evidence
+// for the tenant-scoped task record only: never logged, never returned to a
+// platform operator, and UpstreamMessage may echo prompt fragments.
 type Error struct {
-	Code       string `json:"code"`
-	Message    string `json:"message"`
-	Field      string `json:"field,omitempty"`
-	Retryable  bool   `json:"retryable"`
-	HTTPStatus int    `json:"-"`
+	Code            string `json:"code"`
+	Message         string `json:"message"`
+	Field           string `json:"field,omitempty"`
+	Retryable       bool   `json:"retryable"`
+	HTTPStatus      int    `json:"-"`
+	UpstreamCode    string `json:"-"`
+	UpstreamMessage string `json:"-"`
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }

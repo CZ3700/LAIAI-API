@@ -165,6 +165,13 @@ func ParseResponse(action Action, resp *http.Response, maxBytes int64) Result {
 			out.Error.Code = "upstream_outcome_unknown"
 			out.Error.Message = "upstream result requires reconciliation"
 		}
+		if out.Outcome == OutcomeRejected {
+			// A definite rejection carries the provider's own error envelope
+			// ({"error":{"code","message"}}). Both fields are tenant-scoped
+			// evidence only: the code must look like a documented error token,
+			// and the message is free text that may echo prompt fragments.
+			out.Error.UpstreamCode, out.Error.UpstreamMessage = parseUpstreamError(raw)
+		}
 		return out
 	}
 	if action == ActionDelete {
@@ -302,6 +309,62 @@ func containsStatus(values []int, n int) bool {
 func safeRequestID(s string) string {
 	if len(s) > 256 || !upstreamID.MatchString(s) {
 		return ""
+	}
+	return s
+}
+
+// parseUpstreamError extracts the provider error envelope from a definite
+// rejection body. The official shape is {"error":{"code","message"}}; some
+// gateways return {"code","message"} directly. The code must look like a
+// documented error token (≤64 bytes, matching video_operations.error_code);
+// the message is free text, clipped to the 255-byte tenant evidence column.
+func parseUpstreamError(raw []byte) (code, message string) {
+	if len(raw) == 0 {
+		return "", ""
+	}
+	var envelope struct {
+		Code    json.RawMessage `json:"code"`
+		Message json.RawMessage `json:"message"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return "", ""
+	}
+	codeRaw, messageRaw := envelope.Code, envelope.Message
+	if len(envelope.Error) > 0 && string(envelope.Error) != "null" && string(envelope.Error) != "{}" {
+		var inner struct {
+			Code    json.RawMessage `json:"code"`
+			Message json.RawMessage `json:"message"`
+		}
+		if json.Unmarshal(envelope.Error, &inner) == nil {
+			codeRaw, messageRaw = inner.Code, inner.Message
+		}
+	}
+	return upstreamErrorToken(codeRaw), upstreamErrorMessage(messageRaw)
+}
+
+func upstreamErrorToken(raw json.RawMessage) string {
+	var s string
+	if len(raw) == 0 || json.Unmarshal(raw, &s) != nil || len(s) > 64 || !upstreamID.MatchString(s) {
+		return ""
+	}
+	return s
+}
+
+func upstreamErrorMessage(raw json.RawMessage) string {
+	var s string
+	if len(raw) == 0 || json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	s = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s))
+	const maxMessageBytes = 255
+	if len(s) > maxMessageBytes {
+		s = strings.ToValidUTF8(s[:maxMessageBytes], "")
 	}
 	return s
 }
