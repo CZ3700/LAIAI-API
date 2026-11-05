@@ -14,8 +14,12 @@ var (
 	platformAsset = regexp.MustCompile(`^asset_[A-Za-z0-9_-]+$`)
 	platformTask  = regexp.MustCompile(`^task_[A-Za-z0-9_-]+$`)
 	upstreamID    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`)
-	money         = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]{1,8})?$`)
-	directive     = regexp.MustCompile(`--\s*(dur(?:ation)?|rs|resolution|frames?|fps|ratio|ar|seed|generate[_-]?audio|draft|service[_-]?tier|execution[_-]?expires[_-]?after)\b`)
+	// upstreamAssetID mirrors the asset subsystem's stored provider identifier
+	// shape (videoasset identifier, varchar(128))：URL 模式素材的上游标识由官
+	// 方摄取后原样返回，可含严格模型/任务 ID 模式不允许的冒号与点。
+	upstreamAssetID = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
+	money           = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]{1,8})?$`)
+	directive       = regexp.MustCompile(`--\s*(dur(?:ation)?|rs|resolution|frames?|fps|ratio|ar|seed|generate[_-]?audio|draft|service[_-]?tier|execution[_-]?expires[_-]?after)\b`)
 )
 
 // Normalize validates the platform request against explicitly verified
@@ -352,5 +356,5 @@ func validMediaURL(s string) bool {
 	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.Fragment == ""
 }
 func validUpstreamAsset(s string) bool {
-	return strings.HasPrefix(s, "asset://") && upstreamID.MatchString(strings.TrimPrefix(s, "asset://"))
+	return strings.HasPrefix(s, "asset://") && upstreamAssetID.MatchString(strings.TrimPrefix(s, "asset://"))
 }
