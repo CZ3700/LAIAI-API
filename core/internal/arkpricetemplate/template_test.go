@@ -42,7 +42,7 @@ func TestMigrationContainsExactApprovedSnapshot(t *testing.T) {
 	// 0121 installed the 2026-10-19 profile templates. The 2026-11-05 profile
 	// revision (adaptive ratio bounds) changed the profile evidence hash, so
 	// 0144 replaces the seed rows with the same prices under new identity.
-	seed, err := os.ReadFile("../../../migrations/0144_video_pricing_template_adaptive.sql")
+	seed, err := os.ReadFile("../../../migrations/0145_video_pricing_template_adaptive_v2.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
