@@ -196,6 +196,32 @@ func responseSafeError(err *ark.Error) string {
 	}
 }
 
+// providerErrorEvidence gates the provider's rejection envelope before it is
+// persisted. The code must be a documented-style token (≤64 bytes, the
+// video_operations.error_code width) and must not reflect the live credential.
+// The message is control-character stripped, credential-redacted and clipped to
+// the 255-byte tenant evidence column. Both are tenant-scoped evidence: the
+// message may echo prompt fragments and is never logged.
+func providerErrorEvidence(code, message, credential string) (string, string) {
+	if code != "" && (len(code) > 64 || !responseSafeID.MatchString(code) || credential != "" && strings.Contains(code, credential)) {
+		code = ""
+	}
+	message = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, message))
+	if credential != "" {
+		message = strings.ReplaceAll(message, credential, "[redacted]")
+	}
+	const maxMessageBytes = 255
+	if len(message) > maxMessageBytes {
+		message = strings.ToValidUTF8(message[:maxMessageBytes], "")
+	}
+	return code, message
+}
+
 func (s *Service) responsePreparationSeal(p *preparedResponseReceipt) string {
 	encoded, _ := json.Marshal(struct {
 		Attempt ExecutionAttempt
@@ -229,6 +255,9 @@ func (s *Service) prepareCapturedResponse(attempt ExecutionAttempt, result ark.R
 		BillingSchemaVersion: attempt.BillingSchemaVersion, ExecutionSchemaVersion: attempt.ExecutionSchemaVersion,
 		ObservationSchemaVersion: attempt.ObservationSchemaVersion, EvidenceHMACVersion: attempt.EvidenceHMACVersion,
 		HTTPStatus: result.HTTPStatus, Outcome: string(result.Outcome), SafeErrorCode: responseSafeError(result.Error), Truncated: result.Truncated}
+	if result.Error != nil {
+		row.ProviderErrorCode, row.ProviderErrorMessage = providerErrorEvidence(result.Error.UpstreamCode, result.Error.UpstreamMessage, credential)
+	}
 	// Known credential reflection is unsafe even when it satisfies ID syntax.
 	// Body redaction alone cannot protect these separately stored typed fields.
 	row.UpstreamTaskID = responseIdentifier(result.TaskID, credential, 128)

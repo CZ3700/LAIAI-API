@@ -98,6 +98,48 @@ func TestSimulatedProtocolUncertaintyAndUsage(t *testing.T) {
 	}
 }
 
+// TestDefiniteRejectionCarriesProviderEnvelopeAsTenantEvidence 回归（2026-11-05）：
+// 提交被火山确定性拒绝时（400 等），官方错误信封 {"error":{"code","message"}}
+// 必须作为租户证据保留（UpstreamCode/UpstreamMessage），但绝不进入可日志化的
+// Error()——message 可能回显 prompt 片段。修复前全部失败任务无任何原因。
+func TestDefiniteRejectionCarriesProviderEnvelopeAsTenantEvidence(t *testing.T) {
+	r := ParseResponse(ActionSubmit, response(400, `{"error":{"code":"InvalidParameter","message":"text may echo prompt: a cat"}}`), 0)
+	if r.Outcome != OutcomeRejected || r.Error == nil || r.Error.Code != "upstream_rejected" {
+		t.Fatalf("definite rejection not classified: %+v", r)
+	}
+	if r.Error.UpstreamCode != "InvalidParameter" || !strings.Contains(r.Error.UpstreamMessage, "a cat") {
+		t.Fatalf("envelope lost: %+v", r.Error)
+	}
+	if strings.Contains(r.Error.Error(), "a cat") {
+		t.Fatal("upstream free text escaped into loggable Error()")
+	}
+	// 部分网关直接返回 {"code","message"} 顶层形状。
+	r = ParseResponse(ActionSubmit, response(403, `{"code":"AccessDenied","message":"no access"}`), 0)
+	if r.Error.UpstreamCode != "AccessDenied" || r.Error.UpstreamMessage != "no access" {
+		t.Fatalf("flat envelope lost: %+v", r.Error)
+	}
+	// 非文档形态的 code（URL/空格等）整条丢弃，message 仍保留。
+	r = ParseResponse(ActionSubmit, response(400, `{"error":{"code":"http://evil.example/x?token=1","message":"bad"}}`), 0)
+	if r.Error.UpstreamCode != "" || r.Error.UpstreamMessage != "bad" {
+		t.Fatalf("unsafe code accepted: %+v", r.Error)
+	}
+	// 超长 message 截断到 255 字节且保持合法 UTF-8。
+	r = ParseResponse(ActionSubmit, response(400, `{"error":{"code":"InvalidParameter","message":"`+strings.Repeat("长", 200)+`"}}`), 0)
+	if len(r.Error.UpstreamMessage) > 255 || strings.ToValidUTF8(r.Error.UpstreamMessage, "\uFFFD") != r.Error.UpstreamMessage {
+		t.Fatalf("message not safely clipped: %d bytes", len(r.Error.UpstreamMessage))
+	}
+	// 404 保留合成码，同时携带上游代码。
+	r = ParseResponse(ActionSubmit, response(404, `{"error":{"code":"InvalidEndpointOrModel.NotFound","message":"nope"}}`), 0)
+	if r.Error.Code != "upstream_not_found" || r.Error.UpstreamCode != "InvalidEndpointOrModel.NotFound" {
+		t.Fatalf("404 envelope lost: %+v", r.Error)
+	}
+	// 5xx 结果未知：不解析信封（原因不可信，走人工对账）。
+	r = ParseResponse(ActionSubmit, response(500, `{"error":{"code":"InternalServiceError","message":"boom"}}`), 0)
+	if r.Outcome != OutcomeUnknown || r.Error.UpstreamCode != "" || r.Error.UpstreamMessage != "" {
+		t.Fatalf("unknown outcome adopted provider claim: %+v", r.Error)
+	}
+}
+
 type failingReader struct{}
 
 func (failingReader) Read(p []byte) (int, error) {

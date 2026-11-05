@@ -153,6 +153,12 @@ type Operation struct {
 	CreatedAt               time.Time  `json:"created_at"`
 	UpdatedAt               time.Time  `json:"-"`
 	PollURL                 string     `gorm:"-" json:"poll_url"`
+	// Transient reducer inputs copied from the applied inbox receipt. They are
+	// never persisted on the operation row; the reducer writes the tenant-facing
+	// projections (tasks.fail_reason / operations.error_code) itself.
+	ProviderErrorCode    string `gorm:"-" json:"-"`
+	ProviderErrorMessage string `gorm:"-" json:"-"`
+	ReceiptSafeErrorCode string `gorm:"-" json:"-"`
 }
 
 func (Operation) TableName() string { return "video_operations" }

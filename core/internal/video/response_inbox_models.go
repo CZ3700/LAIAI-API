@@ -37,7 +37,11 @@ type ExecutionAttempt struct {
 func (ExecutionAttempt) TableName() string { return "video_execution_attempts" }
 
 // ResponseInbox is immutable evidence, not an operation projection. Body,
-// URLs and credentials live exclusively in Invocation Store.
+// URLs and credentials live exclusively in Invocation Store. ProviderError*
+// carry the provider's own rejection envelope across the sender -> worker hop
+// when encrypted capture is disabled; the message is tenant evidence only.
+// They are json-excluded so the create-v1 evidence canonical/HMAC (the
+// immutable receipt identity) stays byte-identical to pre-existing receipts.
 type ResponseInbox struct {
 	ReceiptID                string `gorm:"primaryKey;column:receipt_id"`
 	OrgID                    uint64
@@ -60,6 +64,8 @@ type ResponseInbox struct {
 	HTTPStatus               int    `gorm:"column:http_status"`
 	Outcome                  string
 	SafeErrorCode            string
+	ProviderErrorCode        string `json:"-"`
+	ProviderErrorMessage     string `json:"-"`
 	UpstreamTaskID           string
 	ProviderRequestID        string
 	Truncated                bool

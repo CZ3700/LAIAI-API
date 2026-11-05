@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
@@ -334,5 +337,59 @@ func TestMySQLResponseInboxRejectsForgedAttemptIdentity(t *testing.T) {
 				t.Fatal("unregistered or forged producer identity injected a response")
 			}
 		})
+	}
+}
+
+// TestMySQLResponseInboxRejectedEnvelopeBecomesTaskReason 回归（2026-11-05）：
+// 提交被火山确定性拒绝时，失败原因必须端到端可见——400 错误信封经
+// ParseResponse → 收据 provider_error_* 结构化列 → reducer 写
+// tasks.fail_reason / video_operations.error_code → 官方 GET 回包 error 字段。
+// 加密 capture 关闭（线上默认）时收据列是唯一的结构化载体。修复前
+// 547/547 个 ark_official 失败任务 fail_reason 为空、GET 无任何原因。
+func TestMySQLResponseInboxRejectedEnvelopeBecomesTaskReason(t *testing.T) {
+	f := mysqlFixture(t)
+	executionRecoveryScope(t, f, []uint64{f.key.OrgID})
+	must(t, f.s.DB.Model(&Policy{}).Where("org_id = ?", f.key.OrgID).Update("capture_history", false).Error)
+	v := f.create(t, "inbox-rejected-envelope")
+	attempt, op := responseInboxRegister(t, f, v.ID)
+	const message = "The parameter duration is invalid for this model"
+	result := ark.ParseResponse(ark.ActionSubmit, &http.Response{StatusCode: 400, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`{"error":{"code":"InvalidParameter","message":"` + message + `"}}`))}, 0)
+	receipt := responseInboxAppend(t, f, attempt, result)
+	if receipt.ProviderErrorCode != "InvalidParameter" || receipt.ProviderErrorMessage != message {
+		t.Fatalf("provider envelope did not survive the receipt: %+v", receipt)
+	}
+	must(t, f.s.applyClaimedCreateInbox(context.Background(), op, receipt.ReceiptID))
+	var row task.Task
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&row).Error)
+	if row.Status != "failed" || row.FailReason != message {
+		t.Fatalf("failed task lost its reason: status=%s reason=%q", row.Status, row.FailReason)
+	}
+	var stored Operation
+	must(t, f.s.DB.Where("org_id = ? AND id = ?", f.key.OrgID, op.ID).First(&stored).Error)
+	if stored.ErrorCode != "InvalidParameter" {
+		t.Fatalf("operation rejection code = %q", stored.ErrorCode)
+	}
+	// 官方 GET 形状：failed 任务带 error 字段（code=上游拒绝码，message=租户隔离的 fail_reason）。
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/v1/video/generations/:id", f.s.Middleware(), f.s.HandleGet)
+	req := httptest.NewRequest(http.MethodGet, "/v1/video/generations/"+v.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+f.plain)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("get %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Status string `json:"status"`
+		Error  struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	must(t, json.Unmarshal(w.Body.Bytes(), &body))
+	if body.Status != "failed" || body.Error.Code != "InvalidParameter" || body.Error.Message != message {
+		t.Fatalf("official GET did not explain the failure: %s", w.Body.String())
 	}
 }

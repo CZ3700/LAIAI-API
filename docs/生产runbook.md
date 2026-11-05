@@ -126,6 +126,24 @@ Seedance 视频模型按火山官方方式逐模型限流，superadmin 在后台
   监听 `13306`，目标 `127.0.0.1:3306`；Navicat 连 `127.0.0.1:13306`，账号密码取 `infra/.env`。
   宿主 3306 被占用时在 `.env` 设 `MYSQL_HOST_PORT` 换端口（改后需 `up -d mysql` 重建）。
 
+## 视频任务失败原因（0142 起）
+
+派发被火山确定性拒绝（400/401/403/404/409/413/422/429）时，平台把上游错误信封
+`{"error":{"code","message"}}` 端到端落库并回放给租户（2026-11-05 前全部丢弃，547/547
+失败任务无原因）：
+
+- `video_response_inbox.provider_error_code / provider_error_message`：收据侧结构化证据
+  （加密 capture 关闭时唯一载体；code 只收文档形态 token，message 剥控制字符、脱敏凭证、截断 255B）。
+- `tasks.fail_reason`：reducer 写入租户可见原因（上游原文或安全兜底 `upstream rejected (HTTP …)`）。
+- `video_operations.error_code`：ops 侧拒绝码（上游 code 优先，无则合成码）。
+- 官方 `GET /v1/video/generations/:id` 的 failed 任务回包带 `error: {code, message}`，与火山官方形状一致。
+- **排障**：客户报「失败无原因」先查 `tasks.fail_reason`；为空且任务早于 0142 部署 → 存量任务，
+  原因在修复前已丢失，无法追溯（响应体未落库）。
+- **审计纪律**：`provider_error_message` 可能回显 prompt 片段，只在租户/org 隔离面展示，
+  不进日志、不进平台运营可见面。
+- **证据身份**：收据新列 `json:"-"`，不参与 create-v1 evidence canonical/HMAC（HMAC 与旧收据
+  逐字节一致，去重与恢复语义不变）。
+
 ## 3. 支付上线门禁（P1-3，未完成项跟踪）
 
 - 红线：**没有真实 raw callback fixture 的支付引擎不得启用**。当前唯一接近达标的是 epay

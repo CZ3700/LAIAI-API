@@ -261,6 +261,7 @@ func (s *Service) applyCreateInboxProgress(ctx context.Context, org uint64, rece
 		current := op
 		current.ReceivedOutcome, current.ReceivedTaskID, current.HTTPStatus = receipt.Outcome, receipt.UpstreamTaskID, receipt.HTTPStatus
 		current.ReceiptRef = receipt.PayloadRef
+		current.ProviderErrorCode, current.ProviderErrorMessage, current.ReceiptSafeErrorCode = receipt.ProviderErrorCode, receipt.ProviderErrorMessage, receipt.SafeErrorCode
 		if err := tx.Transaction(func(applyTx *gorm.DB) error {
 			return s.applyCreateResultTx(applyTx, t, st, current, current, receiptID, now)
 		}); err != nil {

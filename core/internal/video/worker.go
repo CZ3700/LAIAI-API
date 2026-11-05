@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
@@ -552,7 +553,24 @@ func (s *Service) applyCreateResultTx(tx *gorm.DB, t task.Task, st State, curren
 		t.Status = "failed"
 		st.BillingState = "released"
 		current.Status = "rejected"
-		if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"status": t.Status, "finished_at": now}).Error; err != nil {
+		// A failed task must be able to explain itself: persist the provider's
+		// own rejection text (tenant-scoped evidence, never logged) or a safe
+		// synthetic fallback for legacy receipts without captured envelopes.
+		failReason := current.ProviderErrorMessage
+		if failReason == "" {
+			if response.Outcome == ark.OutcomeNotSent {
+				code := current.ReceiptSafeErrorCode
+				if code == "" {
+					code = "request_not_sent"
+				}
+				failReason = "not dispatched: " + code
+			} else if current.ProviderErrorCode != "" {
+				failReason = "upstream rejected: " + current.ProviderErrorCode
+			} else {
+				failReason = fmt.Sprintf("upstream rejected the request (HTTP %d)", current.HTTPStatus)
+			}
+		}
+		if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"status": t.Status, "finished_at": now, "fail_reason": failReason}).Error; err != nil {
 			return err
 		}
 	default:
@@ -579,7 +597,20 @@ func (s *Service) applyCreateResultTx(tx *gorm.DB, t task.Task, st State, curren
 	if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"sync_state": st.SyncState, "billing_state": st.BillingState, "response_payload_ref": op.ReceiptRef, "row_version": st.RowVersion, "updated_at": now, "next_poll_at": scheduleNow}).Error; err != nil {
 		return err
 	}
-	if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ?", op.OrgID, op.ID).Updates(map[string]any{"status": current.Status, "receipt_ref": op.ReceiptRef, "http_status": current.HTTPStatus, "received_outcome": current.ReceivedOutcome, "received_task_id": current.ReceivedTaskID, "receipt_applied_at": now, "updated_at": now}).Error; err != nil {
+	opUpdates := map[string]any{"status": current.Status, "receipt_ref": op.ReceiptRef, "http_status": current.HTTPStatus, "received_outcome": current.ReceivedOutcome, "received_task_id": current.ReceivedTaskID, "receipt_applied_at": now, "updated_at": now}
+	if current.Status == "rejected" {
+		// Surface the provider's own rejection code to operators; the safe
+		// synthetic code covers legacy/gated rejections without an envelope.
+		code := current.ProviderErrorCode
+		if code == "" {
+			code = current.ReceiptSafeErrorCode
+		}
+		if code == "" {
+			code = "upstream_rejected"
+		}
+		opUpdates["error_code"] = code
+	}
+	if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ?", op.OrgID, op.ID).Updates(opUpdates).Error; err != nil {
 		return err
 	}
 	if terminal(t.Status) {
@@ -627,7 +658,7 @@ func (s *Service) knownUnsent(ctx context.Context, t task.Task, st State, op Ope
 		if _, err := videobilling.ReleaseConfirmedTx(tx, videobilling.ReleaseInput{OrgID: t.OrgID, TaskID: t.TaskID, EvidenceID: evidence, Reason: videobilling.ReleaseNotDispatched, Confirmed: true, Now: s.Now().UTC()}); err != nil {
 			return err
 		}
-		if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"status": "failed", "finished_at": s.Now().UTC()}).Error; err != nil {
+		if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"status": "failed", "finished_at": s.Now().UTC(), "fail_reason": "not dispatched: " + code}).Error; err != nil {
 			return err
 		}
 		st.BillingState = "released"
