@@ -372,6 +372,44 @@ func TestMediaBindingsAndNoInputMutation(t *testing.T) {
 	}
 }
 
+// 回归（2026-11-05）：URL 模式素材经官方摄取后的上游标识由官方原样返回，可以
+// 包含冒号/点（素材子系统入库模式为 videoasset identifier，varchar(128)）。
+// 修复前 Normalize 按严格模型/任务 ID 模式校验绑定 URI，生产 AV 参考绑定被
+// 422 "asset reference has not been verified" 拒绝。
+func TestUpstreamAssetIdentifierFollowsAssetSubsystemShape(t *testing.T) {
+	r := textRequest(Model25)
+	r.Content = append(r.Content, ContentItem{Type: "video_url", VideoURL: &MediaReference{URL: "asset://asset_urlmode"}, Role: "reference_video"})
+	for _, upstream := range []string{
+		"asset://up_asset_0aa5276b9add34af793c57fe225f72bd",
+		"asset://official:id:with:colons-20261103.test",
+	} {
+		bindings := Bindings{Assets: map[string]AssetBinding{"asset_urlmode": {MediaType: "video", UpstreamURI: upstream}}}
+		out, err := Normalize(r, testCapability(Model25), bindings)
+		if err != nil {
+			t.Fatalf("official upstream identifier rejected: %q: %v", upstream, err)
+		}
+		if !strings.Contains(string(out.Body), upstream) {
+			t.Fatalf("lost upstream mapping: %s", out.Body)
+		}
+	}
+	for _, upstream := range []string{
+		"asset://",
+		"asset://has/slash",
+		"asset://has space",
+		"asset://" + strings.Repeat("a", 129),
+		"https://cdn.example/clip.mp4",
+	} {
+		bindings := Bindings{Assets: map[string]AssetBinding{"asset_urlmode": {MediaType: "video", UpstreamURI: upstream}}}
+		if _, err := Normalize(r, testCapability(Model25), bindings); err == nil {
+			t.Errorf("invalid upstream asset accepted: %q", upstream)
+		}
+	}
+	// 严格模式继续约束模型与任务标识，不随资产标识放宽。
+	if upstreamID.MatchString("official:id") || !upstreamAssetID.MatchString("official:id") {
+		t.Fatal("strict pattern scope changed")
+	}
+}
+
 func TestDraftConversionDoesNotReinjectInheritedParameters(t *testing.T) {
 	r := CreateRequest{Model: Model25, Content: []ContentItem{{Type: "draft_task", DraftTask: &DraftReference{ID: "task_parent"}}}, Resolution: ptr("1080p"), OutputFormat: ptr("mov")}
 	b := Bindings{Drafts: map[string]DraftBinding{"task_parent": {UpstreamTaskID: "cgt-parent", PublicModel: Model25, CapabilityVersion: "test-v1", HasInputVideo: true, Parameters: EffectiveParameters{Duration: 12, Ratio: "adaptive", Seed: 42, GenerateAudio: true, OmniReferenceTaskType: "edit", FramesPerSecond: 24}}}}
