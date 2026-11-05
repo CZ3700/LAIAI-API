@@ -425,7 +425,14 @@ func (s *Service) persistResponse(ctx context.Context, t task.Task, op Operation
 		if e = tx.Create(&Attempt{OrgID: t.OrgID, TaskID: t.TaskID, AttemptID: op.AttemptID, RequestID: op.AttemptID, OperationID: op.ID, Phase: "response_received", HTTPStatus: response.HTTPStatus, UpstreamRequestID: response.RequestID, EvidenceRef: ref, ObservedAt: s.Now().UTC()}).Error; e != nil {
 			return e
 		}
-		updated := tx.Model(&Operation{}).Where("id = ? AND org_id = ? AND version = ?", op.ID, t.OrgID, op.Version).Updates(map[string]any{"receipt_ref": ref, "http_status": response.HTTPStatus, "received_outcome": string(response.Outcome), "received_task_id": response.TaskID, "updated_at": s.Now().UTC()})
+		// Legacy dispatch has no inbox receipt row: the provider rejection
+		// envelope rides the operation row so the reducer (now or after a
+		// crash) can explain the failure.
+		providerCode, providerMessage := "", ""
+		if response.Error != nil {
+			providerCode, providerMessage = providerErrorEvidence(response.Error.UpstreamCode, response.Error.UpstreamMessage, secret)
+		}
+		updated := tx.Model(&Operation{}).Where("id = ? AND org_id = ? AND version = ?", op.ID, t.OrgID, op.Version).Updates(map[string]any{"receipt_ref": ref, "http_status": response.HTTPStatus, "received_outcome": string(response.Outcome), "received_task_id": response.TaskID, "provider_error_code": providerCode, "provider_error_message": providerMessage, "updated_at": s.Now().UTC()})
 		if updated.Error != nil {
 			return updated.Error
 		}
@@ -598,6 +605,11 @@ func (s *Service) applyCreateResultTx(tx *gorm.DB, t task.Task, st State, curren
 		return err
 	}
 	opUpdates := map[string]any{"status": current.Status, "receipt_ref": op.ReceiptRef, "http_status": current.HTTPStatus, "received_outcome": current.ReceivedOutcome, "received_task_id": current.ReceivedTaskID, "receipt_applied_at": now, "updated_at": now}
+	if current.ProviderErrorCode != "" || current.ProviderErrorMessage != "" {
+		// Inbox path: the receipt carried the envelope; legacy path already
+		// persisted it in persistResponse (same values, harmless rewrite).
+		opUpdates["provider_error_code"], opUpdates["provider_error_message"] = current.ProviderErrorCode, current.ProviderErrorMessage
+	}
 	if current.Status == "rejected" {
 		// Surface the provider's own rejection code to operators; the safe
 		// synthetic code covers legacy/gated rejections without an envelope.

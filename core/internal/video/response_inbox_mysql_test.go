@@ -393,3 +393,50 @@ func TestMySQLResponseInboxRejectedEnvelopeBecomesTaskReason(t *testing.T) {
 		t.Fatalf("official GET did not explain the failure: %s", w.Body.String())
 	}
 }
+
+// TestMySQLVideoRejectedEnvelopeVisibleInLegacyDispatch 回归（2026-11-05 二修）：
+// 线上 LAIAI_VIDEO_RESPONSE_INBOX=false，派发走 legacy 路径（无 execution_attempt
+// 与收据行）。上游 400 信封必须经 persistResponse 落到操作行，reducer 写
+// tasks.fail_reason，官方 GET 回包 error.code 为上游真实码（而非 upstream_rejected
+// 兜底）。修复前该路径只能给出 "upstream rejected the request (HTTP 400)"。
+func TestMySQLVideoRejectedEnvelopeVisibleInLegacyDispatch(t *testing.T) {
+	f := mysqlFixture(t)
+	v := f.create(t, "legacy-rejected-envelope")
+	const code = "InputImageSensitiveContentDetected.PolicyViolation"
+	const message = "The request failed because the input image content[1] may be related to copyright restrictions. Request id: 021793870523298b3954f28f435bddee30da27ebc9f6d6e309bfc"
+	f.response = func(r *http.Request) (*http.Response, error) {
+		return reply(400, `{"error":{"code":"`+code+`","message":"`+message+`","param":"content[1]","type":"BadRequest"}}`), nil
+	}
+	f.dispatch(t, v.ID)
+	var row task.Task
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&row).Error)
+	if row.Status != "failed" || row.FailReason != message {
+		t.Fatalf("legacy failed task lost its reason: status=%s reason=%q", row.Status, row.FailReason)
+	}
+	var op Operation
+	must(t, f.s.DB.Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, v.ID, "create_task").First(&op).Error)
+	if op.Status != "rejected" || op.ErrorCode != code || op.ProviderErrorMessage != message {
+		t.Fatalf("legacy operation lost the envelope: status=%s code=%q msg=%q", op.Status, op.ErrorCode, op.ProviderErrorMessage)
+	}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/v1/video/generations/:id", f.s.Middleware(), f.s.HandleGet)
+	req := httptest.NewRequest(http.MethodGet, "/v1/video/generations/"+v.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+f.plain)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("get %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Status string `json:"status"`
+		Error  struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	must(t, json.Unmarshal(w.Body.Bytes(), &body))
+	if body.Status != "failed" || body.Error.Code != code || body.Error.Message != message {
+		t.Fatalf("official GET did not explain the failure: %s", w.Body.String())
+	}
+}

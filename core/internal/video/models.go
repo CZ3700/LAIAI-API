@@ -153,11 +153,14 @@ type Operation struct {
 	CreatedAt               time.Time  `json:"created_at"`
 	UpdatedAt               time.Time  `json:"-"`
 	PollURL                 string     `gorm:"-" json:"poll_url"`
-	// Transient reducer inputs copied from the applied inbox receipt. They are
-	// never persisted on the operation row; the reducer writes the tenant-facing
-	// projections (tasks.fail_reason / operations.error_code) itself.
-	ProviderErrorCode    string `gorm:"-" json:"-"`
-	ProviderErrorMessage string `gorm:"-" json:"-"`
+	// Provider rejection envelope. Persisted on the operation row so the legacy
+	// dispatch path (no inbox receipt) can explain a failure, including after a
+	// crash between persistResponse and apply. The message is tenant evidence
+	// only — never logged.
+	ProviderErrorCode    string `json:"-"`
+	ProviderErrorMessage string `json:"-"`
+	// ReceiptSafeErrorCode is a transient reducer input copied from the applied
+	// inbox receipt; the legacy path has no receipt row to copy from.
 	ReceiptSafeErrorCode string `gorm:"-" json:"-"`
 }
 
