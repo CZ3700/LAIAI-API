@@ -133,7 +133,11 @@ Seedance 视频模型按火山官方方式逐模型限流，superadmin 在后台
 失败任务无原因）：
 
 - `video_response_inbox.provider_error_code / provider_error_message`：收据侧结构化证据
-  （加密 capture 关闭时唯一载体；code 只收文档形态 token，message 剥控制字符、脱敏凭证、截断 255B）。
+  （inbox 派发模式；加密 capture 关闭时唯一载体；code 只收文档形态 token，message 剥控制字符、
+  脱敏凭证、截断 255B）。
+- `video_operations.provider_error_code / provider_error_message`：**legacy 派发模式**
+  （`LAIAI_VIDEO_RESPONSE_INBOX=false`，线上当前默认）由 persistResponse 在同一事务写入，
+  崩溃恢复后仍可取回原因。
 - `tasks.fail_reason`：reducer 写入租户可见原因（上游原文或安全兜底 `upstream rejected (HTTP …)`）。
 - `video_operations.error_code`：ops 侧拒绝码（上游 code 优先，无则合成码）。
 - 官方 `GET /v1/video/generations/:id` 的 failed 任务回包带 `error: {code, message}`，与火山官方形状一致。
