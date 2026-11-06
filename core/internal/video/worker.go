@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/ark"
@@ -39,49 +40,103 @@ func (s *Service) ProcessDispatchOnce(ctx context.Context) (err error) {
 func (s *Service) processDispatchOnce(ctx context.Context) error {
 	m := s.metrics()
 	var ops []Operation
-	// Pick at most one eligible operation per provider scope/action. Waiting
-	// cancels and an account's backlog cannot monopolize the bounded batch.
+	// Take the oldest candidates up to the send-gate capacity of one tick per
+	// (scope, action) — 2s tick at interval_ms 100 = 20 creates — so a full
+	// backlog drains at gate pace instead of one operation per 2s tick.
 	if !s.DispatchPaused() {
 		queued := s.pendingOperationCandidates(ctx)
-		if err := s.DB.WithContext(ctx).Table("(?) AS eligible", queued).Where("scope_rank = 1").Order("created_at, id").Limit(20).Find(&ops).Error; err != nil {
+		if err := s.DB.WithContext(ctx).Table("(?) AS eligible", queued).Where("scope_rank <= 20").Order("created_at, id").Limit(60).Find(&ops).Error; err != nil {
 			return err
 		}
 	}
 	m.mu.Lock()
 	m.operationCandidates += uint64(len(ops))
 	m.mu.Unlock()
+	// Creates first, in parallel: independent claim/lease per operation and the
+	// shared DB gate serializes the send permission, so the bounded pool only
+	// parallelizes provider HTTP round-trips (which take seconds each — the
+	// old one-per-tick loop capped dispatch far below the official RPM).
+	var creates, mutations []Operation
 	for _, op := range ops {
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if op.Kind == "create_task" {
+			creates = append(creates, op)
+		} else {
+			mutations = append(mutations, op)
 		}
-		// A previous response in this same batch may have failed to persist.
-		// Stop new mutations, but still query/recover already submitted tasks.
+	}
+	sem := make(chan struct{}, 20)
+	var wg sync.WaitGroup
+	slot := 0
+	for _, op := range creates {
+		if ctx.Err() != nil || s.DispatchPaused() {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		// Stagger worker starts by one gate interval: parallel sends must pace
+		// at the provider rate in wall clock, or every worker past the first
+		// loses its gate slot and the batch degenerates into refusals.
+		stagger := time.Duration(slot) * 100 * time.Millisecond
+		slot++
+		go func(op Operation, stagger time.Duration) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if stagger > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(stagger):
+				}
+			}
+			if s.DispatchPaused() {
+				// A pause raised by an earlier batch member stops the
+				// remainder of an already selected batch at its next slot.
+				return
+			}
+			if err := s.processOperation(ctx, op); err != nil {
+				// Direct dispatch retains its zero-write identity denial. Only the
+				// bounded worker may quarantine a permanently bad, still-pending
+				// legacy input after the failed claim transaction has rolled back.
+				isolated, isolationErr := s.isolateInvalidCreateExecution(ctx, op, err)
+				if isolationErr != nil {
+					s.Log.Warn("video operation isolation failed", "operation_id", op.ID, "err", isolationErr)
+					return
+				}
+				m.mu.Lock()
+				m.operationErrors++
+				m.mu.Unlock()
+				if isolated {
+					s.Log.Warn("video execution input requires review", "operation_id", op.ID)
+					return
+				}
+				s.Log.Warn("video operation needs recovery", "operation_id", op.ID)
+			}
+		}(op, stagger)
+	}
+	wg.Wait()
+	// Mutations (cancel/delete) run after every create of the batch has fully
+	// settled — a pause raised during the create phase stops them here.
+	for _, op := range mutations {
+		if ctx.Err() != nil {
+			break
+		}
 		if s.DispatchPaused() {
 			break
 		}
 		if err := s.processOperation(ctx, op); err != nil {
-			// Direct dispatch retains its zero-write identity denial. Only the
-			// bounded worker may quarantine a permanently bad, still-pending
-			// legacy input after the failed claim transaction has rolled back.
-			isolated, isolationErr := s.isolateInvalidCreateExecution(ctx, op, err)
-			if isolationErr != nil {
-				return isolationErr
-			}
 			m.mu.Lock()
 			m.operationErrors++
 			m.mu.Unlock()
-			if isolated {
-				s.Log.Warn("video execution input requires review", "operation_id", op.ID)
-				continue
-			}
 			s.Log.Warn("video operation needs recovery", "operation_id", op.ID)
 		}
 	}
 	var rows []State
-	// The provider query gate admits 1 req/s per scope; a 2s tick can claim at
-	// most 2 candidates. Claiming more only builds refused transactions —
-	// loadTask/rate-gate/quarantine work for rows that cannot send.
-	if err := s.pendingQueryCandidates(ctx).Order("v.next_poll_at, v.task_id").Limit(2).Scan(&rows).Error; err != nil {
+	// The provider query gate admits one poll per interval_ms (50ms = 20/s
+	// under official Seedance quotas); a 2s tick can claim at most 40
+	// candidates. Claiming fewer starves freshness; claiming more only builds
+	// refused transactions — loadTask/rate-gate/quarantine work for rows that
+	// cannot send.
+	if err := s.pendingQueryCandidates(ctx).Order("v.next_poll_at, v.task_id").Limit(40).Scan(&rows).Error; err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -141,7 +196,9 @@ func (s *Service) recoveryOperationCandidates(ctx context.Context) *gorm.DB {
 }
 
 // A shared DB gate limits aggregate account traffic even if more than one
-// worker runs. Conservative 1 request/s per action until account quotas exist.
+// worker runs. The send interval is per (scope, action) — interval_ms, seeded
+// 1s by the column default and lowered by ops where the provider account's
+// real limits allow (create/query under official Seedance quotas).
 func (s *Service) rateTx(tx *gorm.DB, scope uint64, action string) (bool, error) {
 	if tx == nil || tx.Dialector == nil || tx.Dialector.Name() != "mysql" {
 		return false, ErrUnavailable
@@ -155,11 +212,15 @@ func (s *Service) rateTx(tx *gorm.DB, scope uint64, action string) (bool, error)
 	if err := locked(tx).Where("scope_id = ? AND action = ?", scope, action).Take(&current).Error; err != nil {
 		return false, err
 	}
+	interval := time.Duration(current.IntervalMS) * time.Millisecond
+	if interval <= 0 {
+		interval = time.Second
+	}
 	now, err := authorityTimeTx(tx)
 	if err != nil || current.NextAllowedAt.After(now) {
 		return false, err
 	}
-	result := tx.Model(&ProviderRate{}).Where("scope_id = ? AND action = ?", scope, action).Update("next_allowed_at", now.Add(time.Second))
+	result := tx.Model(&ProviderRate{}).Where("scope_id = ? AND action = ?", scope, action).Update("next_allowed_at", now.Add(interval))
 	return result.RowsAffected == 1, result.Error
 }
 
@@ -281,6 +342,9 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 				return budgetErr
 			}
 			if budgetErr != nil {
+				// Reviewed E04 semantic: a positively observed blocked bucket
+				// refunds via the typed NotSent reducer. Budget protection for
+				// new intake happens at accept time (429 quota_exceeded).
 				validationErr, validationCode = budgetErr, "quota_blocked"
 			}
 		}
@@ -545,6 +609,19 @@ func (s *Service) applyCreateResultTx(tx *gorm.DB, t task.Task, st State, curren
 			return err
 		}
 	case ark.OutcomeRejected, ark.OutcomeNotSent:
+		if response.Outcome == ark.OutcomeRejected && current.HTTPStatus == providerRateLimitHTTPStatus {
+			// The provider admitted nothing (429): the hold stays reserved and
+			// the task returns to accepted behind a fresh pending operation.
+			// Queued, never failed — a provider rate limit is our scheduling
+			// problem, not the customer's. Our own create/query gates and the
+			// concurrency admission make this path rare; while it lasts, ops
+			// accumulate at tick pace (visible via error_code) and the
+			// customer can still cancel.
+			if err := s.requeueRateLimitedCreateTx(tx, t, st, current, requestID, now); err != nil {
+				return err
+			}
+			return nil
+		}
 		// Only the fixed adapter's definite rejection/not-sent classification
 		// authorizes release; absence or lease expiry never does.
 		reason := videobilling.ReleaseProviderNoCharge
@@ -646,6 +723,43 @@ func (s *Service) applyCreateResultTx(tx *gorm.DB, t task.Task, st State, curren
 		typ = "task.submission_unknown"
 	}
 	return appendEventTx(tx, &t, &st, typ, from, t.Status, requestID, op.ReceiptRef, now)
+}
+
+// providerRateLimitHTTPStatus marks a definite provider-side admission
+// refusal (nothing created upstream) that must be retried by scheduling,
+// never settled as a customer-visible failure.
+const providerRateLimitHTTPStatus = 429
+
+// requeueRateLimitedCreateTx turns a definite 429 submit rejection into a
+// requeued dispatch: the applied operation records the upstream evidence and
+// a fresh pending create operation retries behind the rate gate. Task status
+// returns to accepted, the billing hold stays reserved. There is deliberately
+// no retry cap: our own create gate paces sends at the official quota, so a
+// persistent 429 stream means the provider closed further admission — the
+// backlog then queues (ops visible via error_code, cancellable by the
+// customer) instead of mass-failing into refunds.
+func (s *Service) requeueRateLimitedCreateTx(tx *gorm.DB, t task.Task, st State, current Operation, requestID string, now time.Time) error {
+	if err := tx.Model(&Operation{}).Where("org_id = ? AND id = ?", current.OrgID, current.ID).Updates(map[string]any{"status": "rejected", "receipt_ref": current.ReceiptRef, "http_status": current.HTTPStatus, "received_outcome": current.ReceivedOutcome, "received_task_id": current.ReceivedTaskID, "receipt_applied_at": now, "error_code": "upstream_rate_limited", "updated_at": now}).Error; err != nil {
+		return err
+	}
+	opID, err := randomID("op_")
+	if err != nil {
+		return err
+	}
+	next := Operation{ID: opID, OrgID: t.OrgID, ResourceID: t.TaskID, Kind: "create_task", Status: "pending", Version: 1, PayloadRef: current.PayloadRef, CreatedAt: now, UpdatedAt: now}
+	inheritOperationRuntime(st, &next)
+	if err := tx.Create(&next).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Update("status", "accepted").Error; err != nil {
+		return err
+	}
+	t.Status = "accepted"
+	st.RowVersion++
+	if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"row_version": st.RowVersion, "updated_at": now}).Error; err != nil {
+		return err
+	}
+	return appendEventTx(tx, &t, &st, "task.status_changed", "submitting", "accepted", requestID, current.ReceiptRef, now)
 }
 
 func (s *Service) knownUnsent(ctx context.Context, t task.Task, st State, op Operation, code string) error {

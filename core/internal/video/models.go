@@ -216,6 +216,9 @@ type ProviderRate struct {
 	ScopeID       uint64 `gorm:"primaryKey"`
 	Action        string `gorm:"primaryKey"`
 	NextAllowedAt time.Time
+	// Send interval for this scope/action pair. The column default is 1s; ops
+	// lower it (create/query) to match the provider account's real limits.
+	IntervalMS int `gorm:"column:interval_ms"`
 }
 
 func (ProviderRate) TableName() string { return "video_provider_rates" }
