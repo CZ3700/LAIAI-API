@@ -17,7 +17,7 @@ func (c *Client) BuildSubmit(ctx context.Context, in NormalizedRequest) (*http.R
 	if len(in.Body) == 0 || int64(len(in.Body)) > DefaultMaxRequestBytes || !json.Valid(in.Body) || !upstreamID.MatchString(in.UpstreamModel) {
 		return nil, failure("invalid_request", "normalized request is required", "body", 422)
 	}
-	fields, ok := closedObject(in.Body, createFields[:len(createFields)-2])
+	fields, ok := closedObject(in.Body, upstreamBodyFields())
 	var model string
 	if !ok || !uniqueJSON(in.Body) || json.Unmarshal(fields["model"], &model) != nil || model != in.UpstreamModel || len(fields["content"]) == 0 {
 		return nil, failure("invalid_request", "normalized body and bound upstream model must agree", "body", 422)

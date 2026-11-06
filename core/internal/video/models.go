@@ -223,6 +223,21 @@ type ProviderRate struct {
 
 func (ProviderRate) TableName() string { return "video_provider_rates" }
 
+// CallbackHint is one received provider status-change notification (hint).
+// Bodies are never treated as facts; the hint only schedules an authoritative
+// query. Duplicates collapse on (task_id, body_hash).
+type CallbackHint struct {
+	ID          uint64 `gorm:"primaryKey"`
+	TaskID      string
+	BodyHash    string
+	BodyExcerpt string
+	ReceivedAt  time.Time
+	ProcessedAt *time.Time
+	Result      string
+}
+
+func (CallbackHint) TableName() string { return "video_callback_hints" }
+
 type UpstreamBinding struct {
 	ProviderScopeID uint64 `gorm:"primaryKey"`
 	UpstreamTaskID  string `gorm:"primaryKey"`

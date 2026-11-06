@@ -27,6 +27,7 @@ type Config struct {
 	VideoMutationResponseInboxEnabled bool // LAIAI_VIDEO_MUTATION_RESPONSE_INBOX, default false; independent cancel/delete producer gate
 	VideoPortraitCallbackURL          string
 	VideoPortraitReturnURL            string
+	VideoArkCallbackBase              string
 	VideoMediaRoot                    string
 	VideoMediaPublicBaseURL           string
 	VideoMediaSigningKey              []byte
@@ -179,6 +180,7 @@ func Load() (*Config, error) {
 	}
 	c.VideoPortraitCallbackURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_CALLBACK_URL")
 	c.VideoPortraitReturnURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_RETURN_URL")
+	c.VideoArkCallbackBase = strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ARK_CALLBACK_BASE"))
 	if err := c.loadVideoMedia(); err != nil {
 		return nil, err
 	}

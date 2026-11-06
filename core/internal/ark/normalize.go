@@ -25,6 +25,34 @@ var (
 // Normalize validates the platform request against explicitly verified
 // capabilities, resolves trusted bindings and emits canonical official JSON.
 // It never guesses a price, fetches media, or authorizes a resource reference.
+// UpstreamIDMatch reports whether s looks like a provider task id.
+func UpstreamIDMatch(s string) bool {
+	return upstreamID.MatchString(s)
+}
+
+// upstreamBodyFields is the closed field set of a dispatched submit body:
+// every client field except the two platform pricing guards, plus the two
+// gateway-injected per-task fields.
+func upstreamBodyFields() []string {
+	out := append([]string{}, createFields[:len(createFields)-2]...)
+	return append(out, injectedCreateFields...)
+}
+
+// InjectTaskAnnotations appends the gateway-injected per-task fields to a
+// normalized body at acceptance time. Clients can never supply them (Decode's
+// closed list excludes them); re-marshaling keeps key order deterministic.
+func InjectTaskAnnotations(body []byte, callbackURL, safetyIdentifier string) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(body, &payload) != nil || payload == nil {
+		return nil, failure("invalid_request", "normalized body must be an object", "body", 422)
+	}
+	cb, _ := json.Marshal(callbackURL)
+	si, _ := json.Marshal(safetyIdentifier)
+	payload["callback_url"] = cb
+	payload["safety_identifier"] = si
+	return json.Marshal(payload)
+}
+
 func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedRequest, error) {
 	var out NormalizedRequest
 	bad := func(field, msg string) (NormalizedRequest, error) {

@@ -36,6 +36,8 @@ func (s *Service) existing(official, legacy gin.HandlerFunc) gin.HandlerFunc {
 
 func (s *Service) RegisterRoutes(r *gin.RouterGroup, legacy *task.Service) {
 	r.POST("/v1/video/generations", s.LegacyCreate(legacy.HandleCreate))
+	// 公开回调接收端点（火山状态通知 hint）：自校验 token，不走 Bearer 中间件。
+	r.POST("/v1/video/ark-callbacks/:task_id/:token", s.HandleArkCallback)
 	r.GET("/v1/video/generations/:id", s.existing(s.HandleGet, legacy.HandleGet))
 	r.GET("/v1/video/generations/:id/content", s.existing(s.HandleContent, legacy.HandleContent))
 	g := r.Group("/v1/video", s.Middleware())
