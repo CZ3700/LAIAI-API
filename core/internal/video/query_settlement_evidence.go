@@ -125,7 +125,7 @@ func readQuerySettlementEvidence(t task.Task, st State, current QueryReceipt) (q
 	if err != nil {
 		return queryObservation{}, err
 	}
-	if current.ReceivedAt.IsZero() || current.HTTPStatus < 200 || current.HTTPStatus >= 300 || current.Outcome != string(ark.OutcomeAccepted) || o.TaskID != t.UpstreamTaskID || (o.Model != "" && o.Model != st.UpstreamModel) || o.HasError || (o.CompletionTokens != nil && *o.CompletionTokens < 0) || (o.TotalTokens != nil && *o.TotalTokens < 0) {
+	if current.ReceivedAt.IsZero() || current.HTTPStatus < 200 || current.HTTPStatus >= 300 || current.Outcome != string(ark.OutcomeAccepted) || o.TaskID != t.UpstreamTaskID || (o.Model != "" && o.Model != st.UpstreamModel) || (o.HasError && !noChargeFailureObs(o)) || (o.CompletionTokens != nil && *o.CompletionTokens < 0) || (o.TotalTokens != nil && *o.TotalTokens < 0) {
 		return queryObservation{}, &querySettlementEvidenceError{kind: querySettlementObservationInvalid}
 	}
 	switch current.SettlementKind {

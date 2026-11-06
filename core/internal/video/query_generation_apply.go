@@ -10,6 +10,15 @@ import (
 	"gorm.io/gorm"
 )
 
+// noChargeFailureObs 识别「火山明确未交付」的终态观察：failed/cancelled/expired
+// 且零用量。火山 failed 响应必然携带 error 信封——那是其正常形态，不是
+// “succeeded 却带错误”的矛盾证据；零用量证明没有可计费交付，正是
+// provider_no_charge 结算通道存在的场景。
+func noChargeFailureObs(o queryObservation) bool {
+	return (o.Status == ark.StatusFailed || o.Status == ark.StatusCancelled || o.Status == ark.StatusExpired) &&
+		(o.CompletionTokens == nil || *o.CompletionTokens == 0)
+}
+
 // Generation evidence can select a financial source, but never authorizes a
 // financial write. B independently validates that source and the real initial.
 func queryGenerationEvidence(t task.Task, st State, row QueryReceipt) (queryObservation, ark.Transition, string, bool, error) {
@@ -37,7 +46,7 @@ func queryGenerationEvidence(t task.Task, st State, row QueryReceipt) (queryObse
 	if !matched {
 		transition.NeedsReview, transition.Status = true, ark.Status(t.Status)
 	}
-	trusted := matched && row.Outcome == string(ark.OutcomeAccepted) && row.HTTPStatus >= 200 && row.HTTPStatus < 300 && !row.ReceivedAt.IsZero() && !observation.HasError &&
+	trusted := matched && row.Outcome == string(ark.OutcomeAccepted) && row.HTTPStatus >= 200 && row.HTTPStatus < 300 && !row.ReceivedAt.IsZero() && (!observation.HasError || noChargeFailureObs(observation)) &&
 		(observation.CompletionTokens == nil || *observation.CompletionTokens >= 0) && (observation.TotalTokens == nil || *observation.TotalTokens >= 0) &&
 		(observation.Status == ark.StatusQueued || observation.Status == ark.StatusRunning || terminal(string(observation.Status)))
 	if !trusted {

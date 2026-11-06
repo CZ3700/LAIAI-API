@@ -6,14 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/go-sql-driver/mysql"
-	"github.com/laiai/laiai-next/core/internal/task"
-	"github.com/laiai/laiai-next/core/internal/videoruntime"
-	"github.com/shopspring/decimal"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
+	"github.com/laiai/laiai-next/core/internal/ark"
+	"github.com/laiai/laiai-next/core/internal/task"
+	"github.com/laiai/laiai-next/core/internal/videoruntime"
+	"github.com/shopspring/decimal"
 )
 
 // Frozen independent literal proposal, reviewed before the implementation.
@@ -93,6 +95,45 @@ func TestQuerySettlementEvidenceIndependentLiterals(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// 回归（2026-11-06）：火山 failed 响应必然携带 error 信封。failed 家族 + 零
+// 用量时错误信封是正常形态，provider_no_charge 结算证据必须放行（此前 !HasError
+// 门禁让所有失败任务永久冻结在 pending_usage）；带用量的 failed 继续拒绝。
+func TestQuerySettlementEvidenceAllowsErrorEnvelopeOnZeroUsageFailure(t *testing.T) {
+	row, st, r := querySettlementPending(t)
+	observation, err := decodeQueryObservation(r.ObservationJSON)
+	must(t, err)
+	observation.Status, observation.CompletionTokens, observation.HasError = ark.StatusFailed, nil, true
+	if !strings.Contains(","+st.NoChargeStatuses+",", ",failed,") {
+		st.NoChargeStatuses = "failed,cancelled"
+	}
+	raw, err := json.Marshal(observation)
+	must(t, err)
+	r.ObservationJSON = string(raw)
+	pin := r.AttemptID
+	st.SettlementReceiptID = &pin
+	r.SettlementKind = querySettlementProviderNoCharge
+	digest, err := settlementEvidenceDigest(row, st, r, r.SettlementKind)
+	must(t, err)
+	r.SettlementEvidenceSHA256 = hex.EncodeToString(digest[:])
+	at := r.ReceivedAt
+	r.GenerationAppliedAt = &at
+	if _, err := readQuerySettlementEvidence(row, st, r); err != nil {
+		t.Fatalf("failed+zero-usage observation with error envelope rejected: %v", err)
+	}
+	// 带用量的 failed：部分计费风险，必须继续拒绝。
+	usage := int64(100)
+	observation.CompletionTokens = &usage
+	raw, err = json.Marshal(observation)
+	must(t, err)
+	r.ObservationJSON = string(raw)
+	digest, err = settlementEvidenceDigest(row, st, r, r.SettlementKind)
+	must(t, err)
+	r.SettlementEvidenceSHA256 = hex.EncodeToString(digest[:])
+	if _, err := readQuerySettlementEvidence(row, st, r); err == nil {
+		t.Fatal("failed observation with usage must stay blocked")
 	}
 }
 
