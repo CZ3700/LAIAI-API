@@ -78,7 +78,10 @@ func (s *Service) processDispatchOnce(ctx context.Context) error {
 		}
 	}
 	var rows []State
-	if err := s.pendingQueryCandidates(ctx).Order("v.next_poll_at, v.task_id").Limit(40).Scan(&rows).Error; err != nil {
+	// The provider query gate admits 1 req/s per scope; a 2s tick can claim at
+	// most 2 candidates. Claiming more only builds refused transactions —
+	// loadTask/rate-gate/quarantine work for rows that cannot send.
+	if err := s.pendingQueryCandidates(ctx).Order("v.next_poll_at, v.task_id").Limit(2).Scan(&rows).Error; err != nil {
 		return err
 	}
 	m.mu.Lock()
