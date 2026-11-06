@@ -139,12 +139,12 @@ test('Fast and Mini document only the implemented generation envelope and retain
   const models = docPages.find(page => page.id === 'video-intro').sections.find(section => section.id === 'video-models')
   for (const model of ['seedance-2.0-fast', 'seedance-2.0-mini']) {
     const row = models.table.rows.find(row => row[0] === model)
-    assert.match(row[1], /4–15 秒；480p \/ 720p；六种固定比例/)
+    assert.match(row[1], /4–15 秒；480p \/ 720p；七种固定比例（含 adaptive）/)
     assert.match(row[2], /独立渠道配置.*最低量.*USD.*预算/)
   }
   const scope = models.paragraphs.join('\n')
-  assert.match(scope, /16:9 \/ 4:3 \/ 1:1 \/ 3:4 \/ 9:16 \/ 21:9/)
-  assert.match(scope, /不开放 1080p、4k、adaptive、自动时长、frames、Draft/)
+  assert.match(scope, /16:9 \/ 4:3 \/ 1:1 \/ 3:4 \/ 9:16 \/ 21:9 \/ adaptive/)
+  assert.match(scope, /不开放 1080p、4k、自动时长、frames、Draft/)
   assert.match(scope, /不代表当前组织已开通/)
 })
 
@@ -176,6 +176,7 @@ test('served video specification records current canonical contract digest', () 
   for (const field of ['seed', 'resolution', 'ratio', 'duration', 'frames', 'framespersecond', 'service_tier', 'execution_expires_after', 'generate_audio', 'draft', 'priority']) assert.ok(query.properties[field], `OfficialTaskQuery missing ${field}`)
   assert.equal(query.properties.priority.maximum, 9)
   assert.ok(query.properties.content.properties.last_frame_url)
+  assert.ok(query.properties.error, 'OfficialTaskQuery must document the failed-task error envelope')
   assert.ok(!JSON.stringify(spec.paths).includes('failures refund in full'))
   assert.ok(!JSON.stringify(spec.paths).includes('Any extra top-level params'))
   assert.match(spec.components.schemas.Billing.properties.pricing_snapshot.description, /首次实扣=MIN\(实际量计算金额, reserved_amount\)/)
@@ -280,12 +281,24 @@ test('video result examples return upstream URLs and do not send platform creden
   assert.match(description, /可能过期/)
 })
 
+test('failed task GET documents the recorded rejection reason and succeeded GET stays error-free', () => {
+  const failed = byID('task-get-failed').response
+  assert.equal(failed.status, 'failed')
+  assert.equal(failed.error.code, 'InputImageSensitiveContentDetected.PolicyViolation')
+  assert.ok(failed.error.message.length > 0)
+  assert.ok(!Object.hasOwn(byID('task-get').response, 'error'), 'succeeded task GET must not carry error')
+  const query = docPages.find(p => p.id === 'video-query').sections.find(s => s.id === 'query-one')
+  assert.ok(query.table.rows.some(row => row[0] === 'error'))
+})
+
 test('asset examples obtain versions, use platform IDs and submit guarded mutations', () => {
   for (const [read, edit] of [['asset-get', 'asset-rename'], ['group-get', 'group-rename']]) {
     assert.equal(byID(edit).request.expected_version, byID(read).response.Result.Version)
     assert.ok(byID(edit).idempotency)
   }
   assert.match(byID('asset-get').response.Result.URL, /^asset:\/\/asset_/)
+  assert.match(byID('asset-get').response.Result.SourceURL, /^https:\/\//, 'asset GET example must show the upstream SourceURL extension')
+  assert.ok(spec.components.schemas.RpcGetAssetResult.required.includes('SourceURL'), 'RpcGetAssetResult must document SourceURL as always present')
   assert.match(byID('portrait-get').response.Result.SessionId, /^pas_/)
   assert.ok(byID('asset-delete-call').idempotency)
   assert.equal(byID('asset-delete-call').response.ResponseMetadata.Action, 'DeleteAsset')
