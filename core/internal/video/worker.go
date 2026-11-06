@@ -600,8 +600,16 @@ func (s *Service) applyCreateResultTx(tx *gorm.DB, t task.Task, st State, curren
 	st.ResponsePayloadRef = op.ReceiptRef
 	st.UpdatedAt = now
 	st.NextPollAt = scheduleNow
+	var nextPoll any = scheduleNow
+	if terminal(t.Status) && financialFinal(st.BillingState) {
+		// A financially-final terminal task is never polled again. NULL keeps
+		// it out of the candidate scan range instead of leaving a stale
+		// timestamp that the every-tick candidate query must re-scan forever.
+		st.NextPollAt = time.Time{}
+		nextPoll = nil
+	}
 	st.RowVersion++
-	if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"sync_state": st.SyncState, "billing_state": st.BillingState, "response_payload_ref": op.ReceiptRef, "row_version": st.RowVersion, "updated_at": now, "next_poll_at": scheduleNow}).Error; err != nil {
+	if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"sync_state": st.SyncState, "billing_state": st.BillingState, "response_payload_ref": op.ReceiptRef, "row_version": st.RowVersion, "updated_at": now, "next_poll_at": nextPoll}).Error; err != nil {
 		return err
 	}
 	opUpdates := map[string]any{"status": current.Status, "receipt_ref": op.ReceiptRef, "http_status": current.HTTPStatus, "received_outcome": current.ReceivedOutcome, "received_task_id": current.ReceivedTaskID, "receipt_applied_at": now, "updated_at": now}
@@ -674,7 +682,7 @@ func (s *Service) knownUnsent(ctx context.Context, t task.Task, st State, op Ope
 			return err
 		}
 		st.BillingState = "released"
-		if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Update("billing_state", "released").Error; err != nil {
+		if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Updates(map[string]any{"billing_state": "released", "next_poll_at": nil}).Error; err != nil {
 			return err
 		}
 		t.Status = "failed"
@@ -714,15 +722,30 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 			return nil
 		}
 		allowed, e := s.rateTx(tx, st.ProviderScopeID, "query")
-		if e != nil || !allowed {
+		if e != nil {
 			return e
+		}
+		if !allowed {
+			// The 1 req/s provider gate refused this candidate. Requeue it
+			// shortly with sequence-spread jitter instead of leaving
+			// next_poll_at in the past — otherwise the same bounded batch is
+			// re-claimed every tick as refused, effect-free transactions.
+			return tx.Model(&State{}).Where("org_id = ? AND task_id = ? AND query_sequence = ?", org, id, st.QuerySequence).
+				Update("next_poll_at", now.Add(time.Duration(2+st.QuerySequence%11)*time.Second)).Error
 		}
 		now, e = authorityTimeTx(tx)
 		if e != nil {
 			return e
 		}
 		st.QuerySequence++
-		updated := tx.Model(&State{}).Where("org_id = ? AND task_id = ? AND query_sequence = ?", org, id, st.QuerySequence-1).Updates(map[string]any{"next_poll_at": now.Add(10 * time.Second), "query_lease_until": now.Add(3 * time.Minute), "query_sequence": st.QuerySequence})
+		poll := 10 * time.Second
+		if terminal(t.Status) {
+			// Terminal tasks poll only for usage reconciliation evidence; a
+			// slower cadence is sufficient and leaves the provider gate to
+			// live queued/running tasks.
+			poll = time.Minute
+		}
+		updated := tx.Model(&State{}).Where("org_id = ? AND task_id = ? AND query_sequence = ?", org, id, st.QuerySequence-1).Updates(map[string]any{"next_poll_at": now.Add(poll), "query_lease_until": now.Add(3 * time.Minute), "query_sequence": st.QuerySequence})
 		if updated.Error != nil || updated.RowsAffected == 0 {
 			return updated.Error
 		}

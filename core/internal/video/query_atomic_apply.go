@@ -152,6 +152,11 @@ func (s *Service) applyQueryAtomicTx(tx *gorm.DB, taskRow *task.Task, stateRow *
 			return e
 		}
 		stateUpdates := map[string]any{"billing_state": st.BillingState, "sync_state": st.SyncState, "artifact_status": st.ArtifactStatus, "result_payload_ref": st.ResultPayloadRef, "observed_completion_tokens": st.ObservedCompletionTokens, "total_tokens": st.TotalTokens, "last_synced_at": st.LastSyncedAt, "updated_at": now, "applied_query_sequence": receipt.Sequence, "row_version": st.RowVersion + 1}
+		if terminal(t.Status) && financialFinal(st.BillingState) {
+			// Financially-final terminal tasks are never polled again; NULL
+			// keeps them out of the candidate scan range permanently.
+			stateUpdates["next_poll_at"] = nil
+		}
 		if receipt.Sequence == st.QuerySequence {
 			stateUpdates["query_lease_until"] = nil
 		}

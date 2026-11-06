@@ -213,6 +213,12 @@ func (s *Service) applyQueryGenerationTx(tx *gorm.DB, t *task.Task, st *State, r
 			stateUpdates["billing_state"] = billing
 		}
 	}
+	if terminal(t.Status) && financialFinal(st.BillingState) {
+		// Financially-final terminal tasks are never polled again; NULL keeps
+		// them out of the candidate scan range permanently. Evaluated after
+		// the billing projection above settles the final state.
+		stateUpdates["next_poll_at"] = nil
+	}
 	if selectPin {
 		pin := receipt.AttemptID
 		st.SettlementReceiptID = &pin
