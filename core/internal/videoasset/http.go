@@ -356,6 +356,14 @@ func (s *Service) getAssetHTTP(c *gin.Context) {
 		s.httpError(c, err)
 		return
 	}
+	// 素材可用（Reference 已生成）时附带火山侧短时效临时地址；取不到只留空
+	// 字段，不破坏可用性查询的主体响应。
+	sourceURL := ""
+	if dto.Reference != "" {
+		if source, err := s.OfficialSource(c.Request.Context(), auth.OrgID, dto.ID); err == nil {
+			sourceURL = source.URL
+		}
+	}
 	c.JSON(200, rpcEnvelope(c, "GetAsset", gin.H{
 		"Id":        dto.ID,
 		"GroupId":   dto.GroupID,
@@ -363,7 +371,9 @@ func (s *Service) getAssetHTTP(c *gin.Context) {
 		"Status":    dto.Status,
 		"URL":       dto.Reference,
 		// Version 是平台扩展字段（官方无此字段）：PATCH expected_version 乐观锁的唯一读取来源。
-		"Version":   dto.Version,
+		"Version": dto.Version,
+		// SourceURL 是平台扩展字段（官方无此字段）：火山侧短时效临时地址，素材可用时实时获取。
+		"SourceURL": sourceURL,
 		"CreatedAt": dto.CreatedAt.Unix(),
 		"UpdatedAt": dto.UpdatedAt.Unix(),
 	}))
