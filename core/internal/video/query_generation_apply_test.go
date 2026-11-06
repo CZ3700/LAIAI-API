@@ -9,7 +9,7 @@ import (
 )
 
 func TestQueryGenerationRequiresTrustedObservation(t *testing.T) {
-	for _, name := range []string{"positive", "zero", "missing", "nocharge", "http_error", "negative_usage", "negative_total", "has_error", "wrong_target", "wrong_model", "unknown_status", "unknown_outcome", "missing_time"} {
+	for _, name := range []string{"positive", "zero", "missing", "nocharge", "nocharge_has_error", "failed_has_error_with_usage", "http_error", "negative_usage", "negative_total", "has_error", "wrong_target", "wrong_model", "unknown_status", "unknown_outcome", "missing_time"} {
 		t.Run(name, func(t *testing.T) {
 			row, st, receipt := querySettlementFixture(t, 0)
 			row.Status = "running"
@@ -36,6 +36,14 @@ func TestQueryGenerationRequiresTrustedObservation(t *testing.T) {
 				observation.TotalTokens = &n
 			case "has_error":
 				observation.HasError = true
+			case "nocharge_has_error":
+				// 火山 failed 响应必然携带 error 信封：failed 家族 + 零用量时
+				// 错误信封是正常形态，provider_no_charge 通道仍然可信。
+				observation.Status, observation.CompletionTokens, observation.HasError = ark.StatusCancelled, nil, true
+				wantKind = querySettlementProviderNoCharge
+			case "failed_has_error_with_usage":
+				// 带用量的 failed：可能部分计费，错误信封 + 用量必须继续拒绝。
+				observation.Status, observation.HasError = ark.StatusFailed, true
 			case "wrong_target":
 				observation.TaskID += " "
 			case "wrong_model":
@@ -47,7 +55,7 @@ func TestQueryGenerationRequiresTrustedObservation(t *testing.T) {
 			case "missing_time":
 				receipt.ReceivedAt = time.Time{}
 			}
-			if name != "positive" && name != "zero" && name != "missing" && name != "nocharge" {
+			if name != "positive" && name != "zero" && name != "missing" && name != "nocharge" && name != "nocharge_has_error" {
 				wantKind, wantTrusted = querySettlementNone, false
 			}
 			raw, err := json.Marshal(observation)
