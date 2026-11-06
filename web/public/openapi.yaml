@@ -754,7 +754,8 @@
                     "1:1",
                     "3:4",
                     "9:16",
-                    "21:9"
+                    "21:9",
+                    "adaptive"
                   ]
                 },
                 "resolution": {
@@ -913,6 +914,7 @@
             "type": "string"
           },
           "ratio": {
+            "description": "adaptive（自适应宽高比）已对四个模型的标准生成开放，仍受能力版本门控；受理按该分辨率档的保守像素上界预冻结，结算按实际用量。",
             "enum": [
               "16:9",
               "4:3",
@@ -1325,6 +1327,22 @@
           "duration": {
             "description": "官方实际视频时长（秒）；当未使用 frames 时条件返回。",
             "type": "integer"
+          },
+          "error": {
+            "additionalProperties": false,
+            "description": "仅 status=failed 时出现。code 为受理时记录的上游拒绝码（无记录时为 task_failed）；message 为上游失败原因原文（未记录时为固定提示文案）。原文供人阅读，不建议作为程序化分支依据。",
+            "properties": {
+              "code": {
+                "description": "上游拒绝码，无记录时为 task_failed。",
+                "type": "string"
+              },
+              "message": {
+                "description": "上游失败原因原文；未记录时为固定提示。",
+                "type": "string"
+              }
+            },
+            "required": ["code", "message"],
+            "type": "object"
           },
           "execution_expires_after": {
             "description": "提交后执行过期阈值（秒）；超时后任务状态为 expired。",
@@ -1877,6 +1895,10 @@
           "Id": {
             "$ref": "#/components/schemas/AssetId"
           },
+          "SourceURL": {
+            "description": "平台扩展字段（官方无此字段）；素材可用时实时返回的火山侧短时效签名直链（当前约 11.5 小时有效），取不到时为空字符串。直链访问不得附带平台 Key。",
+            "type": "string"
+          },
           "Status": {
             "$ref": "#/components/schemas/RpcAssetStatus"
           },
@@ -1899,6 +1921,7 @@
           "GroupId",
           "AssetType",
           "Status",
+          "SourceURL",
           "URL",
           "Version",
           "CreatedAt",
@@ -3692,7 +3715,7 @@
         ]
       },
       "get": {
-        "description": "火山 RPC 官方信封，Action=GetAsset；CreatedAt/UpdatedAt 为 Unix 秒。\nURL 为平台素材引用（asset://asset_...），仅 status=ready 后非空，此前为空字符串。\nVersion 为平台扩展字段（官方无此字段），是 PATCH expected_version 乐观锁的读取来源。\n",
+        "description": "火山 RPC 官方信封，Action=GetAsset；CreatedAt/UpdatedAt 为 Unix 秒。\nURL 为平台素材引用（asset://asset_...），仅 status=ready 后非空，此前为空字符串。\nVersion 为平台扩展字段（官方无此字段），是 PATCH expected_version 乐观锁的读取来源。\nSourceURL 为平台扩展字段（官方无此字段）：素材可用时实时返回火山侧短时效签名直链，取不到时为空字符串；直链访问不附带平台 Key。\n",
         "operationId": "getVideoAsset",
         "responses": {
           "200": {
@@ -3711,6 +3734,7 @@
                     "CreatedAt": 1792713600,
                     "GroupId": "ag_example001",
                     "Id": "asset_example001",
+                    "SourceURL": "https://media.example.invalid/registered-image.png?signature=EXAMPLE_ONLY",
                     "Status": "ready",
                     "URL": "asset://asset_example001",
                     "UpdatedAt": 1792713700,
@@ -4662,5 +4686,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "5eee19deacba247b08a71bc78961e1cf881b167d52b84159bc0e7a1049ee0a56"
+  "x-seedance-source-sha256": "74a4f5e530cd64783be97adc265353ea5d1255afdb0bea0c6a7b62391eeb753a"
 }

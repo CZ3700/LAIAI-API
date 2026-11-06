@@ -1217,6 +1217,7 @@ components:
         ratio:
           type: string
           enum: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', adaptive]
+          description: adaptive（自适应宽高比）已对四个模型的标准生成开放，仍受能力版本门控；受理按该分辨率档的保守像素上界预冻结，结算按实际用量。
         seed:
           type: integer
           minimum: -1
@@ -1311,7 +1312,7 @@ components:
               draft:
                 const: false
               ratio:
-                enum: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9']
+                enum: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', adaptive]
             not:
               required: [frames]
         - if:
@@ -1491,6 +1492,18 @@ components:
         duration:
           type: integer
           description: 官方实际视频时长（秒）；当未使用 frames 时条件返回。
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          description: 仅 status=failed 时出现。code 为受理时记录的上游拒绝码（无记录时为 task_failed）；message 为上游失败原因原文（未记录时为固定提示文案）。原文供人阅读，不建议作为程序化分支依据。
+          properties:
+            code:
+              type: string
+              description: 上游拒绝码，无记录时为 task_failed。
+            message:
+              type: string
+              description: 上游失败原因原文；未记录时为固定提示。
         frames:
           type: integer
           description: 官方实际帧数；与 duration 互斥，仅上游返回时出现。
@@ -2113,7 +2126,7 @@ components:
     RpcGetAssetResult:
       type: object
       additionalProperties: false
-      required: [Id, GroupId, AssetType, Status, URL, Version, CreatedAt, UpdatedAt]
+      required: [Id, GroupId, AssetType, Status, URL, SourceURL, Version, CreatedAt, UpdatedAt]
       properties:
         Id:
           $ref: '#/components/schemas/AssetId'
@@ -2126,6 +2139,9 @@ components:
         URL:
           type: string
           description: 平台素材引用 asset://asset_...；仅 ready 后非空，此前为空字符串。
+        SourceURL:
+          type: string
+          description: 平台扩展字段（官方无此字段）；素材可用时实时返回的火山侧短时效签名直链（当前约 11.5 小时有效），取不到时为空字符串。直链访问不得附带平台 Key。
         Version:
           type: integer
           minimum: 1
