@@ -71,6 +71,7 @@ services:
       LAIAI_VIDEO_MUTATION_RESPONSE_INBOX: ${LAIAI_VIDEO_MUTATION_RESPONSE_INBOX:-false}
       LAIAI_VIDEO_PORTRAIT_CALLBACK_URL: ${LAIAI_VIDEO_PORTRAIT_CALLBACK_URL:-}
       LAIAI_VIDEO_PORTRAIT_RETURN_URL: ${LAIAI_VIDEO_PORTRAIT_RETURN_URL:-}
+      LAIAI_VIDEO_ARK_CALLBACK_BASE: ${LAIAI_VIDEO_ARK_CALLBACK_BASE:-}
       # Private media remains off until the operator provides all required
       # values, including a real scanner and the private volume mounted below.
       LAIAI_VIDEO_MEDIA_ROOT: ${LAIAI_VIDEO_MEDIA_ROOT:-}

@@ -185,6 +185,29 @@ Seedance 视频模型按火山官方方式逐模型限流，superadmin 在后台
 - 回退：重新应用旧 profile 不可用（内容已变），需回退镜像与能力行；受理侧对 adaptive 的
   预冻结上界偏保守属预期，不是计费错误。
 
+## 火山状态回调通道 + 7 天兜底释放（0148 起）
+
+`submission_unknown`（提交超时无响应体、无任务 id）过去无法轮询、无法审计，
+客户资金无限期冻结。两段式收敛：
+
+- **P0 兜底释放**：终态（failed/submission_unknown/expired）+ pending_usage
+  超过 **7 天**的任务由 sweep 释放退款（最老优先、每轮 100、audit 可追溯，
+  事件 `task.billing_released`）。failed 任务只在极少数部分生成场景计费
+  （2026-10 对账全月 ≈ ¥20），客户安全释放优于永久冻结。
+- **P1 回调通道（缩小版）**：火山状态回调只做 unknown 恢复的通知，**不是
+  事实源**。提交体注入双绑定（0148 后新任务，env 开关默认关）：
+  `callback_url = base/ark-callbacks/{task_id}/{HMAC token}`、
+  `safety_identifier = HMAC 派生值`。公开端点五步廉价校验后 202 落 hint
+  （hint 只是通知，不采信任何字段）；消费者对未绑定任务执行三重证明恢复
+  （token ① + 回显 safety_identifier ② + 权威 GET ③）后绑定 id，交轮询
+  管道权威结算。已绑定任务的回调直接 ACK 丢弃——**轮询是地面真相层，回调
+  故障 = 回到纯轮询现状，零堆积**。伪造 safety_identifier 记 forged_si。
+- **开启步骤**：① 部署含 0148 的镜像；② 测试任务实测火山回调真实到达且
+  safety_identifier 回显（出口条件）；③ `.env` 增
+  `LAIAI_VIDEO_ARK_CALLBACK_BASE=https://laiai.ai` 后 `up -d core`。
+- **观测**：`video_callback_hints.result`（ack_bound/ack_final/bound/
+  forged_si/verify_failed…）与 forged_si 计数突增 = 伪造探测信号。
+
 ## 3. 支付上线门禁（P1-3，未完成项跟踪）
 
 - 红线：**没有真实 raw callback fixture 的支付引擎不得启用**。当前唯一接近达标的是 epay

@@ -28,10 +28,13 @@ import (
 )
 
 type Service struct {
-	DB              *gorm.DB
-	Keyring         *crypto.Keyring
-	Evidence        *invocation.VideoStore
-	Secret          []byte
+	DB       *gorm.DB
+	Keyring  *crypto.Keyring
+	Evidence *invocation.VideoStore
+	Secret   []byte
+	// ArkCallbackBase enables the provider callback binding channel when set
+	// (https base URL). Empty = feature off; polling remains the only truth.
+	ArkCallbackBase string
 	Client          *http.Client
 	Log             *slog.Logger
 	Now             func() time.Time
@@ -344,6 +347,15 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		p, e = s.plan(tx, key.OrgID, in)
 		if e != nil {
 			return e
+		}
+		if s.ArkCallbackBase != "" {
+			// 起量回调绑定：每任务注入 callback_url/safety_identifier（submission_unknown
+			// 的恢复通道，见 runbook）。加性字段，闭式白名单已放行；旧任务体冻结不受影响。
+			injected, e := ark.InjectTaskAnnotations(p.normalized.Body, s.arkCallbackURL(taskID), s.arkSafetyIdentifier(taskID))
+			if e != nil {
+				return e
+			}
+			p.normalized.Body = injected
 		}
 		// Encryption is local CPU work. There is no remote KMS/blob call inside T1.
 		execution, e = s.Evidence.PrepareCreateExecutionTx(tx, invocation.VideoExecutionInput{OrgID: key.OrgID, RequestID: requestID, Body: p.normalized.Body})

@@ -6,7 +6,14 @@ import (
 	"io"
 )
 
+// createFields is the client-facing request contract. The last two entries
+// are platform-internal pricing guards (BuildSubmit strips them).
 var createFields = []string{"model", "content", "duration", "frames", "resolution", "ratio", "seed", "generate_audio", "watermark", "return_last_frame", "draft", "service_tier", "omni_reference_task_type", "output_format", "execution_expires_after", "max_charge_usd", "expected_pricing_version"}
+
+// injectedCreateFields are gateway-injected per-task fields (callback binding,
+// 2026-11-06): never client-settable (Decode's closed list excludes them),
+// always presentable in the upstream body (BuildSubmit admits them).
+var injectedCreateFields = []string{"callback_url", "safety_identifier"}
 
 // Decode accepts one bounded JSON object, rejecting unknown/case-variant keys,
 // duplicate keys at every depth, null values and extra JSON values. It does not

@@ -121,9 +121,27 @@ func TestMySQLProviderRateIntervalConfigurable(t *testing.T) {
 	must(t, f.s.DB.Exec("INSERT INTO video_provider_rates (scope_id, action, next_allowed_at, interval_ms) VALUES (?, 'create', UTC_TIMESTAMP(3), 100) ON DUPLICATE KEY UPDATE interval_ms = 100, next_allowed_at = UTC_TIMESTAMP(3)", st.ProviderScopeID).Error)
 	err := f.s.DB.Transaction(func(tx *gorm.DB) error { _, e := f.s.rateTx(tx, st.ProviderScopeID, "create"); return e })
 	must(t, err)
-	err = f.s.DB.Transaction(func(tx *gorm.DB) error { allowed, e := f.s.rateTx(tx, st.ProviderScopeID, "create"); if e != nil { return e }; if allowed { return fmt.Errorf("interval not enforced") }; return nil })
+	err = f.s.DB.Transaction(func(tx *gorm.DB) error {
+		allowed, e := f.s.rateTx(tx, st.ProviderScopeID, "create")
+		if e != nil {
+			return e
+		}
+		if allowed {
+			return fmt.Errorf("interval not enforced")
+		}
+		return nil
+	})
 	must(t, err)
 	time.Sleep(120 * time.Millisecond)
-	err = f.s.DB.Transaction(func(tx *gorm.DB) error { allowed, e := f.s.rateTx(tx, st.ProviderScopeID, "create"); if e != nil { return e }; if !allowed { return fmt.Errorf("interval never opened") }; return nil })
+	err = f.s.DB.Transaction(func(tx *gorm.DB) error {
+		allowed, e := f.s.rateTx(tx, st.ProviderScopeID, "create")
+		if e != nil {
+			return e
+		}
+		if !allowed {
+			return fmt.Errorf("interval never opened")
+		}
+		return nil
+	})
 	must(t, err)
 }
