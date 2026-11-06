@@ -23,7 +23,7 @@ func registerVideoJobs(jobs *mainJobs, service *video.Service, isLeader func() b
 		{"assets", 5 * time.Second, service.Assets.ProcessOnce},
 		{"events", 5 * time.Second, service.ProcessOutbox},
 		{"ark_callbacks", 5 * time.Second, service.ProcessCallbackHints},
-		{"stale_pending_usage", time.Hour, service.ReleaseStalePendingUsage},
+		{"stale_pending_usage", 10 * time.Minute, service.ReleaseStalePendingUsage},
 		{"evidence_retention", time.Minute, func(ctx context.Context) error {
 			if _, err := service.Evidence.PurgeExpired(ctx, 100); err != nil {
 				return err

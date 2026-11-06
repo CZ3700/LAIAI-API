@@ -208,6 +208,18 @@ Seedance 视频模型按火山官方方式逐模型限流，superadmin 在后台
 - **观测**：`video_callback_hints.result`（ack_bound/ack_final/bound/
   forged_si/verify_failed…）与 forged_si 计数突增 = 伪造探测信号。
 
+## 失败任务解冻语义（2026-11-06 收口）
+
+- **failed/cancelled/expired + 零用量 → 立即解冻**（provider_no_charge 双阶段结算）。
+  前置两项：模型配置 `no_charge_statuses = failed,cancelled,expired`（此前为空，
+  导致 120 条失败单永久冻结）；V2 信任门禁对「终态失败+零用量」放行火山错误信封
+  （failed 响应必然带 error，不是矛盾证据；**带用量的 failed 仍冻结**等对账）。
+- **解冻即停排**：`next_poll_at=NULL`，不再轮询/不再产生任何后续操作。
+- **submission_unknown + 无证据**：7 天兜底 sweep（`stale_pending_usage`，10 分钟
+  节拍）释放退款，事件 `task.billing_released` 可审计；月度对账仍可追溯。
+- 历史教训：`periodic` 首轮不发火（等第一个 tick）——小时级 janitor 在频繁重启的
+  环境里可能永不执行，节拍宁短勿长。
+
 ## 3. 支付上线门禁（P1-3，未完成项跟踪）
 
 - 红线：**没有真实 raw callback fixture 的支付引擎不得启用**。当前唯一接近达标的是 epay
