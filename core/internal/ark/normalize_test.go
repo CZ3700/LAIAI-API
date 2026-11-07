@@ -309,6 +309,8 @@ func TestNormalizeRejectsUnverifiedAndInvalidParameters(t *testing.T) {
 		{"draft-disabled", func(r *CreateRequest, c *Capability) { r.Draft = ptr(true); c.Draft = false }},
 		{"20-format", func(r *CreateRequest, c *Capability) { r.OutputFormat = ptr("mov") }},
 		{"20-edit", func(r *CreateRequest, c *Capability) { r.OmniReferenceTaskType = ptr("edit") }},
+		{"bitrate-mode-unverified", func(r *CreateRequest, c *Capability) { r.BitrateMode = ptr("medium") }},
+		{"bitrate-mode-bad", func(r *CreateRequest, c *Capability) { r.BitrateMode = ptr("ultra") }},
 		{"bad-money", func(r *CreateRequest, c *Capability) { r.MaxChargeUSD = ptr("0.000000001") }},
 		{"expiry-unverified", func(r *CreateRequest, c *Capability) { r.ExecutionExpiresAfter = ptr(1) }},
 		{"empty-ratio", func(r *CreateRequest, c *Capability) { r.Ratio = ptr("") }},
@@ -332,6 +334,45 @@ func TestNormalizeRejectsUnverifiedAndInvalidParameters(t *testing.T) {
 	r.Resolution = ptr("4k")
 	if _, err := Normalize(r, testCapability(Model25), Bindings{}); err == nil {
 		t.Fatal("2.5 4k accepted")
+	}
+}
+
+func TestNormalizeBitrateModePassThrough(t *testing.T) {
+	// 未核实取值：422 指向 bitrate_mode，且不产生上游请求体。
+	r := textRequest(Model20)
+	r.BitrateMode = ptr("medium")
+	out, err := Normalize(r, testCapability(Model20), Bindings{})
+	apiErr, ok := err.(*Error)
+	if !ok || apiErr.Code != "unsupported_capability" || apiErr.Field != "bitrate_mode" || apiErr.HTTPStatus != 422 || len(out.Body) != 0 {
+		t.Fatalf("unverified bitrate mode emitted an upstream request: out=%+v err=%v", out, err)
+	}
+	// 合法取值透传进上游 body，不进计费/回显上下文。
+	r = textRequest(Model20)
+	r.BitrateMode = ptr("high")
+	out, err = Normalize(r, testCapability(Model20), Bindings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if json.Unmarshal(out.Body, &body) != nil || body["bitrate_mode"] != "high" {
+		t.Fatalf("bitrate_mode not passed through: %s", out.Body)
+	}
+	// 不传时上游 body 不含该字段（使用模型默认档，由上游解释）。
+	r = textRequest(Model20)
+	out, err = Normalize(r, testCapability(Model20), Bindings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out.Body), "bitrate_mode") {
+		t.Fatalf("default bitrate leaked into body: %s", out.Body)
+	}
+	// draft 转正式请求禁止重传 bitrate_mode（继承字段语义）。
+	r = textRequest(Model25)
+	r.Content = []ContentItem{{Type: "draft_task", DraftTask: &DraftReference{ID: "task_draftparent01"}}}
+	r.Resolution = ptr("1080p")
+	r.BitrateMode = ptr("high")
+	if _, err := Normalize(r, testCapability(Model25), Bindings{}); err == nil {
+		t.Fatal("draft conversion accepted bitrate_mode")
 	}
 }
 

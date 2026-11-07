@@ -65,6 +65,11 @@ type CreateRequest struct {
 	ServiceTier            *string       `json:"service_tier,omitempty"`
 	OmniReferenceTaskType  *string       `json:"omni_reference_task_type,omitempty"`
 	OutputFormat           *string       `json:"output_format,omitempty"`
+	// BitrateMode 是官方未公开文档列出的码率档位参数（bitrate_mode）：
+	// 2.0 全分辨率、2.5 非 4k、Fast/Mini 480p/720p 支持；不传用模型默认档
+	// （2.0 4k 与 2.5 默认 high，Fast/Mini 默认 standard）。官方查询不回显，
+	// 平台同样不回显、不进计费上下文。
+	BitrateMode            *string       `json:"bitrate_mode,omitempty"`
 	ExecutionExpiresAfter  *int          `json:"execution_expires_after,omitempty"`
 	MaxChargeUSD           *string       `json:"max_charge_usd,omitempty"`
 	ExpectedPricingVersion *string       `json:"expected_pricing_version,omitempty"`
