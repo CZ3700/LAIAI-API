@@ -8,7 +8,7 @@ import (
 
 // createFields is the client-facing request contract. The last two entries
 // are platform-internal pricing guards (BuildSubmit strips them).
-var createFields = []string{"model", "content", "duration", "frames", "resolution", "ratio", "seed", "generate_audio", "watermark", "return_last_frame", "draft", "service_tier", "omni_reference_task_type", "output_format", "execution_expires_after", "max_charge_usd", "expected_pricing_version"}
+var createFields = []string{"model", "content", "duration", "frames", "resolution", "ratio", "seed", "generate_audio", "watermark", "return_last_frame", "draft", "service_tier", "omni_reference_task_type", "output_format", "bitrate_mode", "execution_expires_after", "max_charge_usd", "expected_pricing_version"}
 
 // injectedCreateFields are gateway-injected per-task fields (callback binding,
 // 2026-11-06): never client-settable (Decode's closed list excludes them),
@@ -98,7 +98,7 @@ func Decode(r io.Reader, maxBytes int64) (CreateRequest, error) {
 		return CreateRequest{}, failure("invalid_request", "request field has an invalid type or range", "body", 422)
 	}
 	// Prevent explicit empty optional strings from silently becoming defaults.
-	for _, p := range []*string{out.Resolution, out.Ratio, out.ServiceTier, out.OmniReferenceTaskType, out.OutputFormat, out.ExpectedPricingVersion} {
+	for _, p := range []*string{out.Resolution, out.Ratio, out.ServiceTier, out.OmniReferenceTaskType, out.OutputFormat, out.BitrateMode, out.ExpectedPricingVersion} {
 		if p != nil && *p == "" {
 			return CreateRequest{}, failure("invalid_request", "optional strings must not be empty", "body", 422)
 		}

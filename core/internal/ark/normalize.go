@@ -176,6 +176,16 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if in.OutputFormat != nil && (in.Model != Model25 || !contains([]string{"mp4", "mov"}, p.OutputFormat) || !contains(cap.OutputFormats, p.OutputFormat)) {
 		return unsupported("output_format")
 	}
+	// bitrate_mode 是官方未公开的码率档位参数：支持域与各模型已验证的分辨率域
+	// 一致，因此仅做取值白名单（未核实取值不透传）；不进 EffectiveParameters
+	//（官方查询不回显，也不作为计费上下文），只写入上游请求体。
+	bitrateMode := ""
+	if in.BitrateMode != nil {
+		bitrateMode = *in.BitrateMode
+		if !contains([]string{"high", "standard"}, bitrateMode) {
+			return unsupported("bitrate_mode")
+		}
+	}
 	var content []ContentItem
 	images, videos, audios, first, last, drafts := 0, 0, 0, 0, 0, 0
 	for _, item := range in.Content {
@@ -282,7 +292,7 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if drafts == 0 && p.OmniReferenceTaskType == "extend" && (videos != 1 || p.Ratio != "adaptive") {
 		return bad("omni_reference_task_type", "extend mode requires one video and adaptive ratio")
 	}
-	if drafts > 0 && (drafts != 1 || len(content) != 1 || in.Resolution == nil || *in.Resolution != "1080p" || in.Duration != nil || in.Frames != nil || in.Ratio != nil || in.Seed != nil || in.GenerateAudio != nil || in.OmniReferenceTaskType != nil || p.Draft) {
+	if drafts > 0 && (drafts != 1 || len(content) != 1 || in.Resolution == nil || *in.Resolution != "1080p" || in.Duration != nil || in.Frames != nil || in.Ratio != nil || in.Seed != nil || in.GenerateAudio != nil || in.OmniReferenceTaskType != nil || in.BitrateMode != nil || p.Draft) {
 		return bad("content", "draft conversion requires only its parent and resolution 1080p; inherited fields cannot be supplied")
 	}
 	// Keep the default service tier in billing context, not the optional upstream request field.
@@ -305,6 +315,9 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	}
 	if p.OutputFormat != "" {
 		payload["output_format"] = p.OutputFormat
+	}
+	if bitrateMode != "" {
+		payload["bitrate_mode"] = bitrateMode
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

@@ -840,8 +840,16 @@
             }
           }
         ],
-        "description": "仅开放已核实的 Ark 字段。模型级上限、支持分辨率/角色组合等由对应能力版本二次校验。\n平台禁止同时提交 frames 与 duration，二者同传返回 422；不依赖官方优先级静默改写用户意图。\nduration=-1 只有模型已验证支持自动时长时可用，冻结按该能力的最大可能产出评估。\nprompt 中旧式 --dur/--duration/--rs/--resolution/--frames 等计费参数指令及规范化变体须拒绝，\n有歧义也返回 422 并提示改用结构化字段。本版本不开放任意 provider_params。\ndraft:true 仅限 Seedance 2.5，输出分辨率只支持 480p；其他分辨率返回 422。\n基于 draft_task 的正式生成只允许唯一 draft_task 内容项且 resolution 必须为 1080p；\nduration/frames/ratio/seed/generate_audio/omni_reference_task_type 不得重传，这些有效参数继承 Draft。\n转正式不能同时设置 draft:true。首尾帧模式各最多一张，尾帧须有首帧，ratio 必须为 adaptive，\n不能混入参考图片、视频或音频。2.5 edit 需要恰好一个视频、adaptive 与 duration=-1；\nextend 需要恰好一个视频与 adaptive；这些组合还受已发布能力约束。\nreturn_last_frame/output_format/watermark/service_tier/execution_expires_after 的省略不表示继承，\n按官方正式任务默认值及当前能力版本解释。未在本契约公开的回调/priority 等字段不允许透传。\n",
+        "description": "仅开放已核实的 Ark 字段。模型级上限、支持分辨率/角色组合等由对应能力版本二次校验。\n平台禁止同时提交 frames 与 duration，二者同传返回 422；不依赖官方优先级静默改写用户意图。\nduration=-1 只有模型已验证支持自动时长时可用，冻结按该能力的最大可能产出评估。\nprompt 中旧式 --dur/--duration/--rs/--resolution/--frames 等计费参数指令及规范化变体须拒绝，\n有歧义也返回 422 并提示改用结构化字段。本版本不开放任意 provider_params。\ndraft:true 仅限 Seedance 2.5，输出分辨率只支持 480p；其他分辨率返回 422。\n基于 draft_task 的正式生成只允许唯一 draft_task 内容项且 resolution 必须为 1080p；\nduration/frames/ratio/seed/generate_audio/omni_reference_task_type/bitrate_mode 不得重传，这些有效参数继承 Draft。\n转正式不能同时设置 draft:true。首尾帧模式各最多一张，尾帧须有首帧，ratio 必须为 adaptive，\n不能混入参考图片、视频或音频。2.5 edit 需要恰好一个视频、adaptive 与 duration=-1；\nextend 需要恰好一个视频与 adaptive；这些组合还受已发布能力约束。\nreturn_last_frame/output_format/watermark/service_tier/execution_expires_after 的省略不表示继承，\n按官方正式任务默认值及当前能力版本解释。未在本契约公开的回调/priority 等字段不允许透传。\n",
         "properties": {
+          "bitrate_mode": {
+            "description": "码率档位，官方公开文档未列出但官方接口支持；在模型已验证的分辨率内均可用（2.0 全分辨率、2.5 非 4k、Fast/Mini 480p/720p）。不传时使用模型默认档（2.0 4k 与 2.5 默认 high，Fast/Mini 默认 standard）。官方查询结果不回显本字段，平台任务查询同样不回显；仅接受已核实取值，未开放取值返回 422。Draft 转正式不得重传。",
+            "enum": [
+              "high",
+              "standard"
+            ],
+            "type": "string"
+          },
           "content": {
             "description": "契约的通用上界；每类数量、组合和总量还受当前模型能力版本的更小上限限制，不表示官方账号已支持全部组合。",
             "items": {
@@ -4686,5 +4694,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "74a4f5e530cd64783be97adc265353ea5d1255afdb0bea0c6a7b62391eeb753a"
+  "x-seedance-source-sha256": "6dab6fc936565e752577020877d992e542910e5cdf980ab8e69f6ccd49e5f807"
 }

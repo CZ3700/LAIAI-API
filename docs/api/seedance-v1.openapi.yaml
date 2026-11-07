@@ -1184,7 +1184,7 @@ components:
         有歧义也返回 422 并提示改用结构化字段。本版本不开放任意 provider_params。
         draft:true 仅限 Seedance 2.5，输出分辨率只支持 480p；其他分辨率返回 422。
         基于 draft_task 的正式生成只允许唯一 draft_task 内容项且 resolution 必须为 1080p；
-        duration/frames/ratio/seed/generate_audio/omni_reference_task_type 不得重传，这些有效参数继承 Draft。
+        duration/frames/ratio/seed/generate_audio/omni_reference_task_type/bitrate_mode 不得重传，这些有效参数继承 Draft。
         转正式不能同时设置 draft:true。首尾帧模式各最多一张，尾帧须有首帧，ratio 必须为 adaptive，
         不能混入参考图片、视频或音频。2.5 edit 需要恰好一个视频、adaptive 与 duration=-1；
         extend 需要恰好一个视频与 adaptive；这些组合还受已发布能力约束。
@@ -1244,6 +1244,10 @@ components:
           type: string
           enum: [mp4, mov]
           description: Seedance 2.5 可选格式；仅对应能力已核实并启用时可用。
+        bitrate_mode:
+          type: string
+          enum: [high, standard]
+          description: 码率档位，官方公开文档未列出但官方接口支持；在模型已验证的分辨率内均可用（2.0 全分辨率、2.5 非 4k、Fast/Mini 480p/720p）。不传时使用模型默认档（2.0 4k 与 2.5 默认 high，Fast/Mini 默认 standard）。官方查询结果不回显本字段，平台任务查询同样不回显；仅接受已核实取值，未开放取值返回 422。Draft 转正式不得重传。
         execution_expires_after:
           type: integer
           minimum: 1
