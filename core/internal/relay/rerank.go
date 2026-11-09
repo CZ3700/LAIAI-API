@@ -99,7 +99,7 @@ func (r *Relay) HandleRerank(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model, query and documents are required")
 		return
 	}
-	if code, msg, ok := r.gateKey(key, c.ClientIP(), req.Model); !ok {
+	if code, msg, ok := r.gateRelayKey(c.Request.Context(), key, c.ClientIP(), req.Model); !ok {
 		relayErr(c, code, msg)
 		return
 	}
@@ -172,7 +172,7 @@ func (r *Relay) HandleRerank(c *gin.Context) {
 		return upReq, nil
 	}
 	resp, ch, aborted := r.forwardWithFailover(c, inv, finish, forwardOpts{
-		model: req.Model, hold: hold, unsupported: errRerankUnsupported, modality: "rerank", logLabel: "rerank", policy: resolveRoutePolicy(c, key), build: build,
+		model: req.Model, key: key, hold: hold, unsupported: errRerankUnsupported, modality: "rerank", logLabel: "rerank", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if aborted {
 		return

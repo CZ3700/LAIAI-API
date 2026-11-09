@@ -19,7 +19,7 @@ var (
 )
 
 // RoutingCandidateSubject contains facts, not successful API-key authentication.
-// Reading a grouped row here does not change VerifyKey or key issuance.
+// Callers must compose it with current group/channel and action checks.
 type RoutingCandidateSubject struct {
 	Found                                  bool
 	OrgID, KeyID                           uint64

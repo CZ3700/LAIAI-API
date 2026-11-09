@@ -86,11 +86,16 @@ func validPolicy(p QuotaPolicy) bool {
 	if !validID(p.Version) || p.OwnerID == 0 {
 		return false
 	}
-	if p.Scope == ScopeProvider {
+	switch p.Scope {
+	case ScopeProvider:
 		if p.OrgID != 0 {
 			return false
 		}
-	} else if p.OrgID == 0 {
+	case ScopeOrg, ScopeUser, ScopeKey, ScopeOrgModel:
+		if p.OrgID == 0 {
+			return false
+		}
+	default:
 		return false
 	}
 	switch p.Metric {
@@ -105,7 +110,7 @@ func validPolicy(p QuotaPolicy) bool {
 
 func reserveQuotas(tx *gorm.DB, in ReserveInput, q QuoteResult) error {
 	var policies []QuotaPolicy
-	err := tx.Where("enabled = ? AND ((org_id = ? AND ((scope = ? AND owner_id = ?) OR (scope = ? AND owner_id = ?) OR (scope = ? AND owner_id = ? AND model = ?))) OR (scope = ? AND org_id = 0 AND owner_id = ?)) AND (model = '' OR model = ?)", true, in.OrgID, ScopeOrg, in.OrgID, ScopeKey, in.APIKeyID, ScopeOrgModel, in.OrgID, q.Rule.Model, ScopeProvider, q.Rule.ProviderScopeID, q.Rule.Model).Order("id").Find(&policies).Error
+	err := tx.Where("enabled = ? AND ((org_id = ? AND ((scope = ? AND owner_id = ?) OR (scope = ? AND owner_id = ?) OR (scope = ? AND owner_id = ?) OR (scope = ? AND owner_id = ? AND model = ?))) OR (scope = ? AND org_id = 0 AND owner_id = ?)) AND (model = '' OR model = ?)", true, in.OrgID, ScopeOrg, in.OrgID, ScopeUser, in.UserID, ScopeKey, in.APIKeyID, ScopeOrgModel, in.OrgID, q.Rule.Model, ScopeProvider, q.Rule.ProviderScopeID, q.Rule.Model).Order("id").Find(&policies).Error
 	if err != nil {
 		return err
 	}

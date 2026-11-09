@@ -360,6 +360,10 @@ func (s *Service) SetOrgAssetRoute(ctx context.Context, actor *identity.User, in
 
 func assetScopeID(id uint64) string { return "scope_" + strconv.FormatUint(id, 10) }
 func (s *Service) assetScopeTx(tx *gorm.DB, org uint64, providerID uint64, requested videoasset.Scope, credentials bool) (videoasset.RuntimeScope, error) {
+	return s.assetScopeWithRouteTx(tx, org, providerID, requested, credentials, nil)
+}
+
+func (s *Service) assetScopeWithRouteTx(tx *gorm.DB, org uint64, providerID uint64, requested videoasset.Scope, credentials bool, selected *AssetOrgRoute) (videoasset.RuntimeScope, error) {
 	var out videoasset.RuntimeScope
 	if org == 0 {
 		return out, ErrForbidden
@@ -378,13 +382,24 @@ func (s *Service) assetScopeTx(tx *gorm.DB, org uint64, providerID uint64, reque
 		}
 		providerID = id
 	}
-	route, inherited, err := s.assetRouteTx(tx, org, providerID)
-	if err != nil {
-		return out, err
-	}
-	out.RouteSource = "organization"
-	if inherited.Enabled {
-		out.RouteSource = "shared_default"
+	var route AssetOrgRoute
+	var inherited AssetSharedDefault
+	if selected != nil {
+		if !selected.Enabled || selected.OrgID != org || selected.ProviderScopeID == 0 || selected.ScopeVersion == 0 || providerID != 0 && providerID != selected.ProviderScopeID {
+			return out, ErrCapability
+		}
+		route = *selected
+		out.RouteSource = "routing_group"
+	} else {
+		var err error
+		route, inherited, err = s.assetRouteTx(tx, org, providerID)
+		if err != nil {
+			return out, err
+		}
+		out.RouteSource = "organization"
+		if inherited.Enabled {
+			out.RouteSource = "shared_default"
+		}
 	}
 	var config AssetScopeConfig
 	if tx.Where("provider_scope_id = ? AND version = ? AND enabled = ?", route.ProviderScopeID, route.ScopeVersion, true).First(&config).Error != nil {
@@ -424,7 +439,14 @@ func (s *Service) resolveAssetRuntime(ctx context.Context, org uint64, requested
 	var out videoasset.RuntimeScope
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var err error
-		out, err = s.assetScopeTx(tx, org, 0, requested, true)
+		var selected *AssetOrgRoute
+		if requested.ID == "" {
+			selected, err = s.callerAssetGroupRouteTx(ctx, tx, org)
+			if err != nil {
+				return err
+			}
+		}
+		out, err = s.assetScopeWithRouteTx(tx, org, 0, requested, true, selected)
 		return err
 	})
 	if err != nil {

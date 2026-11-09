@@ -185,6 +185,33 @@ test('served video specification records current canonical contract digest', () 
   assert.ok(formula.table.rows.some(row => row[0] === '首次实扣' && row[1].includes('不自动追扣')))
 })
 
+test('video callback and quota administration use the intended authentication and staleness contract', () => {
+  const callback = spec.paths['/v1/video/ark-callbacks/{task_id}/{token}']?.post
+  assert.deepEqual(callback?.security, [])
+  assert.match(callback.description, /110–130 秒/)
+  assert.match(spec.paths['/v1/video/generations'].post.description, /callback_url/)
+  const control = spec.paths['/api/keys/video-access']?.get
+  assert.deepEqual(control?.security, [{ ConsoleSession: [] }])
+  const adminPaths = [
+    '/api/admin/video/group-asset-projects/{group_id}',
+    '/api/admin/video/orgs/{org_id}/users/{user_id}/limits',
+    '/api/admin/video/provider-scopes/{scope_id}/model-rate-limits/sync',
+    '/api/admin/video/provider-accounts/{account_ref}/model-rate-limits/{foundation_model}',
+    '/api/admin/video/provider-accounts/{account_ref}/model-rate-limits/{foundation_model}/manual',
+  ]
+  for (const path of adminPaths) {
+    assert.ok(spec.paths[path], `missing ${path}`)
+    for (const operation of Object.values(spec.paths[path])) assert.deepEqual(operation.security, [{ ConsoleSession: [] }], `${path} must use a console session`)
+  }
+  const quota = dereference(spec.paths[adminPaths[3]].get.responses['200'].content['application/json'].schema.$ref)
+  assert.ok(quota.required.includes('official_stale'))
+  assert.equal(quota.properties.official_stale.type, 'boolean')
+  assert.match(quota.properties.official_stale.description, /30 分钟/)
+  const manual = dereference(spec.paths[adminPaths[4]].put.requestBody.content['application/json'].schema.$ref)
+  assert.ok(manual.required.includes('expected_version'))
+  assert.ok(manual.properties.create_task_rpm_4k)
+})
+
 test('inline OpenAPI examples satisfy their accompanying schemas', t => {
   let checked = 0
   function walk(value, path = '$') {

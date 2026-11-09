@@ -27,6 +27,7 @@ const (
 	Settled        = "settled"
 	Released       = "released"
 	ScopeOrg       = "org"
+	ScopeUser      = "user"
 	ScopeKey       = "key"
 	ScopeOrgModel  = "org_model"
 	ScopeProvider  = "provider"
@@ -238,11 +239,14 @@ func (BillingEntry) TableName() string { return "video_billing_entries" }
 type ReserveInput struct {
 	BillingSchemaVersion string
 	OrgID                uint64
-	APIKeyID             uint64
-	TaskID               string
-	RequestHMAC          string
-	Quote                QuoteResult
-	Now                  time.Time
+	// UserID identifies the authenticated owner of the API key. Zero means an
+	// organization-scoped key and never matches a per-user budget.
+	UserID      uint64
+	APIKeyID    uint64
+	TaskID      string
+	RequestHMAC string
+	Quote       QuoteResult
+	Now         time.Time
 }
 type ReservationResult struct {
 	Snapshot Snapshot

@@ -24,7 +24,7 @@ import (
 )
 
 // These tests reuse the randomly named, tracked-migration private MySQL schema
-// from B1. They never register a candidate HTTP route or enable grouped keys.
+// from B1. They never register a candidate HTTP route.
 type routingCandidateFixture struct {
 	*routingAdminHTTPFixture
 	resolver              *routinggroup.CandidateResolver
@@ -48,39 +48,22 @@ func newRoutingCandidateFixture(t *testing.T, owner uint64) *routingCandidateFix
 	if _, err := identity.VerifyKey(f.db, plain, time.Now()); err != nil || !key.AllowsModel("arbitrary-legacy-model") {
 		t.Fatal("legacy control did not work before grouped fixture")
 	}
-	// Only a test fixture writes a grouped row, using the real 0129 CHECKs.
+	// The fixture writes a grouped row using the real 0129 CHECKs.
 	routingAdminSQL(t, f.db, "UPDATE api_keys SET model_access_mode='inherit_group',routing_group_id=?,policy_version=7 WHERE id=?", group, key.ID)
 	routingAdminSQL(t, f.db, "INSERT INTO org_entitlements(org_id,feature_images,feature_video) VALUES(1,0,0) ON DUPLICATE KEY UPDATE feature_images=0,feature_video=0")
 	c := &routingCandidateFixture{routingAdminHTTPFixture: f, resolver: &routinggroup.CandidateResolver{Subjects: routingCandidateSubjectBridge{}, Channels: routingPublishedChannelBridge{}}, ref: routinggroup.CandidateSubjectRef{OrgID: 1, KeyID: key.ID}, group: group, owner: owner, version: 2, plain: plain, at: time.Now().UTC().Truncate(time.Millisecond)}
-	t.Cleanup(func() { c.assertGroupedClosed(t) })
+	t.Cleanup(func() { c.assertGroupedValuePredicate(t) })
 	return c
 }
 
-func (f *routingCandidateFixture) assertGroupedClosed(t *testing.T) {
+func (f *routingCandidateFixture) assertGroupedValuePredicate(t *testing.T) {
 	t.Helper()
-	before := routingAdminFingerprints(t, f.db, "api_keys", "routing_policy_events")
 	var key identity.APIKey
 	if err := f.db.Where("id=?", f.ref.KeyID).Take(&key).Error; err != nil {
 		t.Fatal("cannot read grouped gate control")
 	}
 	if key.AllowsModel("alpha") {
-		t.Error("candidate reader enabled AllowsModel")
-	}
-	if _, err := identity.VerifyKey(f.db, f.plain, f.at); err == nil {
-		t.Error("candidate reader enabled grouped VerifyKey")
-	}
-	for _, mode := range []string{"inherit_group", "subset"} {
-		limits := ""
-		if mode == "subset" {
-			limits = "alpha"
-		}
-		plain, key, err := identity.IssueKey(f.db, identity.IssueKeyInput{OrgID: 1, Name: "must-not-issue", RoutingGroupID: &f.group, ModelAccessMode: &mode, ModelLimits: limits})
-		if err == nil || plain != "" || key != nil {
-			t.Error("grouped IssueKey opened by candidate implementation")
-		}
-	}
-	if !reflect.DeepEqual(before, routingAdminFingerprints(t, f.db, "api_keys", "routing_policy_events")) {
-		t.Error("grouped gate checks changed Key/event facts")
+		t.Error("value-only AllowsModel authorized a grouped key")
 	}
 }
 

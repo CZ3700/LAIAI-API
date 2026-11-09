@@ -14,6 +14,12 @@ info:
     结果链接有效期由上游决定；读取任务时使用平台 Key，访问结果链接时不得附带平台 Key。
     未配置默认禁用；标准 2.0/2.5 与 2.0 Fast/Mini 出现在契约中不代表账号已取得官方能力或模型已上线。
     GET 要求 video:read，POST/PATCH/DELETE（含预估）要求 video:write；video:* 或 * 覆盖二者。
+    素材接口沿用视频读写 scope。有效默认路由组下新 Key 继承组模型授权和视频读写 scope；
+    分组 Key 的新素材操作还需要管理员关联的官方素材项目。
+    分组 Key 支持通用 relay 的 Chat、Anthropic Messages、Responses、Embeddings、Rerank、Images、Audio、Realtime
+    及官方 Seedance 视频/素材；旧版 Task/MJ 任务入口仍拒绝分组 Key，须使用 legacy Key。
+    具名用户任务 RPM、在途数、日/月任务数和 USD 金额额度跨其全部 Key 生效。
+    供应商主账号与基础模型的官方限额可同步，人工上限只会收紧有效额度。
     POST 创建、取消、素材创建、授权创建、素材 PATCH 和单素材 DELETE 要求 Idempotency-Key；唯一作用域为
     (org_id, HTTP method, normalized canonical resource path, HMAC-SHA256(Idempotency-Key))。
     路径包含实际资源 ID；哈希针对幂等键而非 Gateway Key。同组织 Key 轮换不会重新派单，
@@ -48,6 +54,10 @@ tags:
     description: 平台素材及素材组
   - name: PortraitAuthorization
     description: 真人 H5 授权流程
+  - name: VideoControlPlane
+    description: 组织会话的 Key 视频能力查询；使用控制台会话令牌
+  - name: VideoAdministration
+    description: 具名平台超管的官方视频配置；使用控制台会话令牌
 paths:
   /v1/video/models:
     get:
@@ -115,6 +125,8 @@ paths:
         不声明外部 URL 不可变；已登记不可变素材或 asset:// 引用可使用可信测量时长。后续结算依官方用量证据。
         参数名沿 Ark 方言，平台严格按已验证模型能力允许的参数组合透传。
         HTTP 超时不等于生成失败；重试时必须复用同一 Idempotency-Key。
+        已配置官方回调时平台注入逐任务 callback_url，以通知触发权威任务查询；
+        缺少可用回调时约 110–130 秒兜底查询，回调正文不直接确定状态或账单。
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -977,6 +989,260 @@ paths:
           description: state/会话/回跳目标无效、过期或已消费；无响应体。
         '503':
           $ref: '#/components/responses/Error'
+  /v1/video/ark-callbacks/{task_id}/{token}:
+    post:
+      tags: [Tasks]
+      operationId: receiveArkVideoCallbackHint
+      summary: 火山任务状态通知入口（仅供上游回调）
+      description: |
+        平台配置回调基础地址后逐任务注入 callback_url。此端点不使用 Gateway Key；
+        URL 中的逐任务 token 自行鉴别通知。通知仅触发平台以原凭据查询官方任务，
+        不直接决定任务状态、产物或客户账单。缺少可用回调时约 110–130 秒兜底查询；
+        未配置回调时约 10 秒轮询。客户端不可主动调用此端点。
+      security: []
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/TaskId'
+        - name: token
+          in: path
+          required: true
+          description: 平台生成的逐任务回调 token，不可作为客户凭证使用。
+          schema:
+            type: string
+            minLength: 32
+            maxLength: 32
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {}
+      responses:
+        '200':
+          description: 通知已保存，或畸形通知被确认丢弃；不代表任务已完成。
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  received:
+                    type: boolean
+        '404':
+          description: 未启用回调或 token 无效；无响应体。
+        '503':
+          description: 持久化通知失败，上游可重试。
+  /api/keys/video-access:
+    get:
+      tags: [VideoControlPlane]
+      operationId: getKeyVideoAccess
+      summary: 查询组织的视频 Key 签发就绪状态
+      description: 使用具名用户控制台会话及当前有效组织成员身份；不能用 Gateway Key。
+      security:
+        - ConsoleSession: []
+      responses:
+        '200':
+          description: 视频执行策略与组织默认路由组状态。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyVideoAccess'
+        '401':
+          description: 控制台会话缺失或过期。
+        '403':
+          description: 当前组织成员身份失效。
+  /api/admin/video/group-asset-projects/{group_id}:
+    get:
+      tags: [VideoAdministration]
+      operationId: getVideoGroupAssetProject
+      summary: 查询路由组关联的官方素材项目
+      description: 具名有效的平台超管会话；未建立关联时返回 404。
+      security:
+        - ConsoleSession: []
+      parameters:
+        - $ref: '#/components/parameters/AdminRoutingGroupId'
+      responses:
+        '200':
+          description: 当前素材项目关联。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupAssetProjectResponse'
+        '404':
+          description: 关联不存在。
+    put:
+      tags: [VideoAdministration]
+      operationId: putVideoGroupAssetProject
+      summary: 以 revision 检查更新路由组素材项目关联
+      description: |
+        仅启用的平台路由组可关联已就绪且身份匹配的官方素材 scope；
+        新素材操作使用此关联，不回退到组织或全局默认项目；历史素材不迁移。
+        需要具名有效的平台超管会话。
+      security:
+        - ConsoleSession: []
+      parameters:
+        - $ref: '#/components/parameters/AdminRoutingGroupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupAssetProjectPut'
+      responses:
+        '200':
+          description: 已保存的关联与新 revision。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupAssetProjectResponse'
+        '409':
+          description: revision 冲突。
+        '422':
+          description: 组渠道或官方素材 scope 未就绪、身份不匹配。
+  /api/admin/video/orgs/{org_id}/users/{user_id}/limits:
+    get:
+      tags: [VideoAdministration]
+      operationId: getVideoUserLimits
+      summary: 查询组织内具名用户的视频任务与 USD 额度
+      security:
+        - ConsoleSession: []
+      parameters:
+        - $ref: '#/components/parameters/AdminOrgId'
+        - $ref: '#/components/parameters/AdminUserId'
+      responses:
+        '200':
+          description: 当前配置；未配置时 configured=false、limits.version=0。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoUserLimitsResponse'
+    put:
+      tags: [VideoAdministration]
+      operationId: putVideoUserLimits
+      summary: 全量设置具名用户的视频任务与 USD 额度
+      description: |
+        跨此用户的全部 Key 生效；四个任务额度字段的 0 表示无限额。
+        USD 字段省略或 null 表示无限额。日/月任务数按 IANA 时区统计；
+        已配置记录的时区不可通过更新改变。策略更新不清空历史使用量。
+        需要具名有效的平台超管会话。
+      security:
+        - ConsoleSession: []
+      parameters:
+        - $ref: '#/components/parameters/AdminOrgId'
+        - $ref: '#/components/parameters/AdminUserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoUserLimitsPut'
+      responses:
+        '200':
+          description: 已保存的额度与新 version。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoUserLimitsResponse'
+        '409':
+          description: version 或已配置时区冲突。
+  /api/admin/video/provider-scopes/{scope_id}/model-rate-limits/sync:
+    post:
+      tags: [VideoAdministration]
+      operationId: syncVideoProviderModelRateLimits
+      summary: 从火山同步供应商账号的基础模型官方额度
+      description: |
+        使用已配置的管理 AK/SK 调用 ListModelRateLimit；需要具名有效的平台超管会话。
+        同步失败保留先前官方快照和有效额度，不提高上限。
+      security:
+        - ConsoleSession: []
+      parameters:
+        - $ref: '#/components/parameters/AdminProviderScopeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [foundation_model_names]
+              properties:
+                foundation_model_names:
+                  type: array
+                  minItems: 1
+                  maxItems: 32
+                  items:
+                    $ref: '#/components/schemas/FoundationModelName'
+      responses:
+        '200':
+          description: 已更新的账号与基础模型额度行。
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [quotas]
+                properties:
+                  quotas:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProviderModelQuota'
+        '409':
+          description: 管理 scope 未配置。
+        '503':
+          description: 官方同步失败，保留原快照。
+  /api/admin/video/provider-accounts/{account_ref}/model-rate-limits/{foundation_model}:
+    get:
+      tags: [VideoAdministration]
+      operationId: getVideoProviderModelRateLimit
+      summary: 查询账号与基础模型的官方、人工及有效额度
+      description: |
+        official_stale 在官方观测时间缺失、晚于当前时间或距今超过 30 分钟时为 true。
+        旧快照仍作为保守上限；未初始化记录返回 404。需要具名有效的平台超管会话。
+      security:
+        - ConsoleSession: []
+      parameters:
+        - $ref: '#/components/parameters/AdminProviderAccountRef'
+        - $ref: '#/components/parameters/AdminFoundationModel'
+      responses:
+        '200':
+          description: 官方快照、人工上限、有效额度及新鲜度标记。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderModelQuotaResponse'
+        '404':
+          description: 账号/模型额度尚未初始化。
+  /api/admin/video/provider-accounts/{account_ref}/model-rate-limits/{foundation_model}/manual:
+    put:
+      tags: [VideoAdministration]
+      operationId: putVideoProviderModelManualRateLimit
+      summary: 以 version 检查更新人工额度上限
+      description: |
+        各字段为非负整数或 null；省略或 null 表示清除该项人工上限。有效额度按官方值和人工值取更严格者，
+        0 是实际禁止额度；4K 同时占用总额度与 4K 子额度。
+        需要具名有效的平台超管会话。
+      security:
+        - ConsoleSession: []
+      parameters:
+        - $ref: '#/components/parameters/AdminProviderAccountRef'
+        - $ref: '#/components/parameters/AdminFoundationModel'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderModelManualQuotaPut'
+      responses:
+        '200':
+          description: 已保存的上限、新 version、有效额度与官方快照新鲜度。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderModelQuotaResponse'
+        '409':
+          description: manual_version 冲突。
 components:
   securitySchemes:
     GatewayKey:
@@ -984,12 +1250,60 @@ components:
       scheme: bearer
       bearerFormat: LAIAI Gateway API Key
       description: 平台签发的下游 Key，绝不使用或返回火山官方 Key。
+    ConsoleSession:
+      type: http
+      scheme: bearer
+      bearerFormat: LAIAI Session Token
+      description: 控制台登录会话令牌。视频超管配置要求具名有效的超管身份；Gateway Key 与共享 X-Admin-Token 不可代替。
   headers:
     IdempotencyReplayed:
       description: true 表示幂等重放已有结果，没有重复创建或冻结。
       schema:
         type: boolean
   parameters:
+    AdminRoutingGroupId:
+      name: group_id
+      in: path
+      required: true
+      description: 平台路由组数值 ID，非素材组 ag_ ID。
+      schema:
+        type: integer
+        minimum: 1
+    AdminOrgId:
+      name: org_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    AdminUserId:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    AdminProviderScopeId:
+      name: scope_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    AdminProviderAccountRef:
+      name: account_ref
+      in: path
+      required: true
+      description: 已登记的供应商主账号引用，不是密钥或 AK/SK。
+      schema:
+        type: string
+        minLength: 1
+    AdminFoundationModel:
+      name: foundation_model
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/FoundationModelName'
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -2290,3 +2604,234 @@ components:
         request_id:
           type: string
           description: 平台请求 ID。
+    FoundationModelName:
+      type: string
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+      description: 火山基础模型名，区别于平台公开的 seedance-2.5 等模型名。
+    KeyVideoAccess:
+      type: object
+      additionalProperties: false
+      required: [state, can_enable, grouped_issuance_enabled, default_group_configured, default_group_state, default_group]
+      properties:
+        state:
+          type: string
+          enum: [unavailable, disabled, not_configured, enabled]
+        can_enable:
+          type: boolean
+        grouped_issuance_enabled:
+          type: boolean
+        default_group_configured:
+          type: boolean
+        default_group_state:
+          type: string
+          enum: [none, inactive, active]
+        default_group:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [id, name]
+          properties:
+            id:
+              type: integer
+              minimum: 1
+            name:
+              type: string
+    GroupAssetProjectPut:
+      type: object
+      additionalProperties: false
+      required: [provider_scope_id, scope_version, expected_revision]
+      properties:
+        provider_scope_id:
+          type: integer
+          minimum: 1
+        scope_version:
+          type: integer
+          minimum: 1
+        expected_revision:
+          type: integer
+          minimum: 0
+    GroupAssetProjectResponse:
+      type: object
+      additionalProperties: false
+      required: [project]
+      properties:
+        project:
+          type: object
+          additionalProperties: false
+          required: [group_id, provider_scope_id, scope_version, revision, updated_at]
+          properties:
+            group_id:
+              type: integer
+              minimum: 1
+            provider_scope_id:
+              type: integer
+              minimum: 1
+            scope_version:
+              type: integer
+              minimum: 1
+            revision:
+              type: integer
+              minimum: 1
+            updated_at:
+              type: string
+              format: date-time
+    VideoUserLimitsPut:
+      type: object
+      additionalProperties: false
+      required: [expected_version, create_task_rpm, max_inflight_tasks, daily_task_limit, monthly_task_limit, timezone]
+      properties:
+        expected_version:
+          type: integer
+          minimum: 0
+        create_task_rpm:
+          type: integer
+          minimum: 0
+          maximum: 60000
+        max_inflight_tasks:
+          type: integer
+          minimum: 0
+          maximum: 100000
+        daily_task_limit:
+          type: integer
+          minimum: 0
+          maximum: 1000000000
+        monthly_task_limit:
+          type: integer
+          minimum: 0
+          maximum: 1000000000
+        timezone:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: IANA 时区；已配置记录不可更改。
+        daily_usd_limit:
+          type: [string, 'null']
+          description: 非负、最多八位小数；省略或 null 表示无日金额上限。
+        monthly_usd_limit:
+          type: [string, 'null']
+          description: 非负、最多八位小数；省略或 null 表示无月金额上限。
+    VideoUserLimitsResponse:
+      type: object
+      additionalProperties: false
+      required: [limits, daily_usd_limit, monthly_usd_limit]
+      properties:
+        configured:
+          type: boolean
+          description: GET 返回；是否已配置用户任务额度。
+        limits:
+          type: object
+          additionalProperties: false
+          required: [org_id, user_id, create_task_rpm, max_inflight_tasks, daily_task_limit, monthly_task_limit, timezone, version, updated_by, updated_at]
+          properties:
+            org_id:
+              type: integer
+            user_id:
+              type: integer
+            create_task_rpm:
+              type: integer
+            max_inflight_tasks:
+              type: integer
+            daily_task_limit:
+              type: integer
+            monthly_task_limit:
+              type: integer
+            timezone:
+              type: string
+            version:
+              type: integer
+            updated_by:
+              type: integer
+            updated_at:
+              type: string
+              format: date-time
+        daily_usd_limit:
+          type: [string, 'null']
+        monthly_usd_limit:
+          type: [string, 'null']
+    NullableQuotaNumber:
+      type: [integer, 'null']
+      minimum: 0
+      description: null 表示该来源未提供此项额度；0 是实际禁止额度。
+    ManualQuotaNumber:
+      type: [integer, 'null']
+      minimum: 0
+      maximum: 1000000
+      description: null 表示无该项人工上限；0 是实际禁止额度。
+    ProviderModelQuota:
+      type: object
+      additionalProperties: false
+      required: [account_ref, foundation_model, official_create_task_rpm, official_concurrent_requests, official_create_task_rpm_4k, official_concurrent_requests_4k, manual_create_task_rpm, manual_concurrent_requests, manual_create_task_rpm_4k, manual_concurrent_requests_4k, official_observed_at, manual_updated_at, manual_updated_by, manual_version, official_request_id]
+      properties:
+        account_ref:
+          type: string
+        foundation_model:
+          $ref: '#/components/schemas/FoundationModelName'
+        official_create_task_rpm:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+        official_concurrent_requests:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+        official_create_task_rpm_4k:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+        official_concurrent_requests_4k:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+        manual_create_task_rpm:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+        manual_concurrent_requests:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+        manual_create_task_rpm_4k:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+        manual_concurrent_requests_4k:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+        official_observed_at:
+          type: [string, 'null']
+          format: date-time
+        manual_updated_at:
+          type: [string, 'null']
+          format: date-time
+        manual_updated_by:
+          type: [integer, 'null']
+        manual_version:
+          type: integer
+        official_request_id:
+          type: string
+    ProviderModelQuotaEffective:
+      type: object
+      additionalProperties: false
+      required: [create_task_rpm, concurrent_requests, create_task_rpm_4k, concurrent_requests_4k]
+      properties:
+        create_task_rpm:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+        concurrent_requests:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+        create_task_rpm_4k:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+        concurrent_requests_4k:
+          $ref: '#/components/schemas/NullableQuotaNumber'
+    ProviderModelQuotaResponse:
+      type: object
+      additionalProperties: false
+      required: [quota, effective, official_stale]
+      properties:
+        quota:
+          $ref: '#/components/schemas/ProviderModelQuota'
+        effective:
+          $ref: '#/components/schemas/ProviderModelQuotaEffective'
+        official_stale:
+          type: boolean
+          description: 官方观测缺失、晚于当前时间或超过 30 分钟时为 true；旧快照仍生效。
+    ProviderModelManualQuotaPut:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version:
+          type: integer
+          minimum: 0
+          description: 当前 manual_version。
+        create_task_rpm:
+          $ref: '#/components/schemas/ManualQuotaNumber'
+        concurrent_requests:
+          $ref: '#/components/schemas/ManualQuotaNumber'
+        create_task_rpm_4k:
+          $ref: '#/components/schemas/ManualQuotaNumber'
+        concurrent_requests_4k:
+          $ref: '#/components/schemas/ManualQuotaNumber'

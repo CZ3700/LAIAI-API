@@ -100,7 +100,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "n must be between 1 and 10")
 		return
 	}
-	if code, msg, ok := r.gateKey(key, c.ClientIP(), req.Model); !ok { // Key 精细管控（0012）
+	if code, msg, ok := r.gateRelayKey(c.Request.Context(), key, c.ClientIP(), req.Model); !ok { // Key 精细管控（0012）
 		relayErr(c, code, msg)
 		return
 	}
@@ -180,7 +180,7 @@ func (r *Relay) HandleImages(c *gin.Context) {
 		return upReq, nil
 	}
 	resp, ch, aborted := r.forwardWithFailover(c, inv, finish, forwardOpts{
-		model: req.Model, hold: hold, unsupported: errImagesUnsupported, modality: "image generation", logLabel: "images", policy: resolveRoutePolicy(c, key), build: build,
+		model: req.Model, key: key, hold: hold, unsupported: errImagesUnsupported, modality: "image generation", logLabel: "images", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if aborted {
 		return

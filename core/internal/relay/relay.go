@@ -386,9 +386,8 @@ func keyGate(key *identity.APIKey, clientIP, model string) (int, string, bool) {
 	return 0, "", true
 }
 
-// gateKey：数据面 key 级准入唯一入口 = keyGate 三项 + key 级 RPM（0041）。
-// 全部数据面模态（chat/embeddings/images/edits/rerank/audio/realtime）与 task（经 GateKey）
-// 共用本入口——未来新增 key 级门（如 key 级并发）也加在这里，不散落 handler。
+// gateKey preserves legacy key admission and the exported task gate. Grouped
+// relay handlers use gateRelayKey with an authoritative model observation.
 // 429 的 Retry-After 头由 relayErr 统一设置。
 func (r *Relay) gateKey(key *identity.APIKey, clientIP, model string) (int, string, bool) {
 	if code, msg, ok := keyGate(key, clientIP, model); !ok {
@@ -405,6 +404,28 @@ func (r *Relay) gateKey(key *identity.APIKey, clientIP, model string) (int, stri
 // 限流窗口（Redis 或进程内），不另建第二套状态。
 func (r *Relay) GateKey(key *identity.APIKey, clientIP, model string) (code int, msg string, ok bool) {
 	return r.gateKey(key, clientIP, model)
+}
+
+// GateOfficialVideoKey applies the key's IP, monetary quota and RPM controls.
+// A grouped key's model and bound channel are checked by the calling video
+// or relay admission path before this model-independent control runs.
+func (r *Relay) GateOfficialVideoKey(key *identity.APIKey, clientIP, model string) (code int, msg string, ok bool) {
+	if key == nil {
+		return http.StatusUnauthorized, "invalid api key", false
+	}
+	if key.ModelAccessMode != identity.ModelAccessInheritGroup {
+		return r.gateKey(key, clientIP, model)
+	}
+	if !key.AllowsIP(clientIP) {
+		return http.StatusForbidden, "this api key is not allowed from your ip address", false
+	}
+	if key.QuotaExhausted() {
+		return http.StatusPaymentRequired, "this api key has reached its quota limit", false
+	}
+	if !r.allowKeyRate(key.ID, key.RPMLimit) {
+		return http.StatusTooManyRequests, "this api key has exceeded its rpm limit, slow down", false
+	}
+	return 0, "", true
 }
 
 func (r *Relay) AllowModelRate(orgID uint64, model string) (ok bool, rpm int) {
@@ -606,8 +627,8 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model is required")
 		return
 	}
-	routePolicy := resolveRoutePolicy(c, key)                      // 路由策略（0043）：X-LAIAI-Route 头 > key 默认 > order
-	if code, msg, ok := r.gateKey(key, c.ClientIP(), model); !ok { // Key 精细管控（0012）
+	routePolicy := resolveRoutePolicy(c, key)                                                // 路由策略（0043）：X-LAIAI-Route 头 > key 默认 > order
+	if code, msg, ok := r.gateRelayKey(c.Request.Context(), key, c.ClientIP(), model); !ok { // Key 精细管控（0012）
 		relayErr(c, code, msg)
 		return
 	}
@@ -625,7 +646,7 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 	for i, m := range chain {
 		if i > 0 {
 			// 降级模型重新过模型白名单 + 模型级限流（IP/quota/key RPM 已在入口过、与模型无关）
-			if !key.AllowsModel(m) {
+			if !r.relayModelAllowed(c.Request.Context(), key, m) {
 				continue
 			}
 			if ok, _ := r.allowModelRate(key.OrgID, m); !ok {
@@ -853,12 +874,12 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 			break // 快照加载失败：当作无渠道，落循环后失败处理
 		}
 		var pickErr error
-		ch, pickErr = r.pickSnapshotPolicy(channelSnap, model, attempt, exclude, routePolicy, key.OrgID, pref)
+		ch, pickErr = r.pickRelayChannel(c.Request.Context(), key, channelSnap, model, attempt, exclude, routePolicy, pref)
 		if pickErr != nil {
 			if !breaker.reopen(exclude) {
 				break // 无渠道可用：落到循环后的失败处理
 			}
-			ch, pickErr = r.pickSnapshotPolicy(channelSnap, model, attempt, exclude, routePolicy, key.OrgID, pref)
+			ch, pickErr = r.pickRelayChannel(c.Request.Context(), key, channelSnap, model, attempt, exclude, routePolicy, pref)
 			if pickErr != nil {
 				break
 			}

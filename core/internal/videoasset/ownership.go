@@ -43,6 +43,16 @@ func callerFrom(ctx context.Context) (CreateContext, bool) {
 	c, ok := ctx.Value(callerContextKey{}).(CreateContext)
 	return c, ok
 }
+
+// CallerRouteIdentity exposes only the authenticated routing identity to the
+// host resolver. It never exposes credentials or grants access by itself.
+func CallerRouteIdentity(ctx context.Context, org uint64) (keyID uint64, session bool, known bool) {
+	c, ok := callerFrom(ctx)
+	if !ok || !validCaller(c, org) {
+		return 0, false, false
+	}
+	return c.KeyID, c.CallerKind == "session_user", true
+}
 func validCaller(c CreateContext, org uint64) bool {
 	return org > 0 && c.OrgID == org && (c.UserID > 0 || c.KeyID > 0) && (!c.Superadmin || c.CallerKind == "session_user" && c.UserID > 0 && c.KeyID == 0)
 }

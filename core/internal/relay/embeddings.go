@@ -121,7 +121,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model and input are required")
 		return
 	}
-	if code, msg, ok := r.gateKey(key, c.ClientIP(), req.Model); !ok { // Key 精细管控（0012）
+	if code, msg, ok := r.gateRelayKey(c.Request.Context(), key, c.ClientIP(), req.Model); !ok { // Key 精细管控（0012）
 		relayErr(c, code, msg)
 		return
 	}
@@ -189,7 +189,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 		return upReq, nil
 	}
 	resp, ch, aborted := r.forwardWithFailover(c, inv, finish, forwardOpts{
-		model: req.Model, hold: hold, unsupported: errEmbeddingsUnsupported, modality: "embeddings", logLabel: "embeddings", policy: resolveRoutePolicy(c, key), build: build,
+		model: req.Model, key: key, hold: hold, unsupported: errEmbeddingsUnsupported, modality: "embeddings", logLabel: "embeddings", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if aborted {
 		return

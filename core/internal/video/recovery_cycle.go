@@ -119,10 +119,11 @@ const (
 	workerCycleRecovery
 	workerCycleDispatch
 	workerCycleSettlement
+	workerCycleQuery
 	workerCycleKindCount
 )
 
-var workerCycleNames = [...]string{"combined", "recovery", "dispatch", "settlement"}
+var workerCycleNames = [...]string{"combined", "recovery", "dispatch", "settlement", "query"}
 
 type workerCycleCounters struct{ started, completed, errors uint64 }
 

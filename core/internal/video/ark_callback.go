@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,17 +19,18 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Ark 回调通道（2026-11-06 起量准备）：火山状态回调只是“通知”，不是事实源。
-// 端点做四步廉价校验（特性开关、task_id 形态、HMAC token、幂等落库）后立即
-// ACK；消费端对未绑定任务执行三重证明恢复（token ① + safety_identifier 回显
-// ② + 权威 GET ③），绑定后交给轮询管道做权威结算。已绑定任务的 hint 直接
-// ACK 丢弃——轮询是地面真相层，回调故障等于回到纯轮询现状，零堆积风险。
+// Ark callbacks are durable query triggers, never status or billing facts.
+// The normal bound path schedules an authoritative GET immediately. A per-task
+// watchdog still queries after about two minutes without a usable callback.
 
 const (
 	arkCallbackTokenDomain    = "ark-callback-token:v1"
 	arkSafetyIdentifierDomain = "ark-safety-identifier:v1"
 	arkCallbackHintMaxBytes   = 64 << 10
 	stalePendingUsageHorizon  = 7 * 24 * time.Hour
+	callbackHintBatch         = 100
+	callbackHintWorkers       = 16
+	callbackVerifyMaxAttempts = 12
 )
 
 func (s *Service) arkCallbackToken(taskID string) string {
@@ -49,8 +52,7 @@ func (s *Service) arkSafetyIdentifier(taskID string) string {
 
 // HandleArkCallback is the public, unauthenticated hint receiver. Nothing in
 // the hint touches billing: it only schedules an authoritative query through
-// the normal pipeline. Invalid tokens cost one row lookup; duplicate hints
-// collapse on the (task_id, body_hash) unique key.
+// the normal pipeline. The task-unique row and revision are updated atomically.
 func (s *Service) HandleArkCallback(c *gin.Context) {
 	if s.ArkCallbackBase == "" {
 		c.Status(http.StatusNotFound)
@@ -70,66 +72,155 @@ func (s *Service) HandleArkCallback(c *gin.Context) {
 	sum := digest(s.Secret, "ark-callback-body:v1", string(body))
 	excerpt := string(body)
 	if len(excerpt) > 4096 {
-		excerpt = excerpt[:4096]
+		// Keep the recovery fields intact even when the provider sends a large
+		// notification whose id appears after the audit excerpt boundary.
+		var identity struct {
+			ID               string `json:"id"`
+			SafetyIdentifier string `json:"safety_identifier"`
+		}
+		if json.Unmarshal(body, &identity) == nil {
+			if compact, marshalErr := json.Marshal(identity); marshalErr == nil {
+				excerpt = string(compact)
+			}
+		}
+		if len(excerpt) > 4096 {
+			excerpt = excerpt[:4096]
+		}
 	}
-	// One row per task, always the latest callback: delete-then-insert keeps
-	// the table O(tasks) instead of O(callbacks) without a DDL change. The
-	// unique key (task_id, body_hash) still collapses exact duplicates.
-	res := s.DB.WithContext(c.Request.Context()).
-		Where("task_id = ?", taskID).
-		Delete(&CallbackHint{})
-	if res.Error == nil {
-		hint := CallbackHint{TaskID: taskID, BodyHash: sum, BodyExcerpt: excerpt, ReceivedAt: s.Now().UTC()}
-		res = s.DB.WithContext(c.Request.Context()).Create(&hint)
+	// A single upsert keeps the latest notification without a delete/insert
+	// gap. A concurrent consumer can acknowledge only the revision it read.
+	now := s.Now().UTC()
+	hint := CallbackHint{TaskID: taskID, BodyHash: sum, BodyExcerpt: excerpt, ReceivedAt: now, Revision: 1}
+	err = s.DB.WithContext(c.Request.Context()).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "task_id"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"body_hash": sum, "body_excerpt": excerpt, "received_at": now,
+			"processed_at": nil, "result": "", "retry_at": nil, "attempts": 0,
+			"revision": gorm.Expr("revision + 1"),
+		}),
+	}).Create(&hint).Error
+	if err != nil {
+		// Ark can retry terminal callbacks only when delivery did not succeed.
+		// The two-minute watchdog still protects tasks after those retries end.
+		s.Log.Warn("ark callback hint store unavailable", "task", taskID)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"received": false})
+		return
 	}
-	if res.Error == nil {
-		s.Log.Info("ark callback hint updated", "task", taskID)
-	}
-	// 存储抖动也 ACK：正确性归轮询管道（回调只是通知，不是事实源）。
 	c.JSON(http.StatusOK, gin.H{"received": true})
 }
 
-// ProcessCallbackHints consumes received hints. Bound/terminal tasks are
-// acknowledged and dropped; submission_unknown tasks run the three-proof
-// recovery and bind the upstream id for the normal poll pipeline to settle.
+type callbackHintOutcome struct {
+	result       string
+	retryAfter   time.Duration
+	countAttempt bool
+}
+
+func callbackRetry(result string, delay time.Duration, count bool) callbackHintOutcome {
+	return callbackHintOutcome{result: result, retryAfter: delay, countAttempt: count}
+}
+
+// ProcessCallbackHints turns notifications into due authoritative queries.
+// Revision-fenced acknowledgment leaves a newer callback pending even if it
+// arrives while this batch is processing. Slow unknown-ID verification cannot
+// hold up bound tasks or the separate create dispatcher.
 func (s *Service) ProcessCallbackHints(ctx context.Context) error {
 	if s.ArkCallbackBase == "" {
 		return nil
 	}
 	var hints []CallbackHint
-	if err := s.DB.WithContext(ctx).Where("processed_at IS NULL").Order("id").Limit(10).Find(&hints).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Where("processed_at IS NULL AND (retry_at IS NULL OR retry_at <= UTC_TIMESTAMP(3))").Order("retry_at, id").Limit(callbackHintBatch).Find(&hints).Error; err != nil {
 		return err
 	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, callbackHintWorkers)
+	var mu sync.Mutex
+	var failures []error
 	for _, hint := range hints {
-		result := s.processCallbackHint(ctx, hint)
-		s.DB.WithContext(ctx).Model(&CallbackHint{}).Where("id = ? AND processed_at IS NULL", hint.ID).
-			Updates(map[string]any{"processed_at": s.Now().UTC(), "result": result})
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(hint CallbackHint) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			outcome, err := s.processCallbackHint(ctx, hint)
+			if finishErr := s.finishCallbackHint(ctx, hint, outcome); finishErr != nil {
+				err = errors.Join(err, finishErr)
+			}
+			if err != nil {
+				s.Log.Warn("ark callback hint deferred", "task", hint.TaskID, "result", outcome.result)
+				mu.Lock()
+				failures = append(failures, err)
+				mu.Unlock()
+			}
+		}(hint)
 	}
-	return nil
+	wg.Wait()
+	return errors.Join(append(failures, ctx.Err())...)
 }
 
-func (s *Service) processCallbackHint(ctx context.Context, hint CallbackHint) string {
+func (s *Service) finishCallbackHint(ctx context.Context, hint CallbackHint, outcome callbackHintOutcome) error {
+	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		now, err := authorityTimeTx(tx)
+		if err != nil {
+			return err
+		}
+		updates := map[string]any{"result": outcome.result}
+		if outcome.retryAfter > 0 {
+			updates["retry_at"] = now.Add(outcome.retryAfter)
+			if outcome.countAttempt {
+				updates["attempts"] = gorm.Expr("attempts + 1")
+			}
+		} else {
+			updates["processed_at"] = now
+			updates["retry_at"] = nil
+		}
+		// RowsAffected=0 means a newer revision won and still needs processing.
+		return tx.Model(&CallbackHint{}).Where("id = ? AND revision = ? AND processed_at IS NULL", hint.ID, hint.Revision).Updates(updates).Error
+	})
+}
+
+func (s *Service) processCallbackHint(ctx context.Context, hint CallbackHint) (callbackHintOutcome, error) {
 	// token 已在端点验证过 task 身份；这里先按 task_id 定位 org（token 校验
 	// 已隐含成员关系），再走带租户的加载。
 	var located task.Task
 	if err := s.DB.WithContext(ctx).Select("org_id", "task_id", "provider").Where("task_id = ?", hint.TaskID).Take(&located).Error; err != nil {
-		return "task_missing"
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return callbackHintOutcome{result: "task_missing"}, nil
+		}
+		return callbackRetry("lookup_unavailable", 10*time.Second, false), err
 	}
 	t, st, err := loadTask(s.DB.WithContext(ctx), located.OrgID, hint.TaskID, false)
 	if err != nil {
-		return "task_missing"
+		if errors.Is(err, ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
+			return callbackHintOutcome{result: "task_missing"}, nil
+		}
+		return callbackRetry("lookup_unavailable", 10*time.Second, false), err
 	}
 	if t.Provider != Provider {
-		return "task_missing"
+		return callbackHintOutcome{result: "task_missing"}, nil
 	}
 	if t.UpstreamTaskID != "" {
-		return "ack_bound" // 正常任务：轮询拥有它，hint 仅 ACK。
+		result, err := s.scheduleCallbackQuery(ctx, t.OrgID, t.TaskID)
+		if err != nil {
+			return callbackRetry("schedule_unavailable", 10*time.Second, false), err
+		}
+		if result == "await_binding" || result == "query_inflight" {
+			return callbackRetry(result, 5*time.Second, false), nil
+		}
+		return callbackHintOutcome{result: result}, nil
 	}
 	if terminal(t.Status) && financialFinal(st.BillingState) {
-		return "ack_final"
+		return callbackHintOutcome{result: "ack_final"}, nil
 	}
 	if t.Status != "submission_unknown" {
-		return "ack_state"
+		if t.Status == "accepted" || t.Status == "submitting" {
+			// A callback may win the race with the create receipt. Preserve it
+			// until either the upstream ID is bound or the create is unknown.
+			return callbackRetry("await_binding", 5*time.Second, false), nil
+		}
+		return callbackHintOutcome{result: "ack_state"}, nil
 	}
 	// body 必须携带任务 id；safety_identifier 出现时必须与我们派发的派生值一致。
 	var body struct {
@@ -137,34 +228,103 @@ func (s *Service) processCallbackHint(ctx context.Context, hint CallbackHint) st
 		SafetyIdentifier string `json:"safety_identifier"`
 	}
 	if json.Unmarshal([]byte(hint.BodyExcerpt), &body) != nil {
-		return "body_unreadable"
+		return callbackHintOutcome{result: "body_unreadable"}, nil
 	}
 	if !ark.UpstreamIDMatch(body.ID) {
-		return "no_id"
+		return callbackHintOutcome{result: "no_id"}, nil
 	}
 	want := s.arkSafetyIdentifier(hint.TaskID)
 	if body.SafetyIdentifier != "" && subtle.ConstantTimeCompare([]byte(body.SafetyIdentifier), []byte(want)) != 1 {
 		s.Log.Warn("ark callback safety_identifier mismatch", "task", hint.TaskID)
-		return "forged_si"
+		return callbackHintOutcome{result: "forged_si"}, nil
 	}
 	// 证明 ③：先用我们的凭据对回显 id 做一次权威查询——查不到/身份不符不绑定。
 	client, err := s.clientFor(ctx, t, st)
 	if err != nil {
-		return "verify_unavailable"
+		return callbackRetry("verify_unavailable", 10*time.Second, false), err
 	}
+	allowed := false
+	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var gateErr error
+		allowed, gateErr = s.rateTx(tx, st.ProviderScopeID, "query")
+		return gateErr
+	}); err != nil {
+		return callbackRetry("query_gate_unavailable", 10*time.Second, false), err
+	}
+	if !allowed {
+		return callbackRetry("query_gate_wait", 3*time.Second, false), nil
+	}
+	started := time.Now()
 	response := client.Query(ctx, body.ID)
-	if response.Outcome != ark.OutcomeAccepted || response.Observation == nil || response.Observation.TaskID != body.ID {
-		return "verify_failed"
+	s.observeAdapterCall("query", response, started)
+	if response.Outcome != ark.OutcomeAccepted || response.Observation == nil {
+		if hint.Attempts+1 >= callbackVerifyMaxAttempts {
+			return callbackHintOutcome{result: "verify_exhausted"}, nil
+		}
+		return callbackRetry("verify_retry", callbackVerifyDelay(hint.Attempts), true), nil
+	}
+	if response.Observation.TaskID != body.ID {
+		return callbackHintOutcome{result: "verify_mismatch"}, nil
 	}
 	if err := s.bindUnknownUpstreamTx(ctx, t, st, body.ID); err != nil {
 		if err == ErrConflict {
-			return "binding_conflict"
+			return callbackRetry("binding_conflict", 5*time.Second, false), nil
 		}
 		s.Log.Warn("ark callback bind failed", "task", hint.TaskID, "err", err)
-		return "bind_failed"
+		return callbackRetry("bind_failed", 10*time.Second, false), err
 	}
 	s.Log.Info("ark callback bound unknown task", "task", hint.TaskID, "upstream", body.ID)
-	return "bound"
+	return callbackHintOutcome{result: "bound"}, nil
+}
+
+func callbackVerifyDelay(attempts uint32) time.Duration {
+	if attempts > 6 {
+		attempts = 6
+	}
+	return min(time.Duration(5<<attempts)*time.Second, 5*time.Minute)
+}
+
+func (s *Service) scheduleCallbackQuery(ctx context.Context, org uint64, id string) (string, error) {
+	result := "ack_state"
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		t, st, err := loadTask(tx, org, id, true)
+		if err != nil {
+			return err
+		}
+		if t.Provider != Provider {
+			result = "task_missing"
+			return nil
+		}
+		if t.UpstreamTaskID == "" {
+			result = "await_binding"
+			return nil
+		}
+		if terminal(t.Status) && financialFinal(st.BillingState) {
+			result = "ack_final"
+			return nil
+		}
+		if t.Status != "queued" && t.Status != "running" && st.BillingState != "pending_usage" {
+			return nil
+		}
+		now, err := authorityTimeTx(tx)
+		if err != nil {
+			return err
+		}
+		if st.QueryLeaseUntil != nil && st.QueryLeaseUntil.After(now) {
+			// The in-flight GET may have started before this callback. Wait for
+			// its receipt, then schedule another GET if the task still needs it.
+			result = "query_inflight"
+			return nil
+		}
+		if st.NextPollAt.IsZero() || st.NextPollAt.After(now) {
+			if err := tx.Model(&State{}).Where("org_id = ? AND task_id = ?", org, id).Update("next_poll_at", now).Error; err != nil {
+				return err
+			}
+		}
+		result = "query_due"
+		return nil
+	})
+	return result, err
 }
 
 // bindUnknownUpstreamTx binds the provider-echoed upstream id onto a

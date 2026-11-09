@@ -21,6 +21,8 @@ interface KeyRow {
   allow_ips: string
   rpm_limit: number
   route_policy: string
+	model_access_mode?: string
+	routing_group_id?: number | null
 }
 
 const { t, d } = useI18n()
@@ -44,12 +46,21 @@ const newExpiry = ref(0)
 const newRPM = ref(0) // key 级每分钟请求上限，0=不限（0041）
 const newRoute = ref('') // key 级路由策略，''=order 默认（0043）
 const newVideoPermission = ref<VideoPermissionChoice>('none')
-type VideoAccess = { state: 'enabled' | 'not_configured' | 'disabled' | 'unavailable'; can_enable: boolean }
+type VideoAccess = {
+  state: 'enabled' | 'not_configured' | 'disabled' | 'unavailable'
+  can_enable: boolean
+  grouped_issuance_enabled?: boolean
+  default_group_configured?: boolean
+  default_group_state?: 'none' | 'active' | 'inactive'
+  default_group?: { id: number; name: string } | null
+}
 const videoAccess = ref<VideoAccess | null>(null)
 const videoAccessLoading = ref(false)
 const enableVideoAsync = ref(false)
 let videoAccessEpoch = 0
-const videoWriteBlocked = computed(() => newVideoPermission.value === 'read_write' &&
+const groupKeyAvailable = computed(() => videoAccess.value?.grouped_issuance_enabled === true && !!videoAccess.value.default_group)
+const groupKeyConfigured = computed(() => videoAccess.value?.default_group_configured === true)
+const videoWriteBlocked = computed(() => groupKeyConfigured.value ? !groupKeyAvailable.value : newVideoPermission.value === 'read_write' &&
   (videoAccessLoading.value || !videoAccess.value || (videoAccess.value.state !== 'enabled' &&
     !(videoAccess.value.state === 'not_configured' && videoAccess.value.can_enable && enableVideoAsync.value))))
 
@@ -179,8 +190,8 @@ function openCreate() {
   void loadVideoAccess()
 }
 function buildKeyBody(): Record<string, unknown> {
-  return buildKeyCreateBody({ name: newName.value, quota: newQuota.value, models: newModels.value, ips: newIps.value,
-    expiry: newExpiry.value, rpm: newRPM.value, route: newRoute.value, videoPermission: newVideoPermission.value,
+  return buildKeyCreateBody({ name: newName.value, quota: newQuota.value, models: groupKeyConfigured.value ? '' : newModels.value, ips: newIps.value,
+    expiry: newExpiry.value, rpm: groupKeyConfigured.value ? 0 : newRPM.value, route: groupKeyConfigured.value ? '' : newRoute.value, videoPermission: groupKeyConfigured.value ? 'none' : newVideoPermission.value,
     enableVideoAsync: videoAccess.value?.state === 'not_configured' && videoAccess.value.can_enable && enableVideoAsync.value })
 }
 async function doCreate(body: Record<string, unknown>, owner: KeyContext, stepUpToken?: string) {
@@ -355,11 +366,12 @@ onMounted(load)
               <span :class="videoPermission(k.scopes) === 'none' ? 'badge-muted' : 'badge-ok'">{{ t(permissionLabels[videoPermission(k.scopes)]) }}</span>
             </td>
             <td class="px-4 py-3 text-xs">
+			  <span v-if="k.model_access_mode === 'inherit_group'" class="badge-ok" :title="`路由组 #${k.routing_group_id}`">继承路由组 #{{ k.routing_group_id }}</span>
               <span v-if="k.model_limits" class="badge-muted" :title="k.model_limits">{{ t('keys.modelLimited') }}</span>
               <span v-if="k.allow_ips" class="badge-muted ml-1" :title="k.allow_ips">IP</span>
               <span v-if="k.rpm_limit > 0" class="badge-muted ml-1">{{ k.rpm_limit }} RPM</span>
               <span v-if="k.route_policy && k.route_policy !== 'order'" class="badge-muted ml-1">{{ k.route_policy }}</span>
-              <span v-if="!k.model_limits && !k.allow_ips && !(k.rpm_limit > 0) && (!k.route_policy || k.route_policy === 'order')" class="text-muted">—</span>
+              <span v-if="k.model_access_mode !== 'inherit_group' && !k.model_limits && !k.allow_ips && !(k.rpm_limit > 0) && (!k.route_policy || k.route_policy === 'order')" class="text-muted">—</span>
             </td>
             <td class="px-4 py-3 text-right font-mono text-xs">
               {{ fmtUsd(k.used_amount, { precision: 4 }) }}<span v-if="k.quota_limit !== '0'" class="text-muted"> / {{ fmtUsd(k.quota_limit, { precision: 2 }) }}</span>
@@ -402,7 +414,7 @@ onMounted(load)
         <div><dt>{{ t('keys.used') }}</dt><dd>{{ fmtUsd(selectedKey.used_amount) }}</dd></div><div><dt>{{ t('currency.quota', { currency: displayCurrencyCode() }) }}</dt><dd>{{ Number(selectedKey.quota_limit) === 0 ? '∞' : fmtUsd(selectedKey.quota_limit) }}</dd></div>
         <div><dt>expires_at</dt><dd>{{ selectedKey.expires_at ? d(new Date(selectedKey.expires_at), { dateStyle: 'short', timeStyle: 'medium' }) : '—' }}</dd></div>
         <div><dt>{{ t('keys.rpmLimit') }}</dt><dd>{{ selectedKey.rpm_limit || '∞' }}</dd></div><div><dt>{{ t('keys.routePolicy') }}</dt><dd>{{ selectedKey.route_policy || 'order' }}</dd></div>
-        <div class="col-span-2"><dt>{{ t('keys.modelLimitsField') }}</dt><dd>{{ selectedKey.model_limits || '—' }}</dd></div><div class="col-span-2"><dt>{{ t('keys.allowIps') }}</dt><dd>{{ selectedKey.allow_ips || '—' }}</dd></div>
+        <div class="col-span-2"><dt>{{ t('keys.modelLimitsField') }}</dt><dd>{{ selectedKey.model_access_mode === 'inherit_group' ? `继承管理员路由组 #${selectedKey.routing_group_id}` : (selectedKey.model_limits || '—') }}</dd></div><div class="col-span-2"><dt>{{ t('keys.allowIps') }}</dt><dd>{{ selectedKey.allow_ips || '—' }}</dd></div>
       </dl>
       <div class="mt-5 space-y-3 rounded-xl border border-line p-4">
         <p class="text-sm text-muted">{{ t('keys.videoNewKeyHint') }}</p>
@@ -430,7 +442,13 @@ onMounted(load)
           <label class="label" for="keyname">{{ t('keys.name') }}</label>
           <input id="keyname" v-model="newName" class="input" :placeholder="t('keys.namePlaceholder')" />
         </div>
-        <fieldset class="space-y-2" aria-describedby="key-video-permissions-hint">
+        <div v-if="groupKeyConfigured" class="rounded-lg border border-accent/30 bg-accent/5 p-3 text-sm">
+          <p class="font-medium">自动继承管理员路由组：{{ videoAccess?.default_group?.name }}</p>
+          <p class="mt-1 text-xs text-muted">模型和官方 Seedance 视频、素材接口权限由路由组与组织配置决定，无需逐项勾选。用户任务 RPM、并发和日月额度由管理员设置。</p>
+          <p v-if="videoAccess?.default_group_state === 'inactive'" class="mt-2 text-danger">默认路由组已失效，请管理员修复授权或渠道关联。</p>
+          <p v-else-if="videoAccess?.state !== 'enabled'" class="mt-2 text-danger">组织视频执行尚未开通，请管理员完成配置。</p>
+        </div>
+        <fieldset v-else class="space-y-2" aria-describedby="key-video-permissions-hint">
           <legend class="label">{{ t('keys.videoPermissionsTitle') }}</legend>
           <label v-for="choice in videoChoices" :key="choice" class="flex cursor-pointer items-start gap-3 rounded-lg border p-3" :class="newVideoPermission === choice ? 'border-accent bg-accent/5' : 'border-line'">
             <input v-model="newVideoPermission" type="radio" name="key-video-permission" :value="choice" class="mt-1 shrink-0 accent-accent" />
@@ -461,12 +479,12 @@ onMounted(load)
             <label class="label" for="keyexp">{{ t('keys.expiry') }}</label>
             <input id="keyexp" v-model.number="newExpiry" class="input" type="number" min="0" placeholder="0" />
           </div>
-          <div>
+          <div v-if="!groupKeyConfigured">
             <label class="label" for="keyrpm">{{ t('keys.rpmLimit') }}</label>
             <input id="keyrpm" v-model.number="newRPM" class="input" type="number" min="0" placeholder="∞" />
           </div>
         </div>
-        <div>
+        <div v-if="!groupKeyConfigured">
           <label class="label" for="keymodels">{{ t('keys.modelLimitsField') }}</label>
           <input id="keymodels" v-model="newModels" class="input font-mono text-xs" placeholder="gpt-5.2, claude-4" />
         </div>
@@ -474,7 +492,7 @@ onMounted(load)
           <label class="label" for="keyips">{{ t('keys.allowIps') }}</label>
           <input id="keyips" v-model="newIps" class="input font-mono text-xs" placeholder="1.2.3.4, 10.0.0.0/8" />
         </div>
-        <div>
+        <div v-if="!groupKeyAvailable">
           <label class="label" for="keyroute">{{ t('keys.routePolicy') }}</label>
           <select id="keyroute" v-model="newRoute" class="input">
             <option value="">{{ t('keys.routeOrder') }}</option>

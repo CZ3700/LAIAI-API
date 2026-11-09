@@ -21,6 +21,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+var errEnableVideoScope = errors.New("enable_video_async requires video write scope")
+
 type createKeyReq struct {
 	EnableVideoAsync bool            `json:"enable_video_async"`
 	Name             string          `json:"name"`
@@ -53,6 +55,11 @@ func (r createKeyReq) routing() (*string, *uint64, error) {
 		group = &value
 	}
 	_, err := identity.ValidateKeyRouting(mode, group, joinTrim(r.ModelLimits))
+	// The public endpoint never lets a caller choose or bypass a routing group.
+	// Grouped issuance is derived from the administrator's current org default.
+	if err == nil && mode != nil && *mode != identity.ModelAccessLegacy {
+		err = identity.ErrGroupRoutingDisabled
+	}
 	return mode, group, err
 }
 
@@ -97,10 +104,6 @@ func (s *Server) createKey(c *gin.Context) {
 	}
 	var plaintext string
 	var key *identity.APIKey
-	if req.EnableVideoAsync && !videoWriteScope(req.Scopes) {
-		fail(c, 400, "enable_video_async requires video write scope")
-		return
-	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		// Serialize key admission and first-time policy creation with admin policy writes.
 		var org identity.Organization
@@ -110,21 +113,44 @@ func (s *Server) createKey(c *gin.Context) {
 		if err := identity.VerifyActiveMembership(tx, claims.UserID, claims.OrgID); err != nil {
 			return err
 		}
+		effectiveScopes := req.Scopes
+		effectiveModels := joinTrim(req.ModelLimits)
+		group, err = routinggroup.DefaultKeyGroupTx(tx, claims.OrgID)
+		if err != nil {
+			return err
+		}
+		if group != nil {
+			if effectiveModels != "" {
+				return identity.ErrModelAccessLimits
+			}
+			inherit := identity.ModelAccessInheritGroup
+			mode = &inherit
+			// A grouped Seedance key receives both official video and asset
+			// API scopes. Group membership and org policies remain independent
+			// runtime gates; these scopes alone confer no model or project.
+			effectiveScopes = "video:read video:write"
+		}
+		if req.EnableVideoAsync && !videoWriteScope(effectiveScopes) {
+			return errEnableVideoScope
+		}
 		ent, err := identity.LoadEntitlements(tx, claims.OrgID)
 		if err != nil {
 			return err
 		}
-		if videoWriteScope(req.Scopes) {
-			if err := s.ensureKeyVideoAccess(tx, claims.OrgID, claims.UserID, req.EnableVideoAsync, ent); err != nil {
+		if videoWriteScope(effectiveScopes) {
+			// The administrator provisions grouped org execution policy. Only
+			// legacy issuance may use the owner's first-time consent shortcut.
+			consent := req.EnableVideoAsync && group == nil
+			if err := s.ensureKeyVideoAccess(tx, claims.OrgID, claims.UserID, consent, ent); err != nil {
 				return err
 			}
 		}
 		uid := claims.UserID
 		plaintext, key, err = identity.IssueKey(tx, identity.IssueKeyInput{
 			OrgID: claims.OrgID, UserID: &uid,
-			Name: req.Name, Scopes: req.Scopes, ExpiresAt: expires,
+			Name: req.Name, Scopes: effectiveScopes, ExpiresAt: expires,
 			QuotaLimit:      quota,
-			ModelLimits:     joinTrim(req.ModelLimits),
+			ModelLimits:     effectiveModels,
 			AllowIPs:        req.AllowIPs,
 			RPMLimit:        req.RPMLimit,
 			RoutePolicy:     req.RoutePolicy,
@@ -134,6 +160,18 @@ func (s *Server) createKey(c *gin.Context) {
 		})
 		return err
 	})
+	if errors.Is(err, errEnableVideoScope) {
+		fail(c, http.StatusBadRequest, errEnableVideoScope.Error())
+		return
+	}
+	if errors.Is(err, identity.ErrModelAccessLimits) {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model whitelist is inherited from the administrator's routing group", "code": identity.ErrModelAccessLimits.Error()})
+		return
+	}
+	if errors.Is(err, routinggroup.ErrInactive) || errors.Is(err, routinggroup.ErrOwnership) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "administrator routing group is inactive", "code": "routing_group_inactive"})
+		return
+	}
 	if replyKeyVideoError(c, err) {
 		return
 	}
@@ -168,7 +206,7 @@ func (s *Server) listKeys(c *gin.Context) {
 			"model_limits": k.ModelLimits, "allow_ips": k.AllowIPs, "rpm_limit": k.RPMLimit,
 			"route_policy":     k.RoutePolicy,
 			"routing_group_id": k.RoutingGroupID, "model_access_mode": k.ModelAccessMode, "policy_version": k.PolicyVersion,
-			"grouped_key_issuance_enabled": false,
+			"grouped_key_issuance_enabled": k.ModelAccessMode == identity.ModelAccessInheritGroup,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"keys": out})

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"time"
 
@@ -37,7 +38,29 @@ func (s *Service) ProcessDispatchOnce(ctx context.Context) (err error) {
 	return s.processDispatchOnce(ctx)
 }
 
+// ProcessOperationsOnce is the production create/mutation lane. Queries run on
+// their own cadence so slow Ark GETs cannot delay the next create batch.
+func (s *Service) ProcessOperationsOnce(ctx context.Context) (err error) {
+	finish := s.metrics().startCycleKind(workerCycleDispatch)
+	defer func() { finish(err) }()
+	return s.processOperationsOnce(ctx)
+}
+
+func (s *Service) ProcessQueryOnce(ctx context.Context) (err error) {
+	finish := s.metrics().startCycleKind(workerCycleQuery)
+	defer func() { finish(err) }()
+	return s.processQueryOnce(ctx)
+}
+
+// Preserve the combined entry for legacy callers and binary handoff tests.
 func (s *Service) processDispatchOnce(ctx context.Context) error {
+	if err := s.processOperationsOnce(ctx); err != nil {
+		return err
+	}
+	return s.processQueryOnce(ctx)
+}
+
+func (s *Service) processOperationsOnce(ctx context.Context) error {
 	m := s.metrics()
 	var ops []Operation
 	// Take the oldest candidates up to the send-gate capacity of one tick per
@@ -130,6 +153,11 @@ func (s *Service) processDispatchOnce(ctx context.Context) error {
 			s.Log.Warn("video operation needs recovery", "operation_id", op.ID)
 		}
 	}
+	return nil
+}
+
+func (s *Service) processQueryOnce(ctx context.Context) error {
+	m := s.metrics()
 	var rows []State
 	// The provider query gate admits one poll per interval_ms (50ms = 20/s
 	// under official Seedance quotas); a 2s tick can claim at most 40
@@ -142,18 +170,44 @@ func (s *Service) processDispatchOnce(ctx context.Context) error {
 	m.mu.Lock()
 	m.queryCandidates += uint64(len(rows))
 	m.mu.Unlock()
-	for _, st := range rows {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 12)
+	for i, st := range rows {
+		if err := ctx.Err(); err != nil {
+			break
 		}
-		if err := s.pollTask(ctx, st.OrgID, st.TaskID); err != nil {
-			m.mu.Lock()
-			m.queryErrors++
-			m.mu.Unlock()
-			s.Log.Warn("video query needs recovery", "task_id", st.TaskID)
-		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(st State, stagger time.Duration) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if stagger > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(stagger):
+				}
+			}
+			if err := s.pollTask(ctx, st.OrgID, st.TaskID); err != nil {
+				m.mu.Lock()
+				m.queryErrors++
+				m.mu.Unlock()
+				s.Log.Warn("video query needs recovery", "task_id", st.TaskID)
+			}
+		}(st, time.Duration(i)*60*time.Millisecond)
 	}
-	return nil
+	wg.Wait()
+	return ctx.Err()
+}
+
+func (s *Service) normalPollDelay(taskID string) time.Duration {
+	if s.ArkCallbackBase == "" {
+		return 10 * time.Second
+	}
+	// Stable 110..130s jitter spreads watchdog GETs after a create burst.
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(taskID))
+	return time.Duration(110+h.Sum32()%21) * time.Second
 }
 
 func (s *Service) pendingQueryCandidates(ctx context.Context) *gorm.DB {
@@ -163,7 +217,7 @@ func (s *Service) pendingQueryCandidates(ctx context.Context) *gorm.DB {
 }
 
 func (s *Service) pendingOperationCandidates(ctx context.Context) *gorm.DB {
-	query := supportedOperationRuntime(s.authorityQuery(ctx).Table("video_operations AS o").Select("o.*, ROW_NUMBER() OVER (PARTITION BY v.provider_scope_id, CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END ORDER BY o.created_at, o.id) AS scope_rank").Joins("JOIN tasks t ON t.org_id = o.org_id AND t.task_id = o.resource_id").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)").Joins("LEFT JOIN video_provider_rates p ON p.scope_id = v.provider_scope_id AND p.action = CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END").Where("o.status = ? AND t.provider = ? AND v.deleted_at IS NULL AND (p.next_allowed_at IS NULL OR p.next_allowed_at <= UTC_TIMESTAMP(3))", "pending", Provider).Where("(o.kind = ? AND t.status = ?) OR (o.kind = ? AND t.status NOT IN ?) OR (o.kind = ? AND t.status IN ?)", "create_task", "accepted", "cancel_task", []string{"submitting", "submission_unknown"}, "delete_task", []string{"succeeded", "failed", "cancelled", "expired"})
+	query := supportedOperationRuntime(s.authorityQuery(ctx).Table("video_operations AS o").Select("o.*, ROW_NUMBER() OVER (PARTITION BY v.provider_scope_id, CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END ORDER BY o.created_at, o.id) AS scope_rank").Joins("JOIN tasks t ON t.org_id = o.org_id AND t.task_id = o.resource_id").Joins("JOIN video_task_states v ON v.org_id = o.org_id AND v.task_id = o.resource_id")).Where("NOT EXISTS (SELECT 1 FROM video_execution_attempts ea WHERE ea.org_id = o.org_id AND ea.operation_id = o.id)").Joins("LEFT JOIN video_provider_rates p ON p.scope_id = v.provider_scope_id AND p.action = CASE WHEN o.kind = 'create_task' THEN 'create' ELSE 'delete' END").Where("o.status = ? AND t.provider = ? AND v.deleted_at IS NULL AND (o.next_dispatch_at IS NULL OR o.next_dispatch_at <= UTC_TIMESTAMP(3)) AND (p.next_allowed_at IS NULL OR p.next_allowed_at <= UTC_TIMESTAMP(3))", "pending", Provider).Where("(o.kind = ? AND t.status = ?) OR (o.kind = ? AND t.status NOT IN ?) OR (o.kind = ? AND t.status IN ?)", "create_task", "accepted", "cancel_task", []string{"submitting", "submission_unknown"}, "delete_task", []string{"succeeded", "failed", "cancelled", "expired"})
 	if s.MutationResponseInboxEnabled {
 		// Filter before ROW_NUMBER/LIMIT so a broken credential on one action
 		// cannot monopolize its scope. Definitive local cancel outcomes bypass
@@ -171,6 +225,11 @@ func (s *Service) pendingOperationCandidates(ctx context.Context) *gorm.DB {
 		query = query.Where("o.kind NOT IN ? OR o.error_code <> ? OR o.updated_at <= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 30 SECOND) OR (o.kind = ? AND t.status NOT IN ?)", []string{"cancel_task", "delete_task"}, mutationPreparationDeferredCode, "cancel_task", []string{"queued", "submitting", "submission_unknown"})
 	}
 	return query
+}
+
+func deferProviderSendTx(tx *gorm.DB, op Operation, until time.Time) error {
+	result := tx.Model(&Operation{}).Where("org_id = ? AND id = ? AND status = ? AND version = ?", op.OrgID, op.ID, "pending", op.Version).Update("next_dispatch_at", until)
+	return result.Error
 }
 
 // Call while holding the operation lock. Any registration, even a future
@@ -319,9 +378,16 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 	}
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var e error
+		quotaIdentity, e := s.prelockCreateQuotaIdentityTx(tx, op.OrgID, op.ResourceID)
+		if e != nil {
+			return e
+		}
 		t, st, e = loadTask(tx, op.OrgID, op.ResourceID, true)
 		if e != nil {
 			return e
+		}
+		if !quotaIdentity.matchesTaskState(t, st) {
+			return ErrUnavailable
 		}
 		if s.DispatchPaused() {
 			return ErrDispatchPaused
@@ -349,7 +415,38 @@ func (s *Service) processOperation(ctx context.Context, op Operation) error {
 			}
 		}
 		if validationErr == nil {
-			allowed, e := s.rateTx(tx, st.ProviderScopeID, "create")
+			var params TaskParameters
+			if e := tx.Where("org_id = ? AND task_id = ?", t.OrgID, t.TaskID).Take(&params).Error; e != nil || !quotaIdentity.matchesParameters(params) {
+				return ErrUnavailable
+			}
+			var effective ark.EffectiveParameters
+			if json.Unmarshal([]byte(params.ParametersJSON), &effective) != nil {
+				return ErrUnavailable
+			}
+			is4K := effective.Resolution == "4k"
+			if t.UserID != nil {
+				allowed, retryAt, gateErr := s.claimUserSendTx(tx, t.OrgID, *t.UserID, time.Now().UTC())
+				if gateErr != nil {
+					return gateErr
+				}
+				if !allowed {
+					return deferProviderSendTx(tx, op, retryAt)
+				}
+			}
+			if e := s.checkProviderModelConcurrencyTx(tx, params.AccountRef, t.Model, st.UpstreamModel, is4K, false); e != nil {
+				if !errors.Is(e, ErrProviderModelConcurrencyLimit) {
+					return e
+				}
+				return deferProviderSendTx(tx, op, time.Now().UTC().Add(5*time.Second))
+			}
+			allowed, retryAt, gateErr := s.claimProviderModelSendTx(tx, params.AccountRef, t.Model, st.UpstreamModel, is4K, time.Now().UTC())
+			if gateErr != nil {
+				return gateErr
+			}
+			if !allowed {
+				return deferProviderSendTx(tx, op, retryAt)
+			}
+			allowed, e = s.rateTx(tx, st.ProviderScopeID, "create")
 			if e != nil || !allowed {
 				return e
 			}
@@ -677,6 +774,9 @@ func (s *Service) applyCreateResultTx(tx *gorm.DB, t task.Task, st State, curren
 	if err != nil {
 		return err
 	}
+	if s.ArkCallbackBase != "" && (t.Status == "queued" || t.Status == "running") {
+		scheduleNow = scheduleNow.Add(s.normalPollDelay(t.TaskID))
+	}
 	st.ResponsePayloadRef = op.ReceiptRef
 	st.UpdatedAt = now
 	st.NextPollAt = scheduleNow
@@ -843,7 +943,7 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 			return e
 		}
 		if !allowed {
-			// The 1 req/s provider gate refused this candidate. Requeue it
+			// The provider query gate refused this candidate. Requeue it
 			// shortly with sequence-spread jitter instead of leaving
 			// next_poll_at in the past — otherwise the same bounded batch is
 			// re-claimed every tick as refused, effect-free transactions.
@@ -855,7 +955,7 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 			return e
 		}
 		st.QuerySequence++
-		poll := 10 * time.Second
+		poll := s.normalPollDelay(id)
 		if terminal(t.Status) {
 			// Terminal tasks poll only for usage reconciliation evidence; a
 			// slower cadence is sufficient and leaves the provider gate to
