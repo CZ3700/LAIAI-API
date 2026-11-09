@@ -191,7 +191,7 @@ func TestMySQLCreateInjectsCallbackAnnotations(t *testing.T) {
 	if !strings.Contains(body2, f.s.arkCallbackToken(v2.ID)) || !strings.Contains(body2, f.s.arkSafetyIdentifier(v2.ID)) {
 		t.Fatalf("submit body lost the callback annotations: %s", body2)
 	}
-	if !strings.Contains(body2, "https://callback.example/ark-callbacks/"+v2.ID+"/") {
+	if !strings.Contains(body2, "https://callback.example/v1/video/ark-callbacks/"+v2.ID+"/") {
 		t.Fatalf("callback_url malformed: %s", body2)
 	}
 }

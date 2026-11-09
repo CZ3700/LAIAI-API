@@ -35,7 +35,12 @@ func (s *Service) arkCallbackToken(taskID string) string {
 }
 
 func (s *Service) arkCallbackURL(taskID string) string {
-	return strings.TrimSuffix(s.ArkCallbackBase, "/") + "/ark-callbacks/" + taskID + "/" + s.arkCallbackToken(taskID)
+	// The route is registered under /v1/video (routes.go RegisterRoutes) and
+	// Caddy only forwards /v1/* to core — everything else falls through to the
+	// SPA file_server, which rejects POST with 405 empty body. The full
+	// /v1/video prefix is required; Volcano pushed to a bare /ark-callbacks
+	// path and received exactly that 405 until this fix.
+	return strings.TrimSuffix(s.ArkCallbackBase, "/") + "/v1/video/ark-callbacks/" + taskID + "/" + s.arkCallbackToken(taskID)
 }
 
 func (s *Service) arkSafetyIdentifier(taskID string) string {
