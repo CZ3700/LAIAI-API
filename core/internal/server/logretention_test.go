@@ -104,6 +104,8 @@ func mustExecLogSchema(t *testing.T, db *gorm.DB) {
 		`CREATE TABLE IF NOT EXISTS video_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, observed_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS video_outbox (event_id TEXT PRIMARY KEY, status TEXT, created_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS video_asset_events (event_id TEXT PRIMARY KEY, created_at DATETIME)`,
+		// 0148 起保留清理覆盖回调 hint 表（按 id 主键 + received_at 时间列）。
+		`CREATE TABLE IF NOT EXISTS video_callback_hints (id INTEGER PRIMARY KEY AUTOINCREMENT, received_at DATETIME)`,
 	} {
 		if err := db.Exec(q).Error; err != nil {
 			t.Fatalf("schema exec: %v", err)
