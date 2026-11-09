@@ -27,6 +27,8 @@ type Config struct {
 	VideoMutationResponseInboxEnabled bool // LAIAI_VIDEO_MUTATION_RESPONSE_INBOX, default false; independent cancel/delete producer gate
 	VideoPortraitCallbackURL          string
 	VideoPortraitReturnURL            string
+	VideoPortraitAutoLicense          bool          // LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE, default true; 认证成功自动登记 video_generation 许可并按官方组状态续验
+	VideoPortraitAutoLicenseValidity time.Duration // LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE_VALIDITY, default 8760h
 	VideoArkCallbackBase              string
 	VideoMediaRoot                    string
 	VideoMediaPublicBaseURL           string
@@ -180,6 +182,20 @@ func Load() (*Config, error) {
 	}
 	c.VideoPortraitCallbackURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_CALLBACK_URL")
 	c.VideoPortraitReturnURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_RETURN_URL")
+	// 认证即授权：显式 false/0/off 才关闭，默认开启。
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE"))) {
+	case "false", "0", "off":
+		c.VideoPortraitAutoLicense = false
+	default:
+		c.VideoPortraitAutoLicense = true
+	}
+	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE_VALIDITY")); v != "" {
+		d, e := time.ParseDuration(v)
+		if e != nil || d <= 0 {
+			return nil, fmt.Errorf("config: LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE_VALIDITY must be a positive Go duration: %w", e)
+		}
+		c.VideoPortraitAutoLicenseValidity = d
+	}
 	c.VideoArkCallbackBase = strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ARK_CALLBACK_BASE"))
 	if err := c.loadVideoMedia(); err != nil {
 		return nil, err

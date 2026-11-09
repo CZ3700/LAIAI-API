@@ -539,7 +539,40 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 		if err := tx.Model(&Secret{}).Where("org_id = ? AND secret_id = ?", op.OrgID, p.SecretRef).Updates(map[string]any{"value_cipher": "", "destroyed_at": now}).Error; err != nil {
 			return ErrStorage
 		}
-		return s.event(tx, op.OrgID, "portrait", p.ID, op.ID, "official_identity_verified", op.ResponsePayloadID, op.LeaseOwner)
+		if err := s.event(tx, op.OrgID, "portrait", p.ID, op.ID, "official_identity_verified", op.ResponsePayloadID, op.LeaseOwner); err != nil {
+			return err
+		}
+		// 认证即授权：H5 认证即官方肖像授权确认，自动登记 video_generation
+		// 业务许可（来源 verified_provider_license，证据为本次官方核实响应）。
+		// 登记失败不阻断认证成功；无证据指针时保守保持 needs_review。
+		if s.options.AutoLicense && op.ResponsePayloadID != "" {
+			_ = s.verifyLicenseTx(tx, op.OrgID, p.ID, LicenseEvidence{ActorID: "gateway", EvidenceRef: op.ResponsePayloadID, Source: "verified_provider_license", Purpose: "video_generation", ValidFrom: now, ValidUntil: now.Add(s.options.AutoLicenseValidity), VerifiedAt: now, ReverifyDueAt: now.Add(s.options.MaxLicenseAge)})
+		}
+		return nil
+	case "GetAssetGroup":
+		// 许可续验：官方组仍存在且账号/项目匹配即续验（Status 字段若返回
+		// 则须为 Active）。官方组被删（404 GroupNotFound 走 rejected 路径）
+		// 或不匹配时不续验——许可到期后自然降级 needs_review，上传/生成被挡。
+		var official struct{ ID, Status, ProjectName string }
+		if json.Unmarshal(result.Data, &official) != nil || !identifier.MatchString(official.ID) {
+			return ErrInvalid
+		}
+		var g Group
+		if err := tx.Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", op.OrgID, op.ResourceID).Take(&g).Error; err != nil {
+			return ErrNotFound
+		}
+		if g.PortraitID == "" || g.ProviderID == nil || *g.ProviderID != official.ID || official.ProjectName != g.Project || official.Status != "" && official.Status != "Active" {
+			return nil
+		}
+		var p Portrait
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND session_id = ? AND revoked_at IS NULL", op.OrgID, g.PortraitID).Take(&p).Error; err != nil || p.SessionStatus != "succeeded" || p.LicenseStatus != "verified" {
+			return nil
+		}
+		next := nowMillis(s)
+		if err := tx.Model(&Portrait{}).Where("org_id = ? AND session_id = ? AND license_version = ? AND revoked_at IS NULL", op.OrgID, p.ID, p.LicenseVersion).Updates(map[string]any{"last_verified_at": next, "reverify_due_at": next.Add(s.options.MaxLicenseAge), "updated_at": next}).Error; err != nil {
+			return ErrStorage
+		}
+		return s.event(tx, op.OrgID, "portrait", p.ID, op.ID, "license_reverified", op.ResponsePayloadID, op.LeaseOwner)
 	}
 	return s.applyConsoleAccepted(tx, op, result, request)
 }
@@ -567,6 +600,24 @@ func (s *Service) enqueueQueries(ctx context.Context) error {
 	}
 	for _, p := range portraits {
 		if err := s.enqueueQuery(ctx, p.OrgID, portraitScope(p), "portrait", p.ID, "GetVisualValidateResult", bodyJSON(map[string]any{"ProjectName": p.Project})); err != nil {
+			return err
+		}
+	}
+	// 已自动授权会话的许可续验：复验到期（默认每日）即用官方素材组状态
+	// 核实（组仍在且匹配→续验；官方组被删/异常→不续，许可降级 needs_review）。
+	var due []Portrait
+	if err := s.db.WithContext(ctx).Where("session_status = ? AND license_status = ? AND revoked_at IS NULL AND group_id IS NOT NULL AND reverify_due_at <= ?", "succeeded", "verified", s.now()).Order("reverify_due_at").Limit(20).Find(&due).Error; err != nil {
+		return ErrStorage
+	}
+	for _, p := range due {
+		if p.GroupID == nil {
+			continue
+		}
+		var g Group
+		if err := s.db.WithContext(ctx).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", p.OrgID, *p.GroupID).Take(&g).Error; err != nil || g.ProviderID == nil {
+			continue
+		}
+		if err := s.enqueueQuery(ctx, p.OrgID, groupScope(g), "asset_group", g.ID, "GetAssetGroup", bodyJSON(map[string]any{"Id": *g.ProviderID, "ProjectName": g.Project})); err != nil {
 			return err
 		}
 	}

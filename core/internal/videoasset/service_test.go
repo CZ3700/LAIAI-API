@@ -53,6 +53,7 @@ type fakeProvider struct {
 	unknown              bool
 	denyPortrait         bool
 	emptyPortraitGroup   bool
+	groupMissing         bool
 	assetStatus, project string
 	groupByAsset         map[string]string
 }
@@ -107,6 +108,12 @@ func (f *fakeProvider) roundTrip(r *http.Request) (*http.Response, error) {
 		} else {
 			result["GroupId"] = "official-real-group"
 		}
+	case "GetAssetGroup":
+		if f.groupMissing {
+			data := bodyJSON(map[string]any{"ResponseMetadata": map[string]any{"RequestId": "group-gone-request", "Action": action, "Version": managementVersion, "Service": "ark", "Region": "cn-beijing", "Error": map[string]string{"Code": "NotFound.group_id", "Message": "group deleted upstream"}}, "Result": nil})
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(bytes.NewReader(data)), Header: http.Header{}, Request: r}, nil
+		}
+		result = map[string]any{"Id": body["Id"], "Name": "Official Real Group", "GroupType": "LivenessFace", "ProjectName": f.project}
 	}
 	data := bodyJSON(map[string]any{"ResponseMetadata": map[string]any{"RequestId": "official-request", "Action": action, "Version": managementVersion, "Service": "ark", "Region": "cn-beijing"}, "Result": result})
 	return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(data)), Header: http.Header{}, Request: r}, nil

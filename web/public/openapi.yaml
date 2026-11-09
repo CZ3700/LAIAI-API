@@ -3552,7 +3552,7 @@
         ]
       },
       "post": {
-        "description": "group_id 必须属于本组织且就绪；真人素材组必须由服务端确认官方 H5 认证成功，\n并有经核验且仍有效、适用当前用途的业务肖像许可。H5 认证成功本身不等同于取得该许可。\nimage/video/audio 只有当前账号/项目对应能力显式启用时允许提交，不支持组合返回 422。\nurl 可为未预登记的公网 HTTPS 素材地址，由火山下载、保存并异步处理；平台不保存媒体字节。\n拒绝含用户认证信息、明显私有地址或非法协议的网址，URL 仅进入加密执行内容。\n官方 Active 不代表取得尺寸、时长或 SHA；已入库图片可在权限允许时引用。\n视频及音频缺少可靠时长时生成引用暂不可用，注册和查询仍可用，不按 0 时长计价。\n接受不等于审核通过；仅 status=ready 的资产可用于任务，平台 asset:// 引用会在内部转换。\n",
+        "description": "group_id 必须属于本组织且就绪；真人素材组必须由服务端确认官方 H5 认证成功，\n并有经核验且仍有效、适用当前用途的业务肖像许可。认证成功即自动登记该许可（默认有效期一年），\n平台以官方素材组状态每日复验；官方组失效、许可到期或撤销时拒绝上传。\nimage/video/audio 只有当前账号/项目对应能力显式启用时允许提交，不支持组合返回 422。\nurl 可为未预登记的公网 HTTPS 素材地址，由火山下载、保存并异步处理；平台不保存媒体字节。\n拒绝含用户认证信息、明显私有地址或非法协议的网址，URL 仅进入加密执行内容。\n官方 Active 不代表取得尺寸、时长或 SHA；已入库图片可在权限允许时引用。\n视频及音频缺少可靠时长时生成引用暂不可用，注册和查询仍可用，不按 0 时长计价。\n接受不等于审核通过；仅 status=ready 的资产可用于任务，平台 asset:// 引用会在内部转换。\n",
         "operationId": "createVideoAsset",
         "parameters": [
           {
@@ -4437,7 +4437,7 @@
         ]
       },
       "post": {
-        "description": "异步调用官方 CreateVisualValidateSession 建立流程，creating 阶段尚无 H5 地址；\n创建结果不确定时为 submission_unknown，不允许盲重发官方创建请求。\npending 时才返回 H5 地址，用户在该页面完成授权；\n平台通过 GetVisualValidateResult 核实结果，再把官方返回的组映射为本组织 ag_ ID。\ncallback_url 仅可为预登记 HTTPS 回跳地址，不是可信的授权结果通知来源；\nH5 回跳本身、客户端参数或截图均不能将授权状态改为成功。\n需要已启用的租户素材路由/Portrait 能力、平台固定回调入口及有效回跳登记。H5 成功仅确认身份流程；\n真人素材仍需独立审核且未过期/撤销的 video_generation 业务许可，才能上传或参与任务。\nauthorization_url 属敏感短期 URL，仅在授权会话响应返回，禁止写入普通日志。\n",
+        "description": "异步调用官方 CreateVisualValidateSession 建立流程，creating 阶段尚无 H5 地址；\n创建结果不确定时为 submission_unknown，不允许盲重发官方创建请求。\npending 时才返回 H5 地址，用户在该页面完成授权；\n平台通过 GetVisualValidateResult 核实结果，再把官方返回的组映射为本组织 ag_ ID。\ncallback_url 仅可为预登记 HTTPS 回跳地址，不是可信的授权结果通知来源；\nH5 回跳本身、客户端参数或截图均不能将授权状态改为成功。\n需要已启用的租户素材路由/Portrait 能力、平台固定回调入口及有效回跳登记。H5 成功仅确认身份流程；\n认证成功即自动登记 video_generation 业务肖像许可（来源官方核实响应，默认有效期一年），\n平台以官方素材组状态每日复验；官方组失效、许可到期或被撤销时拒绝上传或参与任务。\nauthorization_url 属敏感短期 URL，仅在授权会话响应返回，禁止写入普通日志。\n",
         "operationId": "createPortraitAuthorization",
         "parameters": [
           {
@@ -4694,5 +4694,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "6dab6fc936565e752577020877d992e542910e5cdf980ab8e69f6ccd49e5f807"
+  "x-seedance-source-sha256": "9794cede5873962e7cfa67a48cc828cf5e1cdbec1229e493d9df03437e1768a8"
 }

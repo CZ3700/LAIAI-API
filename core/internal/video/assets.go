@@ -32,7 +32,11 @@ type AssetIntegrationOptions struct {
 	// resolve across organizations.
 	ConsoleReturnURL string
 	MaxLicenseAge    time.Duration
-	Client           *videoasset.ManagementClient
+	// PortraitAutoLicense：认证成功自动登记 video_generation 许可并按官方
+	// 组状态续验（LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE，默认开）。
+	PortraitAutoLicense     bool
+	PortraitAutoLicenseDur  time.Duration
+	Client                  *videoasset.ManagementClient
 }
 
 type AssetScopeConfig struct {
@@ -253,7 +257,7 @@ func (s *Service) ConfigureAssets(options AssetIntegrationOptions) error {
 		Now: func() time.Time { return s.Now().UTC() }, ResolveScope: s.resolveAssetRuntime,
 		VerifyMedia: s.verifyRegisteredAssetMedia, ResolveCallback: s.resolveAssetCallbackURL,
 		ResolveCallbackByID: s.resolveAssetCallbackID, PlatformCallbackURL: options.PlatformCallbackURL,
-		HMACKeys: map[string][]byte{"v1": mac.Sum(nil)}, ActiveHMACKey: "v1", MaxLicenseAge: options.MaxLicenseAge, Client: options.Client,
+		HMACKeys: map[string][]byte{"v1": mac.Sum(nil)}, ActiveHMACKey: "v1", MaxLicenseAge: options.MaxLicenseAge, AutoLicense: options.PortraitAutoLicense, AutoLicenseValidity: options.PortraitAutoLicenseDur, Client: options.Client,
 	})
 	if err != nil {
 		return err
