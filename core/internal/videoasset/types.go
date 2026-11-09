@@ -105,6 +105,11 @@ type Options struct {
 	HMACKeys            map[string][]byte
 	ActiveHMACKey       string
 	MaxLicenseAge       time.Duration
+	// AutoLicense：认证成功即自动登记 video_generation 业务肖像许可
+	//（来源 verified_provider_license，证据为官方核实响应），并以官方
+	// 素材组状态（GetAssetGroup Active）在复验到期时自动续验。
+	AutoLicense         bool
+	AutoLicenseValidity time.Duration
 	Client              *ManagementClient
 }
 type Service struct {
@@ -127,6 +132,12 @@ func NewService(db *gorm.DB, keys *crypto.Keyring, evidence *invocation.VideoSto
 		options.MaxLicenseAge = 24 * time.Hour
 	}
 	if options.MaxLicenseAge <= 0 || options.MaxLicenseAge > 7*24*time.Hour {
+		return nil, ErrInvalid
+	}
+	if options.AutoLicenseValidity == 0 {
+		options.AutoLicenseValidity = 365 * 24 * time.Hour
+	}
+	if options.AutoLicenseValidity <= 0 || options.AutoLicenseValidity > 10*365*24*time.Hour {
 		return nil, ErrInvalid
 	}
 	if options.Client == nil {
