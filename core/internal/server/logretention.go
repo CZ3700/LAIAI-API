@@ -102,6 +102,7 @@ func (s *Server) RunLogRetention(ctx context.Context) (invDeleted, auditDeleted 
 			{"video_attempts", "id", "observed_at", ""},
 			{"video_outbox", "event_id", "created_at", "processed"},
 			{"video_asset_events", "event_id", "created_at", ""},
+			{"video_callback_hints", "id", "received_at", ""},
 		} {
 			n, err := purgeRowsOlderThan(s.db.WithContext(ctx), spec[0], spec[1], spec[2], cutoff, 1000, spec[3])
 			if err != nil {

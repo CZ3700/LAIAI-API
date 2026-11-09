@@ -72,12 +72,20 @@ func (s *Service) HandleArkCallback(c *gin.Context) {
 	if len(excerpt) > 4096 {
 		excerpt = excerpt[:4096]
 	}
-	hint := CallbackHint{TaskID: taskID, BodyHash: sum, BodyExcerpt: excerpt, ReceivedAt: s.Now().UTC()}
-	res := s.DB.WithContext(c.Request.Context()).Create(&hint)
+	// One row per task, always the latest callback: delete-then-insert keeps
+	// the table O(tasks) instead of O(callbacks) without a DDL change. The
+	// unique key (task_id, body_hash) still collapses exact duplicates.
+	res := s.DB.WithContext(c.Request.Context()).
+		Where("task_id = ?", taskID).
+		Delete(&CallbackHint{})
 	if res.Error == nil {
-		s.Log.Info("ark callback hint received", "task", taskID, "hint", hint.ID)
+		hint := CallbackHint{TaskID: taskID, BodyHash: sum, BodyExcerpt: excerpt, ReceivedAt: s.Now().UTC()}
+		res = s.DB.WithContext(c.Request.Context()).Create(&hint)
 	}
-	// 唯一键冲突（重复推送）或存储抖动都 ACK：正确性归轮询管道。
+	if res.Error == nil {
+		s.Log.Info("ark callback hint updated", "task", taskID)
+	}
+	// 存储抖动也 ACK：正确性归轮询管道（回调只是通知，不是事实源）。
 	c.JSON(http.StatusOK, gin.H{"received": true})
 }
 

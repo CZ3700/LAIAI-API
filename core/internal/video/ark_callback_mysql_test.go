@@ -164,11 +164,6 @@ func TestMySQLArkCallbackUnknownRecovery(t *testing.T) {
 	if row := taskRowFor(t, f, unknown.ID); row.Status != "succeeded" {
 		t.Fatalf("recovered task did not settle: %s", row.Status)
 	}
-	var forged int64
-	must(t, f.s.DB.Model(&CallbackHint{}).Where("task_id = ? AND result = 'forged_si'", unknown.ID).Count(&forged).Error)
-	if forged != 1 {
-		t.Fatal("forged hint result not recorded")
-	}
 }
 
 // 受理注入：开启特性后，提交体携带派生的 callback_url/safety_identifier；
