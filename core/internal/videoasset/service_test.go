@@ -52,6 +52,7 @@ type fakeProvider struct {
 	calls                map[string]int
 	unknown              bool
 	denyPortrait         bool
+	emptyPortraitGroup   bool
 	assetStatus, project string
 	groupByAsset         map[string]string
 }
@@ -100,7 +101,12 @@ func (f *fakeProvider) roundTrip(r *http.Request) (*http.Response, error) {
 		if body["BytedToken"] != "byted-fixture-secret" {
 			return nil, errors.New("wrong portrait token")
 		}
-		result["GroupId"] = "official-real-group"
+		// 官方在身份认证尚未完成时返回 200 + 空 GroupId。
+		if f.emptyPortraitGroup {
+			result["GroupId"] = ""
+		} else {
+			result["GroupId"] = "official-real-group"
+		}
 	}
 	data := bodyJSON(map[string]any{"ResponseMetadata": map[string]any{"RequestId": "official-request", "Action": action, "Version": managementVersion, "Service": "ark", "Region": "cn-beijing"}, "Result": result})
 	return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(data)), Header: http.Header{}, Request: r}, nil

@@ -485,7 +485,16 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 		return s.applyPortraitCreated(tx, op, result, request)
 	case "GetVisualValidateResult":
 		var data struct{ GroupID string }
-		if json.Unmarshal(result.Data, &data) != nil || !identifier.MatchString(data.GroupID) {
+		if json.Unmarshal(result.Data, &data) != nil {
+			return ErrInvalid
+		}
+		// 官方在身份认证尚未完成时返回 200 + 空 GroupId：这是"仍在等待"的
+		// 合法结果，保持会话 pending、让查询操作正常完结，不记 invalid 错误
+		//（此前被误判 provider_response_invalid，每 15 秒产生一条噪音）。
+		if data.GroupID == "" {
+			return nil
+		}
+		if !identifier.MatchString(data.GroupID) {
 			return ErrInvalid
 		}
 		var p Portrait
