@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/laiai/laiai-next/core/internal/invocation"
+	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"net/url"
@@ -47,40 +48,46 @@ func (s *Service) ProcessOnce(ctx context.Context) error {
 	if err := s.enqueueQueries(ctx); err != nil {
 		return err
 	}
-	var pending []Operation
-	// 素材域官方调用总闸：CreateAsset/GetAsset/GetAssetGroup/GetVisualValidateResult
-	// 共享本派发批量。默认 25 × 5s tick = 300/分钟，对齐火山 Premium 版素材域
-	// QPM 300（官方允许的分钟滑窗上限）；非 Premium 账号按 QPM÷12 下调
-	// LAIAI_VIDEO_ASSET_DISPATCH_PER_TICK，配额升级只改 env 即时生效。
-	if err := s.db.WithContext(ctx).Where("status = ? AND next_attempt_at <= ?", "pending", s.now()).Order("created_at, operation_id").Limit(s.options.DispatchPerTick).Find(&pending).Error; err != nil {
-		return ErrStorage
+	// 官方分接口限流：逐 action 按 tickQuota 拉批（GetAsset 100 QPS→500/tick、
+	// 10 QPS 档→50、CreateAsset QPM 300→25、DeleteAssetGroup 5 QPS→25），
+	// 合并后读写分池并行派发；每个 op 派发前 reserve 全局节拍，把调用平滑到
+	// 单请求间隔——贴官方 QPS 无瞬时突发。单 op 失败不中断整批。
+	writeOps, queryOps := make([]Operation, 0, 64), make([]Operation, 0, 64)
+	for _, action := range assetActions {
+		var batch []Operation
+		if err := s.db.WithContext(ctx).Where("status = ? AND next_attempt_at <= ? AND action = ?", "pending", s.now(), action).Order("created_at, operation_id").Limit(tickQuota(action)).Find(&batch).Error; err != nil {
+			return ErrStorage
+		}
+		if writeAction(action) {
+			writeOps = append(writeOps, batch...)
+		} else {
+			queryOps = append(queryOps, batch...)
+		}
 	}
-	// 并行派发：串行逐个官方往返会把一轮 25 op 拉长到几十秒，实际吞吐远低于
-	// QPM 300 闸值（实测 ~99/分钟）。并发度默认 8，总闸不变（每 tick 仍至多
-	// DispatchPerTick 次官方调用，速率纪律不受影响）。单个 op 失败不中断整批，
-	// 返回第一个错误供调度层记账。
-	var dispatchErr error
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, s.options.DispatchConcurrency)
-	for _, candidate := range pending {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(op Operation) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			if err := s.process(ctx, op); err != nil {
-				mu.Lock()
-				if dispatchErr == nil {
-					dispatchErr = err
+	if len(writeOps) == 0 && len(queryOps) == 0 {
+		return nil
+	}
+	dispatch := func(group *errgroup.Group, ops []Operation) {
+		for _, candidate := range ops {
+			group.Go(func() error {
+				if err := sleepCtx(ctx, s.rates.reserve(candidate.Action)); err != nil {
+					return err
 				}
-				mu.Unlock()
-			}
-		}(candidate)
+				return s.process(ctx, candidate)
+			})
+		}
 	}
+	var writeGroup, queryGroup errgroup.Group
+	writeGroup.SetLimit(s.options.WriteConcurrency)
+	queryGroup.SetLimit(s.options.QueryConcurrency)
+	var writeErr, queryErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); dispatch(&writeGroup, writeOps); writeErr = writeGroup.Wait() }()
+	go func() { defer wg.Done(); dispatch(&queryGroup, queryOps); queryErr = queryGroup.Wait() }()
 	wg.Wait()
-	if dispatchErr != nil {
-		return dispatchErr
+	if err := errors.Join(writeErr, queryErr); err != nil {
+		return err
 	}
 	if s.consoleEnabled() {
 		if err := s.syncPortraitNames(ctx); err != nil {
@@ -605,8 +612,10 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 }
 
 func (s *Service) enqueueQueries(ctx context.Context) error {
+	// 候选批量与派发闸同源（tickQuota）：入队/消费两级由同一张官方限流表驱动，
+	// 避免"消费放开、入队卡死"的失配。
 	var assets []Asset
-	if err := s.db.WithContext(ctx).Where("status = ? AND updated_at <= ? AND deleted_at IS NULL", StatusProcessing, s.now().Add(-15*time.Second)).Order("updated_at").Limit(s.options.PollPerTick).Find(&assets).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("status = ? AND updated_at <= ? AND deleted_at IS NULL", StatusProcessing, s.now().Add(-15*time.Second)).Order("updated_at").Limit(tickQuota("GetAsset")).Find(&assets).Error; err != nil {
 		return ErrStorage
 	}
 	for _, asset := range assets {
@@ -622,7 +631,7 @@ func (s *Service) enqueueQueries(ctx context.Context) error {
 		}
 	}
 	var portraits []Portrait
-	if err := s.db.WithContext(ctx).Where("session_status = ? AND session_expires_at > ? AND updated_at <= ?", "pending", s.now(), s.now().Add(-15*time.Second)).Order("updated_at").Limit(s.options.PollPerTick).Find(&portraits).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("session_status = ? AND session_expires_at > ? AND updated_at <= ?", "pending", s.now(), s.now().Add(-15*time.Second)).Order("updated_at").Limit(tickQuota("GetVisualValidateResult")).Find(&portraits).Error; err != nil {
 		return ErrStorage
 	}
 	for _, p := range portraits {
@@ -633,7 +642,7 @@ func (s *Service) enqueueQueries(ctx context.Context) error {
 	// 已自动授权会话的许可续验：复验到期（默认每日）即用官方素材组状态
 	// 核实（组仍在且匹配→续验；官方组被删/异常→不续，许可降级 needs_review）。
 	var due []Portrait
-	if err := s.db.WithContext(ctx).Where("session_status = ? AND license_status = ? AND revoked_at IS NULL AND group_id IS NOT NULL AND reverify_due_at <= ?", "succeeded", "verified", s.now()).Order("reverify_due_at").Limit(s.options.PollPerTick).Find(&due).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("session_status = ? AND license_status = ? AND revoked_at IS NULL AND group_id IS NOT NULL AND reverify_due_at <= ?", "succeeded", "verified", s.now()).Order("reverify_due_at").Limit(tickQuota("GetAssetGroup")).Find(&due).Error; err != nil {
 		return ErrStorage
 	}
 	for _, p := range due {

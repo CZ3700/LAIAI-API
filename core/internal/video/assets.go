@@ -36,11 +36,10 @@ type AssetIntegrationOptions struct {
 	// 组状态续验（LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE，默认开）。
 	PortraitAutoLicense     bool
 	PortraitAutoLicenseDur  time.Duration
-	// AssetDispatchPerTick/AssetPollPerTick：素材域官方调用总闸与轮询候选
-	// （LAIAI_VIDEO_ASSET_DISPATCH_PER_TICK=25 对齐 Premium QPM 300）。
-	AssetDispatchPerTick    int
-	AssetPollPerTick        int
-	AssetDispatchConcur     int
+	// AssetWriteConcurrency/AssetQueryConcurrency：素材域官方调用读写分池
+	//（速率纪律在 videoasset 官方限流表：单请求间隔，与并发解耦）。
+	AssetWriteConcurrency   int
+	AssetQueryConcurrency   int
 	Client                  *videoasset.ManagementClient
 }
 
@@ -262,7 +261,7 @@ func (s *Service) ConfigureAssets(options AssetIntegrationOptions) error {
 		Now: func() time.Time { return s.Now().UTC() }, ResolveScope: s.resolveAssetRuntime,
 		VerifyMedia: s.verifyRegisteredAssetMedia, ResolveCallback: s.resolveAssetCallbackURL,
 		ResolveCallbackByID: s.resolveAssetCallbackID, PlatformCallbackURL: options.PlatformCallbackURL,
-		HMACKeys: map[string][]byte{"v1": mac.Sum(nil)}, ActiveHMACKey: "v1", MaxLicenseAge: options.MaxLicenseAge, AutoLicense: options.PortraitAutoLicense, AutoLicenseValidity: options.PortraitAutoLicenseDur, DispatchPerTick: options.AssetDispatchPerTick, PollPerTick: options.AssetPollPerTick, DispatchConcurrency: options.AssetDispatchConcur, Client: options.Client,
+		HMACKeys: map[string][]byte{"v1": mac.Sum(nil)}, ActiveHMACKey: "v1", MaxLicenseAge: options.MaxLicenseAge, AutoLicense: options.PortraitAutoLicense, AutoLicenseValidity: options.PortraitAutoLicenseDur, WriteConcurrency: options.AssetWriteConcurrency, QueryConcurrency: options.AssetQueryConcurrency, Client: options.Client,
 	})
 	if err != nil {
 		return err
