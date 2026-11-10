@@ -230,7 +230,10 @@ func TestMySQLArkCallbackUnknownRecovery(t *testing.T) {
 	if due.NextPollAt.After(time.Now().Add(2 * time.Second)) {
 		t.Fatalf("bound hint failed to trigger prompt GET: %s", due.NextPollAt)
 	}
-	must(t, f.s.ProcessQueryOnce(context.Background()))
+	// The shared MySQL fixture may contain more than one bounded worker batch
+	// of older due tasks. Poll this task directly to verify the callback's
+	// authoritative GET and settlement path without depending on queue rank.
+	must(t, f.s.pollTask(context.Background(), f.key.OrgID, bound.ID))
 	if row := taskRowFor(t, f, bound.ID); row.Status != "succeeded" {
 		t.Fatalf("authoritative GET did not settle bound task: %s", row.Status)
 	}
