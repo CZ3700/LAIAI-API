@@ -296,7 +296,7 @@ def main():
         snapshot = read(sys.argv[3]); sha = sys.argv[4]
         if not re.fullmatch('[0-9a-f]{40}', sha): fail('invalid main SHA')
         carryover = int(sys.argv[5]) if len(sys.argv) > 5 else 0
-        if carryover not in (0, 1): fail('invalid carryover policy')
+        if carryover not in (0, 1, 2): fail('invalid carryover policy')
         write(sys.argv[2], {'version': 2, 'commit': sha, 'config_hash': config_hash(), 'snapshot': snapshot,
                             'carryover': carryover})
     elif command == 'get':
@@ -336,13 +336,18 @@ def main():
         plan = read(sys.argv[2])
         applied = set(Path(sys.argv[3]).read_text().splitlines())
         wanted = {p.stem for p in Path(sys.argv[4]).glob('[0-9][0-9][0-9][0-9]_*.sql')}
-        if plan.get('carryover') != 1 or len(applied) != 139 or len(wanted) != 141 or \
-                wanted - applied != {'0140_video_watermark', '0141_video_watermark_users'} or \
-                applied - wanted:
-            fail('carryover is limited to the reviewed watermark-only schema expansion')
+        reviewed = {
+            1: (139, 141, {'0140_video_watermark', '0141_video_watermark_users'}),
+            2: (150, 153, {'0151_callback_hint_revision', '0152_video_user_task_limits',
+                           '0153_video_group_asset_projects'}),
+        }
+        policy = reviewed.get(plan.get('carryover'))
+        if policy is None or len(applied) != policy[0] or len(wanted) != policy[1] or \
+                wanted - applied != policy[2] or applied - wanted:
+            fail('carryover requires an exact reviewed schema expansion')
     elif command == 'business':
         plan = read(sys.argv[2])
-        if plan.get('carryover') != 1: fail('business comparison requires carryover policy')
+        if plan.get('carryover') not in (1, 2): fail('business comparison requires carryover policy')
         before, after = Path(sys.argv[3]).read_text().strip(), Path(sys.argv[4]).read_text().strip()
         if not re.fullmatch('[0-9a-f]{64}', before) or before != after:
             fail('existing task and video business rows changed while writes were stopped')

@@ -100,10 +100,16 @@ for outstanding in active_holds nonterminal_tasks unresolved_video_operations un
   check_data drained 1 >> "$SCRATCH/result.log" 2>&1
   check_data post-migration 1 >> "$SCRATCH/result.log" 2>&1
   check_data post-backfill 1 >> "$SCRATCH/result.log" 2>&1
+  check_data drained 2 >> "$SCRATCH/result.log" 2>&1
+  check_data post-migration 2 >> "$SCRATCH/result.log" 2>&1
+  check_data post-backfill 2 >> "$SCRATCH/result.log" 2>&1
 done
 mutate_fixture metric check ledger_held_vs_active_holds 1
 if (check_data drained 1) > "$SCRATCH/rejected.log" 2>&1; then
   die 'carryover bypassed a funds invariant'
+fi
+if (check_data drained 2) > "$SCRATCH/rejected.log" 2>&1; then
+  die '0153 carryover bypassed a funds invariant'
 fi
 mutate_fixture metric drain active_holds 1
 check_data drained 1 >> "$SCRATCH/result.log" 2>&1

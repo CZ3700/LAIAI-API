@@ -70,6 +70,12 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
 
 当前生产发布入口为 [`infra/release.sh`](../infra/release.sh)，支持 `compare/preflight/backup/build/deploy/open/release/verify/status/rollback`，使用方法见[脚本手册](production-release-cli.md)。旧 `deploy.sh` 不用于本次受控升级。脚本针对已有单 core/Caddy 的 Compose 项目执行升级，不负责从空服务器创建业务库；配置、main 审核与现场验收先准备齐。
 
+#### 0150 → 0153 在途承接发布
+
+长期 `submission_unknown` 任务不会被发布脚本自动取消或结算。若当前数据库确为 0150、目标 main 恰为 0153，可用新版入口的 `--carryover-video-0153` 新建预检计划，保留在途任务及冻结继续由候选 worker 处理。该标志按三条迁移白名单锁定路径，八项资金一致性检查、最终加密备份、业务旧列与资金指纹均不能跳过。旧 `/opt/laiai-next` 若仍在 `2fe1a35`，需先从已合并且 CI 通过的 main 建立 root 可读写的受限独立 checkout，从其中运行新版 `infra/release.sh`；`LIVE_DIR` 继续指原线上 checkout，不得先覆盖它。具体命令和回退边界见[发布脚本手册的 0150→0153 章节](production-release-cli.md#0150--0153-在途任务承接)。
+
+旧 core 干净退出后，若同一任务仍有重复 callback hint，迁移前即停止。0151/0152/0153 迁移部分完成时没有安全回退基线，旧 core 不能由脚本自动重启，须在维护态核对实际 schema 并人工恢复。新版启动后，自动查询到的火山官方配额快照不单独阻断回退；管理员手动上限、活跃派单闸、新的用户/分组能力配置或新受理的 Ark 视频与素材任务会阻止旧镜像回退。回退门禁在停止新版 core 前后各复核一次；新能力投入使用后以向前修复为准。
+
 - **镜像内容锁定**：常规生产叠加 `docker-compose.prod.yml`，`MYSQL_IMAGE`/`REDIS_IMAGE` 填 RepoDigest 形式（.env.example 有取值命令）。2026-10-21 已核对的服务器源码构建方案使用明确锁住四个服务的 `local-images.yml` 替代该 overlay：core/Caddy 为已验收本地 image ID，MySQL/Redis 为现有 RepoDigest，均不自动拉取。按[服务器构建流程](server-source-build.md)保存并核对实际清单；`infra/release-manifest.sh generate/diff` 仅辅助，还需补项目过滤、完整配置与未跟踪文件检查。
 - **迁移**：容器 entrypoint 自动跑 `/app/migrate`（重试 ~60s，失败容器退出）；大版本前先跑
   `make migrate-smoke`（真 MySQL apply×2 幂等 + schema-doctor 漂移体检）。

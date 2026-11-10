@@ -474,6 +474,8 @@ jobs:
         run: sudo make release-check
       - name: Private checkout image permissions and real MySQL migration
         run: bash infra/release/tests/test_image_permissions.sh
+      - name: Isolated 0150 to 0153 carryover fingerprint and rollback guards
+        run: PYTHONDONTWRITEBYTECODE=1 bash infra/release/tests/test_carryover_0153_mysql.sh
 
   redline:
     # CLAUDE.md 平台红线中可机检项
