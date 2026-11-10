@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/laiai/laiai-next/core/internal/videoasset"
 )
 
 type quotaRoundTrip func(*http.Request) (*http.Response, error)
@@ -60,9 +58,8 @@ func TestArkModelRateLimitRejectsIncompleteOrDuplicateResponse(t *testing.T) {
 
 func TestProviderModelManualCeilingIsAccountSharedAndVersioned(t *testing.T) {
 	db := catalogLocalDB(t)
-	for _, model := range []any{&ProviderScope{}, &ProviderModelQuota{}, &videoasset.Event{}} {
-		must(t, db.AutoMigrate(model))
-	}
+	providerQuotaLocalSchema(t, db)
+	must(t, db.Exec(assetProjectSchema).Error)
 	for _, scope := range []ProviderScope{
 		{ID: 1, ScopeKey: "one", AccountRef: "mainaccount", Region: "cn-beijing", ProjectName: "default", Enabled: true},
 		{ID: 2, ScopeKey: "two", AccountRef: "mainaccount", Region: "cn-beijing", ProjectName: "other", Enabled: true},

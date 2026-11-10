@@ -32,7 +32,7 @@ import (
 
 // Run serially against the dedicated ark_test database. With an empty database
 // this covers initial installation over populated business tables. If setup has
-// already applied 0120/0121, it covers installed contents and replay instead;
+// already applied the template migrations, it covers installed contents and replay instead;
 // it never deletes migration records or resets another package's fixtures.
 func TestMySQLTemplateMigrationsInstallAndPreserveBusinessData(t *testing.T) {
 	dsn := os.Getenv("ARK_TEST_MYSQL_DSN")
@@ -83,7 +83,7 @@ func TestMySQLTemplateMigrationsInstallAndPreserveBusinessData(t *testing.T) {
 		t.Fatalf("apply formal template migrations: %v", err)
 	}
 	if len(ran) == 0 {
-		t.Log("0120/0121 already installed: validating installed data and replay; initial-install preservation requires a fresh ark_test database")
+		t.Log("template migrations already installed: validating installed data and replay; initial-install preservation requires a fresh ark_test database")
 	} else {
 		t.Logf("applied template migrations over populated business tables: %v", ran)
 	}
@@ -138,7 +138,7 @@ func templateMySQLMigrations(t *testing.T) (fstest.MapFS, fstest.MapFS) {
 	}
 	base, templates := fstest.MapFS{}, fstest.MapFS{}
 	for _, name := range names {
-		if name >= "0120_" && name != "0120_video_pricing_templates.sql" && name != "0121_seedance_pricing_template_20261019.sql" {
+		if name >= "0120_" && name != "0120_video_pricing_templates.sql" && name != "0121_seedance_pricing_template_20261019.sql" && name != "0144_video_pricing_template_adaptive.sql" && name != "0145_video_pricing_template_adaptive_v2.sql" {
 			continue
 		}
 		raw, err := fs.ReadFile(source, name)
@@ -151,7 +151,7 @@ func templateMySQLMigrations(t *testing.T) (fstest.MapFS, fstest.MapFS) {
 			templates[name] = &fstest.MapFile{Data: raw}
 		}
 	}
-	if len(base) == 0 || len(templates) != 2 {
+	if len(base) == 0 || len(templates) != 4 {
 		t.Fatalf("formal migration files missing: base=%d templates=%d", len(base), len(templates))
 	}
 	return base, templates

@@ -286,6 +286,7 @@ func runtimeHandoffVerify(t *testing.T, db *gorm.DB, root string, report *runtim
 			t.Fatal("old-process evidence is incomplete")
 		}
 		for _, record := range old.Tasks {
+			runtimeHandoffAssertOperationDefaults(t, db, record)
 			if runtimeHandoffFingerprint(t, db, record) != record.Fingerprint {
 				t.Fatal("migration or overlap changed pre-existing task or financial data")
 			}
@@ -447,6 +448,11 @@ func runtimeHandoffHistoricalProjection(table string, columns []string, values [
 		if table == "video_query_receipts" && (column == "generation_applied_at" || column == "settlement_kind" || column == "settlement_evidence_sha256" || column == "settlement_shape_ready") {
 			continue
 		}
+		// 0143 records new provider errors and 0152 adds a send deferral. The
+		// old writer had neither column; verify their defaults separately.
+		if table == "video_operations" && (column == "provider_error_code" || column == "provider_error_message" || column == "next_dispatch_at") {
+			continue
+		}
 		if values[i] == nil {
 			projection[column] = nil
 		} else {
@@ -454,6 +460,17 @@ func runtimeHandoffHistoricalProjection(table string, columns []string, values [
 		}
 	}
 	return projection
+}
+
+func runtimeHandoffAssertOperationDefaults(t *testing.T, db *gorm.DB, record runtimeHandoffTask) {
+	t.Helper()
+	var code, message string
+	var next sql.NullTime
+	err := db.Raw("SELECT provider_error_code, provider_error_message, next_dispatch_at FROM video_operations WHERE org_id = ? AND id = ?", record.OrgID, record.OperationID).Row().Scan(&code, &message, &next)
+	must(t, err)
+	if code != "" || message != "" || next.Valid {
+		t.Fatal("additive operation columns changed old-writer evidence")
+	}
 }
 
 func runtimeHandoffFingerprint(t *testing.T, db *gorm.DB, record runtimeHandoffTask) string {

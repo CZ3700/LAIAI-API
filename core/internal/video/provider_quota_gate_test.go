@@ -33,9 +33,34 @@ func TestFoundationModelForReviewedPublicModels(t *testing.T) {
 	}
 }
 
+// Keep the SQLite fixture explicit so schema changes remain in migrations.
+const providerQuotaTestSchema = `
+CREATE TABLE video_provider_model_quotas (
+ account_ref TEXT NOT NULL, foundation_model TEXT NOT NULL,
+ official_create_task_rpm INTEGER, official_concurrent_requests INTEGER,
+ official_create_task_rpm_4k INTEGER, official_concurrent_requests_4k INTEGER,
+ manual_create_task_rpm INTEGER, manual_concurrent_requests INTEGER,
+ manual_create_task_rpm_4k INTEGER, manual_concurrent_requests_4k INTEGER,
+ official_observed_at DATETIME, manual_updated_at DATETIME,
+ manual_updated_by INTEGER, manual_version INTEGER NOT NULL DEFAULT 0,
+ official_request_id TEXT NOT NULL DEFAULT '',
+ PRIMARY KEY(account_ref, foundation_model)
+);
+CREATE TABLE video_provider_model_send_gates (
+ account_ref TEXT NOT NULL, foundation_model TEXT NOT NULL,
+ next_allowed_at DATETIME NOT NULL, next_allowed_at_4k DATETIME,
+ updated_at DATETIME NOT NULL,
+ PRIMARY KEY(account_ref, foundation_model)
+);`
+
+func providerQuotaLocalSchema(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	must(t, db.Exec(providerQuotaTestSchema).Error)
+}
+
 func TestProviderModelConcurrencyIsMainAccountWideAnd4KSubpool(t *testing.T) {
 	db := catalogLocalDB(t)
-	must(t, db.AutoMigrate(&ProviderModelQuota{}))
+	providerQuotaLocalSchema(t, db)
 	must(t, db.Exec(`CREATE TABLE tasks(org_id INTEGER,task_id TEXT,provider TEXT,status TEXT)`).Error)
 	must(t, db.Exec(`CREATE TABLE video_task_parameters(org_id INTEGER,task_id TEXT,account_ref TEXT,public_model TEXT,parameters_json TEXT)`).Error)
 	baseConcurrency, fourKConcurrency := 2, 1
@@ -83,7 +108,7 @@ func TestProviderModelConcurrencyIsMainAccountWideAnd4KSubpool(t *testing.T) {
 
 func TestProviderModelSendGateSharesAccountAndChecks4KSeparately(t *testing.T) {
 	db := catalogLocalDB(t)
-	must(t, db.AutoMigrate(&ProviderModelQuota{}, &ProviderModelSendGate{}))
+	providerQuotaLocalSchema(t, db)
 	baseRPM, baseConcurrency := 40, 8
 	fourKRPM, fourKConcurrency := 10, 2
 	q := ProviderModelQuota{
@@ -120,7 +145,7 @@ func TestProviderModelSendGateSharesAccountAndChecks4KSeparately(t *testing.T) {
 
 func TestProviderModelSendGateKeepsLegacyFallbackWithoutSnapshot(t *testing.T) {
 	db := catalogLocalDB(t)
-	must(t, db.AutoMigrate(&ProviderModelQuota{}, &ProviderModelSendGate{}))
+	providerQuotaLocalSchema(t, db)
 	s := &Service{DB: db}
 	err := db.Transaction(func(tx *gorm.DB) error {
 		allowed, retry, e := s.claimProviderModelSendTx(tx, "mainaccount", ark.Model25, "doubao-seedance-2-5-260628", false, time.Now())
