@@ -31,6 +31,14 @@ type Config struct {
 	VideoPortraitAutoLicenseValidity time.Duration // LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE_VALIDITY, default 8760h
 	VideoAssetWriteConcurrency        int           // LAIAI_VIDEO_ASSET_WRITE_CONCURRENCY, default 8; 素材域写类官方调用并发池
 	VideoAssetQueryConcurrency        int           // LAIAI_VIDEO_ASSET_QUERY_CONCURRENCY, default 24; 素材域查询类官方调用并发池
+	VideoAssetArchive                 bool          // LAIAI_VIDEO_ASSET_ARCHIVE, default true; 素材自动归档（超保留期分批删除并释放官方存储）
+	VideoAssetArchiveTimezone         string        // LAIAI_VIDEO_ASSET_ARCHIVE_TIMEZONE, default Asia/Shanghai
+	VideoAssetArchiveWindowStart      string        // LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_START, default 02:00（本地时区）
+	VideoAssetArchiveWindowEnd        string        // LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_END, default 06:00
+	VideoAssetArchiveDailyLimit       int           // LAIAI_VIDEO_ASSET_ARCHIVE_DAILY_LIMIT, default 20000
+	VideoAssetArchiveBatch            int           // LAIAI_VIDEO_ASSET_ARCHIVE_BATCH, default 25; 每 tick 注入上限
+	VideoAssetArchiveRetentionDays    int           // LAIAI_VIDEO_ASSET_ARCHIVE_RETENTION_DAYS, default 3
+	VideoAssetArchiveExemptRealGroups bool          // LAIAI_VIDEO_ASSET_ARCHIVE_EXEMPT_REAL_GROUPS, default true; 真人组素材豁免归档
 	VideoArkCallbackBase              string
 	VideoMediaRoot                    string
 	VideoMediaPublicBaseURL           string
@@ -211,6 +219,61 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_QUERY_CONCURRENCY must be a non-negative integer: %w", e)
 		}
 		c.VideoAssetQueryConcurrency = n
+	}
+	// 素材自动归档：显式 false/0/off 关闭，默认开启。
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE"))) {
+	case "false", "0", "off":
+		c.VideoAssetArchive = false
+	default:
+		c.VideoAssetArchive = true
+	}
+	c.VideoAssetArchiveTimezone = strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_TIMEZONE"))
+	c.VideoAssetArchiveWindowStart = strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_START"))
+	c.VideoAssetArchiveWindowEnd = strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_END"))
+	for _, item := range []struct{ name, value string }{
+		{"LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_START", c.VideoAssetArchiveWindowStart},
+		{"LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_END", c.VideoAssetArchiveWindowEnd},
+	} {
+		if item.value == "" {
+			continue
+		}
+		hm := strings.Split(item.value, ":")
+		if len(hm) != 2 {
+			return nil, fmt.Errorf("config: %s must be HH:MM", item.name)
+		}
+		if _, e1 := strconv.Atoi(hm[0]); e1 != nil {
+			return nil, fmt.Errorf("config: %s must be HH:MM", item.name)
+		}
+		if _, e2 := strconv.Atoi(hm[1]); e2 != nil {
+			return nil, fmt.Errorf("config: %s must be HH:MM", item.name)
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_DAILY_LIMIT")); v != "" {
+		n, e := strconv.Atoi(v)
+		if e != nil || n < 0 {
+			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_ARCHIVE_DAILY_LIMIT must be a non-negative integer: %w", e)
+		}
+		c.VideoAssetArchiveDailyLimit = n
+	}
+	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_BATCH")); v != "" {
+		n, e := strconv.Atoi(v)
+		if e != nil || n < 0 {
+			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_ARCHIVE_BATCH must be a non-negative integer: %w", e)
+		}
+		c.VideoAssetArchiveBatch = n
+	}
+	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_RETENTION_DAYS")); v != "" {
+		n, e := strconv.Atoi(v)
+		if e != nil || n < 0 {
+			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_ARCHIVE_RETENTION_DAYS must be a non-negative integer: %w", e)
+		}
+		c.VideoAssetArchiveRetentionDays = n
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_EXEMPT_REAL_GROUPS"))) {
+	case "false", "0", "off":
+		c.VideoAssetArchiveExemptRealGroups = false
+	default:
+		c.VideoAssetArchiveExemptRealGroups = true
 	}
 	c.VideoArkCallbackBase = strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ARK_CALLBACK_BASE"))
 	if err := c.loadVideoMedia(); err != nil {

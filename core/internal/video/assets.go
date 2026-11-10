@@ -40,7 +40,17 @@ type AssetIntegrationOptions struct {
 	//（速率纪律在 videoasset 官方限流表：单请求间隔，与并发解耦）。
 	AssetWriteConcurrency   int
 	AssetQueryConcurrency   int
-	Client                  *videoasset.ManagementClient
+	// AssetArchive*：素材自动归档（LAIAI_VIDEO_ASSET_ARCHIVE_*，窗口/限量/
+	// 保留期/豁免），删除走既有 DeleteAsset op 链路与官方限流。
+	AssetArchive                 bool
+	AssetArchiveTimezone         string
+	AssetArchiveWindowStart      string
+	AssetArchiveWindowEnd        string
+	AssetArchiveDailyLimit       int
+	AssetArchiveBatch            int
+	AssetArchiveRetentionDays    int
+	AssetArchiveExemptRealGroups bool
+	Client                       *videoasset.ManagementClient
 }
 
 type AssetScopeConfig struct {
@@ -261,7 +271,9 @@ func (s *Service) ConfigureAssets(options AssetIntegrationOptions) error {
 		Now: func() time.Time { return s.Now().UTC() }, ResolveScope: s.resolveAssetRuntime,
 		VerifyMedia: s.verifyRegisteredAssetMedia, ResolveCallback: s.resolveAssetCallbackURL,
 		ResolveCallbackByID: s.resolveAssetCallbackID, PlatformCallbackURL: options.PlatformCallbackURL,
-		HMACKeys: map[string][]byte{"v1": mac.Sum(nil)}, ActiveHMACKey: "v1", MaxLicenseAge: options.MaxLicenseAge, AutoLicense: options.PortraitAutoLicense, AutoLicenseValidity: options.PortraitAutoLicenseDur, WriteConcurrency: options.AssetWriteConcurrency, QueryConcurrency: options.AssetQueryConcurrency, Client: options.Client,
+		HMACKeys: map[string][]byte{"v1": mac.Sum(nil)}, ActiveHMACKey: "v1", MaxLicenseAge: options.MaxLicenseAge, AutoLicense: options.PortraitAutoLicense, AutoLicenseValidity: options.PortraitAutoLicenseDur, WriteConcurrency: options.AssetWriteConcurrency, QueryConcurrency: options.AssetQueryConcurrency,
+		ArchiveEnabled: options.AssetArchive, ArchiveTimezone: options.AssetArchiveTimezone, ArchiveWindowStart: options.AssetArchiveWindowStart, ArchiveWindowEnd: options.AssetArchiveWindowEnd, ArchiveDailyLimit: options.AssetArchiveDailyLimit, ArchiveBatch: options.AssetArchiveBatch, ArchiveRetentionDays: options.AssetArchiveRetentionDays, ArchiveExemptRealGroups: options.AssetArchiveExemptRealGroups,
+		Client: options.Client,
 	})
 	if err != nil {
 		return err
