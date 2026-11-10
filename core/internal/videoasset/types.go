@@ -115,7 +115,10 @@ type Options struct {
 	// 各类轮询候选上限（素材/会话/复验），默认 40。消费总量始终受 DispatchPerTick 约束。
 	DispatchPerTick int
 	PollPerTick     int
-	Client          *ManagementClient
+	// DispatchConcurrency：每 tick 内并行派发的官方调用并发度，默认 8。
+	// 总闸（DispatchPerTick）不变，只压缩单轮耗时以吃满 QPM。
+	DispatchConcurrency int
+	Client              *ManagementClient
 }
 type Service struct {
 	db       *gorm.DB
@@ -150,6 +153,9 @@ func NewService(db *gorm.DB, keys *crypto.Keyring, evidence *invocation.VideoSto
 	}
 	if options.PollPerTick <= 0 || options.PollPerTick > 200 {
 		options.PollPerTick = 40
+	}
+	if options.DispatchConcurrency <= 0 || options.DispatchConcurrency > 32 {
+		options.DispatchConcurrency = 8
 	}
 	if options.Client == nil {
 		options.Client = NewManagementClient(nil)
