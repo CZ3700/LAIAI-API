@@ -47,3 +47,30 @@ func TestDispatchPerTickBoundsOfficialCalls(t *testing.T) {
 }
 
 func newTestAssetID(i int) string { return fmt.Sprintf("asset_dispatchbatch%03d", i) }
+
+// TestDispatchParallelCompletesAllOps 验证并行派发正确性：并发 8 下一批 op
+// 全部完成、无丢失；官方调用数与批量一致（总闸纪律不受并行影响）。
+func TestDispatchParallelCompletesAllOps(t *testing.T) {
+	s, db, now, provider := setup(t)
+	s.options.DispatchPerTick = 12
+	s.options.DispatchConcurrency = 8
+	ctx := context.Background()
+	group := readyGroup(t, s, "dispatch-parallel-group")
+	for i := 0; i < 12; i++ {
+		pid := "official-asset-p" + string(rune('a'+i))
+		asset := Asset{ID: newTestAssetID(100 + i), OrgID: 1, GroupID: group.ID, MediaType: "image", Status: StatusProcessing, ReviewState: ReviewClear, ProviderID: &pid, RowVersion: 1, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute)}
+		if err := db.Create(&asset).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var dispatched int64
+	if err := db.Model(&Operation{}).Where("action = ? AND org_id = ? AND status <> ?", "GetAsset", 1, "pending").Count(&dispatched).Error; err != nil || dispatched != 12 {
+		t.Fatalf("all 12 ops must be dispatched: %d %v", dispatched, err)
+	}
+	if provider.calls["GetAsset"] != 12 {
+		t.Fatalf("official calls must equal batch: %d", provider.calls["GetAsset"])
+	}
+}

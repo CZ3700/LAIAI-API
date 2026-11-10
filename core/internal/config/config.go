@@ -31,6 +31,7 @@ type Config struct {
 	VideoPortraitAutoLicenseValidity time.Duration // LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE_VALIDITY, default 8760h
 	VideoAssetDispatchPerTick         int           // LAIAI_VIDEO_ASSET_DISPATCH_PER_TICK, default 25; 素材域官方调用总闸（5s tick），25×12=300/分钟对齐 Premium QPM
 	VideoAssetPollPerTick             int           // LAIAI_VIDEO_ASSET_POLL_PER_TICK, default 40; 每 tick 各类素材/会话轮询候选上限
+	VideoAssetDispatchConcurrency     int           // LAIAI_VIDEO_ASSET_DISPATCH_CONCURRENCY, default 8; 每 tick 并行派发并发度
 	VideoArkCallbackBase              string
 	VideoMediaRoot                    string
 	VideoMediaPublicBaseURL           string
@@ -211,6 +212,13 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_POLL_PER_TICK must be a non-negative integer: %w", e)
 		}
 		c.VideoAssetPollPerTick = n
+	}
+	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_DISPATCH_CONCURRENCY")); v != "" {
+		n, e := strconv.Atoi(v)
+		if e != nil || n < 0 {
+			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_DISPATCH_CONCURRENCY must be a non-negative integer: %w", e)
+		}
+		c.VideoAssetDispatchConcurrency = n
 	}
 	c.VideoArkCallbackBase = strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ARK_CALLBACK_BASE"))
 	if err := c.loadVideoMedia(); err != nil {

@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm/clause"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -54,10 +55,32 @@ func (s *Service) ProcessOnce(ctx context.Context) error {
 	if err := s.db.WithContext(ctx).Where("status = ? AND next_attempt_at <= ?", "pending", s.now()).Order("created_at, operation_id").Limit(s.options.DispatchPerTick).Find(&pending).Error; err != nil {
 		return ErrStorage
 	}
+	// 并行派发：串行逐个官方往返会把一轮 25 op 拉长到几十秒，实际吞吐远低于
+	// QPM 300 闸值（实测 ~99/分钟）。并发度默认 8，总闸不变（每 tick 仍至多
+	// DispatchPerTick 次官方调用，速率纪律不受影响）。单个 op 失败不中断整批，
+	// 返回第一个错误供调度层记账。
+	var dispatchErr error
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, s.options.DispatchConcurrency)
 	for _, candidate := range pending {
-		if err := s.process(ctx, candidate); err != nil {
-			return err
-		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(op Operation) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := s.process(ctx, op); err != nil {
+				mu.Lock()
+				if dispatchErr == nil {
+					dispatchErr = err
+				}
+				mu.Unlock()
+			}
+		}(candidate)
+	}
+	wg.Wait()
+	if dispatchErr != nil {
+		return dispatchErr
 	}
 	if s.consoleEnabled() {
 		if err := s.syncPortraitNames(ctx); err != nil {

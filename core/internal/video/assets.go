@@ -40,6 +40,7 @@ type AssetIntegrationOptions struct {
 	// （LAIAI_VIDEO_ASSET_DISPATCH_PER_TICK=25 对齐 Premium QPM 300）。
 	AssetDispatchPerTick    int
 	AssetPollPerTick        int
+	AssetDispatchConcur     int
 	Client                  *videoasset.ManagementClient
 }
 
@@ -261,7 +262,7 @@ func (s *Service) ConfigureAssets(options AssetIntegrationOptions) error {
 		Now: func() time.Time { return s.Now().UTC() }, ResolveScope: s.resolveAssetRuntime,
 		VerifyMedia: s.verifyRegisteredAssetMedia, ResolveCallback: s.resolveAssetCallbackURL,
 		ResolveCallbackByID: s.resolveAssetCallbackID, PlatformCallbackURL: options.PlatformCallbackURL,
-		HMACKeys: map[string][]byte{"v1": mac.Sum(nil)}, ActiveHMACKey: "v1", MaxLicenseAge: options.MaxLicenseAge, AutoLicense: options.PortraitAutoLicense, AutoLicenseValidity: options.PortraitAutoLicenseDur, DispatchPerTick: options.AssetDispatchPerTick, PollPerTick: options.AssetPollPerTick, Client: options.Client,
+		HMACKeys: map[string][]byte{"v1": mac.Sum(nil)}, ActiveHMACKey: "v1", MaxLicenseAge: options.MaxLicenseAge, AutoLicense: options.PortraitAutoLicense, AutoLicenseValidity: options.PortraitAutoLicenseDur, DispatchPerTick: options.AssetDispatchPerTick, PollPerTick: options.AssetPollPerTick, DispatchConcurrency: options.AssetDispatchConcur, Client: options.Client,
 	})
 	if err != nil {
 		return err
