@@ -110,7 +110,12 @@ type Options struct {
 	// 素材组状态（GetAssetGroup Active）在复验到期时自动续验。
 	AutoLicense         bool
 	AutoLicenseValidity time.Duration
-	Client              *ManagementClient
+	// DispatchPerTick：素材域官方调用总闸（每 5s tick 消费的 pending op 上限），
+	// 默认 25 = 300/分钟，对齐火山 Premium 素材域 QPM 300。PollPerTick：每 tick
+	// 各类轮询候选上限（素材/会话/复验），默认 40。消费总量始终受 DispatchPerTick 约束。
+	DispatchPerTick int
+	PollPerTick     int
+	Client          *ManagementClient
 }
 type Service struct {
 	db       *gorm.DB
@@ -139,6 +144,12 @@ func NewService(db *gorm.DB, keys *crypto.Keyring, evidence *invocation.VideoSto
 	}
 	if options.AutoLicenseValidity <= 0 || options.AutoLicenseValidity > 10*365*24*time.Hour {
 		return nil, ErrInvalid
+	}
+	if options.DispatchPerTick <= 0 || options.DispatchPerTick > 200 {
+		options.DispatchPerTick = 25
+	}
+	if options.PollPerTick <= 0 || options.PollPerTick > 200 {
+		options.PollPerTick = 40
 	}
 	if options.Client == nil {
 		options.Client = NewManagementClient(nil)

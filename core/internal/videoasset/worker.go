@@ -47,7 +47,11 @@ func (s *Service) ProcessOnce(ctx context.Context) error {
 		return err
 	}
 	var pending []Operation
-	if err := s.db.WithContext(ctx).Where("status = ? AND next_attempt_at <= ?", "pending", s.now()).Order("created_at, operation_id").Limit(16).Find(&pending).Error; err != nil {
+	// 素材域官方调用总闸：CreateAsset/GetAsset/GetAssetGroup/GetVisualValidateResult
+	// 共享本派发批量。默认 25 × 5s tick = 300/分钟，对齐火山 Premium 版素材域
+	// QPM 300（官方允许的分钟滑窗上限）；非 Premium 账号按 QPM÷12 下调
+	// LAIAI_VIDEO_ASSET_DISPATCH_PER_TICK，配额升级只改 env 即时生效。
+	if err := s.db.WithContext(ctx).Where("status = ? AND next_attempt_at <= ?", "pending", s.now()).Order("created_at, operation_id").Limit(s.options.DispatchPerTick).Find(&pending).Error; err != nil {
 		return ErrStorage
 	}
 	for _, candidate := range pending {
@@ -579,7 +583,7 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 
 func (s *Service) enqueueQueries(ctx context.Context) error {
 	var assets []Asset
-	if err := s.db.WithContext(ctx).Where("status = ? AND updated_at <= ? AND deleted_at IS NULL", StatusProcessing, s.now().Add(-15*time.Second)).Order("updated_at").Limit(20).Find(&assets).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("status = ? AND updated_at <= ? AND deleted_at IS NULL", StatusProcessing, s.now().Add(-15*time.Second)).Order("updated_at").Limit(s.options.PollPerTick).Find(&assets).Error; err != nil {
 		return ErrStorage
 	}
 	for _, asset := range assets {
@@ -595,7 +599,7 @@ func (s *Service) enqueueQueries(ctx context.Context) error {
 		}
 	}
 	var portraits []Portrait
-	if err := s.db.WithContext(ctx).Where("session_status = ? AND session_expires_at > ? AND updated_at <= ?", "pending", s.now(), s.now().Add(-15*time.Second)).Order("updated_at").Limit(20).Find(&portraits).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("session_status = ? AND session_expires_at > ? AND updated_at <= ?", "pending", s.now(), s.now().Add(-15*time.Second)).Order("updated_at").Limit(s.options.PollPerTick).Find(&portraits).Error; err != nil {
 		return ErrStorage
 	}
 	for _, p := range portraits {
@@ -606,7 +610,7 @@ func (s *Service) enqueueQueries(ctx context.Context) error {
 	// 已自动授权会话的许可续验：复验到期（默认每日）即用官方素材组状态
 	// 核实（组仍在且匹配→续验；官方组被删/异常→不续，许可降级 needs_review）。
 	var due []Portrait
-	if err := s.db.WithContext(ctx).Where("session_status = ? AND license_status = ? AND revoked_at IS NULL AND group_id IS NOT NULL AND reverify_due_at <= ?", "succeeded", "verified", s.now()).Order("reverify_due_at").Limit(20).Find(&due).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("session_status = ? AND license_status = ? AND revoked_at IS NULL AND group_id IS NOT NULL AND reverify_due_at <= ?", "succeeded", "verified", s.now()).Order("reverify_due_at").Limit(s.options.PollPerTick).Find(&due).Error; err != nil {
 		return ErrStorage
 	}
 	for _, p := range due {
