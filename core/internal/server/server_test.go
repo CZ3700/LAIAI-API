@@ -95,6 +95,9 @@ CREATE TABLE routing_policy_events (
     actor_user_id INTEGER NOT NULL, request_id TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL,
     UNIQUE(aggregate_type,aggregate_id,aggregate_version)
 );
+CREATE TABLE routing_groups(id INTEGER PRIMARY KEY AUTOINCREMENT,slug TEXT NOT NULL,name TEXT NOT NULL,description TEXT NOT NULL,owner_org_id INTEGER NOT NULL,status TEXT NOT NULL,policy_version INTEGER NOT NULL,created_at DATETIME NOT NULL,updated_at DATETIME NOT NULL,UNIQUE(owner_org_id,slug));
+CREATE TABLE channel_group_bindings(group_id INTEGER NOT NULL,channel_id INTEGER NOT NULL,created_at DATETIME NOT NULL,updated_at DATETIME NOT NULL,PRIMARY KEY(group_id,channel_id));
+CREATE TABLE org_group_grants(id INTEGER PRIMARY KEY AUTOINCREMENT,org_id INTEGER NOT NULL,group_id INTEGER NOT NULL,status TEXT NOT NULL,grant_version INTEGER NOT NULL,default_slot INTEGER,created_at DATETIME NOT NULL,updated_at DATETIME NOT NULL,UNIQUE(org_id,group_id),UNIQUE(org_id,default_slot));
 CREATE TABLE org_entitlements (
     org_id INTEGER PRIMARY KEY,
     feature_images INTEGER NOT NULL DEFAULT 1, feature_video INTEGER NOT NULL DEFAULT 1,

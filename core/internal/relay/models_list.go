@@ -1,11 +1,14 @@
 package relay
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
+	"github.com/laiai/laiai-next/core/internal/routinggroup"
+	"gorm.io/gorm"
 )
 
 // GET /v1/models（OpenAI 兼容必备端点——LangChain/SDK 工具链普遍依赖）。
@@ -17,8 +20,58 @@ func (r *Relay) HandleListModels(c *gin.Context) {
 		relayErr(c, http.StatusUnauthorized, "missing api key")
 		return
 	}
-	if _, err := identity.VerifyKey(rdb, strings.TrimPrefix(auth, "Bearer "), r.Now()); err != nil {
+	key, err := identity.VerifyKey(rdb, strings.TrimPrefix(auth, "Bearer "), r.Now())
+	if err != nil {
 		relayErr(c, http.StatusUnauthorized, "invalid api key")
+		return
+	}
+	if key.ModelAccessMode == identity.ModelAccessInheritGroup {
+		data := make([]gin.H, 0)
+		resolver := relayCandidateResolver()
+		err := rdb.Transaction(func(tx *gorm.DB) error {
+			membership, err := resolver.ReadMembershipTx(c.Request.Context(), tx, routinggroup.CandidateSubjectRef{OrgID: key.OrgID, KeyID: key.ID}, r.Now().UTC())
+			if err != nil {
+				return err
+			}
+			observed, err := membership.Observation()
+			if err != nil {
+				return err
+			}
+			if observed.OrgID != key.OrgID || observed.KeyID != key.ID || key.RoutingGroupID == nil || observed.GroupID != *key.RoutingGroupID || observed.KeyPolicyVersion != key.PolicyVersion || observed.ModelAccessMode != identity.ModelAccessInheritGroup {
+				return routinggroup.ErrCandidatesDenied
+			}
+			var prices []ModelPrice
+			if err := tx.Order("model").Find(&prices).Error; err != nil {
+				return err
+			}
+			var channels []Channel
+			if err := tx.Where("status = 1").Find(&channels).Error; err != nil {
+				return err
+			}
+			byID := make(map[uint64]Channel, len(channels))
+			for _, channel := range channels {
+				byID[channel.ID] = channel
+			}
+			for _, price := range prices {
+				model, err := membership.ResolveModel(price.Model)
+				if err != nil || !model.ModelIncluded {
+					continue
+				}
+				for _, id := range model.ChannelIDs {
+					if channel, ok := byID[id]; ok && channel.ServesModel(price.Model) {
+						data = append(data, gin.H{"id": price.Model, "object": "model", "owned_by": channel.Provider})
+						break
+					}
+				}
+			}
+			return nil
+		}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+		if err != nil {
+			code, message := groupedChannelFailure(err)
+			relayErr(c, code, message)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
 		return
 	}
 

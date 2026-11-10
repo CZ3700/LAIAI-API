@@ -96,7 +96,7 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 		relayErr(c, http.StatusBadRequest, "n must be between 1 and 10")
 		return
 	}
-	if code, msg, ok := r.gateKey(key, c.ClientIP(), model); !ok {
+	if code, msg, ok := r.gateRelayKey(c.Request.Context(), key, c.ClientIP(), model); !ok {
 		relayErr(c, code, msg)
 		return
 	}
@@ -175,7 +175,7 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 		return upReq, nil
 	}
 	resp, ch, aborted := r.forwardWithFailover(c, inv, finish, forwardOpts{
-		model: model, hold: hold, unsupported: errImagesUnsupported, modality: "image editing", logLabel: "image-edit", policy: resolveRoutePolicy(c, key), build: build,
+		model: model, key: key, hold: hold, unsupported: errImagesUnsupported, modality: "image editing", logLabel: "image-edit", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if aborted {
 		return

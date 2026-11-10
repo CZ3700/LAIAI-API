@@ -69,7 +69,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model and input are required")
 		return
 	}
-	if code, msg, gok := r.gateKey(key, c.ClientIP(), req.Model); !gok {
+	if code, msg, gok := r.gateRelayKey(c.Request.Context(), key, c.ClientIP(), req.Model); !gok {
 		relayErr(c, code, msg)
 		return
 	}
@@ -128,7 +128,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 		return hr, nil
 	}
 	resp, winCh, ferr := r.forwardWithFailover(c, inv, finish, forwardOpts{
-		model: req.Model, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", policy: resolveRoutePolicy(c, key), build: build,
+		model: req.Model, key: key, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if ferr {
 		return
@@ -190,7 +190,7 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 		relayErr(c, http.StatusBadRequest, "multipart form with a model field is required")
 		return
 	}
-	if code, msg, gok := r.gateKey(key, c.ClientIP(), model); !gok {
+	if code, msg, gok := r.gateRelayKey(c.Request.Context(), key, c.ClientIP(), model); !gok {
 		relayErr(c, code, msg)
 		return
 	}
@@ -253,7 +253,7 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 		return hr, nil
 	}
 	resp, winCh, ferr := r.forwardWithFailover(c, inv, finish, forwardOpts{
-		model: model, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", policy: resolveRoutePolicy(c, key), build: build,
+		model: model, key: key, hold: hold, unsupported: errAudioUnsupported, modality: "audio", logLabel: "audio", policy: resolveRoutePolicy(c, key), build: build,
 	})
 	if ferr {
 		return

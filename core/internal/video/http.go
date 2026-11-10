@@ -108,8 +108,12 @@ func respondError(c *gin.Context, err error) {
 		apiError(c, 429, "concurrency_limit")
 	case errors.Is(err, ErrModelConcurrencyLimit):
 		apiError(c, 429, "model_concurrency_limit")
+	case errors.Is(err, ErrProviderModelConcurrencyLimit):
+		apiError(c, 429, "model_concurrency_limit")
 	case errors.Is(err, ErrModelRateLimit):
 		apiError(c, 429, "model_rate_limit")
+	case errors.Is(err, ErrUserTaskRPM), errors.Is(err, ErrUserTaskConcurrency), errors.Is(err, ErrUserDailyTasks), errors.Is(err, ErrUserMonthlyTasks):
+		apiError(c, 429, "rate_limited")
 	case errors.Is(err, videobilling.ErrQuotaExceeded):
 		apiError(c, 429, "quota_exceeded")
 	case errors.Is(err, ledger.ErrInsufficientBalance):
@@ -352,10 +356,6 @@ func (s *Service) HandleCreate(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
-	if !key.AllowsModel(in.Model) {
-		apiError(c, 403, "model_not_allowed")
-		return
-	}
 	canonical, err := json.Marshal(in)
 	if err != nil {
 		respondError(c, ErrInvalid)
@@ -397,7 +397,18 @@ func (s *Service) HandleCreate(c *gin.Context) {
 		apiError(c, 503, "admission_unavailable")
 		return
 	}
-	if code, _, ok := s.Gate.GateKey(key, c.ClientIP(), in.Model); !ok {
+	gate := s.Gate.GateKey
+	if key.ModelAccessMode == identity.ModelAccessInheritGroup {
+		groupedGate, ok := s.Gate.(interface {
+			GateOfficialVideoKey(*identity.APIKey, string, string) (int, string, bool)
+		})
+		if !ok {
+			apiError(c, 503, "admission_unavailable")
+			return
+		}
+		gate = groupedGate.GateOfficialVideoKey
+	}
+	if code, _, ok := gate(key, c.ClientIP(), in.Model); !ok {
 		apiError(c, code, "admission_rejected")
 		return
 	}
@@ -576,10 +587,6 @@ func (s *Service) HandleEstimate(c *gin.Context) {
 		return
 	}
 	key := requestKey(c)
-	if !key.AllowsModel(in.Model) {
-		apiError(c, 403, "model_not_allowed")
-		return
-	}
 	q, e := s.EstimateForKey(c.Request.Context(), key, in)
 	if e != nil {
 		respondError(c, e)

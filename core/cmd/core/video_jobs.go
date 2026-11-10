@@ -17,13 +17,22 @@ func registerVideoJobs(jobs *mainJobs, service *video.Service, isLeader func() b
 		interval time.Duration
 		run      func(context.Context) error
 	}{
-		{"task_dispatch", 2 * time.Second, service.ProcessDispatchOnce},
+		{"task_dispatch", 2 * time.Second, service.ProcessOperationsOnce},
+		{"task_query", 2 * time.Second, service.ProcessQueryOnce},
 		{"task_recovery", 2 * time.Second, service.ProcessPersistedEvidenceOnce},
 		{"task_settlement", 2 * time.Second, service.ProcessSettlementOnce},
 		{"assets", 5 * time.Second, service.Assets.ProcessOnce},
 		{"events", 5 * time.Second, service.ProcessOutbox},
-		{"ark_callbacks", 5 * time.Second, service.ProcessCallbackHints},
+		{"ark_callbacks", 2 * time.Second, service.ProcessCallbackHints},
 		{"stale_pending_usage", 10 * time.Minute, service.ReleaseStalePendingUsage},
+		{"provider_model_quota_sync", 5 * time.Minute, func(ctx context.Context) error {
+			failures := service.RefreshKnownProviderModelRateLimits(ctx)
+			if len(failures) > 0 && ctx.Err() == nil {
+				// Management credential and provider response details never enter logs.
+				log.Warn("video provider quota refresh deferred", "accounts_failed", len(failures))
+			}
+			return nil
+		}},
 		{"evidence_retention", time.Minute, func(ctx context.Context) error {
 			if _, err := service.Evidence.PurgeExpired(ctx, 100); err != nil {
 				return err

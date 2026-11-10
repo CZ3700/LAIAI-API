@@ -44,6 +44,7 @@ type runtimeHandoffTask struct {
 	HoldID      uint64 `json:"hold_id"`
 	HoldUSD     string `json:"hold_usd"`
 	CapturedUSD string `json:"captured_usd"`
+	PollDueAt   string `json:"settled_poll_due_at,omitempty"`
 	Fingerprint string `json:"pre_runtime_columns_sha256"`
 }
 
@@ -256,6 +257,9 @@ func runtimeHandoffSeed(t *testing.T, report *runtimeHandoffReport) {
 			t.Fatal("unfinished old task changed funds")
 		}
 		runtimeHandoffEvidenceExists(t, f.s.DB, record)
+		if role == "settled" {
+			record.PollDueAt = runtimeHandoffPollDue(t, f.s.DB, record)
+		}
 		record.Fingerprint = runtimeHandoffFingerprint(t, f.s.DB, record)
 		report.Tasks = append(report.Tasks, record)
 	}
@@ -286,6 +290,13 @@ func runtimeHandoffVerify(t *testing.T, db *gorm.DB, root string, report *runtim
 			t.Fatal("old-process evidence is incomplete")
 		}
 		for _, record := range old.Tasks {
+			runtimeHandoffAssertOperationDefaults(t, db, record)
+			if record.Role == "settled" {
+				actual := runtimeHandoffPollDue(t, db, record)
+				if name == "old_before" && (record.PollDueAt == "" || actual != "") || name == "old_after" && actual != record.PollDueAt {
+					t.Fatal("settled task poll schedule did not match reviewed 0146 migration behavior")
+				}
+			}
 			if runtimeHandoffFingerprint(t, db, record) != record.Fingerprint {
 				t.Fatal("migration or overlap changed pre-existing task or financial data")
 			}
@@ -447,6 +458,11 @@ func runtimeHandoffHistoricalProjection(table string, columns []string, values [
 		if table == "video_query_receipts" && (column == "generation_applied_at" || column == "settlement_kind" || column == "settlement_evidence_sha256" || column == "settlement_shape_ready") {
 			continue
 		}
+		// 0143 records new provider errors and 0152 adds a send deferral. The
+		// old writer had neither column; verify their defaults separately.
+		if table == "video_operations" && (column == "provider_error_code" || column == "provider_error_message" || column == "next_dispatch_at") {
+			continue
+		}
 		if values[i] == nil {
 			projection[column] = nil
 		} else {
@@ -454,6 +470,28 @@ func runtimeHandoffHistoricalProjection(table string, columns []string, values [
 		}
 	}
 	return projection
+}
+
+func runtimeHandoffAssertOperationDefaults(t *testing.T, db *gorm.DB, record runtimeHandoffTask) {
+	t.Helper()
+	var code, message string
+	var next sql.NullTime
+	err := db.Raw("SELECT provider_error_code, provider_error_message, next_dispatch_at FROM video_operations WHERE org_id = ? AND id = ?", record.OrgID, record.OperationID).Row().Scan(&code, &message, &next)
+	must(t, err)
+	if code != "" || message != "" || next.Valid {
+		t.Fatal("additive operation columns changed old-writer evidence")
+	}
+}
+
+func runtimeHandoffPollDue(t *testing.T, db *gorm.DB, record runtimeHandoffTask) string {
+	t.Helper()
+	var due sql.NullString
+	err := db.Raw("SELECT CAST(next_poll_at AS CHAR) FROM video_task_states WHERE org_id = ? AND task_id = ?", record.OrgID, record.TaskID).Row().Scan(&due)
+	must(t, err)
+	if !due.Valid {
+		return ""
+	}
+	return due.String
 }
 
 func runtimeHandoffFingerprint(t *testing.T, db *gorm.DB, record runtimeHandoffTask) string {
@@ -481,6 +519,11 @@ func runtimeHandoffFingerprint(t *testing.T, db *gorm.DB, record runtimeHandoffT
 			}
 			must(t, rows.Scan(dest...))
 			projection := runtimeHandoffHistoricalProjection(table, columns, values)
+			// 0146 deliberately clears the completed task's stale poll deadline.
+			// Its exact before/after values are asserted separately above.
+			if table == "video_task_states" && record.Role == "settled" {
+				delete(projection, "next_poll_at")
+			}
 			raw, e := json.Marshal(projection)
 			must(t, e)
 			encoded = append(encoded, string(raw))

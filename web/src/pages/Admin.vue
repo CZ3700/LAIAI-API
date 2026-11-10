@@ -10,6 +10,7 @@ import Sparkline from '@/components/Sparkline.vue'
 import DetailDrawer from '@/components/DetailDrawer.vue'
 import AdminPricingPanel from '@/components/pricing/AdminPricingPanel.vue'
 import InvocationLogPanel from '@/components/invocation/InvocationLogPanel.vue'
+import VideoRoutingPanel from '@/components/admin/VideoRoutingPanel.vue'
 import type { ModelMeta } from '@/components/pricing/types'
 
 const auth = useAuth()
@@ -119,14 +120,14 @@ function showError(e: unknown) {
 const { t, d } = useI18n()
 
 // —— tabs ——
-const tab = ref<'overview' | 'analytics' | 'health' | 'channels' | 'videolimits' | 'payments' | 'prices' | 'groups' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
+const tab = ref<'overview' | 'analytics' | 'health' | 'channels' | 'videolimits' | 'routing' | 'payments' | 'prices' | 'groups' | 'orgs' | 'users' | 'logs' | 'settings' | 'audit'>('overview')
 
 // 标签分级（对标后端 RBAC）：资金/系统/定价类仅 superadmin 可见，admin 看运营类。
 // 减法：analytics 并入 overview（同页展示运营分析）、health 并入 channels（渠道+健康同看）、
 // groups 并入 prices（都是定价配置，分组倍率区块用 isSuperadmin 守住原超管权限边界）。12→9。
-const ALL_TABS = ['overview', 'channels', 'videolimits', 'payments', 'prices', 'orgs', 'users', 'logs', 'settings', 'audit'] as const
+const ALL_TABS = ['overview', 'channels', 'videolimits', 'routing', 'payments', 'prices', 'orgs', 'users', 'logs', 'settings', 'audit'] as const
 // logs（全局调用明细）跨租户 → superadmin-only（配合后端 P2-3 把 /invocations 收归超管）
-const SUPER_ONLY_TABS = new Set(['videolimits', 'payments', 'settings', 'logs'])
+const SUPER_ONLY_TABS = new Set(['videolimits', 'routing', 'payments', 'settings', 'logs'])
 const canReadLogs = computed(() => { adminToken.revision.value; return auth.isSuperadmin || adminToken.get() !== '' })
 const visibleTabs = computed(() => ALL_TABS.filter((tb) => tb === 'logs' ? canReadLogs.value : auth.isSuperadmin || !SUPER_ONLY_TABS.has(tb)))
 function requestedTab(value: unknown): typeof ALL_TABS[number] {
@@ -1303,7 +1304,7 @@ onMounted(async () => {
             :class="tab === tb ? 'bg-panel text-ink shadow-sm' : 'text-muted hover:text-ink'"
             @click="selectAdminTab(tb)"
           >
-            {{ t(`admin.${tb}`) }}
+            {{ tb === 'routing' ? '路由与额度' : t(`admin.${tb}`) }}
           </button>
         </div>
         <button class="btn-ghost !py-1.5 text-xs" @click="lock">{{ t('admin.clear') }}</button>
@@ -2510,6 +2511,8 @@ onMounted(async () => {
           </table>
         </div>
       </template>
+
+      <VideoRoutingPanel v-if="tab === 'routing' && auth.isSuperadmin" :channels="channels" :orgs="orgs" />
 
       <!-- 组织 -->
       <template v-if="tab === 'orgs'">

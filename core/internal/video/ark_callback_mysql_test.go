@@ -84,7 +84,7 @@ func hintCount(t *testing.T, f *fixture, taskID string) int64 {
 }
 
 // 回调端点安全面：错误 token → 404 且不落 hint；正确 token → 200 落 hint；
-// 重复推送按 (task_id, body_hash) 折叠。
+// 重复推送原子更新同一任务的 hint。
 func TestMySQLArkCallbackEndpointAuth(t *testing.T) {
 	f := mysqlFixture(t)
 	f.s.ArkCallbackBase = "https://callback.example"
@@ -105,24 +105,134 @@ func TestMySQLArkCallbackEndpointAuth(t *testing.T) {
 	if n := hintCount(t, f, v.ID); n != 1 {
 		t.Fatalf("hints = %d, want 1 (duplicate collapsed)", n)
 	}
+	large := `{"padding":"` + strings.Repeat("x", 5000) + `","id":"cgt-large","safety_identifier":"proof"}`
+	if w := postHint(t, f, f.s.HandleArkCallback, v.ID, token, large); w.Code != 200 {
+		t.Fatalf("large hint = %d", w.Code)
+	}
+	var hint CallbackHint
+	must(t, f.s.DB.Where("task_id = ?", v.ID).First(&hint).Error)
+	if hint.BodyExcerpt != `{"id":"cgt-large","safety_identifier":"proof"}` {
+		t.Fatalf("large hint lost recovery identity: %s", hint.BodyExcerpt)
+	}
 }
 
-// P1 全链路回归（缩小版）：正常任务（有 id）hint 仅 ACK 不动轮询；
+func TestMySQLArkCallbackRevisionPreservesNewDelivery(t *testing.T) {
+	f := mysqlFixture(t)
+	f.s.ArkCallbackBase = "https://callback.example"
+	v := f.create(t, "callback-revision")
+	token := f.s.arkCallbackToken(v.ID)
+	if w := postHint(t, f, f.s.HandleArkCallback, v.ID, token, `{"id":"first"}`); w.Code != 200 {
+		t.Fatalf("first hint = %d", w.Code)
+	}
+	var old CallbackHint
+	must(t, f.s.DB.Where("task_id = ?", v.ID).First(&old).Error)
+	if w := postHint(t, f, f.s.HandleArkCallback, v.ID, token, `{"id":"second"}`); w.Code != 200 {
+		t.Fatalf("second hint = %d", w.Code)
+	}
+	must(t, f.s.finishCallbackHint(context.Background(), old, callbackHintOutcome{result: "ack_final"}))
+	var latest CallbackHint
+	must(t, f.s.DB.Where("task_id = ?", v.ID).First(&latest).Error)
+	if latest.ID != old.ID || latest.Revision <= old.Revision || latest.ProcessedAt != nil || latest.BodyExcerpt != `{"id":"second"}` {
+		t.Fatalf("new delivery was lost after stale ACK: old=%+v latest=%+v", old, latest)
+	}
+	if n := hintCount(t, f, v.ID); n != 1 {
+		t.Fatalf("hints = %d, want 1", n)
+	}
+}
+
+func TestMySQLArkCallbackStoreFailureReturnsRetryableStatus(t *testing.T) {
+	f := mysqlFixture(t)
+	f.s.ArkCallbackBase = "https://callback.example"
+	v := f.create(t, "callback-store-failure")
+	original := f.s.DB
+	tx := original.Begin()
+	must(t, tx.Error)
+	must(t, tx.Rollback().Error)
+	f.s.DB = tx
+	defer func() { f.s.DB = original }()
+	if w := postHint(t, f, f.s.HandleArkCallback, v.ID, f.s.arkCallbackToken(v.ID), `{"id":"cgt-x"}`); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed persistence status = %d, want 503", w.Code)
+	}
+}
+
+func TestMySQLArkCallbackWatchdogFallsBackToGet(t *testing.T) {
+	f := mysqlFixture(t)
+	f.s.ArkCallbackBase = "https://callback.example"
+	v := f.create(t, "callback-watchdog")
+	f.dispatch(t, v.ID)
+	var st State
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&st).Error)
+	if st.NextPollAt.Before(time.Now().Add(100*time.Second)) || st.NextPollAt.After(time.Now().Add(140*time.Second)) {
+		t.Fatalf("watchdog not about two minutes after create: %s", st.NextPollAt)
+	}
+	must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
+	if f.gets.Load() != 0 {
+		t.Fatal("normal query ran before callback watchdog due")
+	}
+	must(t, f.s.DB.Exec("UPDATE video_task_states SET next_poll_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Error)
+	must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
+	if f.gets.Load() != 1 || taskRowFor(t, f, v.ID).Status != "succeeded" {
+		t.Fatal("watchdog did not recover via authoritative GET")
+	}
+}
+
+func TestMySQLArkCallbackDuringInflightQueryStaysPending(t *testing.T) {
+	f := mysqlFixture(t)
+	f.s.ArkCallbackBase = "https://callback.example"
+	v := f.create(t, "callback-inflight")
+	f.dispatch(t, v.ID)
+	row := taskRowFor(t, f, v.ID)
+	must(t, f.s.DB.Exec("UPDATE video_task_states SET query_lease_until = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 1 MINUTE) WHERE org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Error)
+	if w := postHint(t, f, f.s.HandleArkCallback, v.ID, f.s.arkCallbackToken(v.ID), `{"id":"`+row.UpstreamTaskID+`","status":"succeeded"}`); w.Code != 200 {
+		t.Fatalf("hint = %d", w.Code)
+	}
+	must(t, f.s.ProcessCallbackHints(context.Background()))
+	var pending CallbackHint
+	must(t, f.s.DB.Where("task_id = ?", v.ID).First(&pending).Error)
+	if pending.ProcessedAt != nil || pending.RetryAt == nil || pending.Result != "query_inflight" {
+		t.Fatalf("in-flight query consumed callback: %+v", pending)
+	}
+	must(t, f.s.DB.Exec("UPDATE video_task_states SET query_lease_until = NULL WHERE org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Error)
+	must(t, f.s.DB.Exec("UPDATE video_callback_hints SET retry_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE task_id = ?", v.ID).Error)
+	must(t, f.s.ProcessCallbackHints(context.Background()))
+	var st State
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&st).Error)
+	if st.NextPollAt.After(time.Now().Add(2 * time.Second)) {
+		t.Fatalf("callback not scheduled after in-flight query: %s", st.NextPollAt)
+	}
+}
+
+// P1 全链路回归（缩小版）：正常任务（有 id）hint 触发权威查询；
 // submission_unknown（无 id）hint 三重证明后绑定 id，随后轮询照常结算。
 func TestMySQLArkCallbackUnknownRecovery(t *testing.T) {
 	f := mysqlFixture(t)
 	f.s.ArkCallbackBase = "https://callback.example"
 
-	// ① 正常任务：dispatch 成功（有 id），回调到达 → ACK，任务照旧。
+	// ① 正常任务：dispatch 成功（有 id），回调到达 → 查询立即到期，
+	// 仍由正常 GET 管道做状态和资金结算。
 	bound := f.create(t, "callback-bound")
 	f.dispatch(t, bound.ID)
 	boundRow := taskRowFor(t, f, bound.ID)
+	var before State
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, bound.ID).First(&before).Error)
+	if before.NextPollAt.Before(time.Now().Add(100 * time.Second)) {
+		t.Fatalf("callback watchdog scheduled too early: %s", before.NextPollAt)
+	}
 	if w := postHint(t, f, f.s.HandleArkCallback, bound.ID, f.s.arkCallbackToken(bound.ID), `{"id":"`+boundRow.UpstreamTaskID+`","status":"succeeded"}`); w.Code != 200 {
 		t.Fatalf("bound hint = %d", w.Code)
 	}
 	must(t, f.s.ProcessCallbackHints(context.Background()))
 	if row := taskRowFor(t, f, bound.ID); row.Status != "queued" {
-		t.Fatalf("bound hint changed polling ownership: %s", row.Status)
+		t.Fatalf("bound hint bypassed authoritative polling: %s", row.Status)
+	}
+	var due State
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, bound.ID).First(&due).Error)
+	if due.NextPollAt.After(time.Now().Add(2 * time.Second)) {
+		t.Fatalf("bound hint failed to trigger prompt GET: %s", due.NextPollAt)
+	}
+	must(t, f.s.ProcessQueryOnce(context.Background()))
+	if row := taskRowFor(t, f, bound.ID); row.Status != "succeeded" {
+		t.Fatalf("authoritative GET did not settle bound task: %s", row.Status)
 	}
 
 	// ② 提交超时 → submission_unknown（无 id）：带 id + safety_identifier 的
@@ -156,10 +266,14 @@ func TestMySQLArkCallbackUnknownRecovery(t *testing.T) {
 	if w := postHint(t, f, f.s.HandleArkCallback, unknown.ID, f.s.arkCallbackToken(unknown.ID), cb); w.Code != 200 {
 		t.Fatalf("valid hint = %d", w.Code)
 	}
+	// The prior verification may have consumed the provider query slot. Make
+	// this test's slot due rather than depending on wall-clock timing.
+	must(t, f.s.DB.Exec("UPDATE video_provider_rates SET next_allowed_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE action = 'query'").Error)
 	must(t, f.s.ProcessCallbackHints(context.Background()))
 	if row := taskRowFor(t, f, unknown.ID); row.UpstreamTaskID != upstream {
 		t.Fatalf("unknown task not bound: upstream=%q", row.UpstreamTaskID)
 	}
+	must(t, f.s.DB.Exec("UPDATE video_provider_rates SET next_allowed_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE action = 'query'").Error)
 	must(t, f.s.pollTask(context.Background(), f.key.OrgID, unknown.ID))
 	if row := taskRowFor(t, f, unknown.ID); row.Status != "succeeded" {
 		t.Fatalf("recovered task did not settle: %s", row.Status)

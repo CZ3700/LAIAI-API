@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
+	"github.com/laiai/laiai-next/core/internal/routinggroup"
 	"github.com/laiai/laiai-next/core/internal/video"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -32,6 +33,47 @@ func videoWriteScope(scopes string) bool {
 func (s *Server) keyVideoAccess(c *gin.Context) {
 	claims := mustClaims(c)
 	state, canEnable := "unavailable", false
+	var defaultGroup *struct {
+		ID   uint64 `json:"id"`
+		Name string `json:"name"`
+	}
+	defaultGroupState := "none"
+	if err := s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var row struct {
+			ID   uint64 `gorm:"column:id"`
+			Name string `gorm:"column:name"`
+		}
+		err := tx.Table("org_group_grants AS og").
+			Select("og.group_id AS id, COALESCE(routing_groups.name, '') AS name").
+			Joins("LEFT JOIN routing_groups ON routing_groups.id = og.group_id").
+			Where("og.org_id = ? AND og.default_slot = 1", claims.OrgID).Take(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		defaultGroupState = "inactive"
+		defaultGroup = &struct {
+			ID   uint64 `json:"id"`
+			Name string `json:"name"`
+		}{ID: row.ID, Name: row.Name}
+		id, err := routinggroup.DefaultKeyGroupTx(tx, claims.OrgID)
+		if errors.Is(err, routinggroup.ErrInactive) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if id == nil || *id != row.ID {
+			return routinggroup.ErrInvalid
+		}
+		defaultGroupState = "active"
+		return nil
+	}); err != nil {
+		fail(c, 503, "routing group unavailable")
+		return
+	}
 	if s.video != nil {
 		ent, err := identity.LoadEntitlements(s.db, claims.OrgID)
 		if err != nil {
@@ -57,7 +99,13 @@ func (s *Server) keyVideoAccess(c *gin.Context) {
 			state = "enabled"
 		}
 	}
-	c.JSON(200, gin.H{"state": state, "can_enable": canEnable})
+	c.JSON(200, gin.H{
+		"state": state, "can_enable": canEnable,
+		"grouped_issuance_enabled": defaultGroupState == "active" && state == "enabled",
+		"default_group_configured": defaultGroup != nil,
+		"default_group_state":      defaultGroupState,
+		"default_group":            defaultGroup,
+	})
 }
 
 // Caller holds the organization lock. Never overwrite an administrator's policy.

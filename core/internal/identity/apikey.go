@@ -50,7 +50,9 @@ type APIKey struct {
 
 func (APIKey) TableName() string { return "api_keys" }
 
-// AllowsModel 返回该 Key 是否可调用某模型（空白名单=不限）。
+// AllowsModel preserves the legacy pure CSV predicate. A grouped key needs a
+// current group/channel/action observation and cannot be authorized by this
+// value-only method; unconverted entry points stay closed.
 func (k *APIKey) AllowsModel(model string) bool {
 	if !k.validLegacyRouting() {
 		return false
@@ -111,6 +113,11 @@ func IssueKey(tx *gorm.DB, in IssueKeyInput) (string, *APIKey, error) {
 	var plain string
 	var key *APIKey
 	err = tx.Transaction(func(inner *gorm.DB) error {
+		if mode == ModelAccessInheritGroup {
+			if e := routinggroup.ActiveKeyGroupTx(inner, in.OrgID, *in.RoutingGroupID); e != nil {
+				return e
+			}
+		}
 		var e error
 		plain, key, e = issueLegacyKey(inner, in, mode)
 		return e
@@ -158,6 +165,7 @@ func issueLegacyKey(tx *gorm.DB, in IssueKeyInput, mode string) (string, *APIKey
 		AllowIPs:        in.AllowIPs,
 		RPMLimit:        in.RPMLimit,
 		RoutePolicy:     in.RoutePolicy,
+		RoutingGroupID:  in.RoutingGroupID,
 		ModelAccessMode: mode,
 		PolicyVersion:   1,
 	}
@@ -193,7 +201,7 @@ func VerifyKey(db *gorm.DB, plaintext string, now time.Time) (*APIKey, error) {
 	if k.ExpiresAt != nil && now.After(*k.ExpiresAt) {
 		return nil, ErrKeyExpired
 	}
-	if !k.validLegacyRouting() {
+	if !k.validLegacyRouting() && !k.validGroupedRouting() {
 		return nil, ErrKeyInvalid
 	}
 	// P0-1：key 所属 org 必须 active；per-member key（绑定具体成员）还需该成员 active 且 membership 仍在
@@ -204,6 +212,16 @@ func VerifyKey(db *gorm.DB, plaintext string, now time.Time) (*APIKey, error) {
 		}
 	} else if err := VerifyOrgActive(db, k.OrgID); err != nil {
 		return nil, err
+	}
+	if k.validGroupedRouting() {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			return routinggroup.ActiveKeyGroupTx(tx, k.OrgID, *k.RoutingGroupID)
+		}); err != nil {
+			if errors.Is(err, routinggroup.ErrInactive) || errors.Is(err, routinggroup.ErrInvalid) {
+				return nil, ErrKeyInvalid
+			}
+			return nil, err
+		}
 	}
 	return k, nil
 }

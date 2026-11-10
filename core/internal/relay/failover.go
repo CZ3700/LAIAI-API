@@ -18,13 +18,15 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 )
 
 // forwardOpts：一次非 chat 换渠道转发的模态参数。
 type forwardOpts struct {
-	model       string       // 选路模型名（对外名）
+	model       string // 选路模型名（对外名）
+	key         *identity.APIKey
 	hold        *ledger.Hold // 提交时冻结的 hold（全失败时 release）
 	unsupported error        // build 返回它（==）→ 该 provider 不支持本模态，400 终止不换渠道
 	modality    string       // 400 消息/finish brief 用："embeddings"/"rerank"/"audio"/"image generation"/"image editing"
@@ -49,12 +51,12 @@ func (r *Relay) forwardWithFailover(c *gin.Context, inv *invocation.Invocation, 
 		if snapErr != nil {
 			break
 		}
-		ch, pickErr := r.pickSnapshotPolicy(channelSnap, o.model, attempt, exclude, o.policy, inv.OrgID, nil)
+		ch, pickErr := r.pickRelayChannel(c.Request.Context(), o.key, channelSnap, o.model, attempt, exclude, o.policy, nil)
 		if pickErr != nil {
 			if !breaker.reopen(exclude) {
 				break
 			}
-			ch, pickErr = r.pickSnapshotPolicy(channelSnap, o.model, attempt, exclude, o.policy, inv.OrgID, nil)
+			ch, pickErr = r.pickRelayChannel(c.Request.Context(), o.key, channelSnap, o.model, attempt, exclude, o.policy, nil)
 			if pickErr != nil {
 				break
 			}
@@ -113,7 +115,7 @@ func (r *Relay) forwardWithFailover(c *gin.Context, inv *invocation.Invocation, 
 			r.resetKeyFailures(credID)
 			r.breakerNote(ch.ID, true) // 熔断：成功即闭合
 			inv.UpstreamErrorCode = "" // 成功清前次失败尝试的错误码（对抗 review，同 chat 主循环）
-			return resp, ch, false // 成功：winCh=ch，hold 留给调用方 settle
+			return resp, ch, false     // 成功：winCh=ch，hold 留给调用方 settle
 		}
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		resp.Body.Close()

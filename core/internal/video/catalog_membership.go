@@ -85,9 +85,11 @@ func (s *Service) readOfficialActionSubjectTx(ctx context.Context, tx *gorm.DB, 
 	if err != nil {
 		return zero, catalogError(ctx, err)
 	}
-	// Grouped observations are available to internal composition, but public
-	// catalog and admission remain closed until every production entry is ready.
-	if observed.ModelAccessMode != "legacy" {
+	// Only the validated legacy or administrator-bound inherited mode can
+	// enter action composition. Membership itself is not an action permit:
+	// publication, fixed channel, scopes, policy and credentials are checked
+	// by the caller in the same transaction.
+	if observed.ModelAccessMode != identity.ModelAccessLegacy && observed.ModelAccessMode != identity.ModelAccessInheritGroup {
 		return zero, ErrCatalogDenied
 	}
 	facts, err := membership.ContextFacts()

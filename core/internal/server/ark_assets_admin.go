@@ -73,6 +73,8 @@ func (s *Server) registerArkAssetAdmin(su *gin.RouterGroup) {
 		}
 		s.videoAdminReply(c, s.video.SetAssetSharedDefault(c.Request.Context(), actor, in))
 	})
+	g.GET("/group-asset-projects/:group_id", s.getArkGroupAssetProject)
+	g.PUT("/group-asset-projects/:group_id", s.putArkGroupAssetProject)
 	g.POST("/verified-media", func(c *gin.Context) {
 		actor, _ := s.videoAdminActor(c)
 		var in video.AssetMediaRegistration

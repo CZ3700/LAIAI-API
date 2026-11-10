@@ -193,13 +193,13 @@ func TestOfficialActionGroupedCompositionRequiresExactFixedChannel(t *testing.T)
 		if !officialActionDecision(subject, ark.Model20, 7, officialCreate, published).Eligible || officialActionDecision(subject, ark.Model20, 8, officialCreate, published).Eligible {
 			t.Fatal("group member on another same-model channel substituted for the fixed channel")
 		}
-		_, err = s.readOfficialActionSubjectTx(context.Background(), tx, CatalogSubjectRef{OrgID: 1, KeyID: 2})
-		if !errors.Is(err, ErrCatalogDenied) {
-			t.Fatal("internal composition opened grouped production admission")
+		observed, err := s.readOfficialActionSubjectTx(context.Background(), tx, CatalogSubjectRef{OrgID: 1, KeyID: 2})
+		if err != nil || !officialActionDecision(observed, ark.Model20, 7, officialCreate, published).Eligible {
+			t.Fatal("validated grouped subject failed official action composition", err)
 		}
 		return nil
 	}))
-	if _, err := s.EstimateForKey(context.Background(), key, ark.CreateRequest{Model: ark.Model20}); !errors.Is(err, ErrForbidden) {
-		t.Fatal("stale legacy key bypassed grouped mode closure")
+	if _, err := s.EstimateForKey(context.Background(), key, ark.CreateRequest{Model: ark.Model20}); !errors.Is(err, ErrCapability) {
+		t.Fatal("stale legacy key bypassed current grouped membership or publication", err)
 	}
 }

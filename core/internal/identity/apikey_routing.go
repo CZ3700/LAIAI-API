@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-const ModelAccessLegacy = "legacy"
+const (
+	ModelAccessLegacy       = "legacy"
+	ModelAccessInheritGroup = "inherit_group"
+)
 
 var (
 	ErrModelAccessMode      = errors.New("invalid_model_access_mode")
@@ -28,14 +31,17 @@ func ValidateKeyRouting(mode *string, group *uint64, modelLimits string) (string
 			return "", ErrRoutingGroup
 		}
 		return m, nil
-	case "inherit_group", "subset":
+	case ModelAccessInheritGroup, "subset":
 		if group == nil || *group == 0 {
 			return "", ErrRoutingGroup
 		}
-		if m == "inherit_group" && strings.TrimSpace(modelLimits) != "" || m == "subset" && strings.TrimSpace(modelLimits) == "" {
+		if m == ModelAccessInheritGroup && strings.TrimSpace(modelLimits) != "" || m == "subset" && strings.TrimSpace(modelLimits) == "" {
 			return "", ErrModelAccessLimits
 		}
-		return "", ErrGroupRoutingDisabled
+		if m == "subset" {
+			return "", ErrGroupRoutingDisabled
+		}
+		return m, nil
 	default:
 		return "", ErrModelAccessMode
 	}
@@ -43,4 +49,8 @@ func ValidateKeyRouting(mode *string, group *uint64, modelLimits string) (string
 
 func (k *APIKey) validLegacyRouting() bool {
 	return k != nil && k.ModelAccessMode == ModelAccessLegacy && k.RoutingGroupID == nil && k.PolicyVersion > 0
+}
+
+func (k *APIKey) validGroupedRouting() bool {
+	return k != nil && k.ModelAccessMode == ModelAccessInheritGroup && k.RoutingGroupID != nil && *k.RoutingGroupID > 0 && strings.TrimSpace(k.ModelLimits) == "" && k.PolicyVersion > 0
 }

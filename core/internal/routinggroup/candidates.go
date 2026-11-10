@@ -1,7 +1,7 @@
 package routinggroup
 
-// These read-only observations are not admission or a sending permit.
-// Grouped API keys remain disabled in production authentication and admission.
+// These read-only observations are not admission or a sending permit. Callers
+// must compose them with action policy and constrain each selected channel.
 import (
 	"context"
 	"errors"

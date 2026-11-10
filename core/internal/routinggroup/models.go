@@ -1,5 +1,6 @@
 // Package routinggroup owns routing configuration, not billing groups or execution.
-// Named-superadmin HTTP commands manage configuration; grouped API keys remain disabled.
+// Named-superadmin HTTP commands manage configuration. Grouped keys inherit
+// only active grants; callers still authorize each model and action separately.
 package routinggroup
 
 import "time"

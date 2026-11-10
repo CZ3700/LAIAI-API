@@ -362,13 +362,14 @@ func TestMySQLVideoActionMembershipDiscoverySnapshotAndBudgets(t *testing.T) {
 	}
 }
 
-func TestMySQLVideoActionMembershipGroupedAuthenticationRemainsClosed(t *testing.T) {
+func TestMySQLVideoActionMembershipGroupedAuthenticationAndCatalog(t *testing.T) {
 	f, r := videoActionHostFixture(t)
-	// Grouped keys cannot be issued by production; the fixture alone writes a
-	// structurally valid row under the real CHECK constraints, as in A1 tests.
+	// A valid inherited key sees only its bound channel's published models.
+	// Subset issuance remains closed and cannot reuse the inherited path.
 	routingAdminSQL(t, f.db, "INSERT INTO routing_groups(id,slug,name,owner_org_id,status,policy_version,created_at,updated_at) VALUES(70001,'action-fixture','Synthetic group',0,'enabled',1,?,?)", f.at, f.at)
 	routingAdminSQL(t, f.db, "INSERT INTO org_group_grants(org_id,group_id,status,grant_version,created_at,updated_at) VALUES(70001,70001,'enabled',1,?,?)", f.at, f.at)
 	routingAdminSQL(t, f.db, "INSERT INTO channel_group_bindings(group_id,channel_id,created_at,updated_at) VALUES(70001,70001,?,?)", f.at, f.at)
+	routingAdminSQL(t, f.db, "UPDATE channels SET models=? WHERE id=70001", ark.Model20)
 	for _, mode := range []string{"inherit_group", "subset"} {
 		t.Run(mode, func(t *testing.T) {
 			limits := ""
@@ -386,11 +387,17 @@ func TestMySQLVideoActionMembershipGroupedAuthenticationRemainsClosed(t *testing
 			})
 			for _, path := range []string{"/v1/video/models", "/v1/models"} {
 				w := videoActionGET(t, r, f.plain, path)
-				videoActionSafeFailure(t, w, http.StatusUnauthorized)
+				if mode == "inherit_group" {
+					if ids := videoActionIDs(t, w); !reflect.DeepEqual(ids, []string{ark.Model20}) {
+						t.Fatal("grouped catalog escaped bound channel", path, ids)
+					}
+				} else {
+					videoActionSafeFailure(t, w, http.StatusUnauthorized)
+				}
 			}
 			remove()
-			if subjectReads != 0 || !reflect.DeepEqual(before, videoActionMoneyFacts(t, f.db)) || !reflect.DeepEqual(configBefore, routingAdminFingerprints(t, f.db, "api_keys", "routing_groups", "org_group_grants", "channel_group_bindings", "routing_policy_events")) {
-				t.Fatal("grouped authentication entered discovery or changed durable facts")
+			if (mode == "inherit_group" && subjectReads == 0) || (mode == "subset" && subjectReads != 0) || !reflect.DeepEqual(before, videoActionMoneyFacts(t, f.db)) || !reflect.DeepEqual(configBefore, routingAdminFingerprints(t, f.db, "api_keys", "routing_groups", "org_group_grants", "channel_group_bindings", "routing_policy_events")) {
+				t.Fatal("grouped authentication/catalog changed durable facts")
 			}
 		})
 	}
@@ -499,7 +506,7 @@ func TestMySQLVideoActionMembershipReaderUsesOneObservation(t *testing.T) {
 	f := newRoutingCandidateFixture(t, 0)
 	f.channel(t, 10, "alpha, Alpha ,public,public")
 	f.channel(t, 11, "alpha")
-	// Keep the fixture's grouped key unchanged for its original closed-auth
+	// Keep the fixture's grouped key unchanged for its value-only predicate
 	// cleanup control. A separately issued real legacy key is the three-read case.
 	_, legacy, err := identity.IssueKey(f.db, identity.IssueKeyInput{OrgID: f.ref.OrgID, Name: "membership-legacy", Scopes: "video:read", ModelLimits: "Alpha, alpha, public"})
 	if err != nil {

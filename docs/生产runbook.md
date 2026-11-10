@@ -194,19 +194,27 @@ Seedance 视频模型按火山官方方式逐模型限流，superadmin 在后台
   超过 **7 天**的任务由 sweep 释放退款（最老优先、每轮 100、audit 可追溯，
   事件 `task.billing_released`）。failed 任务只在极少数部分生成场景计费
   （2026-10 对账全月 ≈ ¥20），客户安全释放优于永久冻结。
-- **P1 回调通道（缩小版）**：火山状态回调只做 unknown 恢复的通知，**不是
-  事实源**。提交体注入双绑定（0148 后新任务，env 开关默认关）：
-  `callback_url = base/ark-callbacks/{task_id}/{HMAC token}`、
-  `safety_identifier = HMAC 派生值`。公开端点五步廉价校验后 202 落 hint
-  （hint 只是通知，不采信任何字段）；消费者对未绑定任务执行三重证明恢复
-  （token ① + 回显 safety_identifier ② + 权威 GET ③）后绑定 id，交轮询
-  管道权威结算。已绑定任务的回调直接 ACK 丢弃——**轮询是地面真相层，回调
-  故障 = 回到纯轮询现状，零堆积**。伪造 safety_identifier 记 forged_si。
-- **开启步骤**：① 部署含 0148 的镜像；② 测试任务实测火山回调真实到达且
-  safety_identifier 回显（出口条件）；③ `.env` 增
-  `LAIAI_VIDEO_ARK_CALLBACK_BASE=https://laiai.ai` 后 `up -d core`。
-- **观测**：`video_callback_hints.result`（ack_bound/ack_final/bound/
-  forged_si/verify_failed…）与 forged_si 计数突增 = 伪造探测信号。
+- **P1 视频任务回调**：开启后，平台在创建任务请求中自动注入
+  `callback_url = base/v1/video/ark-callbacks/{task_id}/{HMAC token}` 和
+  `safety_identifier = HMAC 派生值`；客户端无需设置 `callback_url`。公开端点
+  `POST /v1/video/ark-callbacks/{task_id}/{token}` 校验逐任务 token，将通知
+  持久化到 `video_callback_hints` 并返回 200。回调只是尽快查询的提示，
+  **不是任务状态、产物或费用的事实源**。已绑定上游 ID 的任务收到回调后，
+  立即安排使用原供应商凭据执行权威 GET；未绑定且处于
+  `submission_unknown` 的任务，经 token、回显的 safety_identifier（若有）
+  与权威 GET 核实后绑定上游 ID，再交查询管道处理。回调先于创建响应到达时
+  暂存等待绑定；重复和迟到通知不新建任务。
+- **兜底查询**：已开启回调的正常任务若没有可用通知，约 110–130 秒后
+  查询一次；未开启时维持约 10 秒轮询。回调故障不影响权威 GET 与账务
+  结算，`submission_unknown` 仍遵循原幂等恢复规则。
+- **开启步骤**：① 部署包含 0148、0150、0151 回调表迁移的镜像；② 确认
+  Caddy 将公网 HTTPS 的 `/v1/*` 转发到 core；③ 在 core 的 `.env` 设置
+  `LAIAI_VIDEO_ARK_CALLBACK_BASE=https://laiai.ai` 并重建 core；④ 用隔离、
+  有额度的测试任务核对创建请求注入、火山通知到达、hint 消费、权威 GET
+  和最终账务。仅有保留数据库或 `ListModelRateLimit` 查询不能验证这条链路。
+- **观测**：查看 `video_callback_hints.result`（如 `query_due`、`bound`、
+  `ack_final`、`forged_si`、`verify_exhausted`）及任务查询、账务事件；
+  `forged_si` 突增需要排查。
 
 ## 失败任务解冻语义（2026-11-06 收口）
 

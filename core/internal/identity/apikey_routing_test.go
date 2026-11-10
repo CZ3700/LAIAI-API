@@ -21,7 +21,7 @@ func TestKeyRoutingInputIsClosedBeforeDatabase(t *testing.T) {
 		{"empty", "", "", false, nil, ErrModelAccessMode}, {"upper", "LEGACY", "", false, nil, ErrModelAccessMode}, {"space", "legacy ", "", false, nil, ErrModelAccessMode},
 		{"legacy-group", "legacy", "", false, &one, ErrRoutingGroup}, {"legacy-zero", "legacy", "", false, &zero, ErrRoutingGroup},
 		{"inherit-no-group", "inherit_group", "", false, nil, ErrRoutingGroup}, {"inherit-extra", "inherit_group", "model", false, &one, ErrModelAccessLimits},
-		{"subset-empty", "subset", "", false, &one, ErrModelAccessLimits}, {"inherit-disabled", "inherit_group", "", false, &one, ErrGroupRoutingDisabled}, {"subset-disabled", "subset", "model", false, &one, ErrGroupRoutingDisabled},
+		{"subset-empty", "subset", "", false, &one, ErrModelAccessLimits}, {"inherit-enabled", "inherit_group", "", false, &one, nil}, {"subset-disabled", "subset", "model", false, &one, ErrGroupRoutingDisabled},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var mode *string
@@ -32,8 +32,8 @@ func TestKeyRoutingInputIsClosedBeforeDatabase(t *testing.T) {
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("got %v want %v", err, tt.want)
 			}
-			if err == nil && got != ModelAccessLegacy {
-				t.Fatal("legacy default missing")
+			if err == nil && got != ModelAccessLegacy && got != ModelAccessInheritGroup {
+				t.Fatal("routing mode missing")
 			}
 			if err != nil { // nil DB proves no quota/random/key/entitlement path ran.
 				plain, key, issueErr := IssueKey(nil, IssueKeyInput{OrgID: 1, ModelAccessMode: mode, RoutingGroupID: tt.group, ModelLimits: tt.limits})
@@ -42,6 +42,35 @@ func TestKeyRoutingInputIsClosedBeforeDatabase(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGroupedKeyRequiresLiveGrantAndNeverUsesLegacyWhitelist(t *testing.T) {
+	db := setupDB(t)
+	if err := db.Exec(`CREATE TABLE routing_groups(id INTEGER PRIMARY KEY,owner_org_id INTEGER,status TEXT,policy_version INTEGER);
+CREATE TABLE org_group_grants(id INTEGER PRIMARY KEY,org_id INTEGER,group_id INTEGER,status TEXT,grant_version INTEGER,default_slot INTEGER);
+INSERT INTO organizations(id,slug,name,status) VALUES(1,'grouped','grouped',1);
+INSERT INTO routing_groups VALUES(7,0,'enabled',1);
+INSERT INTO org_group_grants VALUES(9,1,7,'enabled',1,1);`).Error; err != nil {
+		t.Fatal(err)
+	}
+	mode, group := ModelAccessInheritGroup, uint64(7)
+	plain, key, err := IssueKey(db, IssueKeyInput{OrgID: 1, ModelAccessMode: &mode, RoutingGroupID: &group, Scopes: "video:read video:write", PolicyAudit: routinggroup.Audit{ActorUserID: 1}})
+	if err != nil || key.ModelAccessMode != mode || key.RoutingGroupID == nil || *key.RoutingGroupID != group || key.ModelLimits != "" {
+		t.Fatal("grouped issue", err, key)
+	}
+	verified, err := VerifyKey(db, plain, time.Now())
+	if err != nil || verified.AllowsModel("any-model") {
+		t.Fatal("grouped verification widened pure model access", err)
+	}
+	if err := db.Exec("UPDATE org_group_grants SET status='revoked', grant_version=2 WHERE id=9").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyKey(db, plain, time.Now()); !errors.Is(err, ErrKeyInvalid) {
+		t.Fatal("revoked grant verified", err)
+	}
+	if newPlain, newKey, err := IssueKey(db, IssueKeyInput{OrgID: 1, ModelAccessMode: &mode, RoutingGroupID: &group, PolicyAudit: routinggroup.Audit{ActorUserID: 1}}); err == nil || newPlain != "" || newKey != nil {
+		t.Fatal("issued into revoked grant", err)
 	}
 }
 

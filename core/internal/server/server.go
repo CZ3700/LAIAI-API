@@ -294,6 +294,8 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			{
 				s.registerRoutingGroupsAdmin(su)
 				s.registerVideoConfiguration(su)
+				s.registerVideoUserLimits(su)
+				s.registerVideoProviderQuotas(su)
 				s.registerArkBillingAdmin(su)
 				s.registerArkAssetAdmin(su)
 				s.registerArkAssetsConsole(videoConsoleOrg, su, mediaOrg)

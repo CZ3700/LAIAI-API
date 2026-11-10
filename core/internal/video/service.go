@@ -291,9 +291,6 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 	if key == nil || !validIdempotency(idempotency) {
 		return TaskView{}, false, ErrInvalid
 	}
-	if !key.AllowsModel(in.Model) {
-		return TaskView{}, false, ErrForbidden
-	}
 	canonical, err := json.Marshal(in)
 	if err != nil {
 		return TaskView{}, false, ErrInvalid
@@ -327,6 +324,11 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 			replay = true
 			return s.linkCreateRequestTx(tx, key.OrgID, requestID, t, st, idem.OperationID, true)
 		}
+		if key.UserID != nil {
+			if e = s.checkUserAdmissionTx(tx, key.OrgID, *key.UserID, now); e != nil {
+				return e
+			}
+		}
 		subject, e := s.readOfficialActionSubjectTx(ctx, tx, CatalogSubjectRef{OrgID: key.OrgID, KeyID: key.ID})
 		if e != nil {
 			return officialAdmissionError(e)
@@ -346,6 +348,9 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		}
 		p, e = s.plan(tx, key.OrgID, in)
 		if e != nil {
+			return e
+		}
+		if e = s.checkProviderModelConcurrencyTx(tx, p.scope.AccountRef, in.Model, p.normalized.UpstreamModel, p.normalized.Parameters.Resolution == "4k", true); e != nil {
 			return e
 		}
 		if s.ArkCallbackBase != "" {
@@ -409,7 +414,11 @@ func (s *Service) Create(ctx context.Context, key *identity.APIKey, requestID, i
 		if e = tx.Create(&credential).Error; e != nil {
 			return e
 		}
-		reserved, e := videobilling.ReserveTx(tx, videobilling.ReserveInput{OrgID: key.OrgID, APIKeyID: key.ID, TaskID: taskID, RequestHMAC: idem.BodyHMAC, BillingSchemaVersion: p.runtime.Contract.BillingSchemaVersion, Quote: p.quote, Now: now})
+		userID := uint64(0)
+		if key.UserID != nil {
+			userID = *key.UserID
+		}
+		reserved, e := videobilling.ReserveTx(tx, videobilling.ReserveInput{OrgID: key.OrgID, UserID: userID, APIKeyID: key.ID, TaskID: taskID, RequestHMAC: idem.BodyHMAC, BillingSchemaVersion: p.runtime.Contract.BillingSchemaVersion, Quote: p.quote, Now: now})
 		if e != nil {
 			return e
 		}

@@ -149,6 +149,7 @@ type Operation struct {
 	ReceivedOutcome         string     `json:"-"`
 	ReceivedTaskID          string     `json:"-"`
 	LeaseUntil              *time.Time `json:"-"`
+	NextDispatchAt          *time.Time `gorm:"column:next_dispatch_at" json:"-"`
 	ErrorCode               string     `json:"-"`
 	CreatedAt               time.Time  `json:"created_at"`
 	UpdatedAt               time.Time  `json:"-"`
@@ -223,9 +224,8 @@ type ProviderRate struct {
 
 func (ProviderRate) TableName() string { return "video_provider_rates" }
 
-// CallbackHint is one received provider status-change notification (hint).
-// Bodies are never treated as facts; the hint only schedules an authoritative
-// query. Duplicates collapse on (task_id, body_hash).
+// CallbackHint is the latest received notification for one task. Bodies are
+// never treated as facts; revision fences a consumer against a newer callback.
 type CallbackHint struct {
 	ID          uint64 `gorm:"primaryKey"`
 	TaskID      string
@@ -234,6 +234,9 @@ type CallbackHint struct {
 	ReceivedAt  time.Time
 	ProcessedAt *time.Time
 	Result      string
+	Revision    uint64
+	RetryAt     *time.Time
+	Attempts    uint32
 }
 
 func (CallbackHint) TableName() string { return "video_callback_hints" }
