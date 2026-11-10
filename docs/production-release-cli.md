@@ -63,6 +63,26 @@ bash infra/release.sh --config /etc/laiai/release.conf approve --release 发布I
 
 `--yes` 仅用于已审核的非交互执行，不跳过资源、CI、备份、状态、漂移和业务检查。脚本返回非零即代表该次阶段没有完成，不应在外层用 `|| true` 吞掉失败或无条件执行下一阶段。
 
+### 0150 → 0153 在途任务承接
+
+生产旧 checkout 若仍是 `2fe1a35`，其中的旧 `infra/release.sh` 不认识新参数。先以 `umask 077` 在受限的独立目录检出**已经合入 main 且 CI 通过**的发布脚本，在该目录执行下列命令；`/etc/laiai/release.conf` 的 `LIVE_DIR` 仍指原生产 checkout `/opt/laiai-next`。不要为了运行新入口先覆盖原 checkout。所有阶段须从同一受限 checkout 执行，计划会锁定入口脚本及工具文件的 hash。
+
+```bash
+umask 077
+git clone --branch main --single-branch https://github.com/CZ3700/LAIAI-API.git \
+  /root/laiai-release-entry-0153
+cd /root/laiai-release-entry-0153
+git rev-parse HEAD
+bash infra/release.sh --config /etc/laiai/release.conf \
+  --carryover-video-0153 preflight
+```
+
+`--carryover-video-0153` 只在**新建预检计划**时使用，仅允许数据库恰好已有 150 条迁移、目标恰好 153 条，待执行的正是 `0151_callback_hint_revision`、`0152_video_user_task_limits` 和 `0153_video_group_asset_projects`。旧 `--carryover-watermark` 仍仅用于 0139→0141 的水印路径，不能借它发布 0153。该模式允许五项排空指标保留在途任务和冻结；八项资金一致性检查、资金指纹、业务旧列指纹、备份、CI 及验收门禁仍有效。
+
+进入维护并干净停止旧 core 后，脚本先检查一个任务是否仍有多条 callback hint，再记录原业务列的指纹和最终加密备份，然后迁移。若重复 hint 尚未收敛，迁移不会开始；不能用手动删除未知任务或资金事实来“排空”。0151/0152/0153 中途失败时 MySQL DDL 可能已部分提交，此时没有完整的回退基线，脚本拒绝自动启动旧 core，保持维护并按实际 schema 人工恢复。
+
+候选 core 启动前会记录任务自增 ID 上界、素材及素材操作的身份指纹和数据库时间。之后若新增 Ark 视频任务或素材事实，或启用用户任务限额、用户金额预算、分组继承令牌/默认分组、分组素材项目、手动账号模型上限、未到期的派单闸，则旧 core 回退会被拒绝。身份上界和指纹不依赖应用服务器时钟。回退检查在停止候选 core 前后各执行一次，阻止检查与停机之间的新写入竞态。自动 `ListModelRateLimit` 形成的纯官方配额快照可保留；它本身不算人工启用。新功能已投入使用时，应向前修复候选版本并保留当前数据库。
+
 ## 3. 推荐先分阶段准备
 
 先查看差异，再生成发布计划：
@@ -109,7 +129,7 @@ bash infra/release.sh --config /etc/laiai/release.conf open --release "$RELEASE_
 
 维护期间公开后台和前端页面会返回 503，不能用公开 UI 完成候选验收。通过已有的受控 SSH 会话和服务器容器网络访问候选 API，核验已有数据、权限及日志；前端静态产物由构建和镜像检查验证。验收通道不新增公网旁路端口，真实浏览器的公网路径检查在 `open` 后执行。脚本不会自动新建收费模型任务；需要付费调用时另按已授权的累计费用额度执行。
 
-当前排空检查发现未完成任务、未释放冻结或结算状态未知时立即停止，保留维护入口和原 worker，不自动取消任务或无限等待。维护前安排好业务排空；若已因此中止，在未迁移阶段可用本次 `rollback` 恢复原服务，查清任务后重新创建计划。后续版本必须保留已经配置的非空视频 HMAC 密钥，脚本拒绝随发版替换它。
+默认排空检查发现未完成任务、未释放冻结或结算状态未知时立即停止，保留维护入口和原 worker，不自动取消任务或无限等待。经审查的 0150→0153 承接计划可按上节的专用标志保留这些在途义务；其他迁移仍需排空。若在未迁移阶段中止，可用本次 `rollback` 恢复原服务，查清任务后重新创建计划。后续版本必须保留已经配置的非空视频 HMAC 密钥，脚本拒绝随发版替换它。
 
 如果 `main` 已前进，部署会停止。先确认旧计划尚未执行生产迁移或切换，再为新版本创建新计划、重新构建并审核；不要修改旧计划中的 SHA 或镜像 ID 来绕过检查。配置、镜像或现场服务发生变化时同理，先识别变化来源。
 

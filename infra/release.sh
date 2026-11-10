@@ -27,6 +27,8 @@ Usage: bash infra/release.sh [--config FILE] COMMAND [--release ID] [--yes]
                --stage before-maintenance|before-open|before-rollback --evidence FILE
   --carryover-watermark  Preflight only: preserve existing obligations for the
                exact 0140/0141 watermark-only schema expansion.
+  --carryover-video-0153  Preflight only: preserve existing obligations for the
+               exact 0150 -> 0153 callback, quota and asset schema expansion.
 All mutating commands require a trusted root-owned configuration and an exclusive lock.
 --yes removes the interactive prompt; it does not bypass any validation or approval.
 EOF
@@ -61,6 +63,7 @@ while (($#)); do
       esac; shift 2;;
     --yes) YES=1; shift;;
     --carryover-watermark) CARRYOVER_REQUEST=1; shift;;
+    --carryover-video-0153) CARRYOVER_REQUEST=2; shift;;
     -h|--help|help) usage; exit 0;;
     --*) die "Unknown option: $1";;
     *) [[ -z "$COMMAND" ]] || die 'Only one command is allowed'; COMMAND=$1; shift;;
@@ -136,6 +139,11 @@ load_plan() {
   SOURCE_DIR="$STATE_DIR/sources/$TARGET"
 }
 business_fingerprint() {
+  if (( CARRYOVER == 2 )); then
+    python3 "$TOOL_DIR/carryover_0153.py" fingerprint "$MYSQL_CID" \
+      "$RUN_DIR/carryover-0153-columns.json" "${1:?fingerprint phase required}"
+    return
+  fi
   # Existing task/operation/billing rows must be byte-for-byte stable while
   # all application writers are stopped. Raw rows remain in a private pipe.
   docker exec "$MYSQL_CID" sh -eu -c '
@@ -510,7 +518,11 @@ deploy_stage() {
   fi
   check_data drained "$CARRYOVER"
   cp "$RUN_DIR/data-drained.json" "$RUN_DIR/funds-before.json"
-  if (( CARRYOVER )); then business_fingerprint > "$RUN_DIR/business-before.sha256"; fi
+  if (( CARRYOVER == 2 )); then
+    python3 "$TOOL_DIR/carryover_0153.py" prepare "$MYSQL_CID" "$RUN_DIR/carryover-0153-columns.json" \
+      || die '0153 carryover pre-migration check failed; old core remains stopped.'
+  fi
+  if (( CARRYOVER )); then business_fingerprint before > "$RUN_DIR/business-before.sha256"; fi
   local parent=$RUN_DIR
   RELEASE_CONFIG_DIR="$parent/config"
   OLD_CORE_IMAGE=$(get snapshot.core.image); OLD_CADDY_IMAGE=$(get snapshot.caddy.image)
@@ -526,8 +538,8 @@ deploy_stage() {
   check_data post-migration "$CARRYOVER"
   state schema "$RUN_DIR/schema.txt" "$SOURCE_DIR/migrations" exact
   state funds "$RUN_DIR/funds-before.json" "$RUN_DIR/data-post-migration.json"
-  if (( CARRYOVER )); then business_fingerprint > "$RUN_DIR/business-post-migration.sha256"; state business "$PLAN" "$RUN_DIR/business-before.sha256" "$RUN_DIR/business-post-migration.sha256"; fi
-  if (( CARRYOVER )); then watermark_disabled; fi
+  if (( CARRYOVER )); then business_fingerprint after > "$RUN_DIR/business-post-migration.sha256"; state business "$PLAN" "$RUN_DIR/business-before.sha256" "$RUN_DIR/business-post-migration.sha256"; fi
+  if (( CARRYOVER == 1 )); then watermark_disabled; fi
   mark migrated
   local output iteration complete=0 cutoff
   local complete_pattern='^complete: [0-9]+ source rows projected before '
@@ -544,8 +556,12 @@ deploy_stage() {
   [[ "$output" == "complete: 0 source rows projected before $cutoff" ]] || die 'Backfill replay was not empty.'
   check_data post-backfill "$CARRYOVER"
   state funds "$RUN_DIR/funds-before.json" "$RUN_DIR/data-post-backfill.json"
-  if (( CARRYOVER )); then business_fingerprint > "$RUN_DIR/business-post-backfill.sha256"; state business "$PLAN" "$RUN_DIR/business-before.sha256" "$RUN_DIR/business-post-backfill.sha256"; fi
-  if (( CARRYOVER )); then watermark_disabled; fi
+  if (( CARRYOVER )); then business_fingerprint after > "$RUN_DIR/business-post-backfill.sha256"; state business "$PLAN" "$RUN_DIR/business-before.sha256" "$RUN_DIR/business-post-backfill.sha256"; fi
+  if (( CARRYOVER == 1 )); then watermark_disabled; fi
+  if (( CARRYOVER == 2 )); then
+    python3 "$TOOL_DIR/carryover_0153.py" baseline "$MYSQL_CID" "$RUN_DIR/carryover-0153-baseline.json" \
+      || die '0153 features are already active or the database-time baseline is unavailable.'
+  fi
   mark backfilled
   "${DC[@]}" up -d --no-build --no-deps --pull never --wait --wait-timeout 180 --scale core=1 core >/dev/null
   "${DC[@]}" up -d --no-build --no-deps --pull never caddy >/dev/null
@@ -604,10 +620,19 @@ rollback_stage() {
     log 'Original service resumed before any migration; no database changes were rolled back.'
     return
   fi
-  if (( CARRYOVER )); then watermark_disabled; fi
+  if (( CARRYOVER == 1 )); then watermark_disabled; fi
+  if (( CARRYOVER == 2 )); then
+    python3 "$TOOL_DIR/carryover_0153.py" guard "$MYSQL_CID" "$RUN_DIR/carryover-0153-baseline.json" \
+      || die '0153 rollback is unsafe; keep the new core image.'
+  fi
   check_data drained "$CARRYOVER"
   "${DC[@]}" stop -t 60 core >/dev/null
   check_data drained "$CARRYOVER"
+  if (( CARRYOVER == 1 )); then watermark_disabled; fi
+  if (( CARRYOVER == 2 )); then
+    python3 "$TOOL_DIR/carryover_0153.py" guard "$MYSQL_CID" "$RUN_DIR/carryover-0153-baseline.json" \
+      || die '0153 facts changed before the new core stopped; keep maintenance and the new image.'
+  fi
   cat "$RUN_DIR/config/maintenance.json" > "$RUN_DIR/config/active.json"
   "${DC[@]}" up -d --no-build --no-deps --pull never --wait --wait-timeout 180 --scale core=1 core >/dev/null
   "${DC[@]}" up -d --no-build --no-deps --pull never caddy >/dev/null

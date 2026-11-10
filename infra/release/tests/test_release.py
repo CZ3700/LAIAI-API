@@ -126,7 +126,12 @@ if name=='git':
         save()
     elif args[0]=='clone':
         d=pathlib.Path(args[-1]); d.mkdir(parents=True,exist_ok=True)
-        for f in ('infra/core.Dockerfile','infra/caddy.Dockerfile','infra/docker-compose.yml','core/cmd/backfill-funds/main.go','core/cmd/schema-doctor/main.go','migrations/0001_old.sql','migrations/0002_new.sql'):
+        files=['infra/core.Dockerfile','infra/caddy.Dockerfile','infra/docker-compose.yml','core/cmd/backfill-funds/main.go','core/cmd/schema-doctor/main.go']
+        if c.get('carryover_0153'):
+            files += ['migrations/%04d_fixture.sql' % i for i in range(1,151)]
+            files += ['migrations/'+name+'.sql' for name in ('0151_callback_hint_revision','0152_video_user_task_limits','0153_video_group_asset_projects')]
+        else: files += ['migrations/0001_old.sql','migrations/0002_new.sql']
+        for f in files:
             dest=d/f; dest.parent.mkdir(parents=True,exist_ok=True); dest.write_text('fixture\n')
     elif 'checkout' in args:
         if '--detach' not in args or args[-1] != c['target']: raise RuntimeError('source checkout is not pinned to the planned SHA')
@@ -156,6 +161,7 @@ elif name=='docker':
             elif 'revision' in fmt: print(c['old'])
             elif fmt=='{{.State.Running}}': print('true' if c.get(role+'_running',True) else 'false')
             elif fmt=='{{.State.Health.Status}}': print('healthy')
+            elif fmt=='{{.State.ExitCode}}:{{.State.OOMKilled}}': print('0:false')
             else: raise RuntimeError('unexpected inspect format')
     elif args[:2]==['image','inspect']:
         image=args[-1]
@@ -219,7 +225,12 @@ elif name=='probe':
         phase,root=args[1],pathlib.Path(args[2]); event('data:'+phase)
         if c.get('data_fails')==phase: fail()
         (root/('data-'+phase+'.json')).write_text(json.dumps({'funds_fingerprint':'fixed'}))
-        (root/'schema.txt').write_text('0001_old\n'+('0002_new\n' if c.get('migrated') else ''))
+        if c.get('carryover_0153'):
+            versions=['%04d_fixture' % i for i in range(1,151)]
+            if c.get('migrated'): versions+=['0151_callback_hint_revision','0152_video_user_task_limits','0153_video_group_asset_projects']
+            (root/'schema.txt').write_text('\n'.join(versions)+'\n')
+        else:
+            (root/'schema.txt').write_text('0001_old\n'+('0002_new\n' if c.get('migrated') else ''))
     elif action=='backup':
         root=pathlib.Path(args[1]); event('final-backup' if root.name=='final-backup' else 'backup')
         if c.get('backup_fails')==root.name: print(c['secret'],file=sys.stderr); fail()
@@ -227,6 +238,27 @@ elif name=='probe':
         (root/'checksums.sha256').write_text(hashlib.sha256(b'old images').hexdigest()+'  images.tar\n')
         (root/'backup.ok').write_text('verified\n')
 else: raise RuntimeError('unexpected mock command '+name)
+'''
+
+CARRYOVER_STUB = r'''#!/usr/bin/env python3
+import json, os, pathlib, sys
+p=pathlib.Path(os.environ['MOCK_CONTROL'])
+c=json.loads(p.read_text())
+command=sys.argv[1]
+with open(os.environ['MOCK_EVENTS'],'a') as out: out.write('carryover:'+command+'\n')
+if command=='prepare':
+    if c.get('duplicate_hints'): sys.exit(2)
+    pathlib.Path(sys.argv[3]).write_text('{}')
+elif command=='fingerprint': print('a'*64)
+elif command=='baseline':
+    if c.get('feature_enabled'): sys.exit(2)
+    pathlib.Path(sys.argv[3]).write_text('{}')
+elif command=='guard':
+    c['guard_calls']=c.get('guard_calls',0)+1
+    p.write_text(json.dumps(c))
+    if not pathlib.Path(sys.argv[3]).exists() or c.get('feature_enabled') or c.get('fail_guard_on_call')==c['guard_calls']:
+        sys.exit(2)
+else: sys.exit(2)
 '''
 
 
@@ -303,6 +335,32 @@ class StateTests(unittest.TestCase):
         (migrations / "0141_video_watermark_users.sql").rename(migrations / "0141_other.sql")
         self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
 
+    def test_carryover_video_0153_requires_exact_expansion(self):
+        migrations = self.root / "migrations"
+        migrations.mkdir()
+        names = [f"{i:04d}_fixture" for i in range(1, 151)]
+        names += ["0151_callback_hint_revision", "0152_video_user_task_limits",
+                  "0153_video_group_asset_projects"]
+        for name in names:
+            (migrations / f"{name}.sql").write_text("fixture")
+        applied = self.root / "applied.txt"
+        applied.write_text("\n".join(names[:150]) + "\n")
+        plan = self.root / "plan.json"
+        plan.write_text(json.dumps({"carryover": 2}))
+        self.run_state("carryover-eligible", plan, applied, migrations)
+        for policy in (0, 1, 3):
+            plan.write_text(json.dumps({"carryover": policy}))
+            self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
+        plan.write_text(json.dumps({"carryover": 2}))
+        applied.write_text("\n".join(names[:149]) + "\n")
+        self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
+        applied.write_text("\n".join(names[:150]) + "\n")
+        (migrations / "0153_video_group_asset_projects.sql").rename(migrations / "0153_other.sql")
+        self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
+        (migrations / "0153_other.sql").rename(migrations / "0153_video_group_asset_projects.sql")
+        (migrations / "0154_extra.sql").write_text("fixture")
+        self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
+
     def test_carryover_business_rows_must_remain_identical(self):
         plan = self.root / "plan.json"
         plan.write_text(json.dumps({"carryover": 1}))
@@ -315,6 +373,8 @@ class StateTests(unittest.TestCase):
         plan.write_text(json.dumps({"carryover": 0}))
         after.write_text("a" * 64 + "\n")
         self.run_state("business", plan, before, after, ok=False)
+        plan.write_text(json.dumps({"carryover": 2}))
+        self.run_state("business", plan, before, after)
 
     def test_inspect_stores_hashes_without_environment_secrets(self):
         values = []
@@ -486,8 +546,10 @@ class CLITests(unittest.TestCase):
     def log(self):
         return self.events.read_text().splitlines() if self.events.exists() else []
 
-    def call(self, command, ok=True, include_release=True, error=None):
+    def call(self, command, ok=True, include_release=True, error=None, carryover=False):
         args = ["bash", str(self.tools / "infra/release.sh"), "--config", str(self.config), command, "--yes"]
+        if carryover:
+            args.append("--carryover-video-0153")
         if include_release and self.release_id:
             args.extend(["--release", self.release_id])
         result = subprocess.run(args, text=True, capture_output=True, env=self.env, timeout=40)
@@ -500,8 +562,8 @@ class CLITests(unittest.TestCase):
             self.assertIn(error, result.stdout + result.stderr)
         return result
 
-    def prepare(self, through="build"):
-        self.call("preflight")
+    def prepare(self, through="build", carryover=False):
+        self.call("preflight", carryover=carryover)
         self.release_id = next((self.state_dir / "releases").iterdir()).name
         if through in ("backup", "build"):
             self.call("backup")
@@ -513,6 +575,55 @@ class CLITests(unittest.TestCase):
 
     def assert_no_stop_or_up(self):
         self.assertFalse(any(v == "stop-core" or v.startswith("up-") for v in self.log()), self.log())
+
+    def enable_0153_carryover(self):
+        self.change(carryover_0153=True)
+        (self.tools / "infra/release/carryover_0153.py").write_text(CARRYOVER_STUB)
+
+    def test_0153_carryover_checks_duplicate_after_old_core_stop(self):
+        self.enable_0153_carryover()
+        self.prepare(carryover=True)
+        self.change(duplicate_hints=True)
+        self.call("deploy", ok=False, error="pre-migration check failed")
+        events = self.log()
+        self.assertLess(events.index("stop-core"), events.index("carryover:prepare"))
+        self.assertNotIn("final-backup", events)
+        self.assertNotIn("migrate", events)
+
+    def test_0153_carryover_orders_old_column_checks_and_baseline(self):
+        self.enable_0153_carryover()
+        self.prepare(carryover=True)
+        self.call("deploy")
+        events = self.log()
+        order = [events.index(k) for k in ("stop-core", "carryover:prepare", "final-backup",
+                                            "migrate", "schema-doctor", "backfill-funds",
+                                            "carryover:baseline", "up-core")]
+        self.assertEqual(order, sorted(order), events)
+        self.assertEqual(events.count("carryover:fingerprint"), 3)
+
+    def test_0153_carryover_rollback_rechecks_after_core_stop(self):
+        self.enable_0153_carryover()
+        self.prepare(carryover=True)
+        self.call("deploy")
+        before = len(self.log())
+        self.change(fail_guard_on_call=2)
+        self.call("rollback", ok=False, error="facts changed before the new core stopped")
+        events = self.log()[before:]
+        self.assertEqual(events.count("carryover:guard"), 2)
+        self.assertLess(events.index("carryover:guard"), events.index("stop-core"))
+        self.assertNotIn("up-core", events)
+
+    def test_0153_partial_migration_refuses_old_core_without_baseline(self):
+        self.enable_0153_carryover()
+        self.prepare(carryover=True)
+        self.change(migration_fails=True)
+        self.call("deploy", ok=False)
+        before = len(self.log())
+        self.call("rollback", ok=False, error="0153 rollback is unsafe")
+        events = self.log()[before:]
+        self.assertIn("carryover:guard", events)
+        self.assertNotIn("up-core", events)
+        self.assertNotIn("start-original", events)
 
     def test_main_changes_while_fetching_block_preflight(self):
         self.change(main_moves_during_fetch=True)

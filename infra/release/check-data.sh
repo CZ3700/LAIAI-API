@@ -9,7 +9,7 @@ check_data() (
   set -Eeuo pipefail
   umask 077
   local phase=${1:?check_data requires a phase} carryover=${2:-0} scratch rc=0
-  [[ $carryover == 0 || $carryover == 1 ]] || die 'invalid carryover gate'
+  [[ $carryover == 0 || $carryover == 1 || $carryover == 2 ]] || die 'invalid carryover gate'
   case "$phase" in preflight|drained|post-migration|post-backfill) ;; *) die 'invalid data-check phase';; esac
   : "${MYSQL_CID:?verified MySQL container required}" "${RUN_DIR:?release run directory required}"
   [[ -d "$RUN_DIR" && ! -L "$RUN_DIR" ]] || die 'release run directory is missing or a symlink'
@@ -87,11 +87,11 @@ try:
     if any(item["rows"] != buckets["snapshot"][table + "_rows"] for table, item in fingerprints.items()):
         raise ValueError("incomplete funds fingerprint")
     failures = [name for name, count in buckets["check"].items() if count]
-    if phase != "preflight" and carryover != "1":
+    if phase != "preflight" and carryover == "0":
         failures += [name for name, count in buckets["drain"].items() if count]
     report = {
         "schema_version": 1, "phase": phase,
-        "carryover": carryover == "1",
+        "carryover": carryover != "0",
         "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "passed": not failures, "blocking_checks": sorted(failures),
         "checks": buckets["check"], "warnings": buckets["warning"],
