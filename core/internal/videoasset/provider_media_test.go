@@ -210,7 +210,7 @@ func TestDirectAVRegistrationWithoutFactsIsReferenceable(t *testing.T) {
 				var row Asset
 				if err := db.Where("asset_id = ?", a.ID).Take(&row).Error; err == nil {
 					t.Log("row state:", row.Status, row.ReviewState, row.ProviderID, row.RowVersion, row.UpdatedAt)
-				t.Log("dto:", got.Status, got.Reference, got.Version, "gen:", got.GenerationStatus)
+					t.Log("dto:", got.Status, got.Reference, got.Version, "gen:", got.GenerationStatus)
 				}
 				t.Fatal("officially active AV asset not presented as ready", got.GenerationStatus, got.GenerationBlockReason)
 			}

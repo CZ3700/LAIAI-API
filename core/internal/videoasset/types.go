@@ -110,15 +110,12 @@ type Options struct {
 	// 素材组状态（GetAssetGroup Active）在复验到期时自动续验。
 	AutoLicense         bool
 	AutoLicenseValidity time.Duration
-	// DispatchPerTick：素材域官方调用总闸（每 5s tick 消费的 pending op 上限），
-	// 默认 25 = 300/分钟，对齐火山 Premium 素材域 QPM 300。PollPerTick：每 tick
-	// 各类轮询候选上限（素材/会话/复验），默认 40。消费总量始终受 DispatchPerTick 约束。
-	DispatchPerTick int
-	PollPerTick     int
-	// DispatchConcurrency：每 tick 内并行派发的官方调用并发度，默认 8。
-	// 总闸（DispatchPerTick）不变，只压缩单轮耗时以吃满 QPM。
-	DispatchConcurrency int
-	Client              *ManagementClient
+	// WriteConcurrency/QueryConcurrency：官方调用的读写分池并发度（默认 8/24）。
+	// 速率纪律由 ratelimit.go 的官方限流表（单请求间隔）保证，与并发解耦；
+	// 分池使注册洪峰时 CreateAsset 的 QPM 通道不被查询确认挤占，反之亦然。
+	WriteConcurrency int
+	QueryConcurrency int
+	Client           *ManagementClient
 }
 type Service struct {
 	db       *gorm.DB
@@ -126,6 +123,7 @@ type Service struct {
 	evidence *invocation.VideoStore
 	now      func() time.Time
 	options  Options
+	rates    *rateLimiter
 	console  ConsoleOptions
 }
 
@@ -148,14 +146,11 @@ func NewService(db *gorm.DB, keys *crypto.Keyring, evidence *invocation.VideoSto
 	if options.AutoLicenseValidity <= 0 || options.AutoLicenseValidity > 10*365*24*time.Hour {
 		return nil, ErrInvalid
 	}
-	if options.DispatchPerTick <= 0 || options.DispatchPerTick > 200 {
-		options.DispatchPerTick = 25
+	if options.WriteConcurrency <= 0 || options.WriteConcurrency > 64 {
+		options.WriteConcurrency = 8
 	}
-	if options.PollPerTick <= 0 || options.PollPerTick > 200 {
-		options.PollPerTick = 40
-	}
-	if options.DispatchConcurrency <= 0 || options.DispatchConcurrency > 32 {
-		options.DispatchConcurrency = 8
+	if options.QueryConcurrency <= 0 || options.QueryConcurrency > 64 {
+		options.QueryConcurrency = 24
 	}
 	if options.Client == nil {
 		options.Client = NewManagementClient(nil)
@@ -168,7 +163,7 @@ func NewService(db *gorm.DB, keys *crypto.Keyring, evidence *invocation.VideoSto
 		copied[k] = append([]byte(nil), v...)
 	}
 	options.HMACKeys = copied
-	return &Service{db: db, keys: keys, evidence: evidence, now: options.Now, options: options}, nil
+	return &Service{db: db, keys: keys, evidence: evidence, now: options.Now, options: options, rates: newRateLimiter(options.Now)}, nil
 }
 
 // ORM models are never returned by HTTP handlers.

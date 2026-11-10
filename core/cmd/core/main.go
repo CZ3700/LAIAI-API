@@ -146,7 +146,7 @@ func runCore(log *slog.Logger) (code int) {
 		// Seedance delivers the provider's signed result URLs. Generated media
 		// never passes through platform storage or a background transfer worker.
 		videoSvc.ArkCallbackBase = cfg.VideoArkCallbackBase
-		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL, ConsoleReturnURL: cfg.VideoPortraitReturnURL, PortraitAutoLicense: cfg.VideoPortraitAutoLicense, PortraitAutoLicenseDur: cfg.VideoPortraitAutoLicenseValidity, AssetDispatchPerTick: cfg.VideoAssetDispatchPerTick, AssetPollPerTick: cfg.VideoAssetPollPerTick, AssetDispatchConcur: cfg.VideoAssetDispatchConcurrency}); err != nil {
+		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL, ConsoleReturnURL: cfg.VideoPortraitReturnURL, PortraitAutoLicense: cfg.VideoPortraitAutoLicense, PortraitAutoLicenseDur: cfg.VideoPortraitAutoLicenseValidity, AssetWriteConcurrency: cfg.VideoAssetWriteConcurrency, AssetQueryConcurrency: cfg.VideoAssetQueryConcurrency}); err != nil {
 			log.Error("video asset configuration invalid")
 			return 1
 		}
