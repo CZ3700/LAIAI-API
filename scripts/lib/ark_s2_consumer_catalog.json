@@ -125,6 +125,7 @@
             "same"
           ],
           "TestQueryGenerationRequiresTrustedObservation": [
+            "failed_has_error_with_usage",
             "has_error",
             "http_error",
             "missing",
@@ -132,6 +133,7 @@
             "negative_total",
             "negative_usage",
             "nocharge",
+            "nocharge_has_error",
             "positive",
             "unknown_outcome",
             "unknown_status",
