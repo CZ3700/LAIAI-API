@@ -3,6 +3,8 @@
 package videoasset
 
 import (
+	"strings"
+
 	"context"
 	"errors"
 	"github.com/laiai/laiai-next/core/internal/crypto"
@@ -115,7 +117,21 @@ type Options struct {
 	// 分池使注册洪峰时 CreateAsset 的 QPM 通道不被查询确认挤占，反之亦然。
 	WriteConcurrency int
 	QueryConcurrency int
-	Client           *ManagementClient
+	// Archive*：素材自动归档（用户素材用完即弃）。每日本地时区窗口内对创建
+	// 超过 ArchiveRetentionDays 的 active 素材分批注入 DeleteAsset op（官方
+	// 存储同步释放、本地记录 tombstone）。真人组默认豁免（授权肖像是长期
+	// 资产）；ArchiveNow 供测试注入时钟。
+	ArchiveEnabled          bool
+	ArchiveTimezone         string
+	ArchiveWindowStart      string
+	ArchiveWindowEnd        string
+	ArchiveDailyLimit       int
+	ArchiveBatch            int
+	ArchiveRetentionDays    int
+	ArchiveExemptRealGroups bool
+	ArchiveLocation         *time.Location
+	ArchiveNow              func() time.Time
+	Client                  *ManagementClient
 }
 type Service struct {
 	db       *gorm.DB
@@ -152,6 +168,41 @@ func NewService(db *gorm.DB, keys *crypto.Keyring, evidence *invocation.VideoSto
 	if options.QueryConcurrency <= 0 || options.QueryConcurrency > 64 {
 		options.QueryConcurrency = 24
 	}
+	// 归档默认值：北京时区 02:00-06:00 窗口、每晚 ≤2 万、保留 3 天、
+	// 每 tick 注入 25（对齐 DeleteAsset 10 QPS 闸余量）、真人组豁免。
+	loc := options.ArchiveLocation
+	if loc == nil {
+		var err error
+		loc, err = time.LoadLocation(defaultArchiveTimezone(options.ArchiveTimezone))
+		if err != nil {
+			return nil, ErrInvalid
+		}
+	}
+	options.ArchiveLocation = loc
+	if options.ArchiveWindowStart == "" {
+		options.ArchiveWindowStart = "02:00"
+	}
+	if options.ArchiveWindowEnd == "" {
+		options.ArchiveWindowEnd = "06:00"
+	}
+	if _, ok := parseArchiveClock(options.ArchiveWindowStart); !ok {
+		return nil, ErrInvalid
+	}
+	if _, ok := parseArchiveClock(options.ArchiveWindowEnd); !ok {
+		return nil, ErrInvalid
+	}
+	if options.ArchiveDailyLimit <= 0 {
+		options.ArchiveDailyLimit = 20000
+	}
+	if options.ArchiveBatch <= 0 || options.ArchiveBatch > 500 {
+		options.ArchiveBatch = 25
+	}
+	if options.ArchiveRetentionDays <= 0 {
+		options.ArchiveRetentionDays = 3
+	}
+	if options.ArchiveNow == nil {
+		options.ArchiveNow = time.Now
+	}
 	if options.Client == nil {
 		options.Client = NewManagementClient(nil)
 	}
@@ -164,6 +215,14 @@ func NewService(db *gorm.DB, keys *crypto.Keyring, evidence *invocation.VideoSto
 	}
 	options.HMACKeys = copied
 	return &Service{db: db, keys: keys, evidence: evidence, now: options.Now, options: options, rates: newRateLimiter(options.Now)}, nil
+}
+
+// defaultArchiveTimezone：空值回退 Asia/Shanghai（与供应商日/月预算口径一致）。
+func defaultArchiveTimezone(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "Asia/Shanghai"
+	}
+	return v
 }
 
 // ORM models are never returned by HTTP handlers.

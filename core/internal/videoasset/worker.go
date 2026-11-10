@@ -100,6 +100,12 @@ func (s *Service) ProcessOnce(ctx context.Context) error {
 			return err
 		}
 	}
+	// 素材自动归档：窗口/限量不满足时零成本返回（archive.go）。
+	if s.options.ArchiveEnabled {
+		if err := s.archiveSweep(ctx); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

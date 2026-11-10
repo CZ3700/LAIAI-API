@@ -114,6 +114,9 @@ func (f *fakeProvider) roundTrip(r *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(bytes.NewReader(data)), Header: http.Header{}, Request: r}, nil
 		}
 		result = map[string]any{"Id": body["Id"], "Name": "Official Real Group", "GroupType": "LivenessFace", "ProjectName": f.project}
+	case "DeleteAsset":
+		// 官方 DeleteAsset 受理响应为空对象（异步删除，确认走 GetAsset 404）。
+		result = map[string]any{}
 	}
 	data := bodyJSON(map[string]any{"ResponseMetadata": map[string]any{"RequestId": "official-request", "Action": action, "Version": managementVersion, "Service": "ark", "Region": "cn-beijing"}, "Result": result})
 	return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(data)), Header: http.Header{}, Request: r}, nil

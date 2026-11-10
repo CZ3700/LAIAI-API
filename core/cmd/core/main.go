@@ -146,7 +146,8 @@ func runCore(log *slog.Logger) (code int) {
 		// Seedance delivers the provider's signed result URLs. Generated media
 		// never passes through platform storage or a background transfer worker.
 		videoSvc.ArkCallbackBase = cfg.VideoArkCallbackBase
-		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL, ConsoleReturnURL: cfg.VideoPortraitReturnURL, PortraitAutoLicense: cfg.VideoPortraitAutoLicense, PortraitAutoLicenseDur: cfg.VideoPortraitAutoLicenseValidity, AssetWriteConcurrency: cfg.VideoAssetWriteConcurrency, AssetQueryConcurrency: cfg.VideoAssetQueryConcurrency}); err != nil {
+		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL, ConsoleReturnURL: cfg.VideoPortraitReturnURL, PortraitAutoLicense: cfg.VideoPortraitAutoLicense, PortraitAutoLicenseDur: cfg.VideoPortraitAutoLicenseValidity, AssetWriteConcurrency: cfg.VideoAssetWriteConcurrency, AssetQueryConcurrency: cfg.VideoAssetQueryConcurrency,
+			AssetArchive: cfg.VideoAssetArchive, AssetArchiveTimezone: cfg.VideoAssetArchiveTimezone, AssetArchiveWindowStart: cfg.VideoAssetArchiveWindowStart, AssetArchiveWindowEnd: cfg.VideoAssetArchiveWindowEnd, AssetArchiveDailyLimit: cfg.VideoAssetArchiveDailyLimit, AssetArchiveBatch: cfg.VideoAssetArchiveBatch, AssetArchiveRetentionDays: cfg.VideoAssetArchiveRetentionDays, AssetArchiveExemptRealGroups: cfg.VideoAssetArchiveExemptRealGroups}); err != nil {
 			log.Error("video asset configuration invalid")
 			return 1
 		}
