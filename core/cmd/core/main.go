@@ -147,7 +147,7 @@ func runCore(log *slog.Logger) (code int) {
 		// never passes through platform storage or a background transfer worker.
 		videoSvc.ArkCallbackBase = cfg.VideoArkCallbackBase
 		if err = videoSvc.ConfigureAssets(video.AssetIntegrationOptions{PlatformCallbackURL: cfg.VideoPortraitCallbackURL, ConsoleReturnURL: cfg.VideoPortraitReturnURL, PortraitAutoLicense: cfg.VideoPortraitAutoLicense, PortraitAutoLicenseDur: cfg.VideoPortraitAutoLicenseValidity, AssetWriteConcurrency: cfg.VideoAssetWriteConcurrency, AssetQueryConcurrency: cfg.VideoAssetQueryConcurrency,
-			AssetArchive: cfg.VideoAssetArchive, AssetArchiveTimezone: cfg.VideoAssetArchiveTimezone, AssetArchiveWindowStart: cfg.VideoAssetArchiveWindowStart, AssetArchiveWindowEnd: cfg.VideoAssetArchiveWindowEnd, AssetArchiveDailyLimit: cfg.VideoAssetArchiveDailyLimit, AssetArchiveBatch: cfg.VideoAssetArchiveBatch, AssetArchiveRetentionDays: cfg.VideoAssetArchiveRetentionDays, AssetArchiveUsageWindowDays: cfg.VideoAssetArchiveUsageDays, AssetArchiveExemptRealGroups: cfg.VideoAssetArchiveExemptRealGroups}); err != nil {
+			AssetArchive: cfg.VideoAssetArchive, AssetArchiveTimezone: cfg.VideoAssetArchiveTimezone, AssetArchiveWindowStart: cfg.VideoAssetArchiveWindowStart, AssetArchiveWindowEnd: cfg.VideoAssetArchiveWindowEnd, AssetArchiveDailyLimit: cfg.VideoAssetArchiveDailyLimit, AssetArchiveBatch: cfg.VideoAssetArchiveBatch, AssetArchiveUsageWindowDays: cfg.VideoAssetArchiveUsageDays, AssetArchiveExemptRealGroups: cfg.VideoAssetArchiveExemptRealGroups}); err != nil {
 			log.Error("video asset configuration invalid")
 			return 1
 		}

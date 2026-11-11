@@ -375,9 +375,9 @@ func TestRecoveredQueryUnknownDoesNotBlockDeletion(t *testing.T) {
 	}
 }
 
-// 使用保护（2026-11-11 用户拍板）：创建超保留期后，近 7 天内被生成任务引用
-// （video_task_asset_refs，含已终态 released 的历史引用）的素材不得进入归档；
-// 仅 7 天前的引用或从未引用的素材照常归档。
+// 归档唯一判据（2026-11-12 用户拍板）：近 7 天内被生成任务引用
+// （video_task_asset_refs，含已终态 released 的历史引用）的素材不归档；
+// 近 7 天无调用即可归档——创建时长不参与判断。
 func TestArchiveUsageWindowGate(t *testing.T) {
 	at := time.Date(2026, 11, 12, 3, 0, 0, 0, time.FixedZone("CST", 8*3600))
 	s, _, clock := setupArchive(t, at)
@@ -399,8 +399,10 @@ func TestArchiveUsageWindowGate(t *testing.T) {
 	if len(assets) != 3 {
 		t.Fatalf("expected 3 assets, got %d", len(assets))
 	}
-	// 全部拨到 10 天前（超过 3 天保留期）。
-	if err := s.db.Model(&Asset{}).Where("group_id = ?", group.ID).Updates(map[string]any{"created_at": at.AddDate(0, 0, -10), "status": StatusActive}).Error; err != nil {
+	// 使用窗口是唯一判据：刚创建（created_at = now）的素材只要近 7 天无调用
+	// 也会进入候选——不再有独立的创建保留期。素材拨回 active（对齐线上
+	// ready/active 稳态；测试夹具创建后停在 processing）。
+	if err := s.db.Model(&Asset{}).Where("group_id = ?", group.ID).Updates(map[string]any{"status": StatusActive}).Error; err != nil {
 		t.Fatal(err)
 	}
 	// recent：2 天前被任务引用（已 released——历史调用也算使用）。

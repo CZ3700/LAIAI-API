@@ -28,7 +28,7 @@ type Config struct {
 	VideoPortraitCallbackURL          string
 	VideoPortraitReturnURL            string
 	VideoPortraitAutoLicense          bool          // LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE, default true; 认证成功自动登记 video_generation 许可并按官方组状态续验
-	VideoPortraitAutoLicenseValidity time.Duration // LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE_VALIDITY, default 8760h
+	VideoPortraitAutoLicenseValidity  time.Duration // LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE_VALIDITY, default 8760h
 	VideoAssetWriteConcurrency        int           // LAIAI_VIDEO_ASSET_WRITE_CONCURRENCY, default 8; 素材域写类官方调用并发池
 	VideoAssetQueryConcurrency        int           // LAIAI_VIDEO_ASSET_QUERY_CONCURRENCY, default 24; 素材域查询类官方调用并发池
 	VideoAssetArchive                 bool          // LAIAI_VIDEO_ASSET_ARCHIVE, default true; 素材自动归档（超保留期分批删除并释放官方存储）
@@ -37,8 +37,7 @@ type Config struct {
 	VideoAssetArchiveWindowEnd        string        // LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_END, default 06:00
 	VideoAssetArchiveDailyLimit       int           // LAIAI_VIDEO_ASSET_ARCHIVE_DAILY_LIMIT, default 20000
 	VideoAssetArchiveBatch            int           // LAIAI_VIDEO_ASSET_ARCHIVE_BATCH, default 25; 每 tick 注入上限
-	VideoAssetArchiveRetentionDays    int           // LAIAI_VIDEO_ASSET_ARCHIVE_RETENTION_DAYS, default 3
-	VideoAssetArchiveUsageDays        int           // LAIAI_VIDEO_ASSET_ARCHIVE_USAGE_DAYS, default 7; 近 N 天内有任务引用的素材受保护不归档
+	VideoAssetArchiveUsageDays        int           // LAIAI_VIDEO_ASSET_ARCHIVE_USAGE_DAYS, default 7; 近 N 天无任务引用的素材才归档（唯一判据）
 	VideoAssetArchiveExemptRealGroups bool          // LAIAI_VIDEO_ASSET_ARCHIVE_EXEMPT_REAL_GROUPS, default true; 真人组素材豁免归档
 	VideoArkCallbackBase              string
 	VideoMediaRoot                    string
@@ -262,13 +261,6 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_ARCHIVE_BATCH must be a non-negative integer: %w", e)
 		}
 		c.VideoAssetArchiveBatch = n
-	}
-	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_RETENTION_DAYS")); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil || n < 0 {
-			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_ARCHIVE_RETENTION_DAYS must be a non-negative integer: %w", e)
-		}
-		c.VideoAssetArchiveRetentionDays = n
 	}
 	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_USAGE_DAYS")); v != "" {
 		n, e := strconv.Atoi(v)

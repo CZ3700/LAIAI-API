@@ -34,12 +34,12 @@ type AssetIntegrationOptions struct {
 	MaxLicenseAge    time.Duration
 	// PortraitAutoLicense：认证成功自动登记 video_generation 许可并按官方
 	// 组状态续验（LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE，默认开）。
-	PortraitAutoLicense     bool
-	PortraitAutoLicenseDur  time.Duration
+	PortraitAutoLicense    bool
+	PortraitAutoLicenseDur time.Duration
 	// AssetWriteConcurrency/AssetQueryConcurrency：素材域官方调用读写分池
 	//（速率纪律在 videoasset 官方限流表：单请求间隔，与并发解耦）。
-	AssetWriteConcurrency   int
-	AssetQueryConcurrency   int
+	AssetWriteConcurrency int
+	AssetQueryConcurrency int
 	// AssetArchive*：素材自动归档（LAIAI_VIDEO_ASSET_ARCHIVE_*，窗口/限量/
 	// 保留期/豁免），删除走既有 DeleteAsset op 链路与官方限流。
 	AssetArchive                 bool
@@ -48,7 +48,6 @@ type AssetIntegrationOptions struct {
 	AssetArchiveWindowEnd        string
 	AssetArchiveDailyLimit       int
 	AssetArchiveBatch            int
-	AssetArchiveRetentionDays    int
 	AssetArchiveUsageWindowDays  int
 	AssetArchiveExemptRealGroups bool
 	Client                       *videoasset.ManagementClient
@@ -273,7 +272,7 @@ func (s *Service) ConfigureAssets(options AssetIntegrationOptions) error {
 		VerifyMedia: s.verifyRegisteredAssetMedia, ResolveCallback: s.resolveAssetCallbackURL,
 		ResolveCallbackByID: s.resolveAssetCallbackID, PlatformCallbackURL: options.PlatformCallbackURL,
 		HMACKeys: map[string][]byte{"v1": mac.Sum(nil)}, ActiveHMACKey: "v1", MaxLicenseAge: options.MaxLicenseAge, AutoLicense: options.PortraitAutoLicense, AutoLicenseValidity: options.PortraitAutoLicenseDur, WriteConcurrency: options.AssetWriteConcurrency, QueryConcurrency: options.AssetQueryConcurrency,
-		ArchiveEnabled: options.AssetArchive, ArchiveTimezone: options.AssetArchiveTimezone, ArchiveWindowStart: options.AssetArchiveWindowStart, ArchiveWindowEnd: options.AssetArchiveWindowEnd, ArchiveDailyLimit: options.AssetArchiveDailyLimit, ArchiveBatch: options.AssetArchiveBatch, ArchiveRetentionDays: options.AssetArchiveRetentionDays, ArchiveUsageWindowDays: options.AssetArchiveUsageWindowDays, ArchiveExemptRealGroups: options.AssetArchiveExemptRealGroups,
+		ArchiveEnabled: options.AssetArchive, ArchiveTimezone: options.AssetArchiveTimezone, ArchiveWindowStart: options.AssetArchiveWindowStart, ArchiveWindowEnd: options.AssetArchiveWindowEnd, ArchiveDailyLimit: options.AssetArchiveDailyLimit, ArchiveBatch: options.AssetArchiveBatch, ArchiveUsageWindowDays: options.AssetArchiveUsageWindowDays, ArchiveExemptRealGroups: options.AssetArchiveExemptRealGroups,
 		Client: options.Client,
 	})
 	if err != nil {
