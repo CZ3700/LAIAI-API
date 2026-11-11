@@ -99,6 +99,18 @@ func TestDraftProfileIsExplicitAndKeepsLegacyEvidenceStable(t *testing.T) {
 	if _, err := LoadDraft(ark.Model20); err == nil {
 		t.Fatal("non-2.5 Draft profile accepted")
 	}
+	// 2026-11-11 review correction: the official create API grants Seedance 2.5
+	// 图生视频-首帧/首尾帧. The frozen base profile stays byte-stable (the pricing
+	// template pins its hash), so only the applied draft revision advertises it.
+	if !draft.Capability.ImageFrames {
+		t.Fatal("corrected Seedance 2.5 draft capability must enable first/last-frame input")
+	}
+	if base.Capability.ImageFrames {
+		t.Fatal("frozen base-2.5 profile must stay unchanged for template integrity")
+	}
+	if draft.MinimumVersion != "official-min-seedance-2.5-20261111-draft-v1" {
+		t.Fatal("corrected 2.5 capability must bind to the 20261111 minimum evidence")
+	}
 }
 
 func TestReviewedPixelBoundsAndUnsupportedModels(t *testing.T) {
