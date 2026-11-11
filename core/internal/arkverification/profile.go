@@ -18,8 +18,11 @@ const Version = "ark-official-20261105-v1"
 const VariantVersion = "ark-official-20261105-variants-v1"
 
 // DraftVersion is opt-in so installed 2026-10-19 pricing templates and their
-// evidence hashes continue to validate against the original profile.
-const DraftVersion = "ark-official-20261105-draft-v1"
+// evidence hashes continue to validate against the original profile. The
+// 20261111 revision corrects the Seedance 2.5 capability review: the same
+// captured create-API documentation grants 2.5 first/last-frame image input
+// (adaptive ratio only), which the original profile wrongly disabled.
+const DraftVersion = "ark-official-20261111-draft-v1"
 
 type Dimensions struct {
 	Width  int64 `json:"width"`
@@ -121,6 +124,8 @@ func Load(model string) (Profile, error) {
 		p.Capability.MaxImages = 30
 		p.Capability.MaxVideos = 10
 		p.Capability.MaxAudios = 10
+		// Base-2.5 evidence stays byte-frozen: the pricing template file pins
+		// this profile's hash. LoadDraft carries the corrected frame capability.
 		p.Capability.ImageFrames = false
 		p.Capability.OmniReferenceTaskTypes = []string{"reference"}
 		p.Capability.OutputFormats = []string{"mp4", "mov"}
@@ -234,11 +239,18 @@ func LoadDraft(model string) (Profile, error) {
 		return Profile{}, err
 	}
 	p.Version = DraftVersion
-	p.ObservedAt = time.Date(2026, 10, 30, 10, 38, 0, 0, time.UTC)
-	p.MinimumVersion = "official-min-seedance-2.5-20261105-draft-v1"
+	p.ObservedAt = time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC)
+	p.MinimumVersion = "official-min-seedance-2.5-20261111-draft-v1"
 	p.Capability.Version = p.Version
 	p.Capability.Draft = true
 	p.Capability.DraftConversion = true
+	// 2026-11-11 review correction: the official create API grants Seedance 2.5
+	// 图生视频-首帧/首尾帧 (role first_frame/last_frame, adaptive ratio only and
+	// enforced at admission; frame mode and omni-reference stay mutually
+	// exclusive). The frozen base profile cannot change without invalidating
+	// the pinned pricing template, so the corrected capability ships in this
+	// draft revision that production applies to 2.5.
+	p.Capability.ImageFrames = true
 	p.Sources = append(p.Sources,
 		Source{"official-create-api-20261030-draft", "https://ark.volcengine.com/region:cn-beijing/docs/create-video-generation-task-api.md", "a779514c668fc18272275f07351034078e5aeec9da98cb1352b11a083751f324"},
 		Source{"official-pricing-20261030-draft", "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing.md", "c93a73de8f9db86686a4499065a401c08b04dcd3b972fe51b8ff3f2c43908231"},
