@@ -69,18 +69,18 @@ func (s *Service) archiveSweep(ctx context.Context) error {
 	if remaining < batch {
 		batch = remaining
 	}
-	cutoff := now.UTC().AddDate(0, 0, -s.options.ArchiveRetentionDays)
 	q := s.db.WithContext(ctx).
 		Table("video_assets AS a").
 		Joins("JOIN video_asset_groups g ON g.org_id = a.org_id AND g.group_id = a.group_id").
-		Where("a.status = ? AND a.provider_id IS NOT NULL AND a.deleted_at IS NULL AND a.created_at < ?",
-			StatusActive, cutoff)
+		Where("a.status = ? AND a.provider_id IS NOT NULL AND a.deleted_at IS NULL",
+			StatusActive)
 	if s.options.ArchiveExemptRealGroups {
 		q = q.Where("g.kind <> ?", KindReal)
 	}
-	// 使用保护（2026-11-11 用户拍板）：近 N 天内被生成任务引用的素材不归档。
+	// 归档判据（2026-11-12 用户拍板，替代"3 天保留期 + 7 天使用保护"双条件）：
+	// 只看近 N 天内是否被生成任务引用——有调用不归档，无调用可归档。
 	// 引用以 video_task_asset_refs 行为准（任务受理时写入，含已终态任务——
-	// released 的历史引用也算近期使用）。相关 NOT EXISTS 命中既有
+	// released 的历史引用也算使用）。NOT EXISTS 命中既有
 	// idx_video_asset_refs(org_id,asset_id,released_at) 前缀，每批 ≤25 次
 	// 索引查找，无新迁移。SELECT 与注入之间的新引用由 archiveInject 内
 	// assetDeletionState 的在途引用保护兜底。

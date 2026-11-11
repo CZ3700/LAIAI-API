@@ -117,20 +117,19 @@ type Options struct {
 	// 分池使注册洪峰时 CreateAsset 的 QPM 通道不被查询确认挤占，反之亦然。
 	WriteConcurrency int
 	QueryConcurrency int
-	// Archive*：素材自动归档（用户素材用完即弃）。每日本地时区窗口内对创建
-	// 超过 ArchiveRetentionDays 的 active 素材分批注入 DeleteAsset op（官方
-	// 存储同步释放、本地记录 tombstone）。真人组默认豁免（授权肖像是长期
-	// 资产）；ArchiveNow 供测试注入时钟。
-	ArchiveEnabled          bool
-	ArchiveTimezone         string
-	ArchiveWindowStart      string
-	ArchiveWindowEnd        string
-	ArchiveDailyLimit       int
-	ArchiveBatch            int
-	ArchiveRetentionDays    int
-	// ArchiveUsageWindowDays：近 N 天内有生成任务引用（video_task_asset_refs）
-	// 的素材受使用保护、不进入归档候选（用户拍板策略：七天内调用的不归档）。
-	// <=0 时默认 7。引用含已终态任务（released）——历史上用过即视为近期使用。
+	// Archive*：素材自动归档。每日本地时区窗口内，对近 ArchiveUsageWindowDays
+	// 天内无生成任务引用的 active 素材分批注入 DeleteAsset op（官方存储同步
+	// 释放、本地记录 tombstone）。真人组默认豁免（授权肖像是长期资产）；
+	// ArchiveNow 供测试注入时钟。
+	ArchiveEnabled     bool
+	ArchiveTimezone    string
+	ArchiveWindowStart string
+	ArchiveWindowEnd   string
+	ArchiveDailyLimit  int
+	ArchiveBatch       int
+	// ArchiveUsageWindowDays：归档唯一判据（2026-11-12 用户拍板）——近 N 天内
+	// 有生成任务引用（video_task_asset_refs，含已终态任务）的素材不归档，
+	// 无调用才归档。<=0 时默认 7。
 	ArchiveUsageWindowDays  int
 	ArchiveExemptRealGroups bool
 	ArchiveLocation         *time.Location
@@ -200,9 +199,6 @@ func NewService(db *gorm.DB, keys *crypto.Keyring, evidence *invocation.VideoSto
 	}
 	if options.ArchiveBatch <= 0 || options.ArchiveBatch > 500 {
 		options.ArchiveBatch = 25
-	}
-	if options.ArchiveRetentionDays <= 0 {
-		options.ArchiveRetentionDays = 3
 	}
 	if options.ArchiveUsageWindowDays <= 0 {
 		options.ArchiveUsageWindowDays = 7

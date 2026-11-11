@@ -763,7 +763,7 @@ paths:
         火山 RPC 官方信封，Action=GetAsset；CreatedAt/UpdatedAt 为 Unix 秒。
         URL 为平台素材引用（asset://asset_...），仅 status=ready 后非空，此前为空字符串。
         Version 为平台扩展字段（官方无此字段），是 PATCH expected_version 乐观锁的读取来源。
-        平台于素材创建超过 3 天且近 7 天无生成任务调用时自动归档：官方资源同步释放，记录转为删除态，其后查询返回 404；
+        平台于素材近 7 天无生成任务调用时自动归档（创建时长不参与判断）：官方资源同步释放，记录转为删除态，其后查询返回 404；
         需要长期复用的素材请使用真人授权素材或在此之前自行保存（真人组素材默认豁免归档）。
       responses:
         '200':
@@ -2460,7 +2460,7 @@ components:
           $ref: '#/components/schemas/RpcAssetStatus'
         URL:
           type: string
-          description: 平台素材引用 asset://asset_...；仅 ready 后非空，此前为空字符串。平台于素材创建超过 3 天且近 7 天无生成任务调用时自动归档（官方资源同步释放、记录转为删除态，其后查询 404；真人组素材豁免）。
+          description: 平台素材引用 asset://asset_...；仅 ready 后非空，此前为空字符串。平台于素材近 7 天无生成任务调用时自动归档（创建时长不参与判断）（官方资源同步释放、记录转为删除态，其后查询 404；真人组素材豁免）。
         SourceURL:
           type: string
           description: 平台扩展字段（官方无此字段）；素材可用时实时返回的火山侧短时效签名直链（当前约 11.5 小时有效），取不到时为空字符串。直链访问不得附带平台 Key。
