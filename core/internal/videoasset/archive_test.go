@@ -180,3 +180,46 @@ func TestArchiveEndToEndDeletesAsset(t *testing.T) {
 		t.Fatalf("archived asset must end deleted with deleted_at: %+v", row)
 	}
 }
+
+// TestArchiveReinjectionAfterRejectionNoCollision 断言 rejected 恢复 active
+// 的素材可再次注入（幂等哈希含 op id，不再撞 uk_video_asset_idempotency
+// 中断整批——2026-11-11 生产停摆事故的回归防呆）。
+func TestArchiveReinjectionAfterRejectionNoCollision(t *testing.T) {
+	at := time.Date(2026, 11, 12, 3, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	s, clock := setupArchive(t, at)
+	ctx := context.Background()
+	group := readyGroup(t, s, "archive-reinject-group")
+	if _, _, err := s.CreateAsset(ctx, createContext("req-archive-reinj"), AssetCreate{GroupID: group.ID, MediaType: "image", URL: "https://media.example/archive-reinj.png"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Model(&Asset{}).Where("asset_id LIKE ?", "asset_%").Updates(map[string]any{"created_at": at.AddDate(0, 0, -10), "status": StatusActive}).Error; err != nil {
+		t.Fatal(err)
+	}
+	*clock = at
+	if err := s.archiveSweep(ctx); err != nil {
+		t.Fatalf("first sweep must not fail: %v", err)
+	}
+	// 模拟官方拒绝：op 置 rejected（Receipt 恢复链路把素材拉回 active），
+	// 素材回到候选集后第二次注入不得撞唯一键。
+	var first Operation
+	if err := s.db.Where("action = ?", "DeleteAsset").First(&first).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Model(&Operation{}).Where("operation_id = ?", first.ID).Updates(map[string]any{"status": "rejected", "safe_error_code": "asset_processing_failed"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Model(&Asset{}).Where("asset_id = ?", first.ResourceID).Updates(map[string]any{"status": StatusActive, "deleted_at": nil}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.archiveSweep(ctx); err != nil {
+		t.Fatalf("re-injection after rejection must not collide: %v", err)
+	}
+	var ops int64
+	s.db.Model(&Operation{}).Where("action = ?", "DeleteAsset").Count(&ops)
+	if ops != 2 {
+		t.Fatalf("rejected asset must be re-injected with a fresh idempotency hash: %d", ops)
+	}
+}
