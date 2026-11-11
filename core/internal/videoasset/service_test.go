@@ -54,6 +54,7 @@ type fakeProvider struct {
 	denyPortrait         bool
 	emptyPortraitGroup   bool
 	groupMissing         bool
+	rateLimited          int // >0 时接下来 N 次官方调用返回 429（每次递减）
 	assetStatus, project string
 	groupByAsset         map[string]string
 }
@@ -65,6 +66,11 @@ func (f *fakeProvider) roundTrip(r *http.Request) (*http.Response, error) {
 	f.calls[action]++
 	if f.unknown {
 		return nil, errors.New("connection lost after possible acceptance")
+	}
+	if f.rateLimited > 0 {
+		f.rateLimited--
+		data := bodyJSON(map[string]any{"ResponseMetadata": map[string]any{"RequestId": "rate-limited-request", "Action": action, "Version": managementVersion, "Service": "ark", "Region": "cn-beijing", "Error": map[string]string{"Code": "Throttling", "Message": "request throttled"}}, "Result": nil})
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(bytes.NewReader(data)), Header: http.Header{}, Request: r}, nil
 	}
 	var wire map[string]any
 	var body = map[string]string{}

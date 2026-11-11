@@ -296,7 +296,27 @@ func parseObservation(fields map[string]json.RawMessage) (*Observation, *Error) 
 		return nil, failure("invalid_upstream_response", "upstream task parameters are invalid", "", 502)
 	}
 	o.HasError = len(p.Error) > 0 && string(p.Error) != "null" && string(p.Error) != "{}"
+	// 异步失败信封的脱敏投影（审计 A08）：只取 code/message 两个白名单字段，
+	// 各钳制 255 字符；完整信封已按既有纪律进加密 Invocation Store。
+	if o.HasError {
+		var env struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(p.Error, &env) == nil {
+			o.ErrorCode = clampRunes(env.Code, 255)
+			o.ErrorMessage = clampRunes(env.Message, 255)
+		}
+	}
 	return o, nil
+}
+
+func clampRunes(v string, max int) string {
+	runes := []rune(v)
+	if len(runes) <= max {
+		return v
+	}
+	return string(runes[:max])
 }
 func containsStatus(values []int, n int) bool {
 	for _, v := range values {

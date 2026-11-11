@@ -227,3 +227,28 @@ func TestRequestConstructionAndIdentityProtection(t *testing.T) {
 		}
 	}
 }
+
+// TestQueryFailedErrorEnvelopeProjected（审计 A08 回归）：查询到 failed+error
+// 信封时，脱敏 code/message 必须进入 Observation 投影——此前只留 HasError
+// 布尔，异步失败原因在解析层即被丢弃，客户 GET 回落"原因未记录"。
+func TestQueryFailedErrorEnvelopeProjected(t *testing.T) {
+	body := `{"id":"cgt-async-fail","model":"doubao-seedance-2-0-260128","status":"failed","created_at":1760000000,"updated_at":1760000100,"error":{"code":"InternalServiceError","message":"upstream render failed after 3 attempts"},"usage":{"completion_tokens":0,"total_tokens":0}}`
+	r := ParseResponse(ActionQuery, response(200, body), 0)
+	if r.Outcome != OutcomeAccepted || r.Observation == nil || !r.Observation.HasError {
+		t.Fatalf("failed envelope must parse as accepted-with-error: %+v", r)
+	}
+	if r.Observation.ErrorCode != "InternalServiceError" || r.Observation.ErrorMessage != "upstream render failed after 3 attempts" {
+		t.Fatalf("error code/message must be projected: code=%q message=%q", r.Observation.ErrorCode, r.Observation.ErrorMessage)
+	}
+	// 超长 message 钳制 255 字符，防上游原文无界入库。
+	long := strings.Repeat("x", 400)
+	r2 := ParseResponse(ActionQuery, response(200, `{"id":"cgt-2","status":"failed","created_at":1,"updated_at":2,"error":{"code":"C","message":"`+long+`"}}`), 0)
+	if len([]rune(r2.Observation.ErrorMessage)) != 255 {
+		t.Fatalf("message must clamp to 255 runes: %d", len([]rune(r2.Observation.ErrorMessage)))
+	}
+	// 无 error 字段：两投影为空。
+	r3 := ParseResponse(ActionQuery, response(200, `{"id":"cgt-3","status":"queued","created_at":1,"updated_at":2}`), 0)
+	if r3.Observation.ErrorCode != "" || r3.Observation.ErrorMessage != "" {
+		t.Fatalf("no-error observation must keep empty projections: %+v", r3.Observation)
+	}
+}

@@ -4,20 +4,22 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // setupArchive 返回固定归档时钟（窗内/窗外可控）的 Service。
-func setupArchive(t *testing.T, at time.Time) (*Service, *time.Time) {
-	s, _, _, _ := setup(t)
+func setupArchive(t *testing.T, at time.Time) (*Service, *gorm.DB, *time.Time) {
+	s, db, _, _ := setup(t)
 	s.options.ArchiveEnabled = true
 	clock := at
 	s.options.ArchiveNow = func() time.Time { return clock }
-	return s, &clock
+	return s, db, &clock
 }
 
 func TestArchiveWindowGate(t *testing.T) {
 	at := time.Date(2026, 11, 12, 1, 30, 0, 0, time.FixedZone("CST", 8*3600)) // 窗口前
-	s, clock := setupArchive(t, at)
+	s, _, clock := setupArchive(t, at)
 	ctx := context.Background()
 	group := readyGroup(t, s, "archive-window-group")
 	if _, _, err := s.CreateAsset(ctx, createContext("req-archive-w"), AssetCreate{GroupID: group.ID, MediaType: "image", URL: "https://media.example/archive.png"}); err != nil {
@@ -53,7 +55,7 @@ func TestArchiveWindowGate(t *testing.T) {
 
 func TestArchiveExemptsRealGroups(t *testing.T) {
 	at := time.Date(2026, 11, 12, 3, 0, 0, 0, time.FixedZone("CST", 8*3600))
-	s, clock := setupArchive(t, at)
+	s, _, clock := setupArchive(t, at)
 	ctx := context.Background()
 	group := readyGroup(t, s, "archive-virtual-group")
 	if _, _, err := s.CreateAsset(ctx, createContext("req-archive-v"), AssetCreate{GroupID: group.ID, MediaType: "image", URL: "https://media.example/archive-v.png"}); err != nil {
@@ -93,7 +95,7 @@ func TestArchiveExemptsRealGroups(t *testing.T) {
 
 func TestArchiveDailyLimit(t *testing.T) {
 	at := time.Date(2026, 11, 12, 3, 0, 0, 0, time.FixedZone("CST", 8*3600))
-	s, clock := setupArchive(t, at)
+	s, _, clock := setupArchive(t, at)
 	s.options.ArchiveDailyLimit = 2
 	s.options.ArchiveBatch = 5
 	ctx := context.Background()
@@ -132,7 +134,7 @@ func TestArchiveDailyLimit(t *testing.T) {
 
 func TestArchiveEndToEndDeletesAsset(t *testing.T) {
 	at := time.Date(2026, 11, 12, 3, 0, 0, 0, time.FixedZone("CST", 8*3600))
-	s, clock := setupArchive(t, at)
+	s, _, clock := setupArchive(t, at)
 	ctx := context.Background()
 	group := readyGroup(t, s, "archive-e2e-group")
 	asset, _, err := s.CreateAsset(ctx, createContext("req-archive-e2e"), AssetCreate{GroupID: group.ID, MediaType: "image", URL: "https://media.example/archive-e2e.png"})
@@ -186,7 +188,7 @@ func TestArchiveEndToEndDeletesAsset(t *testing.T) {
 // 中断整批——2026-11-11 生产停摆事故的回归防呆）。
 func TestArchiveReinjectionAfterRejectionNoCollision(t *testing.T) {
 	at := time.Date(2026, 11, 12, 3, 0, 0, 0, time.FixedZone("CST", 8*3600))
-	s, clock := setupArchive(t, at)
+	s, _, clock := setupArchive(t, at)
 	ctx := context.Background()
 	group := readyGroup(t, s, "archive-reinject-group")
 	if _, _, err := s.CreateAsset(ctx, createContext("req-archive-reinj"), AssetCreate{GroupID: group.ID, MediaType: "image", URL: "https://media.example/archive-reinj.png"}); err != nil {
@@ -221,5 +223,154 @@ func TestArchiveReinjectionAfterRejectionNoCollision(t *testing.T) {
 	s.db.Model(&Operation{}).Where("action = ?", "DeleteAsset").Count(&ops)
 	if ops != 2 {
 		t.Fatalf("rejected asset must be re-injected with a fresh idempotency hash: %d", ops)
+	}
+}
+
+// TestArchiveRespectsConcurrentTaskReference（审计 A01 回归）：预检通过后、
+// 事务拿锁前，视频任务写入 TaskReference——锁内完整重检必须放弃归档。
+func TestArchiveRespectsConcurrentTaskReference(t *testing.T) {
+	at := time.Date(2026, 11, 12, 3, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	s, db, clock := setupArchive(t, at)
+	ctx := context.Background()
+	group := readyGroup(t, s, "archive-race-group")
+	asset, _, err := s.CreateAsset(ctx, createContext("req-archive-race"), AssetCreate{GroupID: group.ID, MediaType: "image", URL: "https://media.example/archive-race.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&Asset{}).Where("asset_id = ?", asset.ID).Updates(map[string]any{"created_at": at.AddDate(0, 0, -10), "status": StatusActive}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// 模拟并发窗口：预检（archiveSweep 候选阶段）看到无引用；注入前另一
+	// 任务已写入未释放引用。直接调 archiveInject 前插引用即可确定性编排。
+	*clock = at
+	if err := db.Create(&TaskReference{OrgID: 1, AssetID: asset.ID, TaskID: "task_race_ref01", CreatedAt: at}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var candidate Asset
+	if err := db.Where("asset_id = ?", asset.ID).Take(&candidate).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.archiveInject(ctx, &candidate, at); err != nil {
+		t.Fatal(err)
+	}
+	var row Asset
+	if err := db.Where("asset_id = ?", asset.ID).Take(&row).Error; err != nil || row.Status != StatusActive {
+		t.Fatalf("asset referenced by a concurrent task must stay active: %+v", row)
+	}
+	var ops int64
+	db.Model(&Operation{}).Where("action = ? AND resource_id = ?", "DeleteAsset", asset.ID).Count(&ops)
+	if ops != 0 {
+		t.Fatalf("no archive delete op may be created for a referenced asset: %d", ops)
+	}
+}
+
+// TestArchiveRunsOnIdleWorker（审计 A02 回归）：读写队列全空时 ProcessOnce
+// 仍必须执行归档（曾因空批提前 return 跳过凌晨窗口的维护阶段）。
+func TestArchiveRunsOnIdleWorker(t *testing.T) {
+	at := time.Date(2026, 11, 12, 3, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	s, db, clock := setupArchive(t, at)
+	ctx := context.Background()
+	group := readyGroup(t, s, "archive-idle-group")
+	asset, _, err := s.CreateAsset(ctx, createContext("req-archive-idle"), AssetCreate{GroupID: group.ID, MediaType: "image", URL: "https://media.example/archive-idle.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 先把创建/确认 op 全部消化完（队列清空）。
+	for i := 0; i < 4; i++ {
+		*clock = clock.Add(16 * time.Second)
+		if err := s.ProcessOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var pendingOps int64
+	db.Model(&Operation{}).Where("status IN ?", []string{"pending", "in_flight"}).Count(&pendingOps)
+	if pendingOps != 0 {
+		t.Fatalf("precondition: op queue must be idle, got %d", pendingOps)
+	}
+	if err := db.Model(&Asset{}).Where("asset_id = ?", asset.ID).Updates(map[string]any{"created_at": at.AddDate(0, 0, -10), "status": StatusActive, "updated_at": at.Add(-time.Minute)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	*clock = at
+	if err := s.ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var ops int64
+	db.Model(&Operation{}).Where("action = ? AND resource_id = ?", "DeleteAsset", asset.ID).Count(&ops)
+	if ops != 1 {
+		t.Fatalf("idle worker must still enqueue archive delete: %d", ops)
+	}
+}
+
+// TestArchiveCreateAsset429Recovers（审计 A03 回归）：官方明确 429（未受理）
+// 时素材不得置 failed；上游恢复后同一 op 重派成功转 ready。
+func TestArchiveCreateAsset429Recovers(t *testing.T) {
+	s, db, now, provider := setup(t)
+	ctx := context.Background()
+	group := readyGroup(t, s, "asset-429-group")
+	provider.rateLimited = 1 // 第一次 CreateAsset 调用返回 429
+	if _, _, err := s.CreateAsset(ctx, createContext("req-asset-429"), AssetCreate{GroupID: group.ID, MediaType: "image", URL: "https://media.example/asset-429.png"}); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(16 * time.Second)
+	if err := s.ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var row Asset
+	if err := db.Where("group_id = ? AND media_type = ?", group.ID, "image").Order("created_at DESC").First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.Status == StatusFailed {
+		t.Fatal("definitive 429 must not fail the asset")
+	}
+	var op Operation
+	if err := db.Where("action = ? AND resource_id = ?", "CreateAsset", row.ID).First(&op).Error; err != nil {
+		t.Fatal(err)
+	}
+	if op.Status != "pending" || op.SafeErrorCode != "provider_rate_limited" {
+		t.Fatalf("429 op must stay pending with backoff: status=%s code=%s next=%v", op.Status, op.SafeErrorCode, op.NextAttemptAt)
+	}
+	// 退避到期后重派成功 → 素材走 processing → ready。
+	*now = now.Add(time.Minute)
+	for i := 0; i < 3; i++ {
+		*now = now.Add(16 * time.Second)
+		if err := s.ProcessOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Where("asset_id = ?", row.ID).Take(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != StatusActive {
+		t.Fatalf("asset must recover to ready after provider is healthy: %s", row.Status)
+	}
+}
+
+// TestRecoveredQueryUnknownDoesNotBlockDeletion（审计 A05 回归）：GetAsset
+// 网络失败留下 unknown 查询行，其后的权威读恢复 ready——删除防护不得被
+// 历史只读 unknown 永久阻塞。
+func TestRecoveredQueryUnknownDoesNotBlockDeletion(t *testing.T) {
+	s, db, now, _ := setup(t)
+	group := readyGroup(t, s, "unknown-query-group")
+	asset := readyAsset(t, s, now, group.ID, "unknown-query-asset")
+	// 手工注入一个 GetAsset unknown 历史行（模拟网络失败遗留）。
+	unknown := Operation{ID: "op_unknown_query1", OrgID: 1, Action: "GetAsset", ResourceType: "asset", ResourceID: asset.ID, Status: "unknown", SafeErrorCode: "provider_timeout", CanonicalPath: "internal:GetAsset:" + asset.ID, HMACKeyVersion: "h1", IdempotencyHash: "ih-unknown-1", BodyHash: "bh", CreatedAt: *now, UpdatedAt: *now}
+	if err := db.Create(&unknown).Error; err != nil {
+		t.Fatal(err)
+	}
+	var current Asset
+	if err := db.Where("asset_id = ?", asset.ID).Take(&current).Error; err != nil {
+		t.Fatal(err)
+	}
+	var g Group
+	if err := db.Where("group_id = ?", group.ID).Take(&g).Error; err != nil {
+		t.Fatal(err)
+	}
+	_ = g
+	mode, reason, _, err := s.assetDeletionState(db, current, g)
+	if err != nil || mode != "official" || reason != "" {
+		t.Fatalf("read-only unknown must not block deletion: mode=%s reason=%s err=%v", mode, reason, err)
 	}
 }

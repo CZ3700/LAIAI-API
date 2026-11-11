@@ -30,6 +30,8 @@ type queryObservation struct {
 	Draft                 *bool      `json:"draft,omitempty"`
 	Priority              *int64     `json:"priority,omitempty"`
 	HasError              bool       `json:"has_error"`
+	ErrorCode             string     `json:"error_code,omitempty"`
+	ErrorMessage          string     `json:"error_message,omitempty"`
 	DeliveryPayloadRef    string     `json:"delivery_payload_ref,omitempty"`
 }
 

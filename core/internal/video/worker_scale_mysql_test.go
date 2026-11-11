@@ -145,3 +145,25 @@ func TestMySQLProviderRateIntervalConfigurable(t *testing.T) {
 	})
 	must(t, err)
 }
+
+// TestMySQLRateTxSeedsCalibratedInterval（审计 A07 回归）：全新 (scope,action)
+// 行的 INSERT 必须显式带 0147 校准的 interval（create=100ms、query=50ms），
+// 而不是落列默认 1000ms——否则新 scope 以 60/分钟起步，远低于设计速率。
+func TestMySQLRateTxSeedsCalibratedInterval(t *testing.T) {
+	f := mysqlFixture(t)
+	var st State
+	v := f.create(t, "rate-seed-interval")
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&st).Error)
+	for action, want := range map[string]int{"create": 100, "query": 50} {
+		must(t, f.s.DB.Exec("DELETE FROM video_provider_rates WHERE scope_id = ? AND action = ?", st.ProviderScopeID, action).Error)
+		must(t, f.s.DB.Transaction(func(tx *gorm.DB) error {
+			_, e := f.s.rateTx(tx, st.ProviderScopeID, action)
+			return e
+		}))
+		var interval int
+		must(t, f.s.DB.Raw("SELECT interval_ms FROM video_provider_rates WHERE scope_id = ? AND action = ?", st.ProviderScopeID, action).Scan(&interval).Error)
+		if interval != want {
+			t.Fatalf("%s seed interval = %dms, want %dms", action, interval, want)
+		}
+	}
+}

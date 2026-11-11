@@ -8,6 +8,7 @@ import (
 
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // 归档：用户素材用完即弃，创建超过保留期（默认 3 天）的素材每日凌晨窗口内
@@ -128,6 +129,22 @@ func (s *Service) archiveInject(ctx context.Context, asset *Asset, now time.Time
 		if err := lockTenant(tx, asset.OrgID); err != nil {
 			return err
 		}
+		// 锁内完整重检（TOCTOU 关闭）：上方事务外的 assetDeletionState 只是
+		// 省事务的预检——预检通过后、本事务拿锁前，视频任务可能在同一租户锁
+		// 下写入 TaskReference 引用本素材。锁内必须重跑完整防护（任务引用、
+		// 待决操作、组状态），否则已受理任务的依赖素材会进入官方删除流程。
+		var current Asset
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND asset_id = ? AND deleted_at IS NULL", asset.OrgID, asset.ID).Take(&current).Error; err != nil {
+			return nil
+		}
+		var lockedGroup Group
+		if err := tx.Where("org_id = ? AND group_id = ?", asset.OrgID, asset.GroupID).Take(&lockedGroup).Error; err != nil {
+			return nil
+		}
+		mode, reason, _, err := s.assetDeletionState(tx, current, lockedGroup)
+		if err != nil || mode != "official" || reason != "" {
+			return nil
+		}
 		// 乐观锁复核仍为 active 并置 deleting（对齐用户删除路径的受理语义，
 		// 官方确认链路 WHERE status='deleting' 才能命中）。
 		res := tx.Model(&Asset{}).Where("org_id = ? AND asset_id = ? AND status = ? AND deleted_at IS NULL", asset.OrgID, asset.ID, StatusActive).Updates(map[string]any{"status": StatusDeleting, "updated_at": nowMillisValue})
@@ -135,14 +152,6 @@ func (s *Service) archiveInject(ctx context.Context, asset *Asset, now time.Time
 			return ErrStorage
 		}
 		if res.RowsAffected == 0 {
-			return nil
-		}
-		var count int64
-		if tx.Model(&Operation{}).Where("org_id = ? AND resource_id = ? AND action = ? AND status IN ?",
-			asset.OrgID, asset.ID, "DeleteAsset", []string{"pending", "in_flight", "unknown"}).Count(&count).Error != nil {
-			return ErrStorage
-		}
-		if count > 0 {
 			return nil
 		}
 		row := Operation{
