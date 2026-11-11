@@ -17,10 +17,10 @@ import (
 
 // archiveDailyCount 统计本地时区"今日 00:00"以来已注入的归档删除 op 数，
 // 作为当日限量的轻查询（免迁移，internal 前缀与用户删除路径隔离）。
+// action 条件走 idx_video_asset_operation_resource 索引，避免 LIKE 全表扫。
 func (s *Service) archiveDailyCount(dayStart time.Time) int64 {
 	var n int64
-	s.db.Model(&Operation{}).Where("action = ? AND canonical_path LIKE ? AND created_at >= ?",
-		"DeleteAsset", "internal:DeleteAsset:%", dayStart).Count(&n)
+	s.db.Model(&Operation{}).Where("action = ? AND created_at >= ?", "DeleteAsset", dayStart).Count(&n)
 	return n
 }
 
@@ -53,7 +53,7 @@ func parseArchiveClock(v string) (int, bool) {
 
 // archiveSweep 是每 tick 的归档入口：窗口/限量不满足时零成本返回；窗口内
 // 选取候选素材、逐一过 assetDeletionState 防护后直插 DeleteAsset op
-//（仿 enqueueQuery 的 internal 域直插，不走用户幂等路径）。
+// （仿 enqueueQuery 的 internal 域直插，不走用户幂等路径）。
 func (s *Service) archiveSweep(ctx context.Context) error {
 	now := s.options.ArchiveNow()
 	inWindow, dayStart := s.archiveInWindow(now)
@@ -81,16 +81,19 @@ func (s *Service) archiveSweep(ctx context.Context) error {
 	if err := q.Select("a.*").Order("a.created_at, a.asset_id").Limit(int(batch)).Find(&candidates).Error; err != nil {
 		return ErrStorage
 	}
+	// 单素材注入失败不中断整批（与派发池同语义）：一个坏候选不应阻塞
+	// 同批其余素材的归档。
+	var firstErr error
 	for i := range candidates {
-		if err := s.archiveInject(ctx, &candidates[i], now); err != nil {
-			return err
+		if err := s.archiveInject(ctx, &candidates[i], now); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // archiveInject 对单个素材完成防护与注入；任何防护不满足都静默跳过
-//（rejected 恢复 active 的素材次日窗口自然重试）。
+// （rejected 恢复 active 的素材次日窗口自然重试）。
 func (s *Service) archiveInject(ctx context.Context, asset *Asset, now time.Time) error {
 	var group Group
 	if err := s.db.WithContext(ctx).Where("org_id = ? AND group_id = ?", asset.OrgID, asset.GroupID).Take(&group).Error; err != nil {
@@ -145,16 +148,24 @@ func (s *Service) archiveInject(ctx context.Context, asset *Asset, now time.Time
 		row := Operation{
 			ID: opID, OrgID: asset.OrgID, Action: "DeleteAsset", ResourceType: "asset", ResourceID: asset.ID,
 			RequestID: requestID, CanonicalPath: "internal:DeleteAsset:" + asset.ID,
-			HMACKeyVersion:  s.options.ActiveHMACKey,
-			IdempotencyHash: s.digest(s.options.ActiveHMACKey, "internal", asset.OrgID, "DeleteAsset", asset.ID),
+			HMACKeyVersion: s.options.ActiveHMACKey,
+			// 幂等哈希必须含本次 op id：同素材 rejected 恢复 active 后会再次
+			// 进入候选，固定哈希会撞 uk_video_asset_idempotency 唯一键并中断
+			// 整批 sweep（2026-11-11 生产事故：两个 rejected 素材把归档永久
+			// 停摆）。重注入防重由上方 pending/in_flight/unknown 查询承担。
+			IdempotencyHash: s.digest(s.options.ActiveHMACKey, "internal", asset.OrgID, "DeleteAsset", opID),
 			BodyHash:        s.digest(s.options.ActiveHMACKey, "body", asset.OrgID, "DeleteAsset", string(body)),
 			ScopeID:         group.ScopeID, ScopeVersion: group.ScopeVersion, AccountID: group.AccountID,
 			Region: group.Region, Project: group.Project,
 			Status: "pending", PayloadID: prepared.PayloadID(),
-			Receipt: string(receipt),
+			Receipt:   string(receipt),
 			CreatedAt: nowMillisValue, UpdatedAt: nowMillisValue, NextAttemptAt: nowMillisValue,
 		}
 		if err := tx.Create(&row).Error; err != nil {
+			// 唯一键冲突 = 另一 worker 同时注入同一素材：跳过而非中断整批。
+			if strings.Contains(err.Error(), "Duplicate entry") || strings.Contains(err.Error(), "1062") {
+				return nil
+			}
 			return ErrStorage
 		}
 		if _, err := s.evidence.StageTx(tx, prepared); err != nil {
