@@ -114,7 +114,11 @@ func TestMySQLDatabaseAuthoritySharedRateUsesPrimaryTime(t *testing.T) {
 			var rate ProviderRate
 			must(t, f.s.DB.Where("scope_id = ? AND action = ?", st.ProviderScopeID, action).First(&rate).Error)
 			after := scheduleDatabaseTime(t, f.s.DB)
-			if allowed != 1 || rate.NextAllowedAt.Before(before.Add(time.Second)) || rate.NextAllowedAt.After(after.Add(time.Second)) {
+			// 新闸首次 INSERT 显式携带校准间隔（审计 A07：create 100ms /
+			// query 50ms / delete 50ms，与 0147 迁移一致），因此 next 允许
+			// 下限按该间隔而非旧的列默认 1 秒。
+			seedInterval := map[string]time.Duration{"create": 100 * time.Millisecond, "delete": 50 * time.Millisecond, "query": 50 * time.Millisecond}[action]
+			if allowed != 1 || rate.NextAllowedAt.Before(before.Add(seedInterval)) || rate.NextAllowedAt.After(after.Add(time.Second)) {
 				t.Fatalf("shared rate did not use one primary-time permit: allowed=%d before=%s next=%s after=%s", allowed, before, rate.NextAllowedAt, after)
 			}
 			if authorityFinancialFacts(t, f, v.ID) != funds || f.posts.Load() != 0 || f.gets.Load() != 0 {
