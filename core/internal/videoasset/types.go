@@ -128,6 +128,10 @@ type Options struct {
 	ArchiveDailyLimit       int
 	ArchiveBatch            int
 	ArchiveRetentionDays    int
+	// ArchiveUsageWindowDays：近 N 天内有生成任务引用（video_task_asset_refs）
+	// 的素材受使用保护、不进入归档候选（用户拍板策略：七天内调用的不归档）。
+	// <=0 时默认 7。引用含已终态任务（released）——历史上用过即视为近期使用。
+	ArchiveUsageWindowDays  int
 	ArchiveExemptRealGroups bool
 	ArchiveLocation         *time.Location
 	ArchiveNow              func() time.Time
@@ -199,6 +203,9 @@ func NewService(db *gorm.DB, keys *crypto.Keyring, evidence *invocation.VideoSto
 	}
 	if options.ArchiveRetentionDays <= 0 {
 		options.ArchiveRetentionDays = 3
+	}
+	if options.ArchiveUsageWindowDays <= 0 {
+		options.ArchiveUsageWindowDays = 7
 	}
 	if options.ArchiveNow == nil {
 		options.ArchiveNow = time.Now
