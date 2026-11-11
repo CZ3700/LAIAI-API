@@ -380,7 +380,7 @@ func TestRecoveredQueryUnknownDoesNotBlockDeletion(t *testing.T) {
 // 仅 7 天前的引用或从未引用的素材照常归档。
 func TestArchiveUsageWindowGate(t *testing.T) {
 	at := time.Date(2026, 11, 12, 3, 0, 0, 0, time.FixedZone("CST", 8*3600))
-	s, clock := setupArchive(t, at)
+	s, _, clock := setupArchive(t, at)
 	ctx := context.Background()
 	group := readyGroup(t, s, "archive-usage-group")
 	for i, name := range []string{"recent", "old", "never"} {
