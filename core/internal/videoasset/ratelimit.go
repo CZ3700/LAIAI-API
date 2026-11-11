@@ -16,10 +16,10 @@ const assetsTick = 5 * time.Second
 //
 //	GetAsset 100 QPS；ListAssets/ListAssetGroups/GetAssetGroup/
 //	UpdateAsset/UpdateAssetGroup/DeleteAsset 10 QPS；DeleteAssetGroup 5 QPS；
-//	CreateAsset 最大 QPM 300。
+//	CreateAsset 最大 QPM 300；CreateVisualValidateSession /
+//	GetVisualValidateResult 各 3 QPS（2026-11-11 审计核对官方指南补充核实）。
 //
-// CreateVisualValidateSession / GetVisualValidateResult 官方未列出限流，
-// 保守按 10 QPS 档，待官方联调核实后修正。官方口径变化时改本表发版。
+// 官方口径变化时改本表发版。
 var officialActionRates = map[string]time.Duration{
 	"GetAsset":                    10 * time.Millisecond,
 	"ListAssetGroups":             100 * time.Millisecond,
@@ -31,8 +31,8 @@ var officialActionRates = map[string]time.Duration{
 	"DeleteAsset":                 100 * time.Millisecond,
 	"DeleteAssetGroup":            200 * time.Millisecond,
 	"CreateAsset":                 200 * time.Millisecond,
-	"CreateVisualValidateSession": 100 * time.Millisecond,
-	"GetVisualValidateResult":     100 * time.Millisecond,
+	"CreateVisualValidateSession": 334 * time.Millisecond, // 官方 3 QPS
+	"GetVisualValidateResult":     334 * time.Millisecond, // 官方 3 QPS
 }
 
 // assetActions 是素材域全部官方动作清单（完备性防呆）：派发循环按本清单

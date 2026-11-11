@@ -50,6 +50,7 @@ func (s *Service) applyQueryAtomicTx(tx *gorm.DB, taskRow *task.Task, stateRow *
 				FramesPerSecond: o.FramesPerSecond, Seed: o.Seed, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt,
 				ServiceTier: o.ServiceTier, ExecutionExpiresAfter: o.ExecutionExpiresAfter,
 				GenerateAudio: o.GenerateAudio, Draft: o.Draft, Priority: o.Priority, HasError: o.HasError,
+				ErrorCode: o.ErrorCode, ErrorMessage: o.ErrorMessage,
 			}
 			deliveryRef = o.DeliveryPayloadRef
 		}
@@ -147,6 +148,13 @@ func (s *Service) applyQueryAtomicTx(tx *gorm.DB, taskRow *task.Task, stateRow *
 		updates := map[string]any{"status": t.Status, "actual_tokens": t.ActualTokens, "cost_usd": t.CostUSD}
 		if terminal(t.Status) && t.FinishedAt == nil {
 			updates["finished_at"] = now
+		}
+		// 异步失败原因落库（审计 A08）：创建成功后 GET 才发现 failed 时，
+		// 创建路径没有错误记录，fail_reason 为空导致客户 GET 回落"原因未
+		// 记录"。此处用查询观察的脱敏 code/message 补齐（不覆盖已有值）。
+		if t.Status == "failed" && t.FailReason == "" && (observation != nil && observation.ErrorCode != "") {
+			t.FailReason = observation.ErrorCode + ": " + observation.ErrorMessage
+			updates["fail_reason"] = t.FailReason
 		}
 		if e = tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", org, id).Updates(updates).Error; e != nil {
 			return e

@@ -184,6 +184,11 @@ type Observation struct {
 	Draft                             *bool
 	Priority                          *int64
 	HasError                          bool
+	// ErrorCode/ErrorMessage：查询到 failed+error 信封时的脱敏投影（异步
+	// 失败原因，2026-11-11 审计 A08——此前只留 HasError 布尔，原文被丢弃，
+	// 客户 GET 回落"原因未记录"）。仅白名单字段+长度钳制，完整原文仍在
+	// 加密 Invocation Store。
+	ErrorCode, ErrorMessage string
 }
 
 // Result.Body is bounded raw evidence for the encrypted Invocation Store only.

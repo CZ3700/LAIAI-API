@@ -170,34 +170,55 @@ func (s *Service) processQueryOnce(ctx context.Context) error {
 	m.mu.Lock()
 	m.queryCandidates += uint64(len(rows))
 	m.mu.Unlock()
+	err := fanOutStaggered(ctx, len(rows), 50*time.Millisecond, 12, func(ctx context.Context, i int) {
+		st := rows[i]
+		if err := s.pollTask(ctx, st.OrgID, st.TaskID); err != nil {
+			m.mu.Lock()
+			m.queryErrors++
+			m.mu.Unlock()
+			s.Log.Warn("video query needs recovery", "task_id", st.TaskID)
+		}
+	})
+	if err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+// fanOutStaggered 按固定节拍并发执行 count 个工作项（2026-11-11 审计 A04）：
+// 第 i 项的绝对发送时刻为 start+i*interval（对齐官方 QPS，与循环推进无关），
+// 等待在获取执行槽之前（等待不占槽）；limit 个并发槽完成一个立即补位。
+// 旧行为"先占 12 槽再各自等 i*60ms"会把等待计入槽占用，满批 40 项实测
+// 仅 ~8 项/秒，远低于 20/s 的官方查询配额。
+func fanOutStaggered(ctx context.Context, count int, interval time.Duration, limit int, run func(ctx context.Context, i int)) error {
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 12)
-	for i, st := range rows {
+	sem := make(chan struct{}, limit)
+	start := time.Now()
+	for i := 0; i < count; i++ {
 		if err := ctx.Err(); err != nil {
 			break
 		}
+		if delay := time.Until(start.Add(time.Duration(i) * interval)); delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+			case <-timer.C:
+			}
+			if ctx.Err() != nil {
+				break
+			}
+		}
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(st State, stagger time.Duration) {
+		go func(i int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if stagger > 0 {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(stagger):
-				}
-			}
-			if err := s.pollTask(ctx, st.OrgID, st.TaskID); err != nil {
-				m.mu.Lock()
-				m.queryErrors++
-				m.mu.Unlock()
-				s.Log.Warn("video query needs recovery", "task_id", st.TaskID)
-			}
-		}(st, time.Duration(i)*60*time.Millisecond)
+			run(ctx, i)
+		}(i)
 	}
 	wg.Wait()
-	return ctx.Err()
+	return nil
 }
 
 func (s *Service) normalPollDelay(taskID string) time.Duration {
@@ -264,7 +285,11 @@ func (s *Service) rateTx(tx *gorm.DB, scope uint64, action string) (bool, error)
 	}
 	// The INSERT may itself wait on an existing row. Its timestamp only seeds
 	// a missing gate; it is never reused as permission after acquiring the lock.
-	if err := tx.Model(&ProviderRate{}).Clauses(clause.OnConflict{DoNothing: true}).Create(map[string]any{"scope_id": scope, "action": action, "next_allowed_at": gorm.Expr("UTC_TIMESTAMP(3)")}).Error; err != nil {
+	// interval_ms 必须显式给值：列默认 1000ms 会把新 scope 的 create 压到
+	// 60/分钟、query 压到 60/分钟（远低于 0147 校准的 100/50ms）——新 scope
+	// 开通即应按迁移后的口径起步，而不是等人工修闸（2026-11-11 审计 A07）。
+	seedInterval := map[string]int{"create": 100, "query": 50, "delete": 50} // delete=官方取消/删除 20 QPS
+	if err := tx.Model(&ProviderRate{}).Clauses(clause.OnConflict{DoNothing: true}).Create(map[string]any{"scope_id": scope, "action": action, "interval_ms": seedInterval[action], "next_allowed_at": gorm.Expr("UTC_TIMESTAMP(3)")}).Error; err != nil {
 		return false, err
 	}
 	var current ProviderRate
@@ -1020,7 +1045,7 @@ func (s *Service) pollTask(ctx context.Context, org uint64, id string) error {
 			FramesPerSecond: o.FramesPerSecond, Seed: o.Seed, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt,
 			ServiceTier: o.ServiceTier, ExecutionExpiresAfter: o.ExecutionExpiresAfter,
 			GenerateAudio: o.GenerateAudio, Draft: o.Draft, Priority: o.Priority,
-			HasError: o.HasError, DeliveryPayloadRef: delivery.PayloadID(),
+			HasError: o.HasError, ErrorCode: o.ErrorCode, ErrorMessage: o.ErrorMessage, DeliveryPayloadRef: delivery.PayloadID(),
 		})
 		if e != nil {
 			return e

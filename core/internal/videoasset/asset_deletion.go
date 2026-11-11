@@ -41,12 +41,20 @@ func (s *Service) assetDeletionState(tx *gorm.DB, a Asset, g Group) (string, str
 		[]string{"pending", "in_flight", "unknown"}).Find(&pending).Error; err != nil {
 		return "", "", nil, ErrStorage
 	}
+	// 只读查询操作（GetAsset 等）不构成删除障碍：网络失败的查询会留下
+	// unknown 历史行，其后的权威读已刷新素材状态——旧读的不确定性被新读
+	// 覆盖；若查询行也算 pending 障碍，一次查询失败就永久阻塞删除。
+	// 写操作（Create/Update/Delete/Session）的 pending/in_flight 阻塞、
+	// unknown 保守阻塞（提交结果不明）。
 	for _, op := range pending {
+		if !writeAction(op.Action) {
+			continue
+		}
 		if op.Status == "unknown" {
 			return block("submission_uncertain", latest)
 		}
 	}
-	if len(pending) > 0 {
+	if writePending(pending) > 0 {
 		return block("operation_pending", latest)
 	}
 	var count int64
@@ -115,4 +123,15 @@ func (s *Service) deleteFailedAsset(ctx context.Context, c CreateContext, id str
 		}
 		return s.event(tx, c.OrgID, "asset", id, a.CreateOperationID, "local_failed_asset_deleted", "", callerLabel(c))
 	})
+}
+
+// writePending 统计数组中写类待决操作数。
+func writePending(ops []Operation) int {
+	n := 0
+	for _, op := range ops {
+		if writeAction(op.Action) {
+			n++
+		}
+	}
+	return n
 }

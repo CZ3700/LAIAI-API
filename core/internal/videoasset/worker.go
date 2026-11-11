@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
@@ -64,9 +66,9 @@ func (s *Service) ProcessOnce(ctx context.Context) error {
 			queryOps = append(queryOps, batch...)
 		}
 	}
-	if len(writeOps) == 0 && len(queryOps) == 0 {
-		return nil
-	}
+	// 空批不得提前返回：尾部的控制台同步、媒体清理与自动归档必须在空闲
+	// 时段照常执行（凌晨窗口往往读写队列为空——曾因提前 return 跳过归档）。
+	// 空批派发对空 errgroup 零开销。
 	dispatch := func(group *errgroup.Group, ops []Operation) {
 		for _, candidate := range ops {
 			group.Go(func() error {
@@ -266,7 +268,11 @@ func (s *Service) finish(ctx context.Context, op Operation, r RuntimeScope, resu
 				}
 			}
 		}
-		prepared, err = s.prepareHistoryEvidence(r, invocation.VideoPayloadInput{OrgID: op.OrgID, RequestID: op.RequestID, AttemptID: op.ID, Direction: invocation.VideoUpstreamResponse, SchemaVersion: 1, Body: result.Body, SecretValues: secrets})
+		// AttemptID 必须按派发次数区分（fence 每次认领 +1）：同一 op 在 429
+		// 退避重派后再次 finish 时，若仍用裸 op.ID 会与上次的响应证据撞
+		// correlation_key 唯一键，整个 finish 以 storage 错误失败、op 卡
+		// in_flight（2026-11-11 审计 A03 修复中发现）。
+		prepared, err = s.prepareHistoryEvidence(r, invocation.VideoPayloadInput{OrgID: op.OrgID, RequestID: op.RequestID, AttemptID: op.ID + "-" + strconv.FormatUint(uint64(op.Fence), 10), Direction: invocation.VideoUpstreamResponse, SchemaVersion: 1, Body: result.Body, SecretValues: secrets})
 		// HTTP facts remain authoritative even if optional body capture cannot be
 		// prepared. The safe event records capture absence, never raw parser errors.
 		if err != nil {
@@ -337,6 +343,24 @@ func (s *Service) finish(ctx context.Context, op Operation, r RuntimeScope, resu
 				code = "provider_response_invalid"
 			}
 		} else if result.Outcome == "rejected" || result.Outcome == "not_sent" {
+			// 明确未受理的官方限流（HTTP 429）不是业务拒绝：op 放回 pending
+			// 并按退避延后重派（与视频域 429 重派语义对齐），资源状态不动。
+			// fence 作为重试计数近似，超过上限视为持续限流落终态防永动。
+			// 注意行锁已持有，无需再比对 fence（库里 fence 已在 claim 时 +1，
+			// 本地结构体是旧值——按 fence 匹配会落空）。
+			if result.Retryable && result.SafeErrorCode == "provider_rate_limited" && op.Fence < 64 {
+				backoff := 30 * time.Second << min(op.Fence, 5)
+				if backoff > 10*time.Minute {
+					backoff = 10 * time.Minute
+				}
+				if err := tx.Model(&Operation{}).Where("org_id = ? AND operation_id = ?", op.OrgID, op.ID).Updates(map[string]any{
+					"status": "pending", "lease_owner": "", "lease_expires_at": nil,
+					"safe_error_code": "provider_rate_limited", "next_attempt_at": s.now().Add(backoff), "updated_at": nowMillis(s),
+				}).Error; err != nil {
+					return ErrStorage
+				}
+				return s.event(tx, op.OrgID, op.ResourceType, op.ResourceID, op.ID, "rate_limited_retry", "", op.LeaseOwner)
+			}
 			status = "rejected"
 			if err := s.markRejected(tx, op); err != nil {
 				return err

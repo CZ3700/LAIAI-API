@@ -21,8 +21,8 @@ func TestOfficialActionRatesMatchProviderQuotas(t *testing.T) {
 		"DeleteAsset":                 100 * time.Millisecond, // 10 QPS
 		"DeleteAssetGroup":            200 * time.Millisecond, // 5 QPS
 		"CreateAsset":                 200 * time.Millisecond, // QPM 300
-		"CreateVisualValidateSession": 100 * time.Millisecond, // 未核实，保守
-		"GetVisualValidateResult":     100 * time.Millisecond, // 未核实，保守
+		"CreateVisualValidateSession": 334 * time.Millisecond, // 官方 3 QPS
+		"GetVisualValidateResult":     334 * time.Millisecond, // 官方 3 QPS
 	}
 	if len(quotas) != len(officialActionRates) {
 		t.Fatalf("rate table must cover exactly the documented actions: table=%d documented=%d", len(officialActionRates), len(quotas))
