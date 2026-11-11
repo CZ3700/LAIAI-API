@@ -49,6 +49,7 @@ type AssetIntegrationOptions struct {
 	AssetArchiveDailyLimit       int
 	AssetArchiveBatch            int
 	AssetArchiveRetentionDays    int
+	AssetArchiveUsageWindowDays  int
 	AssetArchiveExemptRealGroups bool
 	Client                       *videoasset.ManagementClient
 }
@@ -272,7 +273,7 @@ func (s *Service) ConfigureAssets(options AssetIntegrationOptions) error {
 		VerifyMedia: s.verifyRegisteredAssetMedia, ResolveCallback: s.resolveAssetCallbackURL,
 		ResolveCallbackByID: s.resolveAssetCallbackID, PlatformCallbackURL: options.PlatformCallbackURL,
 		HMACKeys: map[string][]byte{"v1": mac.Sum(nil)}, ActiveHMACKey: "v1", MaxLicenseAge: options.MaxLicenseAge, AutoLicense: options.PortraitAutoLicense, AutoLicenseValidity: options.PortraitAutoLicenseDur, WriteConcurrency: options.AssetWriteConcurrency, QueryConcurrency: options.AssetQueryConcurrency,
-		ArchiveEnabled: options.AssetArchive, ArchiveTimezone: options.AssetArchiveTimezone, ArchiveWindowStart: options.AssetArchiveWindowStart, ArchiveWindowEnd: options.AssetArchiveWindowEnd, ArchiveDailyLimit: options.AssetArchiveDailyLimit, ArchiveBatch: options.AssetArchiveBatch, ArchiveRetentionDays: options.AssetArchiveRetentionDays, ArchiveExemptRealGroups: options.AssetArchiveExemptRealGroups,
+		ArchiveEnabled: options.AssetArchive, ArchiveTimezone: options.AssetArchiveTimezone, ArchiveWindowStart: options.AssetArchiveWindowStart, ArchiveWindowEnd: options.AssetArchiveWindowEnd, ArchiveDailyLimit: options.AssetArchiveDailyLimit, ArchiveBatch: options.AssetArchiveBatch, ArchiveRetentionDays: options.AssetArchiveRetentionDays, ArchiveUsageWindowDays: options.AssetArchiveUsageWindowDays, ArchiveExemptRealGroups: options.AssetArchiveExemptRealGroups,
 		Client: options.Client,
 	})
 	if err != nil {

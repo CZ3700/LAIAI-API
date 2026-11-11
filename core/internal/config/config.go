@@ -38,6 +38,7 @@ type Config struct {
 	VideoAssetArchiveDailyLimit       int           // LAIAI_VIDEO_ASSET_ARCHIVE_DAILY_LIMIT, default 20000
 	VideoAssetArchiveBatch            int           // LAIAI_VIDEO_ASSET_ARCHIVE_BATCH, default 25; 每 tick 注入上限
 	VideoAssetArchiveRetentionDays    int           // LAIAI_VIDEO_ASSET_ARCHIVE_RETENTION_DAYS, default 3
+	VideoAssetArchiveUsageDays        int           // LAIAI_VIDEO_ASSET_ARCHIVE_USAGE_DAYS, default 7; 近 N 天内有任务引用的素材受保护不归档
 	VideoAssetArchiveExemptRealGroups bool          // LAIAI_VIDEO_ASSET_ARCHIVE_EXEMPT_REAL_GROUPS, default true; 真人组素材豁免归档
 	VideoArkCallbackBase              string
 	VideoMediaRoot                    string
@@ -268,6 +269,13 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_ARCHIVE_RETENTION_DAYS must be a non-negative integer: %w", e)
 		}
 		c.VideoAssetArchiveRetentionDays = n
+	}
+	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_USAGE_DAYS")); v != "" {
+		n, e := strconv.Atoi(v)
+		if e != nil || n < 0 {
+			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_ARCHIVE_USAGE_DAYS must be a non-negative integer: %w", e)
+		}
+		c.VideoAssetArchiveUsageDays = n
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_EXEMPT_REAL_GROUPS"))) {
 	case "false", "0", "off":

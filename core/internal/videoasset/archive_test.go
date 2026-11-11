@@ -374,3 +374,61 @@ func TestRecoveredQueryUnknownDoesNotBlockDeletion(t *testing.T) {
 		t.Fatalf("read-only unknown must not block deletion: mode=%s reason=%s err=%v", mode, reason, err)
 	}
 }
+
+// 使用保护（2026-11-11 用户拍板）：创建超保留期后，近 7 天内被生成任务引用
+// （video_task_asset_refs，含已终态 released 的历史引用）的素材不得进入归档；
+// 仅 7 天前的引用或从未引用的素材照常归档。
+func TestArchiveUsageWindowGate(t *testing.T) {
+	at := time.Date(2026, 11, 12, 3, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	s, _, clock := setupArchive(t, at)
+	ctx := context.Background()
+	group := readyGroup(t, s, "archive-usage-group")
+	for i, name := range []string{"recent", "old", "never"} {
+		if _, _, err := s.CreateAsset(ctx, createContext("req-archive-u"+string(rune('a'+i))), AssetCreate{GroupID: group.ID, MediaType: "image", URL: "https://media.example/archive-u.png"}); err != nil {
+			t.Fatal(err)
+		}
+		_ = name
+	}
+	if err := s.ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var assets []Asset
+	if err := s.db.Where("group_id = ?", group.ID).Order("asset_id").Find(&assets).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(assets) != 3 {
+		t.Fatalf("expected 3 assets, got %d", len(assets))
+	}
+	// 全部拨到 10 天前（超过 3 天保留期）。
+	if err := s.db.Model(&Asset{}).Where("group_id = ?", group.ID).Updates(map[string]any{"created_at": at.AddDate(0, 0, -10), "status": StatusActive}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// recent：2 天前被任务引用（已 released——历史调用也算使用）。
+	released := at.AddDate(0, 0, -2)
+	if err := s.db.Create(&TaskReference{OrgID: 1, TaskID: "task_usage_recent", AssetID: assets[0].ID, GroupID: group.ID, ContentIndex: 0, Role: "reference_image", AssetMetadataVersion: 1, AuthorizationVersion: 1, ReleasedAt: &released, CreatedAt: at.AddDate(0, 0, -2)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// old：8 天前被引用（超出 7 天使用窗口）。
+	if err := s.db.Create(&TaskReference{OrgID: 1, TaskID: "task_usage_old", AssetID: assets[1].ID, GroupID: group.ID, ContentIndex: 0, Role: "reference_image", AssetMetadataVersion: 1, AuthorizationVersion: 1, ReleasedAt: &released, CreatedAt: at.AddDate(0, 0, -8)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	*clock = at
+	if err := s.archiveSweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var ops int64
+	s.db.Model(&Operation{}).Where("action = ?", "DeleteAsset").Count(&ops)
+	if ops != 2 {
+		t.Fatalf("only never-referenced and 7d-stale assets must be archived: %d", ops)
+	}
+	var protected int64
+	s.db.Model(&Operation{}).Where("action = ? AND resource_id = ?", "DeleteAsset", assets[0].ID).Count(&protected)
+	if protected != 0 {
+		t.Fatal("asset referenced within 7 days must be protected from archive")
+	}
+	var archivedOld int64
+	s.db.Model(&Operation{}).Where("action = ? AND resource_id = ?", "DeleteAsset", assets[1].ID).Count(&archivedOld)
+	if archivedOld != 1 {
+		t.Fatal("asset whose only reference is older than 7 days must be archived")
+	}
+}
