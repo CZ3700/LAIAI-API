@@ -109,6 +109,14 @@ func TestMySQLOfficialVideoResponseFormats(t *testing.T) {
 			t.Fatalf("platform DTO field %s leaked into official query: %s", legacy, detail.Body.String())
 		}
 	}
+
+	// 平台扩展字段 upstream_task_id：上游受理后必须在单查中透出（对账/排障用）。
+	if got := query["upstream_task_id"]; got == nil || got == "" {
+		t.Fatalf("upstream_task_id must be projected after upstream acceptance: %s", detail.Body.String())
+	}
+	if got, ok := query["upstream_task_id"].(string); ok && !strings.HasPrefix(got, "cgt-") && !strings.HasPrefix(got, "task_upstream") && got == submit["id"].(string) {
+		t.Fatal("upstream_task_id must differ from the platform task id")
+	}
 	listed := decode(t, call("GET", "/v1/video/generations", "").Body.String())
 	listTask := listed["data"].([]any)[0].(map[string]any)
 	for _, field := range []string{"seed", "resolution", "ratio", "duration", "frames", "framespersecond", "service_tier", "execution_expires_after", "generate_audio", "draft", "priority"} {
