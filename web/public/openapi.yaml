@@ -4936,7 +4936,7 @@
         ]
       },
       "post": {
-        "description": "异步调用官方 CreateVisualValidateSession 建立流程，creating 阶段尚无 H5 地址；\n创建结果不确定时为 submission_unknown，不允许盲重发官方创建请求。\npending 时才返回 H5 地址，用户在该页面完成授权；\n平台通过 GetVisualValidateResult 核实结果，再把官方返回的组映射为本组织 ag_ ID。\ncallback_url 仅可为预登记 HTTPS 回跳地址，不是可信的授权结果通知来源；\nH5 回跳本身、客户端参数或截图均不能将授权状态改为成功。\n需要已启用的租户素材路由/Portrait 能力、平台固定回调入口及有效回跳登记。H5 成功仅确认身份流程；\n认证成功即自动登记 video_generation 业务肖像许可（来源官方核实响应，默认有效期一年），\n平台以官方素材组状态每日复验；官方组失效、许可到期或被撤销时拒绝上传或参与任务。\nauthorization_url 属敏感短期 URL，仅在授权会话响应返回，禁止写入普通日志。\n",
+        "description": "异步调用官方 CreateVisualValidateSession 建立流程，creating 阶段尚无 H5 地址；\n创建结果不确定时为 submission_unknown，不允许盲重发官方创建请求。\npending 时才返回 H5 地址，用户在该页面完成授权；\n平台通过 GetVisualValidateResult 核实结果，再把官方返回的组映射为本组织 ag_ ID。\ncallback_url 由客户直接提交（无需预登记），仅限 HTTPS 且不是可信的授权结果通知来源；\nH5 回跳本身、客户端参数或截图均不能将授权状态改为成功。\n需要已启用的租户素材路由/Portrait 能力及平台固定回调入口。H5 成功仅确认身份流程；\n认证成功即自动登记 video_generation 业务肖像许可（来源官方核实响应，默认有效期一年），\n平台以官方素材组状态每日复验；官方组失效、许可到期或被撤销时拒绝上传或参与任务。\nauthorization_url 属敏感短期 URL，仅在授权会话响应返回，禁止写入普通日志。\n",
         "operationId": "createPortraitAuthorization",
         "parameters": [
           {
@@ -4950,7 +4950,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "callback_url": {
-                    "description": "必须精确匹配组织预登记的 HTTPS 回跳地址。",
+                    "description": "客户自行提交的 HTTPS 回跳地址（无需预登记），随一次性签名 state 绑定。",
                     "format": "uri",
                     "maxLength": 2048,
                     "pattern": "^https://",
@@ -5018,7 +5018,7 @@
             }
           },
           "400": {
-            "description": "请求非法。缺 Idempotency-Key 头时 message 明确点名该头；\ncallback_url 与组织预登记回跳地址不匹配时 message 明确要求先完成登记。\n"
+            "description": "请求非法。缺 Idempotency-Key 头时 message 明确点名该头；\ncallback_url 非 HTTPS 或格式非法时按 invalid_request 拒绝。\n"
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
@@ -5100,7 +5100,7 @@
     },
     "/v1/video/portrait-callback": {
       "get": {
-        "description": "只接受平台签发、绑定组织/会话/回跳登记且未消费的短期 state；不使用 Gateway Key。\n不信任 resultCode、GroupId 或任意 redirect 参数，不据此授予身份认证成功或业务许可。\n消费有效 state 后仅 303 到预登记 HTTPS 地址。客户业务代码应查询 portrait-authorizations 状态。\n",
+        "description": "只接受平台签发、绑定组织/会话/回跳地址且未消费的短期 state；不使用 Gateway Key。\n不信任 resultCode、GroupId 或任意 redirect 参数，不据此授予身份认证成功或业务许可。\n消费有效 state 后仅 303 到客户提交的 HTTPS 回跳地址。客户业务代码应查询 portrait-authorizations 状态。\n",
         "operationId": "consumePortraitBrowserCallback",
         "parameters": [
           {
@@ -5115,7 +5115,7 @@
         ],
         "responses": {
           "303": {
-            "description": "已消费 state，跳转至预登记回跳地址。",
+            "description": "已消费 state，跳转至客户提交的回跳地址。",
             "headers": {
               "Location": {
                 "schema": {
@@ -5619,5 +5619,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "3cc0006a017153b3c66209fbd255a22becb0fdf97ebc7deaede7112a83266459"
+  "x-seedance-source-sha256": "73b6e12d32a9ac12badef3ee2e230112dff966cb35f4994b59f3c081234927e5"
 }

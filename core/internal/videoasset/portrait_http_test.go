@@ -80,20 +80,17 @@ func TestPortraitMissingIdempotencyKeyNamesHeader(t *testing.T) {
 	}
 }
 
-// callback_url 未预登记（客户拿示例 URL 直接打）必须点名登记要求。
-func TestPortraitUnregisteredCallbackNamesRegistration(t *testing.T) {
+// 2026-11-13 用户拍板：callback_url 免登记——客户直接提交的 HTTPS 地址即受理，
+// 回跳地址随签名 state 绑定，无需任何预登记。
+func TestPortraitUnregisteredCallbackAccepted(t *testing.T) {
 	s, _, _, _ := setup(t)
 	router, captured := portraitGatewayTestRouter(s)
 	rec := portraitPost(router, `{"callback_url":"https://client.example.invalid/portrait-complete","name":"本人素材授权","description":"视频生成用途"}`, "idem-portrait-2")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("unregistered callback returned %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("unregistered callback must be accepted: %d %s", rec.Code, rec.Body.String())
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `"code":"invalid_request"`) || !strings.Contains(body, "registered for this organization") {
-		t.Fatalf("message must name registration requirement: %s", body)
-	}
-	if *captured != "invalid_request" {
-		t.Fatalf("video_error not captured, got %q", *captured)
+	if *captured != "" {
+		t.Fatalf("video_error must stay empty on acceptance, got %q", *captured)
 	}
 }
 
