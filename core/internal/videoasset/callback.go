@@ -6,6 +6,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -89,23 +92,43 @@ func (s *Service) parseCallbackState(raw string) (callbackClaims, error) {
 	return claims, nil
 }
 
+// callbackHTML 渲染回调入口的浏览器友好页（火山 H5 跳转终点是浏览器，
+// 绝不吐 API JSON 信封）。无外部资源（CSP default-src 'self' 下内联样式可用）。
+func writeCallbackHTML(c *gin.Context, status int, heading, detail string) {
+	c.Data(status, "text/html; charset=utf-8", []byte(`<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>`+heading+`</title>
+<style>body{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;display:flex;min-height:100dvh;align-items:center;justify-content:center;margin:0;background:#f6f8fa;color:#17212f}
+.card{background:#fff;border:1px solid #e4e7ec;border-radius:12px;padding:40px 32px;max-width:420px;text-align:center;box-shadow:0 8px 32px rgba(15,23,42,.06)}
+h1{font-size:20px;margin:0 0 12px}p{font-size:14px;color:#64748b;line-height:1.7;margin:0}</style></head>
+<body><div class="card"><h1>`+heading+`</h1><p>`+detail+`</p></div></body></html>`))
+}
+
 // HandlePortraitCallback must be mounted at PortraitCallbackPath OUTSIDE the
 // Gateway Key middleware. Signed state permits one redirect/verification hint,
 // never authentication success or a business license. Ignore provider/client
 // resultCode, GroupId and arbitrary redirect parameters completely.
+// Browser-facing exits render the friendly HTML page; the only redirect is to
+// the organization's registered console return page.
 func (s *Service) HandlePortraitCallback(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	c.Header("Referrer-Policy", "no-referrer")
 	raw := c.Query("state")
 	c.Request.URL.RawQuery = ""
+	invalidPage := func() {
+		writeCallbackHTML(c, http.StatusBadRequest, "认证链接无效或已过期", "该认证回跳链接无效、已过期或已被使用。请返回控制台刷新查看认证状态，无需重复操作。")
+	}
+	unavailablePage := func() {
+		writeCallbackHTML(c, http.StatusServiceUnavailable, "暂时无法处理认证回跳", "系统繁忙，本次回跳未能确认。请稍后返回控制台刷新查看认证状态。")
+	}
 	claims, err := s.parseCallbackState(raw)
 	if err != nil || s.options.ResolveCallbackByID == nil {
-		c.AbortWithStatus(400)
+		invalidPage()
 		return
 	}
 	target, err := s.options.ResolveCallbackByID(c.Request.Context(), claims.OrgID, claims.TargetID)
 	if err != nil || target.ID != claims.TargetID || !validHTTPS(target.URL, 2048) {
-		c.AbortWithStatus(400)
+		invalidPage()
 		return
 	}
 	err = s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
@@ -133,9 +156,19 @@ func (s *Service) HandlePortraitCallback(c *gin.Context) {
 		return s.event(tx, claims.OrgID, "portrait", p.ID, p.CreateOperationID, "callback_consumed", "", "callback_browser")
 	})
 	if err != nil {
-		c.AbortWithStatus(400)
+		// state 已消费（H5 偶发重复触发回调）：签名有效且目标即登记回跳页，
+		// 幂等重跳控制台——不重复消费、不泄露任何信息。
+		if errors.Is(err, ErrConflict) {
+			c.Redirect(http.StatusSeeOther, target.URL)
+			return
+		}
+		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalid) {
+			invalidPage()
+			return
+		}
+		unavailablePage()
 		return
 	}
 	// Scheduled GetVisualValidateResult remains the only identity confirmation.
-	c.Redirect(303, target.URL)
+	c.Redirect(http.StatusSeeOther, target.URL)
 }

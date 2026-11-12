@@ -77,7 +77,9 @@ func (s *Service) publicAudit(next gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rid, e := randomID("")
 		if e != nil {
-			apiError(c, 503, "provider_unavailable")
+			// 观测面故障不阻断浏览器回跳：H5 流程不可重放（state 一次性），
+			// 状态消费的业务审计在 events 表事务内，不依赖本请求日志。
+			next(c)
 			return
 		}
 		c.Set("video_request_id", rid)
@@ -85,7 +87,9 @@ func (s *Service) publicAudit(next gin.HandlerFunc) gin.HandlerFunc {
 		if e = s.DB.Transaction(func(tx *gorm.DB) error {
 			return s.Evidence.RequestStartTx(tx, invocation.VideoRequestStart{RequestID: rid, AuthOutcome: "anonymous", Method: c.Request.Method, Route: c.FullPath(), Operation: "portrait_callback", StartedAt: s.Now().UTC()})
 		}); e != nil {
-			apiError(c, 503, "provider_unavailable")
+			// 同上：请求日志写失败按 fail-open 放行（callback_consumed 业务审计
+			// 仍在状态消费事务内提交），绝不让观测故障吞掉浏览器的 303 跳转。
+			next(c)
 			return
 		}
 		original := c.Writer
@@ -93,11 +97,14 @@ func (s *Service) publicAudit(next gin.HandlerFunc) gin.HandlerFunc {
 		c.Writer = buffer
 		next(c)
 		c.Writer = original
+		// 审计落库失败只影响观测面：放行 handler 已生成的响应（303 回跳或
+		// 友好页），绝不吞掉跳转——2026-11-12 生产事故：finish 写失败把
+		// 浏览器 303 替换成 503 JSON，且 state 已消费导致用户重试必 400。
 		if e = s.DB.Transaction(func(tx *gorm.DB) error {
 			return s.Evidence.RequestFinishTx(tx, invocation.VideoRequestFinish{RequestID: rid, HTTPStatus: buffer.Status(), ResponseBytes: int64(buffer.Size()), Outcome: "completed", FinishedAt: s.Now().UTC()})
 		}); e != nil {
-			c.Header("Location", "")
-			apiError(c, 503, "provider_unavailable")
+			original.WriteHeader(buffer.Status())
+			_, _ = original.Write(buffer.body.Bytes())
 			return
 		}
 		original.WriteHeader(buffer.Status())
