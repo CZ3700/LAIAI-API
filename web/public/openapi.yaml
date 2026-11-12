@@ -1438,6 +1438,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "upstream_task_id": {
+            "description": "平台扩展字段（官方形状无此字段）：火山侧受理后生成的任务 ID，供对账/排障。上游未受理（accepted/submitting 阶段）不出现。查询与取消/删除等操作仍只能使用平台 task_ ID，本字段不可作为接口引用。",
+            "type": "string"
+          },
           "ratio": {
             "description": "官方实际生成宽高比；仅上游返回时出现。",
             "type": "string"
@@ -5615,5 +5619,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "0000a0a3fccff01ced84ddc0d0bbbf59688377aee181b24837931e4da769d477"
+  "x-seedance-source-sha256": "3cc0006a017153b3c66209fbd255a22becb0fdf97ebc7deaede7112a83266459"
 }

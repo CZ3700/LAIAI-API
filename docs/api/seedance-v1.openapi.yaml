@@ -1849,6 +1849,9 @@ components:
           minimum: 0
           maximum: 9
           description: 执行优先级，数值越大优先级越高。
+        upstream_task_id:
+          type: string
+          description: 平台扩展字段（官方形状无此字段）：火山侧受理后生成的任务 ID，供对账/排障。上游未受理（accepted/submitting 阶段）不出现。查询与取消/删除等操作仍只能使用平台 task_ ID，本字段不可作为接口引用。
     OfficialTaskOperation:
       type: object
       additionalProperties: false

@@ -468,6 +468,12 @@ func (s *Service) HandleGet(c *gin.Context) {
 		"created_at": st.CreatedAt.Unix(),
 		"updated_at": st.UpdatedAt.Unix(),
 	}
+	// upstream_task_id 是平台扩展字段（官方形状无此字段）：火山侧受理后生成
+	// 的任务 ID，供对账/排障；上游未受理（accepted/submitting 阶段）为空不
+	// 出现。查询/操作仍只能用平台 task_ ID，此字段不可作为接口引用。
+	if t.UpstreamTaskID != "" {
+		queryResp["upstream_task_id"] = t.UpstreamTaskID
+	}
 	if observation.CreatedAt != nil {
 		queryResp["created_at"] = *observation.CreatedAt
 	}
