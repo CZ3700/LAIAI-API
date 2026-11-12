@@ -210,8 +210,8 @@ func TestFixedCallbackStateSingleUseAndCannotGrantLicense(t *testing.T) {
 	forged := httptest.NewRequest(http.MethodGet, PortraitCallbackPath+"?state=forged&resultCode=10000&GroupId=evil", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, forged)
-	if rec.Code != 400 {
-		t.Fatal("forged callback accepted")
+	if rec.Code != 400 || rec.Header().Get("Content-Type") != "text/html; charset=utf-8" || !strings.Contains(rec.Body.String(), "认证链接无效或已过期") {
+		t.Fatalf("forged callback must render the friendly browser page: %d %s %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
 	}
 	requestURL := PortraitCallbackPath + "?state=" + url.QueryEscape(state) + "&resultCode=10000&GroupId=evil&redirect=https://evil.example"
 	valid := httptest.NewRequest(http.MethodGet, requestURL, nil)
@@ -225,11 +225,13 @@ func TestFixedCallbackStateSingleUseAndCannotGrantLicense(t *testing.T) {
 	if p.SessionStatus != "pending" || p.LicenseStatus != "unknown" || p.GroupID != nil || p.CallbackUsedAt == nil {
 		t.Fatal("callback granted identity or license")
 	}
+	// state 已消费的重放：幂等重跳登记回跳页（H5 偶发重复触发时不给用户看错误页），
+	// 不再消费、不授予任何身份或许可（callback_used_at 保持不变）。
 	replay := httptest.NewRequest(http.MethodGet, requestURL, nil)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, replay)
-	if rec.Code != 400 {
-		t.Fatal("callback state replayed")
+	if rec.Code != 303 || rec.Header().Get("Location") != "https://customer.example/return" {
+		t.Fatalf("consumed state replay must redirect idempotently: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 }
 
