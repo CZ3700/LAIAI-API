@@ -157,7 +157,15 @@ func (s *Service) process(ctx context.Context, op Operation) error {
 		return s.finish(ctx, op, runtime, Result{Outcome: "not_sent", SafeErrorCode: "unsupported_capability"}, body)
 	}
 	if op.Action == "CreateVisualValidateSession" {
-		callback, err := s.callbackURL(ctx, op)
+		// 2026-11-13 起回跳地址由客户创建时直接提交（免登记）：加密执行胶囊
+		// 内 ReturnURL 为受理时校验过的 HTTPS 地址，提取后 HMAC 绑定进签名
+		// state；随后整个 body 重建，该地址不会出现在火山出站请求里。旧会话
+		// （登记时代，胶囊无 ReturnURL）走登记解析回退。
+		var dispatchEnvelope struct {
+			ReturnURL string `json:"ReturnURL"`
+		}
+		_ = json.Unmarshal(body, &dispatchEnvelope)
+		callback, err := s.callbackURL(ctx, op, dispatchEnvelope.ReturnURL)
 		if err != nil {
 			return s.finish(ctx, op, runtime, Result{Outcome: "not_sent", SafeErrorCode: "callback_unavailable"}, body)
 		}

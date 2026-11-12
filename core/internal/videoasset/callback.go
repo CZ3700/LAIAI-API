@@ -31,9 +31,14 @@ type callbackClaims struct {
 	OrgID                        uint64
 	SessionID, TargetID, Version string
 	Expires                      int64
+	// Redirect：创建会话时客户直接提交的 HTTPS 回跳地址（2026-11-13 起为
+	// 主通道），随 HMAC 签名绑定进 state——回跳时直接重定向到这里，第三方
+	// 无法篡改，state 一次性消费 + 30 分钟过期。旧版 state 无此字段（预
+	// 登记时代），回退到 TargetID 登记解析。
+	Redirect string
 }
 
-func (s *Service) callbackURL(ctx context.Context, op Operation) (string, error) {
+func (s *Service) callbackURL(ctx context.Context, op Operation, redirect string) (string, error) {
 	if !validPlatformCallback(s.options.PlatformCallbackURL) {
 		return "", ErrUnsupported
 	}
@@ -50,6 +55,9 @@ func (s *Service) callbackURL(ctx context.Context, op Operation) (string, error)
 			return ErrConflict
 		}
 		claims := callbackClaims{OrgID: op.OrgID, SessionID: p.ID, TargetID: p.CallbackTargetID, Version: op.HMACKeyVersion, Expires: op.UpdatedAt.Add(30 * time.Minute).Unix()}
+		if validHTTPS(redirect, 2048) {
+			claims.Redirect = redirect
+		}
 		payload := base64.RawURLEncoding.EncodeToString(bodyJSON(claims))
 		signature := hex.EncodeToString(mac(s.options.HMACKeys[claims.Version], "portrait-callback-v1:"+payload))
 		token = payload + "." + signature
@@ -69,7 +77,7 @@ func (s *Service) callbackURL(ctx context.Context, op Operation) (string, error)
 	return u.String(), nil
 }
 func (s *Service) parseCallbackState(raw string) (callbackClaims, error) {
-	if len(raw) > 2048 {
+	if len(raw) > 4096 {
 		return callbackClaims{}, ErrInvalid
 	}
 	parts := strings.Split(raw, ".")
@@ -108,8 +116,9 @@ h1{font-size:20px;margin:0 0 12px}p{font-size:14px;color:#64748b;line-height:1.7
 // Gateway Key middleware. Signed state permits one redirect/verification hint,
 // never authentication success or a business license. Ignore provider/client
 // resultCode, GroupId and arbitrary redirect parameters completely.
-// Browser-facing exits render the friendly HTML page; the only redirect is to
-// the organization's registered console return page.
+// Browser-facing exits render the friendly HTML page; the only redirect goes
+// to the customer-submitted HTTPS address bound inside the signed state
+// (legacy states fall back to the org's registered return page).
 func (s *Service) HandlePortraitCallback(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	c.Header("Referrer-Policy", "no-referrer")
@@ -126,10 +135,16 @@ func (s *Service) HandlePortraitCallback(c *gin.Context) {
 		invalidPage()
 		return
 	}
-	target, err := s.options.ResolveCallbackByID(c.Request.Context(), claims.OrgID, claims.TargetID)
-	if err != nil || target.ID != claims.TargetID || !validHTTPS(target.URL, 2048) {
-		invalidPage()
-		return
+	// 回跳目标（2026-11-13 起主通道）：state 内 HMAC 绑定的客户提交地址；
+	// 旧版 state（预登记时代）无 Redirect，回退 TargetID 登记解析。
+	targetURL := claims.Redirect
+	if !validHTTPS(targetURL, 2048) {
+		target, err := s.options.ResolveCallbackByID(c.Request.Context(), claims.OrgID, claims.TargetID)
+		if err != nil || target.ID != claims.TargetID || !validHTTPS(target.URL, 2048) {
+			invalidPage()
+			return
+		}
+		targetURL = target.URL
 	}
 	err = s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		if err := lockTenant(tx, claims.OrgID); err != nil {
@@ -156,10 +171,10 @@ func (s *Service) HandlePortraitCallback(c *gin.Context) {
 		return s.event(tx, claims.OrgID, "portrait", p.ID, p.CreateOperationID, "callback_consumed", "", "callback_browser")
 	})
 	if err != nil {
-		// state 已消费（H5 偶发重复触发回调）：签名有效且目标即登记回跳页，
-		// 幂等重跳控制台——不重复消费、不泄露任何信息。
+		// state 已消费（H5 偶发重复触发回调）：签名有效且目标即客户提交/登记
+		// 的回跳页，幂等重跳——不重复消费、不泄露任何信息。
 		if errors.Is(err, ErrConflict) {
-			c.Redirect(http.StatusSeeOther, target.URL)
+			c.Redirect(http.StatusSeeOther, targetURL)
 			return
 		}
 		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalid) {
@@ -170,5 +185,5 @@ func (s *Service) HandlePortraitCallback(c *gin.Context) {
 		return
 	}
 	// Scheduled GetVisualValidateResult remains the only identity confirmation.
-	c.Redirect(http.StatusSeeOther, target.URL)
+	c.Redirect(http.StatusSeeOther, targetURL)
 }

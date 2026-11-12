@@ -256,3 +256,41 @@ func TestConsentDisabledBeforeDispatch(t *testing.T) {
 		t.Fatal("disabled consent reached provider", dto, err)
 	}
 }
+
+// 2026-11-13 免登记主通道 e2e：客户创建会话时直接提交未登记 HTTPS 回跳地址，
+// 平台签发的 state 内 HMAC 绑定该地址；H5 回跳 303 直达客户地址，重放幂等重跳。
+func TestUserSubmittedCallbackURLRedirectsWithoutRegistration(t *testing.T) {
+	s, _, _, provider := setup(t)
+	ctx := context.Background()
+	c := createContext("user-url")
+	created, _, err := s.CreatePortrait(ctx, c, PortraitCreate{CallbackURL: "https://user.example/own-return", Name: "User URL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(provider.callbackURL, s.options.PlatformCallbackURL+"?state=") {
+		t.Fatalf("provider must receive the platform callback receiver: %q", provider.callbackURL)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET(PortraitCallbackPath, s.HandlePortraitCallback)
+
+	first := httptest.NewRequest(http.MethodGet, provider.callbackURL+"&resultCode=10000&GroupId=evil", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, first)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "https://user.example/own-return" {
+		t.Fatalf("user-submitted callback must redirect to the submitted URL: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	replay := httptest.NewRequest(http.MethodGet, provider.callbackURL, nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, replay)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "https://user.example/own-return" {
+		t.Fatalf("consumed state replay must redirect idempotently: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	var p Portrait
+	if err := s.db.Where("session_id = ?", created.ID).Take(&p).Error; err != nil || p.CallbackUsedAt == nil || p.SessionStatus != "pending" {
+		t.Fatalf("state consumption must not grant identity or license: %+v %v", p, err)
+	}
+}

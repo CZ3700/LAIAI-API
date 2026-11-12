@@ -677,7 +677,8 @@ func TestHTTPContractRejectsForgeryAndUnknownFields(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"Status":"creating"`) || strings.Contains(rec.Body.String(), "forged") {
 		t.Fatal("client callback forged success", rec.Body.String())
 	}
-	if _, _, err := s.CreatePortrait(context.Background(), createContext("evil"), PortraitCreate{CallbackURL: "https://evil.example/return"}); !errors.Is(err, ErrCallbackNotRegistered) {
-		t.Fatal("unregistered callback accepted")
+	// 2026-11-13 免登记：任意 HTTPS 回跳地址直接受理（HMAC state 绑定，非开放重定向）。
+	if _, _, err := s.CreatePortrait(context.Background(), createContext("evil"), PortraitCreate{CallbackURL: "https://evil.example/return"}); err != nil {
+		t.Fatal("user-submitted callback_url rejected:", err)
 	}
 }

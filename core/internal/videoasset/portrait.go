@@ -21,7 +21,10 @@ func (s *Service) CreatePortrait(ctx context.Context, c CreateContext, input Por
 	ctx = WithCaller(ctx, c)
 	// 平台侧配置缺失与客户请求格式错误必须分流：混在同一个 invalid_request
 	// 里会把"网关没配好"伪装成"客户请求不合法"（2026-10-28 两个生产 400 的根因）。
-	if s.options.ResolveCallback == nil || s.options.ResolveCallbackByID == nil || !validPlatformCallback(s.options.PlatformCallbackURL) {
+	// 2026-11-13 用户拍板：callback_url 以客户直接提交为主，无需预登记——
+	// 仅保留 HTTPS/格式硬校验；地址随 HMAC 签名 state 绑定（30 分钟、一次性），
+	// 回跳时重定向到 state 内地址，第三方无法篡改。
+	if s.options.ResolveCallbackByID == nil || !validPlatformCallback(s.options.PlatformCallbackURL) {
 		return PortraitDTO{}, false, ErrUnconfigured
 	}
 	if !validCreate(c) || !safeName(input.Name, 64, false) || !safeName(input.Description, 300, false) || !validHTTPS(input.CallbackURL, 2048) {
@@ -40,21 +43,19 @@ func (s *Service) CreatePortrait(ctx context.Context, c CreateContext, input Por
 	if !r.Capabilities.Portrait {
 		return PortraitDTO{}, false, ErrUnsupported
 	}
-	target, err := s.options.ResolveCallback(ctx, c.OrgID, input.CallbackURL)
-	if err != nil || !validID(target.ID) || target.URL != input.CallbackURL {
-		return PortraitDTO{}, false, ErrCallbackNotRegistered
-	}
 	id, err := newID("pas_")
 	if err != nil {
 		return PortraitDTO{}, false, err
 	}
 	// The secret callback state is bound at dispatch and never copied into the
 	// execution capsule. Client return URLs are not sent to the provider.
-	provider := bodyJSON(map[string]any{"ProjectName": r.Scope.Project})
+	// ReturnURL 仅供派发期提取并 HMAC 绑定进签名 state（加密执行胶囊内，
+	// 派发时整个 body 重建，火山侧永远收不到该地址）。
+	provider := bodyJSON(map[string]any{"ProjectName": r.Scope.Project, "ReturnURL": input.CallbackURL})
 	op, replayed, err := s.accept(ctx, c, r, "/v1/video/portrait-authorizations", "CreateVisualValidateSession", "portrait", id, bodyJSON(input), provider, func(tx *gorm.DB, op Operation) error {
 		now := nowMillis(s)
 		p := Portrait{ID: id, OrgID: c.OrgID, OwnerUserID: c.UserID, CreatedByKeyID: c.KeyID, ScopeID: r.Scope.ID, ScopeVersion: r.Scope.Version, AccountID: r.Scope.AccountID, Region: r.Scope.Region, Project: r.Scope.Project,
-			SessionStatus: "creating", LicenseStatus: "unknown", CreateOperationID: op.ID, CallbackTargetID: target.ID, RowVersion: 1, CreatedAt: now, UpdatedAt: now}
+			SessionStatus: "creating", LicenseStatus: "unknown", CreateOperationID: op.ID, CallbackTargetID: "user_submitted", RowVersion: 1, CreatedAt: now, UpdatedAt: now}
 		if err := tx.Create(&p).Error; err != nil {
 			return ErrStorage
 		}
