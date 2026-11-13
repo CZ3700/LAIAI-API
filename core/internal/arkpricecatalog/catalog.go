@@ -103,7 +103,9 @@ func load(files fs.FS) (Catalog, error) {
 	if decoder.Decode(&extra) != io.EOF {
 		return Catalog{}, fmt.Errorf("catalog: trailing document")
 	}
-	if out.SchemaVersion != 1 || !identifier.MatchString(out.Version) || out.Title == "" || len(out.Tables) != 6 || out.ManifestSHA256 != "" || out.CapturedTables != 0 || out.Complete || out.Usage != "" {
+// 七张表：六大模型族 + seedance-2.5-flash（2026-11-13 接线，未上架——仅证据
+	// 目录，不装定价模板）。新增表必须同步此计数与下方逐表校验。
+	if out.SchemaVersion != 1 || !identifier.MatchString(out.Version) || out.Title == "" || len(out.Tables) != 7 || out.ManifestSHA256 != "" || out.CapturedTables != 0 || out.Complete || out.Usage != "" {
 		return Catalog{}, fmt.Errorf("catalog: invalid manifest")
 	}
 	seen := map[string]bool{}

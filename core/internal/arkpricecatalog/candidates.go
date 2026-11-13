@@ -140,6 +140,8 @@ func candidateIdentity(model string) (candidateModelIdentity, bool) {
 		return candidateModelIdentity{"seedance-2.0-prices", "seedance-2.0-minimum", "vewAf9cSae", "2.0fast", true}, true
 	case "seedance-2.0-mini":
 		return candidateModelIdentity{"seedance-2.0-prices", "seedance-2.0-minimum", "vewFrH7ax8", "2.0mini", true}, true
+	case "seedance-2.5-flash":
+		return candidateModelIdentity{"seedance-2.5-flash-prices", "seedance-2.5-minimum", "vewzHxHH5V", "2.5-flash", false}, true
 	default:
 		return candidateModelIdentity{}, false
 	}
@@ -159,6 +161,12 @@ func referenceCandidates(c Catalog, model string) (Candidates, error) {
 	}
 	if model == "seedance-2.0" {
 		resolutions["4k"] = true
+	}
+	// price 覆盖断言的分辨率集合（与 prices TSV 行一致）；minimum 行白名单仍用
+	// 全集 resolutions（2.5-minimum 表含 1080p 历史行，flash 复用该表）。
+	priceResolutions := map[string]bool{"480p": true, "720p": true, "1080p": true}
+	if identity.variant || model == "seedance-2.5-flash" {
+		delete(priceResolutions, "1080p") // flash 官方仅 480p/720p（2026-11-13 价格表）
 	}
 	missingFPS := false
 	for _, t := range c.Tables {
@@ -307,7 +315,7 @@ func referenceCandidates(c Catalog, model string) (Candidates, error) {
 			}
 		}
 	}
-	if len(out.Prices) != len(resolutions)*2 || len(out.Minimum.Cells) == 0 {
+	if len(out.Prices) != len(priceResolutions)*2 || len(out.Minimum.Cells) == 0 {
 		return Candidates{}, fmt.Errorf("catalog: incomplete candidate coverage")
 	}
 	if missingFPS {

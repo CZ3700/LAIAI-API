@@ -31,7 +31,7 @@ type videoModelLimitsReq struct {
 
 // officialVideoModels：展示顺序固定（新→旧），与 ark.IsPublicModel 的判定集一致。
 func officialVideoModels() []string {
-	return []string{ark.Model25, ark.Model20, ark.Model20Fast, ark.Model20Mini}
+	return []string{ark.Model25, ark.Model25Flash, ark.Model20, ark.Model20Fast, ark.Model20Mini}
 }
 
 // adminListModelLimits：GET /api/admin/video/model-limits —— 官方模型限额一览

@@ -5,10 +5,15 @@ import "strings"
 // IsPublicModel identifies the canonical gateway contract. Deployment IDs are
 // configuration, never additional request aliases.
 func IsPublicModel(model string) bool {
-	return model == Model20 || model == Model25 || Is20Variant(model)
+	return model == Model20 || model == Model25 || model == Model25Flash || Is20Variant(model)
 }
 
 func Is20Variant(model string) bool { return model == Model20Fast || model == Model20Mini }
+
+// Is25Family covers the 2.5-series behavioral branches (first/last-frame
+// adaptive, 4k ban, draft-480p): seedance-2.5-flash shares the family semantics
+// while its own capability flags gate Draft/Omni/ImageFrames support.
+func Is25Family(model string) bool { return model == Model25 || model == Model25Flash }
 
 // ValidUpstreamModel preserves the standard models' six-digit deployment
 // grammar. Each variant is pinned to the deployment independently reviewed in
@@ -24,6 +29,8 @@ func ValidUpstreamModel(model, upstream string) bool {
 		if model == Model25 {
 			prefix = "doubao-seedance-2-5-"
 		}
+		// TODO(上架轮次): seedance-2.5-flash 的官方部署名待火山控制台核实后
+		// 在此 pin（当前不 pin = 派发结构性不可能，模型未上架）。
 		if !strings.HasPrefix(upstream, prefix) || len(upstream) != len(prefix)+6 {
 			return false
 		}

@@ -62,7 +62,7 @@ func publicationEnum(values, allowed []string) bool {
 // IO and uses the existing normalization rules for legal default requests.
 func ValidatePublicationCapability(cfg ModelConfig, cap ark.Capability, bounds map[string]Dimensions) error {
 	maxDuration := 15
-	if cfg.PublicModel == ark.Model25 {
+	if ark.Is25Family(cfg.PublicModel) {
 		maxDuration = 30
 	}
 	if !IsOfficialPublicModel(cfg.PublicModel) || cfg.PublicModel != cap.PublicModel || cfg.Version == "" || cfg.PricingVersion == "" || len(cfg.Version) > 64 || cap.Version == "" || len(cap.Version) > 64 || len(cfg.PricingVersion) > 64 || !ark.ValidUpstreamModel(cfg.PublicModel, cap.UpstreamModel) || cap.MinDuration < 4 || cap.MaxDuration > maxDuration || cap.MaxDuration < cap.MinDuration || cap.FPS <= 0 || cap.FPS > 120 || !publicationContains(cap.Resolutions, cap.DefaultResolution) || !publicationContains(cap.Ratios, cap.DefaultRatio) || cfg.MaxInputVideoDurationMS < 0 {
@@ -90,7 +90,7 @@ func ValidatePublicationCapability(cfg ModelConfig, cap ark.Capability, bounds m
 		}
 	}
 	for _, resolution := range cap.Resolutions {
-		if cfg.PublicModel == ark.Model25 && resolution == "4k" {
+		if ark.Is25Family(cfg.PublicModel) && resolution == "4k" {
 			return ErrInvalid
 		}
 		for _, ratio := range cap.Ratios {
