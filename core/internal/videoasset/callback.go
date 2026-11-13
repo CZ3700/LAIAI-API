@@ -171,10 +171,10 @@ func (s *Service) HandlePortraitCallback(c *gin.Context) {
 		return s.event(tx, claims.OrgID, "portrait", p.ID, p.CreateOperationID, "callback_consumed", "", "callback_browser")
 	})
 	if err != nil {
-		// state 已消费（H5 偶发重复触发回调）：签名有效且目标即客户提交/登记
-		// 的回跳页，幂等重跳——不重复消费、不泄露任何信息。
+		// state 已消费（H5 偶发重复触发回调）：签名有效，幂等展示固定结束页
+		//——不重复消费、不泄露任何信息、也不再跳转。
 		if errors.Is(err, ErrConflict) {
-			c.Redirect(http.StatusSeeOther, targetURL)
+			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>真人认证</title><body><h1>真人认证</h1><p>认证流程已结束，请返回应用查询认证结果。</p></body></html>`))
 			return
 		}
 		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalid) {
@@ -185,5 +185,7 @@ func (s *Service) HandlePortraitCallback(c *gin.Context) {
 		return
 	}
 	// Scheduled GetVisualValidateResult remains the only identity confirmation.
-	c.Redirect(http.StatusSeeOther, targetURL)
+	// 成功消费后不再跳转（避免用户在控制台/应用间连环点击）：直接展示固定
+	// 结束页，认证结果一律以平台查询接口为准。
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>真人认证</title><body><h1>真人认证</h1><p>认证流程已结束，请返回应用查询认证结果。</p></body></html>`))
 }

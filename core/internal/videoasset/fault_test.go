@@ -217,8 +217,8 @@ func TestFixedCallbackStateSingleUseAndCannotGrantLicense(t *testing.T) {
 	valid := httptest.NewRequest(http.MethodGet, requestURL, nil)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, valid)
-	if rec.Code != 303 || rec.Header().Get("Location") != "https://customer.example/return" {
-		t.Fatal(rec.Code, rec.Header())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "认证流程已结束") {
+		t.Fatal(rec.Code, rec.Body.String())
 	}
 	var p Portrait
 	db.Where("session_id = ?", portrait.ID).Take(&p)
@@ -230,8 +230,8 @@ func TestFixedCallbackStateSingleUseAndCannotGrantLicense(t *testing.T) {
 	replay := httptest.NewRequest(http.MethodGet, requestURL, nil)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, replay)
-	if rec.Code != 303 || rec.Header().Get("Location") != "https://customer.example/return" {
-		t.Fatalf("consumed state replay must redirect idempotently: %d %s", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "认证流程已结束") {
+		t.Fatalf("consumed state replay must render the fixed page idempotently: %d %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -280,14 +280,14 @@ func TestUserSubmittedCallbackURLRedirectsWithoutRegistration(t *testing.T) {
 	first := httptest.NewRequest(http.MethodGet, provider.callbackURL+"&resultCode=10000&GroupId=evil", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, first)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "https://user.example/own-return" {
-		t.Fatalf("user-submitted callback must redirect to the submitted URL: %d %s", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "认证流程已结束") {
+		t.Fatalf("user-submitted callback must render the fixed completion page: %d %s", rec.Code, rec.Body.String())
 	}
 	replay := httptest.NewRequest(http.MethodGet, provider.callbackURL, nil)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, replay)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "https://user.example/own-return" {
-		t.Fatalf("consumed state replay must redirect idempotently: %d %s", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "认证流程已结束") {
+		t.Fatalf("consumed state replay must render the fixed page idempotently: %d %s", rec.Code, rec.Body.String())
 	}
 	var p Portrait
 	if err := s.db.Where("session_id = ?", created.ID).Take(&p).Error; err != nil || p.CallbackUsedAt == nil || p.SessionStatus != "pending" {

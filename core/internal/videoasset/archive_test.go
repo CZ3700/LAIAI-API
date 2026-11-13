@@ -434,3 +434,39 @@ func TestArchiveUsageWindowGate(t *testing.T) {
 		t.Fatal("asset whose only reference is older than 7 days must be archived")
 	}
 }
+
+// TestAutoLicenseWorksWithoutCaptureHistory（2026-11-13 org45 缺口修复）：
+// CaptureHistory=false 的组织无响应证据指针——自动授权回退用本次核实操作
+// ID 作证据引用，不再永久卡 needs_review。
+func TestAutoLicenseWorksWithoutCaptureHistory(t *testing.T) {
+	s, db, now, _ := setup(t)
+	s.options.AutoLicense = true
+	// 关闭历史捕获：finish 不落响应证据，ResponsePayloadID 为空（运行时由
+	// 组织的 ExecutionRetentionConsent 决定；单测直接验证证据回退分支）。
+	ctx := context.Background()
+	if err := s.ConfigureConsole(ConsoleOptions{CallbackURL: "https://customer.example/return"}); err != nil {
+		t.Fatal(err)
+	}
+	c := CreateContext{CallerKind: "session_user", OrgID: 1, UserID: 22, RequestID: "auto-license-nocapture", IdempotencyKey: "auto-license-nocapture"}
+	p, _, err := s.CreateConsolePortrait(ctx, c, PortraitCreate{Name: "Portrait"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(16 * time.Second)
+	if err := s.ProcessOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var row Portrait
+	if err := db.Where("session_id = ?", p.ID).Take(&row).Error; err != nil || row.SessionStatus != "succeeded" {
+		t.Fatalf("portrait must succeed: %+v %v", row, err)
+	}
+	if row.LicenseStatus != "verified" || row.LicenseEvidenceRef == "" {
+		t.Fatalf("auto license must register even without capture history: %+v", row)
+	}
+	if s.licenseStatus(row, "video_generation") != "authorized" {
+		t.Fatal("license must be authorized")
+	}
+}

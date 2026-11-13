@@ -615,10 +615,16 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 			return err
 		}
 		// 认证即授权：H5 认证即官方肖像授权确认，自动登记 video_generation
-		// 业务许可（来源 verified_provider_license，证据为本次官方核实响应）。
-		// 登记失败不阻断认证成功；无证据指针时保守保持 needs_review。
-		if s.options.AutoLicense && op.ResponsePayloadID != "" {
-			_ = s.verifyLicenseTx(tx, op.OrgID, p.ID, LicenseEvidence{ActorID: "gateway", EvidenceRef: op.ResponsePayloadID, Source: "verified_provider_license", Purpose: "video_generation", ValidFrom: now, ValidUntil: now.Add(s.options.AutoLicenseValidity), VerifiedAt: now, ReverifyDueAt: now.Add(s.options.MaxLicenseAge)})
+		// 业务许可（来源 verified_provider_license，证据引用本次核实操作）。
+		// 登记失败不阻断认证成功。证据引用优先响应证据指针；CaptureHistory
+		// 关闭的组织无指针，回退本次核实操作 ID——无捕获组织同样自动授权
+		//（2026-11-13 修复：此类组织此前永久卡 needs_review 无法上传素材）。
+		if s.options.AutoLicense {
+			evidenceRef := op.ResponsePayloadID
+			if evidenceRef == "" {
+				evidenceRef = op.ID
+			}
+			_ = s.verifyLicenseTx(tx, op.OrgID, p.ID, LicenseEvidence{ActorID: "gateway", EvidenceRef: evidenceRef, Source: "verified_provider_license", Purpose: "video_generation", ValidFrom: now, ValidUntil: now.Add(s.options.AutoLicenseValidity), VerifiedAt: now, ReverifyDueAt: now.Add(s.options.MaxLicenseAge)})
 		}
 		return nil
 	case "GetAssetGroup":

@@ -38,8 +38,9 @@ func TestConsolePortraitSeparatesCallbackAndReturn(t *testing.T) {
 	router.GET(PortraitCallbackPath, s.HandlePortraitCallback)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, provider.callbackURL+"&resultCode=10000", nil))
-	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "https://customer.example/return" {
-		t.Fatal("callback must redirect to registered console return page", recorder.Code)
+	// 成功消费后不再跳转：直接渲染固定结束页（避免用户在控制台/应用间连环点击）。
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "认证流程已结束") {
+		t.Fatal("callback must render the fixed completion page", recorder.Code, recorder.Body.String())
 	}
 	var row Portrait
 	if err := db.Where("session_id = ?", p.ID).Take(&row).Error; err != nil || row.CallbackUsedAt == nil || row.SessionStatus == "succeeded" {
