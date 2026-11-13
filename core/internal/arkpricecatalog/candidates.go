@@ -159,14 +159,15 @@ func referenceCandidates(c Catalog, model string) (Candidates, error) {
 	if identity.variant {
 		delete(resolutions, "1080p")
 	}
-	if model == "seedance-2.0" {
-		resolutions["4k"] = true
-	}
 	// price 覆盖断言的分辨率集合（与 prices TSV 行一致）；minimum 行白名单仍用
 	// 全集 resolutions（2.5-minimum 表含 1080p 历史行，flash 复用该表）。
 	priceResolutions := map[string]bool{"480p": true, "720p": true, "1080p": true}
 	if identity.variant || model == "seedance-2.5-flash" {
 		delete(priceResolutions, "1080p") // flash 官方仅 480p/720p（2026-11-13 价格表）
+	}
+	if model == "seedance-2.0" {
+		resolutions["4k"] = true
+		priceResolutions["4k"] = true
 	}
 	missingFPS := false
 	for _, t := range c.Tables {

@@ -23,8 +23,8 @@ func TestAdminVideoModelLimits(t *testing.T) {
 		t.Fatalf("list = %d %s", w.Code, w.Body.String())
 	}
 	models := out["models"].([]any)
-	if len(models) != 4 {
-		t.Fatalf("models = %d, want 4 official entries", len(models))
+	if len(models) != 5 {
+		t.Fatalf("models = %d, want 5 official entries", len(models))
 	}
 	first := models[0].(map[string]any)
 	if first["model"] != "seedance-2.5" || first["published"] != true || first["channel_name"] != "laiai-volcengine" {
