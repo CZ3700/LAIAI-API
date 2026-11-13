@@ -89,6 +89,92 @@
       ]
     },
     {
+      "id": "seedance-2.5-flash-prices",
+      "reference_video_scope": "per_row_input_duration",
+      "title": "Seedance 2.5 flash 价格",
+      "series": [
+        "2.5-flash"
+      ],
+      "status": "captured",
+      "source_url": "https://bytedance.larkoffice.com/wiki/FXaYwxzJ5i5Zdik32ipcWzt7nxd?table=tblwgvQd3CUQ9K6j&view=vewzHxHH5V",
+      "table_id": "tblwgvQd3CUQ9K6j",
+      "view_id": "vewzHxHH5V",
+      "captured_at": "2026-11-13T06:20:00Z",
+      "raw_file": "seedance-2.5-flash-prices.tsv",
+      "raw_sha256": "238bd1b00fad917585c99b8c78fa2db0a8bd2eeed9467c6d20f2caa584f977c5",
+      "expected_rows": 32,
+      "headers": [
+        "索引",
+        "单价",
+        "时长-输入视频（秒）",
+        "时长-输出视频（秒）",
+        "用量（token）",
+        "视频价格",
+        "分辨率",
+        "画面比例",
+        "长边×短边",
+        "帧率"
+      ],
+      "columns": [
+        {
+          "semantic": "series",
+          "unit": "",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "supplier_token_price",
+          "unit": "CNY/1M_tokens",
+          "precision": "exact"
+        },
+        {
+          "semantic": "input_duration",
+          "unit": "second",
+          "precision": "exact"
+        },
+        {
+          "semantic": "output_duration",
+          "unit": "second",
+          "precision": "exact"
+        },
+        {
+          "semantic": "estimated_tokens",
+          "unit": "token",
+          "precision": "estimated"
+        },
+        {
+          "semantic": "reference_video_amount",
+          "unit": "CNY/video",
+          "precision": "rounded"
+        },
+        {
+          "semantic": "resolution",
+          "unit": "",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "ratio",
+          "unit": "",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "dimensions",
+          "unit": "pixel",
+          "precision": "not_applicable"
+        },
+        {
+          "semantic": "fps",
+          "unit": "fps",
+          "precision": "exact"
+        }
+      ],
+      "notes": [
+        "原表“索引”列显示系列名 2.5 flash，捕获规范化为 2.5-flash（identifier 不允许空格），不是已核验的官方部署模型 ID。",
+        "单价单位为 CNY / 百万 Token；视频价格为舍入后的示例金额，不能当成额外最低扣费金额。",
+        "表中用量属于估算参考，最终用量以官方 usage.completion_tokens 为准。本目录不导入或启用最低量规则。",
+        "2026-11-13 接线捕获：模型未上架（无部署名 pin、无定价模板），证据仅用于能力 profile 对账。"
+      ]
+    },
+    {
       "id": "seedance-2.5-minimum",
       "reference_video_scope": "requires_reference_video",
       "title": "seedance-2.5系列最低token限制（仅针对含输入视频时）",

@@ -71,7 +71,7 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 		return unsupported("model")
 	}
 	maxDuration := 15
-	if in.Model == Model25 {
+	if Is25Family(in.Model) {
 		maxDuration = 30
 	}
 	if cap.MinDuration < 4 || cap.MaxDuration < cap.MinDuration || cap.MaxDuration > maxDuration || cap.FPS <= 0 || cap.MaxContentItems < 1 || cap.MaxContentItems > 51 {
@@ -132,7 +132,7 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if in.OutputFormat != nil {
 		p.OutputFormat = *in.OutputFormat
 	}
-	if !contains([]string{"480p", "720p", "1080p", "4k"}, p.Resolution) || !contains(cap.Resolutions, p.Resolution) || (in.Model == Model25 && p.Resolution == "4k") {
+	if !contains([]string{"480p", "720p", "1080p", "4k"}, p.Resolution) || !contains(cap.Resolutions, p.Resolution) || (Is25Family(in.Model) && p.Resolution == "4k") {
 		return unsupported("resolution")
 	}
 	if !contains([]string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"}, p.Ratio) || !contains(cap.Ratios, p.Ratio) {
@@ -153,7 +153,7 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if p.Draft && !cap.Draft {
 		return unsupported("draft")
 	}
-	if p.Draft && (in.Model != Model25 || p.Resolution != "480p") {
+	if p.Draft && (!Is25Family(in.Model) || p.Resolution != "480p") {
 		return unsupported("resolution")
 	}
 	if p.ExecutionExpiresAfter <= 0 || p.ExecutionExpiresAfter < cap.MinExecutionExpiresAfter || p.ExecutionExpiresAfter > cap.MaxExecutionExpiresAfter {
@@ -200,7 +200,7 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 		}
 		if item.Type == "draft_task" {
 			drafts++
-			if !cap.DraftConversion || in.Model != Model25 || !platformTask.MatchString(item.DraftTask.ID) {
+			if !cap.DraftConversion || !Is25Family(in.Model) || !platformTask.MatchString(item.DraftTask.ID) {
 				return unsupported("content")
 			}
 			b, ok := bindings.Drafts[item.DraftTask.ID]
@@ -272,14 +272,14 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if (first+last) > 0 && (images != first+last || videos > 0 || audios > 0) {
 		return bad("content", "frame mode cannot include reference media")
 	}
-	if (first+last) > 0 && in.Model == Model25 && p.Ratio != "adaptive" {
+	if (first+last) > 0 && Is25Family(in.Model) && p.Ratio != "adaptive" {
 		return bad("content", "2.5 frame mode requires adaptive ratio")
 	}
 	referenceScenario := drafts == 0 && first+last == 0 && images+videos+audios > 0
 	if drafts == 0 && in.OmniReferenceTaskType != nil && !referenceScenario {
 		return bad("omni_reference_task_type", "task type is only supported with reference media, not text or frame generation")
 	}
-	if referenceScenario && in.Model == Model25 && in.OmniReferenceTaskType == nil &&
+	if referenceScenario && Is25Family(in.Model) && in.OmniReferenceTaskType == nil &&
 		contains(cap.OmniReferenceTaskTypes, "reference") && !contains(cap.OmniReferenceTaskTypes, "auto") &&
 		!contains(cap.OmniReferenceTaskTypes, "edit") && !contains(cap.OmniReferenceTaskTypes, "extend") {
 		// Only reference media supports this field. Within that scenario,

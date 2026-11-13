@@ -98,10 +98,10 @@ func TestEmbeddedCatalogIntegrity(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(c.Tables) != 6 || !c.Complete || c.CapturedTables != 6 {
-		t.Fatal("version v1 must contain all six captured official tables")
+	if len(c.Tables) != 7 || !c.Complete || c.CapturedTables != 7 {
+		t.Fatal("version v1 must contain all seven captured official tables")
 	}
-	wantCounts := map[string]int{"seedance-2.5-prices": 48, "seedance-2.5-minimum": 339, "seedance-2.0-prices": 104, "seedance-2.0-minimum": 192, "seedance-1.5-prices": 12, "seedance-1.0-prices": 24}
+	wantCounts := map[string]int{"seedance-2.5-prices": 48, "seedance-2.5-minimum": 339, "seedance-2.5-flash-prices": 32, "seedance-2.0-prices": 104, "seedance-2.0-minimum": 192, "seedance-1.5-prices": 12, "seedance-1.0-prices": 24}
 	total, views := 0, 0
 	for _, table := range c.Tables {
 		if len(table.RawRows) != table.ExpectedRows || len(table.RawRows) != wantCounts[table.ID] {
@@ -114,7 +114,7 @@ func TestEmbeddedCatalogIntegrity(t *testing.T) {
 			views += len(table.Captures)
 		}
 	}
-	if total != 719 || views != 12 {
+	if total != 751 || views != 13 {
 		t.Fatal("source inventory no longer matches the reviewed capture version")
 	}
 }

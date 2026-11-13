@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -73,7 +74,7 @@ func documentationSources() []Source {
 func Load(model string) (Profile, error) {
 	var p Profile
 	variant, isVariant := reviewedVariant(model)
-	if model != ark.Model20 && model != ark.Model25 && !isVariant {
+	if model != ark.Model20 && model != ark.Model25 && model != ark.Model25Flash && !isVariant {
 		return p, arkpricecatalog.ErrUnsupportedModel
 	}
 	ref, err := arkpricecatalog.ReferenceCandidates(model)
@@ -131,6 +132,24 @@ func Load(model string) (Profile, error) {
 		p.Capability.OutputFormats = []string{"mp4", "mov"}
 		p.MaxInputVideoDurationMS = 30000
 		rates = map[string][2]string{"480p": {"70", "42"}, "720p": {"70", "42"}, "1080p": {"77", "46"}}
+	} else if model == ark.Model25Flash {
+		// Seedance-2.5-flash（2026-11-13 接线，未上架）：官方价与 2.0 同表
+		//（不含视频 46 / 含视频 28 元每百万 token——默认 rates 即该值，仅
+		// 收窄分辨率）；输出 4–30s 与输入 ≤30s 由官方最低价表行直接证实；
+		// 480p 像素 854×480 已被官方典型场景价反推证实（2.5 族像素表）。
+		// 部署名未 pin（ValidUpstreamModel 无 case）→ 派发结构性不可能，
+		// 上架轮次补 pin + 定价模板 + verification。
+		p.Capability.Resolutions = []string{"480p", "720p"}
+		p.Capability.MaxDuration = 30
+		p.Capability.MaxContentItems = 51
+		p.Capability.MaxImages = 30
+		p.Capability.MaxVideos = 10
+		p.Capability.MaxAudios = 10
+		p.Capability.ImageFrames = false
+		p.Capability.OmniReferenceTaskTypes = []string{"reference"}
+		p.Capability.OutputFormats = []string{"mp4", "mov"}
+		p.MaxInputVideoDurationMS = 30000
+		rates = map[string][2]string{"480p": {"46", "28"}, "720p": {"46", "28"}}
 	} else if isVariant {
 		p.Capability.Resolutions = []string{"480p", "720p"}
 		rates = map[string][2]string{"480p": {variant.noVideo, variant.video}, "720p": {variant.noVideo, variant.video}}
@@ -158,7 +177,7 @@ func Load(model string) (Profile, error) {
 		"1080p": {{1920, 1080}, {1664, 1248}, {1440, 1440}, {1248, 1664}, {1080, 1920}, {2206, 946}},
 		"4k":    {{3840, 2160}, {3326, 2494}, {2880, 2880}, {2494, 3326}, {2160, 3840}, {4398, 1886}},
 	}
-	if model == ark.Model25 {
+	if ark.Is25Family(model) {
 		dimensions["480p"][0] = Dimensions{854, 480}
 		dimensions["480p"][4] = Dimensions{480, 854}
 	}
@@ -182,34 +201,65 @@ func Load(model string) (Profile, error) {
 		// area. Settlement keeps using upstream usage, never this bound.
 		p.Bounds[res+"/adaptive"] = largest
 	}
-	seen := map[string]bool{}
-	for _, cell := range ref.Minimum.Cells {
-		if cell.FPS != nil && *cell.FPS != 24 {
-			return Profile{}, fmt.Errorf("verification: FPS conflicts with official model list")
+	if model == ark.Model25Flash {
+		// flash 最低量（2026-11-13 官方 Lark 表 28 点精确反推）：最低输入 4s
+		// 钳制——含视频 cell 的 floor = ceil((4s + 输出秒) × W × H × 24 / 1024)。
+		// 与 2.5 最低输入 3s 不同（2.5 表 9s 输出=144,113=12s 几何可证），故
+		// 不复用 2.5-minimum 表，按公式合成专属 cells；不含视频无下限（平台
+		// 语义 input_video=false 跳过 floor），不建 cell。官方 28 点自验在
+		// profile_flash_test.go。
+		for _, res := range p.Capability.Resolutions {
+			for _, ratio := range p.Capability.Ratios {
+				if ratio == "adaptive" {
+					continue
+				}
+				dims := p.Bounds[res+"/"+ratio]
+				for d := p.Capability.MinDuration; d <= p.Capability.MaxDuration; d++ {
+					// tokens = ceil((4000ms + 输出ms) × W × H × fps / (1000 × 1024))：
+					// 最低输入 4s 钳制后的几何值向上取整。480p 16:9 d=5 → 86,468、
+					// 720p 16:9 d=5 → 194,400，与官方最低价表逐值相等。
+					numerator := (4000 + int64(d)*1000) * int64(dims.Width) * int64(dims.Height) * 24
+					denominator := int64(1000 * 1024)
+					tokens := (numerator + denominator - 1) / denominator
+					p.MinimumCells = append(p.MinimumCells, MinimumCell{res, ratio, int64(d) * 1000, 24, tokens})
+				}
+			}
 		}
-		if cell.FPS == nil && model != ark.Model20 && !isVariant {
-			return Profile{}, fmt.Errorf("verification: missing primary FPS")
-		}
-		// Supplement 2.0's absent column from the independently hashed official
-		// model list. Preserve the original capture and its missing-FPS marker.
-		key := fmt.Sprintf("%s/%s/%d", cell.Resolution, cell.Ratio, cell.OutputDurationMS)
-		if _, ok := p.Bounds[cell.Resolution+"/"+cell.Ratio]; !ok || seen[key] || cell.MinimumTokens <= 0 || cell.OutputDurationMS < 4000 || cell.OutputDurationMS > int64(p.Capability.MaxDuration)*1000 || cell.OutputDurationMS%1000 != 0 {
-			return Profile{}, fmt.Errorf("verification: invalid minimum domain")
-		}
-		seen[key] = true
-		p.MinimumCells = append(p.MinimumCells, MinimumCell{cell.Resolution, cell.Ratio, cell.OutputDurationMS, 24, cell.MinimumTokens})
-	}
-	for _, res := range p.Capability.Resolutions {
-		for _, ratio := range p.Capability.Ratios {
-			if ratio == "adaptive" {
-				// The official table prices explicit ratios only; adaptive is
-				// quoted from the maximum of that same explicit domain at
-				// runtime (videobilling.QuoteWithMinimumTx).
+	} else {
+		seen := map[string]bool{}
+		for _, cell := range ref.Minimum.Cells {
+			if cell.FPS != nil && *cell.FPS != 24 {
+				return Profile{}, fmt.Errorf("verification: FPS conflicts with official model list")
+			}
+			if cell.FPS == nil && model != ark.Model20 && !isVariant {
+				return Profile{}, fmt.Errorf("verification: missing primary FPS")
+			}
+			// Supplement 2.0's absent column from the independently hashed official
+			// model list. Preserve the original capture and its missing-FPS marker.
+			// 共享最低量表的跨分辨率行（如其他模型复用共享表时）对未支持的
+			// 分辨率无意义：跳过，不进入 MinimumCells、不参与域检查。
+			if !slices.Contains(p.Capability.Resolutions, cell.Resolution) {
 				continue
 			}
-			for d := p.Capability.MinDuration; d <= p.Capability.MaxDuration; d++ {
-				if !seen[fmt.Sprintf("%s/%s/%d", res, ratio, d*1000)] {
-					return Profile{}, fmt.Errorf("verification: incomplete minimum domain")
+			key := fmt.Sprintf("%s/%s/%d", cell.Resolution, cell.Ratio, cell.OutputDurationMS)
+			if _, ok := p.Bounds[cell.Resolution+"/"+cell.Ratio]; !ok || seen[key] || cell.MinimumTokens <= 0 || cell.OutputDurationMS < 4000 || cell.OutputDurationMS > int64(p.Capability.MaxDuration)*1000 || cell.OutputDurationMS%1000 != 0 {
+				return Profile{}, fmt.Errorf("verification: invalid minimum domain")
+			}
+			seen[key] = true
+			p.MinimumCells = append(p.MinimumCells, MinimumCell{cell.Resolution, cell.Ratio, cell.OutputDurationMS, 24, cell.MinimumTokens})
+		}
+		for _, res := range p.Capability.Resolutions {
+			for _, ratio := range p.Capability.Ratios {
+				if ratio == "adaptive" {
+					// The official table prices explicit ratios only; adaptive is
+					// quoted from the maximum of that same explicit domain at
+					// runtime (videobilling.QuoteWithMinimumTx).
+					continue
+				}
+				for d := p.Capability.MinDuration; d <= p.Capability.MaxDuration; d++ {
+					if !seen[fmt.Sprintf("%s/%s/%d", res, ratio, d*1000)] {
+						return Profile{}, fmt.Errorf("verification: incomplete minimum domain")
+					}
 				}
 			}
 		}

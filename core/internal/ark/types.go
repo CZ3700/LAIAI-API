@@ -9,6 +9,7 @@ const (
 	Model20Fast                   = "seedance-2.0-fast"
 	Model20Mini                   = "seedance-2.0-mini"
 	Model25                       = "seedance-2.5"
+	Model25Flash                  = "seedance-2.5-flash"
 	DefaultMaxRequestBytes  int64 = 10 << 20
 	DefaultMaxResponseBytes int64 = 1 << 20
 )

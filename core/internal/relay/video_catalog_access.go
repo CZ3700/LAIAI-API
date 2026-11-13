@@ -115,7 +115,7 @@ func ReadVideoCatalogRatiosTx(ctx context.Context, tx *gorm.DB, groupName string
 	}
 	for i, model := range models {
 		switch model {
-		case "seedance-2.0", "seedance-2.5", "seedance-2.0-fast", "seedance-2.0-mini":
+		case "seedance-2.0", "seedance-2.5", "seedance-2.5-flash", "seedance-2.0-fast", "seedance-2.0-mini":
 		default:
 			return nil, ErrVideoCatalogInvalid
 		}

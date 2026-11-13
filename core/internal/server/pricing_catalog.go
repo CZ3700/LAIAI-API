@@ -119,6 +119,10 @@ func seedanceIdentity(model string) (canonical, reason string) {
 	if model == ark.Model20Mini || model == "doubao-seedance-2-0-mini-260615" {
 		return ark.Model20Mini, ""
 	}
+	if model == ark.Model25Flash || strings.HasPrefix(model, "doubao-seedance-2-5-flash-") {
+		// 部署名 pin 待上架轮次补（当前仅归一公开名，dispatch 由 ValidUpstreamModel 阻断）。
+		return ark.Model25Flash, ""
+	}
 	if seedanceVariantID.MatchString(model) {
 		return "", "seedance_variant_not_supported"
 	}

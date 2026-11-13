@@ -61,7 +61,7 @@ func TestOfficialPriceCatalogRequiresIndividualActiveSuperadminAndDoesNotWrite(t
 			if e := json.Unmarshal(w.Body.Bytes(), &c); e != nil {
 				t.Fatal(e)
 			}
-			if len(c.Tables) != 6 || c.Usage != "reference_only_no_price_or_capability_changes" || w.Header().Get("Cache-Control") != "private, no-store" {
+			if len(c.Tables) != 7 || c.Usage != "reference_only_no_price_or_capability_changes" || w.Header().Get("Cache-Control") != "private, no-store" {
 				t.Fatal("unsafe or incomplete catalog response")
 			}
 		}
