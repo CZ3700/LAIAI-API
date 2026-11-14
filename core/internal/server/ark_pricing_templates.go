@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"reflect"
 	"time"
 
@@ -184,11 +183,11 @@ func templatePricingSource(tx *gorm.DB, cfg video.ModelConfig, ref *arkpricetemp
 func resolveInitialPricingTemplate(tx *gorm.DB, in *videoPublication, now time.Time) (arkpricetemplate.Template, arkverification.Profile, error) {
 	t, err := loadPricingTemplateRef(tx, in.Configuration.PublicModel, *in.PricingTemplate)
 	if err != nil {
-		return t, arkverification.Profile{}, warnFlashPreview("loadPricingTemplateRef", err)
+		return t, arkverification.Profile{}, err
 	}
 	p, err := arkverification.Load(t.Model)
 	if err != nil || p.Version != t.ProfileVersion || p.EvidenceSHA256 != t.ProfileSHA256 || p.ObservedAt.After(now) {
-		return t, p, warnFlashPreview("p-version-sha-observed", videobilling.ErrConflict)
+		return t, p, videobilling.ErrConflict
 	}
 	cfg := &in.Configuration
 	if cfg.CapabilityJSON == "" && cfg.BoundsJSON == "" {
@@ -206,7 +205,7 @@ func resolveInitialPricingTemplate(tx *gorm.DB, in *videoPublication, now time.T
 	var requested ark.Capability
 	var requestedBounds map[string]video.Dimensions
 	if json.Unmarshal([]byte(cfg.CapabilityJSON), &requested) != nil || json.Unmarshal([]byte(cfg.BoundsJSON), &requestedBounds) != nil {
-		return t, p, warnFlashPreview("capability-unmarshal", videobilling.ErrInvalid)
+		return t, p, videobilling.ErrInvalid
 	}
 	requested.Version = cap.Version
 	if !reflect.DeepEqual(requested, cap) || !reflect.DeepEqual(requestedBounds, bounds) {
@@ -221,7 +220,7 @@ func resolveInitialPricingTemplate(tx *gorm.DB, in *videoPublication, now time.T
 	for i, c := range t.Cells {
 		cell := templatePricingCell(c)
 		if !priceCellSupported(cell, cap) {
-			return t, p, warnFlashPreview("priceCellSupported", videobilling.ErrPricingUnavailable)
+			return t, p, videobilling.ErrPricingUnavailable
 		}
 		retail, re := parsePrice(c.RetailUSDPer1M)
 		cost, ce := parsePrice(c.SupplierCNYPer1M)
@@ -240,21 +239,5 @@ func importTemplateMinimum(tx *gorm.DB, p arkverification.Profile, actor uint64,
 		return err
 	}
 	_, err = videobilling.PublishMinimumTx(tx, videobilling.MinimumRuleSet{Model: p.Capability.PublicModel, Version: p.MinimumVersion, SourceURL: p.SourceURL, EvidenceHash: p.EvidenceSHA256, ObservedAt: p.ObservedAt, VerifiedBy: actor, VerifiedAt: now}, verificationMinimumCells(p))
-	return err
-}
-
-// warnFlashPreview 记录 initial-preview 内部失败点（2026-11-14 诊断 flash
-// 上架 template_unavailable，临时日志；上架完成后可移除）。
-func (s *Server) warnFlashPreview(step string, err error) error {
-	if s.Log != nil {
-		s.Log().Warn("flash preview failed", "step", step, "err", err.Error())
-	}
-	return err
-}
-
-// warnFlashPreview 记录 initial-preview 内部失败点（2026-11-14 诊断 flash
-// 上架 template_unavailable，临时日志；上架完成后可移除）。
-func warnFlashPreview(step string, err error) error {
-	slog.Warn("flash preview failed", "step", step, "err", err.Error())
 	return err
 }

@@ -119,8 +119,10 @@ func seedanceIdentity(model string) (canonical, reason string) {
 	if model == ark.Model20Mini || model == "doubao-seedance-2-0-mini-260615" {
 		return ark.Model20Mini, ""
 	}
-	if model == ark.Model25Flash || strings.HasPrefix(model, "doubao-seedance-2-5-flash-") {
-		// 部署名 pin 待上架轮次补（当前仅归一公开名，dispatch 由 ValidUpstreamModel 阻断）。
+	if model == ark.Model25Flash || model == "doubao-seedance-2-5-flash" || strings.HasPrefix(model, "doubao-seedance-2-5-flash-") {
+		// flash 官方部署名无日期尾缀（doubao-seedance-2-5-flash，与
+		// ValidUpstreamModel 对齐）；带日期形式一并归一，核验/计价链路
+		// 的增量校验靠它识别上游身份（2026-11-15 上架轮次修正）。
 		return ark.Model25Flash, ""
 	}
 	if seedanceVariantID.MatchString(model) {
