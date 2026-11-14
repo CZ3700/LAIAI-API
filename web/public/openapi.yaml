@@ -1633,10 +1633,11 @@
         "type": "string"
       },
       "PublicModel": {
-        "description": "平台公开别名；Fast 对应 doubao-seedance-2-0-fast-260128，Mini 对应 doubao-seedance-2-0-mini-260615。是否可用以 models 返回 enabled 与 verified 为准。",
+        "description": "平台公开别名；Fast 对应 doubao-seedance-2-0-fast-260128，Mini 对应 doubao-seedance-2-0-mini-260615，Flash 对应 doubao-seedance-2-5-flash 系（480p/720p）。是否可用以 models 返回 enabled 与 verified 为准。",
         "enum": [
           "seedance-2.0",
           "seedance-2.5",
+          "seedance-2.5-flash",
           "seedance-2.0-fast",
           "seedance-2.0-mini"
         ],
@@ -5619,5 +5620,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "73b6e12d32a9ac12badef3ee2e230112dff966cb35f4994b59f3c081234927e5"
+  "x-seedance-source-sha256": "9e8e59e682f6675d400a55e2518059b2b3b2822bcb40c92594230bddf0e03840"
 }

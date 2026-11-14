@@ -29,8 +29,6 @@ func ValidUpstreamModel(model, upstream string) bool {
 		if model == Model25 {
 			prefix = "doubao-seedance-2-5-"
 		}
-		// TODO(上架轮次): seedance-2.5-flash 的官方部署名待火山控制台核实后
-		// 在此 pin（当前不 pin = 派发结构性不可能，模型未上架）。
 		if !strings.HasPrefix(upstream, prefix) || len(upstream) != len(prefix)+6 {
 			return false
 		}
@@ -40,6 +38,20 @@ func ValidUpstreamModel(model, upstream string) bool {
 			}
 		}
 		return true
+	case Model25Flash:
+		// 官方部署名待火山控制台最终核实；先接受模型短名与带日期形式两种
+		// 语法（渠道配置可用任一），真实可达性由首次 live 调用验证兜底。
+		return upstream == "doubao-seedance-2-5-flash" ||
+			strings.HasPrefix(upstream, "doubao-seedance-2-5-flash-") &&
+				len(upstream) == len("doubao-seedance-2-5-flash-")+6 &&
+				func() bool {
+					for _, c := range upstream[len("doubao-seedance-2-5-flash-"):] {
+						if c < '0' || c > '9' {
+							return false
+						}
+					}
+					return true
+				}()
 	default:
 		return false
 	}

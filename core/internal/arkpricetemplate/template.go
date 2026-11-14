@@ -101,6 +101,10 @@ func upstream(model string) string {
 		return "doubao-seedance-2-0-fast-260128"
 	case ark.Model20Mini:
 		return "doubao-seedance-2-0-mini-260615"
+	case ark.Model25Flash:
+		// 火山方舟模型短名可直接调用（无日期后缀）；渠道部署名核实后如为
+		// 带日期形式，由渠道配置覆盖，此处仅约束调用语法族。
+		return "doubao-seedance-2-5-flash"
 	default:
 		return ""
 	}

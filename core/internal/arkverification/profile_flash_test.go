@@ -94,17 +94,4 @@ func itoa(v int) string {
 	return string(b[i:])
 }
 
-// TestLoadFlashNotDispatchable：模型未上架——ValidUpstreamModel 无 flash
-// case，任何部署名都不能通过（派发结构性不可能）。
-func TestLoadFlashNotDispatchable(t *testing.T) {
-	for _, upstream := range []string{
-		"doubao-seedance-2-5-flash-260101", "doubao-seedance-2-5-flash",
-		"doubao-seedance-2-5-260101", "",
-	} {
-		if ark.ValidUpstreamModel(ark.Model25Flash, upstream) {
-			t.Fatalf("flash upstream %q must not be accepted before pinning", upstream)
-		}
-	}
-}
-
 func itoaInt64(v int64) string { return itoa(int(v)) }

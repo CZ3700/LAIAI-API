@@ -1456,8 +1456,8 @@ components:
       description: 平台真人授权会话 ID，不暴露官方会话 ID。
     PublicModel:
       type: string
-      enum: [seedance-2.0, seedance-2.5, seedance-2.0-fast, seedance-2.0-mini]
-      description: 平台公开别名；Fast 对应 doubao-seedance-2-0-fast-260128，Mini 对应 doubao-seedance-2-0-mini-260615。是否可用以 models 返回 enabled 与 verified 为准。
+      enum: [seedance-2.0, seedance-2.5, seedance-2.5-flash, seedance-2.0-fast, seedance-2.0-mini]
+      description: 平台公开别名；Fast 对应 doubao-seedance-2-0-fast-260128，Mini 对应 doubao-seedance-2-0-mini-260615，Flash 对应 doubao-seedance-2-5-flash 系（480p/720p）。是否可用以 models 返回 enabled 与 verified 为准。
     MoneyAmount:
       type: string
       pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,8})?$'
