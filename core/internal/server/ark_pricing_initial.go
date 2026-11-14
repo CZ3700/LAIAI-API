@@ -411,6 +411,7 @@ func (s *Server) previewArkInitialPricing(c *gin.Context) {
 		var err error
 		template, err = arkpricetemplate.Load(tx, c.Param("model"), input.TemplateVersion)
 		if err != nil {
+			s.Log().Error("initial template load failed", "err", err.Error())
 			return initialPricingError("template_unavailable")
 		}
 		ref := template.Reference()
