@@ -60,6 +60,10 @@ func verificationSubset(old, next []string) bool {
 
 // A reviewed profile may expand an older configuration, but cannot silently
 // replace a newer or broader configuration with the bundled profile.
+// 首次上架模型无需零基线特判：initial-setup 在进入本函数前已把 profile
+// capability 填入配置（old 即 profile 自身），增量校验对自身恒通过——
+// flash 首轮上架曾误判此处需要零基线分支，实际卡点是 seedanceIdentity
+// 不认裸部署名（2026-11-15 修正）。
 func verificationTarget(cfg video.ModelConfig, old ark.Capability, oldBounds map[string]video.Dimensions, p arkverification.Profile) (ark.Capability, map[string]video.Dimensions, error) {
 	next := p.Capability
 	model, reason := seedanceIdentity(old.UpstreamModel)

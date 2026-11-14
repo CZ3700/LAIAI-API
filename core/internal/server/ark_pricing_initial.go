@@ -441,7 +441,6 @@ func (s *Server) previewArkInitialPricing(c *gin.Context) {
 			if e := tx.Where("id = ?", input.ProviderScopeID).Take(&publication.Scope).Error; e != nil {
 				return initialPricingError("provider_scope_unavailable")
 			}
-			s.Log().Warn("flash preview step1 ok")
 			if e := tx.Where("org_id = 0 AND scope = ? AND owner_id = ? AND enabled = ?", videobilling.ScopeProvider, input.ProviderScopeID, true).Order("id").Find(&publication.SupplierBudgets).Error; e != nil {
 				return e
 			}
@@ -451,8 +450,6 @@ func (s *Server) previewArkInitialPricing(c *gin.Context) {
 		if err != nil {
 			return initialPricingError("template_unavailable")
 		}
-		s.Log().Warn("flash preview step2 done ok", "cells", len(cells))
-		s.Log().Warn("flash preview step2 ok", "cells", len(cells))
 		if input.PricingMode == "official" {
 			if err := officialInitialPrices(&prepared); err != nil {
 				return err

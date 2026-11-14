@@ -553,3 +553,24 @@ func TestSeedanceIdentityExcludesCapturedLegacySeries(t *testing.T) {
 		}
 	}
 }
+
+// TestSeedanceIdentityAdmitsFlashUpstreamForms（2026-11-15 上架轮次）：flash
+// 官方部署名无日期尾缀，verificationTarget 的增量校验靠本函数识别上游身份；
+// 裸部署名归一失败曾令 initial-preview 全链返回 template_unavailable。
+func TestSeedanceIdentityAdmitsFlashUpstreamForms(t *testing.T) {
+	for _, model := range []string{"seedance-2.5-flash", "doubao-seedance-2-5-flash", "doubao-seedance-2-5-flash-260115"} {
+		canonical, reason := seedanceIdentity(model)
+		if canonical != ark.Model25Flash || reason != "" {
+			t.Fatalf("flash upstream not normalized: %s -> (%q, %q)", model, canonical, reason)
+		}
+	}
+	for _, model := range []string{"doubao-seedance-2-5-flashx", "doubao-seedance-2-5-flas", "doubao-seedance-2-5-fast-260128", "doubao-seedance-2-5-mini"} {
+		canonical, reason := seedanceIdentity(model)
+		if canonical == ark.Model25Flash {
+			t.Fatalf("non-flash upstream admitted: %s", model)
+		}
+		if model == "doubao-seedance-2-5-fast-260128" && (canonical != "" || reason != "seedance_variant_not_supported") {
+			t.Fatalf("variant must stay excluded: %s -> (%q, %q)", model, canonical, reason)
+		}
+	}
+}
