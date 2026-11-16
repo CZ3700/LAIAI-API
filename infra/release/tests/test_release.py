@@ -200,6 +200,10 @@ elif name=='docker':
                 c['opened_attempt']=True; save()
                 if c.get('open_reload_fails'): fail()
             elif c.get('opened_attempt') and c.get('maintenance_restore_fails'): fail()
+        elif any('mysqldump' in item for item in args):
+            count=c.get('business_fingerprint_calls',0)+1
+            c['business_fingerprint_calls']=count; save(); event('business-fingerprint')
+            print('changed business rows' if c.get('business_changes') and count>1 else 'stable business rows')
         elif 'validate' in args:
             content=sys.stdin.read()
             if c.get('open_validate_fails') and 'Maintenance in progress' not in content: event('open-validation-failed'); fail()
@@ -230,7 +234,7 @@ elif name=='probe':
             if c.get('migrated'): versions+=['0151_callback_hint_revision','0152_video_user_task_limits','0153_video_group_asset_projects']
             (root/'schema.txt').write_text('\n'.join(versions)+'\n')
         else:
-            (root/'schema.txt').write_text('0001_old\n'+('0002_new\n' if c.get('migrated') else ''))
+            (root/'schema.txt').write_text('0001_old\n'+('0002_new\n' if c.get('migrated') or c.get('app_only') else ''))
     elif action=='backup':
         root=pathlib.Path(args[1]); event('final-backup' if root.name=='final-backup' else 'backup')
         if c.get('backup_fails')==root.name: print(c['secret'],file=sys.stderr); fail()
@@ -375,6 +379,28 @@ class StateTests(unittest.TestCase):
         self.run_state("business", plan, before, after, ok=False)
         plan.write_text(json.dumps({"carryover": 2}))
         self.run_state("business", plan, before, after)
+        plan.write_text(json.dumps({"carryover": 3}))
+        self.run_state("business", plan, before, after)
+
+    def test_app_only_carryover_requires_identical_migrations(self):
+        migrations = self.root / "migrations"
+        migrations.mkdir()
+        for name in ("0154_before", "0155_current"):
+            (migrations / f"{name}.sql").write_text("fixture")
+        applied = self.root / "applied.txt"
+        plan = self.root / "plan.json"
+        plan.write_text(json.dumps({"carryover": 3}))
+        applied.write_text("0154_before\n0155_current\n")
+        self.run_state("carryover-eligible", plan, applied, migrations)
+        applied.write_text("0154_before\n")
+        self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
+        applied.write_text("0154_before\n0155_current\n9999_unknown\n")
+        self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
+        applied.write_text("")
+        self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
+        applied.write_text("0154_before\n0155_current\n")
+        plan.write_text(json.dumps({"carryover": 0}))
+        self.run_state("carryover-eligible", plan, applied, migrations, ok=False)
 
     def test_inspect_stores_hashes_without_environment_secrets(self):
         values = []
@@ -546,10 +572,12 @@ class CLITests(unittest.TestCase):
     def log(self):
         return self.events.read_text().splitlines() if self.events.exists() else []
 
-    def call(self, command, ok=True, include_release=True, error=None, carryover=False):
+    def call(self, command, ok=True, include_release=True, error=None, carryover=False, app_only=False):
         args = ["bash", str(self.tools / "infra/release.sh"), "--config", str(self.config), command, "--yes"]
         if carryover:
             args.append("--carryover-video-0153")
+        if app_only:
+            args.append("--carryover-app-only")
         if include_release and self.release_id:
             args.extend(["--release", self.release_id])
         result = subprocess.run(args, text=True, capture_output=True, env=self.env, timeout=40)
@@ -562,8 +590,10 @@ class CLITests(unittest.TestCase):
             self.assertIn(error, result.stdout + result.stderr)
         return result
 
-    def prepare(self, through="build", carryover=False):
-        self.call("preflight", carryover=carryover)
+    def prepare(self, through="build", carryover=False, app_only=False):
+        if app_only:
+            self.change(app_only=True)
+        self.call("preflight", carryover=carryover, app_only=app_only)
         self.release_id = next((self.state_dir / "releases").iterdir()).name
         if through in ("backup", "build"):
             self.call("backup")
@@ -579,6 +609,41 @@ class CLITests(unittest.TestCase):
     def enable_0153_carryover(self):
         self.change(carryover_0153=True)
         (self.tools / "infra/release/carryover_0153.py").write_text(CARRYOVER_STUB)
+
+    def test_app_only_carryover_blocks_pending_schema_before_maintenance(self):
+        self.call("preflight", app_only=True, ok=False,
+                  error="application-only carryover requires identical applied migrations")
+        self.assert_no_stop_or_up()
+
+    def test_app_only_carryover_skips_migration_and_preserves_obligations(self):
+        self.prepare(app_only=True)
+        self.call("deploy")
+        events = self.log()
+        order = [events.index(k) for k in ("maintenance", "stop-core", "business-fingerprint",
+                                            "final-backup", "up-core", "up-caddy")]
+        self.assertEqual(order, sorted(order), events)
+        self.assertEqual(events.count("business-fingerprint"), 2)
+        for forbidden in ("migrate", "schema-doctor", "backfill-funds"):
+            self.assertNotIn(forbidden, events)
+        self.assertTrue((self.run_dir() / "app-only.ok").exists())
+        self.assertTrue((self.run_dir() / "deployed.ok").exists())
+
+    def test_app_only_carryover_rejects_business_change_before_candidate(self):
+        self.prepare(app_only=True)
+        self.change(business_changes=True)
+        self.call("deploy", ok=False, error="existing task and video business rows changed")
+        self.assertEqual(self.log().count("business-fingerprint"), 2)
+        self.assertNotIn("up-core", self.log())
+
+    def test_app_only_carryover_rollback_requires_compatibility_evidence(self):
+        self.prepare(app_only=True)
+        self.call("deploy")
+        before = len(self.log())
+        self.change(deny_approvals=["before-rollback"])
+        self.call("rollback", ok=False)
+        events = self.log()[before:]
+        self.assertIn("approval:before-rollback", events)
+        self.assertNotIn("stop-core", events)
 
     def test_0153_carryover_checks_duplicate_after_old_core_stop(self):
         self.enable_0153_carryover()
