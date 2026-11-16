@@ -91,7 +91,7 @@ bash infra/release.sh --config /etc/laiai/release.conf \
 bash infra/release.sh --config /etc/laiai/release.conf --carryover-app-only preflight
 ```
 
-后续 `backup/build/deploy/verify/approve/open` 使用该预检返回的发布 ID，不再重复传标志。应用切换开始后，回退必须先提供旧版本兼容性验收证据；若新版本已创建旧版本无法处理的业务事实，应保持维护并向前修复。
+后续 `backup/build/deploy/verify/approve/open` 使用该预检返回的发布 ID，不再重复传标志。`before-maintenance` 验收在业务在线时完成；`deploy` 在候选容器健康、schema 和资金约束通过后立即恢复入口，不等待维护状态下的观察报告。入口恢复后在线观察 core/Caddy 容器健康、`/healthz`、`/api/status`、容器 CPU/内存及任务接入错误，再执行有预算约束的真实任务冒烟。观察不暂停线上业务；若健康检查失败，发布保持维护以避免把故障候选暴露给用户。应用切换开始后，回退必须先提供旧版本兼容性验收证据；若新版本已创建旧版本无法处理的业务事实，应保持维护并向前修复。
 
 ## 3. 推荐先分阶段准备
 

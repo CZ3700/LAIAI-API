@@ -617,6 +617,7 @@ class CLITests(unittest.TestCase):
 
     def test_app_only_carryover_skips_migration_and_preserves_obligations(self):
         self.prepare(app_only=True)
+        self.change(deny_approvals=["before-open"])
         self.call("deploy")
         events = self.log()
         order = [events.index(k) for k in ("maintenance", "stop-core", "business-fingerprint",
@@ -627,6 +628,8 @@ class CLITests(unittest.TestCase):
             self.assertNotIn(forbidden, events)
         self.assertTrue((self.run_dir() / "app-only.ok").exists())
         self.assertTrue((self.run_dir() / "deployed.ok").exists())
+        self.assertTrue((self.run_dir() / "open.ok").exists())
+        self.assertNotIn("approval:before-open", events)
 
     def test_app_only_carryover_rejects_business_change_before_candidate(self):
         self.prepare(app_only=True)
