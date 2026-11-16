@@ -222,6 +222,8 @@ func runCore(log *slog.Logger) (code int) {
 		ReadDB:                  readDB,             // 只读副本（仅非金钱分析读用；nil/同主库=全走主）
 		TrustedProxies:          cfg.TrustedProxies, // 可信反代（P1-2）：空=私网默认；"none"=不信任代理头
 	})
+	// 余额端点 CNY 展示折算：注入平台后台 cny_per_usd 汇率回调（仅展示，不参与记账）。
+	videoSvc.BalanceCNYPerUSD = apiSrv.EffectiveCNYPerUSD
 
 	// Notify outbox 投递循环（§4.9 统一层，leader-only 30s）：扫 pending 到期行发送，指数退避 + DLQ。
 	// 独立于每小时维护循环——任务完成回调是产品刚需，需及时投递（首次 emit 后 30s 内送出）。

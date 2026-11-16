@@ -62,6 +62,9 @@ type Service struct {
 	// shared default enabled, tenants without their own registration resolve
 	// exactly this URL from the shared callback registry.
 	consoleReturnURL string
+	// BalanceCNYPerUSD 由装配层注入（后台 cny_per_usd 设置）；nil = 余额端点
+	// 按账本原值返回 USD。仅供展示换算，不参与任何记账/冻结/结算。
+	BalanceCNYPerUSD func() (decimal.Decimal, string)
 	// 受理侧 CreateRPM 的热读缓存（model_limits.go）；并发闸不走缓存。
 	limitMu    sync.Mutex
 	limitCache modelLimitCache

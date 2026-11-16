@@ -18,6 +18,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videoasset"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -50,7 +51,10 @@ type AssetIntegrationOptions struct {
 	AssetArchiveBatch            int
 	AssetArchiveUsageWindowDays  int
 	AssetArchiveExemptRealGroups bool
-	Client                       *videoasset.ManagementClient
+	// BalanceCNYPerUSD 由装配层注入（后台 cny_per_usd 设置）；nil = 余额端点
+	// 按账本原值返回 USD。仅供展示换算，不参与任何记账/冻结/结算。
+	BalanceCNYPerUSD func() (decimal.Decimal, string)
+	Client           *videoasset.ManagementClient
 }
 
 type AssetScopeConfig struct {
@@ -267,6 +271,8 @@ func (s *Service) ConfigureAssets(options AssetIntegrationOptions) error {
 	mac := hmac.New(sha256.New, s.Secret)
 	_, _ = mac.Write([]byte("video-asset-integration-hmac:v1"))
 	s.consoleReturnURL = options.ConsoleReturnURL
+	// 余额端点展示换算回调（后台 cny_per_usd 设置）；nil = 按账本原值 USD 返回。
+	s.BalanceCNYPerUSD = options.BalanceCNYPerUSD
 	a, err := videoasset.NewService(s.DB, s.Keyring, s.Evidence, videoasset.Options{
 		Now: func() time.Time { return s.Now().UTC() }, ResolveScope: s.resolveAssetRuntime,
 		VerifyMedia: s.verifyRegisteredAssetMedia, ResolveCallback: s.resolveAssetCallbackURL,

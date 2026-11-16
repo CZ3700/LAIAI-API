@@ -257,8 +257,9 @@ paths:
         summary: 查询账户余额
         description: |
           查询当前 Gateway Key 所属组织的账户余额（只读，video:read 权限）。
-          balance 为 USD 总余额，held 为在途冻结（进行中任务的预留），available = balance - held 可用额度。
-          金额为 USD 十进制字符串；无账户行（首笔授信前）自然返回 0。跨组织查询返回各自账本，互不可见。
+          主字段为 CNY 展示值（按平台后台 cny_per_usd 汇率折算，banker's rounding 到 8 位小数；账本以 USD 记账，换算仅为展示，不参与记账/冻结/结算）。
+          cny_per_usd / rate_version 为折算所用汇率与版本；usd_balance / usd_held / usd_available 为账本 USD 原值供核对。
+          held 为在途冻结（进行中任务的预留），available = balance - held 可用额度。无账户行（首笔授信前）各字段返回 "0"。跨组织查询返回各自账本，互不可见。
         responses:
           '200':
             description: 当前组织余额
@@ -266,25 +267,45 @@ paths:
               application/json:
                 schema:
                   type: object
-                  required: [balance, held, available, currency]
+                  required: [balance, held, available, currency, cny_per_usd, rate_version, usd_balance, usd_held, usd_available]
                   properties:
                     balance:
                       type: string
-                      description: USD 总余额（十进制字符串）。
+                      description: CNY 展示余额（十进制字符串，8 位小数；按 cny_per_usd 折算）。
                     held:
                       type: string
-                      description: 在途冻结金额（进行中任务的预留）。
+                      description: 在途冻结金额（CNY 展示值）。
                     available:
                       type: string
-                      description: 可用额度 = balance - held。
+                      description: 可用额度 = balance - held（CNY 展示值）。
                     currency:
                       type: string
-                      description: 固定为 USD。
+                      description: 固定为 CNY。
+                    cny_per_usd:
+                      type: string
+                      description: 折算所用汇率。
+                    rate_version:
+                      type: string
+                      description: 汇率版本标识。
+                    usd_balance:
+                      type: string
+                      description: 账本 USD 总余额原值（供核对）。
+                    usd_held:
+                      type: string
+                      description: 账本 USD 在途冻结原值（供核对）。
+                    usd_available:
+                      type: string
+                      description: 账本 USD 可用额度原值（供核对）。
                 example:
-                  balance: '100.00000000'
-                  held: '0.0008'
-                  available: '99.9992'
-                  currency: USD
+                  balance: '730.00000000'
+                  held: '0.00584000'
+                  available: '729.99416000'
+                  currency: CNY
+                  cny_per_usd: '7.3'
+                  rate_version: ops-fx-20261112
+                  usd_balance: '100.00000000'
+                  usd_held: '0.00080000'
+                  usd_available: '99.99920000'
     delete:
       tags: [Tasks]
       operationId: deleteVideoTask
