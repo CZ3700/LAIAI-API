@@ -5564,6 +5564,55 @@
           }
         }
       }
+    },
+    "/v1/video/account/balance": {
+      "get": {
+        "description": "查询当前 Gateway Key 所属组织的账户余额（只读，video:read 权限）。balance 为 USD 总余额，held 为在途冻结（进行中任务的预留），available = balance - held 可用额度。金额为 USD 十进制字符串；无账户行（首笔授信前）自然返回 0。跨组织查询返回各自账本，互不可见。",
+        "operationId": "getAccountBalance",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "available": "99.9992",
+                  "balance": "100.00000000",
+                  "currency": "USD",
+                  "held": "0.0008"
+                },
+                "schema": {
+                  "properties": {
+                    "available": {
+                      "description": "可用额度 = balance - held。",
+                      "type": "string"
+                    },
+                    "balance": {
+                      "description": "USD 总余额（十进制字符串）。",
+                      "type": "string"
+                    },
+                    "currency": {
+                      "description": "固定为 USD。",
+                      "type": "string"
+                    },
+                    "held": {
+                      "description": "在途冻结金额（进行中任务的预留）。",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "balance",
+                    "currency",
+                    "held"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "当前组织余额"
+          }
+        },
+        "summary": "查询账户余额"
+      }
     }
   },
   "security": [
@@ -5621,5 +5670,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "d5c4a8e8b7f85c431a5af6d3ed0953fcdebe5a8a88427211e0e7b67775daf164"
+  "x-seedance-source-sha256": "f8e28f2f7655382c931c69f64c7462f91f38aa6b6429a3bf70bcd24fd123cc3f"
 }

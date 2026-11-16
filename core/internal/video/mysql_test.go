@@ -589,3 +589,54 @@ func TestMySQLVideoMergedDeleteByStatus(t *testing.T) {
 		}
 	})
 }
+
+// Gateway Key 用户余额查询（GET /v1/video/account/balance）：只读、组织隔离、
+// 金额为 USD 十进制字符串；在途冻结单列，可用额 = balance - held。
+func TestMySQLVideoAccountBalance(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	f := mysqlFixture(t)
+	v := f.create(t, "balance-1")
+	r := gin.New()
+	g := r.Group("/v1/video", f.s.Middleware())
+	g.GET("/account/balance", f.s.HandleAccountBalance)
+	call := func(key string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/video/account/balance", nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+	// 创建后：有冻结，balance = 授信 100，held = 冻结额。
+	w := call(f.plain)
+	if w.Code != 200 {
+		t.Fatalf("balance query failed: %d %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Balance   string `json:"balance"`
+		Held      string `json:"held"`
+		Available string `json:"available"`
+		Currency  string `json:"currency"`
+	}
+	must(t, json.Unmarshal(w.Body.Bytes(), &out))
+	if out.Currency != "USD" || out.Balance == "" || out.Held == "" {
+		t.Fatalf("bad balance payload: %s", w.Body.String())
+	}
+	held := f.hold(t, v.ID)
+	if out.Held != held.Amount.String() {
+		t.Fatalf("held mismatch: got %s want %s", out.Held, held.Amount.String())
+	}
+	// 组织隔离：另一组织的 Key 只看到自身账本（自身授信 100），看不到本组织的在途冻结。
+	other := mysqlFixture(t)
+	wo := call(other.plain)
+	if wo.Code != 200 {
+		t.Fatalf("other org balance query failed: %d %s", wo.Code, wo.Body.String())
+	}
+	var out2 struct {
+		Balance string `json:"balance"`
+		Held    string `json:"held"`
+	}
+	must(t, json.Unmarshal(wo.Body.Bytes(), &out2))
+	if out2.Balance != "100" || out2.Held != "0" {
+		t.Fatalf("cross-org leak: %s", wo.Body.String())
+	}
+}

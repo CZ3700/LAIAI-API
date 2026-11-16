@@ -725,3 +725,21 @@ func (s *Service) RecoverRequestLogs(ctxTime time.Time) error {
 	}
 	return nil
 }
+
+// HandleAccountBalance：GET /v1/video/account/balance —— Gateway Key 用户查询
+// 本组织账户余额（只读，video:read 权限即可）。复用 console 同源的
+// ledger.OrgBalances（跨分片 SUM 归并；无账户行时自然返回 0，不 EnsureAccount）。
+// 金额为 USD 十进制字符串（红线 8：资金面永不用浮点），held 为在途冻结。
+func (s *Service) HandleAccountBalance(c *gin.Context) {
+	posted, held, err := ledger.OrgBalances(s.DB.WithContext(c.Request.Context()), requestKey(c).OrgID, ledger.AccountUserCredit)
+	if err != nil {
+		apiError(c, 500, "internal_error")
+		return
+	}
+	c.JSON(200, gin.H{
+		"balance":   posted.String(),
+		"held":      held.String(),
+		"available": posted.Sub(held).String(),
+		"currency":  "USD",
+	})
+}

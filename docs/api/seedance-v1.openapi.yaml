@@ -250,6 +250,41 @@ paths:
                 priority: 0
         default:
           $ref: '#/components/responses/Error'
+    /v1/video/account/balance:
+      get:
+        tags: [Account]
+        operationId: getAccountBalance
+        summary: 查询账户余额
+        description: |
+          查询当前 Gateway Key 所属组织的账户余额（只读，video:read 权限）。
+          balance 为 USD 总余额，held 为在途冻结（进行中任务的预留），available = balance - held 可用额度。
+          金额为 USD 十进制字符串；无账户行（首笔授信前）自然返回 0。跨组织查询返回各自账本，互不可见。
+        responses:
+          '200':
+            description: 当前组织余额
+            content:
+              application/json:
+                schema:
+                  type: object
+                  required: [balance, held, available, currency]
+                  properties:
+                    balance:
+                      type: string
+                      description: USD 总余额（十进制字符串）。
+                    held:
+                      type: string
+                      description: 在途冻结金额（进行中任务的预留）。
+                    available:
+                      type: string
+                      description: 可用额度 = balance - held。
+                    currency:
+                      type: string
+                      description: 固定为 USD。
+                example:
+                  balance: '100.00000000'
+                  held: '0.0008'
+                  available: '99.9992'
+                  currency: USD
     delete:
       tags: [Tasks]
       operationId: deleteVideoTask
