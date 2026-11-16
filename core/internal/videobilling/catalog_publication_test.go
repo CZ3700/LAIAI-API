@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"github.com/laiai/laiai-next/core/internal/ark"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -48,6 +49,35 @@ func publicationRead(t *testing.T, tx *gorm.DB) CatalogTariffSnapshot {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// TestCatalogPublicationRefLimitCoversFullModelFamily（2026-11-16）：seedance-2.5-flash
+// 成为第 5 个 enabled 官方视频模型时 refs>4 的保守上限令公共 /api/pricing 与后台
+// 模型广场整体 503。目录上限须覆盖全模型族（现 16）。
+func TestCatalogPublicationRefLimitCoversFullModelFamily(t *testing.T) {
+	db := publicationDB(t)
+	tx := db.Begin()
+	defer tx.Rollback()
+	models := []string{"seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini", "seedance-2.5", "seedance-2.5-flash"}
+	refs := make([]CatalogTariffRef, 0, len(models))
+	for i, m := range models {
+		refs = append(refs, CatalogTariffRef{uint64(11 + i), m, "v1"})
+	}
+	for _, r := range refs {
+		if !ark.IsPublicModel(r.Model) {
+			t.Fatalf("test model must be public: %s", r.Model)
+		}
+	}
+	if _, err := ReadCatalogTariffsTx(context.Background(), tx, refs, testAt); err != nil {
+		t.Fatalf("full enabled family must fit the catalog batch: %v", err)
+	}
+	overflow := make([]CatalogTariffRef, 0, 17)
+	for i := 0; i < 17; i++ {
+		overflow = append(overflow, CatalogTariffRef{uint64(100 + i), "seedance-2.0", "v1"})
+	}
+	if _, err := ReadCatalogTariffsTx(context.Background(), tx, overflow, testAt); !errors.Is(err, ErrCatalogTariffInvalid) {
+		t.Fatal("batch beyond the catalog bound must stay rejected")
+	}
 }
 func requirePublicationReason(t *testing.T, out CatalogCellResult, want CatalogTariffReason) {
 	t.Helper()
