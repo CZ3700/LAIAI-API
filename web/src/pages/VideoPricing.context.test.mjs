@@ -1069,6 +1069,41 @@ test('late official synchronization cannot reload a different model or clear tha
   assert.equal(h.vm.notice.value, '')
 })
 
+test('4K verification fills target rates without attaching lower-resolution minimum evidence', async t => {
+  const h = await harness(t, {selectedModel: 'seedance-2.5'}), fallback = h.defaultGet
+  const minimumVersion = 'official-min-seedance-2.5-20261116-4k-v1'
+  const cells = [false, true].flatMap(input_video => ['generate', 'draft_conversion'].map(mode => ({
+    mode, resolution: '4k', input_video, service_tier: 'default', draft: false,
+    available: !input_video, enabled: false, retail_usd_per_1m: '', supplier_cny_per_1m: '', risk_multiplier: '1', minimum_rule_version: '',
+  })))
+  h.defaultGet = call => {
+    if (call.path.endsWith('/verification?profile=4k')) return {...verification(call.orgId, 'seedance-2.5'), profile_version: 'ark-official-20261116-4k-v1', minimum_version: minimumVersion, minimum_resolutions: ['480p', '720p', '1080p'], verified: true}
+    if (call.path.endsWith('/pricing')) return {...pricing(call.orgId, 'seedance-2.5'), fx_usd_per_cny: '0.14', cells: [pricing(call.orgId, 'seedance-2.5').cells[0], ...cells.map(c => ({...c}))]}
+    if (call.path.endsWith('/minimum-rules')) return {items: [{version: minimumVersion}]}
+    if (call.path.endsWith('/reference-candidates')) {
+      const data = reference(call.orgId, 'seedance-2.5')
+      data.prices.push(...[false, true].map(input_video => ({key: `generate/4k/${input_video}/default/false`, mode: 'generate', resolution: '4k', input_video, service_tier: 'default', draft: false, unit: 'CNY/1M_tokens', precision: 'exact', supplier_cny_per_1m: input_video ? '19' : '31', source_rows: []})))
+      return data
+    }
+    return fallback(call)
+  }
+  h.vm.verificationProfile.value = '4k'
+  await until(() => !h.vm.loading.value && h.vm.draftWorkflowReady.value)
+  const got = h.vm.pricing.value.cells.slice(1)
+  assert.deepEqual(got.map(c => c.supplier_cny_per_1m), ['31', '31', '19', '19'])
+  assert.ok(got.every(c => !c.enabled && c.retail_usd_per_1m && c.minimum_rule_version === ''))
+  assert.equal(writes(h).length, 0)
+  // Once the complete captured 4K table is part of the profile, its version
+  // can be attached to both ordinary and Draft-conversion input-video prices.
+  h.vm.verification.value.minimum_resolutions.push('4k')
+  h.vm.inheritOfficialPricing()
+  // Existing populated drafts are not silently rewritten. Explicit adoption
+  // computes the missing minimum version for the selected new combinations.
+  h.vm.selectedKeys.value = got.filter(c => c.input_video).map(c => `${c.mode}/${c.resolution}/${c.input_video}/${c.service_tier}/${c.draft}`)
+  assert.ok(h.vm.adoptionChanges.value.every(c => c.minimumAfter === minimumVersion))
+  assert.equal(h.vm.adoptionChanges.value.length, 2)
+})
+
 test('a draft edited during official synchronization is kept until explicit discard and reload', async t => {
   const h = await harness(t), response = deferred()
   h.vm.verificationOpen.value = true
@@ -1095,6 +1130,9 @@ test('FPS warning follows actual evidence, not the Seedance model name', async t
   assert.equal(h.vm.sourceFPSNotice.value, '')
   h.vm.candidates.value.minimum.cells.push({fps: null})
   assert.equal(h.vm.missingSourceFPS.value, true)
+  h.vm.verification.value.verified = true
+  assert.equal(h.vm.sourceFPSNotice.value, 'fpsVerifiedRule')
+  assert.equal(h.vm.candidates.value.minimum.cells.at(-1).fps, null)
   assert.equal(h.vm.officialSourceURL('https://example.com/official'), 'https://example.com/official')
   assert.equal(h.vm.officialSourceURL('javascript:alert(1)'), undefined)
   assert.equal(h.vm.officialSourceURL('https://user:password@example.com/'), undefined)

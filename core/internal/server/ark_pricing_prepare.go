@@ -113,7 +113,7 @@ func validatePricingBinding(tx *gorm.DB, cfg video.ModelConfig) error {
 }
 func resolvePricingSources(tx *gorm.DB, cfg video.ModelConfig, cells []pricingCell, current []videobilling.PricingRule) (pricingSourceSet, string, error) {
 	out := pricingSourceSet{SchemaVersion: 1, Refs: []pricingSourceRef{}}
-	ref, e := arkpricecatalog.ReferenceCandidates(cfg.PublicModel)
+	ref, e := arkpricecatalog.LatestReferenceCandidates(cfg.PublicModel)
 	if e != nil {
 		return out, "", e
 	}
@@ -159,7 +159,11 @@ func resolvePricingSources(tx *gorm.DB, cfg video.ModelConfig, cells []pricingCe
 		k := priceCellKey(c)
 		priceSource := false
 		if draftPricingSource != nil && (c.Draft || c.Mode == "draft_conversion") {
-			out.Refs = append(out.Refs, pricingSourceRef{Kind: "official_draft_pricing", CellKey: k, Version: arkverification.DraftVersion, SourceID: draftPricingSource.ID, RawSHA256: draftPricingSource.SHA256})
+			if c.Resolution == "4k" {
+				out.Refs = append(out.Refs, pricingSourceRef{Kind: "official_draft_pricing", CellKey: k, Version: arkverification.FourKVersion, SourceID: arkpricecatalog.FourKSourceID, RawSHA256: arkpricecatalog.FourKSourceHash()})
+			} else {
+				out.Refs = append(out.Refs, pricingSourceRef{Kind: "official_draft_pricing", CellKey: k, Version: arkverification.DraftVersion, SourceID: draftPricingSource.ID, RawSHA256: draftPricingSource.SHA256})
+			}
 		}
 		if p, ok := currentMap[k]; ok {
 			priceSource = true

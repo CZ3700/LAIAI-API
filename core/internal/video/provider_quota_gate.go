@@ -64,17 +64,36 @@ func quotaPace(rpm int) time.Duration {
 	return time.Duration(intervalMS) * time.Millisecond
 }
 
+// Seedance 2.5 Premium uses independent 4K and non-4K allocations. Until
+// account-specific 4K data is present, keep the documented 1 concurrent / 15 RPM
+// ceiling; tighter official or manual limits, including zero, still win.
+func seedance25FourKQuota(q ProviderModelQuotaEffective) ProviderModelQuotaEffective {
+	rpm, concurrent := 15, 1
+	if q.CreateTaskRPM4K != nil && *q.CreateTaskRPM4K < rpm {
+		rpm = *q.CreateTaskRPM4K
+	}
+	if q.ConcurrentRequests4K != nil && *q.ConcurrentRequests4K < concurrent {
+		concurrent = *q.ConcurrentRequests4K
+	}
+	q.CreateTaskRPM, q.ConcurrentRequests = nil, nil
+	q.CreateTaskRPM4K, q.ConcurrentRequests4K = &rpm, &concurrent
+	return q
+}
+
 // checkProviderModelConcurrencyTx counts tasks for the main account and
 // reviewed public model across organizations, channels, projects and scopes.
 // Admission includes accepted work; outbound dispatch excludes accepted work
 // so an admitted backlog can drain when the provider is at capacity.
-// A 4K task consumes both the general concurrency pool and its 4K subpool.
+// 2.0 4K consumes the general pool and its subpool; 2.5 uses independent pools.
 func (s *Service) checkProviderModelConcurrencyTx(tx *gorm.DB, accountRef, publicModel, upstreamModel string, is4K, includeAccepted bool) error {
 	q, _, found, err := readProviderModelQuotaTx(tx, accountRef, publicModel, upstreamModel)
-	if err != nil || !found {
+	if err != nil || !found && !(publicModel == ark.Model25 && is4K) {
 		return err
 	}
 	effective := q.Effective()
+	if publicModel == ark.Model25 && is4K {
+		effective = seedance25FourKQuota(effective)
+	}
 	// A known zero CreateTask RPM is a hard upstream/manual denial. Reject
 	// fresh admissions before reserving funds; already-accepted work is
 	// retried by claimProviderModelSendTx if the quota later rises.
@@ -91,9 +110,17 @@ func (s *Service) checkProviderModelConcurrencyTx(tx *gorm.DB, accountRef, publi
 	base := func() *gorm.DB {
 		return locked(tx).Table("video_task_parameters AS p").Joins("JOIN tasks AS t ON t.org_id = p.org_id AND t.task_id = p.task_id").Where("p.account_ref = ? AND p.public_model = ? AND t.provider = ? AND t.status IN ?", accountRef, publicModel, Provider, active)
 	}
+	resolutionPath := "JSON_UNQUOTE(JSON_EXTRACT(p.parameters_json, '$.Resolution'))"
+	if tx.Dialector.Name() == "sqlite" {
+		resolutionPath = "json_extract(p.parameters_json, '$.Resolution')"
+	}
 	var count int64
 	if effective.ConcurrentRequests != nil {
-		if err := base().Count(&count).Error; err != nil {
+		query := base()
+		if publicModel == ark.Model25 {
+			query = query.Where(resolutionPath+" <> ?", "4k")
+		}
+		if err := query.Count(&count).Error; err != nil {
 			return err
 		}
 		if count >= int64(*effective.ConcurrentRequests) {
@@ -102,11 +129,7 @@ func (s *Service) checkProviderModelConcurrencyTx(tx *gorm.DB, accountRef, publi
 	}
 	if is4K && effective.ConcurrentRequests4K != nil {
 		count = 0
-		path := "JSON_UNQUOTE(JSON_EXTRACT(p.parameters_json, '$.Resolution')) = ?"
-		if tx.Dialector.Name() == "sqlite" {
-			path = "json_extract(p.parameters_json, '$.Resolution') = ?"
-		}
-		if err := base().Where(path, "4k").Count(&count).Error; err != nil {
+		if err := base().Where(resolutionPath+" = ?", "4k").Count(&count).Error; err != nil {
 			return err
 		}
 		if count >= int64(*effective.ConcurrentRequests4K) {
@@ -116,8 +139,8 @@ func (s *Service) checkProviderModelConcurrencyTx(tx *gorm.DB, accountRef, publi
 	return nil
 }
 
-// claimProviderModelSendTx spends an account-wide CreateTask slot and, for 4K,
-// also the separate 4K slot. It is intentionally independent of the legacy
+// claimProviderModelSendTx spends the account-wide CreateTask allocation for
+// the selected pool (independent 4K/non-4K for 2.5). It is independent of the legacy
 // scope/action rateTx gate. Denial must leave the task accepted and its hold
 // intact; worker candidate selection excludes it until retryAt.
 func (s *Service) claimProviderModelSendTx(tx *gorm.DB, accountRef, publicModel, upstreamModel string, is4K bool, at time.Time) (allowed bool, retryAt time.Time, err error) {
@@ -125,10 +148,13 @@ func (s *Service) claimProviderModelSendTx(tx *gorm.DB, accountRef, publicModel,
 	if err != nil {
 		return false, time.Time{}, err
 	}
-	if !found {
+	if !found && !(publicModel == ark.Model25 && is4K) {
 		return true, time.Time{}, nil
 	}
 	effective := q.Effective()
+	if publicModel == ark.Model25 && is4K {
+		effective = seedance25FourKQuota(effective)
+	}
 	base := effective.CreateTaskRPM
 	var fourK *int
 	if is4K {

@@ -11,7 +11,7 @@ func IsPublicModel(model string) bool {
 func Is20Variant(model string) bool { return model == Model20Fast || model == Model20Mini }
 
 // Is25Family covers the 2.5-series behavioral branches (first/last-frame
-// adaptive, 4k ban, draft-480p): seedance-2.5-flash shares the family semantics
+// adaptive, draft-480p): seedance-2.5-flash shares the family semantics
 // while its own capability flags gate Draft/Omni/ImageFrames support.
 func Is25Family(model string) bool { return model == Model25 || model == Model25Flash }
 

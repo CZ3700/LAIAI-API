@@ -167,6 +167,9 @@ func loadPricingRebind(tx *gorm.DB, model string, channelID uint64, now time.Tim
 		return fail(err)
 	}
 	reference, err := arkpricecatalog.ReferenceCandidates(model)
+	if model == ark.Model25 && containsPrice(cap.Resolutions, "4k") {
+		reference, err = arkpricecatalog.LatestReferenceCandidates(model)
+	}
 	if err != nil {
 		return fail(err)
 	}

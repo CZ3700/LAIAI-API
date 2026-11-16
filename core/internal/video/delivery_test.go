@@ -178,6 +178,15 @@ func TestMySQLDeliveryLegacyReadBackfillAndExpiry(t *testing.T) {
 	var receipt QueryReceipt
 	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&receipt).Error)
 	must(t, f.s.DB.Model(&State{}).Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).Update("result_payload_ref", receipt.PayloadRef).Error)
+	var st State
+	must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&st).Error)
+	// Keep the query gate occupied while asserting that a detail read stays
+	// local. The production 50ms interval can expire during loaded CI runs.
+	gate := f.s.DB.Model(&ProviderRate{}).Where("scope_id = ? AND action = ?", st.ProviderScopeID, "query").Update("next_allowed_at", gorm.Expr("DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 5 SECOND)"))
+	must(t, gate.Error)
+	if gate.RowsAffected != 1 {
+		t.Fatal("query gate fixture did not match exactly one row")
+	}
 	r := deliveryRouter(f)
 	before := f.gets.Load()
 	w := deliveryRequest(f, r, "/v1/video/generations")

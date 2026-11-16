@@ -120,6 +120,9 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if in.Draft != nil {
 		p.Draft = *in.Draft
 	}
+	if p.Draft && in.Resolution == nil {
+		p.Resolution = "480p"
+	}
 	if in.ServiceTier != nil {
 		p.ServiceTier = *in.ServiceTier
 	}
@@ -132,7 +135,7 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if in.OutputFormat != nil {
 		p.OutputFormat = *in.OutputFormat
 	}
-	if !contains([]string{"480p", "720p", "1080p", "4k"}, p.Resolution) || !contains(cap.Resolutions, p.Resolution) || (Is25Family(in.Model) && p.Resolution == "4k") {
+	if !contains([]string{"480p", "720p", "1080p", "4k"}, p.Resolution) || !contains(cap.Resolutions, p.Resolution) || (in.Model == Model25Flash && p.Resolution == "4k") {
 		return unsupported("resolution")
 	}
 	if !contains([]string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"}, p.Ratio) || !contains(cap.Ratios, p.Ratio) {
@@ -292,8 +295,8 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if drafts == 0 && p.OmniReferenceTaskType == "extend" && (videos != 1 || p.Ratio != "adaptive") {
 		return bad("omni_reference_task_type", "extend mode requires one video and adaptive ratio")
 	}
-	if drafts > 0 && (drafts != 1 || len(content) != 1 || in.Resolution == nil || *in.Resolution != "1080p" || in.Duration != nil || in.Frames != nil || in.Ratio != nil || in.Seed != nil || in.GenerateAudio != nil || in.OmniReferenceTaskType != nil || in.BitrateMode != nil || p.Draft) {
-		return bad("content", "draft conversion requires only its parent and resolution 1080p; inherited fields cannot be supplied")
+	if drafts > 0 && (drafts != 1 || len(content) != 1 || in.Resolution == nil || !(*in.Resolution == "1080p" || in.Model == Model25 && *in.Resolution == "4k") || in.Duration != nil || in.Frames != nil || in.Ratio != nil || in.Seed != nil || in.GenerateAudio != nil || in.OmniReferenceTaskType != nil || in.BitrateMode != nil || p.Draft) {
+		return bad("content", "draft conversion requires only its parent and resolution 1080p or 4k; inherited fields cannot be supplied")
 	}
 	// Keep the default service tier in billing context, not the optional upstream request field.
 	payload := map[string]any{"model": cap.UpstreamModel, "content": content, "resolution": p.Resolution, "watermark": p.Watermark, "return_last_frame": p.ReturnLastFrame, "execution_expires_after": p.ExecutionExpiresAfter}

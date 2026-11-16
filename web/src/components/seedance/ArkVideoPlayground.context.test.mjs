@@ -348,3 +348,23 @@ test('sample identity survives a query response that omits the draft flag', asyn
   h.vm.useDraftTask()
   assert.equal(h.vm.draftTaskId.value, 'task_existing_preview')
 })
+
+test('4K conversion quotes its target and switching resolution invalidates the quote', async t => {
+  const h = await harness(t, 'seedance-2.5')
+  h.vm.capabilities.value.publication.combinations.push({mode: 'draft_conversion', resolution: '4k', input_video: false, service_tier: 'default', draft: false, status: 'published'})
+  h.respond = () => json({reserved_amount: '4.5', pricing_version: '4k-price'})
+  h.vm.generationMode.value = 'convert'
+  h.vm.draftTaskId.value = 'task_preview'
+  h.vm.conversionResolution.value = '4k'
+  await vue.nextTick()
+  await h.vm.estimate()
+  assert.deepEqual(JSON.parse(h.calls.at(-1).options.body), {model: 'seedance-2.5', content: [{type: 'draft_task', draft_task: {id: 'task_preview'}}], resolution: '4k'})
+  assert.ok(h.vm.quote.value)
+  h.vm.conversionResolution.value = '1080p'
+  await vue.nextTick()
+  assert.equal(h.vm.quote.value, null)
+  h.vm.capabilities.value.publication.combinations = h.vm.capabilities.value.publication.combinations.filter(c => c.resolution !== '4k')
+  await vue.nextTick()
+  h.vm.conversionResolution.value = '4k'
+  assert.equal(h.vm.canEstimate.value, false)
+})

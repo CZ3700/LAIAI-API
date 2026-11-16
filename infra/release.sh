@@ -29,6 +29,8 @@ Usage: bash infra/release.sh [--config FILE] COMMAND [--release ID] [--yes]
                exact 0140/0141 watermark-only schema expansion.
   --carryover-video-0153  Preflight only: preserve existing obligations for the
                exact 0150 -> 0153 callback, quota and asset schema expansion.
+  --carryover-app-only  Preflight only: preserve in-flight obligations when the
+               target and database have exactly the same applied migrations.
 All mutating commands require a trusted root-owned configuration and an exclusive lock.
 --yes removes the interactive prompt; it does not bypass any validation or approval.
 EOF
@@ -64,6 +66,7 @@ while (($#)); do
     --yes) YES=1; shift;;
     --carryover-watermark) CARRYOVER_REQUEST=1; shift;;
     --carryover-video-0153) CARRYOVER_REQUEST=2; shift;;
+    --carryover-app-only) CARRYOVER_REQUEST=3; shift;;
     -h|--help|help) usage; exit 0;;
     --*) die "Unknown option: $1";;
     *) [[ -z "$COMMAND" ]] || die 'Only one command is allowed'; COMMAND=$1; shift;;
@@ -477,7 +480,10 @@ open_stage() {
   [[ -f "$STATE_DIR/active-release" && $(cat "$STATE_DIR/active-release") == "$RELEASE_ID" ]] || die 'Another release owns the runtime; refusing stale open.'
   verify_stage; PHASE=open
   if [[ -f "$RUN_DIR/open.ok" ]]; then log 'Release is already open; verified without reloading its routes.'; return; fi
-  external_check before-open
+  # For an application-only switch, finish the health/schema/funds checks and
+  # reopen immediately. Observe live traffic after ingress is restored; do not
+  # hold the public service in maintenance for a monitoring window.
+  if (( CARRYOVER != 3 )); then external_check before-open; fi
   restore_ingress; mark open
   printf '%s\n' "$RELEASE_ID" > "$STATE_DIR/current"
   log 'Release opened. Perform business acceptance within the approved test budget.'
@@ -506,7 +512,8 @@ deploy_stage() {
     ' || die 'Candidate scanner did not reject EICAR and accept clean input.'
   (cd "$RUN_DIR/backup" && sha256sum -c checksums.sha256 >/dev/null)
   (cd "$RUN_DIR" && sha256sum -c candidate-images.tar.sha256 >/dev/null)
-  compose new; check_data preflight; external_check before-maintenance
+  compose new; check_data preflight
+  if (( CARRYOVER != 3 )); then external_check before-maintenance; fi
   if (( CARRYOVER )); then state carryover-eligible "$PLAN" "$RUN_DIR/schema.txt" "$SOURCE_DIR/migrations"; fi
   maintenance_enter
   # Existing workers may finish after ingress is closed; do not erase unknown tasks/holds.
@@ -529,40 +536,53 @@ deploy_stage() {
   mkdir "$parent/final-backup"
   RUN_DIR="$parent/final-backup"; release_backup; RUN_DIR=$parent
   mark final-backup
-  date -u +%FT%TZ > "$RUN_DIR/backfill-cutoff"
-  # DDL can commit even when the migration process fails: mark before the first call.
-  mark migration-started
-  run_tool migrate -dir /app/migrations > "$RUN_DIR/migrate.log"
-  run_tool migrate -dir /app/migrations >> "$RUN_DIR/migrate.log"
-  run_tool schema-doctor -dir /app/migrations > "$RUN_DIR/doctor.log"
-  check_data post-migration "$CARRYOVER"
-  state schema "$RUN_DIR/schema.txt" "$SOURCE_DIR/migrations" exact
-  state funds "$RUN_DIR/funds-before.json" "$RUN_DIR/data-post-migration.json"
-  if (( CARRYOVER )); then business_fingerprint after > "$RUN_DIR/business-post-migration.sha256"; state business "$PLAN" "$RUN_DIR/business-before.sha256" "$RUN_DIR/business-post-migration.sha256"; fi
-  if (( CARRYOVER == 1 )); then watermark_disabled; fi
-  mark migrated
-  local output iteration complete=0 cutoff
-  local complete_pattern='^complete: [0-9]+ source rows projected before '
-  local batch_pattern='^batch limit reached: [0-9]+ source rows projected;'
-  cutoff=$(cat "$RUN_DIR/backfill-cutoff")
-  for ((iteration=0; iteration<100; iteration++)); do
+  if (( CARRYOVER == 3 )); then
+    # No schema or fund backfill is permitted on this path. The old worker has
+    # stopped cleanly; compare task/business and money facts again immediately
+    # before starting the candidate so existing liabilities are carried over.
+    mark app-switch-started
+    state schema "$RUN_DIR/schema.txt" "$SOURCE_DIR/migrations" exact
+    check_data post-backfill "$CARRYOVER"
+    state funds "$RUN_DIR/funds-before.json" "$RUN_DIR/data-post-backfill.json"
+    business_fingerprint after > "$RUN_DIR/business-post-backfill.sha256"
+    state business "$PLAN" "$RUN_DIR/business-before.sha256" "$RUN_DIR/business-post-backfill.sha256"
+    mark app-only
+  else
+    date -u +%FT%TZ > "$RUN_DIR/backfill-cutoff"
+    # DDL can commit even when the migration process fails: mark before the first call.
+    mark migration-started
+    run_tool migrate -dir /app/migrations > "$RUN_DIR/migrate.log"
+    run_tool migrate -dir /app/migrations >> "$RUN_DIR/migrate.log"
+    run_tool schema-doctor -dir /app/migrations > "$RUN_DIR/doctor.log"
+    check_data post-migration "$CARRYOVER"
+    state schema "$RUN_DIR/schema.txt" "$SOURCE_DIR/migrations" exact
+    state funds "$RUN_DIR/funds-before.json" "$RUN_DIR/data-post-migration.json"
+    if (( CARRYOVER )); then business_fingerprint after > "$RUN_DIR/business-post-migration.sha256"; state business "$PLAN" "$RUN_DIR/business-before.sha256" "$RUN_DIR/business-post-migration.sha256"; fi
+    if (( CARRYOVER == 1 )); then watermark_disabled; fi
+    mark migrated
+    local output iteration complete=0 cutoff
+    local complete_pattern='^complete: [0-9]+ source rows projected before '
+    local batch_pattern='^batch limit reached: [0-9]+ source rows projected;'
+    cutoff=$(cat "$RUN_DIR/backfill-cutoff")
+    for ((iteration=0; iteration<100; iteration++)); do
+      output=$(run_tool backfill-funds -before "$cutoff" -limit 100 -batches 100)
+      printf '%s\n' "$output" >> "$RUN_DIR/backfill.log"
+      if [[ "$output" =~ $complete_pattern ]]; then complete=1; break; fi
+      [[ "$output" =~ $batch_pattern ]] || die 'Unrecognized backfill result.'
+    done
+    ((complete == 1)) || die 'Backfill iteration limit reached; remain in maintenance.'
     output=$(run_tool backfill-funds -before "$cutoff" -limit 100 -batches 100)
-    printf '%s\n' "$output" >> "$RUN_DIR/backfill.log"
-    if [[ "$output" =~ $complete_pattern ]]; then complete=1; break; fi
-    [[ "$output" =~ $batch_pattern ]] || die 'Unrecognized backfill result.'
-  done
-  ((complete == 1)) || die 'Backfill iteration limit reached; remain in maintenance.'
-  output=$(run_tool backfill-funds -before "$cutoff" -limit 100 -batches 100)
-  [[ "$output" == "complete: 0 source rows projected before $cutoff" ]] || die 'Backfill replay was not empty.'
-  check_data post-backfill "$CARRYOVER"
-  state funds "$RUN_DIR/funds-before.json" "$RUN_DIR/data-post-backfill.json"
-  if (( CARRYOVER )); then business_fingerprint after > "$RUN_DIR/business-post-backfill.sha256"; state business "$PLAN" "$RUN_DIR/business-before.sha256" "$RUN_DIR/business-post-backfill.sha256"; fi
-  if (( CARRYOVER == 1 )); then watermark_disabled; fi
-  if (( CARRYOVER == 2 )); then
-    python3 "$TOOL_DIR/carryover_0153.py" baseline "$MYSQL_CID" "$RUN_DIR/carryover-0153-baseline.json" \
-      || die '0153 features are already active or the database-time baseline is unavailable.'
+    [[ "$output" == "complete: 0 source rows projected before $cutoff" ]] || die 'Backfill replay was not empty.'
+    check_data post-backfill "$CARRYOVER"
+    state funds "$RUN_DIR/funds-before.json" "$RUN_DIR/data-post-backfill.json"
+    if (( CARRYOVER )); then business_fingerprint after > "$RUN_DIR/business-post-backfill.sha256"; state business "$PLAN" "$RUN_DIR/business-before.sha256" "$RUN_DIR/business-post-backfill.sha256"; fi
+    if (( CARRYOVER == 1 )); then watermark_disabled; fi
+    if (( CARRYOVER == 2 )); then
+      python3 "$TOOL_DIR/carryover_0153.py" baseline "$MYSQL_CID" "$RUN_DIR/carryover-0153-baseline.json" \
+        || die '0153 features are already active or the database-time baseline is unavailable.'
+    fi
+    mark backfilled
   fi
-  mark backfilled
   "${DC[@]}" up -d --no-build --no-deps --pull never --wait --wait-timeout 180 --scale core=1 core >/dev/null
   "${DC[@]}" up -d --no-build --no-deps --pull never caddy >/dev/null
   mark deployed
@@ -580,7 +600,7 @@ rollback_stage() {
   local actual attempt ready=0
   actual=$(docker inspect --format '{{.Image}}' "$CORE_CID")
   [[ "$actual" == "$(get snapshot.core.image)" || "$actual" == "$(state get "$RUN_DIR/images.json" core)" ]] || die 'Running core belongs to another release; refusing stale rollback.'
-  if [[ ! -f "$RUN_DIR/migration-started.ok" ]]; then
+  if [[ ! -f "$RUN_DIR/migration-started.ok" && ! -f "$RUN_DIR/app-switch-started.ok" ]]; then
     [[ "$actual" == "$(get snapshot.core.image)" && $(docker inspect --format '{{.Image}}' "$CADDY_CID") == "$(get snapshot.caddy.image)" ]] || die 'Pre-migration containers unexpectedly changed.'
   else
     external_check before-rollback
@@ -608,7 +628,7 @@ rollback_stage() {
     ((ready)) || die 'Original Caddy did not recover with publicly verified maintenance; core was not changed.'
   fi
   maintenance_enter
-  if [[ ! -f "$RUN_DIR/migration-started.ok" ]]; then
+  if [[ ! -f "$RUN_DIR/migration-started.ok" && ! -f "$RUN_DIR/app-switch-started.ok" ]]; then
     docker start "$CORE_CID" >/dev/null
     ready=0
     for ((attempt=0; attempt<90; attempt++)); do

@@ -158,3 +158,50 @@ func TestProviderModelSendGateKeepsLegacyFallbackWithoutSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSeedance25FourKUsesIndependentPoolAndDocumentedFallback(t *testing.T) {
+	db := catalogLocalDB(t)
+	providerQuotaLocalSchema(t, db)
+	must(t, db.Exec(`CREATE TABLE tasks(org_id INTEGER,task_id TEXT,provider TEXT,status TEXT)`).Error)
+	must(t, db.Exec(`CREATE TABLE video_task_parameters(org_id INTEGER,task_id TEXT,account_ref TEXT,public_model TEXT,parameters_json TEXT)`).Error)
+	s := &Service{DB: db}
+	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	claim := func(is4K bool, at time.Time) (bool, time.Time, error) {
+		var ok bool
+		var retry time.Time
+		err := db.Transaction(func(tx *gorm.DB) error {
+			var e error
+			ok, retry, e = s.claimProviderModelSendTx(tx, "mainaccount", ark.Model25, "doubao-seedance-2-5-260628", is4K, at)
+			return e
+		})
+		return ok, retry, err
+	}
+	if ok, _, err := claim(true, at); !ok || err != nil {
+		t.Fatal(ok, err)
+	}
+	if ok, retry, err := claim(true, at.Add(time.Second)); ok || err != nil || !retry.Equal(at.Add(4*time.Second)) {
+		t.Fatalf("4K 15 RPM fallback not enforced: %v %v %v", ok, retry, err)
+	}
+	rpm, concurrency := 600, 1
+	must(t, db.Create(&ProviderModelQuota{AccountRef: "mainaccount", FoundationModel: "doubao-seedance-2-5", OfficialCreateTaskRPM: &rpm, OfficialConcurrentRequests: &concurrency}).Error)
+	if ok, _, err := claim(false, at.Add(time.Second)); !ok || err != nil {
+		t.Fatalf("4K consumed non-4K RPM: %v %v", ok, err)
+	}
+	must(t, db.Exec("INSERT INTO tasks VALUES(1,'fourk',?,'running')", Provider).Error)
+	must(t, db.Exec(`INSERT INTO video_task_parameters VALUES(1,'fourk','mainaccount',?,'{"Resolution":"4k"}')`, ark.Model25).Error)
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := s.checkProviderModelConcurrencyTx(tx, "mainaccount", ark.Model25, "doubao-seedance-2-5-260628", false, true); err != nil {
+			t.Fatalf("4K consumed non-4K concurrency: %v", err)
+		}
+		if err := s.checkProviderModelConcurrencyTx(tx, "mainaccount", ark.Model25, "doubao-seedance-2-5-260628", true, true); !errors.Is(err, ErrProviderModelConcurrencyLimit) {
+			t.Fatalf("documented 4K concurrency 1 not enforced: %v", err)
+		}
+		return nil
+	})
+	must(t, err)
+	zero := 0
+	must(t, db.Model(&ProviderModelQuota{}).Where("account_ref = ?", "mainaccount").Update("manual_create_task_rpm_4k", zero).Error)
+	if ok, _, err := claim(true, at.Add(time.Minute)); ok || err != nil {
+		t.Fatal("manual 4K zero did not override fallback", ok, err)
+	}
+}

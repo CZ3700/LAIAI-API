@@ -71,7 +71,7 @@ func TestPricingRebindRestoresAllModelsWithoutReverification(t *testing.T) {
 				if cell.Enabled {
 					enabled++
 				}
-				if cell.RiskMultiplier != "1" || cell.Mode == "generate" && !cell.Draft && !cell.Enabled {
+				if cell.RiskMultiplier != "1" || cell.Mode == "generate" && !cell.Draft && cell.Available && !cell.Enabled {
 					t.Fatal("official supported price was not made ready")
 				}
 			}

@@ -7,14 +7,15 @@ export function canDelete(task: { status: string; billing_state?: string; deleti
 }
 export type GenerationMode = 'standard' | 'draft' | 'convert'
 export interface VideoCombination { mode: string; resolution: string; input_video: boolean; service_tier: string; draft: boolean; status: string }
-export function publishedCombination(combinations: VideoCombination[] | undefined, mode: 'draft' | 'convert', inputVideo?: boolean) {
+export function publishedCombination(combinations: VideoCombination[] | undefined, mode: 'draft' | 'convert', inputVideo?: boolean, resolution?: string) {
   return (combinations ?? []).some(cell => cell.status === 'published' && cell.service_tier === 'default' &&
-    cell.mode === (mode === 'draft' ? 'generate' : 'draft_conversion') && cell.resolution === (mode === 'draft' ? '480p' : '1080p') &&
+    cell.mode === (mode === 'draft' ? 'generate' : 'draft_conversion') && (mode === 'draft' ? cell.resolution === '480p' : ['1080p', '4k'].includes(cell.resolution)) &&
+    (!resolution || cell.resolution === resolution) &&
     cell.draft === (mode === 'draft') && (inputVideo === undefined || cell.input_video === inputVideo))
 }
 export function createBody(input: { model: string; prompt: string; image: string; video: string; audio: string; duration: string; resolution: string; ratio: string; mode?: GenerationMode; draftTaskId?: string }) {
   if (input.mode === 'convert') {
-    return { model: input.model, content: [{ type: 'draft_task', draft_task: { id: input.draftTaskId?.trim() ?? '' } }], resolution: '1080p' }
+    return { model: input.model, content: [{ type: 'draft_task', draft_task: { id: input.draftTaskId?.trim() ?? '' } }], resolution: input.resolution === '4k' ? '4k' : '1080p' }
   }
   const content: Record<string, unknown>[] = [{ type: 'text', text: input.prompt.trim() }]
   for (const kind of ['image', 'video', 'audio'] as const) {

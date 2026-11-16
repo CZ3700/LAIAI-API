@@ -77,6 +77,28 @@ func TestMySQLDatabaseAuthoritySharedRateUsesPrimaryTime(t *testing.T) {
 			var st State
 			must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&st).Error)
 			funds := authorityFinancialFacts(t, f, v.ID)
+			// Check the production seed interval separately. A 50/100ms gate is
+			// too short for a concurrency assertion on a loaded CI runner.
+			seedBefore := scheduleDatabaseTime(t, f.s.DB)
+			must(t, f.s.DB.Transaction(func(tx *gorm.DB) error {
+				ok, err := f.s.rateTx(tx, st.ProviderScopeID, action)
+				if err == nil && !ok {
+					return errors.New("fresh seeded rate was denied")
+				}
+				return err
+			}))
+			var rate ProviderRate
+			must(t, f.s.DB.Where("scope_id = ? AND action = ?", st.ProviderScopeID, action).First(&rate).Error)
+			seedInterval := map[string]time.Duration{"create": 100 * time.Millisecond, "delete": 50 * time.Millisecond, "query": 50 * time.Millisecond}[action]
+			if time.Duration(rate.IntervalMS)*time.Millisecond != seedInterval || rate.NextAllowedAt.Before(seedBefore.Add(seedInterval)) {
+				t.Fatalf("unexpected seeded rate: action=%s interval_ms=%d next=%s", action, rate.IntervalMS, rate.NextAllowedAt)
+			}
+			// Keep the shared gate closed across ordinary CI scheduling delays.
+			const arbitrationInterval = 5 * time.Second
+			must(t, f.s.DB.Model(&ProviderRate{}).Where("scope_id = ? AND action = ?", st.ProviderScopeID, action).Updates(map[string]any{
+				"interval_ms":     int(arbitrationInterval / time.Millisecond),
+				"next_allowed_at": gorm.Expr("UTC_TIMESTAMP(3)"),
+			}).Error)
 			before := scheduleDatabaseTime(t, f.s.DB)
 			start := make(chan struct{})
 			type result struct {
@@ -111,14 +133,9 @@ func TestMySQLDatabaseAuthoritySharedRateUsesPrimaryTime(t *testing.T) {
 					allowed++
 				}
 			}
-			var rate ProviderRate
 			must(t, f.s.DB.Where("scope_id = ? AND action = ?", st.ProviderScopeID, action).First(&rate).Error)
 			after := scheduleDatabaseTime(t, f.s.DB)
-			// 新闸首次 INSERT 显式携带校准间隔（审计 A07：create 100ms /
-			// query 50ms / delete 50ms，与 0147 迁移一致），因此 next 允许
-			// 下限按该间隔而非旧的列默认 1 秒。
-			seedInterval := map[string]time.Duration{"create": 100 * time.Millisecond, "delete": 50 * time.Millisecond, "query": 50 * time.Millisecond}[action]
-			if allowed != 1 || rate.NextAllowedAt.Before(before.Add(seedInterval)) || rate.NextAllowedAt.After(after.Add(time.Second)) {
+			if allowed != 1 || rate.NextAllowedAt.Before(before.Add(arbitrationInterval)) || rate.NextAllowedAt.After(after.Add(arbitrationInterval+time.Second)) {
 				t.Fatalf("shared rate did not use one primary-time permit: allowed=%d before=%s next=%s after=%s", allowed, before, rate.NextAllowedAt, after)
 			}
 			if authorityFinancialFacts(t, f, v.ID) != funds || f.posts.Load() != 0 || f.gets.Load() != 0 {
@@ -159,6 +176,7 @@ func TestMySQLDatabaseAuthoritySharedRateUsesPrimaryTime(t *testing.T) {
 			}
 			return err
 		}))
+		must(t, m.s.DB.Model(&ProviderRate{}).Where("scope_id = ? AND action = ?", st.ProviderScopeID, "query").Update("next_allowed_at", gorm.Expr("DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 5 SECOND)")).Error)
 		// Both clocks remain within the 30-day delivery retention window.
 		m.s.Now = func() time.Time { return m.now.Add(24 * time.Hour) }
 		if err := m.s.refreshDelivery(context.Background(), row, st); !errors.Is(err, videoartifact.ErrSourceDeferred) {

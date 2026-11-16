@@ -147,6 +147,14 @@ func TestMySQLOfficialVideoResponseFormats(t *testing.T) {
 	f.response = nil
 	cancelledCreate := call("POST", "/v1/video/generations", "official-cancel-task")
 	cancelTask := decode(t, cancelledCreate.Body.String())
+	// Each task must bind to a distinct provider ID. The fixture's default
+	// response uses one ID per fixture, so override it for the second task.
+	f.response = func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost {
+			return reply(200, `{"id":"cgt-`+cancelTask["id"].(string)+`"}`), nil
+		}
+		return nil, errors.New("unexpected fixture request")
+	}
 	f.dispatch(t, cancelTask["id"].(string))
 	cancel := call("POST", "/v1/video/generations/"+cancelTask["id"].(string)+"/cancel", "official-cancel-1")
 	if cancel.Code != 202 {

@@ -37,7 +37,7 @@ func (s *Server) getArkReferenceCandidates(c *gin.Context) {
 			return
 		}
 	}
-	reference, e := arkpricecatalog.ReferenceCandidates(c.Param("model"))
+	reference, e := arkpricecatalog.LatestReferenceCandidates(c.Param("model"))
 	if errors.Is(e, arkpricecatalog.ErrUnsupportedModel) {
 		fail(c, 404, "official reference candidates unavailable for this model")
 		return

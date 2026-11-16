@@ -18,6 +18,9 @@ import (
 // FX. Price provenance does not confer capability or minimum-token evidence.
 func initialOfficialPricing(tx *gorm.DB, cfg video.ModelConfig, cap ark.Capability, scope video.ProviderScope, now time.Time) ([]videobilling.PricingRule, arkpricecatalog.Candidates, error) {
 	ref, err := arkpricecatalog.ReferenceCandidates(cfg.PublicModel)
+	if cfg.PublicModel == ark.Model25 && containsPrice(cap.Resolutions, "4k") {
+		ref, err = arkpricecatalog.LatestReferenceCandidates(cfg.PublicModel)
+	}
 	if err != nil {
 		return nil, ref, err
 	}
@@ -30,6 +33,9 @@ func initialOfficialPricing(tx *gorm.DB, cfg video.ModelConfig, cap ark.Capabili
 		sourceHashes[source.ID] = source.RawSHA256
 	}
 	profile, err := arkverification.Load(cfg.PublicModel)
+	if cfg.PublicModel == ark.Model25 && containsPrice(cap.Resolutions, "4k") {
+		profile, err = arkverification.Load4K(cfg.PublicModel)
+	}
 	if err != nil {
 		return nil, ref, err
 	}
@@ -62,10 +68,11 @@ func initialOfficialPricing(tx *gorm.DB, cfg video.ModelConfig, cap ark.Capabili
 			Enabled: priceCellSupported(cell, cap),
 		}
 		if price.InputVideo {
-			if minimumAvailable {
+			covered := minimumAvailable && (len(profile.MinimumResolutions) == 0 || containsPrice(profile.MinimumResolutions, price.Resolution))
+			if covered {
 				rule.MinimumRuleVersion = profile.MinimumVersion
 			}
-			if !minimumAvailable || cfg.MaxInputVideoDurationMS <= 0 {
+			if !covered || cfg.MaxInputVideoDurationMS <= 0 {
 				rule.Enabled = false
 			} else if rule.Enabled {
 				if err := videobilling.ValidateMinimumCoverageTx(tx, rule, videobilling.MinimumContext{Resolution: price.Resolution, Ratios: cap.Ratios, MinDuration: cap.MinDuration, MaxDuration: cap.MaxDuration}, int64(cap.FPS)); err != nil {

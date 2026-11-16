@@ -9,7 +9,7 @@ check_data() (
   set -Eeuo pipefail
   umask 077
   local phase=${1:?check_data requires a phase} carryover=${2:-0} scratch rc=0
-  [[ $carryover == 0 || $carryover == 1 || $carryover == 2 ]] || die 'invalid carryover gate'
+  [[ $carryover == 0 || $carryover == 1 || $carryover == 2 || $carryover == 3 ]] || die 'invalid carryover gate'
   case "$phase" in preflight|drained|post-migration|post-backfill) ;; *) die 'invalid data-check phase';; esac
   : "${MYSQL_CID:?verified MySQL container required}" "${RUN_DIR:?release run directory required}"
   [[ -d "$RUN_DIR" && ! -L "$RUN_DIR" ]] || die 'release run directory is missing or a symlink'

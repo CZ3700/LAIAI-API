@@ -117,7 +117,7 @@ func TestPricingMatrixEnumeratesWithoutEnabling(t *testing.T) {
 	for _, tc := range []struct {
 		model string
 		base  int
-	}{{ark.Model20, 8}, {ark.Model25, 6}} {
+	}{{ark.Model20, 8}, {ark.Model25, 8}} {
 		cells := priceMatrix(ark.Capability{PublicModel: tc.model}, nil)
 		n := 0
 		for _, c := range cells {

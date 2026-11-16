@@ -37,7 +37,7 @@ function reset() {
 }
 function collectedPrices(result: ReferenceCandidates & { channel_id: number }): DefaultPrice[] {
   if (result.model !== props.model || result.channel_id !== props.channelId || !Array.isArray(result.prices) || typeof result.catalog_version !== 'string') throw new Error('official_defaults_response_mismatch')
-  const resolutions = props.model === 'seedance-2.0' ? ['480p', '720p', '1080p', '4k'] : props.model === 'seedance-2.5' ? ['480p', '720p', '1080p'] : ['480p', '720p']
+  const resolutions = ['seedance-2.0', 'seedance-2.5'].includes(props.model) ? ['480p', '720p', '1080p', '4k'] : ['480p', '720p']
   const seen = new Set<string>()
   return result.prices.flatMap(cell => {
     if (cell.mode !== 'generate' || cell.service_tier !== 'default' || cell.draft !== false || typeof cell.input_video !== 'boolean' || !resolutions.includes(cell.resolution) || cell.unit !== 'CNY/1M_tokens' || cell.precision !== 'exact') return []

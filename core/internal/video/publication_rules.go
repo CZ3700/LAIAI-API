@@ -90,7 +90,7 @@ func ValidatePublicationCapability(cfg ModelConfig, cap ark.Capability, bounds m
 		}
 	}
 	for _, resolution := range cap.Resolutions {
-		if ark.Is25Family(cfg.PublicModel) && resolution == "4k" {
+		if cfg.PublicModel == ark.Model25Flash && resolution == "4k" {
 			return ErrInvalid
 		}
 		for _, ratio := range cap.Ratios {
@@ -146,7 +146,7 @@ func PublicationCellSupported(cell PublicationCell, cap ark.Capability) bool {
 	case "edit", "extend":
 		return cell.InputVideo && publicationContains(cap.OmniReferenceTaskTypes, cell.Mode)
 	case "draft_conversion":
-		return cap.DraftConversion && cell.Resolution == "1080p"
+		return cap.DraftConversion && (cell.Resolution == "1080p" || cap.PublicModel == ark.Model25 && cell.Resolution == "4k")
 	default:
 		return false
 	}

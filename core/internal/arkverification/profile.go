@@ -51,7 +51,9 @@ type Profile struct {
 	MaxInputVideoDurationMS int64                 `json:"max_input_video_duration_ms"`
 	MinimumVersion          string                `json:"minimum_version"`
 	MinimumCells            []MinimumCell         `json:"minimum_cells"`
-	Sources                 []Source              `json:"sources"`
+	// Empty preserves the historical all-resolution coverage contract.
+	MinimumResolutions []string `json:"minimum_resolutions,omitempty"`
+	Sources            []Source `json:"sources"`
 }
 
 // Source hashes identify the public Markdown bytes fetched on 2026-10-19.

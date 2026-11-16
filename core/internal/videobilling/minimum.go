@@ -67,7 +67,7 @@ func PublishMinimumTx(tx *gorm.DB, set MinimumRuleSet, cells []MinimumRuleCell) 
 	}
 	seen := map[MinimumRuleCell]bool{}
 	for _, c := range cells {
-		if c.ID != 0 || c.RuleSetID != 0 || c.OutputDurationMS < 4000 || c.OutputDurationMS > 30000 || c.OutputDurationMS%1000 != 0 || c.FPS < 1 || c.FPS > 120 || c.MinimumTokens <= 0 || !oneOf(c.Resolution, "480p", "720p", "1080p", "4k") || !oneOf(c.Ratio, "16:9", "4:3", "1:1", "3:4", "9:16", "21:9") || (set.Model == "seedance-2.0" && c.OutputDurationMS > 15000) || (set.Model == "seedance-2.5" && c.Resolution == "4k") {
+		if c.ID != 0 || c.RuleSetID != 0 || c.OutputDurationMS < 4000 || c.OutputDurationMS > 30000 || c.OutputDurationMS%1000 != 0 || c.FPS < 1 || c.FPS > 120 || c.MinimumTokens <= 0 || !oneOf(c.Resolution, "480p", "720p", "1080p", "4k") || !oneOf(c.Ratio, "16:9", "4:3", "1:1", "3:4", "9:16", "21:9") || (set.Model == "seedance-2.0" && c.OutputDurationMS > 15000) || (set.Model == "seedance-2.5-flash" && c.Resolution == "4k") {
 			return set, ErrInvalid
 		}
 		if ark.Is20Variant(set.Model) && (!oneOf(c.Resolution, "480p", "720p") || c.OutputDurationMS > 15000 || c.FPS != 24) {
