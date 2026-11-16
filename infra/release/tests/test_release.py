@@ -302,6 +302,16 @@ else: sys.exit(2)
 '''
 
 
+def walk_all(node):
+    if isinstance(node, dict):
+        yield node
+        for child in node.values():
+            yield from walk_all(child)
+    elif isinstance(node, list):
+        for child in node:
+            yield from walk_all(child)
+
+
 class StateTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="laiai-state-test-")
@@ -720,7 +730,16 @@ class OnlineRouteTests(unittest.TestCase):
         proxy = {"handler": "reverse_proxy", "dynamic_upstreams": {"name": "core", "port": "8080"}}
         routes = [{"match": [{"path": [path]}], "handle": [{"handler": "subroute", "routes": [{"handle": [copy.deepcopy(proxy)]}]}]}
                   for path in ("/healthz", "/api/*", "/v1/*")]
-        routes.append({"handle": [{"handler": "subroute", "routes": [{"handle": [{"handler": "file_server"}]}]}]})
+        # Production shape: the static route's subroute carries asset/index
+        # header routes, an edge-local try_files rewrite fallback, and the
+        # terminal file_server (see online.py drop_edge_try_files).
+        routes.append({"handle": [{"handler": "subroute", "routes": [
+            {"match": [{"path": ["/assets/*"]}], "handle": [{"handler": "headers", "response": {"set": {"Cache-Control": ["public, max-age=31536000, immutable"]}}}]},
+            {"match": [{"path": ["/", "/index.html"]}], "handle": [{"handler": "headers", "response": {"set": {"Cache-Control": ["no-cache"]}}}]},
+            {"match": [{"file": {"try_files": ["{http.request.uri.path}", "/index.html"]}}],
+             "handle": [{"handler": "rewrite", "uri": "{http.matchers.file.relative}"}]},
+            {"handle": [{"handler": "file_server"}]},
+        ]}]})
         self.original = {"apps": {"http": {"servers": {"srv0": {"routes": [{"handle": [{"handler": "subroute", "routes": routes}]}]}}}}}
         (self.root / "original.json").write_text(json.dumps(self.original))
 
@@ -787,6 +806,47 @@ class OnlineRouteTests(unittest.TestCase):
         ])
         empty = self.run_online("referenced", self.root / "original.json").stdout
         self.assertEqual(empty, "")
+
+    def test_route_switch_drops_edge_try_files_fallback(self):
+        output = self.root / "candidate.json"
+        self.run_online("route", self.root / "original.json", output,
+                        "20261116T140000Z-aaaaaaaaaaaa")
+        config = json.loads(output.read_text())
+        leftovers = [item for item in walk_all(config)
+                     if item.get("handler") == "rewrite"
+                     or (item.get("match") and any("try_files" in mm.get("file", {}) for mm in item["match"]))]
+        self.assertEqual(leftovers, [])
+        self.assertIn("online-web-20261116-140000-aaaaaaaaaaaa:8081", output.read_text())
+
+    def test_route_switch_keeps_dropping_fallback_on_online_to_online(self):
+        first = self.root / "first.json"
+        second = self.root / "second.json"
+        self.run_online("route", self.root / "original.json", first,
+                        "20261116T140000Z-aaaaaaaaaaaa")
+        # A legacy online config may still carry the edge fallback (pre-fix
+        # releases); the next switch must strip it too.
+        legacy = json.loads(first.read_text())
+        def inject(routes):
+            for r in routes:
+                if not isinstance(r, dict):
+                    continue
+                hs = r.get("handle", [])
+                for hh in hs:
+                    if isinstance(hh, dict) and hh.get("handler") == "reverse_proxy" and any(
+                            u.get("dial", "").startswith("online-web-") for u in hh.get("upstreams", [])):
+                        r["match"] = [{"file": {"try_files": ["{http.request.uri.path}", "/index.html"]}}]
+                        hs.insert(0, {"handler": "rewrite", "uri": "{http.matchers.file.relative}"})
+                        return True
+                for hh in hs:
+                    if isinstance(hh, dict) and hh.get("handler") == "subroute" and inject(hh.get("routes", [])):
+                        return True
+        self.assertTrue(inject(legacy["apps"]["http"]["servers"]["srv0"]["routes"]))
+        (self.root / "legacy.json").write_text(json.dumps(legacy))
+        self.run_online("route", self.root / "legacy.json", second,
+                        "20261116T150000Z-bbbbbbbbbbbb")
+        leftovers = [item for item in walk_all(second) if item.get("handler") == "rewrite"]
+        self.assertEqual(leftovers, [])
+        self.assertIn("online-web-20261116-150000-bbbbbbbbbbbb:8081", second.read_text())
 
     def test_frontend_overlay_preserves_caddy_executable_capability(self):
         run = self.root / "20261116T140000Z-aaaaaaaaaaaa"
