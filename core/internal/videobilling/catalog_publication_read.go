@@ -77,11 +77,14 @@ func catalogTariffSelectColumns(ctx context.Context, tx *gorm.DB, columns string
 
 // ReadCatalogTariffsTx uses at most three bounded reads in the caller's
 // transaction. Effective rules of every version remain visible to detect overlap.
+// 目录 ref 上限=公开官方视频模型总数（2026-11-16 seedance-2.5-flash 成为第 5 个
+// enabled 模型时 4 的保守值令公共定价目录与后台模型广场整体 503）。下游容量
+// （sets≤16、cells≤32001、rules≤256）在 16 refs 时仍兼容。
 func ReadCatalogTariffsTx(ctx context.Context, tx *gorm.DB, refs []CatalogTariffRef, at time.Time) (CatalogTariffSnapshot, error) {
 	if err := catalogTariffTx(ctx, tx); err != nil {
 		return CatalogTariffSnapshot{}, err
 	}
-	if at.IsZero() || len(refs) > 4 {
+	if at.IsZero() || len(refs) > 16 {
 		return CatalogTariffSnapshot{}, ErrCatalogTariffInvalid
 	}
 	for i, r := range refs {
