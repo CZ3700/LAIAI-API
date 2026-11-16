@@ -180,14 +180,14 @@ func TestMySQLVariantPublicEstimateCreateDispatchSettleAndLogs(t *testing.T) {
 							}
 							return reply(200, `{"id":"`+upstreamID+`"}`), nil
 						}
-						return reply(200, fmt.Sprintf(`{"id":%q,"model":%q,"status":"succeeded","usage":{"completion_tokens":%d,"total_tokens":%d}}`, upstreamID, state.UpstreamModel, actual, actual)), nil
+						return reply(200, fmt.Sprintf(`{"id":%q,"model":%q,"status":"succeeded","content":{"video_url":"https://example.com/variant-result.mp4"},"usage":{"completion_tokens":%d,"total_tokens":%d}}`, upstreamID, state.UpstreamModel, actual, actual)), nil
 					}
 					f.dispatch(t, created.ID)
 					f.dispatch(t, created.ID)
 					must(t, f.s.pollTask(context.Background(), f.key.OrgID, created.ID))
 					public := variantHTTP(f, router, "GET", "/v1/video/generations/"+created.ID, "", "")
 					if public.Code != 200 {
-						t.Fatalf("get status %d", public.Code)
+						t.Fatalf("get status %d: %s", public.Code, public.Body.String())
 					}
 					var final officialTaskQueryResponse
 					must(t, json.Unmarshal(public.Body.Bytes(), &final))
