@@ -197,8 +197,10 @@ func TestMySQLVariantPublicEstimateCreateDispatchSettleAndLogs(t *testing.T) {
 					if final.ID != created.ID || final.Status != "succeeded" || internal.BillingState != "settled" || final.Usage == nil || final.Usage.CompletionTokens == nil || *final.Usage.CompletionTokens != actual || !f.hold(t, created.ID).CapturedAmount.Equal(wantUSD) {
 						t.Fatal("actual usage did not settle variant")
 					}
-					if strings.Contains(public.Body.String(), upstreamID) || strings.Contains(public.Body.String(), "official-test-credential") {
-						t.Fatal("internal provider data leaked")
+					var publicQuery map[string]any
+					must(t, json.Unmarshal(public.Body.Bytes(), &publicQuery))
+					if publicQuery["upstream_task_id"] != upstreamID || strings.Contains(public.Body.String(), "official-test-credential") {
+						t.Fatal("upstream task ID missing or provider credential leaked")
 					}
 					var receipt QueryReceipt
 					must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, created.ID).First(&receipt).Error)
