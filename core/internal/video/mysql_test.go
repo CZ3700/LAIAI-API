@@ -589,3 +589,118 @@ func TestMySQLVideoMergedDeleteByStatus(t *testing.T) {
 		}
 	})
 }
+
+// Gateway Key 用户余额查询（GET /v1/video/account/balance）：只读、组织隔离、
+// 金额为 USD 十进制字符串；在途冻结单列，可用额 = balance - held。
+func TestMySQLVideoAccountBalance(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	f := mysqlFixture(t)
+	v := f.create(t, "balance-1")
+	r := gin.New()
+	g := r.Group("/v1/video", f.s.Middleware())
+	g.GET("/account/balance", f.s.HandleAccountBalance)
+	call := func(key string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/video/account/balance", nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+	// 创建后：有冻结，balance = 授信 100，held = 冻结额。
+	w := call(f.plain)
+	if w.Code != 200 {
+		t.Fatalf("balance query failed: %d %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Balance    string `json:"balance"`
+		Held       string `json:"held"`
+		Available  string `json:"available"`
+		Currency   string `json:"currency"`
+		CNYPerUSD  string `json:"cny_per_usd"`
+		USDBalance string `json:"usd_balance"`
+		USDHeld    string `json:"usd_held"`
+	}
+	must(t, json.Unmarshal(w.Body.Bytes(), &out))
+	if out.Currency != "USD" || out.Balance == "" || out.Held == "" {
+		t.Fatalf("bad balance payload: %s", w.Body.String())
+	}
+	held := f.hold(t, v.ID)
+	if out.Held != held.Amount.String() {
+		t.Fatalf("held mismatch: got %s want %s", out.Held, held.Amount.String())
+	}
+	// 未装配 CNY 回调：按账本原值 USD 返回，无 CNY 附加字段。
+	if out.CNYPerUSD != "" || out.USDBalance != "" {
+		t.Fatalf("USD fallback must omit cny fields: %s", w.Body.String())
+	}
+	if out.Available == "" {
+		t.Fatal("available field missing")
+	}
+	// 组织隔离：另一组织的 Key 只看到自身账本（自身授信 100），看不到本组织的在途冻结。
+	other := mysqlFixture(t)
+	wo := call(other.plain)
+	if wo.Code != 200 {
+		t.Fatalf("other org balance query failed: %d %s", wo.Code, wo.Body.String())
+	}
+	var out2 struct {
+		Balance string `json:"balance"`
+		Held    string `json:"held"`
+	}
+	must(t, json.Unmarshal(wo.Body.Bytes(), &out2))
+	if out2.Balance != "100" || out2.Held != "0" {
+		t.Fatalf("cross-org leak: %s", wo.Body.String())
+	}
+}
+
+// 装配 CNY 汇率回调后：主字段折算为 CNY 展示（banker's rounding 8 位小数），
+// 附 USD 原值与汇率版本供核对；换算仅为展示，不改变账本与冻结。
+func TestMySQLVideoAccountBalanceCNY(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	f := mysqlFixture(t)
+	f.s.BalanceCNYPerUSD = func() (decimal.Decimal, string) {
+		return decimal.RequireFromString("7.3"), "test-fx"
+	}
+	v := f.create(t, "balance-cny-1")
+	r := gin.New()
+	g := r.Group("/v1/video", f.s.Middleware())
+	g.GET("/account/balance", f.s.HandleAccountBalance)
+	req := httptest.NewRequest(http.MethodGet, "/v1/video/account/balance", nil)
+	req.Header.Set("Authorization", "Bearer "+f.plain)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("cny balance query failed: %d %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Balance    string            `json:"balance"`
+		Held       string            `json:"held"`
+		Available  string            `json:"available"`
+		Currency   string            `json:"currency"`
+		CNYPerUSD  string            `json:"cny_per_usd"`
+		RateVer    string            `json:"rate_version"`
+		USDBalance string            `json:"usd_balance"`
+		USDHeld    string            `json:"usd_held"`
+		USDAvail   string            `json:"usd_available"`
+		Extra      map[string]string `json:"-"`
+	}
+	must(t, json.Unmarshal(w.Body.Bytes(), &out))
+	held := f.hold(t, v.ID)
+	rate := decimal.RequireFromString("7.3")
+	if out.Currency != "CNY" || out.CNYPerUSD != "7.3" || out.RateVer != "test-fx" {
+		t.Fatalf("bad cny envelope: %s", w.Body.String())
+	}
+	// 账本授信固定 100 USD：CNY = USD × 7.3（banker's rounding，StringFixed(8) 展示）。
+	if out.Balance != "730.00000000" {
+		t.Fatalf("cny balance mismatch: got %s want 730.00000000", out.Balance)
+	}
+	wantHeld := held.Amount.Mul(rate).RoundBank(8).StringFixed(8)
+	if out.Held != wantHeld {
+		t.Fatalf("cny held mismatch: got %s want %s", out.Held, wantHeld)
+	}
+	// USD 原值核对：授信固定 100，冻结额为 hold 快照。
+	if out.USDBalance != "100" {
+		t.Fatalf("usd balance wrong: %s", out.USDBalance)
+	}
+	if out.USDHeld != held.Amount.String() {
+		t.Fatalf("usd held mismatch: got %s", out.USDHeld)
+	}
+}

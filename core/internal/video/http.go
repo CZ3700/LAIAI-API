@@ -19,6 +19,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/laiai/laiai-next/core/internal/videoruntime"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -724,4 +725,41 @@ func (s *Service) RecoverRequestLogs(ctxTime time.Time) error {
 		}
 	}
 	return nil
+}
+
+// HandleAccountBalance：GET /v1/video/account/balance —— Gateway Key 用户查询
+// 本组织账户余额（只读，video:read 权限即可）。复用 console 同源的
+// ledger.OrgBalances（跨分片 SUM 归并；无账户行时自然返回 0，不 EnsureAccount）。
+// 账本以 USD 记账（红线 8：资金面永不用浮点）；装配层注入了 CNY 汇率回调时，
+// 主字段按该汇率折算为 CNY 展示（banker's rounding 到 8 位小数），并附 USD
+// 原值与汇率供核对——换算仅为展示，不参与任何记账/冻结/结算。
+func (s *Service) HandleAccountBalance(c *gin.Context) {
+	posted, held, err := ledger.OrgBalances(s.DB.WithContext(c.Request.Context()), requestKey(c).OrgID, ledger.AccountUserCredit)
+	if err != nil {
+		apiError(c, 500, "internal_error")
+		return
+	}
+	available := posted.Sub(held)
+	resp := gin.H{
+		"balance":   posted.String(),
+		"held":      held.String(),
+		"available": available.String(),
+		"currency":  "USD",
+	}
+	if s.BalanceCNYPerUSD != nil {
+		rate, rateVersion := s.BalanceCNYPerUSD()
+		toCNY := func(usd decimal.Decimal) string {
+			return usd.Mul(rate).RoundBank(8).StringFixed(8)
+		}
+		resp["balance"] = toCNY(posted)
+		resp["held"] = toCNY(held)
+		resp["available"] = toCNY(available)
+		resp["currency"] = "CNY"
+		resp["cny_per_usd"] = rate.String()
+		resp["rate_version"] = rateVersion
+		resp["usd_balance"] = posted.String()
+		resp["usd_held"] = held.String()
+		resp["usd_available"] = available.String()
+	}
+	c.JSON(200, resp)
 }

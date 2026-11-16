@@ -16,6 +16,12 @@ type exportMoneySnapshot struct {
 	SnapshotAt time.Time `json:"rate_snapshot_at"`
 }
 
+// EffectiveCNYPerUSD 对外暴露平台展示汇率与版本标识，供装配层注入视频余额端点
+// 做展示折算；与导出快照同理，只是展示元数据，不参与账本换算。
+func (s *Server) EffectiveCNYPerUSD() (decimal.Decimal, string) {
+	return s.effectiveCNYPerUSD()
+}
+
 func (s *Server) newExportMoney(currency string) (*exportMoneySnapshot, error) {
 	if currency == "" {
 		return nil, nil
