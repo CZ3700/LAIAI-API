@@ -15,7 +15,7 @@ import (
 const FourKMinimumSourceID = "official-seedance-2.5-minimum-4k-20261116"
 const FourKMinimumCaptureID = "official-seedance-2.5-minimum-4k-capture-20261116"
 const fourKMinimumSHA256 = "33a8983370fd9e68a765d26e40e1d245bf6e4931c2b337328d892484fd521045"
-const fourKMinimumCaptureSHA256 = "e91d8d4d893e1ed97b26a9e598ed35e7dbddafecd9899efa4759df96bfc5ad3c"
+const fourKMinimumCaptureSHA256 = "2cb7afb5704e6c37f2738beed9f1ffadbba1bfaaf83b144197fec860d43ad2a2"
 
 //go:embed data/seedance-2.5-minimum-4k-20261116.tsv
 var fourKMinimumTSV []byte
