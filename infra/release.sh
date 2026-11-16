@@ -22,6 +22,9 @@ Usage: bash infra/release.sh [--config FILE] COMMAND [--release ID] [--yes]
   release      preflight -> online backup -> build -> live candidate switch.
   rollback     Hot-restore the previous routes; old containers remain running.
   verify       Check candidate containers, routes and public health.
+  retire       Remove online candidates referenced by no live route and no
+               active-release rollback record; the active pair and its rollback
+               target always survive.
   status       Show a release's recorded stages, without changing services.
   --carryover-app-only  Preflight only: preserve in-flight obligations when the
                target and database have exactly the same applied migrations.
@@ -64,7 +67,7 @@ while (($#)); do
     *) [[ -z "$COMMAND" ]] || die 'Only one command is allowed'; COMMAND=$1; shift;;
   esac
 done
-case "$COMMAND" in compare|preflight|backup|build|deploy|open|release|rollback|verify|status) ;; *) usage; exit 2;; esac
+case "$COMMAND" in compare|preflight|backup|build|deploy|open|release|rollback|verify|retire|status) ;; *) usage; exit 2;; esac
 [[ $(id -u) == 0 ]] || die 'Run on the production Linux host as root.'
 [[ $(uname -s) == Linux ]] || die 'Production execution requires Linux.'
 
@@ -444,6 +447,11 @@ rollback_stage() {
   online_rollback_stage
 }
 
+retire_stage() {
+  PHASE=retire
+  online_retire_stage
+}
+
 case "$COMMAND" in
   compare) compare_versions;;
   status)
@@ -453,6 +461,7 @@ case "$COMMAND" in
   preflight) preflight;;
   backup) confirm; backup_stage;; build) confirm; build_stage;; deploy) confirm; deploy_stage;;
   open) confirm; open_stage;; verify) verify_stage;; rollback) confirm; rollback_stage;;
+  retire) confirm; retire_stage;;
   release)
     confirm
     if [[ -n "$RUN_DIR" && -f "$RUN_DIR/deployed.ok" ]]; then

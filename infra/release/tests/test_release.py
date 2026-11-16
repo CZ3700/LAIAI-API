@@ -757,6 +757,37 @@ class OnlineRouteTests(unittest.TestCase):
                         "20261116T140000Z-aaaaaaaaaaaa", ok=False)
         self.assertFalse(output.exists())
 
+    def test_referenced_lists_only_online_candidate_dials(self):
+        config = {"apps": {"http": {"servers": {"srv0": {"routes": [
+            {"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "online-core-20261116-140000-aaaaaaaaaaaa:8080"}]}]},
+            {"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "online-web-20261116-150000-bbbbbbbbbbbb:8081"}]}]},
+            {"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "core:8080"}]}]},
+            {"handle": [{"handler": "reverse_proxy", "dynamic_upstreams": {"name": "core", "port": "8080"}}]},
+            {"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "online-core-20261116-140000-aaaaaaaaaaaa:8080"}, {"dial": "online-core-20261116-120000-999999999999:8080"}]}]},
+            {"handle": [{"handler": "file_server"}]},
+        ]}}}}}
+        (self.root / "live.json").write_text(json.dumps(config))
+        out = self.run_online("referenced", self.root / "live.json").stdout
+        self.assertEqual(out.splitlines(), [
+            "online-core-20261116-120000-999999999999",
+            "online-core-20261116-140000-aaaaaaaaaaaa",
+            "online-web-20261116-150000-bbbbbbbbbbbb",
+        ])
+
+    def test_referenced_merges_live_and_rollback_records(self):
+        live = {"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "online-core-20261116-150000-bbbbbbbbbbbb:8080"}]}]}
+        rollback = {"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "online-core-20261116-140000-aaaaaaaaaaaa:8080"}, {"dial": "online-web-20261116-140000-aaaaaaaaaaaa:8081"}]}]}
+        (self.root / "live.json").write_text(json.dumps(live))
+        (self.root / "rollback.json").write_text(json.dumps(rollback))
+        out = self.run_online("referenced", self.root / "live.json", self.root / "rollback.json").stdout
+        self.assertEqual(out.splitlines(), [
+            "online-core-20261116-140000-aaaaaaaaaaaa",
+            "online-core-20261116-150000-bbbbbbbbbbbb",
+            "online-web-20261116-140000-aaaaaaaaaaaa",
+        ])
+        empty = self.run_online("referenced", self.root / "original.json").stdout
+        self.assertEqual(empty, "")
+
     def test_frontend_overlay_preserves_caddy_executable_capability(self):
         run = self.root / "20261116T140000Z-aaaaaaaaaaaa"
         (run / "config").mkdir(parents=True)

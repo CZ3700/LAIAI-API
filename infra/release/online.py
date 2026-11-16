@@ -189,6 +189,25 @@ def route():
     write(sys.argv[3], candidate)
 
 
+def referenced():
+    # Container service names that any supplied Caddy configuration still dials.
+    # Retire keeps exactly these candidates and removes the rest; unknown
+    # configurations fail closed upstream, never here.
+    names = set()
+    for path in sys.argv[2:]:
+        config = json.load(sys.stdin) if path == '-' else read(path)
+        for item in walk(config):
+            if item.get('handler') != 'reverse_proxy':
+                continue
+            for up in item.get('upstreams', []):
+                dial = up.get('dial', '')
+                host = dial.rsplit(':', 1)[0] if ':' in dial else ''
+                if re.fullmatch(r'online-(core|web)-[a-z0-9-]+', host):
+                    names.add(host)
+    for name in sorted(names):
+        print(name)
+
+
 def previous_web():
     config = read(sys.argv[2])
     proxies = [item for item in walk(config)
@@ -222,7 +241,7 @@ def same():
 
 
 def main():
-    {'overlay': overlay, 'check-compose': check_compose,
+    {'overlay': overlay, 'check-compose': check_compose, 'referenced': referenced,
      'route': route, 'previous-web': previous_web,
      'active-core': active_core, 'same': same,
      'names': lambda: print(*names(sys.argv[2]))}[sys.argv[1]]()

@@ -76,6 +76,8 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
 
 应用代码发布不停止旧 core；在途任务继续运行。上线后只观察健康接口、资源指标和任务接入错误。旧容器保留供路由回退；数据库不做自动降级。
 
+**候选容器累积与清理（retire）**：每次在线切流都会新起一对 `infra-online-core-*`/`infra-online-web-*` 候选容器，deploy 失败的预热容器也会残留；它们不参与公网路由但持续占用资源并竞争 leader lease。当前候选对外服务、上一候选是 rollback 路由目标、基座 `infra-core-1`（别名 `core`）是最终回退锚点——三者都必须保留，其余历史候选按需执行 `bash infra/release.sh --config /etc/laiai/release.conf retire --yes` 清理（保留集合由实时路由与 active 发布回退记录自动推导，无锚点时拒绝执行；移除后复测公网探针）。每次发布后检查 `docker ps | grep online-`，只应存在当前对与回退目标对。
+
 - **镜像内容锁定**：常规生产叠加 `docker-compose.prod.yml`，`MYSQL_IMAGE`/`REDIS_IMAGE` 填 RepoDigest 形式（.env.example 有取值命令）。2026-10-21 已核对的服务器源码构建方案使用明确锁住四个服务的 `local-images.yml` 替代该 overlay：core/Caddy 为已验收本地 image ID，MySQL/Redis 为现有 RepoDigest，均不自动拉取。按[服务器构建流程](server-source-build.md)保存并核对实际清单；`infra/release-manifest.sh generate/diff` 仅辅助，还需补项目过滤、完整配置与未跟踪文件检查。
 - **迁移**：容器 entrypoint 自动跑 `/app/migrate`（重试 ~60s，失败容器退出）；大版本前先跑
   `make migrate-smoke`（真 MySQL apply×2 幂等 + schema-doctor 漂移体检）。

@@ -28,6 +28,7 @@ bash infra/release.sh --config /etc/laiai/release.conf status --release "$RELEAS
 | `deploy` | 校验备份和镜像，启动独立候选 core/前端且不绑定公网端口；内部健康后热切 Caddy 路由，检查公网健康、状态和前端。失败时热恢复旧路由。 |
 | `verify` | 核对候选镜像与健康、当前路由、迁移名和三个公网探针。 |
 | `rollback` | 在旧 core 仍运行的前提下热恢复切流前的路由；不降级数据库，不停止公网入口。 |
+| `retire` | 移除既不被当前公网路由引用、也不被 active 发布回退记录引用的历史在线候选容器（含失败发布的预热残留）；当前候选对及其回退目标始终保留，数据容器永不触碰。 |
 | `status` | 读取阶段标记和失败阶段，不改变服务。 |
 
 `open` 对已经完成的在线发布只再次验证，不会安装或移除维护页。`approve` 的历史维护阶段不用于当前在线路径。需要数据库迁移或 Caddy 边缘配置变更时，脚本会提前拒绝；先设计并审核在线兼容发布方案，不能在此路径中临时开启维护。
@@ -35,6 +36,16 @@ bash infra/release.sh --config /etc/laiai/release.conf status --release "$RELEAS
 ## 切流与观察
 
 候选 core 和前端在现有 Compose 网络中独立启动；公共 80/443 端口始终由同一个旧 Caddy 容器持有。新前端文件在新镜像的 `/srv/console` 中，不从宿主机挂载构建产物。入口路由热加载前必须通过候选容器健康、内部 `/healthz` 和 `/api/status`；热加载后必须通过公网 `/healthz`、`/api/status` 和 `/`。切流不停止旧 core，避免打断未完成的后台任务。原路由、旧容器和镜像保留供快速回退。
+
+### 历史候选容器清理（retire）
+
+在线切流会在每次发布留下一对 `infra-online-core-*` / `infra-online-web-*` 候选容器；deploy 中途失败的预热容器同样会残留。新流程**没有自动清理**：保留它们是设计使然——当前候选对外服务，上一候选是 `rollback` 的路由目标，基座 `infra-core-1`（DNS 别名 `core`）是最深回退锚点。因此候选会随发布次数累积，需要定期执行：
+
+```bash
+bash infra/release.sh --config /etc/laiai/release.conf retire --yes
+```
+
+保留集合由脚本推导而非人工点名：实时 Caddy 路由引用的候选 ∪ active 发布 `config/original.json`（回退目标）∪ 其 `config/online-candidate.json`（如存在）。集合之外的 `online-*` 容器 `docker rm -f` 移除；没有 active 发布或推导不出任何被引用候选时直接拒绝执行（fail closed）。移除后自动复测公网三探针。执行时机：发布成功并观察业务指标正常后即可运行；建议每次发布后检查 `docker ps | grep online-`，只应看到当前对与回退目标对。
 
 切流后只需继续观察容器运行状态、健康接口、任务接入错误与 CPU/内存等资源指标。无需让用户在维护页等待观察，也无需在本流程中做收费视频或资金测试。若需要实际出片，必须另有明确授权及预算。
 

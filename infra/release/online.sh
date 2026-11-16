@@ -161,3 +161,43 @@ online_rollback_stage() {
   fi
   log 'Previous routes restored online; both core containers and the public edge remained running.'
 }
+
+online_retire_stage() {
+  # Remove online candidate containers that neither the live public routes nor
+  # the active release's rollback records reference. Failed-deploy warmup
+  # leftovers and superseded candidates die here; the serving pair and its
+  # rollback target always survive. Data services are never touched.
+  local helper="$TOOL_DIR/online.py" active active_run live_cfg
+  [[ -f "$STATE_DIR/active-release" ]] || die 'No active online release; refusing to retire candidates.'
+  active=$(cat "$STATE_DIR/active-release")
+  active_run="$STATE_DIR/releases/$active"
+  [[ -d "$active_run" ]] || die 'The active release record is missing.'
+  [[ -f "$active_run/config/original.json" ]] || die 'The active release has no recorded original routes.'
+  find_containers
+  live_cfg=$(mktemp "$STATE_DIR/.retire-live.XXXXXX")
+  docker exec "$CADDY_CID" wget -q -O - http://127.0.0.1:2019/config/ > "$live_cfg" \
+    || { rm -f -- "$live_cfg"; die 'Cannot read the live public routes.'; }
+  chmod 600 "$live_cfg"
+  local -a inputs=("$live_cfg" "$active_run/config/original.json")
+  [[ -f "$active_run/config/online-candidate.json" ]] && inputs+=("$active_run/config/online-candidate.json")
+  local keep
+  keep=$(python3 "$helper" referenced "${inputs[@]}") \
+    || { rm -f -- "$live_cfg"; die 'Cannot derive the referenced online candidates.'; }
+  rm -f -- "$live_cfg"
+  [[ -n "$keep" ]] || die 'No online candidate is referenced; refusing to retire anything.'
+  local cid svc removed=0
+  while read -r cid; do
+    [[ -n "$cid" ]] || continue
+    svc=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$cid")
+    case "$svc" in
+      online-core-*|online-web-*) ;;
+      *) continue;;
+    esac
+    if printf '%s\n' "$keep" | grep -qx -- "$svc"; then continue; fi
+    docker rm -f -- "$cid" >/dev/null
+    log "Retired stale online candidate: $svc"
+    removed=$((removed + 1))
+  done < <(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT")
+  log "Retire complete: removed $removed stale candidate(s); kept the active pair and its rollback target."
+  online_public_ok || die 'Public service became unhealthy after retire; investigate immediately.'
+}
