@@ -11,8 +11,17 @@ import (
 // registerVideoJobs uses separately tracked loops so an upstream call cannot
 // prevent the local persisted-evidence consumer from making progress. Each
 // iteration remains synchronous on its mainJobs stack and joins at shutdown.
+// videoJobs 是包级变量：跟踪回归（video_settlement_jobs_mysql_test.go）按
+// len(videoJobs) 断言 independently-tracked 循环数，新增作业必须同步本表
+// （曾因断言硬编码 6 与实际列表漂移而令 main CI 恒红）。
+var videoJobs []struct {
+	name     string
+	interval time.Duration
+	run      func(context.Context) error
+}
+
 func registerVideoJobs(jobs *mainJobs, service *video.Service, isLeader func() bool, log *slog.Logger) {
-	videoJobs := []struct {
+	videoJobs = []struct {
 		name     string
 		interval time.Duration
 		run      func(context.Context) error

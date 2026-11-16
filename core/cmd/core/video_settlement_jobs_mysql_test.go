@@ -97,8 +97,8 @@ func TestMySQLQuerySettlementJobTrackedDrain(t *testing.T) {
 			jobs.tracker.mu.Lock()
 			active := jobs.tracker.active
 			jobs.tracker.mu.Unlock()
-			if active != 6 {
-				t.Fatal("settlement loop was not separately tracked")
+			if active != len(videoJobs) {
+				t.Fatalf("settlement loop tracking drifted: %d goroutines for %d registered video jobs", active, len(videoJobs))
 			}
 			select {
 			case <-entered:
