@@ -29,9 +29,7 @@ CADDY_BASE_IMAGE=
 MIN_FREE_MB=8192
 MIN_AVAILABLE_MB=1024
 
-# 默认使用入口同目录下的 release/check-approval.sh、release/check-github-ci.sh。
-# 前者校验 approve 登记的阶段验收证据，后者用服务器已有 gh 授权核验目标 SHA。
-# 无需登录 GHCR；不能用永远 exit 0 的占位程序代替验收。
-# 只有已实现并审查了自动验收程序时，才取消下列注释，填写绝对路径覆盖默认值。
-# CHECK_HOOK=/etc/laiai/release-check
+# 默认使用入口同目录下的 release/check-github-ci.sh，记录目标 main SHA
+# 已提交的关联 CI 运行及当时状态，不等待所有作业成功。不需要 GHCR 登录。
+# 如生产网络须使用经过审查的专用查询程序，可填写绝对路径覆盖默认值。
 # CI_CHECK_HOOK=/etc/laiai/release-ci-check

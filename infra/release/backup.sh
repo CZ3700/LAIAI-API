@@ -13,7 +13,7 @@ release_backup() (
   local database_file=database.sql.gz.enc config_file=configuration.tar.gz.enc
   local media_file=video-media.tar.gz.enc media_root=${MEDIA_BACKUP_ROOT:?Private media backup root is required}
   local image_file=images.tar
-  local -a config_paths=() config_members=()
+  local -a config_paths=() config_members=() archive_images=()
   local -A seen_paths=()
 
   [[ ${RUN_DIR:-} == /* && -d $RUN_DIR && ! -L $RUN_DIR ]] || die 'Backup directory must be an existing absolute directory.'
@@ -27,7 +27,10 @@ release_backup() (
   [[ $first_line_length -ge 32 ]] || die 'Backup key first line must contain at least 32 characters.'
   [[ ${MYSQL_CID:-} =~ ^[a-f0-9]{12,64}$ ]] || die 'Verified MySQL container ID is required.'
 
-  for item in "${OLD_CORE_IMAGE:-}" "${OLD_CADDY_IMAGE:-}"; do
+  archive_images=("$OLD_CORE_IMAGE" "$OLD_CADDY_IMAGE")
+  [[ -z ${ACTIVE_CORE_IMAGE:-} ]] || archive_images+=("$ACTIVE_CORE_IMAGE")
+  [[ -z ${ACTIVE_WEB_IMAGE:-} ]] || archive_images+=("$ACTIVE_WEB_IMAGE")
+  for item in "${archive_images[@]}"; do
     [[ $item =~ ^sha256:[a-f0-9]{64}$ ]] || die 'Complete previous image IDs are required.'
     actual=$(docker image inspect --format '{{.Id}}' "$item" 2>/dev/null) || die 'A previous image is unavailable.'
     [[ $actual == "$item" ]] || die 'Previous image ID verification failed.'
@@ -36,7 +39,7 @@ release_backup() (
   config_paths=("${LIVE_ENV:-}" "${CADDYFILE:-}" "$LIVE_DIR/infra/docker-compose.yml" "$LIVE_DIR/infra/mysql/my.cnf" "$LIVE_DIR/infra/redis/redis.conf")
   [[ -z ${VIDEO_ENV:-} ]] || config_paths+=("$VIDEO_ENV")
   if [[ -n ${RELEASE_CONFIG_DIR:-} ]]; then
-    for item in original.json maintenance.json active.json rollback-compose.json; do
+    for item in original.json active.json rollback-compose.json; do
       config_paths+=("$RELEASE_CONFIG_DIR/$item")
     done
   fi
@@ -105,8 +108,8 @@ release_backup() (
   ln -- "$RUN_DIR/.video-media.partial.tar.gz.enc" "$RUN_DIR/$media_file" 2>/dev/null || die 'Cannot finalize private media backup.'
   rm -- "$RUN_DIR/.video-media.partial.tar.gz.enc" 2>/dev/null || die 'Cannot finalize private media backup record.'
 
-  log 'Archiving the two previous application images for rollback.'
-  if ! docker image save "$OLD_CORE_IMAGE" "$OLD_CADDY_IMAGE" > "$RUN_DIR/.images.partial.tar" 2>/dev/null; then
+  log 'Archiving previous and currently routed application images for rollback.'
+  if ! docker image save "${archive_images[@]}" > "$RUN_DIR/.images.partial.tar" 2>/dev/null; then
     die 'Previous image archive failed.'
   fi
   if ! tar --list --file "$RUN_DIR/.images.partial.tar" > /dev/null 2>/dev/null; then
@@ -118,7 +121,7 @@ release_backup() (
   if ! (cd -- "$RUN_DIR" && sha256sum -- "$database_file" "$config_file" "$media_file" "$image_file" > checksums.sha256 && sha256sum --check --status checksums.sha256) 2>/dev/null; then
     die 'Backup checksum verification failed.'
   fi
-  printf 'format=laiai-release-backup-v2\ndatabase=container-MYSQL_DATABASE-or-laiai\nvideo_media=host-bind-/var/lib/laiai/video-media\nencryption=AES-256-CBC-PBKDF2-SHA256-600000\ncore_image=%s\ncaddy_image=%s\n' "$OLD_CORE_IMAGE" "$OLD_CADDY_IMAGE" > "$RUN_DIR/backup-summary.txt" || die 'Cannot write backup summary.'
+  printf 'format=laiai-release-backup-v2\ndatabase=container-MYSQL_DATABASE-or-laiai\nvideo_media=host-bind-/var/lib/laiai/video-media\nencryption=AES-256-CBC-PBKDF2-SHA256-600000\ncore_image=%s\ncaddy_image=%s\nactive_core_image=%s\nactive_web_image=%s\n' "$OLD_CORE_IMAGE" "$OLD_CADDY_IMAGE" "${ACTIVE_CORE_IMAGE:-}" "${ACTIVE_WEB_IMAGE:-}" > "$RUN_DIR/backup-summary.txt" || die 'Cannot write backup summary.'
   # This is a verified backup, not proof that the database can be rolled back.
   printf 'verified\n' > "$RUN_DIR/.backup.verified.partial" || die 'Cannot write backup completion record.'
   ln -- "$RUN_DIR/.backup.verified.partial" "$RUN_DIR/backup.ok" 2>/dev/null || die 'Cannot finalize backup completion record without overwriting an existing file.'

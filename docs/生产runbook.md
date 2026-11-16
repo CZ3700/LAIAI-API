@@ -68,13 +68,13 @@ Go 回归：`core/internal/server/trustedproxy_test.go`（不可信源伪造 XFF
 
 ## 2. 部署纪律（既有约定的操作面）
 
-当前生产发布入口为 [`infra/release.sh`](../infra/release.sh)，支持 `compare/preflight/backup/build/deploy/open/release/verify/status/rollback`，使用方法见[脚本手册](production-release-cli.md)。旧 `deploy.sh` 不用于本次受控升级。脚本针对已有单 core/Caddy 的 Compose 项目执行升级，不负责从空服务器创建业务库；配置、main 审核与现场验收先准备齐。
+当前生产发布入口为 [`infra/release.sh`](../infra/release.sh)，使用方法见[在线发布手册](production-release-cli.md)。应用版本必须与当前数据库具有完全相同的已应用迁移；旧 core、公共 Caddy、MySQL 和 Redis 持续运行，候选就绪后热切路由。2026-11-16 的维护中断原因和新纪律见[事故复盘](incident-2026-11-16-release-availability.md)。
 
 #### 0150 → 0153 在途承接发布
 
-长期 `submission_unknown` 任务不会被发布脚本自动取消或结算。若当前数据库确为 0150、目标 main 恰为 0153，可用新版入口的 `--carryover-video-0153` 新建预检计划，保留在途任务及冻结继续由候选 worker 处理。该标志按三条迁移白名单锁定路径，八项资金一致性检查、最终加密备份、业务旧列与资金指纹均不能跳过。旧 `/opt/laiai-next` 若仍在 `2fe1a35`，需先从已合并且 CI 通过的 main 建立 root 可读写的受限独立 checkout，从其中运行新版 `infra/release.sh`；`LIVE_DIR` 继续指原线上 checkout，不得先覆盖它。具体命令和回退边界见[发布脚本手册的 0150→0153 章节](production-release-cli.md#0150--0153-在途任务承接)。
+长期 `submission_unknown` 任务不会被发布脚本自动取消或结算。0150→0153 的历史维护式承接流程已停用；新的 schema 变更必须先设计在线兼容迁移，不能借旧参数进入维护。`LIVE_DIR` 仍指原线上 checkout，不得先覆盖它。
 
-旧 core 干净退出后，若同一任务仍有重复 callback hint，迁移前即停止。0151/0152/0153 迁移部分完成时没有安全回退基线，旧 core 不能由脚本自动重启，须在维护态核对实际 schema 并人工恢复。新版启动后，自动查询到的火山官方配额快照不单独阻断回退；管理员手动上限、活跃派单闸、新的用户/分组能力配置或新受理的 Ark 视频与素材任务会阻止旧镜像回退。回退门禁在停止新版 core 前后各复核一次；新能力投入使用后以向前修复为准。
+应用代码发布不停止旧 core；在途任务继续运行。上线后只观察健康接口、资源指标和任务接入错误。旧容器保留供路由回退；数据库不做自动降级。
 
 - **镜像内容锁定**：常规生产叠加 `docker-compose.prod.yml`，`MYSQL_IMAGE`/`REDIS_IMAGE` 填 RepoDigest 形式（.env.example 有取值命令）。2026-10-21 已核对的服务器源码构建方案使用明确锁住四个服务的 `local-images.yml` 替代该 overlay：core/Caddy 为已验收本地 image ID，MySQL/Redis 为现有 RepoDigest，均不自动拉取。按[服务器构建流程](server-source-build.md)保存并核对实际清单；`infra/release-manifest.sh generate/diff` 仅辅助，还需补项目过滤、完整配置与未跟踪文件检查。
 - **迁移**：容器 entrypoint 自动跑 `/app/migrate`（重试 ~60s，失败容器退出）；大版本前先跑
@@ -377,14 +377,14 @@ LAIAI_VIDEO_PORTRAIT_RETURN_URL=https://<console-host>/app/video-assets
 
 ### 7.1 配置与升级准备
 
-- 使用完整提交构建 core 与 Caddy，部署锁定实际镜像内容，保留当前版本的发布清单、受保护环境配置和可恢复数据库备份。当前现场采用[服务器拉源码构建流程](server-source-build.md)：前端在 Caddy 多阶段构建中编译并装入 `/srv/console`，没有独立前端容器或 dist 挂载；应用用本地 image ID 切换，不依赖 GHCR。先通过 `make ci-all`、前端相关测试和真 MySQL 迁移检查，再按 §1.2b 校验 Caddy。
+- 使用完整提交构建 core 与 Caddy/前端，锁定本地 image ID 并保留加密备份。在线发布时前端产物仍烤入镜像 `/srv/console`，以独立候选容器承载；公共 Caddy 不重启，只热加载路由。正式 `main` 的关联 CI 记录须可查询，发布不等待所有作业成功。
 - 本次定价、结算与直链修改不新增迁移；本分支迁移序列截至 `0121_seedance_pricing_template_20261019.sql`。必须执行仓库正式迁移并检查 schema，不能将其他开发分支的额外迁移作为本次依赖。应用回退不执行迁移降级，不用旧数据库覆盖新增账务。
 - Seedance 网关继续需要稳定的 `LAIAI_VIDEO_HMAC_SECRET`、Invocation Store 数据密钥与既有数据库；生产 Redis 按 §2 配置。组织权限、渠道凭据、精确模型映射、已发布能力及价格、最低量规则和供应商预算仍须就绪。
 - `LAIAI_VIDEO_ARTIFACT_ROOT`、`LAIAI_VIDEO_ARTIFACT_TEMP`、`LAIAI_VIDEO_ARTIFACT_HOSTS` 已退出配置，core 不再运行生成产物转存 worker。移除生成产物挂载即可；历史卷及文件留存，禁止随部署自动删除。
 - 输入素材上传是独立可选功能，其 `LAIAI_VIDEO_MEDIA_*` 私有存储、扫描和 ffprobe 要求不变。不要为取消输出存储而删除输入素材配置。
 - 使用运行机器的受保护部署目录和环境文件；私有配置、原始调用证据、完整签名 URL、账户投影和备份不提交 Git。不要输出完整 `docker inspect` 环境或展开后的 `docker compose config`。
 
-切换前停止新受理，记录在途任务、未知提交及未决费用；应用的持久化队列和数据库保留。若计划切换到不共享调度租约的运行方式，先停止旧 worker，避免两套实例重复消费。不能为获得“零在途”而重发、删除或强行退款未知提交。
+相同 schema 的应用切换持续接收正常业务，不停止旧 core 或在途任务；新旧实例共享现有 Redis 调度租约。任务、持久化队列和数据库保持原样，不为获得“零在途”而重发、删除或强行退款未知提交。若版本不能共享调度租约，当前在线发布脚本应拒绝该版本，并先设计兼容方案。
 
 使用[本次发版方案](production-release-plan-20261021.md)和[服务器构建流程第 4–5 节](server-source-build.md)的同一套 Compose 参数、停写/备份/迁移/回填门禁及切换命令。现场目录为 `/opt/laiai-next`、项目 `infra`，原本只有 `infra/docker-compose.yml`；不能假定存在额外生产部署文件或省略原项目与配置目录参数。core/Caddy 切换显式使用 `--no-build --no-deps --pull never`，不重建数据服务。
 
