@@ -157,6 +157,61 @@ def upstream_kind(handler):
     return None
 
 
+def drop_edge_try_files(candidate):
+    # The edge Caddy keeps a baked console root that goes stale once the switch
+    # routes the frontend to the online candidate. Its local try_files fallback
+    # would rewrite every new asset path to /index.html before the proxy
+    # (observed 2026-11-17: the whole console served only index.html). The
+    # online frontend container owns asset fallback through its own try_files
+    # and file_server. Two legacy shapes are handled: a pure fallback sibling
+    # route is removed, and a route that fuses the fallback with the candidate
+    # proxy keeps the proxy and sheds the matcher and rewrite. Fail closed on
+    # unexpected counts.
+    def has_tf(route):
+        return any(isinstance(mm, dict) and 'try_files' in mm.get('file', {})
+                   for mm in route.get('match') or [])
+
+    def has_rw(route):
+        return any(isinstance(h, dict) and h.get('handler') == 'rewrite'
+                   for h in route.get('handle', []))
+
+    def has_proxy(route):
+        return any(isinstance(h, dict) and h.get('handler') == 'reverse_proxy'
+                   for h in route.get('handle', []))
+
+    seen = {'n': 0}
+
+    def clean_in_place(node):
+        if isinstance(node, dict):
+            if has_tf(node) and has_rw(node) and has_proxy(node):
+                node.pop('match', None)
+                node['handle'] = [h for h in node['handle']
+                                  if not (isinstance(h, dict) and h.get('handler') == 'rewrite')]
+                seen['n'] += 1
+            for value in node.values():
+                clean_in_place(value)
+        elif isinstance(node, list):
+            for item in node:
+                clean_in_place(item)
+
+    def prune(node):
+        if isinstance(node, list):
+            for item in list(node):
+                if isinstance(item, dict) and has_tf(item) and has_rw(item) and not has_proxy(item):
+                    seen['n'] += 1
+                    node.remove(item)
+                else:
+                    prune(item)
+        elif isinstance(node, dict):
+            for value in node.values():
+                prune(value)
+
+    clean_in_place(candidate['apps'])
+    prune(candidate['apps'])
+    if seen['n'] > 1:
+        fail('unexpected number of edge try_files fallback routes')
+
+
 def route():
     original = read(sys.argv[2])
     core, web = names(sys.argv[4])
@@ -186,6 +241,7 @@ def route():
         fail('expected one known static frontend route')
     if sum(1 for item in walk(candidate) if item.get('handler') == 'file_server'):
         fail('static frontend was not fully switched')
+    drop_edge_try_files(candidate)
     write(sys.argv[3], candidate)
 
 

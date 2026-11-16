@@ -47,6 +47,8 @@ bash infra/release.sh --config /etc/laiai/release.conf retire --yes
 
 保留集合由脚本推导而非人工点名：实时 Caddy 路由引用的候选 ∪ active 发布 `config/original.json`（回退目标）∪ 其 `config/online-candidate.json`（如存在）。集合之外的 `online-*` 容器 `docker rm -f` 移除；没有 active 发布或推导不出任何被引用候选时直接拒绝执行（fail closed）。移除后自动复测公网三探针。执行时机：发布成功并观察业务指标正常后即可运行；建议每次发布后检查 `docker ps | grep online-`，只应看到当前对与回退目标对。
 
+静态回退归属：切流会移除边缘 Caddy 本地的 `try_files` 兜底路由（其文件存在性判断依据的是边缘镜像里烘焙的旧 console root，保留它会把新资产的请求全部改写成 `/index.html`，2026-11-17 曾因此导致整个控制台白屏）。资产兜底由 online 前端容器自己的 `try_files` + `file_server` 负责。
+
 切流后只需继续观察容器运行状态、健康接口、任务接入错误与 CPU/内存等资源指标。无需让用户在维护页等待观察，也无需在本流程中做收费视频或资金测试。若需要实际出片，必须另有明确授权及预算。
 
 发布使用目标完整 SHA 的 `main` push CI 记录作为“测试已提交并可观察”的证据，记录 URL、运行状态与结论；**不等待所有作业成功**。这不等于宣称 CI 通过。发现失败作业时应记录并判断与本次变更的关系。
