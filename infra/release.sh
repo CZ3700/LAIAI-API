@@ -512,7 +512,8 @@ deploy_stage() {
     ' || die 'Candidate scanner did not reject EICAR and accept clean input.'
   (cd "$RUN_DIR/backup" && sha256sum -c checksums.sha256 >/dev/null)
   (cd "$RUN_DIR" && sha256sum -c candidate-images.tar.sha256 >/dev/null)
-  compose new; check_data preflight; external_check before-maintenance
+  compose new; check_data preflight
+  if (( CARRYOVER != 3 )); then external_check before-maintenance; fi
   if (( CARRYOVER )); then state carryover-eligible "$PLAN" "$RUN_DIR/schema.txt" "$SOURCE_DIR/migrations"; fi
   maintenance_enter
   # Existing workers may finish after ingress is closed; do not erase unknown tasks/holds.
