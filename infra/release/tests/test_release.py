@@ -95,7 +95,7 @@ def compose():
             result['services'][online_core]=dict(result['services']['core'])
             result['services'][online_core]['restart']='unless-stopped'
             result['services'][online_web]={'image':c['new_images']['caddy'],'pull_policy':'never',
-                'restart':'unless-stopped','read_only':True,'cap_drop':['ALL'],
+                'restart':'unless-stopped','read_only':True,
                 'security_opt':['no-new-privileges:true'],
                 'command':['caddy','run','--config','/etc/caddy/Caddyfile'],
                 'healthcheck':{'test':['CMD','wget','-q','-O','/dev/null','http://127.0.0.1:8081/']},
@@ -756,6 +756,18 @@ class OnlineRouteTests(unittest.TestCase):
         self.run_online("route", self.root / "broken.json", output,
                         "20261116T140000Z-aaaaaaaaaaaa", ok=False)
         self.assertFalse(output.exists())
+
+    def test_frontend_overlay_preserves_caddy_executable_capability(self):
+        run = self.root / "20261116T140000Z-aaaaaaaaaaaa"
+        (run / "config").mkdir(parents=True)
+        (run / "plan.json").write_text('{"carryover": 3}')
+        (run / "images.json").write_text(json.dumps(NEW_IMAGES))
+        self.run_online("overlay", run / "plan.json", run / "images.json",
+                        RELEASE_DIR.parent.parent, run / "online-compose.yml")
+        overlay = (run / "online-compose.yml").read_text()
+        self.assertIn('security_opt: ["no-new-privileges:true"]', overlay)
+        self.assertIn('read_only: true', overlay)
+        self.assertNotIn('cap_drop:', overlay)
 
 
 if __name__ == "__main__":

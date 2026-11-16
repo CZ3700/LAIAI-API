@@ -71,7 +71,8 @@ def overlay():
         '    pull_policy: never',
         '    restart: unless-stopped',
         '    read_only: true',
-        '    cap_drop: [ALL]',
+        # The upstream Caddy binary carries cap_net_bind_service. Dropping the
+        # entire bounding set makes exec itself fail with EPERM, even on :8081.
         '    security_opt: ["no-new-privileges:true"]',
         '    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile"]',
         '    volumes:',
@@ -113,7 +114,7 @@ def check_compose():
         fail('online candidate must not start data services')
     if candidate.get('restart') != 'unless-stopped' or web.get('restart') != 'unless-stopped':
         fail('online candidates must restart after a host restart')
-    if (web.get('read_only') is not True or web.get('cap_drop') != ['ALL']
+    if (web.get('read_only') is not True or web.get('cap_drop')
             or web.get('security_opt') != ['no-new-privileges:true']
             or web.get('command') != ['caddy', 'run', '--config', '/etc/caddy/Caddyfile']
             or web.get('healthcheck', {}).get('test') !=
