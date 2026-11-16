@@ -413,9 +413,6 @@ func TestArkReferenceCandidatesPermissionsPreservationAndNoWrites(t *testing.T) 
 			t.Fatal(e)
 		}
 		want := 8
-		if model == ark.Model25 {
-			want = 6
-		}
 		if len(out.Prices) != want || out.InputTokenSemantics != "not_projected_separately_completion_tokens_authoritative" {
 			t.Fatal("wrong candidate response")
 		}

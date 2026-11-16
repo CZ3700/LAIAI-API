@@ -332,8 +332,10 @@ func TestNormalizeRejectsUnverifiedAndInvalidParameters(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Resolution = ptr("4k")
-	if _, err := Normalize(r, testCapability(Model25), Bindings{}); err == nil {
-		t.Fatal("2.5 4k accepted")
+	c := testCapability(Model25)
+	c.Resolutions = []string{"480p", "720p", "1080p"}
+	if _, err := Normalize(r, c, Bindings{}); err == nil {
+		t.Fatal("2.5 4k accepted without verified resolution")
 	}
 }
 

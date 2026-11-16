@@ -89,9 +89,6 @@ func priceCellSupported(c pricingCell, cap ark.Capability) bool {
 }
 func priceMatrix(cap ark.Capability, prices []videobilling.PricingRule) []pricingCell {
 	resolutions := []string{"480p", "720p", "1080p", "4k"}
-	if cap.PublicModel == ark.Model25 {
-		resolutions = []string{"480p", "720p", "1080p"}
-	}
 	if ark.Is20Variant(cap.PublicModel) {
 		resolutions = []string{"480p", "720p"}
 	}
@@ -110,6 +107,7 @@ func priceMatrix(cap ark.Capability, prices []videobilling.PricingRule) []pricin
 		for _, input := range []bool{false, true} {
 			cells = append(cells, pricingCell{Mode: "generate", Resolution: "480p", InputVideo: input, ServiceTier: "default", Draft: true})
 			cells = append(cells, pricingCell{Mode: "draft_conversion", Resolution: "1080p", InputVideo: input, ServiceTier: "default"})
+			cells = append(cells, pricingCell{Mode: "draft_conversion", Resolution: "4k", InputVideo: input, ServiceTier: "default"})
 		}
 	}
 	// Complete replacement must preserve dimensions outside today's grid.

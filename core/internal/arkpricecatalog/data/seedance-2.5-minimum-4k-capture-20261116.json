@@ -1,0 +1,38 @@
+{
+  "captured_at": "2026-11-16T00:00:00Z",
+  "capture_kind": "user_supplied_official_table_screenshots",
+  "source_table": "seedance-2.5系列最低token限制（仅针对含输入视频时）",
+  "source_view": "最低tokens-4k",
+  "raw_file": "seedance-2.5-minimum-4k-20261116.tsv",
+  "raw_sha256": "33a8983370fd9e68a765d26e40e1d245bf6e4931c2b337328d892484fd521045",
+  "raw_rows": 108,
+  "expanded_cells": 162,
+  "primary_fps_column_present": false,
+  "fps_evidence": "Existing independently reviewed Seedance 2.5 model/create API profile: 24 FPS; screenshot FPS remains absent.",
+  "screenshots": [
+    {
+      "path": "minimum-01.png",
+      "sha256": "3c5d054c524870e4fd74b09816426c7895b22323916b22320f65a6e4d011aa71"
+    },
+    {
+      "path": "minimum-02.png",
+      "sha256": "6e916b67fd79552e600fa2badb4235ff7b7efd819958dba1719dcdbbef922fc0"
+    },
+    {
+      "path": "minimum-03.png",
+      "sha256": "dacdd887b3ae7eb1346577ccbbc0049b96d970f145e67ba46edb1a868d8d4ec7"
+    },
+    {
+      "path": "minimum-04.png",
+      "sha256": "c1471b1b279a9d551789f132ec97dde0b3cb3e52890414992231d1240f232bf2"
+    },
+    {
+      "path": "minimum-05.png",
+      "sha256": "90f41d697a46566e4c2e25af892e030f0898a30607181eb10cf6f3bd44ead1d8"
+    },
+    {
+      "path": "minimum-06.png",
+      "sha256": "01aea50149c2d24d56ed7e54ac5c6e2f3d1c9e7cb28aa60cdaec893329af4933"
+    }
+  ]
+}

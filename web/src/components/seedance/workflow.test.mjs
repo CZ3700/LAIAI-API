@@ -76,6 +76,16 @@ test('sample modes require their exact published price combination', () => {
   assert.equal(flow.publishedCombination(cells.slice(0, 2), 'convert'), false)
 })
 
+test('4K conversion uses the chosen target and requires that published resolution', () => {
+  const input = { model: 'seedance-2.5', prompt: 'inherited', image: 'inherited', video: '', audio: '', duration: '5', resolution: '4k', ratio: '16:9', mode: 'convert', draftTaskId: 'task_preview' }
+  assert.deepEqual(flow.createBody(input), { model: 'seedance-2.5', content: [{ type: 'draft_task', draft_task: { id: 'task_preview' } }], resolution: '4k' })
+  const cells = [{ mode: 'draft_conversion', resolution: '4k', input_video: false, service_tier: 'default', draft: false, status: 'published' }]
+  assert.equal(flow.publishedCombination(cells, 'convert'), true)
+  assert.equal(flow.publishedCombination(cells, 'convert', false, '4k'), true)
+  assert.equal(flow.publishedCombination(cells, 'convert', true, '4k'), false)
+  assert.equal(flow.publishedCombination(cells, 'convert', false, '1080p'), false)
+})
+
 test('deletion waits for financial finality and never treats an unknown task as terminal', () => {
   assert.equal(flow.canDelete({ status: 'succeeded', billing_state: 'pending_usage' }), false)
   assert.equal(flow.canDelete({ status: 'submission_unknown', billing_state: 'reserved' }), false)

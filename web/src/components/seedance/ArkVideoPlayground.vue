@@ -31,10 +31,13 @@ const draftTaskId = ref('')
 const capabilities = ref<Model | null>(null)
 const draftPublished = computed(() => props.model === 'seedance-2.5' && !!capabilities.value?.capabilities.draft && publishedCombination(capabilities.value?.publication?.combinations, 'draft'))
 const conversionPublished = computed(() => props.model === 'seedance-2.5' && publishedCombination(capabilities.value?.publication?.combinations, 'convert'))
+const conversionResolutions = computed(() => ['1080p', '4k'].filter(r => publishedCombination(capabilities.value?.publication?.combinations, 'convert', undefined, r)))
+const conversionResolution = ref('1080p')
+watch(conversionResolutions, values => { if (!values.includes(conversionResolution.value)) conversionResolution.value = values[0] ?? '1080p' })
 const draftInputPublished = computed(() => publishedCombination(capabilities.value?.publication?.combinations, 'draft', !!video.value.trim()))
 const canEstimate = computed(() => {
   if (!props.apiKey || !capabilities.value?.enabled || !capabilities.value.verified) return false
-  if (generationMode.value === 'convert') return conversionPublished.value && /^task_[A-Za-z0-9_-]+$/.test(draftTaskId.value.trim())
+  if (generationMode.value === 'convert') return conversionPublished.value && conversionResolutions.value.includes(conversionResolution.value) && /^task_[A-Za-z0-9_-]+$/.test(draftTaskId.value.trim())
   if (!prompt.value.trim()) return false
   return generationMode.value !== 'draft' || draftPublished.value && draftInputPublished.value
 })
@@ -77,7 +80,7 @@ function errorText(data: unknown, status: number) {
   return `HTTP ${status}`
 }
 function body() {
-  return createBody({ model: props.model, prompt: prompt.value, image: image.value, video: video.value, audio: audio.value, duration: duration.value, resolution: resolution.value, ratio: ratio.value, mode: generationMode.value, draftTaskId: draftTaskId.value })
+  return createBody({ model: props.model, prompt: prompt.value, image: image.value, video: video.value, audio: audio.value, duration: duration.value, resolution: generationMode.value === 'convert' ? conversionResolution.value : resolution.value, ratio: ratio.value, mode: generationMode.value, draftTaskId: draftTaskId.value })
 }
 function useDraftTask() {
   if (!task.value || task.value.status !== 'succeeded' || !task.value.draft || !task.value.content?.video_url || !conversionPublished.value) return
@@ -209,7 +212,7 @@ function restore() {
     }
   } catch { sessionStorage.removeItem(storeKey.value) }
 }
-watch([prompt, image, video, audio, duration, resolution, ratio, generationMode, draftTaskId], () => { quote.value = null; quotedBody.value = null })
+watch([prompt, image, video, audio, duration, resolution, ratio, generationMode, draftTaskId, conversionResolution], () => { quote.value = null; quotedBody.value = null })
 watch(src, () => { copiedURL.value = false })
 watch(() => [auth.orgId, props.model, props.apiKey], () => { clearPrivate(); void loadModels(); restore() })
 onMounted(() => { void loadModels(); restore() })
@@ -233,7 +236,7 @@ onBeforeUnmount(clearPrivate)
       <p class="text-xs text-muted">{{ t('seedance.mediaNotice') }}</p>
       <p v-if="generationMode === 'draft' && !draftInputPublished" role="status" class="text-sm text-warn">{{ t('seedance.draftInputUnavailable') }}</p>
     </template>
-    <template v-else><label class="text-sm">{{ t('seedance.draftTaskId') }}<input v-model="draftTaskId" class="input mt-1" placeholder="task_…" :disabled="locked" /></label><p class="text-xs text-muted">{{ t('seedance.draftExpiryNotice') }}</p><p class="text-xs text-muted">{{ t('seedance.conversionNotice') }}</p></template>
+    <template v-else><label class="text-sm">{{ t('seedance.draftTaskId') }}<input v-model="draftTaskId" class="input mt-1" placeholder="task_…" :disabled="locked" /></label><label class="text-sm">{{ t('play.videoResolution') }}<select v-model="conversionResolution" class="input mt-1" :disabled="locked"><option v-for="r in conversionResolutions" :key="r">{{ r }}</option></select></label><p class="text-xs text-muted">{{ t('seedance.draftExpiryNotice') }}</p><p class="text-xs text-muted">{{ t('seedance.conversionNotice') }}</p></template>
     <p v-if="capabilities && (!capabilities.enabled || !capabilities.verified)" role="status" class="text-sm text-warn">{{ t('seedance.modelUnavailable') }}</p>
     <textarea v-if="generationMode !== 'convert'" v-model="prompt" class="input min-h-28" :placeholder="t('play.videoPromptPlaceholder')" :disabled="locked" />
     <p v-if="error" role="alert" class="break-words text-sm text-danger">{{ error }}</p>

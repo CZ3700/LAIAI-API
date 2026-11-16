@@ -1,0 +1,16 @@
+Source: Doubao Seedance 4K customer guide, user-supplied PDF
+URL: https://bytedance.larkoffice.com/wiki/DXIqwz9aOiVWkCkFoxEcohosnfd
+Original PDF SHA256: 3963f167d5a492180fcf921c9da23a73d573ce02ba4640cfebfe43155a52ad71
+Captured: 2026-11-16
+
+Seedance 2.5 upstream model: doubao-seedance-2-5-260628.
+Normal resolutions: 480p, 720p, 1080p, 4k. 4k generation uses 10-bit H.265/HEVC; output_format supports mp4 and mov.
+480p Draft can be converted into 1080p or 4k. Conversion content consists only of draft_task.id; resolution is required. Draft ID is valid for 7 days. The conversion inherits original prompt, references, duration, ratio, seed, audio and task type; these inherited fields must not be supplied again.
+
+Supplier token rates (CNY / million completion tokens):
+480p Draft: without input video 70; with input video 42.
+4k direct or Draft conversion: without input video 31; with input video 19.
+Successful generation is billed using response usage.completion_tokens. Draft and conversion are independently billed. For conversion, input-video class and duration are those of the original Draft request, not the Draft output.
+
+Published 4k limit: concurrency 1, create-task RPM 15. Non-4k limit: concurrency 10, RPM 600. The allocations are independent.
+The PDF does not contain the complete minimum-token table; the user separately supplied six screenshots, summarized in the adjacent TSV and capture manifest.

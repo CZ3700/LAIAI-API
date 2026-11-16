@@ -20,7 +20,7 @@ interface Minimum { id: number; version: string; source_url: string; evidence_ha
 interface Diff { key: string; change: 'added' | 'changed' | 'unchanged' | 'disabled'; before: Cell | null; after: Cell | null }
 interface Prepared { request: Record<string, unknown>; diff: Diff[]; sources: unknown[] }
 interface BulkChange { key: string; before: string; after: string }
-interface Verification { model: string; profile_version: string; evidence_sha256: string; config_version: string; capability_version: string; minimum_version: string; minimum_cell_count: number; minimum_precision?: string; resolutions: string[]; ratios: string[]; min_duration: number; max_duration: number; verified: boolean; sources: { id: string; url: string; sha256: string }[] }
+interface Verification { model: string; profile_version: string; evidence_sha256: string; config_version: string; capability_version: string; minimum_version: string; minimum_cell_count: number; minimum_precision?: string; minimum_resolutions?: string[]; resolutions: string[]; ratios: string[]; min_duration: number; max_duration: number; verified: boolean; sources: { id: string; url: string; sha256: string }[] }
 interface AdoptionChange { key: string; costBefore: string; costAfter: string; riskBefore: string; riskAfter: string; minimumBefore: string; minimumAfter: string }
 interface TemplateRef { version: string; model: string; sha256: string }
 interface PricingTemplate { version: string; model: string; upstream_model: string; label: string; body_sha256: string; currency: string; fx_usd_per_cny: string; fx_version: string; fx_observed_at: string; source_pricing_version: string; profile_version: string; minimum_rule_version: string; minimum_cell_count: number; cells: Cell[] }
@@ -36,14 +36,14 @@ const selectedEvidence = ref<SourceRow[] | null>(null), showMinimum = ref(false)
 const evidenceQuery = ref(''), evidencePage = ref(1), evidencePageSize = 20
 const selectedKeys = ref<string[]>([]), bulkMode = ref('same'), bulkValue = ref(''), bulkChanges = ref<BulkChange[]>([]), bulkError = ref('')
 const verification = ref<Verification | null>(null), verificationError = ref(''), verificationOpen = ref(false), verificationReloadRequired = ref(false)
-const verificationProfile = ref<'standard' | 'draft'>('standard')
+const verificationProfile = ref<'standard' | 'draft' | '4k'>('standard')
 const adoptionOpen = ref(false), adoptionRisk = ref('1'), adoptionError = ref(''), adoptionSnapshot = ref('')
 const templates = ref<PricingTemplate[]>([]), templatesLoading = ref(false), templateError = ref(''), templateOpen = ref(false)
 const templateVersion = ref(''), templateMode = ref<TemplateMode>('fill_missing'), templatePreview = ref<TemplatePreview | null>(null), templateSnapshot = ref(''), templateRef = ref<TemplateRef | null>(null)
 const prepared = ref<Prepared | null>(null), validatedBody = ref(''), validatedDraft = ref(''), previewOpen = ref(false), publishKey = ref(uuid())
 const base = computed(() => `/api/admin/video/models/${encodeURIComponent(model.value)}/pricing`)
 const verificationBase = computed(() => `/api/admin/video/models/${encodeURIComponent(model.value)}/verification`)
-const verificationReadURL = computed(() => verificationBase.value + (model.value === 'seedance-2.5' && verificationProfile.value === 'draft' ? '?profile=draft' : ''))
+const verificationReadURL = computed(() => verificationBase.value + (model.value === 'seedance-2.5' && verificationProfile.value !== 'standard' ? `?profile=${verificationProfile.value}` : ''))
 const supported = computed(() => isOfficialVideoModel(model.value))
 const referenceSeries = computed(() => officialVideoSeries(model.value))
 const bindingMatches = computed(() => !props.selectedChannelId || (pricing.value?.channel_id ?? candidates.value?.config?.channel_id) === props.selectedChannelId)
@@ -73,14 +73,15 @@ const otherPublished = computed(() => otherCells.value.filter(c => c.enabled || 
 const otherPending = computed(() => otherCells.value.filter(c => !otherPublished.value.includes(c)))
 const resolutions = computed(() => [...new Set(primaryCells.value.map(c => c.resolution))])
 const missingSourceFPS = computed(() => !!candidates.value?.minimum.cells.some(cell => cell.fps === null || cell.fps === undefined))
-const sourceFPSNotice = computed(() => missingSourceFPS.value ? t(verification.value?.verified && model.value !== 'seedance-2.5' ? 'fpsVerifiedRule' : 'fpsWarning') : '')
+const sourceFPSNotice = computed(() => missingSourceFPS.value ? t(verification.value?.verified ? 'fpsVerifiedRule' : 'fpsWarning') : '')
 const currentRisk = computed(() => {
   const values = [...new Set((initialPricing.value?.cells ?? []).filter(cell => cell.retail_usd_per_1m || cell.supplier_cny_per_1m).map(cell => { try { return exactRisk(cell.risk_multiplier) } catch { return '' } }).filter(Boolean))]
   return values.length === 1 ? values[0]! : ''
 })
 const canSyncVerification = computed(() => auth.isSuperadmin && supported.value && bindingMatches.value && !!verification.value && !verification.value.verified && !dirty.value && !busy.value && !loading.value && !verificationReloadRequired.value)
-const draftWorkflowReady = computed(() => model.value === 'seedance-2.5' && verificationProfile.value === 'draft' && verification.value?.verified && verification.value.profile_version === 'ark-official-20261030-draft-v1')
-const draftWorkflowCell = (cell: Cell) => cell.service_tier === 'default' && (cell.mode === 'generate' && cell.resolution === '480p' && cell.draft || cell.mode === 'draft_conversion' && cell.resolution === '1080p' && !cell.draft)
+const draftWorkflowReady = computed(() => model.value === 'seedance-2.5' && verificationProfile.value !== 'standard' && verification.value?.verified && ['ark-official-20261030-draft-v1', 'ark-official-20261111-draft-v1', 'ark-official-20261116-4k-v1'].includes(verification.value.profile_version))
+const draftWorkflowCell = (cell: Cell) => cell.service_tier === 'default' && (cell.mode === 'generate' && cell.resolution === '480p' && cell.draft || cell.mode === 'draft_conversion' && ['1080p', '4k'].includes(cell.resolution) && !cell.draft)
+const verifiedMinimumCovers = (cell: Cell) => verification.value?.verified && (!verification.value.minimum_resolutions || verification.value.minimum_resolutions.includes(cell.resolution))
 const adoptionChanges = computed<AdoptionChange[]>(() => {
   return (pricing.value?.cells ?? []).filter(cell => selectedKeys.value.includes(cellKey(cell))).flatMap(cell => {
     const cost = referenceCost(cell)
@@ -89,7 +90,7 @@ const adoptionChanges = computed<AdoptionChange[]>(() => {
     const newConfiguration = !original?.retail_usd_per_1m && !original?.supplier_cny_per_1m && !original?.enabled
     let risk = cell.risk_multiplier
     if (newConfiguration && !risk && adoptionRisk.value) { try { risk = exactRisk(adoptionRisk.value) } catch { /* Applying remains blocked by validation below. */ } }
-    const syncedMinimum = verification.value?.verified && minimums.value.some(item => item.version === verification.value?.minimum_version) ? verification.value.minimum_version : ''
+    const syncedMinimum = verifiedMinimumCovers(cell) && minimums.value.some(item => item.version === verification.value?.minimum_version) ? verification.value!.minimum_version : ''
     const minimum = newConfiguration && cell.input_video && !cell.minimum_rule_version ? syncedMinimum : cell.minimum_rule_version
     const change = { key: cellKey(cell), costBefore: cell.supplier_cny_per_1m, costAfter: cell.supplier_cny_per_1m || cost, riskBefore: cell.risk_multiplier, riskAfter: risk, minimumBefore: cell.minimum_rule_version, minimumAfter: minimum }
     return change.costBefore !== change.costAfter || change.riskBefore !== change.riskAfter || change.minimumBefore !== change.minimumAfter ? [change] : []
@@ -158,8 +159,8 @@ function inheritOfficialPricing() {
       cell.supplier_cny_per_1m = cost
       cell.retail_usd_per_1m = retail
       cell.risk_multiplier ||= '1'
-      if (cell.input_video && !cell.minimum_rule_version && verification.value?.verified && minimums.value.some(item => item.version === verification.value?.minimum_version)) {
-        cell.minimum_rule_version = verification.value.minimum_version
+      if (cell.input_video && !cell.minimum_rule_version && verifiedMinimumCovers(cell) && minimums.value.some(item => item.version === verification.value?.minimum_version)) {
+        cell.minimum_rule_version = verification.value!.minimum_version
       }
       inherited++
     } catch { /* A missing FX snapshot cannot produce a USD selling price. */ }
@@ -372,7 +373,7 @@ defineExpose({ hasUnsavedChanges: () => dirty.value, discardChanges })
     <header class="page-heading"><div><h1>{{ model }}</h1><p>{{ t('unit') }}</p></div><span class="state" :class="{ dirty }">{{ dirty ? t('dirty') : t('clean') }}</span><label v-if="!embedded">{{ t('title') }} <select v-model="model" :disabled="busy || loading || dirty"><option v-for="name in officialVideoModels" :key="name" :value="name">{{ name }}</option></select></label></header>
     <p v-if="!auth.isSuperadmin" class="message">{{ t('unauthorized') }}</p><p v-else-if="!supported" class="message">{{ t('unsupported') }}</p>
     <p v-if="error" class="message error" role="alert">{{ error }}</p><p v-if="notice" class="message success" role="status">{{ notice }}</p>
-    <label v-if="model === 'seedance-2.5' && auth.isSuperadmin && bindingMatches" class="panel">{{ t('verificationSelect') }} <select v-model="verificationProfile" :disabled="busy || loading || dirty"><option value="standard">{{ t('verificationStandard') }}</option><option value="draft">{{ t('verificationDraft') }}</option></select></label>
+    <label v-if="model === 'seedance-2.5' && auth.isSuperadmin && bindingMatches" class="panel">{{ t('verificationSelect') }} <select v-model="verificationProfile" :disabled="busy || loading || dirty"><option value="standard">{{ t('verificationStandard') }}</option><option value="draft">{{ t('verificationDraft') }}</option><option value="4k">Seedance 2.5 4K + Draft</option></select></label>
     <section v-if="verification && !loading && bindingMatches" class="panel verification-summary"><div><strong>{{ verification.verified ? t('verificationSynced') : t('verificationAvailable') }}</strong><p>{{ t('verificationSummary') }}</p></div><button :disabled="busy" @click="verificationOpen = true">{{ t('verificationPreview') }}</button></section>
     <p v-if="verificationError && !verificationOpen" class="message error" role="alert">{{ verificationError }}</p>
     <p v-if="loading" aria-live="polite">{{ t('loading') }}</p><p v-else-if="!bindingMatches" class="message error">{{ t('wrongBinding') }}</p>

@@ -6,7 +6,7 @@ import (
 )
 
 func TestDraftTaskUsableAtOfficialCutover(t *testing.T) {
-	cutover := draftFourteenDayCutover
+	cutover := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 	cases := []struct {
 		name    string
 		created time.Time
@@ -15,8 +15,8 @@ func TestDraftTaskUsableAtOfficialCutover(t *testing.T) {
 	}{
 		{"old task before seven days", cutover.Add(-time.Second), cutover.Add(7*24*time.Hour - 2*time.Second), true},
 		{"old task at seven days", cutover.Add(-time.Second), cutover.Add(7*24*time.Hour - time.Second), false},
-		{"new task before fourteen days", cutover, cutover.Add(14*24*time.Hour - time.Nanosecond), true},
-		{"new task at fourteen days", cutover, cutover.Add(14 * 24 * time.Hour), false},
+		{"new task before seven days", cutover, cutover.Add(7*24*time.Hour - time.Nanosecond), true},
+		{"new task at seven days", cutover, cutover.Add(7 * 24 * time.Hour), false},
 		{"missing creation time", time.Time{}, cutover, false},
 		{"future creation time", cutover.Add(time.Second), cutover, false},
 	}

@@ -20,22 +20,23 @@ import (
 )
 
 type arkVerificationStatus struct {
-	Model             string                   `json:"model"`
-	ProfileVersion    string                   `json:"profile_version"`
-	EvidenceSHA256    string                   `json:"evidence_sha256"`
-	ConfigVersion     string                   `json:"config_version"`
-	CapabilityVersion string                   `json:"capability_version"`
-	MinimumVersion    string                   `json:"minimum_version"`
-	MinimumCellCount  int                      `json:"minimum_cell_count"`
-	Resolutions       []string                 `json:"resolutions"`
-	Ratios            []string                 `json:"ratios"`
-	MinDuration       int                      `json:"min_duration"`
-	MaxDuration       int                      `json:"max_duration"`
-	Verified          bool                     `json:"verified"`
-	VerificationKind  string                   `json:"verification_kind"`
-	MinimumPrecision  string                   `json:"minimum_precision"`
-	LiveTested        bool                     `json:"live_tested"`
-	Sources           []arkverification.Source `json:"sources"`
+	Model              string                   `json:"model"`
+	ProfileVersion     string                   `json:"profile_version"`
+	EvidenceSHA256     string                   `json:"evidence_sha256"`
+	ConfigVersion      string                   `json:"config_version"`
+	CapabilityVersion  string                   `json:"capability_version"`
+	MinimumVersion     string                   `json:"minimum_version"`
+	MinimumCellCount   int                      `json:"minimum_cell_count"`
+	MinimumResolutions []string                 `json:"minimum_resolutions,omitempty"`
+	Resolutions        []string                 `json:"resolutions"`
+	Ratios             []string                 `json:"ratios"`
+	MinDuration        int                      `json:"min_duration"`
+	MaxDuration        int                      `json:"max_duration"`
+	Verified           bool                     `json:"verified"`
+	VerificationKind   string                   `json:"verification_kind"`
+	MinimumPrecision   string                   `json:"minimum_precision"`
+	LiveTested         bool                     `json:"live_tested"`
+	Sources            []arkverification.Source `json:"sources"`
 }
 
 func (s *Server) registerArkVerification(su *gin.RouterGroup) {
@@ -159,6 +160,9 @@ func verificationMinimumCoverage(tx *gorm.DB, model string, p arkverification.Pr
 		return e
 	}
 	for _, resolution := range cap.Resolutions {
+		if len(p.MinimumResolutions) != 0 && !videoContains(p.MinimumResolutions, resolution) {
+			continue
+		}
 		probe := videobilling.PricingRule{PricingKey: videobilling.PricingKey{Model: model, Resolution: resolution, InputVideo: true}, MinimumRuleVersion: p.MinimumVersion}
 		if _, e := videobilling.CatalogMinimumTokens(probe, []videobilling.MinimumRuleSet{set}, cells, videobilling.MinimumContext{Resolution: resolution, Ratios: cap.Ratios, MinDuration: cap.MinDuration, MaxDuration: cap.MaxDuration}, int64(cap.FPS)); e != nil {
 			return e
@@ -201,7 +205,7 @@ func matchingVerificationMinimum(tx *gorm.DB, model string, p arkverification.Pr
 }
 
 func verificationView(cfg video.ModelConfig, current ark.Capability, p arkverification.Profile, verified bool) arkVerificationStatus {
-	return arkVerificationStatus{Model: cfg.PublicModel, ProfileVersion: p.Version, EvidenceSHA256: p.EvidenceSHA256, ConfigVersion: cfg.Version, CapabilityVersion: current.Version, MinimumVersion: p.MinimumVersion, MinimumCellCount: len(p.MinimumCells), Resolutions: p.Capability.Resolutions, Ratios: p.Capability.Ratios, MinDuration: p.Capability.MinDuration, MaxDuration: p.Capability.MaxDuration, Verified: verified, VerificationKind: "official_documentation", MinimumPrecision: "estimated", LiveTested: false, Sources: p.Sources}
+	return arkVerificationStatus{Model: cfg.PublicModel, ProfileVersion: p.Version, EvidenceSHA256: p.EvidenceSHA256, ConfigVersion: cfg.Version, CapabilityVersion: current.Version, MinimumVersion: p.MinimumVersion, MinimumCellCount: len(p.MinimumCells), MinimumResolutions: p.MinimumResolutions, Resolutions: p.Capability.Resolutions, Ratios: p.Capability.Ratios, MinDuration: p.Capability.MinDuration, MaxDuration: p.Capability.MaxDuration, Verified: verified, VerificationKind: "official_documentation", MinimumPrecision: "estimated", LiveTested: false, Sources: p.Sources}
 }
 
 func verificationMatches(cfg video.ModelConfig, old, next ark.Capability, oldBounds, bounds map[string]video.Dimensions, p arkverification.Profile) bool {
@@ -219,6 +223,8 @@ func (s *Server) getArkVerification(c *gin.Context) {
 		p, e = arkverification.Load(c.Param("model"))
 	case "draft":
 		p, e = arkverification.LoadDraft(c.Param("model"))
+	case "4k":
+		p, e = arkverification.Load4K(c.Param("model"))
 	default:
 		fail(c, 422, "unknown verification profile")
 		return
@@ -275,6 +281,11 @@ func (s *Server) syncArkVerification(c *gin.Context) {
 	if p.Version != in.ProfileVersion {
 		if draft, draftErr := arkverification.LoadDraft(c.Param("model")); draftErr == nil && draft.Version == in.ProfileVersion {
 			p = draft
+		}
+	}
+	if p.Version != in.ProfileVersion {
+		if fourK, err := arkverification.Load4K(c.Param("model")); err == nil && fourK.Version == in.ProfileVersion {
+			p = fourK
 		}
 	}
 	if p.Version != in.ProfileVersion {

@@ -189,17 +189,12 @@ var assetIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 // Ark counts Draft-task lifetime from its upstream created_at. The local
 // metadata timestamp precedes upstream creation, so using it is conservative
 // when the upstream timestamp has not been persisted in the task projection.
-var draftFourteenDayCutover = time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
-
 func draftTaskUsable(createdAt, now time.Time) bool {
 	if createdAt.IsZero() || createdAt.After(now) {
 		return false
 	}
-	lifetime := 7 * 24 * time.Hour
-	if !createdAt.Before(draftFourteenDayCutover) {
-		lifetime = 14 * 24 * time.Hour
-	}
-	return now.Before(createdAt.Add(lifetime))
+	// The Seedance 4K integration guide specifies seven days for Draft IDs.
+	return now.Before(createdAt.Add(7 * 24 * time.Hour))
 }
 
 func assetID(v string) bool { return assetIDPattern.MatchString(v) }
