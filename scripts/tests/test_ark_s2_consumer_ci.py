@@ -65,9 +65,12 @@ class Tests(unittest.TestCase):
         old = (C/'.github/workflows/ci.yml').read_text(encoding='utf-8')
         new = (OUT/'.github/workflows/ci.yml').read_text(encoding='utf-8')
         jobs = lambda text: re.findall(r'^  ([a-z][a-z0-9-]+):$', text.split('\njobs:\n',1)[1], re.M)
-        expected = ['ci','web','ark-mysql','ark-mock-baseline','ark-runtime-compat','ark-mutation-compat','ark-execution-input-compat','ark-query-recovery-compat','release-tools','redline']
-        self.assertEqual(expected, [j for j in jobs(new) if j != 'exact-head-ci'])
-        self.assertEqual(jobs(new).count('exact-head-ci'), 1)
+        # 2026-11-17 CI 精简（#151）：exact-head-ci 与五个 ark-*-compat 证据 job
+        # 移出 CI（本地 Makefile 目标保留），release-tools 移除；守卫锁定收敛后
+        # 的 4-job 门禁结构，任何 job 增删必须同步本清单。
+        expected = ['ci','web','ark-mysql','redline']
+        self.assertEqual(expected, jobs(new))
+        self.assertNotIn('exact-head-ci', jobs(new))
         self.assertIn('python3 scripts/tests/test_ark_s2_consumer_ci.py', new)
         self.assertNotIn('-skip \"$(python3', new)
         for scope in ('video', 'race', 'host'):
