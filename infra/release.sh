@@ -480,7 +480,10 @@ open_stage() {
   [[ -f "$STATE_DIR/active-release" && $(cat "$STATE_DIR/active-release") == "$RELEASE_ID" ]] || die 'Another release owns the runtime; refusing stale open.'
   verify_stage; PHASE=open
   if [[ -f "$RUN_DIR/open.ok" ]]; then log 'Release is already open; verified without reloading its routes.'; return; fi
-  external_check before-open
+  # For an application-only switch, finish the health/schema/funds checks and
+  # reopen immediately. Observe live traffic after ingress is restored; do not
+  # hold the public service in maintenance for a monitoring window.
+  if (( CARRYOVER != 3 )); then external_check before-open; fi
   restore_ingress; mark open
   printf '%s\n' "$RELEASE_ID" > "$STATE_DIR/current"
   log 'Release opened. Perform business acceptance within the approved test budget.'
