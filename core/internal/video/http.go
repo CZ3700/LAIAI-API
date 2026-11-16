@@ -564,8 +564,62 @@ func (s *Service) HandleCancel(c *gin.Context) {
 	// 火山官方格式返回：包含任务 id 与状态
 	c.JSON(202, gin.H{"id": c.Param("id"), "status": "cancelling", "operation_id": v.ID})
 }
-func (s *Service) HandleDelete(c *gin.Context) {
-	v, done, e := s.Delete(c.Request.Context(), requestKey(c).OrgID, c.Param("id"), c.GetString("video_request_id"))
+
+// HandleTaskDelete 是官方合并端点（火山 DELETE /contents/generations/tasks/{id}）：
+// 行为由任务状态自动决定——非终态可取消任务走取消链路（queued 两阶段：
+// 上游 DELETE + 权威 GET 确认后才释放冻结）；running 不支持（409）；
+// 终态且账务已终（settled/released/adjusted）走删除链路（tombstone + 隐藏产物）。
+// 旧 POST /generations/:id/cancel 保留为兼容别名，语义不变。
+
+// wrapDB 把 gorm 错误转成 respondError 可判别的 error 链（not-found → 404）。
+func wrapDB(e error) error {
+	if e == nil {
+		return nil
+	}
+	if errors.Is(e, gorm.ErrRecordNotFound) {
+		return ErrNotFound
+	}
+	return e
+}
+
+func (s *Service) HandleTaskDelete(c *gin.Context) {
+	if b, e := io.ReadAll(io.LimitReader(c.Request.Body, 2)); e != nil || len(bytes.TrimSpace(b)) > 0 {
+		apiError(c, 422, "body_not_allowed")
+		return
+	}
+	org, id := requestKey(c).OrgID, c.Param("id")
+	var st State
+	if e := s.DB.WithContext(c.Request.Context()).Select("billing_state", "deleted_at").
+		Where("org_id = ? AND task_id = ?", org, id).Take(&st); e.Error != nil {
+		respondError(c, wrapDB(e.Error))
+		return
+	}
+	if st.DeletedAt != nil {
+		c.Status(204)
+		return
+	}
+	var t task.Task
+	if e := s.DB.WithContext(c.Request.Context()).Select("status").
+		Where("org_id = ? AND task_id = ? AND provider = ?", org, id, Provider).Take(&t); e.Error != nil {
+		respondError(c, wrapDB(e.Error))
+		return
+	}
+	if !terminal(t.Status) {
+		// 非终态 → 取消链路（local cancel / queued 两阶段 / 提交未决意图；
+		// running 由 CancellationDecision 判 409 invalid_state）。
+		v, replay, e := s.Cancel(c.Request.Context(), org, id, c.GetString("video_request_id"), c.GetHeader("Idempotency-Key"))
+		if e != nil {
+			respondError(c, e)
+			return
+		}
+		if replay {
+			c.Header("Idempotency-Replayed", "true")
+		}
+		c.Set("video_operation_id", v.ID)
+		c.JSON(202, gin.H{"id": id, "status": "cancelling", "operation_id": v.ID})
+		return
+	}
+	v, done, e := s.Delete(c.Request.Context(), org, id, c.GetString("video_request_id"))
 	if e != nil {
 		respondError(c, e)
 		return
@@ -576,7 +630,7 @@ func (s *Service) HandleDelete(c *gin.Context) {
 	}
 	c.Set("video_operation_id", v.ID)
 	// 火山官方格式返回
-	c.JSON(202, gin.H{"id": c.Param("id"), "status": "deleting", "operation_id": v.ID})
+	c.JSON(202, gin.H{"id": id, "status": "deleting", "operation_id": v.ID})
 }
 func (s *Service) HandleOperation(c *gin.Context) {
 	v, e := s.GetOperation(requestKey(c).OrgID, c.Param("operation_id"))
