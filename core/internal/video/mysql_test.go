@@ -481,3 +481,111 @@ func TestMySQLVideoHTTPAuditAndRetention(t *testing.T) {
 		t.Fatal("metadata-only history broke lifecycle")
 	}
 }
+
+// 官方合并端点（PR #133）：DELETE /v1/video/generations/:id 按状态自动决定
+// 取消/删除——queued 走取消链路（两阶段），running 409，终态+账务已终走删除，
+// 已删除 204。旧 POST /cancel 保留为兼容别名（行为不变）。
+func TestMySQLVideoMergedDeleteByStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newRouter := func(s *Service) *gin.Engine {
+		r := gin.New()
+		g := r.Group("", s.Middleware())
+		g.DELETE("/v1/video/generations/:id", s.HandleTaskDelete)
+		g.POST("/v1/video/generations/:id/cancel", s.HandleCancel)
+		return r
+	}
+	del := func(f *fixture, id string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodDelete, "/v1/video/generations/"+id, nil)
+		req.Header.Set("Authorization", "Bearer "+f.plain)
+		req.Header.Set("Idempotency-Key", "merged-del-"+id)
+		w := httptest.NewRecorder()
+		newRouter(f.s).ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("queued cancels via merged delete", func(t *testing.T) {
+		f := mysqlFixture(t)
+		v := f.create(t, "merged-queued-1")
+		f.dispatch(t, v.ID)
+		w := del(f, v.ID)
+		if w.Code != 202 || !strings.Contains(w.Body.String(), `"status":"cancelling"`) {
+			t.Fatalf("queued merged delete must cancel: %d %s", w.Code, w.Body.String())
+		}
+		// 两阶段安全：DELETE ack 后必须等权威 GET 确认才释放冻结。
+		if f.hold(t, v.ID).Status != ledger.HoldActive {
+			t.Fatal("hold released before authoritative confirmation")
+		}
+	})
+
+	t.Run("running is rejected", func(t *testing.T) {
+		f := mysqlFixture(t)
+		v := f.create(t, "merged-running-1")
+		f.dispatch(t, v.ID)
+		// 官方查询信封返回 running（平台任务随之转 running）。id 必须是
+		// 上游任务 ID（apply 阶段做 matched 校验）。
+		var dispatchedTask task.Task
+		must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&dispatchedTask).Error)
+		upstream := dispatchedTask.UpstreamTaskID
+		f.response = func(r *http.Request) (*http.Response, error) {
+			if r.Method == http.MethodGet {
+				return reply(200, `{"id":"`+upstream+`","status":"running","usage":{"completion_tokens":0,"total_tokens":0}}`), nil
+			}
+			return reply(200, `{}`), nil
+		}
+		must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
+		w := del(f, v.ID)
+		if w.Code != 409 {
+			t.Fatalf("running merged delete must 409: %d %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("terminal settled deletes then 204", func(t *testing.T) {
+		f := mysqlFixture(t)
+		v := f.create(t, "merged-terminal-1")
+		f.dispatch(t, v.ID)
+		f.dispatch(t, v.ID)
+		must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
+		w := del(f, v.ID)
+		if w.Code != 202 || !strings.Contains(w.Body.String(), `"status":"deleting"`) {
+			t.Fatalf("terminal merged delete must enter deleting: %d %s", w.Code, w.Body.String())
+		}
+		var st State
+		must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&st).Error)
+		if st.DeletionOperationID == "" || st.DeletedAt != nil {
+			t.Fatal("deletion operation not recorded")
+		}
+		again := del(f, v.ID)
+		if again.Code != 202 {
+			t.Fatalf("deletion in flight must return its operation: %d", again.Code)
+		}
+		// 派发 delete_task op（fake 对 DELETE 返回 200 {}）→ 确认 + tombstone。
+		var dop Operation
+		must(t, f.s.DB.Where("org_id = ? AND resource_id = ? AND kind = ?", f.key.OrgID, v.ID, "delete_task").First(&dop).Error)
+		f.response = func(r *http.Request) (*http.Response, error) {
+			if r.Method == http.MethodDelete {
+				return reply(200, `{}`), nil
+			}
+			return reply(200, `{"id":"`+v.ID+`","status":"succeeded","usage":{"completion_tokens":100,"total_tokens":999}}`), nil
+		}
+		must(t, f.s.processMutation(context.Background(), dop))
+		final := del(f, v.ID)
+		if final.Code != 204 {
+			t.Fatalf("completed delete must 204: %d", final.Code)
+		}
+		if _, e := f.s.Get(f.key.OrgID, v.ID); !isNotFound(e) {
+			t.Fatal("deleted task still readable")
+		}
+	})
+
+	t.Run("idempotency key required in cancel phase", func(t *testing.T) {
+		f := mysqlFixture(t)
+		v := f.create(t, "merged-nokey-1")
+		req := httptest.NewRequest(http.MethodDelete, "/v1/video/generations/"+v.ID, nil)
+		req.Header.Set("Authorization", "Bearer "+f.plain)
+		w := httptest.NewRecorder()
+		newRouter(f.s).ServeHTTP(w, req)
+		if w.Code != 422 {
+			t.Fatalf("cancel phase without Idempotency-Key must 422: %d %s", w.Code, w.Body.String())
+		}
+	})
+}

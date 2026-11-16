@@ -45,7 +45,7 @@ func (s *Service) RegisterRoutes(r *gin.RouterGroup, legacy *task.Service) {
 	g.POST("/estimates", s.HandleEstimate)
 	g.GET("/generations", s.HandleList)
 	g.POST("/generations/:id/cancel", s.HandleCancel)
-	g.DELETE("/generations/:id", s.HandleDelete)
+	g.DELETE("/generations/:id", s.HandleTaskDelete) // 官方合并端点：按状态自动决定取消/删除
 	g.GET("/generations/:id/billing", s.HandleBilling)
 	g.GET("/generations/:id/events", s.HandleEvents)
 	g.GET("/operations/:operation_id", func(c *gin.Context) {
