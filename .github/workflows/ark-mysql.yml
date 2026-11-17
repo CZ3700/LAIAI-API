@@ -1,0 +1,106 @@
+# Full MySQL integration checks for schema, routing, billing, and recovery changes.
+# Trigger on the target branch when this coverage is needed; main push CI stays fast.
+name: ark-mysql
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  ark-mysql:
+    # MySQL 集成回归（迁移双跑/资金/调度/目录/恢复/consumer 契约）。
+    # 按需手动运行；不参与 main push 的快速发版反馈。
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ark-ci-test-only
+          MYSQL_ROOT_HOST: '%'
+          MYSQL_DATABASE: ark_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -park-ci-test-only"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      GOPROXY: https://proxy.golang.org,direct
+      LAIAI_DSN: root:ark-ci-test-only@tcp(127.0.0.1:3306)/ark_test?parseTime=true
+      ARK_TEST_MYSQL_DSN: root:ark-ci-test-only@tcp(127.0.0.1:3306)/ark_test?parseTime=true
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.work
+          cache: true
+      - name: Go baseline and consumer selector coverage
+        run: |
+          sh scripts/check-go-toolchain.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_ark_s2_consumer_ci.py
+      - name: Migration upgrades, interrupted replays and formal double-apply
+        run: |
+          go -C core test ./internal/arkpricetemplate -run TestMySQL -count=1 -timeout=5m
+          go -C core test ./internal/migrate -run TestMySQLVideoRuntimeMigrationPreservesLegacyAndReplays -count=1 -timeout=5m -v
+          go -C core test ./internal/migrate -run TestMySQLVideoInboxMigrationPreservesLegacyAndReplays -count=1 -timeout=5m -v
+          go -C core test ./internal/migrate -run TestMySQLVideoActionTargetMigrationPreservesLegacyAndReplays -count=1 -timeout=5m -v
+          go -C core test -race ./internal/migrate -run TestMySQLRouting -count=1 -timeout=8m -v
+          go -C core test -race ./internal/migrate -run '^TestMySQLVideoQueryRecoveryMigrationPreservesAndReplays$' -count=2 -timeout=5m -v
+          go -C core run ./cmd/migrate -dir ../migrations
+          go -C core run ./cmd/migrate -dir ../migrations
+      - name: Key billing retention, races and bounded snapshots
+        run: |
+          go -C core test -race -p 1 ./internal/identity ./internal/videobilling ./internal/server -run '^(TestPurgeRevokedKey|TestKeySnapshotReference|TestKeyPurge|TestMySQLKeyPurge|TestMySQLKeySnapshotIndex)' -count=2 -timeout=10m -v
+          go -C core test -race -p 1 ./internal/invocation ./internal/server -run '^(TestQuery|TestInvocation|TestMySQLInvocation)' -count=1 -timeout=8m
+      - name: Official catalog, membership and routing gates
+        run: |
+          go -C core test -race -p 1 ./internal/identity ./internal/relay ./internal/videobilling ./internal/video ./internal/server -run '^(TestVideoCatalog|TestCatalogPublication|TestPublication)' -count=1 -timeout=10m -v
+          go -C core test -race -p 1 ./internal/video ./internal/server -run '^TestMySQLVideoCatalog' -count=2 -timeout=15m -v
+          go -C core test -race -p 1 ./internal/routinggroup ./internal/video ./internal/server -run '^(TestMembership|TestOfficialAction|TestMySQLOfficialAction|TestMySQLVideoActionMembership)' -count=2 -timeout=10m -v
+          go -C core test -race -p 1 ./internal/identity ./internal/relay ./internal/routinggroup ./internal/server -run '^(TestCandidates|TestRoutingCandidate|TestRoutingPublished|TestMySQLRoutingCandidates)' -count=2 -timeout=10m -v
+          go -C core test -race -p 1 ./internal/identity ./internal/relay ./internal/routinggroup ./internal/server -run '^(TestRouting|TestGroupCreate|TestGroupInsertDuplicate|TestAdmin(Read|Preview|Select)|TestMySQLRoutingAdmin)' -count=1 -timeout=8m
+          go -C core test -race ./internal/server -run '^(TestMySQLRoutingOrgAdmin|TestRoutingOrgAdmin)' -count=1 -timeout=10m -v
+      - name: Ark MySQL transaction, HTTP integration and billing lifecycle
+        run: |
+          skip_pattern=$(python3 scripts/ark-s2-consumer-ci.py --skip video)
+          go -C core test -p 1 ./internal/video ./internal/videoasset ./internal/server -run 'TestMySQL|TestArkBillMySQL' -skip "$skip_pattern" -count=1 -timeout=10m
+          go -C core test -race ./internal/server -run '^(TestArkBillMySQL|TestAuthRateLimit$|TestRealtime(WriteDeadlineDoS|IdleTimeout)$)' -count=1 -timeout=3m
+      - name: Execution input TTL, retention and concurrency checks
+        run: |
+          go -C core test -race -p 1 ./internal/invocation ./internal/video \
+            -run '^(TestMySQLVideo(Execution|RetentionAndTTLPurge$|BlobRestartSafeUploadAndPurge$|UploadFenceAndExpiry$)|TestMySQLExecution(Input(IdentityPrecedesLocalRelease|EarlyFailureIdentityAndInbox|FinalSQLUsesDatabaseExpiry|HostClockFailuresRemainUncertain)|ActionExpiredIdentityStillControlsNotSent)$)' \
+            -count=2 -timeout=15m -v
+          skip_pattern=$(python3 scripts/ark-s2-consumer-ci.py --skip race)
+          go -C core test -race ./internal/video ./internal/videoartifact ./internal/videoasset ./internal/videobilling ./internal/invocation ./internal/notify -skip "$skip_pattern" -count=1 -timeout=20m
+      - name: Scheduling authority, mutation and persisted recovery
+        run: |
+          go -C core test -race ./internal/video -run '^TestMySQLDatabaseAuthority' -count=2 -timeout=25m -v
+          go -C core test -race ./internal/video -run '^(TestMutationProducer|TestMySQLMutationProducer)' -count=1 -timeout=8m -v
+          go -C core test -race ./internal/video -run '^TestMySQLRuntimeHTTP(CreatePersistence|QueryAcceptedPersistence|NullableUsagePersistence|UninterpretableQueryPersistence)$' -count=2 -timeout=8m -v
+          go -C core test -race ./internal/video -run '^(TestRecovery(ErrorsHideMessagesAndPreserveEveryCause|LaneDeadlineDoesNotStarveNextLane|ParentCancellationStopsBeforeNextLane|ErrorClassificationRejectsForeignSemantics|CommittedDispositionAndFailureAreIndependent)|TestInboxRecoveryRetainsApplyAndBackoffFailureAndContinues|TestQueryRecovery(DecoderAndClosedErrorTree|EvidenceDigestCoversDurableFields|DatabaseClockFailsClosed|CountsDoNotTurnFailureIntoNoop|QueueErrorOracle))$' -count=2 -timeout=5m -v
+          go -C core test -race ./internal/video -run '^(TestMySQLQueryRecovery(BadQueueProgress|CommittedStatistics|OldDiagnosticCannotReplaceReview|UnsupportedCompatibilityDiagnostic|DiagnosticsUseCurrentEvidence|TemporaryFailuresRemainRetryable|CandidatesIndexedAndBounded|NoNetworkReplayAndIsolation)|TestMySQLPersistedRecoveryClockBudgetIsScoped)$' -count=2 -timeout=15m -v
+          skip_pattern=$(python3 scripts/ark-s2-consumer-ci.py --skip host)
+          go -C core test -race ./cmd/core -skip "$skip_pattern" -count=2 -timeout=6m -v
+      - name: Consumer phase contracts, double MySQL runs
+        env:
+          ARK_S2_CONSUMER_REPORT_DIR: ${{ runner.temp }}/ark-s2-consumer
+        run: |
+          for stage in s2_pure s2_migrations s2_initial s2_phase s2_generation s2_settlement s2_host; do
+            python3 scripts/ark-s2-consumer-ci.py --stage "$stage"
+          done
+      - name: Retain consumer exact-selector evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ark-s2-consumer-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ark-s2-consumer
+          if-no-files-found: warn
+          retention-days: 14

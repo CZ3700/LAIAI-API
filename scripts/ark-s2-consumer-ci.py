@@ -1,4 +1,4 @@
-"""Exact consumer selectors inside the existing ephemeral ark-mysql CI job.
+"""Exact consumer selectors for the manually triggered ark-mysql CI job.
 
 Owns no database, container or credentials. Formal handoffs remain separate.
 """
