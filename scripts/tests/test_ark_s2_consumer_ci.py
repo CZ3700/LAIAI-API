@@ -61,24 +61,25 @@ class Tests(unittest.TestCase):
                 self.assertIsNone(regex.fullmatch(name+'Future'))
                 self.assertIsNone(regex.fullmatch('Prefix'+name))
 
-    def test_original_jobs_and_budgets_preserved(self):
-        old = (C/'.github/workflows/ci.yml').read_text(encoding='utf-8')
-        new = (OUT/'.github/workflows/ci.yml').read_text(encoding='utf-8')
+    def test_fast_push_and_manual_mysql_workflows_preserve_selectors(self):
+        fast = (C/'.github/workflows/ci.yml').read_text(encoding='utf-8')
+        mysql = (C/'.github/workflows/ark-mysql.yml').read_text(encoding='utf-8')
         jobs = lambda text: re.findall(r'^  ([a-z][a-z0-9-]+):$', text.split('\njobs:\n',1)[1], re.M)
-        # 2026-11-17 CI 精简（#151）：exact-head-ci 与五个 ark-*-compat 证据 job
-        # 移出 CI（本地 Makefile 目标保留），release-tools 移除；守卫锁定收敛后
-        # 的 4-job 门禁结构，任何 job 增删必须同步本清单。
-        expected = ['ci','web','ark-mysql','redline']
-        self.assertEqual(expected, jobs(new))
-        self.assertNotIn('exact-head-ci', jobs(new))
-        self.assertIn('python3 scripts/tests/test_ark_s2_consumer_ci.py', new)
-        self.assertNotIn('-skip \"$(python3', new)
+        self.assertEqual(['ci', 'web', 'redline'], jobs(fast))
+        self.assertEqual(['ark-mysql'], jobs(mysql))
+        self.assertIn('  workflow_dispatch: {}', mysql)
+        self.assertNotIn('  push:', mysql)
+        self.assertNotIn('  pull_request:', mysql)
+        self.assertNotIn('    if: github.event_name == \'push\'', mysql)
+        self.assertNotIn('services:\n      mysql:', fast)
+        self.assertIn('python3 scripts/tests/test_ark_s2_consumer_ci.py', fast)
+        self.assertNotIn('-skip \"$(python3', mysql)
         for scope in ('video', 'race', 'host'):
-            self.assertIn('skip_pattern=$(python3 scripts/ark-s2-consumer-ci.py --skip '+scope+')\n', new)
+            self.assertIn('skip_pattern=$(python3 scripts/ark-s2-consumer-ci.py --skip '+scope+')\n', mysql)
         for command in ["-count=1 -timeout=10m", "-count=1 -timeout=20m", "-count=2 -timeout=6m -v"]:
-            self.assertIn(command, new)
+            self.assertIn(command, mysql)
         self.assertEqual(CATALOG['timeouts'], {'s2_pure':'10m','s2_migrations':'15m','s2_initial':'15m','s2_phase':'10m','s2_generation':'25m','s2_settlement':'25m','s2_host':'5m'})
-        self.assertIn("'^TestMySQLVideoQueryRecoveryMigrationPreservesAndReplays$' -count=2 -timeout=5m -v", new)
+        self.assertIn("'^TestMySQLVideoQueryRecoveryMigrationPreservesAndReplays$' -count=2 -timeout=5m -v", mysql)
 
     def test_new_migration_exact_two_and_guard_exact_thirteen(self):
         stage = CATALOG['test_stages']['s2_migrations']

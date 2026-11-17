@@ -114,6 +114,13 @@ func TestMySQLVideoCatalogReadersFactsAndPlans(t *testing.T) {
 	if _, err := relay.ReadVideoCatalogRatiosTx(context.Background(), tx, group, []string{"seedance-2.0"}); err != nil {
 		t.Fatal("uncommitted group missing", err)
 	}
+	// MySQL may scan either credential subquery for this small fixture even when
+	// the production index exists. Check the indexed access path as a schema
+	// property instead of pinning a cost-based optimizer decision.
+	var credentialIndex string
+	if err := tx.Raw("SELECT COALESCE(GROUP_CONCAT(column_name ORDER BY seq_in_index), '') FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'channel_credentials' AND index_name = 'idx_cc_channel_active'").Scan(&credentialIndex).Error; err != nil || credentialIndex != "channel_id,status" {
+		t.Fatal("credential lookup index missing or changed", credentialIndex, err)
+	}
 	for _, statement := range statements {
 		if !strings.Contains(statement.sql, "MAX_EXECUTION_TIME(") {
 			t.Fatal("actual MySQL SELECT missing bound")
@@ -139,7 +146,7 @@ func TestMySQLVideoCatalogReadersFactsAndPlans(t *testing.T) {
 				return *row.Key
 			}())
 			switch row.Table {
-			case "organizations", "c", "gr", "mr", "all_credentials", "usable":
+			case "organizations", "c", "gr", "mr":
 				if row.Key == nil || *row.Key == "" || row.Access == "ALL" {
 					t.Fatal("selective owned-table lookup did not use an index", row.Table, row.Access)
 				}
