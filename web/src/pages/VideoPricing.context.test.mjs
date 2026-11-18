@@ -139,6 +139,16 @@ async function harness(t, props = {}) {
 const changePrice = (h, value = '20.000000000001') => { h.vm.pricing.value.cells[0].retail_usd_per_1m = value }
 const writes = h => h.calls.filter(c => c.method !== 'GET')
 
+test('configured Seedance 2.5 Flash loads its price editor and matching official reference', async t => {
+  const h = await harness(t, {selectedModel: 'seedance-2.5-flash', selectedChannelId: 10})
+  assert.equal(h.vm.supported.value, true)
+  assert.equal(h.vm.canEdit.value, true)
+  assert.deepEqual(h.vm.referenceSeries.value, ['2.5-flash'])
+  assert.equal(h.vm.pricing.value.model, 'seedance-2.5-flash')
+  assert.ok(h.calls.some(call => call.path === '/api/admin/video/models/seedance-2.5-flash/pricing'))
+  assert.equal(writes(h).length, 0)
+})
+
 function useFreshPricing(h, customize = () => {}) {
   const fallback = h.defaultGet
   h.defaultGet = call => {

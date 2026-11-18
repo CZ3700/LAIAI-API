@@ -38,7 +38,7 @@ const selectedVideoConfigured = computed(() => configuredOfficialVideo(selected.
 function officialModel(row: PricingModel | null) {
   if (!row) return ''
   if (isOfficialVideoModel(row.video_model)) return row.video_model!
-  const exactUpstream: Record<string, string> = { 'doubao-seedance-2-0-260128': 'seedance-2.0', 'doubao-seedance-2-0-fast-260128': 'seedance-2.0-fast', 'doubao-seedance-2-0-mini-260615': 'seedance-2.0-mini', 'doubao-seedance-2-5-260628': 'seedance-2.5' }
+  const exactUpstream: Record<string, string> = { 'doubao-seedance-2-0-260128': 'seedance-2.0', 'doubao-seedance-2-0-fast-260128': 'seedance-2.0-fast', 'doubao-seedance-2-0-mini-260615': 'seedance-2.0-mini', 'doubao-seedance-2-5-260628': 'seedance-2.5', 'doubao-seedance-2-5-flash-261115': 'seedance-2.5-flash' }
   return ['volcengine', 'modelark'].includes(row.provider) ? exactUpstream[row.upstream_model] ?? '' : ''
 }
 const selectedDefaultsModel = computed(() => selectedVideoConfigured.value ? '' : officialModel(selected.value))
