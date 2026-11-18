@@ -86,7 +86,11 @@ func (s *Service) readSecret(ctx context.Context, p Portrait, actor string, owne
 		}
 		allowed := worker || current.CreatedByKeyID == ownerKey
 		if caller, present := callerFrom(ctx); present && !worker {
-			allowed = validCaller(caller, p.OrgID) && ((caller.UserID > 0 && caller.UserID == current.OwnerUserID) || (caller.UserID == 0 && current.OwnerUserID == 0 && caller.KeyID > 0 && caller.KeyID == current.CreatedByKeyID))
+			// 原 Key（CreatedByKeyID 相同）可读其创建会话的 H5 素材——owner
+			// 判定以 Key 为锚（会话可能由 org 级 Key 创建、OwnerUserID=0，
+			// 而调用 Key 带 user：2026-11-18 RPC 透传端点实测踩过）。
+			allowed = validCaller(caller, p.OrgID) && (caller.KeyID > 0 && caller.KeyID == current.CreatedByKeyID ||
+				caller.UserID > 0 && caller.UserID == current.OwnerUserID)
 		}
 		if current.SessionStatus != "pending" || current.SessionExpiresAt == nil || !current.SessionExpiresAt.After(s.now()) || !allowed {
 			return ErrSecret
