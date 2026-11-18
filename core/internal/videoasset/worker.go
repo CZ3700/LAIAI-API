@@ -545,12 +545,34 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 		if json.Unmarshal(result.Data, &empty) != nil || empty == nil {
 			return ErrInvalid
 		}
+		var group Group
+		if err := tx.Where("org_id = ? AND group_id = ?", op.OrgID, op.ResourceID).Take(&group).Error; err != nil {
+			return ErrStorage
+		}
 		res := tx.Model(&Group{}).Where("org_id = ? AND group_id = ? AND status = ? AND delete_operation_id = ? AND deleted_at IS NULL", op.OrgID, op.ResourceID, StatusDeleting, op.ID).Updates(map[string]any{"status": StatusDeleted, "review_state": ReviewClear, "deleted_at": now, "row_version": gorm.Expr("row_version + 1"), "updated_at": now})
 		if res.Error != nil {
 			return ErrStorage
 		}
 		if res.RowsAffected != 1 {
 			return ErrConflict
+		}
+		// Real (LivenessFace) groups: the official DeleteAssetGroup cascaded
+		// every asset provider-side (irreversible). Mirror that locally — soft
+		// delete every live asset row so tombstones and audit history survive.
+		if group.Kind == KindReal {
+			if err := tx.Model(&Asset{}).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", op.OrgID, op.ResourceID).
+				Updates(map[string]any{"status": StatusDeleted, "review_state": ReviewClear, "deleted_at": now, "row_version": gorm.Expr("row_version + 1"), "updated_at": now}).Error; err != nil {
+				return ErrStorage
+			}
+			// Defense in depth: the admission gate already required an
+			// expired/revoked license; force the bound portrait to revoked so a
+			// half-expired license can never outlive its group.
+			if group.PortraitID != "" {
+				if err := tx.Model(&Portrait{}).Where("org_id = ? AND session_id = ? AND license_status <> ?", op.OrgID, group.PortraitID, "revoked").
+					Updates(map[string]any{"license_status": "revoked", "revoked_at": now, "updated_at": now}).Error; err != nil {
+					return ErrStorage
+				}
+			}
 		}
 		return nil
 	case "CreateVisualValidateSession":

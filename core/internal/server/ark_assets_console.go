@@ -58,12 +58,12 @@ func assetConsoleError(c *gin.Context, e error) {
 		status, code = 409, "resource_in_use"
 	case errors.Is(e, videoasset.ErrNotEmpty):
 		status, code = 409, "group_not_empty"
+	case errors.Is(e, videoasset.ErrAuthorizationActive):
+		status, code = 409, "authorization_active"
 	case errors.Is(e, videoasset.ErrUnsupported):
 		status, code = 422, "unsupported_capability"
 	case errors.Is(e, videoasset.ErrUnconfigured):
 		status, code = 503, "portrait_not_configured"
-	case errors.Is(e, videoasset.ErrCallbackNotRegistered):
-		status, code = 422, "callback_not_registered"
 	case errors.Is(e, videoasset.ErrSecret), errors.Is(e, videoasset.ErrAuthorization):
 		status, code = 403, "authorization_required"
 	case errors.Is(e, videoasset.ErrStorage):

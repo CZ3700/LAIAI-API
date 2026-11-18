@@ -504,3 +504,137 @@ func TestOfficialDeletionRetainsLiveReferenceAndCapabilityBarriers(t *testing.T)
 		t.Fatal(err)
 	}
 }
+
+// realGroupDeletionFixture 手工落一个 active 的 LivenessFace 组：真人组无
+// 显式创建 API（火山侧由认证产生），fixture 直接构造与 worker 建组同构的行。
+func realGroupDeletionFixture(t *testing.T, db *gorm.DB, license string, withPortrait bool, withAsset, withRef bool) Group {
+	t.Helper()
+	scope := testScope()
+	now := time.Now()
+	providerID := "group-real-delete-fixture"
+	group := Group{ID: "ag_real_delete_" + license, OrgID: 1, Kind: KindReal, Name: "real", ScopeID: scope.ID,
+		ScopeVersion: scope.Version, AccountID: scope.AccountID, Region: scope.Region, Project: scope.Project,
+		ProviderID: &providerID, Status: StatusActive, ReviewState: ReviewClear, RowVersion: 1}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&Ownership{OrgID: 1, ResourceType: "asset_group", ResourceID: group.ID, OwnerUserID: 2}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if withPortrait {
+		group.PortraitID = "pas_real_" + license
+		portrait := Portrait{ID: group.PortraitID, OrgID: 1, OwnerUserID: 2, CreatedByKeyID: 3,
+			ScopeID: scope.ID, ScopeVersion: scope.Version, AccountID: scope.AccountID, Region: scope.Region, Project: scope.Project,
+			SessionStatus: "succeeded", LicenseStatus: license, CreateOperationID: "op_portrait_fixture",
+			CallbackTargetID: "callback1", SecretRef: "secret_fixture", LicenseScope: "video_generation",
+			LicenseVersion: 1, LicenseEvidenceRef: "evidence_fixture", LicenseSource: "official", RowVersion: 1,
+			CreatedAt: now, UpdatedAt: now}
+		if err := db.Create(&portrait).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Model(&Group{}).Where("org_id = ? AND group_id = ?", group.OrgID, group.ID).Update("portrait_id", group.PortraitID).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if withAsset {
+		asset := Asset{ID: "asset_real_" + license, OrgID: 1, GroupID: group.ID, MediaType: "image", Name: "face",
+			ScopeID: scope.ID, ScopeVersion: scope.Version, Status: StatusActive, ReviewState: ReviewClear, RowVersion: 1, CreatedAt: now, UpdatedAt: now}
+		if err := db.Create(&asset).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if withRef {
+		ref := TaskReference{OrgID: 1, TaskID: "task_ref_" + license, AssetID: "asset_real_" + license, GroupID: group.ID, ContentIndex: 0, Role: "reference_image", AssetMetadataVersion: 1, AuthorizationVersion: 1, CreatedAt: now}
+		if err := db.Create(&ref).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	return group
+}
+
+// TestRealGroupDeletionFollowsOfficialLicenseGateAndCascades（2026-11-18 对齐
+// 火山 DeleteAssetGroup）：真人组删除由许可状态闸门控（verified/unknown 拒、
+// expired/revoked 放行），火山级联删素材故跳过本地 group_not_empty 与空组
+// 预检，worker 确认后组/素材/许可三终态联动。
+func TestRealGroupDeletionFollowsOfficialLicenseGateAndCascades(t *testing.T) {
+	cases := []struct {
+		name     string
+		license  string
+		portrait bool
+		withRef  bool
+		wantErr  error
+	}{
+		{"verified-blocks", "verified", true, false, ErrAuthorizationActive},
+		{"unknown-blocks", "unknown", true, false, ErrAuthorizationActive},
+		{"no-portrait-blocks", "verified", false, false, ErrAuthorizationActive},
+		{"reference-blocks", "expired", true, true, ErrInUse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, db, _, _ := setup(t)
+			calls := map[string]int{}
+			s.options.Client = NewManagementClient(&http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+				calls[req.URL.Query().Get("Action")]++
+				return groupErrorReply(req, 200, "", nil), nil
+			})})
+			group := realGroupDeletionFixture(t, db, tc.license, tc.portrait, true, tc.withRef)
+			if _, _, err := s.DeleteGroup(context.Background(), createContext("real-delete"), group.ID, false); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("want %v got %v", tc.wantErr, err)
+			}
+			if calls["DeleteAssetGroup"] != 0 {
+				t.Fatal("blocked deletion reached the provider", calls)
+			}
+			var stored Group
+			db.Where("group_id = ?", group.ID).Take(&stored)
+			if stored.Status != StatusActive || stored.DeletedAt != nil {
+				t.Fatal("blocked group must stay untouched", stored.Status)
+			}
+		})
+	}
+
+	t.Run("expired-cascades-accepts-and-confirms", func(t *testing.T) {
+		s, db, _, _ := setup(t)
+		calls := map[string]int{}
+		s.options.Client = NewManagementClient(&http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+			action := req.URL.Query().Get("Action")
+			calls[action]++
+			if action == "DeleteAssetGroup" {
+				return syncReply(req, map[string]any{}), nil
+			}
+			if action == "ListAssets" {
+				t.Fatal("real group deletion must skip the virtual empty-group precheck")
+			}
+			return groupErrorReply(req, 404, "NotFound.group_id", nil), nil
+		})})
+		group := realGroupDeletionFixture(t, db, "expired", true, true, false)
+		op, done, err := s.DeleteGroup(context.Background(), createContext("real-delete-ok"), group.ID, false)
+		if err != nil || done {
+			t.Fatal(op, done, err)
+		}
+		if err := s.ProcessOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if calls["DeleteAssetGroup"] != 1 || calls["ListAssets"] != 0 {
+			t.Fatal(calls)
+		}
+		var stored Group
+		db.Where("group_id = ?", group.ID).Take(&stored)
+		if stored.Status != StatusDeleted || stored.DeletedAt == nil {
+			t.Fatal("confirmed group must be tombstoned", stored.Status)
+		}
+		var asset Asset
+		if err := db.Where("asset_id = ?", "asset_real_expired").Take(&asset).Error; err != nil {
+			t.Fatal(err)
+		}
+		if asset.Status != StatusDeleted || asset.DeletedAt == nil {
+			t.Fatal("official cascade must soft-delete group assets", asset.Status)
+		}
+		var portrait Portrait
+		if err := db.Where("session_id = ?", stored.PortraitID).Take(&portrait).Error; err != nil {
+			t.Fatal(err)
+		}
+		if portrait.LicenseStatus != "revoked" || portrait.RevokedAt == nil {
+			t.Fatal("bound license must be force-revoked", portrait.LicenseStatus)
+		}
+	})
+}

@@ -648,10 +648,14 @@ paths:
       operationId: deleteVideoAssetGroup
       summary: 删除素材组
       description: |
-        当前只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。
-        cascade=true、真人组或未启用删除能力均返回 422 unsupported_capability，不支持级联删除。
-        有在途任务引用返回 409 resource_in_use。不会仅删除平台映射而留下未知上游结果。
-        检查组内素材、在途引用并设置 deleting 屏障必须在同一事务锁内完成；
+        虚拟组：只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。
+        真人组（real_person）：对齐官方 DeleteAssetGroup 行为——肖像许可已过期或已撤销
+        （license_status=expired/revoked）方可删除；许可仍有效或待定返回 409 authorization_active，
+        需先经管理端撤销许可或等待到期。真人组删除会批量删除组内全部素材（官方语义，不可逆），
+        本地素材行随确认同步软删，绑定许可强制置 revoked；有在途任务引用仍返回 409 resource_in_use。
+        cascade=true 或未启用删除能力返回 422 unsupported_capability。
+        不会仅删除平台映射而留下未知上游结果。虚拟组删除前经官方空组预检；
+        检查在途引用并设置 deleting 屏障必须在同一事务锁内完成；
         素材新增和任务引用也检查该屏障，避免检查通过后新建素材或引用的竞态。
         首次接受 202；同一幂等键重复请求返回同一受理结果，已确认删除后重复请求 204；跨组织 404。
         删除保留资源墓碑及审计证据，不删除历史任务或账务事实。
@@ -896,6 +900,10 @@ paths:
         平台通过 GetVisualValidateResult 核实结果，再把官方返回的组映射为本组织 ag_ ID。
         callback_url 由客户直接提交（无需预登记），仅限 HTTPS 且不是可信的授权结果通知来源；
         H5 回跳本身、客户端参数或截图均不能将授权状态改为成功。
+        官方 H5 完成后按火山原生形态跳转 callback_url 并拼接认证参数：
+        bytedToken（与授权会话绑定）、resultCode（10000 为认证通过）、
+        algorithmBaseRespCode（服务端子错误码）、reqMeasureInfoValue、verify_type；
+        认证凭证 30 分钟有效且仅支持认证一次，检测失败后 H5 链接失效需重新创建会话。
         需要已启用的租户素材路由/Portrait 能力及平台固定回调入口。H5 成功仅确认身份流程；
         认证成功即自动登记 video_generation 业务肖像许可（来源官方核实响应，默认有效期一年），
         平台以官方素材组状态每日复验；官方组失效、许可到期或被撤销时拒绝上传或参与任务。
