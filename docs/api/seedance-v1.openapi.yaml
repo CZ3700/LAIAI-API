@@ -1026,6 +1026,83 @@ paths:
                 Result: {SessionId: pas_example001, Status: pending, CreatedAt: 1792713600, H5URL: 'https://visual.example.invalid/session?token=...'}
         default:
           $ref: '#/components/responses/Error'
+  /v1/video/management:
+    post:
+      tags: [PortraitAuthorization]
+      operationId: portraitManagementRpc
+      summary: 火山管理 RPC 透传（CreateVisualValidateSession / GetVisualValidateResult）
+      description: |
+        按火山管理 RPC 形态透传：POST /v1/video/management?Action=...&Version=2024-01-01
+        （POST /v1/video/?Action=... 为等价形态）。鉴权仍用平台 Bearer Key（video:write）。
+        支持两个 Action：
+        CreateVisualValidateSession —— 请求体 {CallbackURL(必填,HTTPS), ProjectName(可选,默认路由项目)}；
+        同步调用官方，200 返回 Result.{BytedToken, H5Link, CallbackURL}（火山原生三字段）
+        与平台扩展 SessionId；H5 完成后官方按火山原生形态直跳 CallbackURL 并拼接
+        bytedToken/resultCode(10000=通过)/algorithmBaseRespCode/reqMeasureInfoValue/verify_type；
+        认证凭证 30 分钟有效且仅支持认证一次，检测失败后 H5 链接失效需换新幂等键重建会话。
+        同 org+原 Key+同幂等键的存活会话直接返回原结果（不重复创建）。
+        GetVisualValidateResult —— 请求体 {BytedToken(必填), ProjectName(可选)}；按 BytedToken
+        反查平台会话并同步核实官方：认证完成返回 Result.GroupId（同时建真人素材组并自动登记
+        video_generation 许可）；仍在等待时官方拒绝，平台以 409 安全信封透传——下游应在 H5 回跳
+        收到 resultCode=10000 后再调用。非平台发放的 BytedToken 纯透传官方裁决。
+        官方拒绝/超时以 409 安全信封返回（Result.Error.Code），不泄露上游原文。
+        平台扩展字段：SessionId（创建响应）用于 portrait-authorizations 查询与控制台管理。
+      parameters:
+        - name: Action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [CreateVisualValidateSession, GetVisualValidateResult]
+        - name: Version
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: ['2024-01-01']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                CallbackURL:
+                  type: string
+                  description: CreateVisualValidateSession 必填；认证完成后官方直跳的 HTTPS 地址（客户自持页面）。
+                ProjectName:
+                  type: string
+                  description: 可选；默认为平台路由项目。
+                BytedToken:
+                  type: string
+                  description: GetVisualValidateResult 必填；CreateVisualValidateSession 返回的认证凭证。
+      responses:
+        '200':
+          description: 官方 RPC 信封。CreateVisualValidateSession 返回 BytedToken/H5Link/CallbackURL + SessionId；GetVisualValidateResult 认证完成返回 GroupId + SessionId。
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ResponseMetadata:
+                    $ref: '#/components/schemas/RpcEnvelope'
+                  Result:
+                    type: object
+                    properties:
+                      BytedToken:
+                        type: string
+                      H5Link:
+                        type: string
+                      CallbackURL:
+                        type: string
+                      SessionId:
+                        type: string
+                        description: 平台扩展；portrait-authorizations 查询用的会话 ID。
+                      GroupId:
+                        type: string
+                        description: 认证完成并核实后返回；对应的真人素材组（ag_ ID）经 portrait-authorizations 单查读取。
+        default:
+          $ref: '#/components/responses/Error'
   /v1/video/portrait-callback:
     get:
       tags: [PortraitAuthorization]
