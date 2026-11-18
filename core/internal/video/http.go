@@ -58,7 +58,7 @@ func publicErrorCode(code string, status int) string {
 	switch code {
 	case "insufficient_scope", "video_execution_not_enabled", "runtime_contract_unsupported":
 		return code
-	case "invalid_request", "unauthenticated", "forbidden", "not_found", "idempotency_conflict", "invalid_state", "insufficient_balance", "quota_exceeded", "rate_limited", "model_rate_limit", "model_concurrency_limit", "unsupported_capability", "invalid_asset", "authorization_required", "authorization_expired", "group_not_empty", "resource_in_use", "content_expired", "content_not_ready", "provider_unavailable", "submission_uncertain", "generation_failed", "cancellation_failed", "deletion_failed", "internal_error":
+	case "invalid_request", "unauthenticated", "forbidden", "not_found", "idempotency_conflict", "invalid_state", "insufficient_balance", "quota_exceeded", "rate_limited", "model_rate_limit", "model_concurrency_limit", "unsupported_capability", "invalid_asset", "authorization_required", "authorization_active", "authorization_expired", "group_not_empty", "resource_in_use", "content_expired", "content_not_ready", "provider_unavailable", "submission_uncertain", "generation_failed", "cancellation_failed", "deletion_failed", "internal_error":
 		return code
 	}
 	switch status {

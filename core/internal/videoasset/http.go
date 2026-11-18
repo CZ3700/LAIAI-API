@@ -134,10 +134,6 @@ func (s *Service) httpError(c *gin.Context, err error) {
 		status = 503
 		code = "provider_unavailable"
 		message = "Portrait authorization is not configured on this gateway yet."
-	case errors.Is(err, ErrCallbackNotRegistered):
-		status = 400
-		code = "invalid_request"
-		message = "callback_url must exactly match an HTTPS return address registered for this organization."
 	case errors.Is(err, ErrConflict):
 		status = 409
 		code = "invalid_state"
@@ -154,6 +150,10 @@ func (s *Service) httpError(c *gin.Context, err error) {
 		status = 409
 		code = "group_not_empty"
 		message = "The group contains assets."
+	case errors.Is(err, ErrAuthorizationActive):
+		status = 409
+		code = "authorization_active"
+		message = "The portrait license is still active; revoke or wait for expiry before deleting the group."
 	case errors.Is(err, ErrInUse):
 		status = 409
 		code = "resource_in_use"

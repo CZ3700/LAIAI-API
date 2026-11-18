@@ -26,9 +26,6 @@ func (s *Service) groupDeletionState(tx *gorm.DB, group Group) (string, string, 
 		return "", "", nil, ErrStorage
 	}
 	block := func(reason string) (string, string, *Operation, error) { return "blocked", reason, latest, nil }
-	if group.Kind != KindVirtual {
-		return block("real_group_not_supported")
-	}
 	if group.ReviewState != ReviewClear {
 		return block("submission_uncertain")
 	}
@@ -45,19 +42,42 @@ func (s *Service) groupDeletionState(tx *gorm.DB, group Group) (string, string, 
 	if len(pending) > 0 {
 		return block("operation_pending")
 	}
+	// Real (LivenessFace) groups follow the official DeleteAssetGroup rule:
+	// deletion is allowed only when the portrait license has expired or been
+	// revoked; an active or pending license blocks it. The official call also
+	// cascades every asset in the group (irreversible), so the local
+	// group_not_empty gate is deliberately skipped for real groups — virtual
+	// groups keep it because their official delete contract is empty-only.
+	if group.Kind == KindReal {
+		if group.PortraitID == "" {
+			return block("authorization_active")
+		}
+		var portrait Portrait
+		if err := tx.Where("org_id = ? AND session_id = ?", group.OrgID, group.PortraitID).Take(&portrait).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return block("authorization_active")
+			}
+			return "", "", nil, ErrStorage
+		}
+		if portrait.LicenseStatus != "expired" && portrait.LicenseStatus != "revoked" {
+			return block("authorization_active")
+		}
+	} else {
+		var count int64
+		// Failed creations cannot legitimately own even historical assets. Official
+		// groups may retain soft-deleted assets, whose audit history must survive.
+		assets := tx.Model(&Asset{}).Where("org_id = ? AND group_id = ?", group.OrgID, group.ID)
+		if group.ProviderID != nil {
+			assets = assets.Where("deleted_at IS NULL")
+		}
+		if err := assets.Count(&count).Error; err != nil {
+			return "", "", nil, ErrStorage
+		}
+		if count > 0 {
+			return block("group_not_empty")
+		}
+	}
 	var count int64
-	// Failed creations cannot legitimately own even historical assets. Official
-	// groups may retain soft-deleted assets, whose audit history must survive.
-	assets := tx.Model(&Asset{}).Where("org_id = ? AND group_id = ?", group.OrgID, group.ID)
-	if group.ProviderID != nil {
-		assets = assets.Where("deleted_at IS NULL")
-	}
-	if err := assets.Count(&count).Error; err != nil {
-		return "", "", nil, ErrStorage
-	}
-	if count > 0 {
-		return block("group_not_empty")
-	}
 	if err := tx.Model(&TaskReference{}).Where("org_id = ? AND group_id = ? AND released_at IS NULL", group.OrgID, group.ID).Count(&count).Error; err != nil {
 		return "", "", nil, ErrStorage
 	}
@@ -91,7 +111,9 @@ func deletionBlockError(reason string) error {
 		return ErrNotEmpty
 	case "resource_in_use":
 		return ErrInUse
-	case "real_group_not_supported", "scope_unavailable", "delete_capability_disabled", "exclusive_project_required":
+	case "authorization_active":
+		return ErrAuthorizationActive
+	case "scope_unavailable", "delete_capability_disabled", "exclusive_project_required":
 		return ErrUnsupported
 	default:
 		return ErrConflict
@@ -194,7 +216,7 @@ func (s *Service) deletionIdentity(ctx context.Context, op Operation, request []
 	if s.db.WithContext(ctx).Where("org_id = ? AND group_id = ? AND deleted_at IS NULL", op.OrgID, op.ResourceID).Take(&group).Error != nil {
 		return false
 	}
-	return group.Kind == KindVirtual && group.Status == StatusDeleting && group.ReviewState == ReviewClear &&
+	return (group.Kind == KindVirtual || group.Kind == KindReal) && group.Status == StatusDeleting && group.ReviewState == ReviewClear &&
 		group.DeleteOperationID == op.ID && group.ProviderID != nil && *group.ProviderID == body.ID &&
 		sameScope(groupScope(group), opScope(op))
 }
@@ -203,24 +225,38 @@ func (s *Service) processGroupDeletion(ctx context.Context, op Operation, r Runt
 	if !s.deletionIdentity(ctx, op, request) {
 		return s.finish(ctx, op, r, Result{Outcome: "unknown", SafeErrorCode: "group_identity_mismatch"}, request)
 	}
-	check := s.options.Client.Call(ctx, r.Scope, r.Credentials, "ListAssets",
-		bodyJSON(map[string]any{"Filter": map[string]any{"GroupType": "AIGC", "GroupIds": []string{extractProviderID(request)}}, "MaxResults": 1, "ProjectName": r.Scope.Project}), s.now())
-	defer clear(check.Body)
-	defer clear(check.Data)
-	evidence := []deletionEvidence{{stage: "precheck", result: check}}
-	var page struct {
-		Items     []json.RawMessage
-		NextToken string
+	// Virtual groups keep the official empty-group precheck (their delete
+	// contract is empty-only). Real LivenessFace groups skip it: the official
+	// DeleteAssetGroup cascades every asset in the group, so a non-empty
+	// precheck would contradict the provider contract we are aligning with.
+	// The precheck stays inline: moving it into a helper would run its
+	// `defer clear(...)` on return and wipe response bodies the final finish
+	// still has to encrypt into stage evidence.
+	var group Group
+	if err := s.db.WithContext(ctx).Where("org_id = ? AND group_id = ?", op.OrgID, op.ResourceID).Take(&group).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrStorage
 	}
-	if check.Outcome != "accepted" || json.Unmarshal(check.Data, &page) != nil || page.Items == nil || len(page.Items) > 0 || page.NextToken != "" {
-		code := "group_empty_check_failed"
-		if check.Outcome == "accepted" && page.Items != nil && len(page.Items) > 0 {
-			code = "group_not_empty"
+	evidence := []deletionEvidence{}
+	if group.Kind == KindVirtual {
+		check := s.options.Client.Call(ctx, r.Scope, r.Credentials, "ListAssets",
+			bodyJSON(map[string]any{"Filter": map[string]any{"GroupType": "AIGC", "GroupIds": []string{extractProviderID(request)}}, "MaxResults": 1, "ProjectName": r.Scope.Project}), s.now())
+		defer clear(check.Body)
+		defer clear(check.Data)
+		evidence = append(evidence, deletionEvidence{stage: "precheck", result: check})
+		var page struct {
+			Items     []json.RawMessage
+			NextToken string
 		}
-		// No DELETE was sent. Keep the check's HTTP/request identifiers and body,
-		// but rejection describes our precondition, not a provider DELETE reply.
-		check.Outcome, check.SafeErrorCode = "not_sent", code
-		return s.finish(ctx, op, r, check, request, evidence...)
+		if check.Outcome != "accepted" || json.Unmarshal(check.Data, &page) != nil || page.Items == nil || len(page.Items) > 0 || page.NextToken != "" {
+			code := "group_empty_check_failed"
+			if check.Outcome == "accepted" && page.Items != nil && len(page.Items) > 0 {
+				code = "group_not_empty"
+			}
+			// No DELETE was sent. Keep the check's HTTP/request identifiers and body,
+			// but rejection describes our precondition, not a provider DELETE reply.
+			check.Outcome, check.SafeErrorCode = "not_sent", code
+			return s.finish(ctx, op, r, check, request, evidence...)
+		}
 	}
 	// The empty check is a network round trip. Recheck the claim and capability
 	// immediately before the irreversible DELETE, not merely before ListAssets.
@@ -256,6 +292,7 @@ func (s *Service) processGroupDeletion(ctx context.Context, op Operation, r Runt
 		} else {
 			result.Outcome, result.SafeErrorCode = "unknown", "group_absence_unverified"
 		}
+		return s.finish(ctx, op, r, result, request, evidence...)
 	}
 	return s.finish(ctx, op, r, result, request, evidence...)
 }

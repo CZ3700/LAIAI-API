@@ -326,7 +326,10 @@ func (s *Service) DeleteGroup(ctx context.Context, c CreateContext, id string, c
 	if err != nil {
 		return OperationDTO{}, false, err
 	}
-	if !r.Capabilities.DeleteVirtualEmptyGroups || !r.Capabilities.ExclusiveProjectWrites || group.Kind != KindVirtual {
+	// Both group kinds dispatch the official DeleteAssetGroup; virtual groups
+	// add the empty-group precheck in the worker, real (LivenessFace) groups
+	// are gated upstream by the portrait license state (groupDeletionState).
+	if !r.Capabilities.DeleteVirtualEmptyGroups || !r.Capabilities.ExclusiveProjectWrites {
 		return OperationDTO{}, false, ErrUnsupported
 	}
 	if group.ProviderID == nil {
