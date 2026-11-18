@@ -734,7 +734,7 @@ func (s *Service) settleFailure(t *Task, reason string, upstreamOrigin bool) {
 	if reason == "" {
 		reason = "upstream reported failure"
 	}
-	reason = clipReason(reason, 255) // fail_reason VARCHAR(255) 上限
+	reason = clipReason(reason, 1024) // fail_reason VARCHAR(1024) 上限（0156；按字节截断比字符限制更保守）
 	brief := reason
 	if upstreamOrigin {
 		brief = "upstream reported failure"

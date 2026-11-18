@@ -153,7 +153,7 @@ func (s *Service) applyQueryAtomicTx(tx *gorm.DB, taskRow *task.Task, stateRow *
 		// 创建路径没有错误记录，fail_reason 为空导致客户 GET 回落"原因未
 		// 记录"。此处用查询观察的脱敏 code/message 补齐（不覆盖已有值）。
 		if t.Status == "failed" && t.FailReason == "" && (observation != nil && observation.ErrorCode != "") {
-			t.FailReason = observation.ErrorCode + ": " + observation.ErrorMessage
+			t.FailReason = clipFailReason(observation.ErrorCode, observation.ErrorMessage)
 			updates["fail_reason"] = t.FailReason
 		}
 		if e = tx.Model(&task.Task{}).Where("org_id = ? AND task_id = ?", org, id).Updates(updates).Error; e != nil {
@@ -180,4 +180,22 @@ func (s *Service) applyQueryAtomicTx(tx *gorm.DB, taskRow *task.Task, stateRow *
 		return finish(applyCode)
 	}()
 	return result, err
+}
+
+// maxFailReasonBytes 是 tasks.fail_reason 列宽（VARCHAR(1024)，0156）对应的
+// 字节上限。按字节而非字符截断：utf8mb4 单字符最多 4 字节，字节截断比字符
+// 限制更保守，截断结果必然能放入列；截断点落在多字节字符中间时由
+// ToValidUTF8 移除半个 rune。
+const maxFailReasonBytes = 1024
+
+// clipFailReason 拼接异步失败的 code/message 并按列宽字节安全截断。
+// 先判长度再截断（短报文原样保留，不损失 request id 等排查信息）；
+// 只有超出列宽的异常长报文才截断——未截断时整条 apply 事务会因 1406
+// 回滚，收据无限重试（2026-11-18 事故：TaskTypeMismatch 长消息）。
+func clipFailReason(code, message string) string {
+	reason := code + ": " + message
+	if len(reason) <= maxFailReasonBytes {
+		return reason
+	}
+	return strings.ToValidUTF8(reason[:maxFailReasonBytes], "")
 }
