@@ -31,7 +31,7 @@ func TestAssetAdmissionErrorsUsePublicHTTPContract(t *testing.T) {
 		err    error
 		status int
 		code   string
-	}{{videoasset.ErrAuthorization, 403, "forbidden"}, {videoasset.ErrNotFound, 404, "not_found"}, {videoasset.ErrUnsupported, 422, "unsupported_capability"}, {videoasset.ErrInvalid, 422, "invalid_request"}, {videoasset.ErrConflict, 409, "invalid_state"}, {videoasset.ErrInUse, 409, "invalid_state"}, {videoasset.ErrNotEmpty, 409, "invalid_state"}, {videoasset.ErrStorage, 503, "provider_unavailable"}} {
+	}{{videoasset.ErrAuthorization, 403, "forbidden"}, {videoasset.ErrNotFound, 404, "not_found"}, {videoasset.ErrUnsupported, 422, "unsupported_capability"}, {videoasset.ErrInvalid, 422, "invalid_request"}, {videoasset.ErrConflict, 409, "invalid_state"}, {videoasset.ErrInUse, 409, "resource_in_use"}, {videoasset.ErrNotEmpty, 409, "group_not_empty"}, {videoasset.ErrStorage, 503, "provider_unavailable"}} {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Set("video_request_id", "request_test")

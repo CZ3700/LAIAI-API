@@ -736,6 +736,22 @@ type taskResourcePlan struct {
 	HasUnverifiedVideo bool
 }
 
+// materialBindingError 把素材引用解析错误映射成官方语义（2026-11-18 用户反馈②）：
+// 不存在与他账号素材统一 404 material_not_found（官方口径不区分二者，客户端统一
+// 提示“当前账号下找不到该素材”）；本账号素材尚未就绪 409 material_not_ready。
+// 授权（authorization_*）与存储错误原样保留，不在此掩盖。
+func materialBindingError(e error) error {
+	switch {
+	case e == nil:
+		return nil
+	case errors.Is(e, videoasset.ErrNotFound):
+		return &ark.Error{Code: "material_not_found", Message: "material not found", Field: "content", HTTPStatus: 404}
+	case errors.Is(e, videoasset.ErrConflict):
+		return &ark.Error{Code: "material_not_ready", Message: "material not ready", Field: "content", Retryable: true, HTTPStatus: 409}
+	}
+	return e
+}
+
 func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, provider ProviderScope, cap ark.Capability) (ark.CreateRequest, ark.Bindings, taskResourcePlan, error) {
 	bindings := ark.Bindings{Assets: map[string]ark.AssetBinding{}, Drafts: map[string]ark.DraftBinding{}}
 	resources := taskResourcePlan{}
@@ -846,7 +862,7 @@ func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, 
 		resources.Scope = runtime.Scope
 		resolved, err := s.Assets.ValidateBindingsTx(tx, org, runtime.Scope, resources.References)
 		if err != nil {
-			return in, bindings, resources, err
+			return in, bindings, resources, materialBindingError(err)
 		}
 		resources.Bindings = resolved
 		for _, b := range resolved {
@@ -876,7 +892,7 @@ func (s *Service) persistTaskResourcesTx(tx *gorm.DB, org uint64, taskID string,
 		}
 		actual, err := s.Assets.ResolveBindingsTx(tx, org, p.resources.Scope, taskID, p.resources.References)
 		if err != nil {
-			return err
+			return materialBindingError(err)
 		}
 		expected, _ := json.Marshal(p.resources.Bindings)
 		got, _ := json.Marshal(actual)
