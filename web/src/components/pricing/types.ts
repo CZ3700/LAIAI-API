@@ -1,10 +1,10 @@
 export const genericPriceFields = ['input_usd_per_1m', 'output_usd_per_1m', 'cached_input_usd_per_1m', 'image_usd', 'per_call_usd', 'tts_usd_per_1k_chars', 'transcription_usd_per_call', 'audio_input_usd_per_1m', 'audio_output_usd_per_1m'] as const
 export type PriceField = typeof genericPriceFields[number]
 export type GenericPrice = { model: string } & Record<PriceField, string>
-export const officialVideoModels = ['seedance-2.0', 'seedance-2.0-fast', 'seedance-2.0-mini', 'seedance-2.5'] as const
+export const officialVideoModels = ['seedance-2.0', 'seedance-2.0-fast', 'seedance-2.0-mini', 'seedance-2.5', 'seedance-2.5-flash'] as const
 export function isOfficialVideoModel(model: string | null | undefined): boolean { return officialVideoModels.some(value => value === model) }
 export function officialVideoSeries(model: string): string[] {
-  const series: Record<string, string> = { 'seedance-2.0': '2.0', 'seedance-2.0-fast': '2.0fast', 'seedance-2.0-mini': '2.0mini', 'seedance-2.5': '2.5' }
+  const series: Record<string, string> = { 'seedance-2.0': '2.0', 'seedance-2.0-fast': '2.0fast', 'seedance-2.0-mini': '2.0mini', 'seedance-2.5': '2.5', 'seedance-2.5-flash': '2.5-flash' }
   return series[model] ? [series[model]] : []
 }
 export type PricingKind = 'token' | 'image' | 'per_call' | 'audio' | 'mixed' | 'video' | 'generic_video' | 'unknown'

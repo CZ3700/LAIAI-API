@@ -330,6 +330,7 @@ test('standard unconfigured and mismatched channels show official defaults; unkn
   const data = {...catalog(), models: [
     {...variantRow(), key: '1:standard', video_model: 'seedance-2.0', official_price_evidence: undefined},
     {...variantRow(), key: '1:2.5', video_model: 'seedance-2.5', official_price_evidence: undefined},
+    {...variantRow(), key: '1:2.5-flash', video_model: 'seedance-2.5-flash', official_price_evidence: undefined},
     {...variantRow(), key: '1:mismatch', unsupported_reason: 'official_video_channel_mismatch', video_configuration: {channel_id: 99, provider_scope_id: 7, config_version: 'foreign', pricing_version: 'foreign', enabled: true}},
   ]}
   const h = await harness(t, Panel, {}, () => data)
@@ -342,6 +343,7 @@ test('standard unconfigured and mismatched channels show official defaults; unkn
   }
   assert.equal(h.vm.officialModel({...row(), provider: 'modelark', upstream_model: 'doubao-seedance-2-0-260128'}), 'seedance-2.0')
   assert.equal(h.vm.officialModel({...row(), provider: 'volcengine', upstream_model: 'doubao-seedance-2-5-260628'}), 'seedance-2.5')
+  assert.equal(h.vm.officialModel({...row(), provider: 'volcengine', upstream_model: 'doubao-seedance-2-5-flash-261115'}), 'seedance-2.5-flash')
   assert.equal(h.vm.officialModel({...row(), provider: 'modelark', upstream_model: 'doubao-seedance-2-0-fast-unknown'}), '')
   assert.equal(h.vm.officialModel({...row(), upstream_model: 'doubao-seedance-2-0-260128'}), '')
   assert.ok(h.calls.every(call => call.method === 'GET'))
@@ -811,6 +813,17 @@ function configuredVariant(variant = 'fast') {
   const item = variantRow(variant)
   return {...item, unsupported_reason: '', video_configuration: {channel_id: item.channel_id, provider_scope_id: 4, config_version: `${variant}-cfg`, pricing_version: `${variant}-prices`, enabled: true}, pricing: {...item.pricing, status: 'partial', combinations: [{key: 'generate/720p/false/default/false', mode: 'generate', resolution: '720p', input_video: false, service_tier: 'default', draft: false, amount: '5.238900001234'}]}}
 }
+
+test('configured Seedance 2.5 Flash opens the normal video price editor', async t => {
+  const flash = {...configuredVariant(), key: '1:flash', model: 'doubao-seedance-2-5-flash-261115', upstream_model: 'doubao-seedance-2-5-flash-261115', video_model: 'seedance-2.5-flash', official_price_evidence: undefined}
+  const h = await harness(t, Panel, {}, () => ({...catalog(), models: [flash]}))
+  h.vm.openModel(flash, 'pricing')
+  assert.equal(h.vm.selectedVideoConfigured.value, true)
+  assert.equal(h.vm.selectedDefaultsModel.value, '')
+  assert.deepEqual([...h.vm.drawerTabs.value], ['pricing', 'overview'])
+  assert.equal(h.vm.drawerTab.value, 'pricing')
+  assert.ok(h.calls.every(call => call.method === 'GET'))
+})
 
 test('configured Fast and Mini use their bound normal price editor and preserve separate official evidence', async t => {
   const data = {...catalog(), models: [configuredVariant('fast'), configuredVariant('mini')]}
