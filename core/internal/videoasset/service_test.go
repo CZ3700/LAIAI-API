@@ -38,6 +38,8 @@ CREATE TABLE video_portrait_secrets(secret_id TEXT PRIMARY KEY,org_id INTEGER NO
 ALTER TABLE video_portrait_authorizations ADD COLUMN callback_state_hash TEXT NOT NULL DEFAULT '';
 ALTER TABLE video_portrait_authorizations ADD COLUMN callback_state_version TEXT NOT NULL DEFAULT '';
 ALTER TABLE video_portrait_authorizations ADD COLUMN callback_used_at DATETIME;
+ALTER TABLE video_portrait_authorizations ADD COLUMN byted_token_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE video_portrait_authorizations ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT '';
 CREATE TABLE video_asset_operations(operation_id TEXT PRIMARY KEY,org_id INTEGER NOT NULL,action TEXT NOT NULL,resource_type TEXT NOT NULL,resource_id TEXT NOT NULL,request_id TEXT NOT NULL,canonical_path TEXT NOT NULL,hmac_key_version TEXT NOT NULL,idempotency_hash TEXT NOT NULL,body_hash TEXT NOT NULL,scope_id TEXT NOT NULL,scope_version INTEGER NOT NULL,account_id TEXT NOT NULL,region TEXT NOT NULL,project TEXT NOT NULL,status TEXT NOT NULL,payload_id TEXT NOT NULL,response_payload_id TEXT NOT NULL,lease_owner TEXT NOT NULL,lease_expires_at DATETIME,fence INTEGER NOT NULL,http_status INTEGER NOT NULL,upstream_request_id TEXT NOT NULL,safe_error_code TEXT NOT NULL,receipt TEXT NOT NULL,created_at DATETIME NOT NULL,updated_at DATETIME NOT NULL,next_attempt_at DATETIME NOT NULL,UNIQUE(org_id,canonical_path,idempotency_hash));
 CREATE TABLE video_asset_events(event_id TEXT PRIMARY KEY,org_id INTEGER NOT NULL,resource_type TEXT NOT NULL,resource_id TEXT NOT NULL,operation_id TEXT NOT NULL,kind TEXT NOT NULL,evidence_ref TEXT NOT NULL,actor_id TEXT NOT NULL,created_at DATETIME NOT NULL);
 `

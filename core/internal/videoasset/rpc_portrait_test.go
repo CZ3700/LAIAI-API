@@ -1,0 +1,120 @@
+package videoasset
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/laiai/laiai-next/core/internal/identity"
+)
+
+func rpcActionPost(router *gin.Engine, action, body, idempotency string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/v1/video/?Action="+action+"&Version=2024-01-01", strings.NewReader(body))
+	if idempotency != "" {
+		req.Header.Set("Idempotency-Key", idempotency)
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestRPCPortraitPassthroughFullFlow（2026-11-18 火山透传对齐）：Action RPC 形态
+// 的创建/核实全链。创建同步返回火山三字段并落 pending+指纹；查询等待期返回空
+// GroupId，就绪后复用认证即授权联动（real 组 + 自动许可）；幂等键重放不重复创建。
+func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
+	s, db, _, _ := setup(t)
+	s.options.AutoLicense = true
+	s.options.AutoLicenseValidity = 365 * 24 * time.Hour
+	s.options.MaxLicenseAge = 90 * 24 * time.Hour
+	stages := 0
+	s.options.Client = NewManagementClient(&http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+		action := req.URL.Query().Get("Action")
+		if action == "CreateVisualValidateSession" {
+			stages++
+			return syncReply(req, map[string]any{"BytedToken": "vvs-rpc-test-token", "H5Link": "https://h5.example/rpc-auth", "CallbackURL": "https://customer.example/return"}), nil
+		}
+		if action == "GetVisualValidateResult" {
+			stages++
+			groupID := ""
+			if stages >= 3 { // 第二次核实：官方侧已就绪
+				groupID = "group-rpc-test-001"
+			}
+			return syncReply(req, map[string]any{"GroupId": groupID}), nil
+		}
+		return groupErrorReply(req, 500, "InternalError", nil), nil
+	})})
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		uid := uint64(2)
+		c.Set("video_key", &identity.APIKey{ID: 3, OrgID: 1, UserID: &uid, Scopes: "video:read video:write"})
+		c.Set("video_request_id", "req-rpc-test")
+		c.Next()
+	})
+	s.RegisterRoutes(router.Group("/v1/video"))
+
+	rec := rpcActionPost(router, rpcActionCreateSession, `{"CallbackURL":"https://customer.example/return"}`, "idem-rpc-create")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create returned %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"BytedToken":"vvs-rpc-test-token"`, `"H5Link":"https://h5.example/rpc-auth"`, `"CallbackURL":"https://customer.example/return"`, `"SessionId":"pas_`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("create result missing %s: %s", want, body)
+		}
+	}
+	var p Portrait
+	if err := db.Where("idempotency_key = ?", "idem-rpc-create").Take(&p).Error; err != nil || p.SessionStatus != "pending" || p.BytedTokenHash == "" {
+		t.Fatalf("pending session with token hash expected: %+v %v", p, err)
+	}
+
+	// 幂等重放：同键返回同会话，不再触达官方。
+	before := stages
+	rec = rpcActionPost(router, rpcActionCreateSession, `{"CallbackURL":"https://customer.example/return"}`, "idem-rpc-create")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"SessionId":"`) {
+		t.Fatalf("replay returned %d %s", rec.Code, rec.Body.String())
+	}
+	if stages != before {
+		t.Fatal("replay must not hit the provider again")
+	}
+
+	// 核实·等待期：空 GroupId。
+	rec = rpcActionPost(router, rpcActionGetResult, `{"BytedToken":"vvs-rpc-test-token"}`, "idem-rpc-check-1")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"GroupId":""`) {
+		t.Fatalf("waiting query returned %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 核实·就绪：建组 + 自动许可。
+	rec = rpcActionPost(router, rpcActionGetResult, `{"BytedToken":"vvs-rpc-test-token"}`, "idem-rpc-check-2")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"GroupId":"group-rpc-test-001"`) {
+		t.Fatalf("ready query returned %d %s", rec.Code, rec.Body.String())
+	}
+	var portrait Portrait
+	db.Where("session_id = ?", p.ID).Take(&portrait)
+	var allGroups []Group
+	if err := db.Find(&allGroups).Error; err != nil {
+		t.Fatal(err)
+	}
+	var g Group
+	if err := db.Where("provider_id = ?", "group-rpc-test-001").Take(&g).Error; err != nil || g.Kind != KindReal || g.Status != StatusActive {
+		t.Fatalf("real group expected: %+v %v", g, err)
+	}
+	if portrait.SessionStatus != "succeeded" || portrait.GroupID == nil || portrait.LicenseStatus != "verified" {
+		t.Fatalf("identity/license end state wrong: %+v", portrait)
+	}
+
+	// 不支持的 Action / Version。
+	if rec := rpcActionPost(router, "Unknown", `{}`, "x"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"InvalidAction"`) {
+		t.Fatalf("unknown action returned %d %s", rec.Code, rec.Body.String())
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/video/?Action=CreateVisualValidateSession&Version=2020-01-01", strings.NewReader(`{"CallbackURL":"https://customer.example/return"}`))
+	req.Header.Set("Idempotency-Key", "x")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"InvalidParameter"`) {
+		t.Fatalf("bad version returned %d %s", rec.Code, rec.Body.String())
+	}
+}

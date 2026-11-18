@@ -32,7 +32,11 @@ func (s *Service) RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/portrait-authorizations", s.createPortraitHTTP)
 	group.GET("/portrait-authorizations", s.listPortraitsHTTP)
 	group.GET("/portrait-authorizations/:session_id", s.getPortraitHTTP)
+	// 火山管理 RPC 透传（2026-11-18）：POST /v1/video/?Action=CreateVisualValidateSession|GetVisualValidateResult&Version=2024-01-01（/management 为等价别名）。
+	group.POST("/", s.RPCDispatch)
+	group.POST("/management", s.RPCDispatch)
 }
+
 func (s *Service) auth(c *gin.Context, write bool) (CreateContext, bool) {
 	raw, exists := c.Get("video_key")
 	key, ok := raw.(*identity.APIKey)

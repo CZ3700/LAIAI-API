@@ -243,7 +243,7 @@ func (s *Service) applyPortraitCreated(tx *gorm.DB, op Operation, result Result,
 	if err := tx.Create(&row).Error; err != nil {
 		return ErrStorage
 	}
-	if err := tx.Model(&Portrait{}).Where("org_id = ? AND session_id = ?", op.OrgID, p.ID).Updates(map[string]any{"session_status": "pending", "secret_ref": secretID, "session_expires_at": expires, "row_version": gorm.Expr("row_version + 1"), "updated_at": nowMillis(s)}).Error; err != nil {
+	if err := tx.Model(&Portrait{}).Where("org_id = ? AND session_id = ?", op.OrgID, p.ID).Updates(map[string]any{"session_status": "pending", "secret_ref": secretID, "session_expires_at": expires, "byted_token_hash": s.digest(s.options.ActiveHMACKey, bytedTokenHashDomain, 0, "", data.BytedToken), "row_version": gorm.Expr("row_version + 1"), "updated_at": nowMillis(s)}).Error; err != nil {
 		return ErrStorage
 	}
 	return nil

@@ -595,60 +595,13 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND session_id = ?", op.OrgID, op.ResourceID).Take(&p).Error; err != nil {
 			return ErrNotFound
 		}
-		if p.SessionStatus == "succeeded" {
-			if p.GroupID == nil {
-				return ErrConflict
-			}
-			var existing Group
-			if err := tx.Where("org_id = ? AND group_id = ?", op.OrgID, *p.GroupID).Take(&existing).Error; err != nil {
-				return ErrStorage
-			}
-			if existing.ProviderID == nil || *existing.ProviderID != data.GroupID {
-				return ErrConflict
-			}
-			return nil
+		evidenceRef := op.ResponsePayloadID
+		if evidenceRef == "" {
+			evidenceRef = op.ID
 		}
-		if p.SessionStatus != "pending" || p.SessionExpiresAt == nil || !p.SessionExpiresAt.After(now) || !sameScope(portraitScope(p), opScope(op)) {
-			return ErrConflict
-		}
-		id, err := newID("ag_")
-		if err != nil {
-			return err
-		}
-		label := PortraitLabel{}
-		_ = tx.Where("org_id = ? AND session_id = ?", op.OrgID, p.ID).Take(&label).Error
-		group := Group{ID: id, OrgID: op.OrgID, Kind: KindReal, Name: label.Name, ScopeID: p.ScopeID, ScopeVersion: p.ScopeVersion, AccountID: p.AccountID, Region: p.Region, Project: p.Project, ProviderID: &data.GroupID, Status: StatusActive, ReviewState: ReviewClear, PortraitID: p.ID, CreateOperationID: op.ID, RowVersion: 1, CreatedAt: now, UpdatedAt: now}
-		if err := tx.Create(&group).Error; err != nil {
-			return ErrStorage
-		}
-		if err := inheritOwnerTx(tx, op.OrgID, "portrait", p.ID, "asset_group", id); err != nil {
-			return err
-		}
-		if err := saveDetails(tx, op.OrgID, id, label.Description, "platform", now); err != nil {
-			return err
-		}
-		if err := tx.Model(&Portrait{}).Where("org_id = ? AND session_id = ? AND session_status = ?", op.OrgID, p.ID, "pending").Updates(map[string]any{"session_status": "succeeded", "group_id": id, "license_status": "unknown", "row_version": gorm.Expr("row_version + 1"), "updated_at": now}).Error; err != nil {
-			return ErrStorage
-		}
-		if err := tx.Model(&Secret{}).Where("org_id = ? AND secret_id = ?", op.OrgID, p.SecretRef).Updates(map[string]any{"value_cipher": "", "destroyed_at": now}).Error; err != nil {
-			return ErrStorage
-		}
-		if err := s.event(tx, op.OrgID, "portrait", p.ID, op.ID, "official_identity_verified", op.ResponsePayloadID, op.LeaseOwner); err != nil {
-			return err
-		}
-		// 认证即授权：H5 认证即官方肖像授权确认，自动登记 video_generation
-		// 业务许可（来源 verified_provider_license，证据引用本次核实操作）。
-		// 登记失败不阻断认证成功。证据引用优先响应证据指针；CaptureHistory
-		// 关闭的组织无指针，回退本次核实操作 ID——无捕获组织同样自动授权
-		//（2026-11-13 修复：此类组织此前永久卡 needs_review 无法上传素材）。
-		if s.options.AutoLicense {
-			evidenceRef := op.ResponsePayloadID
-			if evidenceRef == "" {
-				evidenceRef = op.ID
-			}
-			_ = s.verifyLicenseTx(tx, op.OrgID, p.ID, LicenseEvidence{ActorID: "gateway", EvidenceRef: evidenceRef, Source: "verified_provider_license", Purpose: "video_generation", ValidFrom: now, ValidUntil: now.Add(s.options.AutoLicenseValidity), VerifiedAt: now, ReverifyDueAt: now.Add(s.options.MaxLicenseAge)})
-		}
-		return nil
+		// 建组/授权联动已提取为共享函数：同步 RPC 端点
+		//（?Action=GetVisualValidateResult）与本 op 分支共用同一终态语义。
+		return s.applyVisualValidateGroupTx(tx, op.OrgID, &p, data.GroupID, opScope(op), op.ID, op.LeaseOwner, evidenceRef, now, s.options.AutoLicense)
 	case "GetAssetGroup":
 		// 许可续验：官方组仍存在且账号/项目匹配即续验（Status 字段若返回
 		// 则须为 Active）。官方组被删（404 GroupNotFound 走 rejected 路径）
