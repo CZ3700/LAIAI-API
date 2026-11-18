@@ -207,11 +207,12 @@ func (s *Service) SyncCreateVisualValidateSession(ctx context.Context, c CreateC
 	if providerRejected {
 		return PortraitDTO{}, "", providerRejectedError(result)
 	}
-	dto, err := s.GetPortraitForCaller(ctx, c, id, true)
-	if err == nil {
-		dto.AuthorizationURL = data.H5Link
-	}
-	return dto, data.BytedToken, err
+	// 同步端点直接构造响应视图：GetPortraitForCaller/GetPortrait 的 H5 读取
+	// 走 readSecret 的 owner 闸（pending+原 Key 已满足），但这里 H5Link 就在
+	// 本次官方响应里，无需再解密 secret；pending DTO 的其余字段就地可得。
+	expires := s.now().Add(rpcSessionTTL)
+	dto := PortraitDTO{ID: id, Status: "pending", ExpiresAt: &expires, AuthorizationURL: data.H5Link}
+	return dto, data.BytedToken, nil
 }
 
 // SyncGetVisualValidateResult 同步核实：按 BytedToken 指纹反查会话并调官方。
