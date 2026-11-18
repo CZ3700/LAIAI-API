@@ -37,6 +37,15 @@ func apiErrorWithParam(c *gin.Context, status int, code, param string) {
 	if publicCode == "video_execution_not_enabled" {
 		message = "Organization video execution is not enabled. Ask the organization owner or administrator to enable it."
 	}
+	if publicCode == "invalid_parameter" {
+		message = "Running tasks cannot be cancelled. The task continues to execute: a successful run is billed by the normal rules, a failed run charges no generation fee."
+	}
+	if publicCode == "material_not_found" {
+		message = "The current account has no such material. Missing and foreign-account materials are indistinguishable by design."
+	}
+	if publicCode == "material_not_ready" {
+		message = "The material belongs to your account but is not ready for tasks yet. Poll the asset until it is active."
+	}
 	detail := gin.H{"code": publicCode, "message": message, "retryable": status == 429 || status == 503}
 	// Only known parameter names are exposed. Never return provider/input text.
 	if status == 422 && (publicCode == "unsupported_capability" || publicCode == "invalid_request") && safeVideoErrorParam(param) {
@@ -58,7 +67,7 @@ func publicErrorCode(code string, status int) string {
 	switch code {
 	case "insufficient_scope", "video_execution_not_enabled", "runtime_contract_unsupported":
 		return code
-	case "invalid_request", "unauthenticated", "forbidden", "not_found", "idempotency_conflict", "invalid_state", "insufficient_balance", "quota_exceeded", "rate_limited", "model_rate_limit", "model_concurrency_limit", "unsupported_capability", "invalid_asset", "authorization_required", "authorization_active", "authorization_expired", "group_not_empty", "resource_in_use", "content_expired", "content_not_ready", "provider_unavailable", "submission_uncertain", "generation_failed", "cancellation_failed", "deletion_failed", "internal_error":
+	case "invalid_request", "unauthenticated", "forbidden", "not_found", "idempotency_conflict", "invalid_state", "invalid_parameter", "material_not_found", "material_not_ready", "insufficient_balance", "quota_exceeded", "rate_limited", "model_rate_limit", "model_concurrency_limit", "unsupported_capability", "invalid_asset", "authorization_required", "authorization_active", "authorization_expired", "group_not_empty", "resource_in_use", "content_expired", "content_not_ready", "provider_unavailable", "submission_uncertain", "generation_failed", "cancellation_failed", "deletion_failed", "internal_error":
 		return code
 	}
 	switch status {
@@ -99,7 +108,12 @@ func respondError(c *gin.Context, err error) {
 		apiError(c, 422, "invalid_request")
 	case errors.Is(err, ErrConflict) || errors.Is(err, videobilling.ErrConflict):
 		apiError(c, 409, "idempotency_conflict")
-	case errors.Is(err, ErrState) || errors.Is(err, videoasset.ErrConflict) || errors.Is(err, videoasset.ErrInUse) || errors.Is(err, videoasset.ErrNotEmpty):
+	case errors.Is(err, videoasset.ErrInUse):
+		// 被引用素材删除：可恢复冲突——等引用它的任务终态并释放引用后重试。
+		apiError(c, 409, "resource_in_use")
+	case errors.Is(err, videoasset.ErrNotEmpty):
+		apiError(c, 409, "group_not_empty")
+	case errors.Is(err, ErrState) || errors.Is(err, videoasset.ErrConflict):
 		apiError(c, 409, "invalid_state")
 	case errors.Is(err, ErrDraftExpired):
 		apiError(c, 410, "content_expired")
@@ -120,6 +134,8 @@ func respondError(c *gin.Context, err error) {
 	case errors.Is(err, ledger.ErrInsufficientBalance):
 		apiError(c, 402, "insufficient_balance")
 	default:
+		// 上游/存储暂不可用：按官方删除/取消指引给出重试节奏。
+		c.Header("Retry-After", "10")
 		apiError(c, 503, "temporarily_unavailable")
 	}
 }
@@ -567,10 +583,13 @@ func (s *Service) HandleCancel(c *gin.Context) {
 }
 
 // HandleTaskDelete 是官方合并端点（火山 DELETE /contents/generations/tasks/{id}）：
-// 行为由任务状态自动决定——非终态可取消任务走取消链路（queued 两阶段：
-// 上游 DELETE + 权威 GET 确认后才释放冻结）；running 不支持（409）；
-// 终态且账务已终（settled/released/adjusted）走删除链路（tombstone + 隐藏产物）。
-// 旧 POST /generations/:id/cancel 保留为兼容别名，语义不变。
+// 行为由任务状态自动决定，响应契约对齐官方同步语义——成功一律 200 {}（取消
+// 受理/删除受理/已删除同形；客户端随后 GET 同一路径确认状态变化）。取消链路
+// 内部仍为两阶段（上游 DELETE + 权威 GET 确认后才释放冻结），与官方一致地
+// 只承诺受理。running 返回 400 invalid_parameter（任务继续执行：成功按正常
+// 规则计费，失败不收生成费用）；终态且账务已终走删除链路（tombstone +
+// 隐藏产物），账务未终态返回 409（短暂窗口，稍后重试）。旧
+// POST /generations/:id/cancel 保留为兼容别名，语义不变（202 + operation_id）。
 
 // wrapDB 把 gorm 错误转成 respondError 可判别的 error 链（not-found → 404）。
 func wrapDB(e error) error {
@@ -596,7 +615,7 @@ func (s *Service) HandleTaskDelete(c *gin.Context) {
 		return
 	}
 	if st.DeletedAt != nil {
-		c.Status(204)
+		c.JSON(200, gin.H{})
 		return
 	}
 	var t task.Task
@@ -606,8 +625,13 @@ func (s *Service) HandleTaskDelete(c *gin.Context) {
 		return
 	}
 	if !terminal(t.Status) {
-		// 非终态 → 取消链路（local cancel / queued 两阶段 / 提交未决意图；
-		// running 由 CancellationDecision 判 409 invalid_state）。
+		// running 与官方一致：不支持取消，任务继续执行（400 InvalidParameter）。
+		// 查询显示 queued 时上游可能已进入 running——400 提示按继续执行处理。
+		if t.Status == "running" {
+			apiErrorWithParam(c, 400, "invalid_parameter", "task")
+			return
+		}
+		// 其余非终态 → 取消链路（local cancel / queued 两阶段 / 提交未决意图）。
 		v, replay, e := s.Cancel(c.Request.Context(), org, id, c.GetString("video_request_id"), c.GetHeader("Idempotency-Key"))
 		if e != nil {
 			respondError(c, e)
@@ -617,7 +641,7 @@ func (s *Service) HandleTaskDelete(c *gin.Context) {
 			c.Header("Idempotency-Replayed", "true")
 		}
 		c.Set("video_operation_id", v.ID)
-		c.JSON(202, gin.H{"id": id, "status": "cancelling", "operation_id": v.ID})
+		c.JSON(200, gin.H{})
 		return
 	}
 	v, done, e := s.Delete(c.Request.Context(), org, id, c.GetString("video_request_id"))
@@ -626,12 +650,11 @@ func (s *Service) HandleTaskDelete(c *gin.Context) {
 		return
 	}
 	if done {
-		c.Status(204)
+		c.JSON(200, gin.H{})
 		return
 	}
 	c.Set("video_operation_id", v.ID)
-	// 火山官方格式返回
-	c.JSON(202, gin.H{"id": id, "status": "deleting", "operation_id": v.ID})
+	c.JSON(200, gin.H{})
 }
 func (s *Service) HandleOperation(c *gin.Context) {
 	v, e := s.GetOperation(requestKey(c).OrgID, c.Param("operation_id"))

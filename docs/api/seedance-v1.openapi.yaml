@@ -117,6 +117,8 @@ paths:
       description: |
         首次受理返回 202 和平台 task_ ID。模型映射、素材引用和计费参数在受理前验证。
         不接受任意裸上游标识。asset://asset_ 引用须属于当前组织且已就绪；真人素材组须授权有效。
+        素材引用错误按官方口径：不存在或属于其他账号统一 404 material_not_found（不区分二者，客户端统一提示“当前账号下找不到该素材”）；
+        属于当前账号但尚未就绪返回 409 material_not_ready（轮询素材至 ready 后重试）。
         draft:true 仅限 Seedance 2.5 的 480p 样片；draft_task 转正式支持 1080p 或 4k。
         draft_task 只能引用本组织成功且未过期的 Draft，且模型、能力版本、官方账号/区域/项目一致，父任务未删除。
         Draft ID 有效期为自创建时间起 7 天。
@@ -311,32 +313,40 @@ paths:
       operationId: deleteVideoTask
       summary: 取消或删除视频任务（官方合并端点：按状态自动决定行为）
       description: |
-        对齐火山官方“取消或删除视频生成任务”合并端点：单一 DELETE，行为由任务状态自动决定。
-        - queued（含 accepted/submitting/submission_unknown 的提交未决态）：取消任务。accepted 且尚未派发时本地直接取消并释放冻结；
-          queued 已派发时走两阶段——上游 DELETE 200 不足以证明取消，平台以权威 GET 观察到 cancelled 才释放冻结，完成前 billing 仍为 reserved/pending_usage。
-        - running：不支持操作，返回 409 invalid_state。
-        - succeeded/failed/cancelled/expired 且 billing_state 为 settled/released/adjusted：删除任务记录（tombstone），隐藏产物并释放素材绑定。
-          cancelled 仅本地软删除，不再发上游 DELETE。删除不退款，不物理删除账务或安全审计记录。
-          上游删除失败或结果未知不能伪造完成。已完成重复删除返回 204；跨组织仍为 404。
-        幂等：取消相位必须携带 Idempotency-Key（重复携带同键返回同一操作并标记 Idempotency-Replayed）；
-        删除相位以 deletion_operation_id 去重（重复请求返回同一操作，完成后返回 204）。GET 在删除完成后返回 404，
-        账单与安全事件按保留策略可查。旧端点 POST /v1/video/generations/{task_id}/cancel 保留为兼容别名（行为不变，已弃用）。
+        对齐火山官方“取消或删除视频生成任务”合并端点：单一 DELETE、无请求体，行为由任务状态自动决定。
+        响应为官方同步契约——成功一律 200 {}；随后用 GET 查询同一路径，看到 status 为 cancelled 即确认取消，
+        删除完成后 GET 返回 404。
+        - queued（含 accepted/submitting/submission_unknown 的提交未决态）：受理取消并返回 200 {}。
+          accepted 且尚未派发时本地直接取消并释放冻结；queued 已派发时走两阶段——上游 DELETE 200 不足以证明
+          取消，平台以权威 GET 观察到 cancelled 才释放冻结。确认取消后不收生成费用，已冻结或预扣的额度释放或退回。
+        - running：不支持取消，返回 400 invalid_parameter；任务继续执行，成功按正常规则计费，失败不收生成费用。
+          查询显示 queued 时上游可能已进入 running——收到 400 即按继续执行处理，不要更换幂等键重试取消。
+        - succeeded/failed/cancelled/expired 且 billing_state 为 settled/released/adjusted：受理删除并返回 200 {}
+          （tombstone、隐藏产物、释放素材绑定）。cancelled 仅本地软删除，不再发上游 DELETE。删除不退款，
+          不物理删除账务或安全审计记录；账单与安全事件按保留策略可查。billing_state 尚未终态（结算短暂窗口）
+          返回 409，稍后重试。
+        幂等与重试：取消相位必须携带 Idempotency-Key（重复同键返回原操作并标记 Idempotency-Replayed）；
+        删除相位以 deletion_operation_id 去重；409 或 504 请用原幂等键重试；503 附带 Retry-After 按提示等待。
+        旧端点 POST /v1/video/generations/{task_id}/cancel 保留为兼容别名（保留 202 + operation_id 契约，已弃用）。
       responses:
-        '202':
-          description: 官方形状受理回执 {id, status:"deleting", operation_id}；完成与否以 operations 资源为准。
+        '200':
+          description: 受理成功（取消受理/删除受理/已删除同形 {}）；最终结果以 GET 任务状态与 operations 资源为准。
           headers:
             Idempotency-Replayed:
               $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OfficialTaskOperation'
-              example:
-                id: task_example001
-                status: deleting
-                operation_id: op_example001
-        '204':
-          description: 当前组织任务的删除已经完成，无响应体。
+                type: object
+                additionalProperties: false
+                maxProperties: 0
+              example: {}
+        '400':
+          description: running 不支持取消（invalid_parameter，param=task）；任务继续执行，按上述计费规则处理。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           $ref: '#/components/responses/Conflict'
         default:
@@ -855,6 +865,9 @@ paths:
         已有上游映射且处于允许删除的 ready/failed 状态；未启用返回 422 unsupported_capability。
         明确创建被拒、从未取得官方 ID 且无未决操作或任务引用的本地失败记录，可清理并返回 204；不会调用官方删除。
         存在在途任务引用为 409 resource_in_use；在途修改/删除或状态冲突为 409 invalid_state。
+        删除遇阻的推荐处理：先 GET 原素材——已删除（回读 404）无需重试；仍在删除中（status=deleting）继续轮询；
+        素材仍存在且返回 503 时按 Retry-After 等待（无头则先等 10 秒再试并逐步拉长）；持续 503 携带素材 ID 与
+        X-Request-Id 联系平台核对。resource_in_use 不是错误：等引用该素材的任务终态并释放引用后再删即可。
         受理返回 202 官方信封（Result.Status 恒为 deleting），响应不再内嵌操作对象；
         完成确认以重新 GET 为主：素材已删除回读 404，已确认删除的空组重复删除返回 204。未知结果不能盲重发。
         不存在、跨组织或已删除可能返回 404，因此重复请求的 404 不是删除成功证据。
@@ -1085,7 +1098,7 @@ paths:
                 type: object
                 properties:
                   ResponseMetadata:
-                    $ref: '#/components/schemas/RpcEnvelope'
+                    $ref: '#/components/schemas/RpcResponseMetadata'
                   Result:
                     type: object
                     properties:
@@ -1551,12 +1564,15 @@ components:
       description: |
         安全错误。素材接口非法 JSON/缺少幂等键/非法网址为 400；任务参数或幂等键非法通常为 422；
         401=Key 无效；403=权限或真人业务许可不足；
-        任务接口的素材校验错误映射为 403 forbidden、409 invalid_state 或 422 unsupported_capability；
+        任务接口的素材引用错误按官方口径返回 404 material_not_found（不存在或属他账号，不区分二者）与
+        409 material_not_ready（本账号素材尚未就绪）；其余素材校验错误映射为 403 forbidden、409 invalid_state
+        或 422 unsupported_capability；
         素材接口独立返回 authorization_required、resource_in_use、group_not_empty 等安全错误码。
         404=资源不存在或跨组织；409=幂等冲突/状态冲突；410=产物或 Draft 任务 ID 已过期；
         413=请求体超限；422=未验证或不支持的模型参数/素材组合；429=Token 配额/限流/并发限制；
         402=余额不足；500=素材服务内部失败；502/503=服务不可用（503 亦含平台侧
-        真人认证回调未配置的 provider_unavailable，属可重试的服务端状态）。已接受的提交结果未知通过任务状态表达，
+        真人认证回调未配置的 provider_unavailable，属可重试的服务端状态，响应可带 Retry-After）。
+        已接受的提交结果未知通过任务状态表达，
         不使用误导性的失败结果允许客户任意重新创建。错误 message 不包含上游原文、凭证或 PII。
       headers:
         X-Request-Id:
@@ -2474,6 +2490,17 @@ components:
           $ref: '#/components/schemas/TaskStatus'
         to_status:
           $ref: '#/components/schemas/TaskStatus'
+    RpcResponseMetadata:
+      type: object
+      additionalProperties: false
+      description: 官方 RPC 响应元数据；RequestId 与 X-Request-Id 头一致。
+      required: [RequestId, Action, Version, Service, Region]
+      properties:
+        RequestId: {type: string}
+        Action: {type: string}
+        Version: {type: string, const: '2024-01-01'}
+        Service: {type: string, const: ark}
+        Region: {type: string, const: cn-beijing}
     RpcEnvelope:
       type: object
       additionalProperties: false

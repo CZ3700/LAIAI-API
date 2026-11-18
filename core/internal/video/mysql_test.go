@@ -25,6 +25,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/task"
+	"github.com/laiai/laiai-next/core/internal/videoasset"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 	"gorm.io/driver/mysql"
@@ -508,8 +509,9 @@ func TestMySQLVideoMergedDeleteByStatus(t *testing.T) {
 		v := f.create(t, "merged-queued-1")
 		f.dispatch(t, v.ID)
 		w := del(f, v.ID)
-		if w.Code != 202 || !strings.Contains(w.Body.String(), `"status":"cancelling"`) {
-			t.Fatalf("queued merged delete must cancel: %d %s", w.Code, w.Body.String())
+		// 官方同步契约：受理即 200 {}，客户端随后 GET 确认 cancelled。
+		if w.Code != 200 || strings.TrimSpace(w.Body.String()) != "{}" {
+			t.Fatalf("queued merged delete must return 200 {}: %d %s", w.Code, w.Body.String())
 		}
 		// 两阶段安全：DELETE ack 后必须等权威 GET 确认才释放冻结。
 		if f.hold(t, v.ID).Status != ledger.HoldActive {
@@ -517,7 +519,7 @@ func TestMySQLVideoMergedDeleteByStatus(t *testing.T) {
 		}
 	})
 
-	t.Run("running is rejected", func(t *testing.T) {
+	t.Run("running is rejected with 400 invalid_parameter", func(t *testing.T) {
 		f := mysqlFixture(t)
 		v := f.create(t, "merged-running-1")
 		f.dispatch(t, v.ID)
@@ -534,20 +536,24 @@ func TestMySQLVideoMergedDeleteByStatus(t *testing.T) {
 		}
 		must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
 		w := del(f, v.ID)
-		if w.Code != 409 {
-			t.Fatalf("running merged delete must 409: %d %s", w.Code, w.Body.String())
+		if w.Code != 400 || !strings.Contains(w.Body.String(), `"code":"invalid_parameter"`) {
+			t.Fatalf("running merged delete must 400 invalid_parameter: %d %s", w.Code, w.Body.String())
+		}
+		// 任务继续执行：状态仍是 running，资金未被释放。
+		if f.hold(t, v.ID).Status != ledger.HoldActive {
+			t.Fatal("running rejection must not release the hold")
 		}
 	})
 
-	t.Run("terminal settled deletes then 204", func(t *testing.T) {
+	t.Run("terminal settled deletes then 200", func(t *testing.T) {
 		f := mysqlFixture(t)
 		v := f.create(t, "merged-terminal-1")
 		f.dispatch(t, v.ID)
 		f.dispatch(t, v.ID)
 		must(t, f.s.pollTask(context.Background(), f.key.OrgID, v.ID))
 		w := del(f, v.ID)
-		if w.Code != 202 || !strings.Contains(w.Body.String(), `"status":"deleting"`) {
-			t.Fatalf("terminal merged delete must enter deleting: %d %s", w.Code, w.Body.String())
+		if w.Code != 200 || strings.TrimSpace(w.Body.String()) != "{}" {
+			t.Fatalf("terminal merged delete must accept with 200 {}: %d %s", w.Code, w.Body.String())
 		}
 		var st State
 		must(t, f.s.DB.Where("org_id = ? AND task_id = ?", f.key.OrgID, v.ID).First(&st).Error)
@@ -555,8 +561,8 @@ func TestMySQLVideoMergedDeleteByStatus(t *testing.T) {
 			t.Fatal("deletion operation not recorded")
 		}
 		again := del(f, v.ID)
-		if again.Code != 202 {
-			t.Fatalf("deletion in flight must return its operation: %d", again.Code)
+		if again.Code != 200 {
+			t.Fatalf("deletion in flight must accept idempotently: %d", again.Code)
 		}
 		// 派发 delete_task op（fake 对 DELETE 返回 200 {}）→ 确认 + tombstone。
 		var dop Operation
@@ -569,8 +575,8 @@ func TestMySQLVideoMergedDeleteByStatus(t *testing.T) {
 		}
 		must(t, f.s.processMutation(context.Background(), dop))
 		final := del(f, v.ID)
-		if final.Code != 204 {
-			t.Fatalf("completed delete must 204: %d", final.Code)
+		if final.Code != 200 || strings.TrimSpace(final.Body.String()) != "{}" {
+			t.Fatalf("completed delete must stay 200 {}: %d %s", final.Code, final.Body.String())
 		}
 		if _, e := f.s.Get(f.key.OrgID, v.ID); !isNotFound(e) {
 			t.Fatal("deleted task still readable")
@@ -703,4 +709,44 @@ func TestMySQLVideoAccountBalanceCNY(t *testing.T) {
 	if out.USDHeld != held.Amount.String() {
 		t.Fatalf("usd held mismatch: got %s", out.USDHeld)
 	}
+}
+
+// 素材引用错误官方语义（2026-11-18 用户反馈②）：asset:// 不存在或属他账号
+// 统一 404 material_not_found；本账号素材尚未就绪 409 material_not_ready。
+func TestMySQLVideoMaterialBindingErrors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	f := mysqlFixture(t)
+	scope, cap := assetTestSetup(t, f)
+	_, asset := assetTestSeed(t, f, scope, videoasset.KindVirtual)
+
+	r := gin.New()
+	r.POST("/v1/video/generations", f.s.Middleware(), f.s.HandleCreate)
+	call := func(assetID string) *httptest.ResponseRecorder {
+		body := `{"model":"` + ark.Model20 + `","content":[{"type":"text","text":"视频背景改成沙漠"},{"type":"image_url","image_url":{"url":"asset://` + assetID + `"},"role":"reference_image"}],"resolution":"720p","duration":5}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/video/generations", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+f.plain)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "material-err-"+assetID)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("missing asset is 404 material_not_found", func(t *testing.T) {
+		w := call("asset_missing_000001")
+		if w.Code != 404 || !strings.Contains(w.Body.String(), `"code":"material_not_found"`) {
+			t.Fatalf("missing asset must 404 material_not_found: %d %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("not-ready asset is 409 material_not_ready", func(t *testing.T) {
+		// 本账号素材存在但 provider 未分配（尚未就绪）：active 前提不满足。
+		must(t, f.s.DB.Model(&videoasset.Asset{}).Where("asset_id = ?", asset.ID).
+			Update("provider_id", nil).Error)
+		w := call(asset.ID)
+		if w.Code != 409 || !strings.Contains(w.Body.String(), `"code":"material_not_ready"`) {
+			t.Fatalf("not-ready asset must 409 material_not_ready: %d %s", w.Code, w.Body.String())
+		}
+	})
+	_ = cap
 }

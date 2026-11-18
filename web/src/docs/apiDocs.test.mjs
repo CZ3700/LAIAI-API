@@ -269,7 +269,8 @@ test('video creation and cancellation preserve required idempotency and empty ca
   assert.match(receipt.id, /^task_/)
   assert.equal(receipt.status, 'cancelling')
   assert.match(receipt.operation_id, /^op_/)
-  assert.equal(byID('task-delete-call').response.status, 'deleting')
+  // 官方同步契约：合并 DELETE 成功一律 200 {}。
+  assert.deepEqual(byID('task-delete-call').response, {})
   const queried = byID('task-get').response
   assert.ok(!Object.hasOwn(queried, 'result_url'))
   assert.ok(!Object.hasOwn(queried, 'cost_usd'))
