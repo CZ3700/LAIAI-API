@@ -118,3 +118,40 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 		t.Fatalf("bad version returned %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestRPCCreateProviderRejectedSurfacesCleanly（2026-11-18 生产 503 回归）：
+// 官方拒绝（非 accepted）时会话置 failed 且响应 409 安全信封——此前 rejected
+// 分支写了 portrait 表不存在的 safe_error_code 列（1054）→ ErrStorage →
+// 503 provider_unavailable，失败原因被吞。
+func TestRPCCreateProviderRejectedSurfacesCleanly(t *testing.T) {
+	s, db, _, _ := setup(t)
+	s.options.Client = NewManagementClient(&http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+		return groupErrorReply(req, 403, "AccessDenied", nil), nil
+	})})
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		uid := uint64(2)
+		c.Set("video_key", &identity.APIKey{ID: 3, OrgID: 1, UserID: &uid, Scopes: "video:read video:write"})
+		c.Set("video_request_id", "req-rpc-reject")
+		c.Next()
+	})
+	s.RegisterRoutes(router.Group("/v1/video"))
+
+	rec := rpcActionPost(router, rpcActionCreateSession, `{"CallbackURL":"https://customer.example/return"}`, "idem-rpc-reject")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("provider rejection returned %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"Code":"`) {
+		t.Fatalf("rejection envelope must carry the safe error: %s", rec.Body.String())
+	}
+	var p Portrait
+	if err := db.Where("idempotency_key = ?", "idem-rpc-reject").Take(&p).Error; err != nil || p.SessionStatus != "failed" {
+		t.Fatalf("session must be failed: %+v %v", p, err)
+	}
+	var events int64
+	db.Model(&Event{}).Where("org_id = ? AND resource_id = ? AND kind = ?", 1, p.ID, "rpc_session_failed").Count(&events)
+	if events != 1 {
+		t.Fatalf("rejection audit event expected, got %d", events)
+	}
+}
