@@ -284,6 +284,8 @@ type Portrait struct {
 	ScopeVersion                                                                 uint64
 	AccountID, Region, Project                                                   string
 	SessionStatus, LicenseStatus, CreateOperationID, CallbackTargetID, SecretRef string
+	BytedTokenHash                                                               string `gorm:"column:byted_token_hash"`
+	IdempotencyKey                                                               string `gorm:"column:idempotency_key"`
 	SessionExpiresAt                                                             *time.Time
 	GroupID                                                                      *string
 	ValidFrom, ValidUntil                                                        *time.Time
