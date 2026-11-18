@@ -176,7 +176,10 @@ func (s *Service) processQueryOnce(ctx context.Context) error {
 			m.mu.Lock()
 			m.queryErrors++
 			m.mu.Unlock()
-			s.Log.Warn("video query needs recovery", "task_id", st.TaskID)
+			// 带原因：只有 task_id 的警告无法定位恢复失败（2026-11-18 事故）。
+			if s.Log != nil {
+				s.Log.Warn("video query needs recovery", "task_id", st.TaskID, "err", err.Error())
+			}
 		}
 	})
 	if err != nil {

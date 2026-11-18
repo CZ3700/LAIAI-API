@@ -100,6 +100,11 @@ func (s *Service) runRecoveryLanes(ctx context.Context, lanes []recoveryLane) er
 		stop()
 		s.metrics().observeRecoveryLane(lane.kind, result, err)
 		if err != nil {
+			// 恢复通道的持续失败此前只进 metrics 不进日志，运维无迹可查
+			// （2026-11-18 query_receipts lane 全量 failed 3 小时）。
+			if s.Log != nil {
+				s.Log.Warn("video recovery lane failed", "lane", lane.kind, "selected", result.Selected, "applied", result.Applied, "failed", result.Failed, "err", err.Error())
+			}
 			failures = append(failures, err)
 		}
 		// An ordinary lane error (including its local timeout) does not
