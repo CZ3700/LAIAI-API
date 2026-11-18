@@ -54,7 +54,9 @@ func registerVideoJobs(jobs *mainJobs, service *video.Service, isLeader func() b
 			periodic(ctx, job.interval, func(ctx context.Context) {
 				if isLeader() {
 					if err := job.run(ctx); err != nil && ctx.Err() == nil {
-						log.Warn("video background job deferred", "job", job.name)
+						// 带上原因：不带 err 的 deferred 让持续失败的 job 在
+						// 运维上完全不可诊断（2026-11-18 恢复通道 3h 静默卡死）。
+						log.Warn("video background job deferred", "job", job.name, "err", err.Error())
 					}
 				}
 			})
