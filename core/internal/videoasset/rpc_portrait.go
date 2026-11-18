@@ -178,21 +178,23 @@ func (s *Service) SyncCreateVisualValidateSession(ctx context.Context, c CreateC
 	result := s.options.Client.Call(ctx, r.Scope, r.Credentials, rpcActionCreateSession,
 		bodyJSON(map[string]any{"ProjectName": r.Scope.Project, "CallbackURL": callbackURL, "ReturnURL": callbackURL}), s.now())
 	var data struct{ BytedToken, H5Link, CallbackURL string }
+	providerRejected := false
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var p Portrait
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("org_id = ? AND session_id = ?", c.OrgID, id).Take(&p).Error; err != nil {
 			return ErrNotFound
 		}
 		if result.Outcome != "accepted" {
-			code := result.SafeErrorCode
-			if code == "" {
-				code = "provider_rejected"
-			}
+			// 失败标记必须在本次事务提交（不能借 ErrConflict 回滚掉）：
+			// video_portrait_authorizations 无 safe_error_code 列（异步路径的
+			// 失败详情在 operations 表，同步路径无 op），失败码只进事件留痕，
+			// 客户在本次响应已收到完整安全错误信封。
+			providerRejected = true
 			if err := tx.Model(&Portrait{}).Where("org_id = ? AND session_id = ? AND session_status = ?", c.OrgID, id, "creating").
-				Updates(map[string]any{"session_status": "failed", "safe_error_code": code, "row_version": gorm.Expr("row_version + 1"), "updated_at": nowMillis(s)}).Error; err != nil {
+				Updates(map[string]any{"session_status": "failed", "row_version": gorm.Expr("row_version + 1"), "updated_at": nowMillis(s)}).Error; err != nil {
 				return ErrStorage
 			}
-			return ErrConflict
+			return s.event(tx, c.OrgID, "portrait", id, "", "rpc_session_failed", "", result.SafeErrorCode)
 		}
 		if json.Unmarshal(result.Data, &data) != nil || data.BytedToken == "" || len(data.BytedToken) > 4096 || !validHTTPS(data.H5Link, 4096) {
 			return ErrInvalid
@@ -200,10 +202,10 @@ func (s *Service) SyncCreateVisualValidateSession(ctx context.Context, c CreateC
 		return s.applyPortraitSecretTx(tx, &p, data.BytedToken, data.H5Link, s.now().Add(rpcSessionTTL))
 	})
 	if err != nil {
-		if errors.Is(err, ErrConflict) && result.Outcome != "accepted" {
-			return PortraitDTO{}, "", providerRejectedError(result)
-		}
 		return PortraitDTO{}, "", err
+	}
+	if providerRejected {
+		return PortraitDTO{}, "", providerRejectedError(result)
 	}
 	dto, err := s.GetPortraitForCaller(ctx, c, id, true)
 	if err == nil {
