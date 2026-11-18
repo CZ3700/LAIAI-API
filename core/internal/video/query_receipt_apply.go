@@ -141,6 +141,11 @@ func (s *Service) applyQueryReceiptProgress(ctx context.Context, receipt QueryRe
 	// Even a successful reducer is not committed evidence if COMMIT failed.
 	result = queryRecoveryResult{disposition: queryRecoveryNoop}
 	cause := safeRecoveryErrors(err, ctx.Err())
+	// 具体失败原因的运维留痕：lane 层聚合错误会吞成固定文案，此处 err 是
+	// 内部错误码（ErrConflict/ErrState/DB 错误），不含上游原文（2026-11-18 事故）。
+	if s.Log != nil {
+		s.Log.Warn("video query receipt apply failed", "task_id", requested.TaskID, "attempt_id", requested.AttemptID, "sequence", requested.Sequence, "err", err.Error())
+	}
 	if compatibility.identity.valid {
 		result, progressErr := s.recordQueryCompatibilityFailure(ctx, compatibility, cause)
 		return result, safeRecoveryErrors(cause, progressErr)
