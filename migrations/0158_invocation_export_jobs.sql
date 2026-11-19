@@ -1,7 +1,7 @@
 CREATE TABLE invocation_export_admission (
  id TINYINT UNSIGNED NOT NULL PRIMARY KEY
 ) ENGINE=InnoDB;
-INSERT INTO invocation_export_admission (id) VALUES (1);
+INSERT INTO invocation_export_admission (id) VALUES (1) ON DUPLICATE KEY UPDATE id = 1;
 
 CREATE TABLE invocation_export_jobs (
  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

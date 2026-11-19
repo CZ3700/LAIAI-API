@@ -12,9 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/invocation"
+	"github.com/laiai/laiai-next/core/internal/migrate"
 )
 
 func TestInvocationExportJobBatchesAndScopes(t *testing.T) {
@@ -37,8 +39,18 @@ func TestMySQLInvocationExportJobBatchesAndScopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.db.Exec(string(sql)).Error; err != nil {
+	// MySQL can commit the admission row before the migration is registered.
+	// Verify the real migrator can finish this interrupted schema expansion.
+	parts := strings.SplitN(string(sql), ";", 3)
+	if err := h.db.Exec(strings.Join(parts[:2], ";")).Error; err != nil {
 		t.Fatal(err)
+	}
+	files := fstest.MapFS{"0158_invocation_export_jobs.sql": {Data: sql}}
+	if applied, err := migrate.Up(h.db, files); err != nil || len(applied) != 1 {
+		t.Fatalf("resume migration: %v %v", applied, err)
+	}
+	if applied, err := migrate.Up(h.db, files); err != nil || len(applied) != 0 {
+		t.Fatalf("replay migration: %v %v", applied, err)
 	}
 	checkInvocationExportJobBatchesAndScopes(t, h)
 	h.server.srv.expireInvocationExportJobs(context.Background(), invocationAcceptanceNow.Add(25*time.Hour))

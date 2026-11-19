@@ -776,6 +776,25 @@ class OnlineRouteTests(unittest.TestCase):
                         "20261116T140000Z-aaaaaaaaaaaa", ok=False)
         self.assertFalse(output.exists())
 
+    def test_switch_from_standalone_web_keeps_exact_rollback_routes(self):
+        initial = self.root / "original.json"
+        standalone = self.root / "standalone.json"
+        candidate = self.root / "candidate.json"
+        release = "20261116T140000Z-aaaaaaaaaaaa"
+        self.run_online("route", initial, standalone, release)
+        config = standalone.read_text().replace("online-core-20261116-140000-aaaaaaaaaaaa:8080", "infra-core-1:8080")
+        config = config.replace("online-web-20261116-140000-aaaaaaaaaaaa:8081", "infra-online-web-manual-docs:8081")
+        standalone.write_text(config)
+        self.assertEqual(self.run_online("active-core", input_text=config).stdout.strip(), "core")
+        self.assertEqual(self.run_online("previous-web", standalone).stdout.strip(),
+                         "infra-online-web-manual-docs")
+        self.run_online("route", standalone, candidate, release)
+        self.assertEqual(standalone.read_text(), config)
+        self.assertIn("online-web-20261116-140000-aaaaaaaaaaaa:8081", candidate.read_text())
+        self.assertNotIn("infra-online-web-manual-docs", candidate.read_text())
+        kept = self.run_online("referenced", standalone, candidate).stdout.splitlines()
+        self.assertIn("infra-online-web-manual-docs", kept)
+
     def test_referenced_lists_only_online_candidate_dials(self):
         config = {"apps": {"http": {"servers": {"srv0": {"routes": [
             {"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "online-core-20261116-140000-aaaaaaaaaaaa:8080"}]}]},
