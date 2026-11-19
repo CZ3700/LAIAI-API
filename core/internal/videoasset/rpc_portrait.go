@@ -468,12 +468,13 @@ func (s *Service) rpcCreateVisualValidateSession(c *gin.Context) {
 		s.rpcHTTPError(c, err)
 		return
 	}
+	// Result 严格火山原生三字段（BytedToken/H5Link/CallbackURL）——平台
+	// SessionId 不进响应体，放 X-Session-Id 响应头供需要平台侧管理的下游取用。
+	c.Header("X-Session-Id", dto.ID)
 	c.JSON(200, rpcEnvelope(c, rpcActionCreateSession, gin.H{
 		"BytedToken":  bytedToken,
 		"H5Link":      dto.AuthorizationURL,
 		"CallbackURL": in.CallbackURL,
-		"SessionId":   dto.ID,
-		"Status":      dto.Status,
 	}))
 }
 
@@ -504,11 +505,10 @@ func (s *Service) rpcGetVisualValidateResult(c *gin.Context) {
 		s.rpcHTTPError(c, err)
 		return
 	}
-	result := gin.H{"GroupId": groupID}
 	if sessionID != "" {
-		result["SessionId"] = sessionID
+		c.Header("X-Session-Id", sessionID)
 	}
-	c.JSON(200, rpcEnvelope(c, rpcActionGetResult, result))
+	c.JSON(200, rpcEnvelope(c, rpcActionGetResult, gin.H{"GroupId": groupID}))
 }
 
 // errProviderRejected 把 SafeError 包装成 error（SafeError 本身不实现 error）。

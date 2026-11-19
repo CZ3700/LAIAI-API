@@ -61,10 +61,17 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 		t.Fatalf("create returned %d %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`"BytedToken":"vvs-rpc-test-token"`, `"H5Link":"https://h5.example/rpc-auth"`, `"CallbackURL":"https://customer.example/return"`, `"SessionId":"pas_`} {
+	// Result 严格火山原生三字段（SessionId 不进响应体，在 X-Session-Id 头）。
+	for _, want := range []string{`"BytedToken":"vvs-rpc-test-token"`, `"H5Link":"https://h5.example/rpc-auth"`, `"CallbackURL":"https://customer.example/return"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("create result missing %s: %s", want, body)
 		}
+	}
+	if strings.Contains(body, "SessionId") {
+		t.Fatalf("create result must not contain SessionId (volcano-native shape): %s", body)
+	}
+	if rec.Header().Get("X-Session-Id") == "" {
+		t.Fatal("X-Session-Id header expected for platform-side management")
 	}
 	var p Portrait
 	if err := db.Where("idempotency_key = ?", "idem-rpc-create").Take(&p).Error; err != nil || p.SessionStatus != "pending" || p.BytedTokenHash == "" {
@@ -74,7 +81,7 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 	// 幂等重放：同键返回同会话，不再触达官方。
 	before := stages
 	rec = rpcActionPost(router, rpcActionCreateSession, `{"CallbackURL":"https://customer.example/return"}`, "idem-rpc-create")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"SessionId":"`) {
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Session-Id") == "" {
 		t.Fatalf("replay returned %d %s", rec.Code, rec.Body.String())
 	}
 	if stages != before {
@@ -87,9 +94,9 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 		t.Fatalf("waiting query returned %d %s", rec.Code, rec.Body.String())
 	}
 
-	// 核实·就绪：建组 + 自动许可。
+	// 核实·就绪：建组 + 自动许可。响应体严格火山原生（仅 GroupId，无 SessionId）。
 	rec = rpcActionPost(router, rpcActionGetResult, `{"BytedToken":"vvs-rpc-test-token"}`, "idem-rpc-check-2")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"GroupId":"group-rpc-test-001"`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"GroupId":"group-rpc-test-001"`) || strings.Contains(rec.Body.String(), "SessionId") {
 		t.Fatalf("ready query returned %d %s", rec.Code, rec.Body.String())
 	}
 	var portrait Portrait
