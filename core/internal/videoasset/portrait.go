@@ -106,7 +106,13 @@ func (s *Service) readSecret(ctx context.Context, p Portrait, actor string, owne
 		if err != nil {
 			return ErrSecret
 		}
-		if json.Unmarshal([]byte(raw), &secret) != nil || secret.OrgID != p.OrgID || secret.SessionID != p.ID || !sameScope(secret.Scope, portraitScope(current)) || !secret.ExpiresAt.Equal(row.ExpiresAt) || !secret.ExpiresAt.After(s.now()) {
+		if json.Unmarshal([]byte(raw), &secret) != nil || secret.OrgID != p.OrgID || secret.SessionID != p.ID || !sameScope(secret.Scope, portraitScope(current)) || !secret.ExpiresAt.After(s.now()) {
+			secret = portraitSecret{}
+			return ErrSecret
+		}
+		// Older RPC sessions sealed sub-millisecond values; SQL keeps milliseconds.
+		expiryOffset := secret.ExpiresAt.Sub(row.ExpiresAt)
+		if expiryOffset <= -time.Millisecond || expiryOffset >= time.Millisecond {
 			secret = portraitSecret{}
 			return ErrSecret
 		}

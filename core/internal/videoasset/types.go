@@ -24,9 +24,7 @@ var (
 	ErrNotEmpty      = errors.New("video asset: group not empty")
 	ErrStorage       = errors.New("video asset: storage unavailable")
 	ErrSecret        = errors.New("video asset: secret unavailable")
-	// ErrAuthorizationActive mirrors the official DeleteAssetGroup rule for
-	// LivenessFace groups: a group whose portrait license is still verified or
-	// pending cannot be deleted until the license is revoked or expired.
+	// ErrAuthorizationActive indicates that the portrait license blocks group deletion.
 	ErrAuthorizationActive = errors.New("video asset: portrait license is still active")
 	// ErrUnconfigured marks platform-side configuration gaps (portrait return
 	// callback not installed). It is a server state, never a client mistake,
