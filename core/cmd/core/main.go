@@ -241,7 +241,12 @@ func runCore(log *slog.Logger) (code int) {
 	// 后台维护循环（每小时）：旧日志保留期清理（调用日志 + 审计日志，运营可热配，gap P2-C）
 	//   + relay 卡死 hold 清扫（审查 H-1）。放在 apiSrv 构建后以复用 RunLogRetention（读 ext_settings）。
 	jobs.goRun(apiSrv.RunFundExportJobs)
-	jobs.goRun(func(ctx context.Context) { apiSrv.RunInvocationExportJobs(ctx, leaderLease.IsLeader) })
+	// A previous version can hold the shared jobs lease during an online
+	// rollout even though it cannot consume invocation exports.
+	invocationExportLease := leader.New(leader.NewRedisStore(redisRL), "laiai:leader:invocation-exports", randToken(),
+		30*time.Second, log.With("component", "invocation-export-leader"))
+	jobs.goRun(invocationExportLease.Run)
+	jobs.goRun(func(ctx context.Context) { apiSrv.RunInvocationExportJobs(ctx, invocationExportLease.IsLeader) })
 	jobs.goRun(func(maintCtx context.Context) {
 		periodic(maintCtx, time.Hour, func(maintCtx context.Context) {
 			if !leaderLease.IsLeader() {
