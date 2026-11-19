@@ -5134,7 +5134,7 @@
         ],
         "operationId": "portraitManagementRpc",
         "summary": "火山管理 RPC 透传（CreateVisualValidateSession / GetVisualValidateResult）",
-        "description": "按火山管理 RPC 形态透传：POST /v1/video/management?Action=...&Version=2024-01-01（POST /v1/video/?Action=... 为等价形态）。鉴权仍用平台 Bearer Key（video:write）。\n\nCreateVisualValidateSession：请求体 {CallbackURL(必填,HTTPS), ProjectName(可选,默认路由项目)}；同步调用官方，200 返回 Result.{BytedToken, H5Link, CallbackURL}（火山原生三字段）与平台扩展 SessionId；H5 完成后官方按火山原生形态直跳 CallbackURL 并拼接 bytedToken/resultCode(10000=通过)/algorithmBaseRespCode/reqMeasureInfoValue/verify_type；认证凭证 30 分钟有效且仅支持认证一次，检测失败后 H5 链接失效需换新幂等键重建会话；同 org+原 Key+同幂等键的存活会话直接返回原结果（不重复创建）。\n\nGetVisualValidateResult：请求体 {BytedToken(必填), ProjectName(可选)}；按 BytedToken 反查平台会话并同步核实官方：认证完成返回 Result.GroupId（同时建真人素材组并自动登记 video_generation 许可）；仍在等待时官方拒绝，平台以 409 安全信封透传——下游应在 H5 回跳收到 resultCode=10000 后再调用。非平台发放的 BytedToken 纯透传官方裁决。\n\n官方拒绝/超时以 409 安全信封返回（Result.Error.Code），不泄露上游原文。",
+        "description": "按火山管理 RPC 形态透传：POST /v1/video/?Action=...&Version=2024-01-01（POST /v1/video/management?Action=... 为等价别名；/v1/video 不带尾部斜杠会 307，需带尾斜杠）。鉴权仍用平台 Bearer Key（video:write）。\n\nCreateVisualValidateSession：请求体 {CallbackURL(必填,HTTPS), ProjectName(可选,默认路由项目)}；同步调用官方，200 返回 Result.{BytedToken, H5Link, CallbackURL}（火山原生三字段）（平台扩展 SessionId 经 X-Session-Id 响应头返回，响应体不含）；H5 完成后官方按火山原生形态直跳 CallbackURL 并拼接 bytedToken/resultCode(10000=通过)/algorithmBaseRespCode/reqMeasureInfoValue/verify_type；认证凭证 30 分钟有效且仅支持认证一次，检测失败后 H5 链接失效需换新幂等键重建会话；同 org+原 Key+同幂等键的存活会话直接返回原结果（不重复创建）。\n\nGetVisualValidateResult：请求体 {BytedToken(必填), ProjectName(可选)}；按 BytedToken 反查平台会话并同步核实官方：认证完成返回 Result.GroupId（同时建真人素材组并自动登记 video_generation 许可）；仍在等待时官方拒绝，平台以 409 安全信封透传——下游应在 H5 回跳收到 resultCode=10000 后再调用。非平台发放的 BytedToken 纯透传官方裁决。\n\n官方拒绝/超时以 409 安全信封返回（Result.Error.Code），不泄露上游原文。",
         "parameters": [
           {
             "name": "Action",
@@ -5209,7 +5209,7 @@
                         },
                         "SessionId": {
                           "type": "string",
-                          "description": "平台扩展；portrait-authorizations 查询用的会话 ID。"
+                          "description": "平台扩展；经 X-Session-Id 响应头返回（响应体不含）；用于 portrait-authorizations 查询与控制台管理。"
                         },
                         "GroupId": {
                           "type": "string",
@@ -5828,5 +5828,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "63984c1226e611b9e8808ca7136b81f3c279d2518dfb0d51a010a6fe637f40d4"
+  "x-seedance-source-sha256": "8ab6f0f9f079d3e131231c1deaa87b000928a192c2a4a6d26fff74b693266888"
 }
