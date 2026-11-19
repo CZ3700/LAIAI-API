@@ -1,6 +1,7 @@
 package videoasset
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,7 +26,9 @@ func rpcActionPost(router *gin.Engine, action, body, idempotency string) *httpte
 // 的创建/核实全链。创建同步返回火山三字段并落 pending+指纹；查询等待期返回空
 // GroupId，就绪后复用认证即授权联动（real 组 + 自动许可）；幂等键重放不重复创建。
 func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
-	s, db, _, _ := setup(t)
+	s, db, now, _ := setup(t)
+	*now = now.Add(750 * time.Microsecond)
+	const upstreamToken = "20260102030405A12BCDEF0123456789"
 	s.options.AutoLicense = true
 	s.options.AutoLicenseValidity = 365 * 24 * time.Hour
 	s.options.MaxLicenseAge = 90 * 24 * time.Hour
@@ -34,9 +37,13 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 		action := req.URL.Query().Get("Action")
 		if action == "CreateVisualValidateSession" {
 			stages++
-			return syncReply(req, map[string]any{"BytedToken": "vvs-rpc-test-token", "H5Link": "https://h5.example/rpc-auth", "CallbackURL": "https://customer.example/return"}), nil
+			return syncReply(req, map[string]any{"BytedToken": upstreamToken, "H5Link": "https://h5.example/rpc-auth", "CallbackURL": "https://customer.example/return"}), nil
 		}
 		if action == "GetVisualValidateResult" {
+			var input struct{ BytedToken string }
+			if err := json.NewDecoder(req.Body).Decode(&input); err != nil || input.BytedToken != upstreamToken {
+				t.Errorf("provider query must receive the original token, got %q (%v)", input.BytedToken, err)
+			}
 			stages++
 			groupID := ""
 			if stages >= 3 { // 第二次核实：官方侧已就绪
@@ -62,7 +69,7 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 	}
 	body := rec.Body.String()
 	// Result 严格火山原生三字段（SessionId 不进响应体，在 X-Session-Id 头）。
-	for _, want := range []string{`"BytedToken":"vvs-rpc-test-token"`, `"H5Link":"https://h5.example/rpc-auth"`, `"CallbackURL":"https://customer.example/return"`} {
+	for _, want := range []string{`"BytedToken":"` + upstreamToken + `"`, `"H5Link":"https://h5.example/rpc-auth"`, `"CallbackURL":"https://customer.example/return"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("create result missing %s: %s", want, body)
 		}
@@ -84,18 +91,22 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Header().Get("X-Session-Id") == "" {
 		t.Fatalf("replay returned %d %s", rec.Code, rec.Body.String())
 	}
+	if rec.Body.String() != body || rec.Header().Get("X-Session-Id") != p.ID {
+		t.Fatalf("replay must return the original provider token, link and session ID: %s", rec.Body.String())
+	}
 	if stages != before {
 		t.Fatal("replay must not hit the provider again")
 	}
 
 	// 核实·等待期：空 GroupId。
-	rec = rpcActionPost(router, rpcActionGetResult, `{"BytedToken":"vvs-rpc-test-token"}`, "idem-rpc-check-1")
+	queryBody := `{"BytedToken":"` + upstreamToken + `"}`
+	rec = rpcActionPost(router, rpcActionGetResult, queryBody, "idem-rpc-check-1")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"GroupId":""`) {
 		t.Fatalf("waiting query returned %d %s", rec.Code, rec.Body.String())
 	}
 
 	// 核实·就绪：建组 + 自动许可。响应体严格火山原生（仅 GroupId，无 SessionId）。
-	rec = rpcActionPost(router, rpcActionGetResult, `{"BytedToken":"vvs-rpc-test-token"}`, "idem-rpc-check-2")
+	rec = rpcActionPost(router, rpcActionGetResult, queryBody, "idem-rpc-check-2")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"GroupId":"group-rpc-test-001"`) || strings.Contains(rec.Body.String(), "SessionId") {
 		t.Fatalf("ready query returned %d %s", rec.Code, rec.Body.String())
 	}
@@ -111,6 +122,11 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 	}
 	if portrait.SessionStatus != "succeeded" || portrait.GroupID == nil || portrait.LicenseStatus != "verified" {
 		t.Fatalf("identity/license end state wrong: %+v", portrait)
+	}
+	before = stages
+	rec = rpcActionPost(router, rpcActionCreateSession, `{"CallbackURL":"https://customer.example/return"}`, "idem-rpc-create")
+	if rec.Code != http.StatusConflict || stages != before {
+		t.Fatalf("completed session must report a conflict without creating a new one: %d %s", rec.Code, rec.Body.String())
 	}
 
 	// 不支持的 Action / Version。

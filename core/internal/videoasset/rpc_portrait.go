@@ -101,30 +101,6 @@ func (s *Service) applyPortraitSecretTx(tx *gorm.DB, p *Portrait, bytedToken, h5
 	return nil
 }
 
-// readPendingSecretTx 幂等重放：解密 pending 会话的 secret 取回完整回跳三元组。
-func (s *Service) readPendingSecretTx(tx *gorm.DB, org uint64, sessionID string) (bytedToken, h5Link string, err error) {
-	var p Portrait
-	if err = tx.Where("org_id = ? AND session_id = ?", org, sessionID).Take(&p).Error; err != nil {
-		return "", "", ErrNotFound
-	}
-	if p.SessionStatus != "pending" || p.SecretRef == "" {
-		return "", "", ErrConflict
-	}
-	var row Secret
-	if err = tx.Where("org_id = ? AND session_id = ? AND secret_id = ? AND destroyed_at IS NULL", org, sessionID, p.SecretRef).Take(&row).Error; err != nil {
-		return "", "", ErrSecret
-	}
-	raw, err := s.keys.Decrypt(row.ValueCipher)
-	if err != nil {
-		return "", "", ErrSecret
-	}
-	var secret portraitSecret
-	if json.Unmarshal([]byte(raw), &secret) != nil || secret.SessionID != sessionID {
-		return "", "", ErrSecret
-	}
-	return secret.BytedToken, secret.H5URL, nil
-}
-
 // SyncCreateVisualValidateSession 同步创建：事务受理 → 同步调官方 → 事务落
 // pending。官方拒绝/超时时会话置 failed 并返回安全错误（火山原生行为即失败
 // 后换新会话重试；本地 failed 会话不占用幂等键）。
@@ -143,12 +119,30 @@ func (s *Service) SyncCreateVisualValidateSession(ctx context.Context, c CreateC
 	if !r.Capabilities.Portrait {
 		return PortraitDTO{}, "", ErrUnsupported
 	}
-	// 幂等受理：同 org + 原 Key + 同幂等键的存活会话（pending/succeeded）直接返回。
+	// 幂等重放：只向原 Key 返回仍有效的官方认证凭证。
 	var existing Portrait
-	if err := s.db.WithContext(ctx).Where("org_id = ? AND created_by_key_id = ? AND idempotency_key = ? AND session_status IN ?",
-		c.OrgID, c.KeyID, c.IdempotencyKey, []string{"pending", "succeeded"}).Order("created_at DESC").Take(&existing).Error; err == nil {
-		dto, err := s.GetPortraitForCaller(ctx, c, existing.ID, true)
-		return dto, "", err
+	lookupErr := s.db.WithContext(ctx).Where("org_id = ? AND created_by_key_id = ? AND idempotency_key = ? AND session_status IN ?",
+		c.OrgID, c.KeyID, c.IdempotencyKey, []string{"pending", "succeeded", "expired"}).Order("created_at DESC").Take(&existing).Error
+	if lookupErr == nil {
+		dto, err := s.GetPortraitForCaller(ctx, c, existing.ID, false)
+		if err != nil {
+			return PortraitDTO{}, "", err
+		}
+		if dto.Status != "pending" {
+			return PortraitDTO{}, "", ErrConflict
+		}
+		secret, err := s.readSecret(ctx, existing, "gateway", c.KeyID, false)
+		if err != nil {
+			return PortraitDTO{}, "", err
+		}
+		if secret.BytedToken == "" {
+			return PortraitDTO{}, "", ErrSecret
+		}
+		dto.AuthorizationURL = secret.H5URL
+		return dto, secret.BytedToken, nil
+	}
+	if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+		return PortraitDTO{}, "", ErrStorage
 	}
 	id, err := newID("pas_")
 	if err != nil {
@@ -178,6 +172,7 @@ func (s *Service) SyncCreateVisualValidateSession(ctx context.Context, c CreateC
 	result := s.options.Client.Call(ctx, r.Scope, r.Credentials, rpcActionCreateSession,
 		bodyJSON(map[string]any{"ProjectName": r.Scope.Project, "CallbackURL": callbackURL, "ReturnURL": callbackURL}), s.now())
 	var data struct{ BytedToken, H5Link, CallbackURL string }
+	expires := nowMillis(s).Add(rpcSessionTTL)
 	providerRejected := false
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var p Portrait
@@ -199,7 +194,7 @@ func (s *Service) SyncCreateVisualValidateSession(ctx context.Context, c CreateC
 		if json.Unmarshal(result.Data, &data) != nil || data.BytedToken == "" || len(data.BytedToken) > 4096 || !validHTTPS(data.H5Link, 4096) {
 			return ErrInvalid
 		}
-		return s.applyPortraitSecretTx(tx, &p, data.BytedToken, data.H5Link, s.now().Add(rpcSessionTTL))
+		return s.applyPortraitSecretTx(tx, &p, data.BytedToken, data.H5Link, expires)
 	})
 	if err != nil {
 		return PortraitDTO{}, "", err
@@ -210,7 +205,6 @@ func (s *Service) SyncCreateVisualValidateSession(ctx context.Context, c CreateC
 	// 同步端点直接构造响应视图：GetPortraitForCaller/GetPortrait 的 H5 读取
 	// 走 readSecret 的 owner 闸（pending+原 Key 已满足），但这里 H5Link 就在
 	// 本次官方响应里，无需再解密 secret；pending DTO 的其余字段就地可得。
-	expires := s.now().Add(rpcSessionTTL)
 	dto := PortraitDTO{ID: id, Status: "pending", ExpiresAt: &expires, AuthorizationURL: data.H5Link}
 	return dto, data.BytedToken, nil
 }

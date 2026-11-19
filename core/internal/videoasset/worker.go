@@ -564,9 +564,7 @@ func (s *Service) applyAccepted(tx *gorm.DB, op Operation, result Result, reques
 				Updates(map[string]any{"status": StatusDeleted, "review_state": ReviewClear, "deleted_at": now, "row_version": gorm.Expr("row_version + 1"), "updated_at": now}).Error; err != nil {
 				return ErrStorage
 			}
-			// Defense in depth: the admission gate already required an
-			// expired/revoked license; force the bound portrait to revoked so a
-			// half-expired license can never outlive its group.
+			// The bound license ends with the confirmed group deletion.
 			if group.PortraitID != "" {
 				if err := tx.Model(&Portrait{}).Where("org_id = ? AND session_id = ? AND license_status <> ?", op.OrgID, group.PortraitID, "revoked").
 					Updates(map[string]any{"license_status": "revoked", "revoked_at": now, "updated_at": now}).Error; err != nil {

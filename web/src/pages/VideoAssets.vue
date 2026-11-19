@@ -64,19 +64,20 @@ const text=(value:string)=>labels[value]??value
 const errors:Record<string,string>={management_scope_not_configured:'素材管理配置尚未就绪。请在配置素材管理中核对账号项目、管理版本、已授权能力及组织默认路由。',execution_policy_required:'管理版本和组织绑定不会自动开启执行许可。请在配置素材管理的第 3 步开启本组织的异步执行许可并保存。',unsupported_capability:'该能力尚未配置或开通，请查看项目能力设置。',invalid_state:'资源状态已变化，请刷新后重试。',resource_in_use:'素材仍被进行中的视频任务引用，暂时不能删除。',group_not_empty:'素材组非空，请先处理组内素材。',authorization_required:'尚未取得有效的真人使用许可。',invalid_request:'参数或媒体校验不通过，请核对类型、大小和素材要求。',not_found:'资源不存在或无权查看。',storage_unavailable:'暂时无法保存数据，请稍后重试。',SourceDownloadFailed:'源文件无法下载，请检查地址是否可访问或已过期。',provider_sync_failed:'官方同步失败，请检查管理权限后重试。',pagination_cycle:'官方分页游标重复，已停止同步。',provider_response_invalid:'官方返回信息不完整，已保留待核验状态。',provider_unavailable:'官方处理暂未确认，请刷新状态。',media_verification_failed:'媒体安全检测或格式校验未通过。',checkpoint_expired:'同步断点已过期，请重新发起同步。',source_unavailable:'源文件无法下载，请检查地址是否可访问或已过期。',source_not_allowed:'源地址不符合安全要求，请使用公开可访问的 HTTPS 地址。',upload_expired:'上传会话已过期，请重新上传。',empty_upload:'上传内容为空，请重新选择文件。'}
 const deletionReasons:Record<string,string>={
  real_group_not_supported:'真人素材组暂不支持删除。',group_not_empty:'素材组仍有素材，请先处理组内素材。',
+ authorization_active:'肖像许可仍有效。仅含已确认处理失败素材的真人组可直接提交删除。',
  resource_in_use:'素材组仍被进行中的视频任务引用。',operation_pending:'删除处理中，请等待状态确认。',
  submission_uncertain:'官方提交结果待核验，请刷新或查看请求日志，不能再次删除。',
  asset_not_ready:'素材尚未就绪，请先确认注册结果。',creation_not_rejected:'创建结果尚未确认失败，不能清理该记录。',group_not_ready:'素材组尚未就绪，请先确认创建结果。',
  resource_identity_mismatch:'素材与所属素材组的账号项目不一致，请由管理员核对。',
  scope_unavailable:'资源所属账号项目配置不可用，请先核对管理配置。',
  delete_capability_disabled:'所属项目未启用此资源的官方删除能力。',
- exclusive_project_required:'需先确认该项目仅由本平台写入，才能删除官方空组。',
+ exclusive_project_required:'需先确认该项目仅由本平台写入，才能删除官方素材组。',
 }
 const safeMessages=new Set(['请填写公开可访问的 HTTPS 地址，不要包含账号密码或片段标记。'])
 function requestSuffix(id:unknown){return typeof id==='string'&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(id)?`（请求 ID：${id}）`:''}
 function safeErrorText(e:unknown){
  const message=e instanceof Error?e.message:'',code=e instanceof ApiError?(e.code||message):message
- return (errors[code]??(safeMessages.has(message)?message:'操作未完成，请刷新状态或查看请求日志。'))+requestSuffix(e instanceof ApiError?e.requestId:undefined)
+ return (errors[code]??deletionReasons[code]??(safeMessages.has(message)?message:'操作未完成，请刷新状态或查看请求日志。'))+requestSuffix(e instanceof ApiError?e.requestId:undefined)
 }
 function report(e:unknown){error.value=safeErrorText(e)}
 function resourceOperationNotice(row:AssetGroup|VideoAsset){return resourceOperations(row).map(op=>operationReadErrors.value[op.operation_id]||(op.status==='unknown'?operationError(op)||'官方操作结果尚未确认，请查看详情。':'')).filter(Boolean).join(' ')}
@@ -97,12 +98,15 @@ function trackResourceOperations(row:AssetGroup|VideoAsset,isGroup:boolean,inclu
 function groupDeleteReason(row:AssetGroup){
  if(deleteLocks.value[row.id])return deleteLocks.value[row.id]==='unknown'?'删除结果待核验，不能重复提交。':'删除已提交，正在确认结果与刷新列表。'
  if(row.delete_operation&&['pending','sending','in_flight','unknown','confirmed'].includes(row.delete_operation.status))return row.delete_operation.status==='unknown'?'删除结果待核验，不能重复提交。':'删除正在确认，请等待列表刷新。'
- if(row.kind!=='virtual')return '真人素材组暂不支持删除。'
- if(row.asset_count>0)return '素材组仍有素材，请先处理组内素材。'
+ if(row.kind==='virtual'&&row.asset_count>0)return '素材组仍有素材，请先处理组内素材。'
  if(row.deletion_mode==='local_failed'&&row.status==='failed')return ''
  // Eligibility belongs to the group's fixed provider scope, not the current default route.
  if(row.deletion_mode==='official'&&row.status==='ready')return ''
  return deletionReasons[row.deletion_block_reason??'']??'当前记录暂不可删除，请刷新配置或查看请求日志。'
+}
+function groupDeleteLabel(row:AssetGroup){
+ if(row.deletion_mode==='local_failed')return '清理失败记录'
+ return row.kind==='virtual'?'删除空组':'删除素材组'
 }
 function assetDeleteReason(row:VideoAsset){
  if(deleteLocks.value[row.id])return deleteLocks.value[row.id]==='unknown'?'删除结果待核验，不能重复提交。':'删除已提交，请等待确认，不能重复提交。'
@@ -294,6 +298,8 @@ const operationMessages:Record<string,string>={
  provider_group_not_found:'官方未找到该素材组。',
  group_not_empty:'官方素材组内仍有素材，不能删除。',
  group_empty_check_failed:'无法确认官方素材组为空，本次未删除。',
+ group_failed_assets_unverified:'火山列表未能确认组内只有平台记录的失败素材，删除未提交。',
+ authorization_active:deletionReasons.authorization_active,
  group_absence_unverified:'官方返回素材组不存在，但后续核验尚未确认。',
  group_identity_mismatch:"删除请求与素材组所属账号项目不一致。",
  provider_response_invalid:'官方返回信息不完整，操作结果待核验。',
@@ -370,11 +376,11 @@ onUnmounted(()=>{scopeEpoch++;syncRestoreEpoch++;groupsEpoch++;assetsEpoch++;upl
      <div class="va-group-heading"><h2>{{ activeGroup.name||'未命名素材组' }} <span class="va-badge" :data-state="activeGroup.status">{{ groupStateText(activeGroup)||text(activeGroup.status) }}</span></h2><p v-if="activeGroup.description">{{ activeGroup.description }}</p><p v-if="resourceOperationNotice(activeGroup)" class="va-help" role="status">{{ resourceOperationNotice(activeGroup) }} 请查看组详情。</p><p v-if="kind==='real_person'" class="va-help">使用授权：{{ text(activeGroup.authorization_status) }}。真人认证与使用许可分别核验。</p></div>
      <div class="va-actions va-group-actions" aria-label="素材组操作">
       <button @click="showGroupDetails(activeGroup)">组详情</button><button v-if="auth.isSuperadmin && kind==='real_person'" :disabled="busy || !activeGroup.portrait_session_id" @click="openLicense">核验使用许可</button><button :disabled="busy || !caps?.update" @click="openRename(activeGroup,true)">编辑组</button>
-      <button :disabled="busy || !!groupDeleteReason(activeGroup)" :title="groupDeleteReason(activeGroup)" :aria-describedby="groupDeleteReason(activeGroup)?'va-group-delete-hint':undefined" @click="openDelete(activeGroup,true)">{{ activeGroup.deletion_mode==='local_failed'?'清理失败记录':'删除空组' }}</button>
+      <button :disabled="busy || !!groupDeleteReason(activeGroup)" :title="groupDeleteReason(activeGroup)" :aria-describedby="groupDeleteReason(activeGroup)?'va-group-delete-hint':undefined" @click="openDelete(activeGroup,true)">{{ groupDeleteLabel(activeGroup) }}</button>
       <button class="va-primary" :disabled="busy || !!uploadBlockedReason" :title="uploadBlockedReason" :aria-describedby="uploadBlockedReason?'va-group-upload-hint':undefined" @click="openUpload">＋ 添加素材</button>
      </div>
      <div v-if="groupDeleteReason(activeGroup) || uploadBlockedReason || activeGroup.delete_operation" class="va-action-hints" aria-label="操作说明">
-      <p v-if="groupDeleteReason(activeGroup)" id="va-group-delete-hint" role="status"><strong>删除空组</strong><span>{{ groupDeleteReason(activeGroup) }}</span></p>
+      <p v-if="groupDeleteReason(activeGroup)" id="va-group-delete-hint" role="status"><strong>{{ groupDeleteLabel(activeGroup) }}</strong><span>{{ groupDeleteReason(activeGroup) }}</span></p>
       <p v-if="activeGroup.delete_operation"><strong>删除进度</strong><span>{{ text(activeGroup.delete_operation.status) }} · 操作 {{ activeGroup.delete_operation.operation_id }}</span></p>
       <div v-if="uploadBlockedReason" class="va-action-hint"><p id="va-group-upload-hint" role="status"><strong>添加素材</strong><span>{{ uploadBlockedReason }}</span></p><button v-if="auth.isSuperadmin" :disabled="busy || setupBusy" @click="setupOpen=true">查看配置缺项</button></div>
      </div>
@@ -387,7 +393,7 @@ onUnmounted(()=>{scopeEpoch++;syncRestoreEpoch++;groupsEpoch++;assetsEpoch++;upl
   <Teleport to="body"><div v-if="modal" class="va-overlay" @click.self="!busy && close()"><section class="va-dialog" role="dialog" aria-modal="true" aria-labelledby="va-dialog-title"><header><h2 id="va-dialog-title">{{ ({group:kind==='virtual'?'创建虚拟素材组':'创建真人素材组',upload:'网址注册素材',rename:'编辑名称',delete:localCleanup?'清理失败记录':'确认删除',portrait:'真人认证',discovery:'官方资源发现与归属',assign:'确认资源归属',license:'核验真人使用许可',register:'将已核验上传注册到素材组'} as Record<string,string>)[modal] }}</h2><button :disabled="busy" @click="close" aria-label="关闭弹框">×</button></header><div class="va-dialog-body">
    <div v-if="modal==='group' || modal==='rename'"><div v-if="modal==='group'&&kind==='real_person'" class="va-steps"><strong>1 创建认证任务</strong><span>2 完成真人认证</span><span>3 生成素材组</span></div><label>素材{{ modal==='group'||targetGroup?'组':'' }}名称<input v-model="name" maxlength="64" autofocus></label><label v-if="modal==='group'||targetGroup">描述（可选）<textarea v-model="description" maxlength="300" rows="3" /></label></div>
    <div v-if="modal==='upload'"><p v-if="uploadPhase" role="status" class="va-notice">{{ text(uploadPhase) }}<span v-if="uploadID"> · {{ uploadID }}</span></p><label>素材名称<input v-model="name" maxlength="64"></label><label>素材类型<select v-model="uploadType"><option v-for="m in caps?.media_types" :value="m">{{ ({image:'图片',video:'视频',audio:'音频'} as Record<string,string>)[m] }}</option></select></label><label>公开可访问的 HTTPS 网址<input v-model="sourceURL" type="url" autocomplete="off" placeholder="https://" :disabled="registrationUncertain"></label><p class="va-help">火山直接读取该网址并处理素材。平台不下载、不存储、不扫描文件；网址应在官方处理完成前持续有效。</p><label>本地文件<input type="file" disabled aria-describedby="va-local-file-unavailable"></label><p id="va-local-file-unavailable" class="va-help">暂不支持浏览器直接上传至火山。请先将文件放在可公开访问的 HTTPS 地址，再填写上方网址。</p><p v-if="registrationUncertain" class="va-alert" role="alert">本次注册是否受理尚未确认，请先刷新列表并核对请求日志；不会自动重复注册。</p><p class="va-help">图片小于 30 MB；视频不超过 200 MB；音频不超过 15 MB。视频、音频时长为 2–30 秒，生成时还需符合所选模型限制。</p></div>
-   <div v-if="modal==='delete'"><template v-if="localCleanup"><p>确认清理“{{ target?.name }}”的失败记录？</p><p class="va-help">仅清理本平台中已确认创建失败、未生成官方{{ targetGroup?'素材组':'素材' }}的记录。不会调用官方删除，历史任务、请求日志和账务记录仍保留。</p></template><template v-else><p>将删除“{{ target?.name }}”。官方删除不可恢复。</p><p class="va-help">存在进行中的任务引用、同步不完整或上游内容变化时，服务端会拒绝删除。不会清除历史任务、日志或账务记录。</p></template><p v-if="deleteBlocked" class="va-alert" role="alert">{{ deleteBlocked }}</p></div>
+   <div v-if="modal==='delete'"><template v-if="localCleanup"><p>确认清理“{{ target?.name }}”的失败记录？</p><p class="va-help">仅清理本平台中已确认创建失败、未生成官方{{ targetGroup?'素材组':'素材' }}的记录。不会调用官方删除，历史任务、请求日志和账务记录仍保留。</p></template><template v-else><p>将删除“{{ target?.name }}”。官方删除不可恢复。</p><p v-if="targetGroup && (deleteTarget as AssetGroup)?.kind==='real_person'" class="va-help">删除真人素材组会一并删除组内全部素材，并结束绑定的肖像许可。</p><p class="va-help">存在进行中的任务引用、同步不完整或上游内容变化时，服务端会拒绝删除。不会清除历史任务、日志或账务记录。</p></template><p v-if="deleteBlocked" class="va-alert" role="alert">{{ deleteBlocked }}</p></div>
    <div v-if="modal==='portrait'" class="va-portrait"><div class="va-steps"><span>1 创建认证任务</span><strong>2 完成真人认证</strong><span>3 生成素材组</span></div><p>{{ text(portrait?.status??'creating') }}</p><p v-if="portrait && portraitFailureText(portrait)" class="va-alert" role="alert">{{ portraitFailureText(portrait) }}</p><p v-if="validPortraitHTTPStatus(portrait?.provider_http_status)" class="va-help">火山 HTTP 状态：{{ portrait?.provider_http_status }}</p><p v-if="validPortraitDiagnosticID(portrait?.upstream_request_id)" class="va-help">火山请求 ID：<span class="va-id">{{ portrait?.upstream_request_id }}</span></p><p v-if="validPortraitDiagnosticID(portrait?.request_id)" class="va-help">平台请求 ID：<span class="va-id">{{ portrait?.request_id }}</span></p><template v-if="portrait?.authorization_url"><QrCode :value="portrait.authorization_url" :size="220" /><a :href="portrait.authorization_url" target="_blank" rel="noopener noreferrer" class="va-primary">打开官方认证页</a></template><p v-if="portrait?.expires_at" class="va-help">有效期至 {{ new Date(portrait.expires_at).toLocaleString() }}</p><p class="va-help">由真人本人完成官方认证。认证成功后会同步素材组，并单独核验使用许可。</p><button :disabled="busy" @click="run(checkPortrait)">刷新认证状态</button></div>
    <div v-if="modal==='discovery'"><p class="va-help">项目 {{ caps?.project }} · {{ caps?.scope_id }}。仅实名超级管理员可查看未归属资源。官方 default 项目不会自动分配给当前组织。</p><div class="va-actions"><button class="va-primary" :disabled="busy || !caps?.sync || discoveryActionBlocked" @click="discover">发现{{ kind==='virtual'?'虚拟':'真人' }}素材组</button><button :disabled="busy" @click="run(()=>loadDiscoveries())">刷新待归属列表</button></div><section v-if="discoveryJob" class="va-sync-status"><p role="status">{{ syncSummary(discoveryJob,discoveryReadback) }}</p><p class="va-help">已处理 {{ discoveryJob.items }} 个组 / {{ discoveryJob.pages }} 页</p><p v-if="syncErrorText(discoveryJob)" class="va-help" :class="{'text-danger':discoveryJob.status==='failed'}">{{ syncErrorText(discoveryJob) }}</p><p v-if="discoveryJob.status==='pending' && discoveryJob.next_attempt_at" class="va-help">预计下次读取：{{ new Date(discoveryJob.next_attempt_at).toLocaleString() }}。系统会自动重试，无需再次发起。</p><p v-if="discoveryReadback.error" class="va-help">{{ discoveryReadback.error }}</p><button @click="syncDetailMode='discover'">发现任务详情</button><button :disabled="busy" @click="run(()=>refreshSyncTask('discover',true))">刷新任务状态</button></section><p v-if="discoveryQueryError" class="va-help text-danger" role="alert">{{ discoveryQueryError }}</p><div class="va-table-wrap"><table><thead><tr><th>官方素材组</th><th>类别</th><th>操作</th></tr></thead><tbody><tr v-for="d in discoveries" :key="d.id"><td>{{ d.name }}<small>{{ d.description }}</small><small>{{ d.provider_id }}</small></td><td>{{ d.kind==='real_person' || d.kind==='real'?'真人':'虚拟' }}</td><td><button :disabled="busy" @click="openAssign(d)">分配归属</button></td></tr></tbody></table><p class="va-help">已显示 {{ discoveries.length }} / {{ discoveryTotal }} 个待归属组</p><button v-if="discoveryCursor" :disabled="busy" @click="run(()=>loadDiscoveries(true))">加载更多待归属组</button><p v-if="!discoveries.length" class="va-empty">暂无待归属素材组，可先发起官方发现。</p></div></div>
    <div v-if="modal==='assign'"><p>素材组：{{ assignment?.name }}</p><label>目标组织<select v-model="targetOrg"><option :value="0">请选择目标组织</option><option v-for="o in organizations" :key="o.id" :value="o.id">{{ o.name }}（{{ o.id }}）</option></select></label><label>归属核验依据<textarea v-model="evidence" rows="4" maxlength="3000" placeholder="记录归属依据、凭据编号或已审核合同；不要填写 API Key、身份证号或密码。" /></label><label class="va-check"><input v-model="assignmentConfirmed" type="checkbox">已核验归属，确认只将此组分配给选定组织。目标组织须已配置相同官方项目路由。</label><p class="va-help">真人素材组分配不代表真人认证完成或使用许可通过。</p></div>

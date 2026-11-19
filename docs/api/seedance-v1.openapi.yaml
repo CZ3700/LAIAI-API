@@ -659,9 +659,10 @@ paths:
       summary: 删除素材组
       description: |
         虚拟组：只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。
-        真人组（real_person）：对齐官方 DeleteAssetGroup 行为——肖像许可已过期或已撤销
-        （license_status=expired/revoked）方可删除；许可仍有效或待定返回 409 authorization_active，
-        需先经管理端撤销许可或等待到期。真人组删除会批量删除组内全部素材（官方语义，不可逆），
+        真人组（real_person）可在肖像许可已过期或已撤销（license_status=expired/revoked）后删除。
+        许可为 verified 时，若组内至少有一个素材且全部为 asset_processing_failed，平台可受理删除任务。
+        任务会先核对火山的完整素材列表，确认同一批素材均为 Failed，再提交整组删除；火山仍可能根据授权规则拒绝。
+        其他许可受限的真人组返回 409 authorization_active。真人组删除会批量删除组内全部素材（不可逆），
         本地素材行随确认同步软删，绑定许可强制置 revoked；有在途任务引用仍返回 409 resource_in_use。
         cascade=true 或未启用删除能力返回 422 unsupported_capability。
         不会仅删除平台映射而留下未知上游结果。虚拟组删除前经官方空组预检；
@@ -1049,11 +1050,12 @@ paths:
         （POST /v1/video/management?Action=... 为等价别名；/v1/video 不带尾部斜杠会 307，需带尾斜杠）。鉴权仍用平台 Bearer Key（video:write）。
         支持两个 Action：
         CreateVisualValidateSession —— 请求体 {CallbackURL(必填,HTTPS), ProjectName(可选,默认路由项目)}；
-        同步调用官方，200 返回 Result.{BytedToken, H5Link, CallbackURL}（火山原生三字段）
-        （平台扩展 SessionId 经 X-Session-Id 响应头返回，响应体不含）；H5 完成后官方按火山原生形态直跳 CallbackURL 并拼接
+        同步调用官方，200 返回 Result.{BytedToken, H5Link, CallbackURL}（火山原生三字段）。
+        BytedToken 原样返回火山签发的字符串，调用方应直接用于查询认证结果。平台会话 ID 通过 X-Session-Id 响应头返回。
+        H5 完成后官方按火山原生形态直跳 CallbackURL 并拼接
         bytedToken/resultCode(10000=通过)/algorithmBaseRespCode/reqMeasureInfoValue/verify_type；
         认证凭证 30 分钟有效且仅支持认证一次，检测失败后 H5 链接失效需换新幂等键重建会话。
-        同 org+原 Key+同幂等键的存活会话直接返回原结果（不重复创建）。
+        同 org+原 Key+同幂等键在待认证且未过期时返回原凭证与链接；会话已完成或过期时返回 409，创建新会话需换幂等键。
         GetVisualValidateResult —— 请求体 {BytedToken(必填), ProjectName(可选)}；按 BytedToken
         反查平台会话并同步核实官方：认证完成返回 Result.GroupId（同时建真人素材组并自动登记
         video_generation 许可）；仍在等待时官方拒绝，平台以 409 安全信封透传——下游应在 H5 回跳

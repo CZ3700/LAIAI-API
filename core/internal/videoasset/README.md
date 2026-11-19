@@ -58,10 +58,11 @@ and requires reconciliation; it must never be interpreted as safe to create agai
 The service does not promise automatic discovery of unknown creates without an
 official ID. Read-only query intents can be recreated after a bounded delay.
 
-Virtual empty-group deletion requires both the explicit deletion capability and
-exclusive project write control, because official deletion cascades without an
-atomic empty-group precondition. Local and fresh official emptiness checks are
-mandatory. Nonempty/cascade and real-person group deletion are rejected.
+Group deletion requires the deletion capability and exclusive project writes
+because the provider call cascades. Virtual groups require local and fresh
+provider emptiness checks. Real-person groups require a revoked or expired
+license, or a verified license with only confirmed processing failures. In the
+latter case, a fresh provider listing must match the complete failed asset set.
 Individual DeleteAsset is enabled separately and rejects live task references. Deletion
 sets a barrier before external dispatch; unknown outcomes keep that barrier.
 Deletion confirmation preserves evidence and task references. A definite
