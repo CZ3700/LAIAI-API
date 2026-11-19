@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
 import DetailDrawer from '@/components/DetailDrawer.vue'
+import InvocationExportJobs from './InvocationExportJobs.vue'
 import { useInvocationLogs } from '@/composables/useInvocationLogs'
 import { ApiError, copyText } from '@/lib/api'
 import { formatDisplayMoney, convertUsdToDisplay } from '@/lib/decimalMoney'
-import { InvocationFilterError, formatInvocationTokens, invocationTotalTokens, invocationModalities, invocationStatuses, invocationTimezones, type InvocationPageSize, type InvocationScope } from '@/lib/invocationQuery'
+import { InvocationFilterError, formatInvocationTokens, invocationInclusiveEnd, invocationTotalTokens, invocationModalities, invocationStatuses, invocationTimezones, type InvocationPageSize, type InvocationScope } from '@/lib/invocationQuery'
 import type { InvocationRow } from '@/lib/invocationQueryTransport'
 
 const props = withDefaults(defineProps<{ scope: InvocationScope; active?: boolean }>(), { active: true })
@@ -13,6 +14,10 @@ const { t, locale } = useI18n()
 const { draft, applied, bundle, page, pageSize, loading, error, exporting, exportResult, exportError, selectedRow, allowed, dirty,
   apply, reset, refresh, setPage, setPageSize, exportCSV, cancelExport, openDetail, closeDetail } = useInvocationLogs({ scope: () => props.scope, active: () => props.active })
 const copied = ref('')
+const filterId = useId()
+function invalidField(...fields: string[]) {
+  return error.value instanceof InvocationFilterError && fields.includes(error.value.field)
+}
 const money = computed(() => bundle.value?.query.display_money)
 const timezone = computed(() => applied.value?.timezone ?? draft.timezone)
 const first = computed(() => bundle.value?.items.length ? (bundle.value.page - 1) * bundle.value.page_size + 1 : 0)
@@ -21,7 +26,8 @@ const hasNext = computed(() => !!bundle.value && page.value * pageSize.value < b
 const chips = computed(() => {
   const f = applied.value
   if (!f) return []
-  const out = [`${f.since} ≤ ${t('invocationLogs.recordedTime')} < ${f.until} · ${f.timezone}`]
+  const end = invocationInclusiveEnd(f.until)
+  const out = [`${f.since === end ? end : `${f.since} – ${end}`} · ${f.timezone}`]
   if (f.model) out.push(`${t('reqlog.filterModel')}: ${f.model}`)
   if (f.request_id) out.push(`${t('reqlog.filterRequestId')}: ${f.request_id}`)
   if (f.api_key_id) out.push(`${t('reqlog.filterApiKey')}: #${f.api_key_id}`)
@@ -48,7 +54,20 @@ function exactAmount(row: InvocationRow): string {
 }
 function tokenTotal(row: InvocationRow): string { return formatInvocationTokens(invocationTotalTokens(row.usage_exact.prompt_tokens, row.usage_exact.completion_tokens)) }
 function failure(e: unknown): string {
-  if (e instanceof InvocationFilterError) return t('invocationLogs.invalidFilter')
+  if (e instanceof InvocationFilterError) {
+    if (e.field === 'api_key_id') return t(e.reason === 'credential_not_id' ? 'invocationLogs.keyCredential' : 'invocationLogs.keyIDHint')
+    if (e.reason === 'range_too_long') return t('invocationLogs.rangeTooLong')
+    if (e.reason === 'range_reversed') return t('invocationLogs.rangeReversed')
+    if (['range', 'start', 'end', 'since', 'until'].includes(e.field)) return t('invocationLogs.datesRequired')
+    if (e.field === 'model' || e.field === 'request_id') {
+      return t('invocationLogs.invalidText', { field: t(e.field === 'model' ? 'reqlog.filterModel' : 'reqlog.filterRequestId'), max: e.field === 'model' ? 128 : 32 })
+    }
+    if (e.field === 'org_id' || e.field === 'channel_id') {
+      return t('invocationLogs.invalidID', { field: t(e.field === 'org_id' ? 'admin.lgOrg' : 'admin.lgChannel') })
+    }
+    if (e.reason === 'conflicting_parameters') return t('invocationLogs.resultStatusExclusive')
+    return t('invocationLogs.invalidFilter')
+  }
   if (e instanceof ApiError) {
     const key = e.status === 401 || e.status === 403 ? 'permission' : e.status === 429 ? 'busy' : e.code === 'export_limit_exceeded' || e.code === 'export_size_exceeded' ? 'exportLimit' : 'unavailable'
     const message = e.status === 429 && e.retryAfter !== null && /^(0|[1-9]\d{0,5})$/.test(e.retryAfter)
@@ -67,18 +86,31 @@ async function copy(value: string) { copied.value = await copyText(value) ? t('c
   <section class="invocation-workspace" :aria-label="t('reqlog.title')" :aria-busy="loading">
     <header class="invocation-heading">
       <div><h2>{{ t(scope === 'admin' ? 'invocationLogs.platform' : 'invocationLogs.organization') }}</h2><p class="text-muted text-xs">{{ t('invocationLogs.notice') }}</p></div>
-      <div class="invocation-actions"><span v-if="money" class="badge-muted">{{ money.currency }}</span><button type="button" class="btn-ghost" :disabled="!allowed || loading" @click="refresh">{{ t('common.refresh') }}</button><button type="button" class="btn-primary" :disabled="!allowed || !applied || exporting || loading" @click="exportCSV">{{ t('invocationLogs.exportApplied') }}</button><button v-if="exporting" type="button" class="btn-ghost" @click="cancelExport">{{ t('common.cancel') }}</button></div>
+      <div class="invocation-actions">
+        <span v-if="money" class="badge-muted">{{ money.currency }}</span>
+        <button type="button" class="btn-ghost" :disabled="!allowed || loading" @click="refresh">{{ t('common.refresh') }}</button>
+        <InvocationExportJobs v-if="scope === 'org' && allowed" :filter="applied" :disabled="loading" />
+        <template v-else-if="scope === 'admin'">
+          <button type="button" class="btn-primary" :disabled="!allowed || !applied || exporting || loading" @click="exportCSV">{{ t('invocationLogs.exportApplied') }}</button>
+          <button v-if="exporting" type="button" class="btn-ghost" @click="cancelExport">{{ t('common.cancel') }}</button>
+        </template>
+      </div>
     </header>
     <p v-if="!allowed" role="alert" class="inline-alert">{{ t('invocationLogs.permission') }}</p>
     <form v-if="allowed" class="app-panel invocation-filters" @submit.prevent="apply()">
       <label class="filter-group"><span>{{ t('reqlog.filterTimeRange') }}</span><select v-model="draft.range" class="input"><option value="7d">{{ t('reqlog.range7d') }}</option><option value="30d">{{ t('reqlog.range30d') }}</option><option value="month">{{ t('reqlog.rangeMonth') }}</option><option value="prev">{{ t('reqlog.rangePrev') }}</option><option value="custom">{{ t('reqlog.rangeCustom') }}</option></select></label>
       <label class="filter-group"><span>{{ t('invocationLogs.timezone') }}</span><select v-model="draft.timezone" class="input"><option v-for="zone in invocationTimezones" :key="zone" :value="zone">{{ zone }}</option></select></label>
-      <template v-if="draft.range === 'custom'"><label class="filter-group"><span>{{ t('reqlog.startDate') }}</span><input v-model="draft.start" class="input" type="date" /></label><label class="filter-group"><span>{{ t('invocationLogs.inclusiveEnd') }}</span><input v-model="draft.end" class="input" type="date" /></label></template>
+      <template v-if="draft.range === 'custom'"><label class="filter-group"><span>{{ t('reqlog.startDate') }}</span><input v-model="draft.start" class="input" type="date" :aria-invalid="invalidField('start', 'since', 'range')" /></label><label class="filter-group"><span>{{ t('invocationLogs.inclusiveEnd') }}</span><input v-model="draft.end" class="input" type="date" :aria-invalid="invalidField('end', 'until', 'range')" /></label></template>
       <label class="filter-group"><span>{{ t('reqlog.filterModel') }}</span><input v-model="draft.model" class="input" maxlength="256" :placeholder="t('invocationLogs.exactMatch')" /></label>
       <label class="filter-group"><span>{{ t('reqlog.filterRequestId') }}</span><input v-model="draft.requestId" class="input" maxlength="64" autocomplete="off" :placeholder="t('invocationLogs.exactMatch')" /></label>
-      <label class="filter-group"><span>{{ t('reqlog.filterApiKey') }} ID</span><input v-model="draft.apiKeyId" class="input" inputmode="numeric" maxlength="20" :placeholder="t('reqlog.allKeys')" /></label>
+      <label class="filter-group">
+        <span>{{ t('reqlog.filterApiKey') }} ID</span>
+        <input v-model="draft.apiKeyId" class="input" inputmode="numeric" maxlength="20" autocomplete="off" spellcheck="false"
+          :placeholder="t('reqlog.allKeys')" :aria-invalid="invalidField('api_key_id')" :aria-describedby="`${filterId}-key-hint`" />
+        <small :id="`${filterId}-key-hint`">{{ t('invocationLogs.keyIDHint') }} <a v-if="scope === 'org'" class="table-link" href="/app/keys">{{ t('invocationLogs.keyDetails') }}</a></small>
+      </label>
       <label class="filter-group"><span>{{ t('reqlog.filterResult') }}</span><select v-model="draft.result" class="input" @change="chooseResult"><option value="all">{{ t('reqlog.resultAll') }}</option><option value="success">{{ t('reqlog.resultSuccess') }}</option><option value="failed">{{ t('invocationLogs.nonSuccess') }}</option></select></label>
-      <label class="filter-group"><span>{{ t('reqlog.colStatus') }}</span><select v-model="draft.status" class="input" @change="chooseStatus"><option value="">{{ t('reqlog.resultAll') }}</option><option v-for="status in invocationStatuses" :key="status" :value="status">{{ status }}</option></select></label>
+      <label class="filter-group"><span>{{ t('reqlog.colStatus') }}</span><select v-model="draft.status" class="input" @change="chooseStatus"><option value="">{{ t('reqlog.resultAll') }}</option><option v-for="status in invocationStatuses" :key="status" :value="status">{{ status }}</option></select><small>{{ t('invocationLogs.resultStatusExclusive') }}</small></label>
       <label class="filter-group"><span>{{ t('reqlog.filterModality') }}</span><select v-model="draft.modality" class="input"><option value="all">{{ t('reqlog.modAll') }}</option><option value="historical">{{ t('invocationLogs.historical') }}</option><option v-for="kind in invocationModalities" :key="kind" :value="kind">{{ kind }}</option></select></label>
       <label class="filter-group"><span>{{ t('reqlog.dtStream') }}</span><select v-model="draft.stream" class="input"><option value="all">{{ t('reqlog.resultAll') }}</option><option value="true">{{ t('common.yes') }}</option><option value="false">{{ t('common.no') }}</option></select></label>
       <template v-if="scope === 'admin'"><label class="filter-group"><span>{{ t('admin.lgOrg') }} ID</span><input v-model="draft.orgId" class="input" inputmode="numeric" maxlength="20" /></label><label class="filter-group"><span>{{ t('admin.lgChannel') }} ID</span><input v-model="draft.channelId" class="input" inputmode="numeric" maxlength="20" /></label></template>

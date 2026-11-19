@@ -82,7 +82,8 @@ export function invocationDateWindow(draft: InvocationFilterDraft, now = new Dat
     default: return invalid('range', 'invalid_range')
   }
   const days = (calendarDay(until, 'end').getTime() - calendarDay(since, 'start').getTime()) / 86_400_000
-  if (days < 1 || days > 90) return invalid('range', 'invalid_range')
+  if (days < 1) return invalid('end', 'range_reversed')
+  if (days > 90) return invalid('range', 'range_too_long')
   return { since, until }
 }
 function optionalText(raw: string, field: string, limit: number): string | undefined {
@@ -91,21 +92,26 @@ function optionalText(raw: string, field: string, limit: number): string | undef
   if ([...value].length > limit || /[\p{Cc}\p{Cs}]/u.test(value)) return invalid(field, 'invalid_text')
   return value
 }
-function optionalID(raw: string, field: string): string | undefined {
+export function optionalInvocationID(raw: string, field: string): string | undefined {
   const value = raw.trim()
   if (!value) return undefined
+  if (field === 'api_key_id' && /^sk[-_]/i.test(value)) return invalid(field, 'credential_not_id')
   if (!/^\d{1,20}$/.test(value)) return invalid(field, 'positive_integer_required')
   const id = BigInt(value)
   if (id <= 0n || id > 18446744073709551615n) return invalid(field, 'positive_integer_required')
   return id.toString()
+}
+
+export function invocationInclusiveEnd(until: string): string {
+  return moveDay(until, -1)
 }
 export function buildInvocationFilter(draft: InvocationFilterDraft, scope: InvocationScope, now = new Date()): Readonly<InvocationFilterSpec> {
   if (scope !== 'org' && scope !== 'admin') return invalid('scope', 'invalid_scope')
   if (scope === 'org' && (draft.orgId.trim() || draft.channelId.trim())) return invalid('scope', 'admin_filter_forbidden')
   const out: { -readonly [K in keyof InvocationFilterSpec]: InvocationFilterSpec[K] } = { scope, timezone: draft.timezone, ...invocationDateWindow(draft, now),
     model: optionalText(draft.model, 'model', 128), request_id: optionalText(draft.requestId, 'request_id', 32),
-    api_key_id: optionalID(draft.apiKeyId, 'api_key_id'),
-    ...(scope === 'admin' ? { org_id: optionalID(draft.orgId, 'org_id'), channel_id: optionalID(draft.channelId, 'channel_id') } : {}) }
+    api_key_id: optionalInvocationID(draft.apiKeyId, 'api_key_id'),
+    ...(scope === 'admin' ? { org_id: optionalInvocationID(draft.orgId, 'org_id'), channel_id: optionalInvocationID(draft.channelId, 'channel_id') } : {}) }
   if (draft.modality === 'historical') out.modality = ''
   else if (draft.modality !== 'all') {
     if (!invocationModalities.includes(draft.modality)) return invalid('modality', 'unsupported_value')

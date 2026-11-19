@@ -1,6 +1,6 @@
 import { apiFetch, apiResponseError, ApiError } from '@/lib/api'
 import { validRate } from '@/lib/decimalMoney'
-import { invocationExactInteger, invocationQueryParams, type InvocationCurrency, type InvocationFilterSpec, type InvocationPageSize, type InvocationScope } from '@/lib/invocationQuery'
+import { InvocationFilterError, invocationExactInteger, invocationQueryParams, type InvocationCurrency, type InvocationFilterSpec, type InvocationPageSize, type InvocationScope } from '@/lib/invocationQuery'
 
 export interface InvocationUsageExact {
   prompt_tokens: string; completion_tokens: string; cached_tokens: string; reasoning_tokens: string
@@ -10,11 +10,11 @@ export interface InvocationMoneySnapshot {
   rate_source: 'setting' | 'default_missing' | 'default_empty'
 }
 export interface InvocationRow {
-  id: number; created_at: string; request_id: string; api_key_id: number; model: string; modality: string
+  id: number; created_at: string; request_id: string; api_key_id: number | string; model: string; modality: string
   status: string; status_code: number; is_stream: boolean; cost_usd: string; usage_exact: InvocationUsageExact
   frt_ms: number; duration_ms: number; usage_source?: string; error_brief?: string
   finish_reason?: string; protocol?: string; upstream_error_code?: string; upstream_request_id?: string
-  org_id?: number; user_id?: number | null; channel_id?: number; provider?: string; attempts?: number
+  org_id?: number | string; user_id?: number | null; channel_id?: number | string; provider?: string; attempts?: number
 }
 export interface InvocationTotals extends InvocationUsageExact {
   record_count: number; success_count: number; non_success_count: number
@@ -44,6 +44,10 @@ function object(value: unknown): Record<string, unknown> {
 }
 function text(value: unknown, limit = 4096): string { return typeof value === 'string' && value.length <= limit ? value : invalid() }
 function integer(value: unknown, minimum = 0): number { return typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum ? value : invalid() }
+function wireID(value: unknown, minimum = 0): number | string {
+  if (typeof value !== 'string') return integer(value, minimum)
+  return /^[1-9]\d{0,19}$/.test(value) && BigInt(value) <= 18446744073709551615n ? value : invalid()
+}
 function bool(value: unknown): boolean { return typeof value === 'boolean' ? value : invalid() }
 function exact(value: unknown): string { try { return invocationExactInteger(value) } catch { return invalid() } }
 function decimal(value: unknown): string { return typeof value === 'string' && value.length <= 256 && /^-?(0|[1-9]\d*)(\.\d+)?$/.test(value) ? value : invalid() }
@@ -64,7 +68,7 @@ function usage(value: unknown): InvocationUsageExact {
 }
 function row(value: unknown, scope: InvocationScope): InvocationRow {
   const v = object(value)
-  const out: InvocationRow = { id: integer(v.id, 1), created_at: timestamp(v.created_at), request_id: text(v.request_id, 128), api_key_id: integer(v.api_key_id),
+  const out: InvocationRow = { id: integer(v.id, 1), created_at: timestamp(v.created_at), request_id: text(v.request_id, 128), api_key_id: wireID(v.api_key_id),
     model: text(v.model, 512), modality: v.modality === undefined ? '' : text(v.modality, 80), status: text(v.status, 80), status_code: integer(v.status_code),
     is_stream: bool(v.is_stream), cost_usd: decimal(v.cost_usd), usage_exact: usage(v.usage_exact), frt_ms: integer(v.frt_ms), duration_ms: integer(v.duration_ms) }
   for (const key of ['usage_source', 'error_brief', 'finish_reason', 'protocol', 'upstream_error_code', 'upstream_request_id'] as const) {
@@ -73,7 +77,7 @@ function row(value: unknown, scope: InvocationScope): InvocationRow {
   // White-list both scopes. Payload/client identifiers and arbitrary fields
   // never enter a panel even when a malformed proxy adds them to a response.
   if (scope === 'admin') {
-    out.org_id = integer(v.org_id, 1); out.channel_id = integer(v.channel_id); out.provider = text(v.provider, 128)
+    out.org_id = wireID(v.org_id, 1); out.channel_id = wireID(v.channel_id); out.provider = text(v.provider, 128)
     out.user_id = v.user_id === null || v.user_id === undefined ? null : integer(v.user_id, 1)
     out.attempts = integer(v.attempts)
   }
@@ -98,7 +102,7 @@ function normalized(value: unknown, filter: InvocationFilterSpec): Record<string
   if (out.is_stream !== filter.is_stream) return invalid()
   for (const key of ['api_key_id', 'org_id', 'channel_id'] as const) {
     if (filter.scope === 'org' && key !== 'api_key_id') { if (v[key] !== undefined) return invalid(); continue }
-    if (v[key] !== undefined) out[key] = integer(v[key], 1)
+    if (v[key] !== undefined) out[key] = wireID(v[key], 1)
     if (out[key] === undefined ? filter[key] !== undefined : String(out[key]) !== filter[key]) return invalid()
   }
   return out
@@ -159,6 +163,10 @@ async function checkedResponse(path: string, scope: InvocationScope, signal: Abo
     let data: unknown
     try { data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await readInvocationBody(response, signal, 64 * 1024))) }
     catch (error) { if (signal.aborted) throw error }
+    if (response.status === 422 && data && typeof data === 'object') {
+      const { code, field, reason } = data as Record<string, unknown>
+      if (code === 'invalid_query' && typeof field === 'string' && typeof reason === 'string') throw new InvocationFilterError(field, reason)
+    }
     throw apiResponseError(response, data)
   }
   return response

@@ -169,10 +169,16 @@ func (b *invocationExportBuffer) Write(p []byte) (int, error) {
 }
 
 func encodeInvocationExport(ctx context.Context, result invocation.QueryResult, admin bool, money *exportMoneySnapshot, rateSource, filterHash string) ([]byte, error) {
+	return encodeInvocationExportChunk(ctx, result, admin, money, rateSource, filterHash, true)
+}
+
+func encodeInvocationExportChunk(ctx context.Context, result invocation.QueryResult, admin bool, money *exportMoneySnapshot, rateSource, filterHash string, header bool) ([]byte, error) {
 	buffer := &invocationExportBuffer{ctx: ctx}
 	w := csv.NewWriter(buffer)
-	if err := w.Write(invocationExportHeader(admin)); err != nil {
-		return nil, err
+	if header {
+		if err := w.Write(invocationExportHeader(admin)); err != nil {
+			return nil, err
+		}
 	}
 	for _, row := range result.Items {
 		if err := ctx.Err(); err != nil {

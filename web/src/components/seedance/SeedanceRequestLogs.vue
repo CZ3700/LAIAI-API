@@ -3,6 +3,7 @@ import { fmtUsd, displayCurrencyCode } from '@/lib/money'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, errorMessage } from '@/lib/api'
+import { InvocationFilterError, optionalInvocationID } from '@/lib/invocationQuery'
 import { useAuth } from '@/stores/auth'
 import DetailDrawer from '@/components/DetailDrawer.vue'
 import HistoryJSON from './HistoryJSON.vue'
@@ -17,7 +18,11 @@ const route = useRoute()
 const rows = ref<LogRow[]>([])
 const loading = ref(false)
 const error = ref('')
-const filter = ref({ request_id: '', task_id: '', model: '', api_key_id: '', operation: 'create_task', http_status: '', task_status: '', billing_state: '', from: '', to: '' })
+const defaultFilters = () => ({ request_id: '', task_id: '', model: '', api_key_id: '', operation: 'create_task', http_status: '', task_status: '', billing_state: '', from: '', to: '' })
+const filter = ref(defaultFilters())
+const appliedFilters = ref(defaultFilters())
+const dirty = computed(() => JSON.stringify(filter.value) !== JSON.stringify(appliedFilters.value))
+const invalidKey = ref(false)
 const cursors = ref<string[]>([''])
 const next = ref<string | null>(null)
 const detail = ref<LogDetail | null>(null)
@@ -37,14 +42,41 @@ function base() { return auth.isSuperadmin ? '/api/admin/video/request-logs' : '
 function url(path = '', query = new URLSearchParams()) { if (auth.isSuperadmin) query.set('org_id', String(auth.orgId)); return `${base()}${path}?${query}` }
 function time(value: string | null) { return value ? new Intl.DateTimeFormat(locale.value, { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) : '—' }
 function close() { epoch++; selected.value = ''; detail.value = null; bodies.value = {}; events.value = []; attempts.value = []; eventsNext.value = null; attemptsNext.value = null; bodyLoading.value = '' }
-function reset() { close(); rows.value = []; cursors.value = ['']; next.value = null; error.value = ''; void load() }
-async function load(restart = false) {
-  if (restart) cursors.value = ['']
+function reset() {
+  close(); listVersion++; rows.value = []; cursors.value = ['']; next.value = null; error.value = ''
+  filter.value = defaultFilters(); appliedFilters.value = defaultFilters(); invalidKey.value = false
+  if (auth.token && auth.orgId > 0) void load()
+  else loading.value = false
+}
+function applyFilters() {
+  invalidKey.value = false
+  try { optionalInvocationID(filter.value.api_key_id, 'api_key_id') }
+  catch (err) {
+    invalidKey.value = true
+    error.value = t(err instanceof InvocationFilterError && err.reason === 'credential_not_id' ? 'invocationLogs.keyCredential' : 'invocationLogs.keyIDHint')
+    return
+  }
+  const { from, to } = filter.value
+  if ((from && !Number.isFinite(Date.parse(from))) || (to && !Number.isFinite(Date.parse(to)))) {
+    error.value = t('invocationLogs.datesRequired')
+    return
+  }
+  if (from && to && Date.parse(from) >= Date.parse(to)) {
+    error.value = t('invocationLogs.timeRangeReversed')
+    return
+  }
+  close(); cursors.value = ['']; next.value = null; rows.value = []
+  appliedFilters.value = { ...filter.value }
+  void load()
+}
+async function load() {
   const version = ++listVersion; const org = auth.orgId
-  loading.value = true; error.value = ''
+  loading.value = true; error.value = ''; next.value = null
   try {
     const q = new URLSearchParams({ limit: '20', cursor: cursors.value[cursors.value.length - 1] })
-    for (const [key, value] of Object.entries(filter.value)) if (value) q.set(key, key === 'from' || key === 'to' ? new Date(value).toISOString() : value.trim())
+    for (const [key, value] of Object.entries(appliedFilters.value)) {
+      if (value.trim()) q.set(key, key === 'from' || key === 'to' ? new Date(value).toISOString() : value.trim())
+    }
     const page = await api<Page<LogRow>>('GET', url('', q))
     if (version !== listVersion || org !== auth.orgId) return
     rows.value = page.data; next.value = page.next_cursor
@@ -85,7 +117,7 @@ async function read(section: string, attempt = '') {
   finally { if (current === epoch) bodyLoading.value = '' }
 }
 function bodyStatus(info?: BodyInfo) { return t(`seedance.${info?.availability ?? 'not_captured'}`) }
-watch(() => auth.orgId, reset)
+watch(() => [auth.orgId, auth.token, auth.session, auth.isSuperadmin], reset, { flush: 'sync' })
 watch(() => route.query.request_id, id => { if (typeof id === 'string' && id) void open(id) })
 onMounted(() => { void load(); if (typeof route.query.request_id === 'string') void open(route.query.request_id) })
 onBeforeUnmount(() => { listVersion++; close() })
@@ -94,10 +126,11 @@ onBeforeUnmount(() => { listVersion++; close() })
 <template>
   <section class="space-y-4" aria-label="Seedance">
     <p class="text-sm text-muted">{{ t('seedance.notice') }}</p>
-    <form class="toolbar-panel items-end" @submit.prevent="load(true)">
+    <form class="toolbar-panel items-end" @submit.prevent="applyFilters">
       <label v-for="key in ['request_id', 'task_id', 'model', 'api_key_id'] as const" :key="key" class="filter-group">
-        <span>{{ t(`seedance.${({ request_id: 'request', task_id: 'task', model: 'model', api_key_id: 'key' })[key]}`) }}</span>
-        <input v-model="filter[key]" class="input" :name="key" />
+        <span>{{ key === 'api_key_id' ? `${t('reqlog.filterApiKey')} ID` : t(`seedance.${({ request_id: 'request', task_id: 'task', model: 'model' })[key]}`) }}</span>
+        <input v-model="filter[key]" class="input" :name="key" autocomplete="off" :inputmode="key === 'api_key_id' ? 'numeric' : undefined"
+          :aria-invalid="key === 'api_key_id' && invalidKey" :placeholder="key === 'api_key_id' ? t('invocationLogs.keyIDHint') : undefined" />
       </label>
       <label class="filter-group"><span>{{ t('seedance.operation') }}</span><select v-model="filter.operation" class="input"><option v-for="op in ['create_task', 'all', 'get_task', 'cancel_task', 'delete_task', 'estimate', 'asset_operation']" :key="op" :value="op">{{ t(`seedance.${op}`) }}</option></select></label>
       <label class="filter-group"><span>{{ t('seedance.http') }}</span><input v-model="filter.http_status" class="input" type="number" min="100" max="599" /></label>
@@ -107,6 +140,7 @@ onBeforeUnmount(() => { listVersion++; close() })
       <label class="filter-group"><span>{{ t('seedance.time') }} &lt;</span><input v-model="filter.to" class="input" type="datetime-local" /></label>
       <button class="btn-primary" type="submit" :disabled="loading">{{ t('seedance.search') }}</button>
     </form>
+    <p v-if="dirty" class="text-xs text-muted">{{ t('invocationLogs.videoDraft') }}</p>
     <p v-if="error && !selected" role="alert" class="text-danger">{{ error }}</p>
     <div class="overflow-auto rounded border border-line">
       <table class="w-full text-left text-xs"><thead><tr class="border-b border-line bg-elev"><th v-for="key in ['request','task','key','model','operation','http','taskStatus','billing','artifact','amount','time']" :key="key" class="whitespace-nowrap p-3">{{ t(`seedance.${key}`, { currency: displayCurrencyCode() }) }}</th></tr></thead>

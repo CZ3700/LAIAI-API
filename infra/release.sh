@@ -340,8 +340,14 @@ backup_stage() {
       ACTIVE_CORE_IMAGE=$(docker inspect --format '{{.Image}}' "$active_cid")
     fi
     if [[ -n "$active_web" ]]; then
-      active_cid=$(docker ps -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
-        --filter "label=com.docker.compose.service=$active_web")
+      # The standalone docs frontend dials its exact Docker name and has no
+      # Compose labels. The unmodified live route remains the rollback target.
+      if [[ "$active_web" == "$COMPOSE_PROJECT"-online-web-manual-* ]]; then
+        active_cid=$(docker ps -q --filter "name=^/$active_web$")
+      else
+        active_cid=$(docker ps -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+          --filter "label=com.docker.compose.service=$active_web")
+      fi
       [[ -n "$active_cid" ]] || die 'Active online frontend is missing during backup.'
       ACTIVE_WEB_IMAGE=$(docker inspect --format '{{.Image}}' "$active_cid")
     fi

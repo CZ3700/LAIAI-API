@@ -24,6 +24,7 @@ const built = await build({ stdin: { contents: compiled.content, loader: 'ts', s
       if (args.path === '@/lib/decimalMoney') return { contents: money, loader: 'ts' }
       if (args.path === '@/lib/invocationQuery') return { contents: filters, loader: 'ts' }
       if (args.path === '@/components/DetailDrawer.vue') return { contents: `export default { props:['open'], setup(props, {slots}) { return () => props.open ? globalThis.__invocationPanelVue.h('aside', {'data-drawer':'right'}, slots.default?.()) : null; } };` }
+      if (args.path === './InvocationExportJobs.vue') return { contents: `export default { props:['filter'], setup(props) { return () => globalThis.__invocationPanelVue.h('div', { 'data-export-model':props.filter?.model }); } };` }
       throw new Error(`Unexpected panel dependency ${args.path}`)
     })
   } }] })
@@ -97,7 +98,7 @@ test('admin panel exposes only approved metadata and all field types stay exact'
 })
 
 test('draft edits do not relabel applied results or export; form and pagination call controller once', async t => {
-  const h = harness(t)
+  const h = harness(t, 'admin')
   h.state.draft.model = 'unapplied-private-draft'; h.state.dirty.value = true; await vue.nextTick()
   const chips = h.all().find(n => n.props.class === 'invocation-chips')
   assert.match(text(chips), /historical-model/); assert.ok(!text(chips).includes('unapplied-private-draft'))

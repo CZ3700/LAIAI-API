@@ -1,3 +1,36 @@
+const invocationExportMessages = {
+  "keyIDHint": "Enter the numeric ID shown in the API key details.",
+  "keyCredential": "You entered an API key. Use its numeric ID from the key details.",
+  "keyDetails": "Open API keys",
+  "rangeTooLong": "Select no more than 90 calendar days, including both dates.",
+  "rangeReversed": "The end date must be on or after the start date.",
+  "datesRequired": "Enter a valid start and end date.",
+  "timeRangeReversed": "The end time must be later than the start time.",
+  "videoDraft": "Apply the changed filters to update the results.",
+  "invalidText": "{field} must be valid text with at most {max} characters.",
+  "invalidID": "{field} ID must be a positive integer.",
+  "resultStatusExclusive": "Choose either result or a specific status.",
+  "jobsTitle": "Export jobs",
+  "jobsHint": "Exports use the applied filters. You can leave this view while they run. Jobs and downloads expire 24 hours after creation.",
+  "jobsEmpty": "No export jobs yet.",
+  "jobsUnavailable": "Could not load or complete the export action. Try again.",
+  "jobsCapacity": "The export queue is full. Try again after an export expires.",
+  "jobsDownload": "Download CSV",
+  "jobsRows": "{count} records processed",
+  "jobsSize": "The CSV exceeds 128 MiB. Export a smaller date range.",
+  "jobsFailed": "This export could not be completed. Create a new job to retry.",
+  "jobsDetails": "Job details",
+  "jobsCreated": "Created",
+  "jobsUpdated": "Updated",
+  "jobsExpires": "Expires",
+  "jobsScanned": "Scanned through (newest first)",
+  "job_pending": "Queued",
+  "job_processing": "Processing",
+  "job_ready": "Ready",
+  "job_failed": "Failed",
+  "job_expired": "Expired",
+}
+
 export const invocationLogMessages = {
   "en": {
     "organization": "Current organization",
@@ -17,7 +50,8 @@ export const invocationLogMessages = {
     "exporting": "Preparing export…",
     "exportDone": "Exported {count} records using applied filters.",
     "exportObservation": "Export is a new observation:",
-    "invalidFilter": "Check the filters: valid paired dates, at most 90 days, and positive integer IDs.",
+    "invalidFilter": "Check the selected filters.",
+    ...invocationExportMessages,
     "permission": "This account or credential cannot access these logs.",
     "busy": "Too many queries. Please try again shortly.",
     "unavailable": "Logs are unavailable. Retry or contact support with the request ID.",
@@ -51,7 +85,37 @@ export const invocationLogMessages = {
     "exporting": "正在准备导出…",
     "exportDone": "已按应用条件导出 {count} 条记录。",
     "exportObservation": "导出为一次新的观察：",
-    "invalidFilter": "请检查筛选：日期须完整且有效、不超过 90 天，ID 须为正整数。",
+    "invalidFilter": "请检查所选的筛选条件。",
+    "keyIDHint": "请输入密钥详情中的数字 ID。",
+    "keyCredential": "你输入的是 API 密钥。请改填密钥详情中的数字 ID。",
+    "keyDetails": "查看 API 密钥",
+    "rangeTooLong": "按所选时区计算，起止日期均计入，最多 90 个自然日。",
+    "rangeReversed": "结束日期不可早于开始日期。",
+    "datesRequired": "请输入有效的开始日期和结束日期。",
+    "timeRangeReversed": "结束时间须晚于开始时间。",
+    "videoDraft": "筛选已修改，点击查询后更新结果。",
+    "invalidText": "「{field}」须为有效文本，最多 {max} 个字符。",
+    "invalidID": "「{field}」ID 须为正整数。",
+    "resultStatusExclusive": "结果和具体状态只能选择一项。",
+    "jobsTitle": "导出任务",
+    "jobsHint": "按已应用条件在后台导出，可离开此页面。任务和下载自创建起保留 24 小时。",
+    "jobsEmpty": "暂无导出任务。",
+    "jobsUnavailable": "导出操作未完成，请重试。",
+    "jobsCapacity": "导出任务已达容量上限，请等已有任务到期后再试。",
+    "jobsDownload": "下载 CSV",
+    "jobsRows": "已处理 {count} 条记录",
+    "jobsSize": "CSV 超过 128 MiB，请缩小日期范围后重新导出。",
+    "jobsFailed": "导出失败，可新建任务重试。",
+    "jobsDetails": "任务明细",
+    "jobsCreated": "创建时间",
+    "jobsUpdated": "更新时间",
+    "jobsExpires": "到期时间",
+    "jobsScanned": "已扫描至（从新到旧）",
+    "job_pending": "排队中",
+    "job_processing": "处理中",
+    "job_ready": "可下载",
+    "job_failed": "失败",
+    "job_expired": "已到期",
     "permission": "当前账户或凭据无法访问这些日志。",
     "busy": "查询繁忙，请稍后重试。",
     "unavailable": "日志暂不可用，请重试或携请求 ID 联系支持。",
@@ -68,6 +132,7 @@ export const invocationLogMessages = {
     "busyRetry": "查询繁忙，请在 {seconds} 秒后重试。"
   },
   "zh-TW": {
+    ...invocationExportMessages,
     "organization": "目前組織",
     "platform": "全平台",
     "timezone": "時區",
@@ -85,7 +150,7 @@ export const invocationLogMessages = {
     "exporting": "正在準備匯出…",
     "exportDone": "已依套用條件匯出 {count} 筆記錄。",
     "exportObservation": "匯出為一次新的觀察：",
-    "invalidFilter": "請檢查篩選：日期須完整且有效、不超過 90 天，ID 須為正整數。",
+    "invalidFilter": "請檢查所選的篩選條件。",
     "permission": "目前帳戶或憑證無法存取這些日誌。",
     "busy": "查詢繁忙，請稍後重試。",
     "unavailable": "日誌暫不可用，請重試或提供請求 ID 聯絡支援。",
@@ -102,6 +167,7 @@ export const invocationLogMessages = {
     "busyRetry": "查詢繁忙，請在 {seconds} 秒後重試。"
   },
   "ja": {
+    ...invocationExportMessages,
     "organization": "現在の組織",
     "platform": "全組織",
     "timezone": "タイムゾーン",
@@ -136,6 +202,7 @@ export const invocationLogMessages = {
     "busyRetry": "クエリが混雑しています。{seconds} 秒後に再試行してください。"
   },
   "fr": {
+    ...invocationExportMessages,
     "organization": "Organisation actuelle",
     "platform": "Toutes les organisations",
     "timezone": "Fuseau horaire",
@@ -170,6 +237,7 @@ export const invocationLogMessages = {
     "busyRetry": "Trop de requêtes. Réessayez dans {seconds} secondes."
   },
   "ru": {
+    ...invocationExportMessages,
     "organization": "Текущая организация",
     "platform": "Все организации",
     "timezone": "Часовой пояс",
@@ -204,6 +272,7 @@ export const invocationLogMessages = {
     "busyRetry": "Слишком много запросов. Повторите через {seconds} секунд."
   },
   "vi": {
+    ...invocationExportMessages,
     "organization": "Tổ chức hiện tại",
     "platform": "Tất cả tổ chức",
     "timezone": "Múi giờ",
@@ -238,6 +307,7 @@ export const invocationLogMessages = {
     "busyRetry": "Quá nhiều truy vấn. Thử lại sau {seconds} giây."
   },
   "ms": {
+    ...invocationExportMessages,
     "organization": "Organisasi semasa",
     "platform": "Semua organisasi",
     "timezone": "Zon waktu",
@@ -272,6 +342,7 @@ export const invocationLogMessages = {
     "busyRetry": "Terlalu banyak pertanyaan. Cuba lagi selepas {seconds} saat."
   },
   "th": {
+    ...invocationExportMessages,
     "organization": "องค์กรปัจจุบัน",
     "platform": "ทุกองค์กร",
     "timezone": "เขตเวลา",

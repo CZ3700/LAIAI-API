@@ -96,9 +96,14 @@ func parseInvocationQuery(values url.Values, admin bool, now time.Time) (invocat
 		start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
 		out.Filter.Since, out.Filter.Until = start.AddDate(0, 0, -6), start.AddDate(0, 0, 1)
 	}
-	if out.Filter.Since.Year() < 1000 || out.Filter.Until.Year() > 9999 ||
-		!out.Filter.Since.Before(out.Filter.Until) || out.Filter.Until.After(out.Filter.Since.In(location).AddDate(0, 0, 90)) {
+	if out.Filter.Since.Year() < 1000 || out.Filter.Until.Year() > 9999 {
 		return out, invalidInvocationFilter("until", "invalid_range")
+	}
+	if !out.Filter.Since.Before(out.Filter.Until) {
+		return out, invalidInvocationFilter("until", "range_reversed")
+	}
+	if out.Filter.Until.After(out.Filter.Since.In(location).AddDate(0, 0, 90)) {
+		return out, invalidInvocationFilter("until", "range_too_long")
 	}
 	out.Filter.Since, out.Filter.Until = out.Filter.Since.UTC(), out.Filter.Until.UTC()
 	if out.Filter.Since.Year() < 1000 || out.Filter.Until.Year() > 9999 {
@@ -230,6 +235,33 @@ func (q invocationQuerySpec) normalized() invocationNormalizedFilters {
 	return invocationNormalizedFilters{Source: "invocation_log", TimeBasis: "recorded_at", Timezone: q.Timezone,
 		Since: f.Since, Until: f.Until, Model: f.Model, RequestID: f.RequestID, APIKeyID: f.APIKeyID,
 		Modality: f.Modality, Result: f.Result, Status: f.Status, IsStream: f.IsStream, OrgID: f.OrgID, ChannelID: f.ChannelID}
+}
+
+func invocationWireID(id uint64) any {
+	if id > 1<<53-1 {
+		return strconv.FormatUint(id, 10)
+	}
+	return id
+}
+
+func (q invocationQuerySpec) wireFilters() any {
+	f := q.normalized()
+	out := struct {
+		invocationNormalizedFilters
+		APIKeyID  any `json:"api_key_id,omitempty"`
+		OrgID     any `json:"org_id,omitempty"`
+		ChannelID any `json:"channel_id,omitempty"`
+	}{invocationNormalizedFilters: f}
+	if f.APIKeyID != 0 {
+		out.APIKeyID = invocationWireID(f.APIKeyID)
+	}
+	if f.OrgID != 0 {
+		out.OrgID = invocationWireID(f.OrgID)
+	}
+	if f.ChannelID != 0 {
+		out.ChannelID = invocationWireID(f.ChannelID)
+	}
+	return out
 }
 
 // A record-set hash includes server-authorized scope, never pagination/FX.

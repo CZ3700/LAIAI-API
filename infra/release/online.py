@@ -6,6 +6,7 @@ fail closed before the public configuration is reloaded.
 """
 import copy
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -143,6 +144,16 @@ def walk(value):
             yield from walk(child)
 
 
+def stable_core_dial(dial):
+    project = os.environ.get('COMPOSE_PROJECT', 'infra')
+    return dial in ('core:8080', f'{project}-core-1:8080')
+
+
+def manual_web_host(host):
+    project = os.environ.get('COMPOSE_PROJECT', 'infra')
+    return re.fullmatch(re.escape(project) + r'-online-web-manual-[a-z0-9-]+', host) is not None
+
+
 def upstream_kind(handler):
     dynamic = handler.get('dynamic_upstreams', {})
     if dynamic.get('name') == 'core' and dynamic.get('port') == '8080':
@@ -150,9 +161,9 @@ def upstream_kind(handler):
     upstreams = handler.get('upstreams', [])
     if len(upstreams) == 1:
         dial = upstreams[0].get('dial', '')
-        if re.fullmatch(r'online-core-[a-z0-9-]+:8080', dial):
+        if stable_core_dial(dial) or re.fullmatch(r'online-core-[a-z0-9-]+:8080', dial):
             return 'core'
-        if re.fullmatch(r'online-web-[a-z0-9-]+:8081', dial):
+        if re.fullmatch(r'online-web-[a-z0-9-]+:8081', dial) or (dial.endswith(':8081') and manual_web_host(dial[:-5])):
             return 'web'
     return None
 
@@ -258,7 +269,7 @@ def referenced():
             for up in item.get('upstreams', []):
                 dial = up.get('dial', '')
                 host = dial.rsplit(':', 1)[0] if ':' in dial else ''
-                if re.fullmatch(r'online-(core|web)-[a-z0-9-]+', host):
+                if re.fullmatch(r'online-(core|web)-[a-z0-9-]+', host) or manual_web_host(host):
                     names.add(host)
     for name in sorted(names):
         print(name)
@@ -285,7 +296,8 @@ def active_core():
         if proxy.get('dynamic_upstreams', {}).get('name') == 'core':
             targets.add('core')
         else:
-            targets.add(proxy['upstreams'][0]['dial'].split(':')[0])
+            dial = proxy['upstreams'][0]['dial']
+            targets.add('core' if stable_core_dial(dial) else dial.split(':')[0])
     if len(targets) != 1:
         fail('active core routes disagree')
     print(targets.pop())
