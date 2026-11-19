@@ -155,3 +155,31 @@ func TestRPCCreateProviderRejectedSurfacesCleanly(t *testing.T) {
 		t.Fatalf("rejection audit event expected, got %d", events)
 	}
 }
+
+// TestRPCCreateInvalidCallbackURLNamesField（2026-11-19 客户反馈）：少斜杠等
+// URL 笔误必须点名 CallbackURL 字段并给出正确示例——泛化的 invalid_request
+// 让客户无法自查（实测案例 https:/www.baidu.com）。
+func TestRPCCreateInvalidCallbackURLNamesField(t *testing.T) {
+	s, _, _, _ := setup(t)
+	s.options.Client = NewManagementClient(&http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("invalid callback URL must not reach the provider")
+		return nil, nil
+	})})
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		uid := uint64(2)
+		c.Set("video_key", &identity.APIKey{ID: 3, OrgID: 1, UserID: &uid, Scopes: "video:read video:write"})
+		c.Set("video_request_id", "req-rpc-badurl")
+		c.Next()
+	})
+	s.RegisterRoutes(router.Group("/v1/video"))
+
+	rec := rpcActionPost(router, rpcActionCreateSession, `{"CallbackURL":"https:/www.baidu.com"}`, "idem-rpc-badurl")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("malformed URL returned %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "CallbackURL must be a valid HTTPS URL") {
+		t.Fatalf("error must name CallbackURL with guidance: %s", rec.Body.String())
+	}
+}

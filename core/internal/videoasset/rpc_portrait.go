@@ -454,7 +454,13 @@ func (s *Service) rpcCreateVisualValidateSession(c *gin.Context) {
 	}
 	in, ok := parseRPCInput(raw)
 	if !ok {
-		rpcFail(c, 422, "InvalidParameter", "CallbackURL (HTTPS) is required.")
+		rpcFail(c, 422, "InvalidParameter", "CallbackURL is required.")
+		return
+	}
+	// 字段级定位：callback_url 是唯一必填的 URL 参数，格式错误直接点名
+	//（客户常见笔误如少写一个斜杠 https:/，泛化的 invalid_request 无法自查）。
+	if !validHTTPS(in.CallbackURL, 2048) {
+		rpcFail(c, 422, "InvalidParameter", "CallbackURL must be a valid HTTPS URL, e.g. https://your-domain.example/callback.")
 		return
 	}
 	dto, bytedToken, err := s.SyncCreateVisualValidateSession(c.Request.Context(), auth, in.CallbackURL)
