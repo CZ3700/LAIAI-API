@@ -241,6 +241,7 @@ func runCore(log *slog.Logger) (code int) {
 	// 后台维护循环（每小时）：旧日志保留期清理（调用日志 + 审计日志，运营可热配，gap P2-C）
 	//   + relay 卡死 hold 清扫（审查 H-1）。放在 apiSrv 构建后以复用 RunLogRetention（读 ext_settings）。
 	jobs.goRun(apiSrv.RunFundExportJobs)
+	jobs.goRun(func(ctx context.Context) { apiSrv.RunInvocationExportJobs(ctx, leaderLease.IsLeader) })
 	jobs.goRun(func(maintCtx context.Context) {
 		periodic(maintCtx, time.Hour, func(maintCtx context.Context) {
 			if !leaderLease.IsLeader() {

@@ -24,12 +24,24 @@ test('inclusive custom dates cross DST and leap days as calendar dates, with a 9
   for (const [start, end, until] of [['2026-03-08', '2026-03-08', '2026-03-09'], ['2026-11-01', '2026-11-01', '2026-11-02'], ['2024-02-28', '2024-02-29', '2024-03-01'], ['2026-01-01', '2026-03-31', '2026-04-01']]) {
     assert.deepEqual(q.invocationDateWindow(draft({ range: 'custom', timezone: 'America/New_York', start, end }), now), { since: start, until })
   }
-  fails(() => q.invocationDateWindow(draft({ range: 'custom', start: '2026-01-01', end: '2026-04-01' }), now), 'range', 'invalid_range')
-  fails(() => q.invocationDateWindow(draft({ range: 'custom', start: '2026-03-09', end: '2026-03-08' }), now), 'range', 'invalid_range')
+  fails(() => q.invocationDateWindow(draft({ range: 'custom', start: '2026-01-01', end: '2026-04-01' }), now), 'range', 'range_too_long')
+  fails(() => q.invocationDateWindow(draft({ range: 'custom', start: '2026-03-09', end: '2026-03-08' }), now), 'end', 'range_reversed')
   for (const value of ['', '2026-02-29', '2026-03-08T00:00:00Z', '2026-3-8']) {
     fails(() => q.invocationDateWindow(draft({ range: 'custom', start: value, end: '2026-03-08' }), now), 'start', 'invalid_date')
   }
   fails(() => q.invocationDateWindow(draft({ timezone: 'Local' }), now), 'timezone', 'invalid_timezone')
+})
+
+test('same-day custom date with key ID and success preserves every applied filter', () => {
+  const input = draft({ range: 'custom', timezone: 'Asia/Shanghai', start: '2026-11-16', end: '2026-11-16', apiKeyId: '00042', result: 'success', stream: 'false', modality: 'historical' })
+  const f = q.buildInvocationFilter(input, 'org', now)
+  assert.equal(f.since, '2026-11-16')
+  assert.equal(q.invocationInclusiveEnd(f.until), '2026-11-16')
+  assert.equal(f.api_key_id, '42')
+  assert.equal(f.result, 'success')
+  assert.equal(f.modality, '')
+  assert.equal(f.is_stream, false)
+  fails(() => q.buildInvocationFilter({ ...input, apiKeyId: 'sk-synthetic' }, 'org', now), 'api_key_id', 'credential_not_id')
 })
 
 test('historical modality, false stream and non-success retain their distinct API meanings', () => {

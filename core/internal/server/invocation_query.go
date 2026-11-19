@@ -226,7 +226,7 @@ func (s *Server) handleInvocationQueryV1(c *gin.Context, admin bool) {
 	c.JSON(http.StatusOK, gin.H{
 		"items": items, "total": result.Totals.RecordCount, "page": spec.Page, "page_size": spec.PageSize,
 		"query": gin.H{
-			"filter_version": 1, "normalized_filters": spec.normalized(), "filter_hash": spec.filterHash(admin, orgID),
+			"filter_version": 1, "normalized_filters": spec.wireFilters(), "filter_hash": spec.filterHash(admin, orgID),
 			"as_of": result.AsOf, "data_watermark": gin.H{"kind": "observation", "recorded_through_id": nil},
 			"consistency": "response_snapshot", "cross_request_consistency": "live", "data_source": "invocation_log",
 			"amount_source": "log_recorded_cost", "completeness": "best_effort",
@@ -260,13 +260,14 @@ func invocationUsageExact(row invocation.Invocation) invocationExactUsage {
 // json:"-" field; exact usage is additive and does not reinterpret old numbers.
 type invocationPublicQueryItem struct {
 	invocation.Invocation
+	APIKeyID   any                  `json:"api_key_id"`
 	UsageExact invocationExactUsage `json:"usage_exact"`
 }
 
 func invocationPublicItems(rows []invocation.Invocation) []invocationPublicQueryItem {
 	items := make([]invocationPublicQueryItem, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, invocationPublicQueryItem{Invocation: row, UsageExact: invocationUsageExact(row)})
+		items = append(items, invocationPublicQueryItem{Invocation: row, APIKeyID: invocationWireID(row.APIKeyID), UsageExact: invocationUsageExact(row)})
 	}
 	return items
 }
@@ -276,8 +277,8 @@ func invocationAdminItems(rows []invocation.Invocation) []gin.H {
 	for _, r := range rows {
 		items = append(items, gin.H{
 			"id": r.ID, "created_at": r.CreatedAt, "request_id": r.RequestID,
-			"org_id": r.OrgID, "user_id": r.UserID, "api_key_id": r.APIKeyID, "model": r.Model, "modality": r.Modality,
-			"channel_id": r.ChannelID, "provider": r.Provider, "status": r.Status, "status_code": r.StatusCode, "is_stream": r.IsStream,
+			"org_id": invocationWireID(r.OrgID), "user_id": r.UserID, "api_key_id": invocationWireID(r.APIKeyID), "model": r.Model, "modality": r.Modality,
+			"channel_id": invocationWireID(r.ChannelID), "provider": r.Provider, "status": r.Status, "status_code": r.StatusCode, "is_stream": r.IsStream,
 			"attempts": r.Attempts, "prompt_tokens": r.PromptTokens, "completion_tokens": r.CompletionTokens,
 			"cached_tokens": r.CachedTokens, "reasoning_tokens": r.ReasoningTokens, "cost_usd": r.CostUSD, "usage_source": r.UsageSource,
 			"usage_exact": invocationUsageExact(r),

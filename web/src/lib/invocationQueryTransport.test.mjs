@@ -73,6 +73,15 @@ test('exact normalized filters reject mismatches without accepting a weaker resp
   }
 })
 
+test('API key ID above JavaScript safe integer range survives validation and display', () => {
+  const apiKeyId = '9007199254740993', filter = spec('org', { apiKeyId }), input = bundle(filter)
+  input.query.normalized_filters.api_key_id = apiKeyId
+  input.items[0].api_key_id = apiKeyId
+  const result = m.decodeInvocationBundle(input, filter, 'CNY', 1, 20)
+  assert.equal(result.query.normalized_filters.api_key_id, apiKeyId)
+  assert.equal(result.items[0].api_key_id, apiKeyId)
+})
+
 test('normalized UTC boundaries must represent the requested calendar midnights across DST', () => {
   const filter=spec('org',{range:'custom',timezone:'America/New_York',start:'2026-11-01',end:'2026-11-01'}), input=bundle(filter)
   input.query.normalized_filters.since='2026-11-01T04:00:00Z'

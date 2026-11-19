@@ -220,6 +220,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.DELETE("/keys/:id/purge", s.deleteKey)
 				org.GET("/usage", s.getUsage)
 				org.GET("/usage/export", s.getUsageExport) // 调用明细 CSV 自助导出（Latency/Usage 页）
+				s.registerInvocationExportJobs(org)
 				org.GET("/usage/summary", s.getUsageSummary)
 				org.GET("/usage/by-model", s.getUsageByModel)
 				org.GET("/usage/by-key", s.getUsageByKey)         // 仪表盘密钥排行榜
