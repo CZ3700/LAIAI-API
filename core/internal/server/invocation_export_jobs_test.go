@@ -21,13 +21,22 @@ import (
 
 func TestInvocationExportJobBatchesAndScopes(t *testing.T) {
 	h, _ := invocationAcceptanceSmall(t)
-	if err := h.db.AutoMigrate(&invocationExportJob{}, &invocationExportChunk{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.db.Exec("CREATE TABLE invocation_export_admission (id INTEGER PRIMARY KEY)").Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := h.db.Exec("INSERT INTO invocation_export_admission VALUES (1)").Error; err != nil {
+	if err := h.db.Exec(`
+CREATE TABLE invocation_export_admission (id INTEGER PRIMARY KEY);
+INSERT INTO invocation_export_admission VALUES (1);
+CREATE TABLE invocation_export_jobs (
+ id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+ request_key TEXT NOT NULL, filter_hash TEXT NOT NULL, spec_json TEXT NOT NULL,
+ max_log_id INTEGER NOT NULL, slice_until DATETIME NOT NULL, cursor_time DATETIME,
+ cursor_id INTEGER NOT NULL, row_count INTEGER NOT NULL, byte_count INTEGER NOT NULL,
+ chunk_count INTEGER NOT NULL, status TEXT NOT NULL, error_code TEXT NOT NULL,
+ created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, expires_at DATETIME NOT NULL,
+ UNIQUE (org_id, user_id, request_key)
+);
+CREATE TABLE invocation_export_chunks (
+ job_id INTEGER NOT NULL, seq INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY (job_id, seq)
+);
+`).Error; err != nil {
 		t.Fatal(err)
 	}
 	checkInvocationExportJobBatchesAndScopes(t, h)

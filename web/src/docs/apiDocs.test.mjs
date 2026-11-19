@@ -235,7 +235,11 @@ test('document requests map to real published operations and examples match thei
   for (const example of examples) {
     assert.ok(!ids.has(example.id), `duplicate example ${example.id}`); ids.add(example.id)
     if (!example.path) continue
-    const operation = spec.paths[pathFor(example.path)]?.[example.method.toLowerCase()]
+    const path = pathFor(example.path)
+    // The OpenAPI entry documents both spellings of the same management RPC.
+    const rpc = spec.paths['/v1/video/management']?.post
+    const operation = path === '/v1/video/' && example.method === 'POST' && rpc?.description.includes('POST /v1/video/?Action=')
+      ? rpc : spec.paths[path]?.[example.method.toLowerCase()]
     assert.ok(operation, `missing operation ${example.method} ${example.path}`)
     assert.ok(operation.responses[example.status] || operation.responses.default, `missing status ${example.id}`)
     if (example.request !== undefined) {
@@ -327,7 +331,9 @@ test('asset examples obtain versions, use platform IDs and submit guarded mutati
   assert.match(byID('asset-get').response.Result.URL, /^asset:\/\/asset_/)
   assert.match(byID('asset-get').response.Result.SourceURL, /^https:\/\//, 'asset GET example must show the upstream SourceURL extension')
   assert.ok(spec.components.schemas.RpcGetAssetResult.required.includes('SourceURL'), 'RpcGetAssetResult must document SourceURL as always present')
-  assert.match(byID('portrait-get').response.Result.SessionId, /^pas_/)
+  assert.match(byID('portrait-get').response.Result.GroupId, /^group_/)
+  assert.ok(!Object.hasOwn(byID('portrait-get').response.Result, 'SessionId'))
+  assert.ok(spec.paths['/v1/video/management'].post.responses['200'].headers['X-Session-Id'])
   assert.ok(byID('asset-delete-call').idempotency)
   assert.equal(byID('asset-delete-call').response.ResponseMetadata.Action, 'DeleteAsset')
   assert.equal(byID('asset-delete-call').response.Result.Status, 'deleting')
