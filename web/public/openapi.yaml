@@ -3815,9 +3815,19 @@
     },
     "/v1/video/asset-groups/{group_id}": {
       "delete": {
-        "description": "虚拟组：只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。\n真人组（real_person）可在肖像许可已过期或已撤销（license_status=expired/revoked）后删除。\n许可为 verified 时，若组内至少有一个素材且全部为 asset_processing_failed，平台可受理删除任务。\n任务会先核对火山的完整素材列表，确认同一批素材均为 Failed，再提交整组删除；火山仍可能根据授权规则拒绝。\n其他许可受限的真人组返回 409 authorization_active。真人组删除会批量删除组内全部素材（不可逆），\n本地素材行随确认同步软删，绑定许可强制置 revoked；有在途任务引用仍返回 409 resource_in_use。\ncascade=true 或未启用删除能力返回 422 unsupported_capability。\n不会仅删除平台映射而留下未知上游结果。虚拟组删除前经官方空组预检；\n检查在途引用并设置 deleting 屏障必须在同一事务锁内完成；\n素材新增和任务引用也检查该屏障，避免检查通过后新建素材或引用的竞态。\n首次接受 202；同一幂等键重复请求返回同一受理结果，已确认删除后重复请求 204；跨组织 404。\n删除保留资源墓碑及审计证据，不删除历史任务或账务事实。\n",
+        "description": "group_id 接受平台素材组 ID 或火山 GroupId。火山 ID 必须唯一匹配当前调用方可见的素材组；\n无可见映射返回 404，多条可见映射返回 409 invalid_state。两种 ID 指向同一删除操作。\n虚拟组：只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。\n真人组（real_person）可在肖像许可已过期或已撤销（license_status=expired/revoked）后删除。\n许可为 verified 时，若组内至少有一个素材且全部为 asset_processing_failed，平台可受理删除任务。\n任务会先核对火山的完整素材列表，确认同一批素材均为 Failed，再提交整组删除；火山仍可能根据授权规则拒绝。\n其他许可受限的真人组返回 409 authorization_active。真人组删除会批量删除组内全部素材（不可逆），\n本地素材行随确认同步软删，绑定许可强制置 revoked；有在途任务引用仍返回 409 resource_in_use。\ncascade=true 或未启用删除能力返回 422 unsupported_capability。\n不会仅删除平台映射而留下未知上游结果。虚拟组删除前经官方空组预检；\n检查在途引用并设置 deleting 屏障必须在同一事务锁内完成；\n素材新增和任务引用也检查该屏障，避免检查通过后新建素材或引用的竞态。\n首次接受 202；同一幂等键重复请求返回同一受理结果，已确认删除后重复请求 204；跨组织 404。\n删除保留资源墓碑及审计证据，不删除历史任务或账务事实。\n",
         "operationId": "deleteVideoAssetGroup",
         "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "description": "平台素材组 ID（ag_…）或 GetVisualValidateResult 返回的火山 GroupId。",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            }
+          },
           {
             "description": "当前只能为 false；true 返回 422，不执行级联。",
             "in": "query",
@@ -5134,7 +5144,7 @@
         ],
         "operationId": "portraitManagementRpc",
         "summary": "火山管理 RPC 透传（CreateVisualValidateSession / GetVisualValidateResult）",
-        "description": "按火山管理 RPC 形态透传：POST /v1/video/?Action=...&Version=2024-01-01\n（POST /v1/video/management?Action=... 为等价别名；/v1/video 不带尾部斜杠会 307，需带尾斜杠）。鉴权仍用平台 Bearer Key（video:write）。\n支持两个 Action：\nCreateVisualValidateSession —— 请求体 {CallbackURL(必填,HTTPS), ProjectName(可选,默认路由项目)}；\n同步调用官方，200 返回 Result.{BytedToken, H5Link, CallbackURL}（火山原生三字段）。\nBytedToken 原样返回火山签发的字符串，调用方应直接用于查询认证结果。平台会话 ID 通过 X-Session-Id 响应头返回。\nH5 完成后官方按火山原生形态直跳 CallbackURL 并拼接\nbytedToken/resultCode(10000=通过)/algorithmBaseRespCode/reqMeasureInfoValue/verify_type；\n认证凭证 30 分钟有效且仅支持认证一次，检测失败后 H5 链接失效需换新幂等键重建会话。\n同 org+原 Key+同幂等键在待认证且未过期时返回原凭证与链接；会话已完成或过期时返回 409，创建新会话需换幂等键。\nGetVisualValidateResult —— 请求体 {BytedToken(必填), ProjectName(可选)}；按 BytedToken\n反查平台会话并同步核实官方：认证完成返回 Result.GroupId（同时建真人素材组并自动登记\nvideo_generation 许可）；仍在等待时官方拒绝，平台以 409 安全信封透传——下游应在 H5 回跳\n收到 resultCode=10000 后再调用。非平台发放的 BytedToken 纯透传官方裁决。\n官方拒绝/超时以 409 安全信封返回（Result.Error.Code），不泄露上游原文。\n平台扩展：SessionId 经 X-Session-Id 响应头返回（响应体严格火山原生 Result），用于 portrait-authorizations 查询与控制台管理。\n",
+        "description": "按火山管理 RPC 形态透传：POST /v1/video/?Action=...&Version=2024-01-01\n（POST /v1/video/management?Action=... 为等价别名；/v1/video 不带尾部斜杠会 307，需带尾斜杠）。鉴权仍用平台 Bearer Key（video:write）。\n支持两个 Action：\nCreateVisualValidateSession —— 请求体 {CallbackURL(必填,HTTPS), ProjectName(可选,默认路由项目)}；\n同步调用官方，200 返回 Result.{BytedToken, H5Link, CallbackURL}（火山原生三字段）。\nBytedToken 原样返回火山签发的字符串，调用方应直接用于查询认证结果。平台会话 ID 通过 X-Session-Id 响应头返回。\nH5 完成后官方按火山原生形态直跳 CallbackURL 并拼接\nbytedToken/resultCode(10000=通过)/algorithmBaseRespCode/reqMeasureInfoValue/verify_type；\n认证凭证 30 分钟有效且仅支持认证一次，检测失败后 H5 链接失效需换新幂等键重建会话。\n同 org+原 Key+同幂等键在待认证且未过期时返回原凭证与链接；会话已完成或过期时返回 409，创建新会话需换幂等键。\nGetVisualValidateResult —— 请求体 {BytedToken(必填), ProjectName(可选)}；按 BytedToken\n反查平台会话并同步核实官方：认证完成及之后重复查询均返回火山的 Result.GroupId（首次确认时建立\n平台真人素材组并自动登记 video_generation 许可）。素材组删除接口接受该火山 GroupId。\n仍在等待时官方拒绝，平台以 409 安全信封透传——下游应在 H5 回跳\n收到 resultCode=10000 后再调用。非平台发放的 BytedToken 纯透传官方裁决。\n官方拒绝/超时以 409 安全信封返回（Result.Error.Code），不泄露上游原文。\n平台扩展：SessionId 经 X-Session-Id 响应头返回（响应体严格火山原生 Result），用于 portrait-authorizations 查询与控制台管理。\n",
         "parameters": [
           {
             "name": "Action",
@@ -5832,5 +5842,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "262fb673509d521851077e72b88090e43c6b67bbf76c22aa5bfcdf96cfd006a4"
+  "x-seedance-source-sha256": "ced64bf7821ee3c62f086564e9dce11c8653d1a57a38a47cbbfa0a7453753343"
 }

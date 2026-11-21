@@ -658,6 +658,8 @@ paths:
       operationId: deleteVideoAssetGroup
       summary: 删除素材组
       description: |
+        group_id 接受平台素材组 ID 或火山 GroupId。火山 ID 必须唯一匹配当前调用方可见的素材组；
+        无可见映射返回 404，多条可见映射返回 409 invalid_state。两种 ID 指向同一删除操作。
         虚拟组：只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。
         真人组（real_person）可在肖像许可已过期或已撤销（license_status=expired/revoked）后删除。
         许可为 verified 时，若组内至少有一个素材且全部为 asset_processing_failed，平台可受理删除任务。
@@ -671,6 +673,13 @@ paths:
         首次接受 202；同一幂等键重复请求返回同一受理结果，已确认删除后重复请求 204；跨组织 404。
         删除保留资源墓碑及审计证据，不删除历史任务或账务事实。
       parameters:
+        - name: group_id
+          in: path
+          required: true
+          description: 平台素材组 ID（ag_…）或 GetVisualValidateResult 返回的火山 GroupId。
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_.:-]{1,128}$'
         - name: cascade
           in: query
           description: 当前只能为 false；true 返回 422，不执行级联。
@@ -1057,8 +1066,9 @@ paths:
         认证凭证 30 分钟有效且仅支持认证一次，检测失败后 H5 链接失效需换新幂等键重建会话。
         同 org+原 Key+同幂等键在待认证且未过期时返回原凭证与链接；会话已完成或过期时返回 409，创建新会话需换幂等键。
         GetVisualValidateResult —— 请求体 {BytedToken(必填), ProjectName(可选)}；按 BytedToken
-        反查平台会话并同步核实官方：认证完成返回 Result.GroupId（同时建真人素材组并自动登记
-        video_generation 许可）；仍在等待时官方拒绝，平台以 409 安全信封透传——下游应在 H5 回跳
+        反查平台会话并同步核实官方：认证完成及之后重复查询均返回火山的 Result.GroupId（首次确认时建立
+        平台真人素材组并自动登记 video_generation 许可）。素材组删除接口接受该火山 GroupId。
+        仍在等待时官方拒绝，平台以 409 安全信封透传——下游应在 H5 回跳
         收到 resultCode=10000 后再调用。非平台发放的 BytedToken 纯透传官方裁决。
         官方拒绝/超时以 409 安全信封返回（Result.Error.Code），不泄露上游原文。
         平台扩展：SessionId 经 X-Session-Id 响应头返回（响应体严格火山原生 Result），用于 portrait-authorizations 查询与控制台管理。
