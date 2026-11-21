@@ -236,7 +236,18 @@ func (s *Service) SyncGetVisualValidateResult(ctx context.Context, c CreateConte
 		if p.GroupID == nil {
 			return "", "", ErrConflict
 		}
-		return *p.GroupID, p.ID, nil
+		var group Group
+		if err := s.db.WithContext(ctx).Select("provider_id").
+			Where("org_id = ? AND group_id = ? AND portrait_id = ?", p.OrgID, *p.GroupID, p.ID).Take(&group).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", "", ErrConflict
+			}
+			return "", "", ErrStorage
+		}
+		if group.ProviderID == nil || !identifier.MatchString(*group.ProviderID) {
+			return "", "", ErrConflict
+		}
+		return *group.ProviderID, p.ID, nil
 	case "failed", "expired":
 		return "", p.ID, nil
 	}

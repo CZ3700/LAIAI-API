@@ -295,15 +295,29 @@ func (s *Service) DeleteGroup(ctx context.Context, c CreateContext, id string, c
 	if cascade {
 		return OperationDTO{}, false, ErrUnsupported
 	}
-	if c.IdempotencyKey == "" {
-		c.IdempotencyKey = "delete:" + id + ":" + c.RequestID
+	generateKey := c.IdempotencyKey == ""
+	if generateKey {
+		c.IdempotencyKey = c.RequestID
 	}
-	if !validID(id) || !validCreate(c) {
+	if !identifier.MatchString(id) || !validCreate(c) {
 		return OperationDTO{}, false, ErrInvalid
 	}
-	var group Group
-	if err := owned(ctx, s.db.WithContext(ctx), c.OrgID, "asset_group", "group_id").Where("org_id = ? AND group_id = ?", c.OrgID, id).Take(&group).Error; err != nil {
+	var groups []Group
+	if err := owned(ctx, s.db.WithContext(ctx), c.OrgID, "asset_group", "group_id").
+		Where("org_id = ? AND (group_id = ? OR provider_id = ?)", c.OrgID, id, id).Limit(2).Find(&groups).Error; err != nil {
+		return OperationDTO{}, false, ErrStorage
+	}
+	if len(groups) == 0 {
 		return OperationDTO{}, false, ErrNotFound
+	}
+	if len(groups) > 1 {
+		return OperationDTO{}, false, ErrConflict
+	}
+	group := groups[0]
+	// Both IDs address the same operation, including retries with a different alias.
+	id = group.ID
+	if generateKey {
+		c.IdempotencyKey = "delete:" + id + ":" + c.RequestID
 	}
 	if group.DeletedAt != nil {
 		return OperationDTO{}, true, nil

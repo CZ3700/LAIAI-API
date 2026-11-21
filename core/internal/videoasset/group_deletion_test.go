@@ -599,6 +599,10 @@ func TestRealGroupDeletionFollowsOfficialLicenseGateAndCascades(t *testing.T) {
 			action := req.URL.Query().Get("Action")
 			calls[action]++
 			if action == "DeleteAssetGroup" {
+				var body struct{ ID string }
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil || body.ID != "group-real-delete-fixture" {
+					t.Errorf("provider must receive its own group ID: %q, %v", body.ID, err)
+				}
 				return syncReply(req, map[string]any{}), nil
 			}
 			if action == "ListAssets" {
@@ -607,11 +611,17 @@ func TestRealGroupDeletionFollowsOfficialLicenseGateAndCascades(t *testing.T) {
 			return groupErrorReply(req, 404, "NotFound.group_id", nil), nil
 		})})
 		group := realGroupDeletionFixture(t, db, "expired", true, true, false)
-		op, done, err := s.DeleteGroup(context.Background(), createContext("real-delete-ok"), group.ID, false)
+		ctx := context.Background()
+		caller := createContext("real-delete-ok")
+		op, done, err := s.DeleteGroup(ctx, caller, *group.ProviderID, false)
 		if err != nil || done {
 			t.Fatal(op, done, err)
 		}
-		if err := s.ProcessOnce(context.Background()); err != nil {
+		replay, done, err := s.DeleteGroup(ctx, caller, group.ID, false)
+		if err != nil || done || replay.ID != op.ID || op.ResourceID != group.ID {
+			t.Fatalf("both IDs must address the same deletion: op=%+v replay=%+v done=%v err=%v", op, replay, done, err)
+		}
+		if err := s.ProcessOnce(ctx); err != nil {
 			t.Fatal(err)
 		}
 		if calls["DeleteAssetGroup"] != 1 || calls["ListAssets"] != 0 {
@@ -636,7 +646,46 @@ func TestRealGroupDeletionFollowsOfficialLicenseGateAndCascades(t *testing.T) {
 		if portrait.LicenseStatus != "revoked" || portrait.RevokedAt == nil {
 			t.Fatal("bound license must be force-revoked", portrait.LicenseStatus)
 		}
+		for _, id := range []string{group.ID, *group.ProviderID} {
+			if _, done, err := s.DeleteGroup(ctx, caller, id, false); err != nil || !done {
+				t.Fatalf("deleted group must remain idempotent via %q: done=%v err=%v", id, done, err)
+			}
+		}
 	})
+}
+
+func TestDeleteGroupProviderIDRequiresOwnedUnambiguousMapping(t *testing.T) {
+	s, db, _, provider := setup(t)
+	group := realGroupDeletionFixture(t, db, "expired", true, false, false)
+	ctx := context.Background()
+	otherOrg, otherOwner := createContext("other-org"), createContext("other-owner")
+	otherOrg.OrgID = 2
+	otherOwner.UserID = 4
+	for _, caller := range []CreateContext{otherOrg, otherOwner} {
+		if _, _, err := s.DeleteGroup(ctx, caller, *group.ProviderID, false); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("inaccessible provider ID must return not found, got %v", err)
+		}
+	}
+	caller := createContext("ambiguous")
+	if _, _, err := s.DeleteGroup(ctx, caller, "group-unmapped", false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unmapped provider ID must return not found, got %v", err)
+	}
+
+	other := group
+	other.ID, other.ScopeID = "ag_other_scope", "scope2"
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&Ownership{OrgID: group.OrgID, ResourceType: "asset_group", ResourceID: other.ID, OwnerUserID: caller.UserID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.DeleteGroup(ctx, caller, *group.ProviderID, false); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate provider ID across scopes must return conflict, got %v", err)
+	}
+	var count int64
+	if err := db.Model(&Operation{}).Where("action = ?", "DeleteAssetGroup").Count(&count).Error; err != nil || count != 0 || provider.calls["DeleteAssetGroup"] != 0 {
+		t.Fatalf("rejected lookup must not queue deletion: count=%d err=%v", count, err)
+	}
 }
 
 func TestVerifiedRealGroupDeletionWithProcessingFailures(t *testing.T) {

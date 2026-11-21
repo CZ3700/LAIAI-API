@@ -124,6 +124,19 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 		t.Fatalf("identity/license end state wrong: %+v", portrait)
 	}
 	before = stages
+	rec = rpcActionPost(router, rpcActionGetResult, queryBody, "idem-rpc-check-3")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"GroupId":"group-rpc-test-001"`) || stages != before {
+		t.Fatalf("verified session must keep returning the provider group ID: %d %s", rec.Code, rec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/video/asset-groups/group-rpc-test-001?cascade=false", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "authorization_active") {
+		t.Fatalf("DELETE must resolve the provider group ID and check the license: %d %s", rec.Code, rec.Body.String())
+	}
+
+	before = stages
 	rec = rpcActionPost(router, rpcActionCreateSession, `{"CallbackURL":"https://customer.example/return"}`, "idem-rpc-create")
 	if rec.Code != http.StatusConflict || stages != before {
 		t.Fatalf("completed session must report a conflict without creating a new one: %d %s", rec.Code, rec.Body.String())
@@ -133,7 +146,7 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 	if rec := rpcActionPost(router, "Unknown", `{}`, "x"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"InvalidAction"`) {
 		t.Fatalf("unknown action returned %d %s", rec.Code, rec.Body.String())
 	}
-	req := httptest.NewRequest(http.MethodPost, "/v1/video/?Action=CreateVisualValidateSession&Version=2020-01-01", strings.NewReader(`{"CallbackURL":"https://customer.example/return"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/video/?Action=CreateVisualValidateSession&Version=2020-01-01", strings.NewReader(`{"CallbackURL":"https://customer.example/return"}`))
 	req.Header.Set("Idempotency-Key", "x")
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
