@@ -428,6 +428,8 @@ func (s *Service) RenameResource(ctx context.Context, c CreateContext, id string
 		q := tx.Model(&Asset{}).Where("org_id = ? AND asset_id = ? AND row_version = ? AND status <> ? AND deleted_at IS NULL", c.OrgID, id, in.ExpectedVersion, StatusDeleting)
 		if isGroup {
 			q = tx.Model(&Group{}).Where("org_id = ? AND group_id = ? AND row_version = ? AND status = ? AND deleted_at IS NULL", c.OrgID, id, in.ExpectedVersion, StatusActive)
+		} else {
+			q = q.Where("EXISTS (SELECT 1 FROM video_asset_groups g WHERE g.org_id = ? AND g.group_id = ? AND g.status = ? AND g.deleted_at IS NULL)", c.OrgID, group.ID, StatusActive)
 		}
 		res := q.Update("row_version", gorm.Expr("row_version + 1"))
 		if res.Error != nil {

@@ -132,8 +132,8 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/v1/video/asset-groups/group-rpc-test-001?cascade=false", nil)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "authorization_active") {
-		t.Fatalf("DELETE must resolve the provider group ID and check the license: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted || !strings.Contains(rec.Body.String(), `"Status":"deleting"`) {
+		t.Fatalf("DELETE must accept the provider group ID for upstream deletion: %d %s", rec.Code, rec.Body.String())
 	}
 
 	before = stages

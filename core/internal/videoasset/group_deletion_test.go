@@ -552,47 +552,38 @@ func realGroupDeletionFixture(t *testing.T, db *gorm.DB, license string, withPor
 	return group
 }
 
-// TestRealGroupDeletionFollowsOfficialLicenseGateAndCascades（2026-11-18 对齐
-// 火山 DeleteAssetGroup）：真人组删除由许可状态闸门控（verified/unknown 拒、
-// expired/revoked 放行），火山级联删素材故跳过本地 group_not_empty 与空组
-// 预检，worker 确认后组/素材/许可三终态联动。
-func TestRealGroupDeletionFollowsOfficialLicenseGateAndCascades(t *testing.T) {
-	cases := []struct {
-		name     string
-		license  string
-		portrait bool
-		withRef  bool
-		wantErr  error
-	}{
-		{"verified-blocks", "verified", true, false, ErrAuthorizationActive},
-		{"unknown-blocks", "unknown", true, false, ErrAuthorizationActive},
-		{"no-portrait-blocks", "verified", false, false, ErrAuthorizationActive},
-		{"reference-blocks", "expired", true, true, ErrInUse},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s, db, _, _ := setup(t)
-			calls := map[string]int{}
-			s.options.Client = NewManagementClient(&http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
-				calls[req.URL.Query().Get("Action")]++
-				return groupErrorReply(req, 200, "", nil), nil
-			})})
-			group := realGroupDeletionFixture(t, db, tc.license, tc.portrait, true, tc.withRef)
-			if _, _, err := s.DeleteGroup(context.Background(), createContext("real-delete"), group.ID, false); !errors.Is(err, tc.wantErr) {
-				t.Fatalf("want %v got %v", tc.wantErr, err)
-			}
-			if calls["DeleteAssetGroup"] != 0 {
-				t.Fatal("blocked deletion reached the provider", calls)
-			}
-			var stored Group
-			db.Where("group_id = ?", group.ID).Take(&stored)
-			if stored.Status != StatusActive || stored.DeletedAt != nil {
-				t.Fatal("blocked group must stay untouched", stored.Status)
-			}
-		})
-	}
+func TestRealGroupDeletionDelegatesCascadeToProvider(t *testing.T) {
+	t.Run("in-flight asset mutation blocks cascade", func(t *testing.T) {
+		s, db, _, provider := setup(t)
+		group := realGroupDeletionFixture(t, db, "verified", true, true, false)
+		if err := db.Create(&Operation{ID: "op_pending_child", OrgID: group.OrgID, ResourceType: "asset",
+			ResourceID: "asset_real_verified", Action: "CreateAsset", Status: "in_flight"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.DeleteGroup(context.Background(), createContext("real-delete"), group.ID, false); !errors.Is(err, ErrConflict) {
+			t.Fatalf("want conflict for in-flight asset changes, got %v", err)
+		}
+		if provider.calls["DeleteAssetGroup"] != 0 {
+			t.Fatal("cascade raced with in-flight asset changes")
+		}
+	})
 
-	t.Run("expired-cascades-accepts-and-confirms", func(t *testing.T) {
+	t.Run("active task reference blocks dispatch", func(t *testing.T) {
+		s, db, _, provider := setup(t)
+		group := realGroupDeletionFixture(t, db, "verified", true, true, true)
+		if _, _, err := s.DeleteGroup(context.Background(), createContext("real-delete"), group.ID, false); !errors.Is(err, ErrInUse) {
+			t.Fatalf("want active reference error, got %v", err)
+		}
+		var stored Group
+		if err := db.Where("group_id = ?", group.ID).Take(&stored).Error; err != nil {
+			t.Fatal(err)
+		}
+		if stored.Status != StatusActive || stored.DeletedAt != nil || provider.calls["DeleteAssetGroup"] != 0 {
+			t.Fatalf("blocked group changed: status=%s calls=%v", stored.Status, provider.calls)
+		}
+	})
+
+	t.Run("confirmed cascade with verified license and active assets", func(t *testing.T) {
 		s, db, _, _ := setup(t)
 		calls := map[string]int{}
 		s.options.Client = NewManagementClient(&http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
@@ -610,7 +601,7 @@ func TestRealGroupDeletionFollowsOfficialLicenseGateAndCascades(t *testing.T) {
 			}
 			return groupErrorReply(req, 404, "NotFound.group_id", nil), nil
 		})})
-		group := realGroupDeletionFixture(t, db, "expired", true, true, false)
+		group := realGroupDeletionFixture(t, db, "verified", true, true, false)
 		ctx := context.Background()
 		caller := createContext("real-delete-ok")
 		op, done, err := s.DeleteGroup(ctx, caller, *group.ProviderID, false)
@@ -633,7 +624,7 @@ func TestRealGroupDeletionFollowsOfficialLicenseGateAndCascades(t *testing.T) {
 			t.Fatal("confirmed group must be tombstoned", stored.Status)
 		}
 		var asset Asset
-		if err := db.Where("asset_id = ?", "asset_real_expired").Take(&asset).Error; err != nil {
+		if err := db.Where("asset_id = ?", "asset_real_verified").Take(&asset).Error; err != nil {
 			t.Fatal(err)
 		}
 		if asset.Status != StatusDeleted || asset.DeletedAt == nil {
@@ -688,81 +679,40 @@ func TestDeleteGroupProviderIDRequiresOwnedUnambiguousMapping(t *testing.T) {
 	}
 }
 
-func TestVerifiedRealGroupDeletionWithProcessingFailures(t *testing.T) {
+func TestEmptyRealGroupDeletionFollowsProviderResponse(t *testing.T) {
 	for _, tc := range []struct {
-		name           string
-		additional     string
-		secondUpstream string
-		withReference  bool
-		wantErr        error
+		name       string
+		httpStatus int
 	}{
-		{name: "all failed across pages", additional: StatusFailed, secondUpstream: "Failed"},
-		{name: "local active blocks", additional: StatusActive, wantErr: ErrAuthorizationActive},
-		{name: "local processing blocks", additional: StatusProcessing, wantErr: ErrAuthorizationActive},
-		{name: "in-flight reference blocks", withReference: true, wantErr: ErrInUse},
-		{name: "upstream active on later page blocks", additional: StatusFailed, secondUpstream: "Active"},
-		{name: "untracked upstream failure blocks", secondUpstream: "Failed"},
+		{"confirmed", http.StatusOK},
+		{"rejected", http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, db, _, _ := setup(t)
-			group := realGroupDeletionFixture(t, db, "verified", true, true, tc.withReference)
-			firstID, secondID := "asset-upstream-failed-1", "asset-upstream-failed-2"
-			if err := db.Model(&Asset{}).Where("asset_id = ?", "asset_real_verified").Updates(map[string]any{
-				"provider_id": firstID, "status": StatusFailed, "safe_error_code": "asset_processing_failed",
-			}).Error; err != nil {
-				t.Fatal(err)
-			}
-			if tc.additional != "" {
-				if err := db.Create(&Asset{ID: "asset_second", OrgID: group.OrgID, GroupID: group.ID,
-					ProviderID: &secondID, ScopeID: group.ScopeID, ScopeVersion: group.ScopeVersion, MediaType: "image",
-					ReviewState: ReviewClear, Status: tc.additional, SafeErrorCode: "asset_processing_failed", RowVersion: 1,
-				}).Error; err != nil {
-					t.Fatal(err)
-				}
-			}
-			listCalls, deleteCalls := 0, 0
+			group := realGroupDeletionFixture(t, db, "verified", true, false, false)
+			calls := 0
 			s.options.Client = NewManagementClient(&http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
-				if req.URL.Query().Get("Action") == "DeleteAssetGroup" {
-					deleteCalls++
+				calls++
+				if action := req.URL.Query().Get("Action"); action != "DeleteAssetGroup" {
+					t.Errorf("unexpected provider action: %s", action)
+					return groupErrorReply(req, http.StatusBadRequest, "InvalidAction", nil), nil
+				}
+				if tc.httpStatus == http.StatusOK {
 					return syncReply(req, map[string]any{}), nil
 				}
-				var input struct {
-					Filter struct {
-						GroupType string
-						GroupIds  []string
-					}
-					NextToken string
-				}
-				if req.URL.Query().Get("Action") != "ListAssets" || json.NewDecoder(req.Body).Decode(&input) != nil ||
-					input.Filter.GroupType != "LivenessFace" || len(input.Filter.GroupIds) != 1 || input.Filter.GroupIds[0] != *group.ProviderID {
-					t.Errorf("unexpected provider request for %s", req.URL.Query().Get("Action"))
-					return groupErrorReply(req, 400, "InvalidParameter", nil), nil
-				}
-				listCalls++
-				if listCalls == 1 && input.NextToken == "" {
-					return syncReply(req, map[string]any{
-						"Items":     []safeReceipt{{ID: firstID, GroupID: *group.ProviderID, ProjectName: group.Project, Status: "Failed"}},
-						"NextToken": "next-page",
-					}), nil
-				}
-				if listCalls != 2 || input.NextToken != "next-page" {
-					t.Errorf("unexpected cursor: %q", input.NextToken)
-				}
-				return syncReply(req, map[string]any{
-					"Items": []safeReceipt{{ID: secondID, GroupID: *group.ProviderID, ProjectName: group.Project, Status: tc.secondUpstream}},
-				}), nil
+				return groupErrorReply(req, tc.httpStatus, "Forbidden.PortraitLicense", nil), nil
 			})})
-			op, done, err := s.DeleteGroup(context.Background(), createContext("delete-failed-real-group"), group.ID, false)
-			if tc.wantErr != nil {
-				if !errors.Is(err, tc.wantErr) || listCalls != 0 || deleteCalls != 0 {
-					t.Fatalf("expected %v before provider calls, got %v", tc.wantErr, err)
-				}
-				return
+			ctx := context.Background()
+			caller := createContext("empty-real-group")
+			view, err := s.GetGroup(WithCaller(ctx, caller), caller.OrgID, group.ID)
+			if err != nil || view.DeletionMode != "official" {
+				t.Fatalf("empty real group must offer provider deletion: mode=%q err=%v", view.DeletionMode, err)
 			}
+			op, done, err := s.DeleteGroup(ctx, caller, group.ID, false)
 			if err != nil || done {
 				t.Fatal(op, done, err)
 			}
-			if err := s.ProcessOnce(context.Background()); err != nil {
+			if err := s.ProcessOnce(ctx); err != nil {
 				t.Fatal(err)
 			}
 			var stored Group
@@ -777,20 +727,16 @@ func TestVerifiedRealGroupDeletionWithProcessingFailures(t *testing.T) {
 			if err := db.Where("session_id = ?", group.PortraitID).Take(&license).Error; err != nil {
 				t.Fatal(err)
 			}
-			if listCalls != 2 {
-				t.Fatalf("expected both provider pages, got %d calls", listCalls)
+			if calls != 1 || recorded.HTTPStatus != tc.httpStatus || recorded.UpstreamRequestID == "" {
+				t.Fatalf("expected a single direct provider call: calls=%d receipt=%+v", calls, recorded)
 			}
-			if tc.additional == StatusFailed && tc.secondUpstream == "Failed" {
-				if deleteCalls != 1 || recorded.Status != "confirmed" || stored.DeletedAt == nil || license.LicenseStatus != "revoked" {
-					t.Fatalf("expected confirmed cascade: calls=%d operation=%s group=%s license=%s", deleteCalls, recorded.Status, stored.Status, license.LicenseStatus)
+			if tc.httpStatus == http.StatusOK {
+				if recorded.Status != "confirmed" || stored.DeletedAt == nil || license.LicenseStatus != "revoked" {
+					t.Fatalf("expected confirmed deletion: operation=%s group=%s license=%s", recorded.Status, stored.Status, license.LicenseStatus)
 				}
-				var live int64
-				if err := db.Model(&Asset{}).Where("group_id = ? AND deleted_at IS NULL", group.ID).Count(&live).Error; err != nil || live != 0 {
-					t.Fatalf("expected all failed assets to be deleted, live=%d err=%v", live, err)
-				}
-			} else if deleteCalls != 0 || recorded.Status != "rejected" || recorded.SafeErrorCode != "group_failed_assets_unverified" ||
+			} else if recorded.Status != "rejected" || recorded.SafeErrorCode != "provider_permission_denied" ||
 				stored.Status != StatusActive || stored.DeletedAt != nil || license.LicenseStatus != "verified" {
-				t.Fatalf("expected rejected precheck: calls=%d operation=%s code=%s group=%s license=%s", deleteCalls, recorded.Status, recorded.SafeErrorCode, stored.Status, license.LicenseStatus)
+				t.Fatalf("provider rejection must leave group and license intact: operation=%s code=%s group=%s license=%s", recorded.Status, recorded.SafeErrorCode, stored.Status, license.LicenseStatus)
 			}
 		})
 	}
