@@ -64,8 +64,8 @@ const text=(value:string)=>labels[value]??value
 const errors:Record<string,string>={management_scope_not_configured:'素材管理配置尚未就绪。请在配置素材管理中核对账号项目、管理版本、已授权能力及组织默认路由。',execution_policy_required:'管理版本和组织绑定不会自动开启执行许可。请在配置素材管理的第 3 步开启本组织的异步执行许可并保存。',unsupported_capability:'该能力尚未配置或开通，请查看项目能力设置。',invalid_state:'资源状态已变化，请刷新后重试。',resource_in_use:'素材仍被进行中的视频任务引用，暂时不能删除。',group_not_empty:'素材组非空，请先处理组内素材。',authorization_required:'尚未取得有效的真人使用许可。',invalid_request:'参数或媒体校验不通过，请核对类型、大小和素材要求。',not_found:'资源不存在或无权查看。',storage_unavailable:'暂时无法保存数据，请稍后重试。',SourceDownloadFailed:'源文件无法下载，请检查地址是否可访问或已过期。',provider_sync_failed:'官方同步失败，请检查管理权限后重试。',pagination_cycle:'官方分页游标重复，已停止同步。',provider_response_invalid:'官方返回信息不完整，已保留待核验状态。',provider_unavailable:'官方处理暂未确认，请刷新状态。',media_verification_failed:'媒体安全检测或格式校验未通过。',checkpoint_expired:'同步断点已过期，请重新发起同步。',source_unavailable:'源文件无法下载，请检查地址是否可访问或已过期。',source_not_allowed:'源地址不符合安全要求，请使用公开可访问的 HTTPS 地址。',upload_expired:'上传会话已过期，请重新上传。',empty_upload:'上传内容为空，请重新选择文件。'}
 const deletionReasons:Record<string,string>={
  real_group_not_supported:'真人素材组暂不支持删除。',group_not_empty:'素材组仍有素材，请先处理组内素材。',
- authorization_active:'肖像许可仍有效。仅含已确认处理失败素材的真人组可直接提交删除。',
- resource_in_use:'素材组仍被进行中的视频任务引用。',operation_pending:'删除处理中，请等待状态确认。',
+ authorization_active:'提交时肖像许可仍有效，删除请求被当时的规则拦截。',
+ resource_in_use:'素材组仍被进行中的视频任务引用。',operation_pending:'已有操作处理中，请等待状态确认。',
  submission_uncertain:'官方提交结果待核验，请刷新或查看请求日志，不能再次删除。',
  asset_not_ready:'素材尚未就绪，请先确认注册结果。',creation_not_rejected:'创建结果尚未确认失败，不能清理该记录。',group_not_ready:'素材组尚未就绪，请先确认创建结果。',
  resource_identity_mismatch:'素材与所属素材组的账号项目不一致，请由管理员核对。',

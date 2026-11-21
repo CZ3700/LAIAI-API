@@ -24,8 +24,6 @@ var (
 	ErrNotEmpty      = errors.New("video asset: group not empty")
 	ErrStorage       = errors.New("video asset: storage unavailable")
 	ErrSecret        = errors.New("video asset: secret unavailable")
-	// ErrAuthorizationActive indicates that the portrait license blocks group deletion.
-	ErrAuthorizationActive = errors.New("video asset: portrait license is still active")
 	// ErrUnconfigured marks platform-side configuration gaps (portrait return
 	// callback not installed). It is a server state, never a client mistake,
 	// and must not surface as the client-blaming invalid_request envelope.

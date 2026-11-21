@@ -44,10 +44,18 @@ func (s *Service) groupDeletionState(tx *gorm.DB, group Group) (string, string, 
 		return block("operation_pending")
 	}
 	if group.Kind == KindReal {
-		if _, err := realGroupDeletionAssets(tx, group); errors.Is(err, ErrAuthorizationActive) {
-			return block("authorization_active")
-		} else if err != nil {
-			return "", "", nil, err
+		// An already-dispatched asset write could race with the provider cascade.
+		assets := tx.Model(&Asset{}).Select("asset_id").Where(
+			"org_id = ? AND group_id = ? AND deleted_at IS NULL", group.OrgID, group.ID)
+		var writes int64
+		if err := tx.Model(&Operation{}).Where(
+			"org_id = ? AND resource_type = ? AND resource_id IN (?) AND action IN ? AND status IN ?",
+			group.OrgID, "asset", assets, []string{"CreateAsset", "UpdateAsset", "DeleteAsset"},
+			[]string{"pending", "in_flight", "unknown"}).Count(&writes).Error; err != nil {
+			return "", "", nil, ErrStorage
+		}
+		if writes > 0 {
+			return block("operation_pending")
 		}
 	} else {
 		var count int64
@@ -72,7 +80,7 @@ func (s *Service) groupDeletionState(tx *gorm.DB, group Group) (string, string, 
 		return block("resource_in_use")
 	}
 	if group.ProviderID == nil {
-		if group.Status != StatusFailed || group.CreateOperationID == "" {
+		if group.Kind == KindReal || group.Status != StatusFailed || group.CreateOperationID == "" {
 			return block("creation_not_rejected")
 		}
 		var created Operation
@@ -92,54 +100,12 @@ func (s *Service) groupDeletionState(tx *gorm.DB, group Group) (string, string, 
 	return "official", "", latest, nil
 }
 
-// A nil set means the license already permits deletion. A nonempty set limits
-// deletion under a verified license to the exact assets that failed processing.
-func realGroupDeletionAssets(tx *gorm.DB, group Group) (map[string]struct{}, error) {
-	if group.PortraitID == "" {
-		return nil, ErrAuthorizationActive
-	}
-	var portrait Portrait
-	if err := tx.Where("org_id = ? AND session_id = ?", group.OrgID, group.PortraitID).Take(&portrait).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrAuthorizationActive
-		}
-		return nil, ErrStorage
-	}
-	switch portrait.LicenseStatus {
-	case "expired", "revoked":
-		return nil, nil
-	case "verified":
-	default:
-		return nil, ErrAuthorizationActive
-	}
-
-	var assets []Asset
-	if err := tx.Select("provider_id", "status", "review_state", "safe_error_code").Where(
-		"org_id = ? AND group_id = ? AND deleted_at IS NULL", group.OrgID, group.ID).Find(&assets).Error; err != nil {
-		return nil, ErrStorage
-	}
-	failed := make(map[string]struct{}, len(assets))
-	for _, asset := range assets {
-		if asset.Status != StatusFailed || asset.ReviewState != ReviewClear || asset.SafeErrorCode != "asset_processing_failed" ||
-			asset.ProviderID == nil || !identifier.MatchString(*asset.ProviderID) {
-			return nil, ErrAuthorizationActive
-		}
-		failed[*asset.ProviderID] = struct{}{}
-	}
-	if len(failed) == 0 {
-		return nil, ErrAuthorizationActive
-	}
-	return failed, nil
-}
-
 func deletionBlockError(reason string) error {
 	switch reason {
 	case "group_not_empty":
 		return ErrNotEmpty
 	case "resource_in_use":
 		return ErrInUse
-	case "authorization_active":
-		return ErrAuthorizationActive
 	case "scope_unavailable", "delete_capability_disabled", "exclusive_project_required":
 		return ErrUnsupported
 	default:
@@ -279,30 +245,8 @@ func (s *Service) processGroupDeletion(ctx context.Context, op Operation, r Runt
 			check.Outcome, check.SafeErrorCode = "not_sent", code
 			return s.finish(ctx, op, r, check, request, evidence...)
 		}
-	} else {
-		failed, err := realGroupDeletionAssets(s.db.WithContext(ctx), group)
-		if errors.Is(err, ErrAuthorizationActive) {
-			return s.finish(ctx, op, r, Result{Outcome: "not_sent", SafeErrorCode: "authorization_active"}, request)
-		}
-		if err != nil {
-			return err
-		}
-		if len(failed) > 0 {
-			var verified bool
-			evidence, verified = s.verifyFailedGroupAssets(ctx, r, *group.ProviderID, failed)
-			defer func() {
-				for _, entry := range evidence {
-					clear(entry.result.Body)
-					clear(entry.result.Data)
-				}
-			}()
-			if !verified {
-				return s.finish(ctx, op, r, Result{Outcome: "not_sent", SafeErrorCode: "group_failed_assets_unverified"}, request, evidence...)
-			}
-		}
 	}
-	// The precheck can take multiple round trips. Recheck the claim and capability
-	// immediately before the irreversible DELETE, not merely before ListAssets.
+	// Recheck the claim and capability immediately before the irreversible DELETE.
 	var live int64
 	if err := s.db.WithContext(ctx).Model(&Operation{}).Where("org_id = ? AND operation_id = ? AND status = ? AND fence = ? AND lease_owner = ? AND lease_expires_at > ?",
 		op.OrgID, op.ID, "in_flight", op.Fence, op.LeaseOwner, s.now()).Count(&live).Error; err != nil {
@@ -338,39 +282,4 @@ func (s *Service) processGroupDeletion(ctx context.Context, op Operation, r Runt
 		return s.finish(ctx, op, r, result, request, evidence...)
 	}
 	return s.finish(ctx, op, r, result, request, evidence...)
-}
-
-// Verify the complete provider listing before using an irreversible cascade.
-// Every nonfinal page must consume at least one known ID, bounding the scan.
-func (s *Service) verifyFailedGroupAssets(ctx context.Context, r RuntimeScope, groupID string, failed map[string]struct{}) ([]deletionEvidence, bool) {
-	var evidence []deletionEvidence
-	input := map[string]any{
-		"Filter":      map[string]any{"GroupType": "LivenessFace", "GroupIds": []string{groupID}},
-		"MaxResults":  100,
-		"ProjectName": r.Scope.Project,
-	}
-	for {
-		check := s.options.Client.Call(ctx, r.Scope, r.Credentials, "ListAssets", bodyJSON(input), s.now())
-		evidence = append(evidence, deletionEvidence{stage: "failed_assets_" + strconv.Itoa(len(evidence)+1), result: check})
-		var page struct {
-			Items     []safeReceipt
-			NextToken string
-		}
-		if check.Outcome != "accepted" || json.Unmarshal(check.Data, &page) != nil || page.Items == nil {
-			return evidence, false
-		}
-		for _, item := range page.Items {
-			if _, ok := failed[item.ID]; !ok || item.GroupID != groupID || item.ProjectName != r.Scope.Project || item.Status != "Failed" {
-				return evidence, false
-			}
-			delete(failed, item.ID)
-		}
-		if page.NextToken == "" {
-			return evidence, len(failed) == 0
-		}
-		if len(page.Items) == 0 {
-			return evidence, false
-		}
-		input["NextToken"] = page.NextToken
-	}
 }

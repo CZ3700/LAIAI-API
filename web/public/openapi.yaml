@@ -1839,7 +1839,7 @@
         "additionalProperties": false,
         "properties": {
           "Id": {
-            "description": "平台资源 ID（ag_/asset_）。",
+            "description": "平台删除操作 ID（op_…）。",
             "type": "string"
           },
           "Status": {
@@ -3815,7 +3815,7 @@
     },
     "/v1/video/asset-groups/{group_id}": {
       "delete": {
-        "description": "group_id 接受平台素材组 ID 或火山 GroupId。火山 ID 必须唯一匹配当前调用方可见的素材组；\n无可见映射返回 404，多条可见映射返回 409 invalid_state。两种 ID 指向同一删除操作。\n虚拟组：只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。\n真人组（real_person）可在肖像许可已过期或已撤销（license_status=expired/revoked）后删除。\n许可为 verified 时，若组内至少有一个素材且全部为 asset_processing_failed，平台可受理删除任务。\n任务会先核对火山的完整素材列表，确认同一批素材均为 Failed，再提交整组删除；火山仍可能根据授权规则拒绝。\n其他许可受限的真人组返回 409 authorization_active。真人组删除会批量删除组内全部素材（不可逆），\n本地素材行随确认同步软删，绑定许可强制置 revoked；有在途任务引用仍返回 409 resource_in_use。\ncascade=true 或未启用删除能力返回 422 unsupported_capability。\n不会仅删除平台映射而留下未知上游结果。虚拟组删除前经官方空组预检；\n检查在途引用并设置 deleting 屏障必须在同一事务锁内完成；\n素材新增和任务引用也检查该屏障，避免检查通过后新建素材或引用的竞态。\n首次接受 202；同一幂等键重复请求返回同一受理结果，已确认删除后重复请求 204；跨组织 404。\n删除保留资源墓碑及审计证据，不删除历史任务或账务事实。\n",
+        "description": "group_id 接受平台素材组 ID 或火山 GroupId。火山 ID 必须唯一匹配当前调用方可见的素材组；\n无可见映射返回 404，多条可见映射返回 409 invalid_state。两种 ID 指向同一删除操作。\n虚拟组：只允许显式启用删除能力的虚拟空组；非空组返回 409 group_not_empty。\n真人组（real_person）通过归属、项目能力、在途操作及任务引用检查后，直接提交火山 DeleteAssetGroup。\n火山裁决肖像许可及组内素材是否允许删除。火山拒绝时，删除操作记为 rejected，组和素材保留原状态。\n火山确认真人组删除成功后，组内全部素材会被一并删除（不可逆），本地素材行同步软删，绑定许可转为 revoked。\n有在途任务引用返回 409 resource_in_use。\ncascade=true 或未启用删除能力返回 422 unsupported_capability。\n不会仅删除平台映射而留下未知上游结果。虚拟组删除前经官方空组预检；\n检查在途引用并设置 deleting 屏障必须在同一事务锁内完成；\n素材新增和任务引用也检查该屏障，避免检查通过后新建素材或引用的竞态。\n首次接受 202；同一幂等键重复请求返回同一受理结果，已确认删除后重复请求 204；跨组织 404。\n删除保留资源墓碑及审计证据，不删除历史任务或账务事实。\n",
         "operationId": "deleteVideoAssetGroup",
         "parameters": [
           {
@@ -3851,7 +3851,7 @@
                     "Version": "2024-01-01"
                   },
                   "Result": {
-                    "Id": "ag_example001",
+                    "Id": "op_example004",
                     "Status": "deleting"
                   }
                 },
@@ -3872,7 +3872,7 @@
                 }
               }
             },
-            "description": "官方信封受理回执，Action=DeleteAssetGroup，Result.Status 恒为 deleting；完成确认以重新 GET 为主（确认删除后重复请求 204）。",
+            "description": "平台已受理删除任务，Action=DeleteAssetGroup，Result.Status 为 deleting。查询删除操作确认火山结果；确认删除后重复请求返回 204。",
             "headers": {
               "Idempotency-Replayed": {
                 "$ref": "#/components/headers/IdempotencyReplayed"
@@ -4205,7 +4205,7 @@
                     "Version": "2024-01-01"
                   },
                   "Result": {
-                    "Id": "asset_example001",
+                    "Id": "op_example008",
                     "Status": "deleting"
                   }
                 },
@@ -5842,5 +5842,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "ced64bf7821ee3c62f086564e9dce11c8653d1a57a38a47cbbfa0a7453753343"
+  "x-seedance-source-sha256": "e2d6b02659a332e18bb4b4ddebbdddc2232f3377706eef1ab6beec303ca22b14"
 }

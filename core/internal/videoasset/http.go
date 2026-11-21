@@ -154,10 +154,6 @@ func (s *Service) httpError(c *gin.Context, err error) {
 		status = 409
 		code = "group_not_empty"
 		message = "The group contains assets."
-	case errors.Is(err, ErrAuthorizationActive):
-		status = 409
-		code = "authorization_active"
-		message = "The portrait license is still active; revoke or wait for expiry before deleting the group."
 	case errors.Is(err, ErrInUse):
 		status = 409
 		code = "resource_in_use"
