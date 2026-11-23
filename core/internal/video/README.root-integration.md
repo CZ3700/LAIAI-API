@@ -95,7 +95,7 @@ trusted reviewer evidence. The callback never grants a material license.
 
 ## Creation and Draft behavior
 
-`plan` verifies registered media and asset references, same organization,
+`plan` verifies library asset references against the same organization,
 provider account/region/project and material license. `ValidateBindingsTx` takes the same tenant/group/license locks
 as binding but inserts no task reference. After the task row exists,
 `persistTaskResourcesTx` calls `ResolveBindingsTx` and compares the entire binding
@@ -117,14 +117,14 @@ re-authorized, including fresh real-person material licenses. The child gets its
 own active references. No parent request or response body is read. Tasks predating
 this metadata table fail closed for Draft conversion; no history parsing backfill.
 
-The public task-creation contract continues to accept raw HTTPS image/audio URLs
-and passes them to Ark without a platform fetch. Unregistered video URLs require
+The public task-creation contract passes raw HTTP and HTTPS image, video and
+audio URLs to Ark unchanged. Direct URLs require no media registry lookup.
+Direct video URLs require
 an explicit, verified `MaxInputVideoDurationMS` that represents the official
 model's **aggregate total input-video duration upper bound**. When any video input
-is unregistered, the entire aggregate freezes against that bound, not a sum of
-customer assertions. We claim no immutability for raw external URLs; the actual
-outbound request and frozen bound are retained. Registered media, asset references
-and inherited Draft context provide trusted durations for more precise freezing.
+uses a direct URL, the entire aggregate freezes against that bound. The actual
+outbound request and frozen bound are retained. Library asset references and
+inherited Draft context provide trusted durations for more precise freezing.
 The configured maximum also bounds those measured durations when present.
 By contrast, the **CreateAsset material-management endpoint always requires the
 immutable media registry** and never falls back to an unverified customer URL.

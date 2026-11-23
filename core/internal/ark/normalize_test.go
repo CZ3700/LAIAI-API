@@ -407,11 +407,34 @@ func TestMediaBindingsAndNoInputMutation(t *testing.T) {
 	if r.Content[1].VideoURL.URL != "asset://asset_test" {
 		t.Fatal("mutated caller reference")
 	}
-	for _, u := range []string{"asset://official-id", "https://user:secret@media.example/a", "http://media.example/a", "data:video/mp4;base64,abc"} {
+	for _, u := range []string{"asset://official-id", "https://user:secret@media.example/a", "http:/media.example/a", "data:video/mp4;base64,abc"} {
 		r.Content[1].VideoURL.URL = u
 		if _, err := Normalize(r, testCapability(Model25), bindings); err == nil {
 			t.Errorf("invalid media accepted: %q", u)
 		}
+	}
+}
+
+func TestRawGenerationMediaPreservesURLsAndText(t *testing.T) {
+	in := textRequest(Model25)
+	in.Content[0].Text = "  A paper boat on the water.\n"
+	in.Content = append(in.Content,
+		ContentItem{Type: "image_url", Role: "reference_image", ImageURL: &MediaReference{URL: "http://media.example/image.png?raw=%2B&n=2"}},
+		ContentItem{Type: "video_url", Role: "reference_video", VideoURL: &MediaReference{URL: "https://media.example/video.mp4?sig=A%2Fb"}},
+		ContentItem{Type: "audio_url", Role: "reference_audio", AudioURL: &MediaReference{URL: "http://media.example/sound.mp3"}},
+	)
+	out, err := Normalize(in, testCapability(Model25), Bindings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct{ Content []ContentItem }
+	if err := json.Unmarshal(out.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(in.Content)
+	got, _ := json.Marshal(body.Content)
+	if string(got) != string(want) || !out.HasInputVideo || len(out.AssetIDs) != 0 {
+		t.Fatalf("unexpected outbound content: %s", got)
 	}
 }
 
