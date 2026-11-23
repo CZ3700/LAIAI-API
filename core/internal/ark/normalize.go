@@ -260,8 +260,8 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 				}
 				ref.URL = b.UpstreamURI
 				out.AssetIDs = append(out.AssetIDs, id)
-			} else if !validMediaURL(ref.URL) {
-				return bad("content", "media URL must use HTTPS without user credentials")
+			} else if !validWebMediaURL(ref.URL, true) {
+				return bad("content", "media URL must use HTTP or HTTPS without user credentials")
 			}
 		}
 		content = append(content, n)
@@ -393,11 +393,14 @@ func hasDirective(s string) bool {
 	return directive.MatchString(s)
 }
 func validMediaURL(s string) bool {
+	return validWebMediaURL(s, false)
+}
+func validWebMediaURL(s string, allowHTTP bool) bool {
 	if len(s) > 4096 || strings.IndexFunc(s, unicode.IsSpace) >= 0 {
 		return false
 	}
 	u, err := url.Parse(s)
-	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.Fragment == ""
+	return err == nil && (u.Scheme == "https" || allowHTTP && u.Scheme == "http") && u.Hostname() != "" && u.User == nil && u.Fragment == ""
 }
 func validUpstreamAsset(s string) bool {
 	return strings.HasPrefix(s, "asset://") && upstreamAssetID.MatchString(strings.TrimPrefix(s, "asset://"))

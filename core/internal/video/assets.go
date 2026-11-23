@@ -758,28 +758,12 @@ func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, 
 	if len(in.Content) == 0 || cap.MaxContentItems <= 0 || len(in.Content) > cap.MaxContentItems {
 		return in, bindings, resources, ErrInvalid
 	}
-	// Clone the request before replacing verified URLs; the original is retained
-	// only by the separately governed Invocation Store and idempotency digest.
-	raw, _ := json.Marshal(in)
-	var effective ark.CreateRequest
-	if json.Unmarshal(raw, &effective) != nil {
-		return in, bindings, resources, ErrInvalid
-	}
-	for _, item := range effective.Content {
-		if item.Type == "draft_task" && len(effective.Content) != 1 {
+	for _, item := range in.Content {
+		if item.Type == "draft_task" && len(in.Content) != 1 {
 			return in, bindings, resources, ErrInvalid
 		}
 	}
-	for _, item := range effective.Content {
-		if item.ImageURL != nil || item.VideoURL != nil || item.AudioURL != nil {
-			var tenant videoasset.TenantLock
-			if err := locked(tx).Where("org_id = ?", org).Take(&tenant).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				return in, bindings, resources, ErrUnavailable
-			}
-			break
-		}
-	}
-	for index, item := range effective.Content {
+	for index, item := range in.Content {
 		var ref *ark.MediaReference
 		kind := ""
 		switch item.Type {
@@ -800,22 +784,9 @@ func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, 
 					role = "reference_" + kind
 				}
 				resources.References = append(resources.References, videoasset.ReferenceInput{AssetID: strings.TrimPrefix(ref.URL, "asset://"), Role: role, ContentIndex: index})
-			} else {
-				media, err := s.registeredMediaTx(tx, org, ref.URL, kind)
-				if errors.Is(err, ErrNotFound) {
-					// Raw HTTPS is transparently passed to Ark. We make no
-					// immutability or measured-duration claim for this URL.
-					if kind == "video" {
-						resources.HasUnverifiedVideo = true
-					}
-				} else if err != nil {
-					return in, bindings, resources, err
-				} else {
-					ref.URL = media.FetchURL
-					if kind == "video" {
-						resources.InputDurationMS += media.DurationMS
-					}
-				}
+			} else if kind == "video" {
+				// Raw video URLs go to Ark unchanged, without a trusted duration.
+				resources.HasUnverifiedVideo = true
 			}
 		}
 		if item.Type == "draft_task" && item.DraftTask != nil {
@@ -855,6 +826,10 @@ func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, 
 		if s.Assets == nil {
 			return in, bindings, resources, ErrCapability
 		}
+		var tenant videoasset.TenantLock
+		if err := locked(tx).Where("org_id = ?", org).Take(&tenant).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return in, bindings, resources, ErrUnavailable
+		}
 		runtime, err := s.assetScopeTx(tx, org, provider.ID, resources.Scope, false)
 		if err != nil {
 			return in, bindings, resources, err
@@ -875,7 +850,7 @@ func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, 
 			bindings.Assets[b.AssetID] = ark.AssetBinding{MediaType: b.MediaType, UpstreamURI: "asset://" + b.ProviderAssetID}
 			if b.MediaType == "video" && len(bindings.Drafts) == 0 {
 				resources.InputDurationMS += b.DurationMS
-				// URL 模式的视频参考没有实测时长（平台不下载不探测）：与裸 HTTPS
+				// URL 模式的视频参考没有实测时长（平台不下载不探测）：与直传外链
 				// 输入视频同款兜底——按配置的输入时长上限计费与校验，不因缺事实拒绝。
 				if b.DurationMS <= 0 {
 					resources.HasUnverifiedVideo = true
@@ -883,7 +858,7 @@ func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, 
 			}
 		}
 	}
-	return effective, bindings, resources, nil
+	return in, bindings, resources, nil
 }
 func (s *Service) persistTaskResourcesTx(tx *gorm.DB, org uint64, taskID string, p createPlan) error {
 	if len(p.resources.References) > 0 {
