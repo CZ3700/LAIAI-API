@@ -1057,7 +1057,7 @@ paths:
         按火山管理 RPC 形态透传：POST /v1/video/?Action=...&Version=2024-01-01
         （POST /v1/video/management?Action=... 为等价别名；/v1/video 不带尾部斜杠会 307，需带尾斜杠）。鉴权仍用平台 Bearer Key（video:write）。
         支持两个 Action：
-        CreateVisualValidateSession —— 请求体 {CallbackURL(必填,HTTPS), ProjectName(可选,默认路由项目)}；
+        CreateVisualValidateSession —— 请求体 {CallbackURL(必填,HTTP 或 HTTPS), ProjectName(可选,默认路由项目)}；
         同步调用官方，200 返回 Result.{BytedToken, H5Link, CallbackURL}（火山原生三字段）。
         BytedToken 原样返回火山签发的字符串，调用方应直接用于查询认证结果。平台会话 ID 通过 X-Session-Id 响应头返回。
         H5 完成后官方按火山原生形态直跳 CallbackURL 并拼接
@@ -1093,7 +1093,8 @@ paths:
               properties:
                 CallbackURL:
                   type: string
-                  description: CreateVisualValidateSession 必填；认证完成后官方直跳的 HTTPS 地址（客户自持页面）。
+                  format: uri
+                  description: CreateVisualValidateSession 必填。填写完整的 HTTP 或 HTTPS 回跳 URL，认证完成后由火山跳转。
                 ProjectName:
                   type: string
                   description: 可选；默认为平台路由项目。

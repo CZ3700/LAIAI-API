@@ -29,6 +29,8 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 	s, db, now, _ := setup(t)
 	*now = now.Add(750 * time.Microsecond)
 	const upstreamToken = "20260102030405A12BCDEF0123456789"
+	const callbackURL = "http://customer.example:8080/return?source=h5"
+	const createBody = `{"CallbackURL":"` + callbackURL + `"}`
 	s.options.AutoLicense = true
 	s.options.AutoLicenseValidity = 365 * 24 * time.Hour
 	s.options.MaxLicenseAge = 90 * 24 * time.Hour
@@ -37,7 +39,11 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 		action := req.URL.Query().Get("Action")
 		if action == "CreateVisualValidateSession" {
 			stages++
-			return syncReply(req, map[string]any{"BytedToken": upstreamToken, "H5Link": "https://h5.example/rpc-auth", "CallbackURL": "https://customer.example/return"}), nil
+			var input struct{ CallbackURL, ReturnURL string }
+			if err := json.NewDecoder(req.Body).Decode(&input); err != nil || input.CallbackURL != callbackURL || input.ReturnURL != callbackURL {
+				t.Errorf("provider must receive the original HTTP callback URL: %+v (%v)", input, err)
+			}
+			return syncReply(req, map[string]any{"BytedToken": upstreamToken, "H5Link": "https://h5.example/rpc-auth", "CallbackURL": callbackURL}), nil
 		}
 		if action == "GetVisualValidateResult" {
 			var input struct{ BytedToken string }
@@ -63,13 +69,13 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 	})
 	s.RegisterRoutes(router.Group("/v1/video"))
 
-	rec := rpcActionPost(router, rpcActionCreateSession, `{"CallbackURL":"https://customer.example/return"}`, "idem-rpc-create")
+	rec := rpcActionPost(router, rpcActionCreateSession, createBody, "idem-rpc-create")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create returned %d %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
 	// Result 严格火山原生三字段（SessionId 不进响应体，在 X-Session-Id 头）。
-	for _, want := range []string{`"BytedToken":"` + upstreamToken + `"`, `"H5Link":"https://h5.example/rpc-auth"`, `"CallbackURL":"https://customer.example/return"`} {
+	for _, want := range []string{`"BytedToken":"` + upstreamToken + `"`, `"H5Link":"https://h5.example/rpc-auth"`, `"CallbackURL":"` + callbackURL + `"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("create result missing %s: %s", want, body)
 		}
@@ -87,7 +93,7 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 
 	// 幂等重放：同键返回同会话，不再触达官方。
 	before := stages
-	rec = rpcActionPost(router, rpcActionCreateSession, `{"CallbackURL":"https://customer.example/return"}`, "idem-rpc-create")
+	rec = rpcActionPost(router, rpcActionCreateSession, createBody, "idem-rpc-create")
 	if rec.Code != http.StatusOK || rec.Header().Get("X-Session-Id") == "" {
 		t.Fatalf("replay returned %d %s", rec.Code, rec.Body.String())
 	}
@@ -137,7 +143,7 @@ func TestRPCPortraitPassthroughFullFlow(t *testing.T) {
 	}
 
 	before = stages
-	rec = rpcActionPost(router, rpcActionCreateSession, `{"CallbackURL":"https://customer.example/return"}`, "idem-rpc-create")
+	rec = rpcActionPost(router, rpcActionCreateSession, createBody, "idem-rpc-create")
 	if rec.Code != http.StatusConflict || stages != before {
 		t.Fatalf("completed session must report a conflict without creating a new one: %d %s", rec.Code, rec.Body.String())
 	}
@@ -211,11 +217,10 @@ func TestRPCCreateInvalidCallbackURLNamesField(t *testing.T) {
 	})
 	s.RegisterRoutes(router.Group("/v1/video"))
 
-	rec := rpcActionPost(router, rpcActionCreateSession, `{"CallbackURL":"https:/www.baidu.com"}`, "idem-rpc-badurl")
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("malformed URL returned %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "CallbackURL must be a valid HTTPS URL") {
-		t.Fatalf("error must name CallbackURL with guidance: %s", rec.Body.String())
+	for _, callback := range []string{"https:/www.baidu.com", "//customer.example/return", "ftp://customer.example/return", "http://"} {
+		rec := rpcActionPost(router, rpcActionCreateSession, string(bodyJSON(map[string]string{"CallbackURL": callback})), "idem-rpc-badurl")
+		if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "CallbackURL must be a valid HTTP or HTTPS URL") {
+			t.Fatalf("invalid callback %q returned %d %s", callback, rec.Code, rec.Body.String())
+		}
 	}
 }

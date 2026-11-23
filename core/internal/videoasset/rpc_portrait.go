@@ -29,6 +29,7 @@ const (
 	rpcVersion             = "2024-01-01"
 	bytedTokenHashDomain   = "byted-token"
 	rpcSessionTTL          = 30 * time.Minute
+	rpcCallbackURLMax      = 2048
 )
 
 type rpcPortraitCreateInput struct {
@@ -106,7 +107,7 @@ func (s *Service) applyPortraitSecretTx(tx *gorm.DB, p *Portrait, bytedToken, h5
 // 后换新会话重试；本地 failed 会话不占用幂等键）。
 func (s *Service) SyncCreateVisualValidateSession(ctx context.Context, c CreateContext, callbackURL string) (PortraitDTO, string, error) {
 	ctx = WithCaller(ctx, c)
-	if !validCreate(c) || !validHTTPS(callbackURL, 2048) {
+	if !validCreate(c) || !validWebURL(callbackURL, rpcCallbackURLMax, "http", "https") {
 		return PortraitDTO{}, "", ErrInvalid
 	}
 	if s.options.ResolveCallbackByID == nil || !validPlatformCallback(s.options.PlatformCallbackURL) {
@@ -464,8 +465,8 @@ func (s *Service) rpcCreateVisualValidateSession(c *gin.Context) {
 	}
 	// 字段级定位：callback_url 是唯一必填的 URL 参数，格式错误直接点名
 	//（客户常见笔误如少写一个斜杠 https:/，泛化的 invalid_request 无法自查）。
-	if !validHTTPS(in.CallbackURL, 2048) {
-		rpcFail(c, 422, "InvalidParameter", "CallbackURL must be a valid HTTPS URL, e.g. https://your-domain.example/callback.")
+	if !validWebURL(in.CallbackURL, rpcCallbackURLMax, "http", "https") {
+		rpcFail(c, 422, "InvalidParameter", "CallbackURL must be a valid HTTP or HTTPS URL, e.g. http://your-domain.example/callback.")
 		return
 	}
 	dto, bytedToken, err := s.SyncCreateVisualValidateSession(c.Request.Context(), auth, in.CallbackURL)

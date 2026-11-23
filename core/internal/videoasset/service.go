@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -29,8 +30,11 @@ func safeName(v string, max int, required bool) bool {
 	return utf8.ValidString(v) && utf8.RuneCountInString(v) <= max && (!required || strings.TrimSpace(v) != "") && strings.IndexFunc(v, unicode.IsControl) < 0
 }
 func validHTTPS(raw string, max int) bool {
+	return validWebURL(raw, max, "https")
+}
+func validWebURL(raw string, max int, schemes ...string) bool {
 	u, err := url.Parse(raw)
-	return err == nil && len(raw) <= max && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.Fragment == ""
+	return err == nil && len(raw) <= max && slices.Contains(schemes, u.Scheme) && u.Hostname() != "" && u.User == nil && u.Fragment == ""
 }
 func nowMillis(s *Service) time.Time { return s.now().UTC().Truncate(time.Millisecond) }
 func groupScope(g Group) Scope {
