@@ -407,7 +407,9 @@ func TestMediaBindingsAndNoInputMutation(t *testing.T) {
 	if r.Content[1].VideoURL.URL != "asset://asset_test" {
 		t.Fatal("mutated caller reference")
 	}
-	for _, u := range []string{"asset://official-id", "https://user:secret@media.example/a", "http:/media.example/a", "data:video/mp4;base64,abc"} {
+	// Only the platform namespace needs a binding, and only malformed asset URIs
+	// are rejected; any other provider asset URI is forwarded (see below).
+	for _, u := range []string{"asset://asset_unbound", "asset://", "asset://has/slash", "asset://has space", "asset://" + strings.Repeat("a", 129), "https://user:secret@media.example/a", "http:/media.example/a", "data:video/mp4;base64,abc"} {
 		r.Content[1].VideoURL.URL = u
 		if _, err := Normalize(r, testCapability(Model25), bindings); err == nil {
 			t.Errorf("invalid media accepted: %q", u)
@@ -438,25 +440,46 @@ func TestRawGenerationMediaPreservesURLsAndText(t *testing.T) {
 	}
 }
 
-func TestNormalizeVerifiedPublicAsset(t *testing.T) {
-	const public = "asset://asset-20260224190652-2qjpm"
-	in := textRequest(Model20Mini)
-	in.Resolution, in.Ratio, in.Duration, in.GenerateAudio = ptr("480p"), ptr("adaptive"), ptr(4), ptr(false)
-	cap := variantTestCapability(Model20Mini)
-	cap.Ratios = append(cap.Ratios, "adaptive")
-	in.Content = append(in.Content, ContentItem{Type: "image_url", Role: "reference_image", ImageURL: &MediaReference{URL: public}})
-	out, err := Normalize(in, cap, Bindings{})
-	if err != nil || !strings.Contains(string(out.Body), public) || len(out.AssetIDs) != 0 {
-		t.Fatalf("expected unchanged public asset without a library binding: %s (%v)", out.Body, err)
+// Provider asset URIs are forwarded unchanged: no library binding and no
+// provider lookup; Ark alone decides whether the asset exists, is ready and
+// matches the content item. This replaces the single-asset allowlist that left
+// every other native ID rejected with material_not_found (2026-11-24). The IDs
+// below are synthetic: the repository is public and a forwarded URI needs no
+// ownership proof, so real asset IDs must never be committed.
+func TestNormalizeForwardsProviderAssetURIs(t *testing.T) {
+	for _, tc := range []struct {
+		typ, role, uri string
+	}{
+		{"image_url", "reference_image", "asset://asset-20260101000000-abcde"},
+		{"video_url", "reference_video", "asset://asset-20260101000000-vide0"},
+		{"audio_url", "reference_audio", "asset://audio:id.with.dots-1"},
+	} {
+		in := textRequest(Model25)
+		ref := MediaReference{URL: tc.uri}
+		item := ContentItem{Type: tc.typ, Role: tc.role}
+		switch tc.typ {
+		case "image_url":
+			item.ImageURL = &ref
+		case "video_url":
+			item.VideoURL = &ref
+		case "audio_url":
+			item.AudioURL = &ref
+		}
+		in.Content = append(in.Content, item)
+		out, err := Normalize(in, testCapability(Model25), Bindings{})
+		if err != nil || !strings.Contains(string(out.Body), `"url":"`+tc.uri+`"`) || len(out.AssetIDs) != 0 {
+			t.Fatalf("provider asset URI must be forwarded unchanged: %s (%v)", out.Body, err)
+		}
+		if out.HasInputVideo != (tc.typ == "video_url") {
+			t.Fatalf("input video metering must follow the content item: %+v", out)
+		}
 	}
 
-	in.Content[1].ImageURL.URL = "asset://asset-20260224190652-unverified"
-	if _, err := Normalize(in, cap, Bindings{}); err == nil {
-		t.Fatal("an unverified Ark asset with the same ID format must still need a binding")
-	}
-	in.Content[1] = ContentItem{Type: "video_url", Role: "reference_video", VideoURL: &MediaReference{URL: public}}
-	if _, err := Normalize(in, cap, Bindings{}); err == nil {
-		t.Fatal("a public image must not pass as a video")
+	// The platform namespace still needs its binding: Ark cannot resolve it.
+	in := textRequest(Model25)
+	in.Content = append(in.Content, ContentItem{Type: "image_url", Role: "reference_image", ImageURL: &MediaReference{URL: "asset://asset_unbound"}})
+	if _, err := Normalize(in, testCapability(Model25), Bindings{}); err == nil {
+		t.Fatal("a platform asset without its library binding must still be rejected")
 	}
 }
 

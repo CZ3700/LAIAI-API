@@ -778,14 +778,20 @@ func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, 
 			kind = "audio"
 		}
 		if ref != nil {
-			if strings.HasPrefix(ref.URL, "asset://") && ark.PublicAssetMediaType(ref.URL) == "" {
+			if ark.IsPlatformAssetURI(ref.URL) {
+				// A platform library asset is resolved to its provider URI below
+				// and recorded so deletion and archiving stay blocked while it is
+				// referenced. Provider asset URIs (asset://asset-...) take the
+				// direct path instead: no library lookup, no asset route, no
+				// reference row — Ark alone decides whether the asset is usable.
 				role := item.Role
 				if role == "" {
 					role = "reference_" + kind
 				}
 				resources.References = append(resources.References, videoasset.ReferenceInput{AssetID: strings.TrimPrefix(ref.URL, "asset://"), Role: role, ContentIndex: index})
 			} else if kind == "video" {
-				// Raw video URLs go to Ark unchanged, without a trusted duration.
+				// Direct video URLs and provider video assets go to Ark unchanged,
+				// without a trusted duration.
 				resources.HasUnverifiedVideo = true
 			}
 		}
