@@ -40,10 +40,24 @@ func (r *Relay) applyInvalidate(kind, key string) {
 		r.ratios.invalidateAll()
 	case KindChannel:
 		r.channels.invalidate()
+	case KindForwardRule:
+		if r.Forward != nil {
+			r.Forward.Invalidate()
+		}
+	case KindBillingRule:
+		if r.billingRules != nil {
+			r.billingRules.invalidateAll()
+		}
 	case KindAll:
 		r.prices.invalidateAll()
 		r.ratios.invalidateAll()
 		r.channels.invalidate()
+		if r.Forward != nil {
+			r.Forward.Invalidate()
+		}
+		if r.billingRules != nil {
+			r.billingRules.invalidateAll()
+		}
 	}
 }
 

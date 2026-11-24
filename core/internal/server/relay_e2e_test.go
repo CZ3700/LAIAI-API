@@ -103,6 +103,9 @@ CREATE TABLE tasks (
     hold_amount_usd NUMERIC NOT NULL DEFAULT 0, group_ratio NUMERIC NOT NULL DEFAULT 1,
     submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     started_at DATETIME, finished_at DATETIME,
+    forward_rule_eid TEXT NOT NULL DEFAULT '', billing_rule_pid TEXT NOT NULL DEFAULT '',
+    features_json TEXT, time_multiplier NUMERIC NOT NULL DEFAULT 1,
+    billing_detail TEXT NOT NULL DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE topup_orders (
@@ -162,6 +165,8 @@ CREATE TABLE invocations (
     finish_reason TEXT NOT NULL DEFAULT '', protocol TEXT NOT NULL DEFAULT '',
     cached_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     upstream_error_code TEXT NOT NULL DEFAULT '',
+    forward_rule_eid TEXT NOT NULL DEFAULT '', billing_rule_pid TEXT NOT NULL DEFAULT '',
+    upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `

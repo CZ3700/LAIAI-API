@@ -81,10 +81,13 @@ type Invocation struct {
 	ReasoningTokens   int64  `gorm:"column:reasoning_tokens" json:"reasoning_tokens"`
 	UpstreamErrorCode string `gorm:"column:upstream_error_code" json:"upstream_error_code,omitempty"`
 	// 访客侧元数据（请求日志详情 CLIENT 栏）：真实 IP 经 Caddy XFF；UA/Referer 截断。属请求元数据非 payload。
-	ClientIP   string    `gorm:"column:client_ip" json:"client_ip,omitempty"`
-	UserAgent  string    `gorm:"column:user_agent" json:"user_agent,omitempty"`
-	Referer    string    `gorm:"column:referer" json:"referer,omitempty"`
-	CreatedAt  time.Time `gorm:"column:created_at;autoCreateTime:milli" json:"created_at"`
+	ClientIP          string          `gorm:"column:client_ip" json:"client_ip,omitempty"`
+	UserAgent         string          `gorm:"column:user_agent" json:"user_agent,omitempty"`
+	Referer           string          `gorm:"column:referer" json:"referer,omitempty"`
+	ForwardRuleEID    string          `gorm:"column:forward_rule_eid" json:"forward_rule_eid,omitempty"`
+	BillingRulePID    string          `gorm:"column:billing_rule_pid" json:"billing_rule_pid,omitempty"`
+	UpstreamCostRatio decimal.Decimal `gorm:"column:upstream_cost_ratio" json:"-"`
+	CreatedAt         time.Time       `gorm:"column:created_at;autoCreateTime:milli" json:"created_at"`
 }
 
 func (Invocation) TableName() string { return "invocations" }

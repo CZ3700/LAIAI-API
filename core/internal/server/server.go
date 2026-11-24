@@ -114,7 +114,6 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		log:                 log,
 		now:                 time.Now,
 		invRetentionDefault: opts.InvocationRetentionDays,
-		forwardResolver:     forward.NewResolver(15 * time.Second),
 	}
 	// 邮件走「settings 热配优先 + env 回退」包装：admin 后台填 SMTP 即生效，无需重启/改 env。
 	s.mailer = &settingsMailer{s: s, env: opts.Mailer}
@@ -149,6 +148,9 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		rl.UseRedisRateLimiter(opts.RedisRateLimiter)    // 非 nil 才接入；nil 退化进程内限流
 		rl.SubscribeInvalidations(opts.RedisRateLimiter) // 跨实例热读缓存失效（同一 Redis 客户端复用）
 		s.relay = rl
+		s.forwardResolver = rl.Forward // 共享同一解析器实例（Redis 失效跨实例同步）
+	} else {
+		s.forwardResolver = forward.NewResolver(15 * time.Second)
 	}
 
 	// 统一通知层（§4.9）：邮件复用 settingsMailer；出站 webhook 走 guarded client（SSRF 纪律，
@@ -222,6 +224,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.DELETE("/keys/:id", s.revokeKey)
 				org.DELETE("/keys/:id/purge", s.deleteKey)
 				org.GET("/usage", s.getUsage)
+				org.GET("/logs/unified", s.getUnifiedLogs) // 统一调用流水 + 异步视频任务聚合日志
 				org.GET("/usage/export", s.getUsageExport) // 调用明细 CSV 自助导出（Latency/Usage 页）
 				s.registerInvocationExportJobs(org)
 				org.GET("/usage/summary", s.getUsageSummary)
@@ -292,6 +295,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.GET("/usage/by-user", s.adminUsageByUser)              // 全平台按用户聚合用量（gap P2-B）
 			admin.GET("/usage/by-user/export", s.adminUsageByUserExport) // 同上 CSV 导出
 			admin.GET("/log-stats", s.adminLogStats)                     // 日志量 + 保留期一览（gap P2-C）
+			admin.GET("/logs/unified", s.adminListUnifiedLogs)           // 全平台统一调用+视频任务日志视图
 
 			admin.GET("/channel-categories", s.adminListChannelCategories)
 			admin.POST("/channel-categories", s.adminCreateChannelCategory)
@@ -365,9 +369,12 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		rg := r.Group("", echoTraceHeaders())
 		rg.GET("/v1/models", s.listPricedModels)
 		rg.POST("/v1/chat/completions", rl.HandleChatCompletions)
-		// Anthropic 原生入站（Claude Code / Anthropic SDK 把 base 指到 /anthropic 即用）：
-		// ingress 转 OpenAI canonical → 复用未改动的 HandleChatCompletions 全套计费/路由 → egress 转回 Anthropic。
+		// 国内与各厂商原生兼容入站端点：火山方舟 /api/v3、Anthropic /v1/messages、Google Gemini /v1beta/models
+		rg.POST("/api/v3/chat/completions", rl.HandleChatCompletions)
+		rg.POST("/v1/messages", rl.HandleAnthropicMessages)
+		rg.POST("/api/compatible/v1/messages", rl.HandleAnthropicMessages)
 		rg.POST("/anthropic/v1/messages", rl.HandleAnthropicMessages)
+		rg.POST("/v1beta/models/*action", rl.HandleGeminiNative)
 		// OpenAI Responses 原生入站（Responses SDK / Codex 把 base 指到本网关即用任意 chat 上游）：
 		// ingress 转 OpenAI canonical → 复用未改动 HandleChatCompletions → egress 转回 Responses 形态（§3.2）。
 		rg.POST("/v1/responses", rl.HandleResponses)
@@ -395,8 +402,15 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		if ts.Notify == nil {
 			ts.Notify = s.notify // 任务完成/失败回调（§4.9 Notify）；best-effort，绝不影响结算
 		}
+		if ts.Forward == nil {
+			ts.Forward = s.forwardResolver // 接入数据驱动转发规则解析器
+		}
 		// 数据面体上限（P0-2）：与 relay 各端点 io.LimitReader 同一上限，超限 413
 		vg := r.Group("", bodyLimit(relay.MaxRequestBodySize))
+		// Seedance / 火山方舟原生异步视频任务入站（/api/v3/contents/generations/tasks）
+		vg.POST("/api/v3/contents/generations/tasks", ts.HandleArkNativeCreate)
+		vg.GET("/api/v3/contents/generations/tasks/:id", ts.HandleArkNativeGet)
+		vg.DELETE("/api/v3/contents/generations/tasks/:id", ts.HandleArkNativeCancel)
 		if opts.VideoService != nil {
 			if opts.VideoService.Gate == nil {
 				opts.VideoService.Gate = rl

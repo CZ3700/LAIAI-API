@@ -19,9 +19,11 @@ import (
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/crypto"
+	"github.com/laiai/laiai-next/core/internal/forward"
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/laiai/laiai-next/core/internal/pricing"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -64,6 +66,11 @@ type Task struct {
 	SubmittedAt      time.Time       `gorm:"column:submitted_at;autoCreateTime:milli" json:"submitted_at"`
 	StartedAt        *time.Time      `gorm:"column:started_at" json:"started_at,omitempty"`
 	FinishedAt       *time.Time      `gorm:"column:finished_at" json:"finished_at,omitempty"`
+	ForwardRuleEID   string          `gorm:"column:forward_rule_eid" json:"forward_rule_eid,omitempty"`
+	BillingRulePID   string          `gorm:"column:billing_rule_pid" json:"billing_rule_pid,omitempty"`
+	FeaturesJSON     string          `gorm:"column:features_json" json:"-"`
+	TimeMultiplier   decimal.Decimal `gorm:"column:time_multiplier" json:"-"`
+	BillingDetail    string          `gorm:"column:billing_detail" json:"billing_detail,omitempty"`
 }
 
 func (Task) TableName() string { return "tasks" }
@@ -102,6 +109,7 @@ type Service struct {
 	Gate        Gate                 // 准入（P0-1）：server 装配时注入 relay 实例；HandleCreate 缺装配即拒绝
 	Rec         *invocation.Recorder // 任务终态落 Invocation Store（请求日志可见视频消费）；nil=不记录
 	Notify      Notifier             // 终态通知（§4.9）；nil=不通知（best-effort，绝不影响结算）
+	Forward     *forward.Resolver    // 数据驱动转发规则解析器；nil=按默认 provider adaptor
 	pollCursor  uint64               // 轮询游标（B-4 饥饿修复）：上次轮询到的最大 task id，回绕轮转。
 	// 单 leader 串行调用 PollOnce（main.go ticker），无并发，无需锁。
 }
@@ -142,6 +150,8 @@ type SubmitInput struct {
 	// 网关本地的——按权重独立选路/换渠道故障转移都会把续操作投给不持有该任务的网关（对抗
 	// review CONFIRMED）。非 0 时跳过选路与 failover。
 	PinChannelID uint64
+	// RequestPath：入站路由路径（如 /api/v3/contents/generations/tasks），供 forward_rules 匹配。
+	RequestPath string
 }
 
 var (
@@ -164,10 +174,20 @@ func (e *UpstreamRejectedError) Error() string {
 // Submit：计费快照 → 并发闸 → hold → 上游提交 → 落任务行。
 // 上游提交失败 → release，不留任务行。
 func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
-	price, err := relay.GetPrice(s.DB, in.Model)
-	if err != nil {
-		return nil, err
+	binding, bRule := resolveTaskBillingRule(s.DB, in.Model)
+	var price *relay.ModelPrice
+	if bRule == nil {
+		var perr error
+		price, perr = relay.GetPrice(s.DB, in.Model)
+		if perr != nil {
+			return nil, perr
+		}
 	}
+	reqPath := in.RequestPath
+	if reqPath == "" {
+		reqPath = "/v1/video/generations"
+	}
+	fwd := s.resolveTaskForward(ctx, in.Model, reqPath)
 	// 健康分传 nil：异步任务（视频）独立于 relay 的内存健康态，沿用纯权重选路。
 	var ch *relay.Channel
 	if in.PinChannelID != 0 {
@@ -183,7 +203,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 			return nil, err
 		}
 	}
-	ad, err := adaptorFor(ch.Provider)
+	ad, err := adaptorForTask(ch.Provider, fwd)
 	if officialArkChannel(ch) {
 		return nil, relay.ErrNoChannel
 	}
@@ -208,11 +228,25 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 	// 同事务内重新计数 → hold + 插入 queued 任务行（即"占住槽位"，下一个 Submit 数得到它）。
 	// 消灭 count-then-act 竞态：N 个并发不会全部过闸。
 	estTokens := ad.EstimateOutputTokens(in.Model, in.Content, in.Params)
-	// 计费倍率快照（0011 一层 × 0027 二层）：hold 与结算取同一次值（chat 同款纪律）。
-	// 提交 QPS 低，直读 DB 不走 relay 热读缓存。
 	ratio := relay.EffectiveRatio(s.DB, in.OrgID, in.Model)
-	// ChatCost = 按次计价感知（PerCallUSD>0 直接按次，MJ 等；否则回退 token 口径——视频模型不变）
-	holdAmount := price.ChatCost(0, 0, estTokens).Mul(ratio)
+	timeMult := pricing.ResolveTimeMultiplierAt(bRule, s.Now(), taskCSTZone)
+	features := extractTaskVideoFeatures(in.Content, in.Params, timeMult)
+	featuresJSON := encodeFeaturesSnapshot(features)
+
+	var holdAmount decimal.Decimal
+	var priceOutUSD, pricePerCallUSD decimal.Decimal
+	var bRulePID, fRuleEID string
+	if fwd != nil {
+		fRuleEID = fwd.EID
+	}
+	if bRule != nil {
+		bRulePID = bRule.PID
+		holdAmount = computeTaskRuleHold(binding, bRule, estTokens, ratio, features)
+	} else {
+		holdAmount = price.ChatCost(0, 0, estTokens).Mul(ratio)
+		priceOutUSD = price.OutputUSDPer1M
+		pricePerCallUSD = price.PerCallUSD
+	}
 	// API Key 额度原子预留（P0-1，chat 的 P0-3 同款）：防并发提交超 key quota。
 	// 退还全覆盖：下方事务失败立即退；任务行落地后由 settle 终态按 hold_amount_usd 快照对账/退还。
 	if !identity.ReserveKeyQuota(s.DB, in.APIKeyID, holdAmount) {
@@ -223,11 +257,15 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		OrgID:  in.OrgID, UserID: in.UserID, APIKeyID: in.APIKeyID,
 		Model: in.Model, ChannelID: ch.ID, Provider: ch.Provider,
 		Status: StatusQueued, EstTokens: estTokens,
-		PriceOutUSDPer1M: price.OutputUSDPer1M,
-		PricePerCallUSD:  price.PerCallUSD, // 0048：按次计价快照（MJ 等），settle 与 hold 同口径
+		PriceOutUSDPer1M: priceOutUSD,
+		PricePerCallUSD:  pricePerCallUSD, // 0048：按次计价快照（MJ 等），settle 与 hold 同口径
 
 		HoldAmountUSD: holdAmount, GroupRatio: ratio,
-		CredentialID: credID, // 钉住提交用的 key（0035），轮询固定用它
+		CredentialID:   credID, // 钉住提交用的 key（0035），轮询固定用它
+		ForwardRuleEID: fRuleEID,
+		BillingRulePID: bRulePID,
+		FeaturesJSON:   featuresJSON,
+		TimeMultiplier: timeMult,
 	}
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
 		// 锁渠道行（MySQL FOR UPDATE；SQLite 测试靠单连接串行）
@@ -281,7 +319,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 			if in.PinChannelID != 0 {
 				break // 钉渠道（MJ 引用类动作）：换渠道无意义——目标网关不持有该任务
 			}
-			next, nextAd, nextCred, ok := s.nextSubmitCandidate(in.Model, attempt, tried, t)
+			next, nextAd, nextCred, ok := s.nextSubmitCandidate(in.Model, attempt, tried, t, fwd)
 			if !ok {
 				break // 无更多可用候选（或任务已被并发结算）
 			}
@@ -293,7 +331,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		}
 		tried[ch.ID] = true
 
-		upReq, err := ad.SubmitRequest(ctx, ch, credential, in)
+		upReq, err := buildTaskSubmitRequest(ctx, ad, ch, fwd, credential, in)
 		if err != nil {
 			lastErr = err
 			continue // 构建失败：换渠道（不同 provider 构建路径不同）
@@ -414,7 +452,7 @@ func submitErrorIsClientFault(msg string) bool {
 
 // nextSubmitCandidate：故障转移候选——排除已试渠道重新选路，解出凭证，并把任务行改钉到
 // 新渠道（新渠道并发闸内重新过闸；满则跳过该候选继续找）。返回 ok=false 表示候选耗尽。
-func (s *Service) nextSubmitCandidate(model string, attempt int, tried map[uint64]bool, t *Task) (*relay.Channel, Adaptor, string, bool) {
+func (s *Service) nextSubmitCandidate(model string, attempt int, tried map[uint64]bool, t *Task, fwd *forward.ResolvedForward) (*relay.Channel, Adaptor, string, bool) {
 	for {
 		ch, err := relay.PickChannelForAttempt(s.DB, model, attempt, tried, nil)
 		if err != nil {
@@ -424,7 +462,7 @@ func (s *Service) nextSubmitCandidate(model string, attempt int, tried map[uint6
 			tried[ch.ID] = true
 			continue
 		}
-		ad, err := adaptorFor(ch.Provider)
+		ad, err := adaptorForTask(ch.Provider, fwd)
 		if err != nil {
 			tried[ch.ID] = true
 			continue
@@ -574,7 +612,8 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 		s.Log.Error("task channel missing", "task", t.TaskID, "err", err)
 		return
 	}
-	ad, err := adaptorFor(t.Provider)
+	fwd := s.resolveTaskForwardByEID(ctx, t.ForwardRuleEID, t.Model)
+	ad, err := adaptorForTask(t.Provider, fwd)
 	if err != nil {
 		s.Log.Error("task adaptor missing", "task", t.TaskID, "provider", t.Provider)
 		return
@@ -595,7 +634,7 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 		s.Log.Error("task channel credential", "task", t.TaskID, "err", err)
 		return
 	}
-	upReq, err := ad.QueryRequest(ctx, ch, credential, t.UpstreamTaskID)
+	upReq, err := buildTaskQueryRequest(ctx, ad, ch, fwd, credential, t.UpstreamTaskID)
 	if err != nil {
 		return
 	}
@@ -666,17 +705,34 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 	}
 	actual := decimal.Zero
 	usageSource := invocation.UsageSourceUpstream
-	switch {
-	case price.PerCallUSD.IsPositive():
-		// 按次固定价：usage 与金额无关（MJ 等不报 token），无需"缺 usage"告警
-		actual = price.PerCallUSD.Mul(ratio)
-	case result.CompletionTokens > 0:
-		actual = price.Cost(0, 0, result.CompletionTokens).Mul(ratio)
-	default:
-		// 上游没给 usage：按预估收（保守；上游 usage 缺失会在日志可见）
-		actual = price.Cost(0, 0, t.EstTokens).Mul(ratio)
-		usageSource = invocation.UsageSourceEstimated
-		s.Log.Warn("task usage missing from upstream, charged by estimate", "task", t.TaskID)
+	billingDetail := ""
+	ledgerReason := fmt.Sprintf("task model=%s tokens=%d", t.Model, result.CompletionTokens)
+	if t.BillingRulePID != "" {
+		if b, bRule := resolveTaskBillingRule(s.DB, t.Model); bRule != nil {
+			billTokens := result.CompletionTokens
+			if billTokens <= 0 {
+				billTokens = t.EstTokens
+				usageSource = invocation.UsageSourceEstimated
+			}
+			actual, billingDetail = computeTaskRuleActual(b, bRule, billTokens, ratio, t.FeaturesJSON, t.TimeMultiplier)
+			if billingDetail != "" {
+				ledgerReason = billingDetail
+			}
+		}
+	}
+	if billingDetail == "" {
+		switch {
+		case price.PerCallUSD.IsPositive():
+			// 按次固定价：usage 与金额无关（MJ 等不报 token），无需"缺 usage"告警
+			actual = price.PerCallUSD.Mul(ratio)
+		case result.CompletionTokens > 0:
+			actual = price.Cost(0, 0, result.CompletionTokens).Mul(ratio)
+		default:
+			// 上游没给 usage：按预估收（保守；上游 usage 缺失会在日志可见）
+			actual = price.Cost(0, 0, t.EstTokens).Mul(ratio)
+			usageSource = invocation.UsageSourceEstimated
+			s.Log.Warn("task usage missing from upstream, charged by estimate", "task", t.TaskID)
+		}
 	}
 	// capture 永不超过 hold（预授权语义 + 资金红线①防护，对抗 review CONFIRMED）：
 	// A 类任务（kling/vidu）上游用量单位量纲无法先验封顶，若 EstimateOutputTokens 低估、真实
@@ -696,7 +752,8 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 				"status": StatusSucceeded, "result_url": result.ResultURL,
 				"result_ref":    result.ResultRef, // 代理下发厂商的内部引用（0038；其余厂商为空/审计留痕）
 				"actual_tokens": result.CompletionTokens, "cost_usd": actual,
-				"finished_at": now,
+				"billing_detail": clipReason(billingDetail, 500),
+				"finished_at":    now,
 			})
 		if res.Error != nil {
 			return res.Error
@@ -705,8 +762,7 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 			return nil // CAS 输了：另一个轮询已结算，本事务什么都不做（陷阱 1）
 		}
 		won = true
-		_, err := ledger.SettleHoldExact(tx, t.HoldID, actual, "task", t.TaskID,
-			fmt.Sprintf("task model=%s tokens=%d", t.Model, result.CompletionTokens))
+		_, err := ledger.SettleHoldExact(tx, t.HoldID, actual, "task", t.TaskID, ledgerReason)
 		return err
 	})
 	if err != nil {
@@ -720,7 +776,7 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 	if t.HoldAmountUSD.IsPositive() {
 		_ = identity.AddKeyUsageSigned(s.DB, t.APIKeyID, actual.Sub(t.HoldAmountUSD))
 	}
-	t.Status, t.CostUSD = StatusSucceeded, actual
+	t.Status, t.CostUSD, t.BillingDetail = StatusSucceeded, actual, billingDetail
 	s.recordInvocation(t, invocation.StatusSuccess, http.StatusOK, result.CompletionTokens, actual, usageSource, "")
 	s.emitNotify(t, eventTaskCompleted) // 终态通知（§4.9）：CAS 赢者唯一 emit 点，天然不重
 	s.Log.Info("task succeeded", "task", t.TaskID, "cost", actual)
@@ -789,8 +845,11 @@ func (s *Service) recordInvocation(t *Task, status string, code int, tokens int6
 		ChannelID: t.ChannelID, Provider: t.Provider,
 		Status: status, StatusCode: code,
 		CompletionTokens: tokens, CostUSD: cost, UsageSource: usageSource,
-		DurationMs: int(s.Now().Sub(t.SubmittedAt).Milliseconds()),
-		ErrorBrief: brief,
+		UpstreamRequestID: t.UpstreamTaskID,
+		ForwardRuleEID:    t.ForwardRuleEID,
+		BillingRulePID:    t.BillingRulePID,
+		DurationMs:        int(s.Now().Sub(t.SubmittedAt).Milliseconds()),
+		ErrorBrief:        brief,
 	})
 }
 

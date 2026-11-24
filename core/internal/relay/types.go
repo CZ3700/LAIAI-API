@@ -117,6 +117,14 @@ func mappedRawBody(ch *Channel, rawBody []byte, model string) ([]byte, string) {
 // EnforcesStrictResponse 返回是否启用上游响应校验（默认开；历史/手工行未设值视为开）。
 func (c *Channel) EnforcesStrictResponse() bool { return c.StrictResponse != 0 }
 
+// EffectiveUpstreamCostRatio 返回正数进货成本倍率（0/负值兜底 1）。
+func (c *Channel) EffectiveUpstreamCostRatio() decimal.Decimal {
+	if c != nil && c.UpstreamCostRatio.IsPositive() {
+		return c.UpstreamCostRatio
+	}
+	return decimal.NewFromInt(1)
+}
+
 // IsLLMContentType 判断上游响应 content-type 是否为合法的 LLM 响应类型
 // （JSON / SSE / AWS event stream）。HTML/纯文本等被判为上游异常（中转站返回首页、网关错误页等）。
 // "eventstream"（无连字符）覆盖 Bedrock 的 application/vnd.amazon.eventstream——否则 strict_response

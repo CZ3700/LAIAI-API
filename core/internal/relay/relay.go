@@ -18,9 +18,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/crypto"
+	"github.com/laiai/laiai-next/core/internal/forward"
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/laiai/laiai-next/core/internal/pricing"
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -113,11 +115,13 @@ type Relay struct {
 	// 热读缓存（WS-2）：极少变、读极热的运营配置。命中即把每请求 DB 读从 ~5 降到 0。
 	// 失效=本地写后同步 invalidate + 跨实例 Redis pub/sub（invalidate.go）；TTL 兜底。
 	// 绝不缓存任何资金可变字段（used_amount/quota/balance 永远走 DB 原子写）。
-	channels *snapCache[[]Channel]                // status=1 渠道全表快照（#1 读瓶颈，8s）
-	prices   *ttlCache[string, *ModelPrice]       // model → 定价（45s）
-	ratios   *ttlCache[ratioKey, decimal.Decimal] // (org,model) → 最终倍率（45s）
-	invRedis *redis.Client                        // 跨实例失效 pub/sub（nil = 单实例 TTL 兜底）
-	invStop  chan struct{}
+	channels     *snapCache[[]Channel]                  // status=1 渠道全表快照（#1 读瓶颈，8s）
+	prices       *ttlCache[string, *ModelPrice]         // model → 定价（45s）
+	billingRules *ttlCache[string, *resolvedBillingRule] // model → 绑定与多模态计费规则（45s）
+	ratios       *ttlCache[ratioKey, decimal.Decimal]   // (org,model) → 最终倍率（45s）
+	Forward      *forward.Resolver                      // 数据驱动转发规则解析器（15s）
+	invRedis     *redis.Client                          // 跨实例失效 pub/sub（nil = 单实例 TTL 兜底）
+	invStop      chan struct{}
 }
 
 // ratioKey：倍率缓存键（org × model 的最终倍率，含一层+二层合并）。
@@ -217,9 +221,11 @@ func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Lo
 		suggested:     map[uint64]bool{},
 		rateWindows:   map[string]*rateWindow{},
 		// 热读缓存 TTL：渠道快照短(8s，禁用/重启用要较快跟随)；价目/倍率长(45s，纯运营低频改)。
-		channels: newSnapCache[[]Channel](8*time.Second, now),
-		prices:   newTTLCache[string, *ModelPrice](45*time.Second, now),
-		ratios:   newTTLCache[ratioKey, decimal.Decimal](45*time.Second, now),
+		channels:     newSnapCache[[]Channel](8*time.Second, now),
+		prices:       newTTLCache[string, *ModelPrice](45*time.Second, now),
+		billingRules: newTTLCache[string, *resolvedBillingRule](45*time.Second, now),
+		ratios:       newTTLCache[ratioKey, decimal.Decimal](45*time.Second, now),
+		Forward:      forward.NewResolver(15 * time.Second),
 	}
 	r.rehydrateSuggested() // 启动回填禁用建议内存 set（对抗 review：重启后成功请求才能清陈旧建议）
 	return r
@@ -781,15 +787,31 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	// 否则本模型若在进入换渠道循环体前就终态失败（无渠道/余额不足/quota 不足），记录会残留上一模型的
 	// channel_id/provider/attempts/错误码（对抗 review：观测数据失真，误把 no_channel 归因到无关渠道）。
 	inv.ChannelID, inv.Provider, inv.Attempts, inv.UpstreamErrorCode = 0, "", 0, ""
+	inv.ForwardRuleEID, inv.BillingRulePID, inv.UpstreamCostRatio = "", "", decimal.NewFromInt(1)
 
-	// 3. 定价（热读缓存：命中即免 DB 查；hold/capture 仍取同一个 *price 局部变量）
-	price, err := r.cachedPrice(model)
-	if err != nil {
-		if !last {
-			return chatNextModel // 该模型未定价/不存在 → 降级下一模型
+	// 3. 定价与规则解析（优先 model_rule_bindings + billing_rules，未绑定则平滑回退 legacy model_prices）
+	binding, bRule := r.cachedBillingRule(model)
+	timeMult := decimal.NewFromInt(1)
+	if bRule != nil {
+		timeMult = pricing.ResolveTimeMultiplierAt(bRule, r.Now(), cstZone)
+		inv.BillingRulePID = bRule.PID
+	}
+	var price *ModelPrice
+	if bRule == nil {
+		var perr error
+		price, perr = r.cachedPrice(model)
+		if perr != nil {
+			if !last {
+				return chatNextModel // 该模型未定价/不存在 → 降级下一模型
+			}
+			relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", model))
+			return chatDone
 		}
-		relayErr(c, http.StatusBadRequest, fmt.Sprintf("model %q is not available", model))
-		return chatDone
+	}
+	reqServiceTier, _ := req["service_tier"].(string)
+	fwd := r.resolveForwardRule(c.Request.Context(), model, inferInboundCategory(c.Request.URL.Path), c.Request.URL.Path)
+	if fwd != nil {
+		inv.ForwardRuleEID = fwd.EID
 	}
 
 	// 4. Hold：按 tiktoken 估算输入 + max_tokens 上限 冻结（整个重试周期只 hold 一次）
@@ -804,7 +826,12 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	}
 	// 计费倍率（0011 一层 + 0027 二层 (分组,模型)）：hold/capture 取同一次值，避免中途改配置导致 release 算错
 	groupRatio := r.cachedRatio(key.OrgID, model)
-	holdAmount := price.ChatCost(holdIn, 0, holdOutput).Mul(groupRatio) // holdOutput 含 n 倍；按次固定价时忽略 token（gap P2-F）
+	var holdAmount decimal.Decimal
+	if bRule != nil {
+		holdAmount = computeBillingRuleHold(binding, bRule, holdIn, holdOutput, groupRatio, timeMult, reqServiceTier)
+	} else {
+		holdAmount = price.ChatCost(holdIn, 0, holdOutput).Mul(groupRatio) // holdOutput 含 n 倍；按次固定价时忽略 token（gap P2-F）
+	}
 	// fallback 链：每模型独立幂等键（绝不共用 hold 跨模型结算错价，设计 §4.4）；
 	// chainIdx=0 保持历史键形（零回归）。
 	idem := "relay:" + inv.RequestID
@@ -812,7 +839,7 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 		idem = fmt.Sprintf("relay:%s#%d", inv.RequestID, chainIdx)
 	}
 	var hold *ledger.Hold
-	err = r.DB.Transaction(func(tx *gorm.DB) error {
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
 		// 分片感知 hold（CreateHoldSharded）：org 未分片(n≤1)时与 CreateHold 逐字一致（零回归），
 		// 巨客户配 shardCount>1 后按 RequestID 散列打散写热点、不足跨片回退——届时只升级配置即可。
 		h, _, err := ledger.CreateHoldSharded(tx, key.OrgID, ledger.AccountUserCredit, inv.RequestID, ledger.HoldInput{
@@ -861,6 +888,7 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	// 不需要 NewAPI 的磁盘 BufStorage。
 	var resp *http.Response
 	var ch *Channel
+	var lastAd adapter
 	var attemptStart time.Time
 	var credID uint64 // 本次终选的 credential id（0034 Multi-key）：成功清其失败计数，失败按 key 禁用
 	exclude := map[uint64]bool{}
@@ -890,6 +918,7 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 		}
 		inv.Attempts = attempt + 1
 		inv.ChannelID, inv.Provider = ch.ID, ch.Provider
+		inv.UpstreamCostRatio = ch.EffectiveUpstreamCostRatio()
 		attemptStart = r.Now()
 		// 选 key（0034 Multi-key）：按渠道模式从启用 key 挑一个；无 key → 换渠道。
 		credEnc, credOK := "", false
@@ -907,14 +936,14 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 			lastStatus, lastBody = http.StatusServiceUnavailable, []byte(`{"error":{"message":"upstream configuration error"}}`)
 			continue // 我方配置错误（知识库 channel: 前缀类）→ 换渠道
 		}
-		ad := adapterForChannel(ch)
 		// 模型映射（0009）：每次 attempt 按当前渠道覆盖写，无跨渠道残留；
 		// 计费/记录/对外响应仍用对外名（inv.Model / price 已定）。
 		req["model"] = ch.UpstreamModel(model)
 		// 渠道级 param override（0033，指令 §3.4）：在**本 attempt 的副本**上深合并（无 override
 		// 零拷贝返回原 map）——换渠道重试各用各的 override，绝不残留。资金钳制键受保护（overrides.go）。
-		upReq, err := ad.buildRequest(c.Request.Context(), ch, credential,
+		upReq, ad, err := buildForwardAwareRequest(c.Request.Context(), ch, fwd, credential,
 			applyParamOverride(req, ch.ParamOverride), stream)
+		lastAd = ad
 		if err != nil {
 			r.release(hold.ID)
 			finish(invocation.StatusUpstreamError, http.StatusInternalServerError, "upstream request build failed")
@@ -993,7 +1022,10 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 		return chatDone
 	}
 	defer resp.Body.Close()
-	ad := adapterForChannel(ch)
+	ad := lastAd
+	if ad == nil {
+		ad = adapterForChannel(ch)
+	}
 
 	// 上游响应校验（部署冒烟暴露）：200 但 content-type 非 JSON/SSE（如中转站返回 HTML 首页）
 	// 判为上游异常——不透传垃圾、不误计费成 success。渠道级开关可放宽。
@@ -1060,18 +1092,24 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	byok := r.byokFactor(ch, key.OrgID)
 	cw5m, cw1h := u.CacheWrites()          // Anthropic 写缓存溢价（1.25x/2x 输入价，差额补收）
 	aIn, aOut := u.AudioIn(), u.AudioOut() // 音频 token 价差补收（gpt-4o-audio 等，≈16× 文本价）
-	actual := price.ChatCost(u.PromptTokens, u.Cached(), u.CompletionTokens).
-		Add(price.CacheWriteSurcharge(cw5m, cw1h)).
-		Add(price.AudioSurcharge(aIn, aOut)).Mul(groupRatio).Mul(byok).Round(8)
-	reason := fmt.Sprintf("model=%s in=%d cached=%d out=%d ×%s", model, u.PromptTokens, u.Cached(), u.CompletionTokens, groupRatio)
-	if cw5m > 0 || cw1h > 0 {
-		reason += fmt.Sprintf(" cw5m=%d cw1h=%d", cw5m, cw1h)
-	}
-	if aIn > 0 || aOut > 0 {
-		reason += fmt.Sprintf(" audioIn=%d audioOut=%d", aIn, aOut)
-	}
-	if !byok.Equal(decimalOne) {
-		reason += " byok×" + byok.String()
+	var actual decimal.Decimal
+	var reason string
+	if bRule != nil {
+		actual, reason = computeBillingRuleActual(binding, bRule, u, cw5m, cw1h, aIn, groupRatio, byok, timeMult, reqServiceTier)
+	} else {
+		actual = price.ChatCost(u.PromptTokens, u.Cached(), u.CompletionTokens).
+			Add(price.CacheWriteSurcharge(cw5m, cw1h)).
+			Add(price.AudioSurcharge(aIn, aOut)).Mul(groupRatio).Mul(byok).Round(8)
+		reason = fmt.Sprintf("model=%s in=%d cached=%d out=%d ×%s", model, u.PromptTokens, u.Cached(), u.CompletionTokens, groupRatio)
+		if cw5m > 0 || cw1h > 0 {
+			reason += fmt.Sprintf(" cw5m=%d cw1h=%d", cw5m, cw1h)
+		}
+		if aIn > 0 || aOut > 0 {
+			reason += fmt.Sprintf(" audioIn=%d audioOut=%d", aIn, aOut)
+		}
+		if !byok.Equal(decimalOne) {
+			reason += " byok×" + byok.String()
+		}
 	}
 	var overage = decimal.Zero
 	if err := r.DB.Transaction(func(tx *gorm.DB) error {
