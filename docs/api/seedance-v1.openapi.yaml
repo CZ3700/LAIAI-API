@@ -1739,7 +1739,7 @@ components:
         output_format:
           type: string
           enum: [mp4, mov]
-          description: Seedance 2.5 可选格式；仅对应能力已核实并启用时可用。
+          description: Seedance 2.5 与 Seedance 2.5 Flash 按各自已发布的模型能力选择 mp4 或 mov。省略时使用上游默认格式。
         bitrate_mode:
           type: string
           enum: [high, standard]

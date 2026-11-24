@@ -176,7 +176,7 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 	if in.OmniReferenceTaskType != nil && (in.Model != Model25 || !contains([]string{"auto", "reference", "edit", "extend"}, p.OmniReferenceTaskType) || !contains(cap.OmniReferenceTaskTypes, p.OmniReferenceTaskType)) {
 		return unsupported("omni_reference_task_type")
 	}
-	if in.OutputFormat != nil && (in.Model != Model25 || !contains([]string{"mp4", "mov"}, p.OutputFormat) || !contains(cap.OutputFormats, p.OutputFormat)) {
+	if in.OutputFormat != nil && (!Is25Family(in.Model) || !contains([]string{"mp4", "mov"}, p.OutputFormat) || !contains(cap.OutputFormats, p.OutputFormat)) {
 		return unsupported("output_format")
 	}
 	// bitrate_mode 是官方未公开的码率档位参数：支持域与各模型已验证的分辨率域
