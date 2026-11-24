@@ -116,7 +116,7 @@ paths:
       summary: 创建视频任务
       description: |
         首次受理返回 202 和平台 task_ ID。模型映射、素材引用和计费参数在受理前验证。
-        不接受任意裸上游标识。asset://asset_ 引用须属于当前组织且已就绪；真人素材组须授权有效。
+        已核实的火山公共素材可用原始 asset:// URI 直传。私域 asset://asset_ 引用须属于当前调用方且已就绪；真人素材组须授权有效。
         素材引用错误按官方口径：不存在或属于其他账号统一 404 material_not_found（不区分二者，客户端统一提示“当前账号下找不到该素材”）；
         属于当前账号但尚未就绪返回 409 material_not_ready（轮询素材至 ready 后重试）。
         draft:true 仅限 Seedance 2.5 的 480p 样片；draft_task 转正式支持 1080p 或 4k。
@@ -1664,8 +1664,8 @@ components:
     MediaUrl:
       type: string
       maxLength: 4096
-      pattern: '^([Hh][Tt][Tt][Pp][Ss]?://[^\s]+|asset://asset_[A-Za-z0-9_-]+)$'
-      description: HTTP 或 HTTPS 外链，或当前调用方有权使用的 asset://asset_ 素材引用。
+      pattern: '^([Hh][Tt][Tt][Pp][Ss]?://[^\s]+|asset://asset_[A-Za-z0-9_-]+|asset://asset-20260224190652-2qjpm)$'
+      description: HTTP 或 HTTPS 外链、平台私域素材引用，或已核实的火山公共图片 URI asset://asset-20260224190652-2qjpm。
     CreateTaskRequest:
       type: object
       additionalProperties: false

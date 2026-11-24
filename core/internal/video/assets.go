@@ -778,7 +778,7 @@ func (s *Service) taskBindingsTx(tx *gorm.DB, org uint64, in ark.CreateRequest, 
 			kind = "audio"
 		}
 		if ref != nil {
-			if strings.HasPrefix(ref.URL, "asset://") {
+			if strings.HasPrefix(ref.URL, "asset://") && ark.PublicAssetMediaType(ref.URL) == "" {
 				role := item.Role
 				if role == "" {
 					role = "reference_" + kind
