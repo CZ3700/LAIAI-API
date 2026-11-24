@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -25,19 +27,75 @@ func assetTestActor() *identity.User {
 
 func TestDirectGenerationMediaRequiresNoAssetStore(t *testing.T) {
 	s := &Service{}
+	// Provider asset URIs (native Ark IDs created outside the platform library)
+	// are forwarded unchanged; the repository is public, so the IDs are
+	// synthetic rather than the customer-reported ones.
+	native := "asset://asset-20260101000000-abcde"
 	in := ark.CreateRequest{Content: []ark.ContentItem{
 		{Type: "text", Text: "A quiet lakeshore"},
 		{Type: "image_url", ImageURL: &ark.MediaReference{URL: "http://media.example/lake.png"}},
 		{Type: "video_url", VideoURL: &ark.MediaReference{URL: "https://media.example/lake.mp4?sig=fixture"}},
 		{Type: "audio_url", AudioURL: &ark.MediaReference{URL: "http://media.example/lake.mp3"}},
-		{Type: "image_url", ImageURL: &ark.MediaReference{URL: "asset://asset-20260224190652-2qjpm"}},
+		{Type: "image_url", ImageURL: &ark.MediaReference{URL: "asset://asset-20260101000000-f1x7t"}},
+		{Type: "image_url", ImageURL: &ark.MediaReference{URL: native}},
+		{Type: "video_url", VideoURL: &ark.MediaReference{URL: "asset://asset-20260101000000-vide0"}},
 	}}
-	effective, bindings, resources, err := s.taskBindingsTx(nil, 1, in, ProviderScope{}, ark.Capability{MaxContentItems: 5})
+	effective, bindings, resources, err := s.taskBindingsTx(nil, 1, in, ProviderScope{}, ark.Capability{MaxContentItems: 7})
 	if err != nil || len(bindings.Assets) != 0 || len(resources.References) != 0 || !resources.HasUnverifiedVideo {
 		t.Fatalf("raw media must need neither the registry nor an asset binding: resources=%+v err=%v", resources, err)
 	}
-	if effective.Content[2].VideoURL.URL != in.Content[2].VideoURL.URL || effective.Content[4].ImageURL.URL != in.Content[4].ImageURL.URL {
+	if effective.Content[2].VideoURL.URL != in.Content[2].VideoURL.URL || effective.Content[4].ImageURL.URL != in.Content[4].ImageURL.URL || effective.Content[5].ImageURL.URL != native || effective.Content[6].VideoURL.URL != in.Content[6].VideoURL.URL {
 		t.Fatal("direct media URL was rewritten")
+	}
+
+	// The platform namespace keeps the library path: Ark cannot resolve it, so a
+	// service without the asset store must refuse it instead of forwarding it.
+	library := ark.CreateRequest{Content: []ark.ContentItem{{Type: "image_url", ImageURL: &ark.MediaReference{URL: "asset://asset_library_1"}}}}
+	if _, _, _, err := s.taskBindingsTx(nil, 1, library, ProviderScope{}, ark.Capability{MaxContentItems: 1}); !errors.Is(err, ErrCapability) {
+		t.Fatalf("platform asset must stay on the library path: %v", err)
+	}
+	if library.Content[0].ImageURL.URL != "asset://asset_library_1" {
+		t.Fatal("taskBindingsTx must not mutate the caller's request")
+	}
+}
+
+// A provider asset URI reaches Ark byte-for-byte with nothing behind it on the
+// platform side: the fixture organization has no asset route, no tenant lock
+// and no library row, and the task records no reference (2026-11-24).
+func TestMySQLProviderAssetURIForwardsWithoutLibrary(t *testing.T) {
+	f := mysqlFixture(t)
+	var cfg ModelConfig
+	must(t, f.s.DB.First(&cfg, "public_model = ?", ark.Model20).Error)
+	var cap ark.Capability
+	must(t, json.Unmarshal([]byte(cfg.CapabilityJSON), &cap))
+	cap.ImageInput, cap.MaxImages = true, 2
+	raw, _ := json.Marshal(cap)
+	must(t, f.s.DB.Model(&cfg).Update("capability_json", string(raw)).Error)
+
+	const native = "asset://asset-20260101000000-abcde"
+	forwarded := ""
+	f.response = func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			forwarded = string(body)
+			return reply(200, `{"id":"up_native_asset"}`), nil
+		}
+		return reply(200, `{"id":"up_native_asset","status":"succeeded","usage":{"completion_tokens":100,"total_tokens":999}}`), nil
+	}
+	in := ark.CreateRequest{Model: ark.Model20, Content: []ark.ContentItem{
+		{Type: "text", Text: "A quiet lakeshore"},
+		{Type: "image_url", Role: "reference_image", ImageURL: &ark.MediaReference{URL: native}},
+	}}
+	v, _, err := f.s.Create(context.Background(), f.key, f.requestID("native-asset"), "native-asset-create", in)
+	must(t, err)
+	var refs int64
+	must(t, f.s.DB.Model(&videoasset.TaskReference{}).Where("org_id = ?", f.key.OrgID).Count(&refs).Error)
+	if refs != 0 {
+		t.Fatalf("a forwarded provider asset must not record a library reference: %d", refs)
+	}
+	f.dispatch(t, v.ID)
+	if !strings.Contains(forwarded, `"url":"`+native+`"`) {
+		t.Fatalf("provider asset URI was not forwarded unchanged: %s", forwarded)
 	}
 }
 func assetTestSetup(t *testing.T, f *fixture) (ProviderScope, ark.Capability) {

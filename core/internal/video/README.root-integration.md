@@ -96,7 +96,10 @@ trusted reviewer evidence. The callback never grants a material license.
 ## Creation and Draft behavior
 
 `plan` verifies library asset references against the same organization,
-provider account/region/project and material license. `ValidateBindingsTx` takes the same tenant/group/license locks
+provider account/region/project and material license. Provider asset URIs (native
+`asset://asset-...` IDs created outside the platform library) are forwarded to
+Ark unchanged: no library lookup, no provider asset API call, no task
+reference row; Ark alone decides usability. `ValidateBindingsTx` takes the same tenant/group/license locks
 as binding but inserts no task reference. After the task row exists,
 `persistTaskResourcesTx` calls `ResolveBindingsTx` and compares the entire binding
 snapshot, in the financial creation transaction. Any failure rolls back the task,
@@ -122,7 +125,8 @@ audio URLs to Ark unchanged. Direct URLs require no media registry lookup.
 Direct video URLs require
 an explicit, verified `MaxInputVideoDurationMS` that represents the official
 model's **aggregate total input-video duration upper bound**. When any video input
-uses a direct URL, the entire aggregate freezes against that bound. The actual
+uses a direct URL, the entire aggregate freezes against that bound. Provider asset URIs (native `asset://asset-...`)
+follow the same unverified-duration path.  The actual
 outbound request and frozen bound are retained. Library asset references and
 inherited Draft context provide trusted durations for more precise freezing.
 The configured maximum also bounds those measured durations when present.

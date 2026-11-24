@@ -253,19 +253,23 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 		}
 		if ref != nil {
 			if strings.HasPrefix(ref.URL, "asset://") {
-				if publicType := PublicAssetMediaType(ref.URL); publicType != "" {
-					if publicType != mediaType {
-						return bad("content", "public asset media type does not match the content item")
-					}
-				} else {
-					id := strings.TrimPrefix(ref.URL, "asset://")
-					b, ok := bindings.Assets[id]
-					if !platformAsset.MatchString(id) || !ok || b.MediaType != mediaType || !validUpstreamAsset(b.UpstreamURI) {
+				id := strings.TrimPrefix(ref.URL, "asset://")
+				if b, ok := bindings.Assets[id]; ok {
+					// A platform library asset is translated to its provider URI.
+					if b.MediaType != mediaType || !validUpstreamAsset(b.UpstreamURI) {
 						return bad("content", "asset reference has not been verified")
 					}
 					ref.URL = b.UpstreamURI
 					out.AssetIDs = append(out.AssetIDs, id)
+				} else if IsPlatformAssetID(id) {
+					// Only the platform can resolve its own namespace; Ark cannot.
+					return bad("content", "asset reference has not been verified")
+				} else if !validUpstreamAsset(ref.URL) {
+					return bad("content", "asset URI is malformed")
 				}
+				// Any other provider asset URI is forwarded unchanged. Ark decides
+				// whether the asset exists, is ready and may be used; the platform
+				// neither looks it up locally nor queries the provider asset API.
 			} else if !validWebMediaURL(ref.URL, true) {
 				return bad("content", "media URL must use HTTP or HTTPS without user credentials")
 			}
@@ -412,15 +416,16 @@ func validUpstreamAsset(s string) bool {
 	return strings.HasPrefix(s, "asset://") && upstreamAssetID.MatchString(strings.TrimPrefix(s, "asset://"))
 }
 
-// PublicAssetMediaType identifies Ark assets explicitly verified as belonging to
-// a provider group with GroupType=Public. The native ID syntax is also used by
-// private assets, so a prefix or pattern alone cannot grant generation access.
-func PublicAssetMediaType(uri string) string {
-	switch uri {
-	case "asset://asset-20260224190652-2qjpm":
-		// Ark GetAssetGroup confirmed Public for group-20260224190652-6sz8j.
-		return "image"
-	default:
-		return ""
-	}
+// IsPlatformAssetID reports whether the ID after "asset://" is a platform
+// library asset (asset_...). Only the platform can resolve that namespace: it
+// must be translated to the provider URI before the request reaches Ark.
+func IsPlatformAssetID(id string) bool {
+	return platformAsset.MatchString(id)
+}
+
+// IsPlatformAssetURI reports whether a media URL is an asset:// reference into
+// the platform library, as opposed to a provider asset URI that is forwarded
+// to Ark unchanged.
+func IsPlatformAssetURI(uri string) bool {
+	return strings.HasPrefix(uri, "asset://") && IsPlatformAssetID(strings.TrimPrefix(uri, "asset://"))
 }
