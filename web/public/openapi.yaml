@@ -959,7 +959,7 @@
             "type": "string"
           },
           "output_format": {
-            "description": "Seedance 2.5 可选格式；仅对应能力已核实并启用时可用。",
+            "description": "Seedance 2.5 与 Seedance 2.5 Flash 按各自已发布的模型能力选择 mp4 或 mov。省略时使用上游默认格式。",
             "enum": [
               "mp4",
               "mov"
@@ -5843,5 +5843,5 @@
     }
   ],
   "x-seedance-source": "docs/api/seedance-v1.openapi.yaml",
-  "x-seedance-source-sha256": "d32db3f72dfb0f4fc7ba1eb17464315984ed52a99f81d06459a6b934b1a67422"
+  "x-seedance-source-sha256": "aabb5a3ee51a476da86e456cab7117ee73481f9239af90f3a1ef58e6199127a9"
 }

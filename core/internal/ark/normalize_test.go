@@ -339,6 +339,55 @@ func TestNormalizeRejectsUnverifiedAndInvalidParameters(t *testing.T) {
 	}
 }
 
+func TestNormalizeFlashOutputFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		format    *string
+		published []string
+		reject    bool
+	}{
+		{name: "mp4", format: ptr("mp4"), published: []string{"mp4", "mov"}},
+		{name: "mov", format: ptr("mov"), published: []string{"mp4", "mov"}},
+		{name: "omitted", published: []string{"mp4", "mov"}},
+		{name: "unpublished", format: ptr("mov"), published: []string{"mp4"}, reject: true},
+		{name: "invalid", format: ptr("avi"), published: []string{"avi"}, reject: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cap := testCapability(Model25)
+			cap.PublicModel = Model25Flash
+			cap.UpstreamModel = "doubao-seedance-2-5-flash-261115"
+			cap.OutputFormats = tc.published
+			in := textRequest(Model25Flash)
+			in.OutputFormat = tc.format
+
+			out, err := Normalize(in, cap, Bindings{})
+			if tc.reject {
+				apiErr, ok := err.(*Error)
+				if !ok || apiErr.HTTPStatus != http.StatusUnprocessableEntity || apiErr.Code != "unsupported_capability" || apiErr.Field != "output_format" {
+					t.Fatalf("expected output_format capability error, got %+v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(out.Body, &body); err != nil {
+				t.Fatal(err)
+			}
+			if tc.format == nil {
+				if _, present := body["output_format"]; present {
+					t.Fatalf("output_format was injected into %s", out.Body)
+				}
+				return
+			}
+			if body["output_format"] != *tc.format || out.Parameters.OutputFormat != *tc.format {
+				t.Fatalf("output_format %q was not preserved in parameters and body %s", *tc.format, out.Body)
+			}
+		})
+	}
+}
+
 func TestNormalizeBitrateModePassThrough(t *testing.T) {
 	// 未核实取值：422 指向 bitrate_mode，且不产生上游请求体。
 	r := textRequest(Model20)
