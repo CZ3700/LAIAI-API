@@ -23,20 +23,21 @@ func assetTestActor() *identity.User {
 	return &identity.User{ID: 77, Role: identity.PlatRoleSuperadmin, Status: identity.StatusActive}
 }
 
-func TestRawGenerationMediaRequiresNoAssetStore(t *testing.T) {
+func TestDirectGenerationMediaRequiresNoAssetStore(t *testing.T) {
 	s := &Service{}
 	in := ark.CreateRequest{Content: []ark.ContentItem{
 		{Type: "text", Text: "A quiet lakeshore"},
 		{Type: "image_url", ImageURL: &ark.MediaReference{URL: "http://media.example/lake.png"}},
 		{Type: "video_url", VideoURL: &ark.MediaReference{URL: "https://media.example/lake.mp4?sig=fixture"}},
 		{Type: "audio_url", AudioURL: &ark.MediaReference{URL: "http://media.example/lake.mp3"}},
+		{Type: "image_url", ImageURL: &ark.MediaReference{URL: "asset://asset-20260224190652-2qjpm"}},
 	}}
 	effective, bindings, resources, err := s.taskBindingsTx(nil, 1, in, ProviderScope{}, ark.Capability{MaxContentItems: 5})
 	if err != nil || len(bindings.Assets) != 0 || len(resources.References) != 0 || !resources.HasUnverifiedVideo {
 		t.Fatalf("raw media must need neither the registry nor an asset binding: resources=%+v err=%v", resources, err)
 	}
-	if effective.Content[2].VideoURL.URL != in.Content[2].VideoURL.URL {
-		t.Fatal("raw video URL was rewritten")
+	if effective.Content[2].VideoURL.URL != in.Content[2].VideoURL.URL || effective.Content[4].ImageURL.URL != in.Content[4].ImageURL.URL {
+		t.Fatal("direct media URL was rewritten")
 	}
 }
 func assetTestSetup(t *testing.T, f *fixture) (ProviderScope, ark.Capability) {

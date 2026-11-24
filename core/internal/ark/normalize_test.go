@@ -438,6 +438,28 @@ func TestRawGenerationMediaPreservesURLsAndText(t *testing.T) {
 	}
 }
 
+func TestNormalizeVerifiedPublicAsset(t *testing.T) {
+	const public = "asset://asset-20260224190652-2qjpm"
+	in := textRequest(Model20Mini)
+	in.Resolution, in.Ratio, in.Duration, in.GenerateAudio = ptr("480p"), ptr("adaptive"), ptr(4), ptr(false)
+	cap := variantTestCapability(Model20Mini)
+	cap.Ratios = append(cap.Ratios, "adaptive")
+	in.Content = append(in.Content, ContentItem{Type: "image_url", Role: "reference_image", ImageURL: &MediaReference{URL: public}})
+	out, err := Normalize(in, cap, Bindings{})
+	if err != nil || !strings.Contains(string(out.Body), public) || len(out.AssetIDs) != 0 {
+		t.Fatalf("expected unchanged public asset without a library binding: %s (%v)", out.Body, err)
+	}
+
+	in.Content[1].ImageURL.URL = "asset://asset-20260224190652-unverified"
+	if _, err := Normalize(in, cap, Bindings{}); err == nil {
+		t.Fatal("an unverified Ark asset with the same ID format must still need a binding")
+	}
+	in.Content[1] = ContentItem{Type: "video_url", Role: "reference_video", VideoURL: &MediaReference{URL: public}}
+	if _, err := Normalize(in, cap, Bindings{}); err == nil {
+		t.Fatal("a public image must not pass as a video")
+	}
+}
+
 // 回归（2026-11-05）：URL 模式素材经官方摄取后的上游标识由官方原样返回，可以
 // 包含冒号/点（素材子系统入库模式为 videoasset identifier，varchar(128)）。
 // 修复前 Normalize 按严格模型/任务 ID 模式校验绑定 URI，生产 AV 参考绑定被

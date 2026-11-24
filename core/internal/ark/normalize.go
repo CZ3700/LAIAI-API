@@ -253,13 +253,19 @@ func Normalize(in CreateRequest, cap Capability, bindings Bindings) (NormalizedR
 		}
 		if ref != nil {
 			if strings.HasPrefix(ref.URL, "asset://") {
-				id := strings.TrimPrefix(ref.URL, "asset://")
-				b, ok := bindings.Assets[id]
-				if !platformAsset.MatchString(id) || !ok || b.MediaType != mediaType || !validUpstreamAsset(b.UpstreamURI) {
-					return bad("content", "asset reference has not been verified")
+				if publicType := PublicAssetMediaType(ref.URL); publicType != "" {
+					if publicType != mediaType {
+						return bad("content", "public asset media type does not match the content item")
+					}
+				} else {
+					id := strings.TrimPrefix(ref.URL, "asset://")
+					b, ok := bindings.Assets[id]
+					if !platformAsset.MatchString(id) || !ok || b.MediaType != mediaType || !validUpstreamAsset(b.UpstreamURI) {
+						return bad("content", "asset reference has not been verified")
+					}
+					ref.URL = b.UpstreamURI
+					out.AssetIDs = append(out.AssetIDs, id)
 				}
-				ref.URL = b.UpstreamURI
-				out.AssetIDs = append(out.AssetIDs, id)
 			} else if !validWebMediaURL(ref.URL, true) {
 				return bad("content", "media URL must use HTTP or HTTPS without user credentials")
 			}
@@ -404,4 +410,17 @@ func validWebMediaURL(s string, allowHTTP bool) bool {
 }
 func validUpstreamAsset(s string) bool {
 	return strings.HasPrefix(s, "asset://") && upstreamAssetID.MatchString(strings.TrimPrefix(s, "asset://"))
+}
+
+// PublicAssetMediaType identifies Ark assets explicitly verified as belonging to
+// a provider group with GroupType=Public. The native ID syntax is also used by
+// private assets, so a prefix or pattern alone cannot grant generation access.
+func PublicAssetMediaType(uri string) string {
+	switch uri {
+	case "asset://asset-20260224190652-2qjpm":
+		// Ark GetAssetGroup confirmed Public for group-20260224190652-6sz8j.
+		return "image"
+	default:
+		return ""
+	}
 }
