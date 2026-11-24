@@ -76,6 +76,8 @@ CREATE TABLE channels (
     owner_org_id INTEGER NOT NULL DEFAULT 0,
     suggest_disable_reason TEXT NOT NULL DEFAULT '', suggest_disabled_at DATETIME,
     status INTEGER NOT NULL DEFAULT 1,
+    category_id INTEGER NOT NULL DEFAULT 0,
+    upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE channel_credentials (

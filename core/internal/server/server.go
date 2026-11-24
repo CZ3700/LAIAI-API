@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/crypto"
+	"github.com/laiai/laiai-next/core/internal/forward"
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/mailer"
@@ -65,6 +66,7 @@ type Server struct {
 	invRetentionDefault int                 // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
 	invocationQueries   invocationQueryGate // v1 metadata queries: global 4, subject 2, zero wait.
 	routingGroupReads   routingAdminReadGate
+	forwardResolver     *forward.Resolver
 }
 
 // readOnly 返回只读副本句柄（规模化：分析/用量/排行/公开价目等重读卸载到副本）；未配副本回退主库。
@@ -112,6 +114,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		log:                 log,
 		now:                 time.Now,
 		invRetentionDefault: opts.InvocationRetentionDays,
+		forwardResolver:     forward.NewResolver(15 * time.Second),
 	}
 	// 邮件走「settings 热配优先 + env 回退」包装：admin 后台填 SMTP 即生效，无需重启/改 env。
 	s.mailer = &settingsMailer{s: s, env: opts.Mailer}
@@ -289,6 +292,26 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			admin.GET("/usage/by-user", s.adminUsageByUser)              // 全平台按用户聚合用量（gap P2-B）
 			admin.GET("/usage/by-user/export", s.adminUsageByUserExport) // 同上 CSV 导出
 			admin.GET("/log-stats", s.adminLogStats)                     // 日志量 + 保留期一览（gap P2-C）
+
+			admin.GET("/channel-categories", s.adminListChannelCategories)
+			admin.POST("/channel-categories", s.adminCreateChannelCategory)
+			admin.PUT("/channel-categories/:id", s.adminUpdateChannelCategory)
+			admin.DELETE("/channel-categories/:id", s.adminDeleteChannelCategory)
+
+			admin.GET("/billing-rules", s.adminListBillingRules)
+			admin.POST("/billing-rules", s.adminCreateBillingRule)
+			admin.PUT("/billing-rules/:id", s.adminUpdateBillingRule)
+			admin.DELETE("/billing-rules/:id", s.adminDeleteBillingRule)
+
+			admin.GET("/forward-rules", s.adminListForwardRules)
+			admin.POST("/forward-rules", s.adminCreateForwardRule)
+			admin.PUT("/forward-rules/:id", s.adminUpdateForwardRule)
+			admin.DELETE("/forward-rules/:id", s.adminDeleteForwardRule)
+
+			admin.GET("/model-rule-bindings", s.adminListModelRuleBindings)
+			admin.POST("/model-rule-bindings", s.adminUpsertModelRuleBinding)
+			admin.PUT("/model-rule-bindings/:model", s.adminUpsertModelRuleBinding)
+			admin.DELETE("/model-rule-bindings/:model", s.adminDeleteModelRuleBinding)
 
 			// —— superadmin 级（资金 / 系统设置 / 定价策略 / 授权）——（对标 NewAPI RootAuth）
 			su := admin.Group("", s.requireSuperadmin())

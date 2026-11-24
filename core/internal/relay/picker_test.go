@@ -23,7 +23,9 @@ CREATE TABLE channels (
     detected_models TEXT NOT NULL DEFAULT '', ignored_models TEXT NOT NULL DEFAULT '',
     owner_org_id INTEGER NOT NULL DEFAULT 0,
     suggest_disable_reason TEXT NOT NULL DEFAULT '', suggest_disabled_at DATETIME,
-    status INTEGER NOT NULL DEFAULT 1
+    status INTEGER NOT NULL DEFAULT 1,
+    category_id INTEGER NOT NULL DEFAULT 0,
+    upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1
 );
 `
 

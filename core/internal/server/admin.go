@@ -255,6 +255,8 @@ type channelReq struct {
 	Converter          string            `json:"converter"`            // 格式转换器（0036 advanced_custom，可选）
 	UpstreamPath       string            `json:"upstream_path"`        // 自定义端点路径（0036，可选）
 	ModelSyncEnabled   bool              `json:"model_sync_enabled"`   // opt-in 周期自动检测上游模型（0037）
+	CategoryID         uint64            `json:"category_id"`          // 渠道分类 ID（0160，0=未分组）
+	UpstreamCostRatio  *decimal.Decimal  `json:"upstream_cost_ratio"`  // 上游进货成本倍率（0160，默认 1）
 }
 
 // validateAdvancedFields：converter 枚举 + upstream_path 组合 + advanced_custom 的 SSRF base_url 校验。
@@ -320,6 +322,9 @@ func (s *Server) invalidateCache(kind, key string) {
 	if s.relay != nil {
 		s.relay.InvalidateCache(kind, key)
 	}
+	if s.forwardResolver != nil && (kind == relay.KindForwardRule || kind == relay.KindAll) {
+		s.forwardResolver.Invalidate()
+	}
 }
 
 func (s *Server) adminCreateChannel(c *gin.Context) {
@@ -374,6 +379,14 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	upstreamRatio := decimal.NewFromInt(1)
+	if req.UpstreamCostRatio != nil {
+		if !req.UpstreamCostRatio.IsPositive() {
+			fail(c, http.StatusBadRequest, "upstream_cost_ratio must be positive")
+			return
+		}
+		upstreamRatio = *req.UpstreamCostRatio
+	}
 	ch := &relay.Channel{
 		Name: req.Name, Provider: req.Provider,
 		BaseURL:       strings.TrimRight(req.BaseURL, "/"),
@@ -384,8 +397,10 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		ParamOverride: strings.TrimSpace(req.ParamOverride), HeaderOverride: strings.TrimSpace(req.HeaderOverride),
 		CredentialMode: credMode,
 		Converter:      strings.TrimSpace(req.Converter), UpstreamPath: strings.TrimSpace(req.UpstreamPath),
-		ModelSyncEnabled: b2i8(req.ModelSyncEnabled),
-		Status:           1,
+		ModelSyncEnabled:  b2i8(req.ModelSyncEnabled),
+		Status:            1,
+		CategoryID:        req.CategoryID,
+		UpstreamCostRatio: upstreamRatio,
 	}
 	// 渠道行 + 首个 key 子表行同事务落库（0034 Multi-key）：channels.credential_enc 保留作
 	// legacy mirror，子表行为选 key 的实际来源，与 0034 迁移回填的形态一致。
@@ -433,6 +448,8 @@ type updateChannelReq struct {
 	UpstreamPath       *string            `json:"upstream_path"`        // 自定义端点路径（0036）
 	ModelSyncEnabled   *bool              `json:"model_sync_enabled"`   // 周期自动检测上游模型（0037）
 	MaxConcurrentTasks *int               `json:"max_concurrent_tasks"` // 任务并发总闸；0=未设（运行时兜底 3）
+	CategoryID         *uint64            `json:"category_id"`          // 渠道分类 ID（0160）
+	UpstreamCostRatio  *decimal.Decimal   `json:"upstream_cost_ratio"`  // 上游进货成本倍率（0160）
 }
 
 // adminUpdateChannel：PUT /api/admin/channels/:id —— 编辑渠道（部署冒烟暴露的高频缺口）。
@@ -492,6 +509,16 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 			return
 		}
 		updates["max_concurrent_tasks"] = *req.MaxConcurrentTasks
+	}
+	if req.CategoryID != nil {
+		updates["category_id"] = *req.CategoryID
+	}
+	if req.UpstreamCostRatio != nil {
+		if !req.UpstreamCostRatio.IsPositive() {
+			fail(c, http.StatusBadRequest, "upstream_cost_ratio must be positive")
+			return
+		}
+		updates["upstream_cost_ratio"] = *req.UpstreamCostRatio
 	}
 	// advanced_custom（0036）：converter/upstream_path 变更 + SSRF 复核。converter 或 base_url
 	// 任一改动即按（现有 provider + 生效 converter + 生效 base_url）重跑校验，防改配置绕过 SSRF。
@@ -659,6 +686,7 @@ func (s *Server) adminListChannels(c *gin.Context) {
 			"ignored_models": ch.IgnoredModels, "last_sync_at": ch.LastSyncAt,
 			// 禁用建议（0047 B-2）：硬故障时给运营的手动禁用建议（不自动禁）
 			"suggest_disable_reason": ch.SuggestDisableReason, "suggest_disabled_at": ch.SuggestDisabledAt,
+			"category_id": ch.CategoryID, "upstream_cost_ratio": ch.UpstreamCostRatio,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": out})

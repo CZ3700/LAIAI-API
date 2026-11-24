@@ -14,10 +14,12 @@ import (
 const cacheInvalidateChannel = "laiai:cache:invalidate"
 
 const (
-	KindAll     = "all"     // 全部失效
-	KindPrice   = "price"   // key = model（空 = 全部价目）
-	KindRatio   = "ratio"   // 倍率（key 忽略，整表清——改 group/ratio 影响面广）
-	KindChannel = "channel" // 渠道快照（key 忽略）
+	KindAll         = "all"          // 全部失效
+	KindPrice       = "price"        // key = model（空 = 全部价目）
+	KindRatio       = "ratio"        // 倍率（key 忽略，整表清——改 group/ratio 影响面广）
+	KindChannel     = "channel"      // 渠道快照（key 忽略）
+	KindForwardRule = "forward_rule" // 转发规则与模型绑定快照
+	KindBillingRule = "billing_rule" // 计费规则快照
 )
 
 type invMsg struct {
