@@ -107,34 +107,32 @@ export const LogsPage: React.FC<LogsPageProps> = ({ isAdmin = false }) => {
             <span>{isAdmin ? t('admin.logs', '全局调用日志') : t('menu.logs', '请求日志')}</span>
           </Space>
         }
-        extra={
-          <Space wrap>
-            <Input.Search
-              allowClear
-              placeholder={t('logs.search_placeholder', 'Request ID / 模型')}
-              style={{ width: 220 }}
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              onSearch={() => {
-                setPage(1);
-                void loadLogs(1, pageSize);
-              }}
-            />
-            <Select
-              allowClear
-              placeholder={t('common.status', '状态')}
-              style={{ width: 120 }}
-              value={statusFilter || undefined}
-              onChange={(v) => setStatusFilter(v || '')}
-              options={[
-                { value: 'success', label: 'Success' },
-                { value: 'failed', label: 'Failed' },
-              ]}
-            />
-            <Button icon={<ReloadOutlined />} onClick={() => loadLogs(page, pageSize)} />
-          </Space>
-        }
       >
+        <div style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          <Input.Search
+            allowClear
+            placeholder={t('logs.search_placeholder', 'Request ID / 模型')}
+            style={{ width: 220 }}
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            onSearch={() => {
+              setPage(1);
+              void loadLogs(1, pageSize);
+            }}
+          />
+          <Select
+            allowClear
+            placeholder={t('common.status', '状态')}
+            style={{ width: 120 }}
+            value={statusFilter || undefined}
+            onChange={(v) => setStatusFilter(v || '')}
+            options={[
+              { value: 'success', label: 'Success' },
+              { value: 'failed', label: 'Failed' },
+            ]}
+          />
+          <Button icon={<ReloadOutlined />} onClick={() => loadLogs(page, pageSize)} />
+        </div>
         <Table
           loading={loading}
           rowKey="id"

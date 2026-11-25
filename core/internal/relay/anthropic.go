@@ -485,7 +485,7 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 	c.JSON(http.StatusOK, converted)
 	u := usage{PromptTokens: resp.Usage.promptTotal(), CompletionTokens: resp.Usage.OutputTokens, FinishReason: finishReason}
 	u.PromptTokensDetails.CachedTokens = resp.Usage.CacheReadInputTokens // 缓存读按折扣价计费（P2-9）
-	u.CacheWrite5m, u.CacheWrite1h = cw5m, cw1h                         // 写缓存溢价补收
+	u.CacheWrite5m, u.CacheWrite1h = cw5m, cw1h                          // 写缓存溢价补收
 	return u, len(raw), nil
 }
 

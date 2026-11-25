@@ -125,7 +125,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ scope = 'org' }) =
         <Col xs={24} sm={12} lg={6}>
           <Card loading={loading}>
             <Statistic
-              title={t('dashboard.period_cost', `近 ${days} 天消耗 ($)`)}
+              title={t('dashboard.period_cost', { period: `近 ${days} 天` })}
               value={Number(stats?.total_cost_usd || 0)}
               precision={4}
               prefix={<ThunderboltOutlined />}

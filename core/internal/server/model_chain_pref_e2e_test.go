@@ -62,8 +62,8 @@ func TestModelFallbackChainDegrades(t *testing.T) {
 	apiKey, orgID := seedUserWithCredit(t, srv, "chain@example.com", "10")
 
 	w, out := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
-		"model":  "model-a",
-		"models": []string{"model-b"},
+		"model":    "model-a",
+		"models":   []string{"model-b"},
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
 	})
 	if w.Code != 200 {
@@ -111,8 +111,8 @@ func TestModelChainNoFallbackOnClientError(t *testing.T) {
 	apiKey, _ := seedUserWithCredit(t, srv, "chain400@example.com", "10")
 
 	w, _ := srv.do(t, "POST", "/v1/chat/completions", apiKey, map[string]any{
-		"model":  "model-a",
-		"models": []string{"model-b"},
+		"model":    "model-a",
+		"models":   []string{"model-b"},
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
 	})
 	if w.Code != http.StatusBadRequest {

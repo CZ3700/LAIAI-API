@@ -150,37 +150,35 @@ export const TaskLogsPage: React.FC<TaskLogsPageProps> = ({ isAdmin = false }) =
             <span>{isAdmin ? t('admin.task_logs', '全局异步视频任务') : t('menu.task_logs', '异步视频任务日志')}</span>
           </Space>
         }
-        extra={
-          <Space wrap>
-            <Input.Search
-              allowClear
-              placeholder={t('tasks.search_placeholder', 'Task ID / 模型')}
-              style={{ width: 220 }}
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              onSearch={() => {
-                setPage(1);
-                void loadTasks(1, pageSize);
-              }}
-            />
-            <Select
-              allowClear
-              placeholder={t('common.status', '状态')}
-              style={{ width: 130 }}
-              value={statusFilter || undefined}
-              onChange={(v) => setStatusFilter(v || '')}
-              options={[
-                { value: 'queued', label: 'queued' },
-                { value: 'running', label: 'running' },
-                { value: 'succeeded', label: 'succeeded' },
-                { value: 'failed', label: 'failed' },
-                { value: 'cancelled', label: 'cancelled' },
-              ]}
-            />
-            <Button icon={<ReloadOutlined />} onClick={() => loadTasks(page, pageSize)} />
-          </Space>
-        }
       >
+        <div style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          <Input.Search
+            allowClear
+            placeholder={t('tasks.search_placeholder', 'Task ID / 模型')}
+            style={{ width: 220 }}
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            onSearch={() => {
+              setPage(1);
+              void loadTasks(1, pageSize);
+            }}
+          />
+          <Select
+            allowClear
+            placeholder={t('common.status', '状态')}
+            style={{ width: 130 }}
+            value={statusFilter || undefined}
+            onChange={(v) => setStatusFilter(v || '')}
+            options={[
+              { value: 'queued', label: 'queued' },
+              { value: 'running', label: 'running' },
+              { value: 'succeeded', label: 'succeeded' },
+              { value: 'failed', label: 'failed' },
+              { value: 'cancelled', label: 'cancelled' },
+            ]}
+          />
+          <Button icon={<ReloadOutlined />} onClick={() => loadTasks(page, pageSize)} />
+        </div>
         <Table
           loading={loading}
           rowKey="task_id"

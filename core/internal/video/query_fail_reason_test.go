@@ -26,8 +26,8 @@ func TestClipFailReasonBoundsColumn(t *testing.T) {
 		"short",
 		strings.Repeat("a", 1024),
 		strings.Repeat("a", 2048),
-		strings.Repeat("字", 1000),  // 3000 字节中文
-		strings.Repeat("🙂", 3000),  // 12000 字节 emoji
+		strings.Repeat("字", 1000),        // 3000 字节中文
+		strings.Repeat("🙂", 3000),        // 12000 字节 emoji
 		strings.Repeat("a", 1021) + "汉字", // 截断点落在多字节字符中间
 	} {
 		got := clipFailReason(code, message)

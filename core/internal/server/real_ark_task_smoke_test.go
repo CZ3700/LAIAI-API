@@ -55,8 +55,8 @@ func TestRealArkTaskSmoke(t *testing.T) {
 
 	// 最小成本真任务：4s / 16:9 / 默认 720p / 无音频 / 无水印（真机标定 ≈87k tokens）
 	w, submitOut := srv.do(t, "POST", "/v1/video/generations", apiKey, map[string]any{
-		"model":   model,
-		"content": []map[string]any{{"type": "text", "text": "a red apple rolls slowly on a wooden table, soft daylight"}},
+		"model":    model,
+		"content":  []map[string]any{{"type": "text", "text": "a red apple rolls slowly on a wooden table, soft daylight"}},
 		"duration": 4, "ratio": "16:9", "generate_audio": false, "watermark": false,
 	})
 	if w.Code != http.StatusAccepted {

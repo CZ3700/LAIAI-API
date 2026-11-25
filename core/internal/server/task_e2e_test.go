@@ -258,8 +258,8 @@ func TestTaskParamPassthroughAndScaledHold(t *testing.T) {
 	apiKey, orgID := seedUserWithCredit(t, srv, "video-params@example.com", "20")
 
 	w, out := srv.do(t, "POST", "/v1/video/generations", apiKey, map[string]any{
-		"model":   "seedance-test",
-		"content": []map[string]any{{"type": "text", "text": "apple ad"}},
+		"model":          "seedance-test",
+		"content":        []map[string]any{{"type": "text", "text": "apple ad"}},
 		"generate_audio": true, "ratio": "16:9", "duration": 11,
 		"resolution": "1080p", "watermark": false,
 	})

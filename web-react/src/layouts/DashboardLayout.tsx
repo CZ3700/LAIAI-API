@@ -3,6 +3,7 @@ import {
   Avatar,
   Badge,
   Button,
+  ConfigProvider,
   Drawer,
   Dropdown,
   Layout,
@@ -27,16 +28,20 @@ import {
   DashboardOutlined,
   DollarOutlined,
   FileTextOutlined,
-  FolderOutlined,
   FundOutlined,
   GlobalOutlined,
+  InfoCircleOutlined,
   KeyOutlined,
+  LineChartOutlined,
   LogoutOutlined,
+  MailOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   MoonOutlined,
   NodeIndexOutlined,
   NotificationOutlined,
+  PayCircleOutlined,
+  SafetyCertificateOutlined,
   SettingOutlined,
   ShopOutlined,
   SlidersOutlined,
@@ -55,9 +60,10 @@ import useSettingsStore from '../store/settings';
 import { useThemeStore } from '../store/theme';
 import request, { coreApi } from '../utils/request';
 import { LANG_NAME_MAP, persistUserLanguagePreference } from '../utils/language';
-import { getAnnouncementDisplayTime, getAnnouncementLabel } from '../utils/announcement';
+import { getAnnouncementDisplayTime } from '../utils/announcement';
 import { formatApiDateTime } from '../utils/timedisplay';
-import { solidAccent } from '../theme/tokens';
+import { getSiderMenuTokens, solidAccent } from '../theme/tokens';
+import type { Announcement } from '../types';
 
 const { Header, Sider, Content } = Layout;
 
@@ -65,16 +71,6 @@ interface OrgOption {
   id: number;
   name: string;
   role?: string;
-}
-
-interface AnnouncementItem {
-  id: number;
-  title: string;
-  content: string;
-  is_pinned?: number;
-  created_at?: string;
-  updated_at?: string;
-  display_time_mode?: string;
 }
 
 interface DashboardLayoutProps {
@@ -93,14 +89,15 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [orgs, setOrgs] = useState<OrgOption[]>([]);
   const [switchingOrg, setSwitchingOrg] = useState(false);
-  const [announcements, setAnnouncements] = useState<AnnouncementItem[]>([]);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [announceOpen, setAnnounceOpen] = useState(false);
 
-  const adminPath = settings?.site?.admin_path || 'admin';
-  const siteTitle = settings?.site?.title || 'LAIAI';
+  const adminPath = settings?.site?.admin_path || localStorage.getItem('laiai_admin_path') || 'admin';
+  const siteTitle = settings?.site?.title || settings?.site?.name || 'LAIAI';
   const isAdmin = user?.role === 'admin' || user?.plat_role === 'admin' || user?.plat_role === 'superadmin';
   const isLight = themeMode === 'light';
   const accent = solidAccent(isLight ? 'light' : 'dark');
+  const siderMenuTokens = useMemo(() => getSiderMenuTokens(isLight ? 'light' : 'dark'), [isLight]);
 
   useEffect(() => {
     void fetchSettings();
@@ -120,7 +117,6 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
         }
       })
       .catch(() => {
-        // fallback to public announcements
         request
           .get('/announcements/public')
           .then((list: any) => {
@@ -170,29 +166,29 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
 
   const userMenuItems: MenuProps['items'] = useMemo(
     () => [
-      { key: '/dashboard', icon: <DashboardOutlined />, label: t('menu.dashboard', '概览仪表盘') },
-      { key: '/apikeys', icon: <KeyOutlined />, label: t('menu.apikeys', 'API Key 令牌') },
+      { key: '/dashboard', icon: <DashboardOutlined />, label: t('menu.dashboard', '概览') },
+      { key: '/apikeys', icon: <KeyOutlined />, label: t('menu.apikeys', 'API 令牌') },
       {
-        key: 'grp-logs',
+        key: 'grp-user-logs',
         type: 'group',
-        label: collapsed ? undefined : t('menu.usage_group', '用量与任务'),
+        label: collapsed ? undefined : t('menu.usage_group', '日志与任务'),
         children: [
-          { key: '/logs', icon: <UnorderedListOutlined />, label: t('menu.logs', '请求日志') },
-          { key: '/task-logs', icon: <VideoCameraOutlined />, label: t('menu.task_logs', '异步视频任务') },
+          { key: '/logs', icon: <UnorderedListOutlined />, label: t('menu.logs', '调用日志') },
+          { key: '/task-logs', icon: <VideoCameraOutlined />, label: t('menu.task_logs', '异步任务') },
         ],
       },
       {
-        key: 'grp-billing',
+        key: 'grp-user-billing',
         type: 'group',
         label: collapsed ? undefined : t('menu.billing_group', '账务与组织'),
         children: [
-          { key: '/wallet', icon: <WalletOutlined />, label: t('menu.wallet', '钱包充值与流水') },
+          { key: '/wallet', icon: <WalletOutlined />, label: t('menu.wallet', '钱包与资金明细') },
           { key: '/team', icon: <TeamOutlined />, label: t('menu.team', '团队与 BYOK') },
-          { key: '/profile', icon: <UserOutlined />, label: t('menu.profile', '个人资料与 2FA') },
+          { key: '/profile', icon: <UserOutlined />, label: t('menu.profile', '个人设置') },
         ],
       },
       {
-        key: 'grp-ecosystem',
+        key: 'grp-user-resources',
         type: 'group',
         label: collapsed ? undefined : t('menu.resources', '模型与文档'),
         children: [
@@ -207,45 +203,73 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
   const adminBase = `/${adminPath}`;
   const adminMenuItems: MenuProps['items'] = useMemo(
     () => [
-      { key: `${adminBase}/dashboard`, icon: <DashboardOutlined />, label: t('admin.dashboard', '运营概览') },
+      { key: `${adminBase}/dashboard`, icon: <DashboardOutlined />, label: t('menu.dashboard', '系统概览') },
+      { key: `${adminBase}/apikeys`, icon: <KeyOutlined />, label: t('menu.tokens', '令牌管理') },
+      { key: `${adminBase}/logs`, icon: <UnorderedListOutlined />, label: t('menu.logs', '日志记录') },
+      { key: `${adminBase}/task-logs`, icon: <VideoCameraOutlined />, label: t('menu.task_logs', '任务列表') },
       {
-        key: 'grp-routing',
-        type: 'group',
-        label: collapsed ? undefined : t('admin.routing_group', '模型与计价转发'),
+        key: 'sub-channels',
+        icon: <CloudServerOutlined />,
+        label: t('menu.channel_management', '渠道管理'),
         children: [
-          { key: `${adminBase}/models`, icon: <ApiOutlined />, label: t('admin.models', '模型管理') },
-          { key: `${adminBase}/billing-rules`, icon: <SlidersOutlined />, label: t('admin.billing_rules', '计价规则') },
-          { key: `${adminBase}/forward-rules`, icon: <NodeIndexOutlined />, label: t('admin.forward_rules', '转发规则') },
-          { key: `${adminBase}/channels`, icon: <CloudServerOutlined />, label: t('admin.channels', '渠道管理') },
-          { key: `${adminBase}/channel-categories`, icon: <FolderOutlined />, label: t('admin.channel_categories', '渠道分组') },
+          { key: `${adminBase}/channels`, icon: <CloudServerOutlined />, label: t('menu.channels', '渠道列表') },
+          { key: `${adminBase}/channel-configs`, icon: <SlidersOutlined />, label: t('menu.channel_configs', '渠道配置') },
+          { key: `${adminBase}/payment-channels`, icon: <CreditCardOutlined />, label: t('admin.payment_channels', '支付通道') },
         ],
       },
       {
-        key: 'grp-users',
-        type: 'group',
-        label: collapsed ? undefined : t('admin.users_group', '用户与费率'),
+        key: 'sub-models',
+        icon: <ApiOutlined />,
+        label: t('menu.model_management', '模型管理'),
+        children: [
+          { key: `${adminBase}/models`, icon: <ApiOutlined />, label: t('menu.models', '模型列表') },
+          { key: `${adminBase}/billing-rules`, icon: <DollarOutlined />, label: t('menu.billing_rules', '计费规则') },
+          { key: `${adminBase}/forward-rules`, icon: <NodeIndexOutlined />, label: t('menu.forward_rules', '转发规则') },
+        ],
+      },
+      {
+        key: 'sub-marketing',
+        icon: <NotificationOutlined />,
+        label: t('menu.marketing_group', '营销通知'),
+        children: [
+          { key: `${adminBase}/marketing/announcements`, icon: <NotificationOutlined />, label: t('menu.announcements', '系统公告') },
+        ],
+      },
+      {
+        key: 'sub-users',
+        icon: <TeamOutlined />,
+        label: t('menu.user_management', '用户管理'),
         children: [
           { key: `${adminBase}/users`, icon: <TeamOutlined />, label: t('admin.users', '用户与组织') },
           { key: `${adminBase}/group-ratios`, icon: <DollarOutlined />, label: t('admin.group_ratios', '分组倍率') },
-          { key: `${adminBase}/recharges`, icon: <FundOutlined />, label: t('admin.recharges', '财务分析') },
-          { key: `${adminBase}/payment-channels`, icon: <CreditCardOutlined />, label: t('admin.payment_channels', '支付渠道') },
         ],
       },
       {
-        key: 'grp-ops',
-        type: 'group',
-        label: collapsed ? undefined : t('admin.ops_group', '日志与运维'),
+        key: 'sub-finance',
+        icon: <FundOutlined />,
+        label: t('menu.finance_management', '财务管理'),
         children: [
-          { key: `${adminBase}/logs`, icon: <UnorderedListOutlined />, label: t('admin.logs', '全局调用日志') },
-          { key: `${adminBase}/task-logs`, icon: <VideoCameraOutlined />, label: t('admin.task_logs', '全局异步任务') },
-          { key: `${adminBase}/docs`, icon: <FileTextOutlined />, label: t('admin.docs', '接口文档管理') },
-          { key: `${adminBase}/announcements`, icon: <NotificationOutlined />, label: t('admin.announcements', '系统公告') },
+          { key: `${adminBase}/finance/recharges`, icon: <WalletOutlined />, label: t('menu.recharge_records', '充值与调账记录') },
+          { key: `${adminBase}/finance/orders`, icon: <CreditCardOutlined />, label: t('menu.order_details', '充值订单明细') },
+          { key: `${adminBase}/finance/analysis`, icon: <LineChartOutlined />, label: t('menu.finance_analysis', '财务数据分析') },
+        ],
+      },
+      {
+        key: 'sub-settings',
+        icon: <SettingOutlined />,
+        label: t('menu.site_settings', '站点设置'),
+        children: [
+          { key: `${adminBase}/settings`, icon: <SettingOutlined />, label: t('menu.system_settings', '基础与安全设置') },
+          { key: `${adminBase}/payment-settings`, icon: <PayCircleOutlined />, label: t('menu.payment_settings', '收款支付设置') },
+          { key: `${adminBase}/message-notification`, icon: <MailOutlined />, label: t('menu.message_notification', '消息通知配置') },
+          { key: `${adminBase}/oauth-settings`, icon: <SafetyCertificateOutlined />, label: t('menu.oauth_settings', '第三方登录(OAuth)') },
+          { key: `${adminBase}/docs-manager`, icon: <FileTextOutlined />, label: t('admin.docs', 'API文档管理') },
           { key: `${adminBase}/audit-logs`, icon: <AuditOutlined />, label: t('admin.audit_logs', '审计日志') },
-          { key: `${adminBase}/settings`, icon: <SettingOutlined />, label: t('admin.settings', '系统设置') },
+          { key: `${adminBase}/about`, icon: <InfoCircleOutlined />, label: t('menu.about', '关于系统') },
         ],
       },
     ],
-    [adminBase, collapsed, t],
+    [adminBase, t],
   );
 
   const items = mode === 'admin' ? adminMenuItems : userMenuItems;
@@ -253,12 +277,62 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
   const selectedKey = useMemo(() => {
     const p = location.pathname;
     if (mode === 'admin') {
+      if (p.includes('/dashboard')) return `${adminBase}/dashboard`;
+      if (p.includes('/apikeys')) return `${adminBase}/apikeys`;
+      if (p.includes('/task-logs')) return `${adminBase}/task-logs`;
+      if (p.includes('/audit-logs')) return `${adminBase}/audit-logs`;
+      if (p.includes('/logs')) return `${adminBase}/logs`;
+      if (p.includes('/channel-configs')) return `${adminBase}/channel-configs`;
+      if (p.includes('/payment-channels')) return `${adminBase}/payment-channels`;
+      if (p.includes('/channels')) return `${adminBase}/channels`;
       if (p.includes('/billing-rules')) return `${adminBase}/billing-rules`;
       if (p.includes('/forward-rules')) return `${adminBase}/forward-rules`;
+      if (p.includes('/models')) return `${adminBase}/models`;
+      if (p.includes('/announcements')) return `${adminBase}/marketing/announcements`;
+      if (p.includes('/recharges') || p.includes('/finance/recharges')) return `${adminBase}/finance/recharges`;
+      if (p.includes('/finance/orders')) return `${adminBase}/finance/orders`;
+      if (p.includes('/finance/analysis')) return `${adminBase}/finance/analysis`;
+      if (p.includes('/docs')) return `${adminBase}/docs-manager`;
       return p;
     }
+    if (p.startsWith('/dashboard')) return '/dashboard';
+    if (p.startsWith('/task-logs')) return '/task-logs';
+    if (p.startsWith('/logs')) return '/logs';
     return p;
   }, [adminBase, location.pathname, mode]);
+
+  const activeSubKey = useMemo(() => {
+    if (mode !== 'admin') return '';
+    if (selectedKey.includes('/channels') || selectedKey.includes('/channel-configs') || selectedKey.includes('/payment-channels')) {
+      return 'sub-channels';
+    }
+    if (selectedKey.includes('/models') || selectedKey.includes('/billing-rules') || selectedKey.includes('/forward-rules')) {
+      return 'sub-models';
+    }
+    if (selectedKey.includes('/marketing/')) return 'sub-marketing';
+    if (selectedKey.includes('/users') || selectedKey.includes('/group-ratios')) return 'sub-users';
+    if (selectedKey.includes('/finance/')) return 'sub-finance';
+    if (
+      selectedKey.includes('/settings') ||
+      selectedKey.includes('/payment-settings') ||
+      selectedKey.includes('/message-notification') ||
+      selectedKey.includes('/oauth-settings') ||
+      selectedKey.includes('/docs-manager') ||
+      selectedKey.includes('/audit-logs') ||
+      selectedKey.includes('/about')
+    ) {
+      return 'sub-settings';
+    }
+    return '';
+  }, [mode, selectedKey]);
+
+  const [openKeys, setOpenKeys] = useState<string[]>(() => (activeSubKey ? [activeSubKey] : []));
+
+  useEffect(() => {
+    if (activeSubKey) {
+      setOpenKeys((prev) => (prev.includes(activeSubKey) ? prev : [...prev, activeSubKey]));
+    }
+  }, [activeSubKey]);
 
   const langMenu: MenuProps['items'] = Object.entries(LANG_NAME_MAP).map(([code, label]) => ({
     key: code,
@@ -269,6 +343,14 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
     },
   }));
 
+  const outletCtx = useMemo(
+    () => ({
+      announcements,
+      notifyConsolePageReady: () => {},
+    }),
+    [announcements],
+  );
+
   return (
     <Layout style={{ minHeight: '100vh', background: antdToken.colorBgLayout }}>
       <Sider
@@ -276,7 +358,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
         collapsed={collapsed}
         onCollapse={setCollapsed}
         trigger={null}
-        width={236}
+        width={244}
         collapsedWidth={68}
         style={{
           background: antdToken.colorBgContainer,
@@ -328,16 +410,24 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
           )}
         </div>
 
-        <Menu
-          mode="inline"
-          selectedKeys={[selectedKey]}
-          items={items}
-          onClick={({ key }) => navigate(key)}
-          style={{ borderInlineEnd: 'none', padding: '8px 6px' }}
-        />
+        <ConfigProvider theme={{ components: { Menu: siderMenuTokens } }}>
+          <Menu
+            mode="inline"
+            selectedKeys={[selectedKey]}
+            openKeys={collapsed ? undefined : openKeys}
+            onOpenChange={(keys) => setOpenKeys(keys)}
+            items={items}
+            onClick={({ key }) => {
+              if (typeof key === 'string' && key.startsWith('/')) {
+                navigate(key);
+              }
+            }}
+            style={{ borderInlineEnd: 'none', padding: '8px 4px' }}
+          />
+        </ConfigProvider>
       </Sider>
 
-      <Layout style={{ background: antdToken.colorBgLayout }}>
+      <Layout style={{ background: antdToken.colorBgLayout, minWidth: 0 }}>
         <Header
           style={{
             height: 60,
@@ -385,8 +475,8 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
                 onChange={handleSwitchOrg}
                 style={{ minWidth: 150 }}
                 suffixIcon={<SwapOutlined />}
-                options={orgs.map((o) => ({
-                  value: o.id,
+                options={orgs.map((o: any) => ({
+                  value: o.org_id ?? o.id,
                   label: o.name,
                 }))}
               />
@@ -445,8 +535,8 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
           </Space>
         </Header>
 
-        <Content style={{ padding: 20, maxWidth: 1600, width: '100%', margin: '0 auto' }}>
-          <Outlet />
+        <Content style={{ padding: 20, maxWidth: 1640, width: '100%', margin: '0 auto' }}>
+          <Outlet context={outletCtx} />
         </Content>
       </Layout>
 

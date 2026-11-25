@@ -132,8 +132,8 @@ func TestVertexBuildRequestGemini(t *testing.T) {
 func TestVertexPipeJSONDelegation(t *testing.T) {
 	// Claude 上游名 → anthropic 解析器
 	c, rec := newSSECtx()
-	c.Set(respModelKey, "outward-name")                    // 对外名故意与上游归属不同
-	c.Set(respUpstreamModelKey, "claude-3-5-sonnet@x")     // 上游是 Claude
+	c.Set(respModelKey, "outward-name")                // 对外名故意与上游归属不同
+	c.Set(respUpstreamModelKey, "claude-3-5-sonnet@x") // 上游是 Claude
 	antBody := `{"type":"message","role":"assistant","content":[{"type":"text","text":"hi from claude"}],` +
 		`"stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":3}}`
 	u, _, err := vertexAdapter{}.pipeJSON(c, strings.NewReader(antBody))

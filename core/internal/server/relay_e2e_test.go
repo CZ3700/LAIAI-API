@@ -976,7 +976,6 @@ func TestCreditAdjust(t *testing.T) {
 	want("45", "after add 5 (no mode)")
 }
 
-
 // 公开状态页（M3）：无需登录；无渠道=relay down；有活跃渠道=operational；不泄露细节。
 func TestPublicStatus(t *testing.T) {
 	srv, _ := setupRelayServer(t)

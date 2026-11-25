@@ -27,15 +27,15 @@ import (
 // 命中任一 + level>=Error 才告警——普通 Error（可自愈/重试）不打扰值班。
 // 取自当前代码里真实存在的高危 log.Error 消息，新增高危点沿用这些措辞即自动覆盖。
 var criticalPatterns = []string{
-	"SETTLE FAILED",                  // relay 6 路径同步结算失败（audio/embeddings/images/images_edit/relay/rerank）
-	"DRIFT DETECTED",                 // 账本漂移自检检出（有人绕开 ledger 写余额 / 局部写损坏）
-	"drift check failed",             // 漂移巡检本身失败
-	"manual reconcile",              // 需人工对账
-	"manual credit",                 // 需人工补入账
+	"SETTLE FAILED",                   // relay 6 路径同步结算失败（audio/embeddings/images/images_edit/relay/rerank）
+	"DRIFT DETECTED",                  // 账本漂移自检检出（有人绕开 ledger 写余额 / 局部写损坏）
+	"drift check failed",              // 漂移巡检本身失败
+	"manual reconcile",                // 需人工对账
+	"manual credit",                   // 需人工补入账
 	"CREDIT AND PROOF-PERSIST FAILED", // x402 链上已扣但入账+存证双失败（最危险）
-	"provider_ref persist failed",   // 支付单外部引用落库失败 → callback 漏发即盲区
-	"reconcile failed",              // 充值对账 job 失败
-	"credit failed",                 // 入账失败
+	"provider_ref persist failed",     // 支付单外部引用落库失败 → callback 漏发即盲区
+	"reconcile failed",                // 充值对账 job 失败
+	"credit failed",                   // 入账失败
 }
 
 // Handler 装饰一个 inner slog.Handler：正常输出照旧，命中 critical 的 Error 旁路告警。

@@ -82,7 +82,7 @@ export const Register: React.FC = () => {
       }}
     >
       <Card style={{ width: '100%', maxWidth: 420 }} styles={{ body: { padding: 32 } }}>
-        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={16} style={{ width: '100%' }}>
           <div style={{ textAlign: 'center' }}>
             <div
               style={{

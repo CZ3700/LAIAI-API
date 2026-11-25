@@ -204,4 +204,3 @@ func TestAdminListUsersBalance(t *testing.T) {
 		t.Errorf("balance = %v, want 100", got)
 	}
 }
-

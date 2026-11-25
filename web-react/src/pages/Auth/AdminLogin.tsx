@@ -82,7 +82,7 @@ export const AdminLogin: React.FC = () => {
       }}
     >
       <Card style={{ width: '100%', maxWidth: 440 }} styles={{ body: { padding: 32 } }} loading={checking}>
-        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={16} style={{ width: '100%' }}>
           <div style={{ textAlign: 'center' }}>
             <div
               style={{
@@ -110,7 +110,7 @@ export const AdminLogin: React.FC = () => {
             <Alert
               type="info"
               showIcon
-              message={t('admin.init_hint', '检测到平台尚未创建管理员账号，请创建首个超级管理员。')}
+              title={t('admin.init_hint', '检测到平台尚未创建管理员账号，请创建首个超级管理员。')}
             />
           )}
 

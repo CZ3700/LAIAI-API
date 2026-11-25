@@ -24,13 +24,13 @@ const diagMaxModelsSample = 24
 // DiagResult：Key 检测报告。**绝不含被测 key**。
 type DiagResult struct {
 	OK           bool     `json:"ok"`
-	Status       string   `json:"status"`         // ok | invalid_key | unreachable | forbidden | error
-	BaseURL      string   `json:"base_url"`       // 探测命中的 base_url（命中时）
-	LatencyMs    int      `json:"latency_ms"`     // 命中候选的往返耗时
-	ModelCount   int      `json:"model_count"`    // 可用模型总数
-	ModelsSample []string `json:"models_sample"`  // 样例模型（截断至 diagMaxModelsSample）
-	Gateway      string   `json:"gateway"`        // 上游网关线索（Server/Via 头）
-	Message      string   `json:"message"`        // 人类可读结论（绝不含 key）
+	Status       string   `json:"status"`        // ok | invalid_key | unreachable | forbidden | error
+	BaseURL      string   `json:"base_url"`      // 探测命中的 base_url（命中时）
+	LatencyMs    int      `json:"latency_ms"`    // 命中候选的往返耗时
+	ModelCount   int      `json:"model_count"`   // 可用模型总数
+	ModelsSample []string `json:"models_sample"` // 样例模型（截断至 diagMaxModelsSample）
+	Gateway      string   `json:"gateway"`       // 上游网关线索（Server/Via 头）
+	Message      string   `json:"message"`       // 人类可读结论（绝不含 key）
 }
 
 // diagAllowedProvider：Diagnostics 允许探测的 provider 白名单——已知云端 chat 家族。

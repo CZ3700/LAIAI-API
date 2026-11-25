@@ -22,10 +22,34 @@ function resolveAuthRedirectPath(): string | null {
   return isAdminArea ? adminBase : '/login';
 }
 
+function readStoredToken(): string | null {
+  const direct = sessionStorage.getItem('token') || localStorage.getItem('token');
+  if (direct) return direct;
+  try {
+    const raw = sessionStorage.getItem('laiai_auth') || localStorage.getItem('laiai_auth');
+    if (raw) {
+      const parsed = JSON.parse(raw) as { token?: string | null };
+      if (parsed?.token) return parsed.token;
+    }
+  } catch {
+    // ignore malformed storage
+  }
+  return null;
+}
+
+function clearStoredAuth() {
+  sessionStorage.removeItem('token');
+  sessionStorage.removeItem('user');
+  sessionStorage.removeItem('laiai_auth');
+  localStorage.removeItem('token');
+  localStorage.removeItem('user');
+  localStorage.removeItem('laiai_auth');
+}
+
 function attachInterceptors(instance: AxiosInstance) {
   instance.interceptors.request.use(
     (config) => {
-      const token = sessionStorage.getItem('token') || localStorage.getItem('token');
+      const token = readStoredToken();
       if (token && !config.headers.Authorization && !config.headers.authorization) {
         config.headers.Authorization = `Bearer ${token}`;
       }
@@ -78,16 +102,9 @@ function attachInterceptors(instance: AxiosInstance) {
           if (isAwaitingFreshSetup()) {
             return Promise.reject(error);
           }
-          const isImpersonating = !!sessionStorage.getItem('token');
-          const hadToken = isImpersonating || !!localStorage.getItem('token');
+          const hadToken = !!readStoredToken();
           if (hadToken) {
-            if (isImpersonating) {
-              sessionStorage.removeItem('token');
-              sessionStorage.removeItem('user');
-            } else {
-              localStorage.removeItem('token');
-              localStorage.removeItem('user');
-            }
+            clearStoredAuth();
           }
           const redirectTo = resolveAuthRedirectPath();
           if (redirectTo) {

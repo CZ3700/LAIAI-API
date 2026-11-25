@@ -7,9 +7,9 @@ import "testing"
 
 func TestSubmitErrorIsClientFault(t *testing.T) {
 	clientFaults := []string{
-		"content sensitive",             // hailuo 1026
-		"invalid_action bad action",     // suno
-		"invalid model_name",            // kling 1200
+		"content sensitive",                      // hailuo 1026
+		"invalid_action bad action",              // suno
+		"invalid model_name",                     // kling 1200
 		"DataInspectionFailed sensitive content", // ali 内容审查
 		"invalid parameter: duration",
 		"prompt violates content policy",
@@ -20,23 +20,23 @@ func TestSubmitErrorIsClientFault(t *testing.T) {
 		}
 	}
 	channelFaults := []string{
-		"insufficient balance",       // 欠费
-		"invalid api key",            // 渠道凭证（含 invalid 但属渠道侧）
-		"rate limit exceeded",        // 限流
-		"Throttling.User",            // ali 限流
-		"authentication failed",      // 鉴权
-		"Authorization is invalid",   // kling 1002 鉴权（含 invalid 但属渠道侧，对抗 review 修）
-		"Sign is invalid",            // kling 1004 签名（含 invalid 但属渠道侧）
-		"sign check error",           // 签名校验
-		"invalid signature",          // 签名
-		"internal server error",      // 内部
+		"insufficient balance",     // 欠费
+		"invalid api key",          // 渠道凭证（含 invalid 但属渠道侧）
+		"rate limit exceeded",      // 限流
+		"Throttling.User",          // ali 限流
+		"authentication failed",    // 鉴权
+		"Authorization is invalid", // kling 1002 鉴权（含 invalid 但属渠道侧，对抗 review 修）
+		"Sign is invalid",          // kling 1004 签名（含 invalid 但属渠道侧）
+		"sign check error",         // 签名校验
+		"invalid signature",        // 签名
+		"internal server error",    // 内部
 		"service unavailable, try again later",
 		"upstream timeout",
-		"账户余额不足",                  // 中文欠费
-		"请求过于频繁",                  // 中文限流
+		"账户余额不足",                    // 中文欠费
+		"请求过于频繁",                    // 中文限流
 		"验签失败",                      // 中文签名
-		"",                           // 空 → 默认 failover
-		"something totally unknown",  // 未知 → 默认 failover
+		"",                          // 空 → 默认 failover
+		"something totally unknown", // 未知 → 默认 failover
 	}
 	for _, m := range channelFaults {
 		if submitErrorIsClientFault(m) {

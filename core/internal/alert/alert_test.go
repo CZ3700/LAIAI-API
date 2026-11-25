@@ -25,9 +25,9 @@ func TestIsCritical(t *testing.T) {
 	}
 
 	notCrit := []string{
-		"config load failed",       // 启动错误，非资金事件
-		"db connect failed",        // 连接错误
-		"server failed",            // 服务器错误
+		"config load failed",         // 启动错误，非资金事件
+		"db connect failed",          // 连接错误
+		"server failed",              // 服务器错误
 		"log retention purge failed", // 清理失败，非资金
 		"released stuck relay holds", // 正常 sweep（且是 Warn 不是 Error）
 	}

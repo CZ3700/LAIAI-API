@@ -9,8 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/ark"
 	"github.com/laiai/laiai-next/core/internal/task"
-	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/laiai/laiai-next/core/internal/videoasset"
+	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"gorm.io/gorm"
 )
 

@@ -36,9 +36,9 @@ func TestPickByPolicyThroughput(t *testing.T) {
 	tier := chans(1, 2, 3)
 	stats := map[string]map[uint64]*ChanStat{
 		"m": {
-			1: {Calls: 100, Succeeded: 90, P50Ms: 100},  // 0.90
-			2: {Calls: 100, Succeeded: 99, P50Ms: 900},  // 0.99 最高
-			3: {Calls: 100, Succeeded: 99, P50Ms: 100},  // 0.99 且更快 → tie-break 胜
+			1: {Calls: 100, Succeeded: 90, P50Ms: 100}, // 0.90
+			2: {Calls: 100, Succeeded: 99, P50Ms: 900}, // 0.99 最高
+			3: {Calls: 100, Succeeded: 99, P50Ms: 100}, // 0.99 且更快 → tie-break 胜
 		},
 	}
 	if got := pickByPolicy(tier, stats, "m", RoutePolicyThroughput); got == nil || got.ID != 3 {

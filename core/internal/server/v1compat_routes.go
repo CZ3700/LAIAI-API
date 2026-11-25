@@ -19,7 +19,6 @@ import (
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/routinggroup"
 	"github.com/laiai/laiai-next/core/internal/server/v1compat"
-	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -32,6 +31,7 @@ func (s *Server) registerV1CompatRoutes(r *gin.Engine) {
 
 	// ── 公开免登录端点 ────────────────────────
 	v1.GET("/auth/init-status", s.v1InitStatus)
+	v1.GET("/auth/admin/init-status", s.v1InitStatus)
 	v1.POST("/auth/init-admin", s.authRateLimit(), s.v1InitAdmin)
 	v1.POST("/auth/login", s.authRateLimit(), s.v1Login)
 	v1.POST("/auth/2fa", s.authRateLimit(), s.v1TwofaLogin)
@@ -59,7 +59,11 @@ func (s *Server) registerV1CompatRoutes(r *gin.Engine) {
 
 		org := authed.Group("", s.requireActiveMembership())
 		{
+			org.GET("/dashboard", s.v1TkeDashboard)
 			org.GET("/dashboard/stats", s.v1DashboardStats)
+			org.GET("/dashboard/models_30d", s.v1Models30d)
+			org.GET("/metrics/live", s.v1LiveMetrics)
+
 			org.GET("/tokens", s.v1ListTokens)
 			org.POST("/tokens", s.requireStepUpForKeys(), s.v1CreateToken)
 			org.PUT("/tokens/:id", s.v1UpdateToken)
@@ -67,8 +71,10 @@ func (s *Server) registerV1CompatRoutes(r *gin.Engine) {
 			org.POST("/tokens/:id/reveal", s.v1ForbidTokenReveal)
 
 			org.GET("/logs", s.v1ListLogs)
+			org.GET("/logs/export", s.v1ExportLogs)
 			org.GET("/logs/:id/detail", s.v1LogDetail)
 			org.GET("/task_logs", s.v1ListTaskLogs)
+			org.GET("/task_logs/export", s.v1ExportTaskLogs)
 			org.GET("/task_logs/:id/detail", s.v1TaskLogDetail)
 			org.POST("/task_logs/:id/sync", s.v1SyncTaskLog)
 			org.POST("/task_logs/:id/cancel", s.v1CancelTaskLog)
@@ -82,17 +88,57 @@ func (s *Server) registerV1CompatRoutes(r *gin.Engine) {
 	admin := v1.Group("", s.adminRequired(identity.PlatRoleAdmin))
 	{
 		admin.GET("/model-providers", s.v1ModelProviders)
+		admin.POST("/model-providers", s.v1SaveModelProvider)
+		admin.PUT("/model-providers/:id", s.v1SaveModelProvider)
+		admin.DELETE("/model-providers/:id", s.v1DeleteModelProvider)
+
+		admin.GET("/model-api-providers", s.v1ModelAPIProviders)
+		admin.POST("/model-api-providers", s.v1SaveModelAPIProvider)
+		admin.PUT("/model-api-providers/:id", s.v1SaveModelAPIProvider)
+		admin.DELETE("/model-api-providers/:id", s.v1DeleteModelAPIProvider)
+
 		admin.GET("/model-types", s.v1ModelTypes)
+		admin.POST("/model-types", s.v1SaveModelType)
+		admin.PUT("/model-types/:id", s.v1SaveModelType)
+		admin.DELETE("/model-types/:id", s.v1DeleteModelType)
+
+		admin.GET("/classifications/stats", s.v1ClassificationsStats)
 
 		admin.GET("/channel-categories", s.v1ListChannelCategories)
 		admin.POST("/channel-categories", s.adminCreateChannelCategory)
 		admin.PUT("/channel-categories/:id", s.adminUpdateChannelCategory)
 		admin.DELETE("/channel-categories/:id", s.adminDeleteChannelCategory)
 
+		admin.GET("/channels", s.v1ListChannels)
+		admin.POST("/channels", s.v1CreateChannel)
+		admin.PUT("/channels/:id", s.v1UpdateChannel)
+		admin.DELETE("/channels/:id", s.v1DeleteChannel)
+		admin.POST("/channels/:id/test", s.adminTestChannel)
+		admin.GET("/channels/:id/meltdown", s.v1ChannelMeltdownStatus)
+		admin.POST("/channels/:id/meltdown/reset", s.v1ChannelMeltdownReset)
+		admin.POST("/channels/:id/quota/reset", s.v1ChannelQuotaReset)
+
+		admin.GET("/channel-configs", s.v1ListChannelConfigs)
+		admin.POST("/channel-configs", s.v1CreateChannelConfig)
+		admin.PUT("/channel-configs/:id", s.v1UpdateChannelConfig)
+		admin.DELETE("/channel-configs/:id", s.v1DeleteChannelConfig)
+		admin.POST("/channel-configs/:id/copy", s.v1CopyChannelConfig)
+		admin.GET("/channel-configs/:id/sync-logs", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"data": []any{}}) })
+		admin.POST("/channel-configs/:id/sync-rate", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"synced": true}) })
+		admin.POST("/channel-configs/upstream-groups", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"groups": []any{}}) })
+		admin.GET("/channel-configs/providers", s.v1ChannelConfigProviders)
+		admin.POST("/channel-configs/providers", s.v1SaveChannelConfigProvider)
+		admin.PUT("/channel-configs/providers/:id", s.v1SaveChannelConfigProvider)
+		admin.DELETE("/channel-configs/providers/:id", s.v1SaveChannelConfigProvider)
+		admin.GET("/upstreams", s.v1ListUpstreams)
+		admin.GET("/user_levels", s.v1ListUserLevels)
+		admin.PUT("/user_levels/:id", s.v1UpdateUserLevel)
+
 		admin.GET("/billing-rules", s.v1ListBillingRules)
 		admin.POST("/billing-rules", s.adminCreateBillingRule)
 		admin.PUT("/billing-rules/:id", s.adminUpdateBillingRule)
 		admin.DELETE("/billing-rules/:id", s.adminDeleteBillingRule)
+		admin.POST("/billing-rules/:id/restore-default", s.v1RestoreDefaultBillingRule)
 
 		admin.GET("/forward-rules", s.v1ListForwardRules)
 		admin.POST("/forward-rules", s.adminCreateForwardRule)
@@ -102,7 +148,35 @@ func (s *Server) registerV1CompatRoutes(r *gin.Engine) {
 		admin.GET("/models", s.v1AdminListModels)
 		admin.POST("/models", s.v1AdminUpsertModel)
 		admin.PUT("/models/:id", s.v1AdminUpsertModel)
+		admin.PUT("/models/library/:id", s.v1AdminUpsertModel)
 		admin.DELETE("/models/:id", s.v1AdminDeleteModel)
+		admin.POST("/models/:id/relist", func(c *gin.Context) { s.v1ModelSetListed(c, 1) })
+		admin.POST("/models/:id/unlist", func(c *gin.Context) { s.v1ModelSetListed(c, 0) })
+		admin.POST("/models/library/:id/publish", func(c *gin.Context) { s.v1ModelSetListed(c, 1) })
+		admin.POST("/models/:id/copy", s.v1ModelCopy)
+
+		admin.GET("/finance/recharge_types", s.v1FinanceRechargeTypes)
+		admin.GET("/finance/recharges", s.v1FinanceRecharges)
+		admin.GET("/finance/orders", s.v1FinanceOrders)
+		admin.POST("/finance/orders/:out_trade_no/query-remote", s.v1FinanceOrderAction)
+		admin.POST("/finance/orders/:out_trade_no/confirm-credit", s.requireSuperadmin(), s.v1FinanceOrderAction)
+		admin.POST("/finance/orders/:out_trade_no/mark-settled", s.requireSuperadmin(), s.v1FinanceOrderAction)
+		admin.GET("/finance/daily-stats", s.v1FinanceDailyStats)
+
+		admin.GET("/settings/full", s.v1AdminGetFullSettings)
+		admin.POST("/settings", s.requireSuperadmin(), s.v1AdminPostFullSettings)
+		admin.POST("/settings/full", s.requireSuperadmin(), s.v1AdminPostFullSettings)
+		admin.GET("/settings/currency/fx", s.v1SettingsCurrencyFX)
+		admin.POST("/settings/currency/fx/refresh", s.v1SettingsCurrencyFX)
+		admin.GET("/settings/database/info", s.v1SettingsDatabaseInfo)
+		admin.POST("/settings/database/verify", s.v1SettingsDatabaseVerify)
+		admin.POST("/settings/cron/trigger-maintenance", s.v1SettingsTriggerMaintenance)
+		admin.POST("/settings/usage-stats/sync", s.v1SettingsUsageStatsSync)
+		admin.GET("/system/about", s.v1SystemAbout)
+		admin.GET("/plugins", s.v1AdminListPlugins)
+		admin.GET("/plugins/high_availability_channel/ha-config", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"enabled": false, "items": []any{}})
+		})
 
 		admin.GET("/announcements", s.v1AdminListAnnouncements)
 		admin.POST("/announcements", s.v1AdminCreateAnnouncement)
@@ -286,48 +360,22 @@ func (s *Server) v1SendCode(c *gin.Context) {
 }
 
 func (s *Server) v1PublicSettings(c *gin.Context) {
+	full := s.buildFullSettingsPayload()
+	site, _ := full["site"].(map[string]any)
+	reg, _ := full["registration"].(map[string]any)
+	login, _ := full["login"].(map[string]any)
+	cur, _ := full["currency"].(map[string]any)
 	_, cny := s.effectiveCNYPerUSD()
-	currencyEnabled := s.getBoolSetting("currency_display_enabled")
-	currencySymbol := "$"
-	if currencyEnabled {
-		currencySymbol = "¥"
+	if cur != nil {
+		cur["cny_per_usd"] = cny
+		cur["currency_display_enabled"] = s.getBoolSetting("currency_display_enabled")
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"site": gin.H{
-			"name":                cmp.Or(s.getSetting("site_name"), "LAIAI"),
-			"title":               cmp.Or(s.getSetting("site_name"), "LAIAI AI Gateway"),
-			"admin_path":          cmp.Or(s.getSetting("admin_path"), "admin"),
-			"enable_multilingual": true,
-			"enable_theme_toggle": true,
-			"default_theme":       "light",
-			"default_language":    "zh",
-			"supported_languages": []string{"zh", "en", "zh-TW"},
-			"default_timezone":    "Asia/Shanghai",
-			"footer_text":         s.getSetting("footer_text"),
-			"support_email":       s.getSetting("support_email"),
-			"maintenance":         s.getBoolSetting("maintenance_mode"),
-		},
-		"login": gin.H{
-			"enable_username_login": true,
-			"enable_email_login":    true,
-			"enable_google_login":   s.getSetting("google_client_id") != "",
-			"enable_github_login":   s.getSetting("github_client_id") != "",
-		},
-		"registration": gin.H{
-			"enable_registration":        s.getBoolSetting("register_enabled"),
-			"enable_email_registration":  s.getBoolSetting("register_enabled"),
-			"email_verification_enabled": s.getBoolSetting("email_verification_enabled"),
-			"require_stepup_for_keys":    s.getBoolSetting("require_stepup_for_keys"),
-		},
-		"currency": gin.H{
-			"currency_display_enabled": currencyEnabled,
-			"cny_per_usd":              cny,
-			"currency_symbol":          currencySymbol,
-		},
-		"agreement": gin.H{
-			"tos_mode":     "page",
-			"privacy_mode": "page",
-		},
+		"site":         site,
+		"login":        login,
+		"registration": reg,
+		"currency":     cur,
+		"agreement":    full["agreement"],
 		"notification": gin.H{
 			"site_notification_enabled": true,
 			"low_balance_threshold":     10,
@@ -477,7 +525,9 @@ func (s *Server) v1UpdateProfile(c *gin.Context) {
 }
 
 func (s *Server) v1MarketplacePublic(c *gin.Context) {
-	res, err := v1compat.BuildPublicMarketplace(c.Request.Context(), s.readOnly())
+	ctx := c.Request.Context()
+	_ = v1compat.EnsurePresetRules(ctx, s.db)
+	res, err := v1compat.BuildPublicMarketplace(ctx, s.readOnly())
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "load marketplace failed")
 		return
@@ -892,353 +942,6 @@ func (s *Server) v1ForbidTokenReveal(c *gin.Context) {
 	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 		"error": "plaintext API keys are shown only once at creation time and cannot be revealed again",
 		"code":  "token_reveal_forbidden",
-	})
-}
-
-func (s *Server) v1ListLogs(c *gin.Context) {
-	claims := mustClaims(c)
-	isAdmin := false
-	targetOrgID := claims.OrgID
-	if c.Query("admin") == "1" {
-		if _, role, _, ok := s.resolveAdmin(c); ok && identity.RoleRank(role) >= identity.RoleRank(identity.PlatRoleAdmin) {
-			isAdmin = true
-			targetOrgID = 0
-			if raw := strings.TrimSpace(c.Query("org_id")); raw != "" {
-				if parsed, err := strconv.ParseUint(raw, 10, 64); err == nil {
-					targetOrgID = parsed
-				}
-			}
-		} else {
-			fail(c, http.StatusForbidden, "admin access required")
-			return
-		}
-	}
-
-	page, _ := strconv.Atoi(cmp.Or(c.Query("page"), "1"))
-	page = max(1, page)
-	pageSize, _ := strconv.Atoi(cmp.Or(c.Query("per_page"), c.Query("page_size"), "20"))
-	if pageSize < 1 {
-		pageSize = 20
-	}
-	pageSize = min(100, pageSize)
-
-	rdb := s.readOnly().WithContext(c.Request.Context())
-	q := rdb.Model(&invocation.Invocation{})
-	if targetOrgID > 0 {
-		q = q.Where("org_id = ?", targetOrgID)
-	}
-	if m := strings.TrimSpace(c.Query("model")); m != "" {
-		q = q.Where("model = ?", m)
-	}
-	if st := strings.TrimSpace(c.Query("status")); st != "" {
-		if st == "failed" {
-			q = q.Where("status <> ?", invocation.StatusSuccess)
-		} else {
-			q = q.Where("status = ?", st)
-		}
-	}
-	if mod := strings.TrimSpace(c.Query("modality")); mod != "" {
-		q = q.Where("modality = ?", mod)
-	}
-	if kw := strings.TrimSpace(cmp.Or(c.Query("q"), c.Query("search_keyword"))); kw != "" {
-		pat := "%" + escapeSQLLike(kw) + "%"
-		q = q.Where(`request_id LIKE ? ESCAPE '\' OR upstream_request_id LIKE ? ESCAPE '\' OR model LIKE ? ESCAPE '\'`, pat, pat, pat)
-	}
-
-	var total int64
-	if err := q.Count(&total).Error; err != nil {
-		fail(c, http.StatusInternalServerError, "query logs failed")
-		return
-	}
-	var rows []invocation.Invocation
-	if err := q.Order("id DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&rows).Error; err != nil {
-		fail(c, http.StatusInternalServerError, "query logs failed")
-		return
-	}
-
-	out := make([]gin.H, 0, len(rows))
-	for _, inv := range rows {
-		entry := gin.H{
-			"id":                inv.ID,
-			"request_id":        inv.RequestID,
-			"api_key_id":        inv.APIKeyID,
-			"model":             inv.Model,
-			"modality":          inv.Modality,
-			"protocol":          inv.Protocol,
-			"status":            inv.Status,
-			"status_code":       inv.StatusCode,
-			"is_stream":         inv.IsStream,
-			"prompt_tokens":     inv.PromptTokens,
-			"completion_tokens": inv.CompletionTokens,
-			"cached_tokens":     inv.CachedTokens,
-			"reasoning_tokens":  inv.ReasoningTokens,
-			"cost_usd":          inv.CostUSD,
-			"usage_source":      inv.UsageSource,
-			"frt_ms":            inv.FRTMs,
-			"duration_ms":       inv.DurationMs,
-			"finish_reason":     inv.FinishReason,
-			"error_brief":       inv.ErrorBrief,
-			"forward_rule_eid":  inv.ForwardRuleEID,
-			"billing_rule_pid":  inv.BillingRulePID,
-			"created_at":        inv.CreatedAt,
-		}
-		if isAdmin {
-			entry["org_id"] = inv.OrgID
-			entry["user_id"] = inv.UserID
-			entry["channel_id"] = inv.ChannelID
-			entry["provider"] = inv.Provider
-			entry["upstream_cost_ratio"] = inv.UpstreamCostRatio
-			entry["upstream_request_id"] = inv.UpstreamRequestID
-		}
-		out = append(out, entry)
-	}
-	c.JSON(http.StatusOK, gin.H{"data": out, "total": total, "page": page, "per_page": pageSize})
-}
-
-func (s *Server) v1LogDetail(c *gin.Context) {
-	claims := mustClaims(c)
-	id, ok := parseUintIDParam(c, "id")
-	if !ok {
-		return
-	}
-	isAdmin := false
-	if _, role, _, okAdmin := s.resolveAdmin(c); okAdmin && identity.RoleRank(role) >= identity.RoleRank(identity.PlatRoleAdmin) {
-		isAdmin = true
-	}
-	var inv invocation.Invocation
-	q := s.readOnly().WithContext(c.Request.Context()).Where("id = ?", id)
-	if !isAdmin {
-		q = q.Where("org_id = ?", claims.OrgID)
-	}
-	if err := q.First(&inv).Error; err != nil {
-		fail(c, http.StatusNotFound, "log not found")
-		return
-	}
-	if isAdmin {
-		s.writeAudit(c, "invocation_detail_read", strconv.FormatUint(inv.ID, 10), "viewed log metadata "+inv.RequestID)
-	}
-	out := gin.H{
-		"id":                  inv.ID,
-		"request_id":          inv.RequestID,
-		"upstream_request_id": inv.UpstreamRequestID,
-		"model":               inv.Model,
-		"modality":            inv.Modality,
-		"protocol":            inv.Protocol,
-		"status":              inv.Status,
-		"status_code":         inv.StatusCode,
-		"is_stream":           inv.IsStream,
-		"prompt_tokens":       inv.PromptTokens,
-		"completion_tokens":   inv.CompletionTokens,
-		"cached_tokens":       inv.CachedTokens,
-		"reasoning_tokens":    inv.ReasoningTokens,
-		"cost_usd":            inv.CostUSD,
-		"usage_source":        inv.UsageSource,
-		"frt_ms":              inv.FRTMs,
-		"duration_ms":         inv.DurationMs,
-		"finish_reason":       inv.FinishReason,
-		"upstream_error_code": inv.UpstreamErrorCode,
-		"error_brief":         inv.ErrorBrief,
-		"client_ip":           inv.ClientIP,
-		"user_agent":          inv.UserAgent,
-		"forward_rule_eid":    inv.ForwardRuleEID,
-		"billing_rule_pid":    inv.BillingRulePID,
-		"created_at":          inv.CreatedAt,
-	}
-	if isAdmin {
-		out["org_id"] = inv.OrgID
-		out["channel_id"] = inv.ChannelID
-		out["provider"] = inv.Provider
-		out["upstream_cost_ratio"] = inv.UpstreamCostRatio
-	}
-	c.JSON(http.StatusOK, out)
-}
-
-func (s *Server) formatV1TaskRow(t task.Task, isAdmin bool) gin.H {
-	durMs := 0
-	if t.FinishedAt != nil {
-		durMs = max(0, int(t.FinishedAt.Sub(t.SubmittedAt).Milliseconds()))
-	}
-	previews := []string{}
-	if strings.TrimSpace(t.ResultURL) != "" {
-		previews = []string{t.ResultURL}
-	}
-	entry := gin.H{
-		"id":               t.ID,
-		"task_id":          t.TaskID,
-		"api_key_id":       t.APIKeyID,
-		"model":            t.Model,
-		"action_type":      "视频",
-		"status":           t.Status,
-		"fail_reason":      t.FailReason,
-		"result_url":       t.ResultURL,
-		"preview_urls":     previews,
-		"est_tokens":       t.EstTokens,
-		"actual_tokens":    t.ActualTokens,
-		"hold_amount_usd":  t.HoldAmountUSD,
-		"cost_usd":         t.CostUSD,
-		"forward_rule_eid": t.ForwardRuleEID,
-		"billing_rule_pid": t.BillingRulePID,
-		"billing_detail":   t.BillingDetail,
-		"features_json":    t.FeaturesJSON,
-		"time_multiplier":  t.TimeMultiplier,
-		"duration_ms":      durMs,
-		"submitted_at":     t.SubmittedAt,
-		"started_at":       t.StartedAt,
-		"finished_at":      t.FinishedAt,
-		"created_at":       t.SubmittedAt,
-	}
-	if isAdmin {
-		entry["org_id"] = t.OrgID
-		entry["user_id"] = t.UserID
-		entry["channel_id"] = t.ChannelID
-		entry["provider"] = t.Provider
-		entry["upstream_task_id"] = t.UpstreamTaskID
-	}
-	return entry
-}
-
-func (s *Server) v1ListTaskLogs(c *gin.Context) {
-	claims := mustClaims(c)
-	isAdmin := false
-	targetOrgID := claims.OrgID
-	if c.Query("admin") == "1" {
-		if _, role, _, ok := s.resolveAdmin(c); ok && identity.RoleRank(role) >= identity.RoleRank(identity.PlatRoleAdmin) {
-			isAdmin = true
-			targetOrgID = 0
-			if raw := strings.TrimSpace(c.Query("org_id")); raw != "" {
-				if parsed, err := strconv.ParseUint(raw, 10, 64); err == nil {
-					targetOrgID = parsed
-				}
-			}
-		} else {
-			fail(c, http.StatusForbidden, "admin access required")
-			return
-		}
-	}
-	page, _ := strconv.Atoi(cmp.Or(c.Query("page"), "1"))
-	page = max(1, page)
-	pageSize, _ := strconv.Atoi(cmp.Or(c.Query("per_page"), c.Query("page_size"), "20"))
-	if pageSize < 1 {
-		pageSize = 20
-	}
-	pageSize = min(100, pageSize)
-
-	rdb := s.readOnly().WithContext(c.Request.Context())
-	q := rdb.Model(&task.Task{})
-	if targetOrgID > 0 {
-		q = q.Where("org_id = ?", targetOrgID)
-	}
-	if m := strings.TrimSpace(c.Query("model")); m != "" {
-		q = q.Where("model = ?", m)
-	}
-	if st := strings.TrimSpace(c.Query("status")); st != "" {
-		q = q.Where("status = ?", st)
-	}
-	if kw := strings.TrimSpace(cmp.Or(c.Query("q"), c.Query("search_keyword"))); kw != "" {
-		pat := "%" + escapeSQLLike(kw) + "%"
-		q = q.Where(`task_id LIKE ? ESCAPE '\' OR upstream_task_id LIKE ? ESCAPE '\' OR model LIKE ? ESCAPE '\'`, pat, pat, pat)
-	}
-
-	var total int64
-	if err := q.Count(&total).Error; err != nil {
-		fail(c, http.StatusInternalServerError, "query task logs failed")
-		return
-	}
-	var rows []task.Task
-	if err := q.Order("submitted_at DESC, id DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&rows).Error; err != nil {
-		fail(c, http.StatusInternalServerError, "query task logs failed")
-		return
-	}
-	out := make([]gin.H, 0, len(rows))
-	for _, t := range rows {
-		out = append(out, s.formatV1TaskRow(t, isAdmin))
-	}
-	c.JSON(http.StatusOK, gin.H{"data": out, "total": total, "page": page, "per_page": pageSize})
-}
-
-func (s *Server) v1TaskLogDetail(c *gin.Context) {
-	claims := mustClaims(c)
-	isAdmin := false
-	if _, role, _, ok := s.resolveAdmin(c); ok && identity.RoleRank(role) >= identity.RoleRank(identity.PlatRoleAdmin) {
-		isAdmin = true
-	}
-	ref := strings.TrimSpace(c.Param("id"))
-	q := s.readOnly().WithContext(c.Request.Context()).Where("task_id = ?", ref)
-	if !isAdmin {
-		q = q.Where("org_id = ?", claims.OrgID)
-	}
-	var t task.Task
-	err := q.First(&t).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		if numID, perr := strconv.ParseUint(ref, 10, 64); perr == nil && numID > 0 {
-			qNum := s.readOnly().WithContext(c.Request.Context()).Where("id = ?", numID)
-			if !isAdmin {
-				qNum = qNum.Where("org_id = ?", claims.OrgID)
-			}
-			err = qNum.First(&t).Error
-		}
-	}
-	if err != nil {
-		fail(c, http.StatusNotFound, "task not found")
-		return
-	}
-	c.JSON(http.StatusOK, s.formatV1TaskRow(t, isAdmin))
-}
-
-func (s *Server) v1SyncTaskLog(c *gin.Context) {
-	if s.taskService == nil {
-		fail(c, http.StatusServiceUnavailable, "task service unavailable")
-		return
-	}
-	claims := mustClaims(c)
-	isAdmin := false
-	if _, role, _, ok := s.resolveAdmin(c); ok && identity.RoleRank(role) >= identity.RoleRank(identity.PlatRoleAdmin) {
-		isAdmin = true
-	}
-	t, err := s.taskService.SyncTask(c.Request.Context(), claims.OrgID, c.Param("id"), isAdmin)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		fail(c, http.StatusNotFound, "task not found")
-		return
-	}
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "sync task failed")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"message": "task synced",
-		"task":    s.formatV1TaskRow(*t, isAdmin),
-	})
-}
-
-func (s *Server) v1CancelTaskLog(c *gin.Context) {
-	if s.taskService == nil {
-		fail(c, http.StatusServiceUnavailable, "task service unavailable")
-		return
-	}
-	claims := mustClaims(c)
-	isAdmin := false
-	if _, role, _, ok := s.resolveAdmin(c); ok && identity.RoleRank(role) >= identity.RoleRank(identity.PlatRoleAdmin) {
-		isAdmin = true
-	}
-	t, err := s.taskService.CancelTask(c.Request.Context(), claims.OrgID, c.Param("id"), isAdmin)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		fail(c, http.StatusNotFound, "task not found")
-		return
-	}
-	if errors.Is(err, task.ErrTaskNotCancellable) {
-		fail(c, http.StatusConflict, "task cannot be cancelled in current state")
-		return
-	}
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "cancel task failed")
-		return
-	}
-	if isAdmin {
-		s.writeAudit(c, "task_cancel", t.TaskID, "cancelled task and refunded hold")
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"message": "task cancelled and hold refunded",
-		"task":    s.formatV1TaskRow(*t, isAdmin),
 	})
 }
 

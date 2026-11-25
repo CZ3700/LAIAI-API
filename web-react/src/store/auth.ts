@@ -21,15 +21,22 @@ function ensureTabId(): string {
 
 export function getAuthFromStorage(): { user: User | null; token: string | null } {
   try {
-    const rawSession = sessionStorage.getItem(AUTH_STORAGE_KEY);
-    const rawLocal = localStorage.getItem(AUTH_STORAGE_KEY);
-    const raw = rawSession || rawLocal;
-    if (!raw) return { user: null, token: null };
-    const parsed = JSON.parse(raw) as { user?: User | null; token?: string | null };
-    return {
-      user: parsed.user ?? null,
-      token: parsed.token ?? null,
-    };
+    const directToken = sessionStorage.getItem('token') || localStorage.getItem('token');
+    const directUserRaw = sessionStorage.getItem('user') || localStorage.getItem('user');
+    const raw = sessionStorage.getItem(AUTH_STORAGE_KEY) || localStorage.getItem(AUTH_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { user?: User | null; token?: string | null };
+      const tok = parsed.token ?? directToken ?? null;
+      const usr = parsed.user ?? (directUserRaw ? (JSON.parse(directUserRaw) as User) : null);
+      if (tok) return { user: usr, token: tok };
+    }
+    if (directToken) {
+      return {
+        user: directUserRaw ? (JSON.parse(directUserRaw) as User) : null,
+        token: directToken,
+      };
+    }
+    return { user: null, token: null };
   } catch {
     return { user: null, token: null };
   }
@@ -41,11 +48,21 @@ function saveAuthToStorage(user: User | null, token: string | null) {
     if (!token) {
       sessionStorage.removeItem(AUTH_STORAGE_KEY);
       localStorage.removeItem(AUTH_STORAGE_KEY);
+      sessionStorage.removeItem('token');
+      sessionStorage.removeItem('user');
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
       return;
     }
     const payload = JSON.stringify({ user, token });
     sessionStorage.setItem(AUTH_STORAGE_KEY, payload);
     localStorage.setItem(AUTH_STORAGE_KEY, payload);
+    localStorage.setItem('token', token);
+    if (user) {
+      localStorage.setItem('user', JSON.stringify(user));
+    } else {
+      localStorage.removeItem('user');
+    }
   } catch {
     // ignore storage quota errors
   }
@@ -55,9 +72,9 @@ interface AuthState {
   user: User | null;
   token: string | null;
   isLoggedIn: boolean;
-  setUser: (user: User | null) => void;
-  setToken: (token: string | null) => void;
-  setAuth: (user: User | null, token: string | null) => void;
+  setUser: (user: User | null, useSession?: boolean) => void;
+  setToken: (token: string | null, useSession?: boolean) => void;
+  setAuth: (user: User | null, token: string | null, useSession?: boolean) => void;
   logout: () => void;
 }
 
@@ -67,18 +84,31 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   user: initial.user,
   token: initial.token,
   isLoggedIn: Boolean(initial.token),
-  setUser: (user) => {
+  setUser: (user, useSession = false) => {
     const token = get().token;
-    saveAuthToStorage(user, token);
+    if (useSession && user) {
+      sessionStorage.setItem('user', JSON.stringify(user));
+    } else {
+      saveAuthToStorage(user, token);
+    }
     set({ user });
   },
-  setToken: (token) => {
+  setToken: (token, useSession = false) => {
     const user = get().user;
-    saveAuthToStorage(user, token);
+    if (useSession && token) {
+      sessionStorage.setItem('token', token);
+    } else {
+      saveAuthToStorage(user, token);
+    }
     set({ token, isLoggedIn: Boolean(token) });
   },
-  setAuth: (user, token) => {
-    saveAuthToStorage(user, token);
+  setAuth: (user, token, useSession = false) => {
+    if (useSession && token) {
+      sessionStorage.setItem('token', token);
+      if (user) sessionStorage.setItem('user', JSON.stringify(user));
+    } else {
+      saveAuthToStorage(user, token);
+    }
     set({ user, token, isLoggedIn: Boolean(token) });
   },
   logout: () => {

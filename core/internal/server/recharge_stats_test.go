@@ -36,7 +36,7 @@ func TestRechargeStats(t *testing.T) {
 	_, me := srv.do(t, "GET", "/api/me", tok, nil)
 	orgID := uint64(me["org_id"].(float64))
 	now := time.Now().UTC()
-	insertTopup(t, db, orgID, "o1", 30, 1, now.Unix())                    // 今天 已到账 → 本月 + 近7日
+	insertTopup(t, db, orgID, "o1", 30, 1, now.Unix())                     // 今天 已到账 → 本月 + 近7日
 	insertTopup(t, db, orgID, "o2", 100, 1, now.AddDate(0, 0, -40).Unix()) // 40 天前 已到账 → 本月外 + 近7日外
 	insertTopup(t, db, orgID, "o3", 50, 0, now.Unix())                     // 今天 pending → 不计
 

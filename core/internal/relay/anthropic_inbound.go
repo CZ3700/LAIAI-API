@@ -210,6 +210,7 @@ func anthropicToOpenAIRequest(raw []byte) ([]byte, bool, error) {
 //   - string → string（原样）
 //   - text-block 数组无 cache_control → join \n\n 成 string（零回归，逆 flatten）
 //   - text-block 数组带 cache_control → content-parts 数组，保留 cache_control（缓存断点必须活着往下传）
+//
 // 返回 nil = 无 system（跳过，不加空消息）。
 func anthropicSystemToOpenAI(sys any) any {
 	switch s := sys.(type) {
@@ -685,11 +686,11 @@ func invStopReason(r string) string {
 // ════════════════════════ EGRESS SSE 状态机：OpenAI chunk 流 → Anthropic 事件流 ════════════════════════
 
 type anthropicSSE struct {
-	started   bool
-	id        string
-	model     string
-	textOpen  bool
-	textIndex int
+	started    bool
+	id         string
+	model      string
+	textOpen   bool
+	textIndex  int
 	toolBlock  map[int]int // OpenAI tool index → Anthropic content-block index
 	nextIndex  int
 	inTok      int64

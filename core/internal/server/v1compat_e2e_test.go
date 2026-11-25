@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
+	"github.com/laiai/laiai-next/core/internal/server/v1compat"
 	"github.com/laiai/laiai-next/core/internal/task"
 	"github.com/shopspring/decimal"
 )
@@ -238,4 +240,185 @@ func TestV1CompatE2EContractsAndSecurityRedlines(t *testing.T) {
 	}
 
 	_ = identity.PlatRoleAdmin
+}
+
+func TestV1CompatStage3Endpoints(t *testing.T) {
+	f, db, _, userToken, _ := setupStage2Server(t)
+
+	// Ensure auxiliary tables queried by marketplace / classification / topup exist in SQLite test fixture.
+	if err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS model_meta (
+			model TEXT PRIMARY KEY,
+			vendor TEXT NOT NULL DEFAULT '',
+			category TEXT NOT NULL DEFAULT '',
+			tags TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			context_length INTEGER NOT NULL DEFAULT 0,
+			icon TEXT NOT NULL DEFAULT '',
+			updated_at INTEGER NOT NULL DEFAULT 0
+		);
+	`).Error; err != nil {
+		t.Fatalf("exec model_meta: %v", err)
+	}
+
+	// 1. Seeded presets: 14 billing rules, 54 total forward rules in DB, 46 visible via GET /forward-rules.
+	if err := v1compat.EnsurePresetRules(context.Background(), db); err != nil {
+		t.Fatalf("EnsurePresetRules: %v", err)
+	}
+	var dbBillingCnt, dbForwardCnt int64
+	db.Table("billing_rules").Count(&dbBillingCnt)
+	db.Table("forward_rules").Count(&dbForwardCnt)
+	if dbBillingCnt != 14 {
+		t.Fatalf("expected 14 billing rules in DB, got %d", dbBillingCnt)
+	}
+	if dbForwardCnt != 54 {
+		t.Fatalf("expected 54 forward rules in DB, got %d", dbForwardCnt)
+	}
+
+	wBR := adminDo(t, f, http.MethodGet, "/api/v1/billing-rules", nil, true)
+	if wBR.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/billing-rules status=%d body=%s", wBR.Code, wBR.Body.String())
+	}
+	var brList []map[string]any
+	if err := json.Unmarshal(wBR.Body.Bytes(), &brList); err != nil || len(brList) != 14 {
+		t.Fatalf("expected 14 billing rules in API response, got %d (err=%v)", len(brList), err)
+	}
+
+	wFR := adminDo(t, f, http.MethodGet, "/api/v1/forward-rules", nil, true)
+	if wFR.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/forward-rules status=%d body=%s", wFR.Code, wFR.Body.String())
+	}
+	var frList []map[string]any
+	if err := json.Unmarshal(wFR.Body.Bytes(), &frList); err != nil || len(frList) != 46 {
+		t.Fatalf("expected 46 visible forward rules, got %d (err=%v)", len(frList), err)
+	}
+
+	// 2. Dashboard / Live Metrics / Models 30d
+	for _, ep := range []string{"/api/v1/dashboard", "/api/v1/metrics/live", "/api/v1/dashboard/models_30d"} {
+		w, _ := f.do(t, http.MethodGet, ep, userToken, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s expected 200, got %d body=%s", ep, w.Code, w.Body.String())
+		}
+	}
+
+	// 3. Channels, bare array channel-categories, channel-configs, admin models
+	wCat := adminDo(t, f, http.MethodGet, "/api/v1/channel-categories", nil, true)
+	if wCat.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/channel-categories expected 200, got %d", wCat.Code)
+	}
+	var catArr []map[string]any
+	if err := json.Unmarshal(wCat.Body.Bytes(), &catArr); err != nil {
+		t.Fatalf("expected bare JSON array from channel-categories, err=%v body=%s", err, wCat.Body.String())
+	}
+
+	wChCreate := adminDo(t, f, http.MethodPost, "/api/v1/channels", map[string]any{
+		"name":     "e2e-openai-channel",
+		"provider": "openai",
+		"base_url": "https://api.openai.com/v1",
+		"api_key":  "sk-e2e-channel-secret",
+		"models":   []string{"gpt-4o"},
+		"status":   1,
+	}, true)
+	if wChCreate.Code != http.StatusCreated && wChCreate.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/channels expected 200/201, got %d body=%s", wChCreate.Code, wChCreate.Body.String())
+	}
+	if w := adminDo(t, f, http.MethodGet, "/api/v1/channels", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/channels expected 200, got %d", w.Code)
+	}
+
+	wCfgCreate := adminDo(t, f, http.MethodPost, "/api/v1/channel-configs", map[string]any{
+		"name":          "e2e-cfg",
+		"provider_type": "openai",
+		"base_url":      "https://api.openai.com",
+		"api_key":       "sk-cfg-secret",
+	}, true)
+	if wCfgCreate.Code != http.StatusCreated && wCfgCreate.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/channel-configs expected 200/201, got %d body=%s", wCfgCreate.Code, wCfgCreate.Body.String())
+	}
+	if w := adminDo(t, f, http.MethodGet, "/api/v1/channel-configs", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/channel-configs expected 200, got %d", w.Code)
+	}
+
+	wModels := adminDo(t, f, http.MethodGet, "/api/v1/models", nil, true)
+	if wModels.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/models expected 200, got %d body=%s", wModels.Code, wModels.Body.String())
+	}
+	var modelsBody map[string]any
+	_ = json.Unmarshal(wModels.Body.Bytes(), &modelsBody)
+	if _, ok := modelsBody["data"]; !ok {
+		t.Fatalf("GET /api/v1/models missing data field")
+	}
+
+	wStats := adminDo(t, f, http.MethodGet, "/api/v1/classifications/stats", nil, true)
+	if wStats.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/classifications/stats expected 200, got %d body=%s", wStats.Code, wStats.Body.String())
+	}
+	var statsBody map[string]any
+	_ = json.Unmarshal(wStats.Body.Bytes(), &statsBody)
+	for _, key := range []string{"providers", "types", "source_counts"} {
+		if _, ok := statsBody[key]; !ok {
+			t.Fatalf("GET /api/v1/classifications/stats missing %s field", key)
+		}
+	}
+
+	// 4. Finance & Full Settings endpoints
+	for _, ep := range []string{
+		"/api/v1/finance/recharges",
+		"/api/v1/finance/orders",
+		"/api/v1/finance/daily-stats",
+		"/api/v1/settings/full",
+		"/api/v1/system/about",
+		"/api/v1/plugins/high_availability_channel/ha-config",
+	} {
+		w := adminDo(t, f, http.MethodGet, ep, nil, true)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s expected 200, got %d body=%s", ep, w.Code, w.Body.String())
+		}
+	}
+	wFX := adminDo(t, f, http.MethodGet, "/api/v1/settings/currency/fx", nil, true)
+	if wFX.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/settings/currency/fx expected 200, got %d body=%s", wFX.Code, wFX.Body.String())
+	}
+	var fxBody map[string]any
+	_ = json.Unmarshal(wFX.Body.Bytes(), &fxBody)
+	if _, ok := fxBody["channels"].([]any); !ok {
+		t.Fatalf("GET /api/v1/settings/currency/fx channels should be array, got %T", fxBody["channels"])
+	}
+	if _, ok := fxBody["rates"].([]any); !ok {
+		t.Fatalf("GET /api/v1/settings/currency/fx rates should be array, got %T", fxBody["rates"])
+	}
+	wSetSave := adminDo(t, f, http.MethodPost, "/api/v1/settings", map[string]any{
+		"site": map[string]any{"name": "LAIAI Preview", "admin_path": "admin"},
+	}, true)
+	if wSetSave.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/settings expected 200, got %d body=%s", wSetSave.Code, wSetSave.Body.String())
+	}
+
+	// 5. Task log channel isolation for non-admin caller
+	if err := db.Create(&task.Task{
+		TaskID:    "task-iso-1",
+		OrgID:     1,
+		APIKeyID:  1,
+		Model:     "doubao-seedance-2-0-260128",
+		ChannelID: 99,
+		Provider:  "volcengine-secret-channel",
+		Status:    task.StatusQueued,
+	}).Error; err != nil {
+		t.Fatalf("insert isolation task: %v", err)
+	}
+	wTL, _ := f.do(t, http.MethodGet, "/api/v1/task_logs", userToken, nil)
+	if wTL.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/task_logs expected 200, got %d", wTL.Code)
+	}
+	var tlBody struct {
+		Data []map[string]any `json:"data"`
+	}
+	_ = json.Unmarshal(wTL.Body.Bytes(), &tlBody)
+	for _, row := range tlBody.Data {
+		for _, secretKey := range []string{"channel_id", "channel_name", "sub_channel_name"} {
+			if _, leaked := row[secretKey]; leaked {
+				t.Fatalf("tenant task_logs leaked %s", secretKey)
+			}
+		}
+	}
 }

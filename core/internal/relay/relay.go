@@ -115,12 +115,12 @@ type Relay struct {
 	// 热读缓存（WS-2）：极少变、读极热的运营配置。命中即把每请求 DB 读从 ~5 降到 0。
 	// 失效=本地写后同步 invalidate + 跨实例 Redis pub/sub（invalidate.go）；TTL 兜底。
 	// 绝不缓存任何资金可变字段（used_amount/quota/balance 永远走 DB 原子写）。
-	channels     *snapCache[[]Channel]                  // status=1 渠道全表快照（#1 读瓶颈，8s）
-	prices       *ttlCache[string, *ModelPrice]         // model → 定价（45s）
+	channels     *snapCache[[]Channel]                   // status=1 渠道全表快照（#1 读瓶颈，8s）
+	prices       *ttlCache[string, *ModelPrice]          // model → 定价（45s）
 	billingRules *ttlCache[string, *resolvedBillingRule] // model → 绑定与多模态计费规则（45s）
-	ratios       *ttlCache[ratioKey, decimal.Decimal]   // (org,model) → 最终倍率（45s）
-	Forward      *forward.Resolver                      // 数据驱动转发规则解析器（15s）
-	invRedis     *redis.Client                          // 跨实例失效 pub/sub（nil = 单实例 TTL 兜底）
+	ratios       *ttlCache[ratioKey, decimal.Decimal]    // (org,model) → 最终倍率（45s）
+	Forward      *forward.Resolver                       // 数据驱动转发规则解析器（15s）
+	invRedis     *redis.Client                           // 跨实例失效 pub/sub（nil = 单实例 TTL 兜底）
 	invStop      chan struct{}
 }
 

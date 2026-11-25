@@ -152,11 +152,14 @@ export const TeamByokPage: React.FC = () => {
                   />
                   <Typography.Title level={5}>{t('team.my_orgs', '我的组织')}</Typography.Title>
                   <Space wrap>
-                    {orgs.map((o) => (
-                      <Tag key={o.id} color={o.id === user?.org_id ? 'indigo' : 'default'}>
-                        {o.name} (ID: {o.id})
-                      </Tag>
-                    ))}
+                    {orgs.map((o) => {
+                      const oid = o.org_id ?? o.id;
+                      return (
+                        <Tag key={oid} color={oid === user?.org_id ? 'indigo' : 'default'}>
+                          {o.name} (ID: {oid})
+                        </Tag>
+                      );
+                    })}
                   </Space>
                 </Space>
               ),

@@ -50,7 +50,7 @@ func TestFanOutStaggeredCancellation(t *testing.T) {
 
 // TestFanOutStaggeredSlowExecutionDoesNotBlockCadence 断言"等待不占槽"：
 // 每项执行 300ms、4 并发槽下，前 8 项的派发节拍不被执行时长拖慢
-//（第 8 项应在 ~400ms 内开始——若等待占槽则会推迟到 ~600ms 后）。
+// （第 8 项应在 ~400ms 内开始——若等待占槽则会推迟到 ~600ms 后）。
 func TestFanOutStaggeredSlowExecutionDoesNotBlockCadence(t *testing.T) {
 	ctx := context.Background()
 	var started [16]atomic.Int64

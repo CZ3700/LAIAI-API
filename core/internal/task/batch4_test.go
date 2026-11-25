@@ -139,11 +139,11 @@ func TestVeoParseQueryLRO(t *testing.T) {
 	}
 	// 5 种 URI 方言逐一验证 → ResultRef（绝不进 ResultURL——带 key）
 	dialects := map[string]string{
-		"新版 generatedVideos": `{"done":true,"response":{"generateVideoResponse":{"generatedVideos":[{"video":{"uri":"https://files/g1?key=SECRET"}}]}}}`,
+		"新版 generatedVideos":  `{"done":true,"response":{"generateVideoResponse":{"generatedVideos":[{"video":{"uri":"https://files/g1?key=SECRET"}}]}}}`,
 		"旧版 generatedSamples": `{"done":true,"response":{"generateVideoResponse":{"generatedSamples":[{"video":{"uri":"https://files/g2"}}]}}}`,
-		"videos 数组":          `{"done":true,"response":{"videos":[{"uri":"https://files/g3"}]}}`,
-		"video 字符串":          `{"done":true,"response":{"video":"https://files/g4"}}`,
-		"顶层 uri":             `{"done":true,"uri":"https://files/g6"}`,
+		"videos 数组":           `{"done":true,"response":{"videos":[{"uri":"https://files/g3"}]}}`,
+		"video 字符串":           `{"done":true,"response":{"video":"https://files/g4"}}`,
+		"顶层 uri":              `{"done":true,"uri":"https://files/g6"}`,
 	}
 	for name, body := range dialects {
 		r, err := ad.ParseQuery(fixtureResp(200, body))

@@ -73,7 +73,7 @@ export const PaymentChannelsPage: React.FC = () => {
   return (
     <Card title={<Space><CreditCardOutlined />{t('admin.payment_channels', '支付渠道')}</Space>}
       extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); form.setFieldsValue({ enabled: false, priority: 0, protocol: 'epay' }); setOpen(true); }}>{t('common.add', '新建')}</Button>}>
-      <Alert type="info" showIcon style={{ marginBottom: 12 }} message="新建渠道默认禁用；测试连通后再启用。密钥只写不回显。微信/支付宝直连按需后续补充。" />
+      <Alert type="info" showIcon style={{ marginBottom: 12 }} title="新建渠道默认禁用；测试连通后再启用。密钥只写不回显。微信/支付宝直连按需后续补充。" />
       <Table rowKey="id" dataSource={rows} pagination={false}
         columns={[
           { title: 'Code', dataIndex: 'code' },

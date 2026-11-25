@@ -126,6 +126,7 @@ func TestRealViduTaskSmoke(t *testing.T) {
 }
 
 // §3.8 批次 3 真机 smoke（env 门控）：
+//
 //	LAIAI_SMOKE_HAILUO_KEY / LAIAI_SMOKE_WAN_KEY / LAIAI_SMOKE_SUNO_KEY (+ _URL/_MODEL)
 func TestRealHailuoTaskSmoke(t *testing.T) {
 	key := os.Getenv("LAIAI_SMOKE_HAILUO_KEY")
