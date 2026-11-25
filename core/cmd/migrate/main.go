@@ -1,8 +1,6 @@
-// migrate 命令：对 MySQL 应用 migrations/ 下的版本化 SQL。
+// migrate command applies versioned SQL migrations under migrations/ to PostgreSQL (or SQLite).
 //
-//	LAIAI_DSN="user:pass@tcp(host:3306)/laiai?parseTime=true" go run ./cmd/migrate [-dir ../migrations] [-status]
-//
-// 纪律：生产执行前先备份（旧平台 Migration runbook）；无 Down，回滚靠恢复。
+//	LAIAI_DSN="postgres://user:pass@host:5432/laiai?sslmode=disable" go run ./cmd/migrate [-dir ../migrations] [-status]
 package main
 
 import (
@@ -10,8 +8,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/laiai/laiai-next/core/internal/dbopen"
 	"github.com/laiai/laiai-next/core/internal/migrate"
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -26,7 +24,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "LAIAI_DSN required (refusing to guess a database)")
 		os.Exit(1)
 	}
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Warn)})
+	db, err := dbopen.Open(dsn, &gorm.Config{Logger: logger.Default.LogMode(logger.Warn)})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "connect: %v\n", err)
 		os.Exit(1)

@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type presetArticle struct {
@@ -278,18 +277,6 @@ func EnsurePresetDocs(ctx context.Context, db *gorm.DB, forceReset bool) error {
 	}
 
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if forceReset {
-			// Retain custom admin-written articles when restoring system presets cleanly.
-			var existing []APIDoc
-			if err := tx.Where("is_preset = 1").Find(&existing).Error; err == nil && len(existing) > 0 {
-				var presetIDs []uint64
-				for _, r := range existing {
-					presetIDs = append(presetIDs, r.ID)
-				}
-				_ = tx.Where("doc_id IN ?", presetIDs).Delete(&APIDocIntl{}).Error
-			}
-		}
-
 		for _, cat := range presetDocs {
 			dirDoc := APIDoc{
 				ParentID:        nil,
@@ -308,36 +295,37 @@ func EnsurePresetDocs(ctx context.Context, db *gorm.DB, forceReset bool) error {
 				dirDoc.ID = found.ID
 				if forceReset {
 					if uerr := tx.Model(&APIDoc{}).Where("id = ?", found.ID).Updates(map[string]any{
-						"title":            cat.Title,
-						"sort_order":       cat.SortOrder,
-						"is_active":        1,
-						"default_expanded": b2i8(cat.DefaultExpanded),
+						"title":             cat.Title,
+						"sort_order":        cat.SortOrder,
+						"is_active":         1,
+						"default_expanded":  b2i8(cat.DefaultExpanded),
+						"translations_json": encodeTranslations(map[string]DocTranslationInput{"en": {Title: cat.TitleEn}}),
 					}).Error; uerr != nil {
 						return uerr
 					}
 				}
 			} else {
+				dirDoc.TranslationsJSON = encodeTranslations(map[string]DocTranslationInput{"en": {Title: cat.TitleEn}})
 				if cerr := tx.Create(&dirDoc).Error; cerr != nil {
 					return cerr
-				}
-			}
-			if cat.TitleEn != "" {
-				if err := upsertIntlTx(tx, dirDoc.ID, "en", cat.TitleEn, ""); err != nil {
-					return err
 				}
 			}
 
 			pid := dirDoc.ID
 			for _, art := range cat.Articles {
+				artTrJSON := encodeTranslations(map[string]DocTranslationInput{
+					"en": {Title: art.TitleEn, Content: art.ContentEn},
+				})
 				artDoc := APIDoc{
-					ParentID:  &pid,
-					Title:     art.Title,
-					Slug:      art.Slug,
-					Content:   art.Content,
-					IsDir:     0,
-					SortOrder: art.SortOrder,
-					IsActive:  1,
-					IsPreset:  1,
+					ParentID:         &pid,
+					Title:            art.Title,
+					Slug:             art.Slug,
+					Content:          art.Content,
+					IsDir:            0,
+					SortOrder:        art.SortOrder,
+					IsActive:         1,
+					IsPreset:         1,
+					TranslationsJSON: artTrJSON,
 				}
 				var existingArt APIDoc
 				aerr := tx.Where("is_preset = 1 AND slug = ? AND is_dir = 0", art.Slug).Order("id ASC").First(&existingArt).Error
@@ -345,11 +333,12 @@ func EnsurePresetDocs(ctx context.Context, db *gorm.DB, forceReset bool) error {
 					artDoc.ID = existingArt.ID
 					if forceReset {
 						if uerr := tx.Model(&APIDoc{}).Where("id = ?", existingArt.ID).Updates(map[string]any{
-							"parent_id":  pid,
-							"title":      art.Title,
-							"content":    art.Content,
-							"sort_order": art.SortOrder,
-							"is_active":  1,
+							"parent_id":         pid,
+							"title":             art.Title,
+							"content":           art.Content,
+							"sort_order":        art.SortOrder,
+							"is_active":         1,
+							"translations_json": artTrJSON,
 						}).Error; uerr != nil {
 							return uerr
 						}
@@ -359,28 +348,10 @@ func EnsurePresetDocs(ctx context.Context, db *gorm.DB, forceReset bool) error {
 						return cerr
 					}
 				}
-				if art.TitleEn != "" || art.ContentEn != "" {
-					if err := upsertIntlTx(tx, artDoc.ID, "en", art.TitleEn, art.ContentEn); err != nil {
-						return err
-					}
-				}
 			}
 		}
 		return nil
 	})
-}
-
-func upsertIntlTx(tx *gorm.DB, docID uint64, lang, title, content string) error {
-	row := APIDocIntl{
-		DocID:   docID,
-		Lang:    lang,
-		Title:   title,
-		Content: content,
-	}
-	return tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "doc_id"}, {Name: "lang"}},
-		DoUpdates: clause.AssignmentColumns([]string{"title", "content", "updated_at"}),
-	}).Create(&row).Error
 }
 
 func b2i8(v bool) int8 {

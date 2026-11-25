@@ -46,6 +46,11 @@ type Channel struct {
 	Status               int8            `gorm:"column:status"`
 	CategoryID           uint64          `gorm:"column:category_id"`
 	UpstreamCostRatio    decimal.Decimal `gorm:"column:upstream_cost_ratio"`
+	ConfigCID            string          `gorm:"column:config_cid"`
+	SubChannelsJSON      string          `gorm:"column:sub_channels_json"`
+	QuotaLimitUSD        decimal.Decimal `gorm:"column:quota_limit_usd"`
+	UsedQuotaUSD         decimal.Decimal `gorm:"column:used_quota_usd"`
+	Remark               string          `gorm:"column:remark"`
 
 	// Credentials：该渠道的启用 key 列表（非持久列；快照/选择器按需填充，0034 Multi-key）。
 	// 空 = 回退 CredentialEnc 单 key（legacy）。调用方只读，绝不原地改。

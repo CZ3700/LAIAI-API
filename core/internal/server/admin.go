@@ -2,10 +2,8 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/csv"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -182,49 +180,13 @@ func (s *Server) adminGrantCredit(c *gin.Context) {
 		balanceAfter = posted
 		return nil
 	}
-	if ledger.ActivityTrackingEnabled(s.db) && (mode == "add" || mode == "subtract" || mode == "override") {
-		direction, activityType := "credit", "admin_credit"
-		requested := amount
-		if mode == "subtract" {
-			direction, activityType = "debit", "admin_debit"
-		} else if mode == "override" {
-			// The actual delta is only known after locking all account shards.
-			direction, activityType, requested = "", "admin_adjustment", decimal.Zero
-		}
-		fingerprintBody, _ := json.Marshal([]string{mode, amount.String(), req.Reason})
-		fingerprint := sha256.Sum256(fingerprintBody)
-		executed := false
-		_, err = ledger.RunOperation(s.db.WithContext(c.Request.Context()), ledger.OperationIntent{
-			OrgID: req.OrgID, IdempotencyKey: "admin-adjust:" + req.IdempotencyKey,
-			Type: activityType, Direction: direction, RequestedAmount: requested,
-			RequestFingerprint: hex.EncodeToString(fingerprint[:]),
-			RefType:            "admin_adjustment", RefID: req.IdempotencyKey,
-		}, func(tx *gorm.DB) error {
-			executed = true
-			return adjust(tx)
-		})
-		if err == nil && !executed {
-			applied = true
-			balanceAfter, _, err = ledger.OrgBalances(s.db, req.OrgID, ledger.AccountUserCredit)
-		}
-	} else {
-		err = s.db.Transaction(adjust)
-	}
+	err = s.db.WithContext(c.Request.Context()).Transaction(adjust)
 	switch {
 	case errors.Is(err, errBadAdjustMode):
 		fail(c, http.StatusBadRequest, "mode must be add, subtract or override")
 		return
 	case errors.Is(err, ledger.ErrInsufficientBalance):
 		fail(c, http.StatusConflict, "insufficient available balance for this adjustment")
-		return
-	case errors.Is(err, ledger.ErrOperationPending):
-		fail(c, http.StatusConflict, "adjustment outcome is pending reconciliation")
-		return
-	case errors.Is(err, ledger.ErrOperationConflict):
-		fail(c, http.StatusConflict, "idempotency key belongs to another adjustment")
-		return
-	case errors.Is(err, ledger.ErrOperationFailed):
-		fail(c, http.StatusConflict, "previous adjustment failed; use a new key for an explicit new attempt")
 		return
 	case err != nil:
 		fail(c, http.StatusInternalServerError, "adjustment failed")
@@ -928,7 +890,7 @@ func (s *Server) adminListOrgs(c *gin.Context) {
 	// 活跃度子查询独立聚合（每 org 一行），避免与 members 子查询交叉相乘。
 	// 余额/冻结用相关子查询 SUM 跨所有分片（分片 org 的 ledger_accounts 有多行；JOIN 会扇出→行重复/漏算）。
 	err := s.db.Raw(`
-		SELECT o.id, o.name, o.kind, o.status, o.group_name AS ` + "`group`" + `,
+		SELECT o.id, o.name, o.kind, o.status, o.group_name AS "group",
 		       COALESCE(u.email, '') AS owner_email,
 		       (SELECT COUNT(*) FROM org_members m WHERE m.org_id = o.id) AS members,
 		       (SELECT COALESCE(SUM(la.posted_balance), 0) FROM ledger_accounts la
@@ -937,17 +899,15 @@ func (s *Server) adminListOrgs(c *gin.Context) {
 		           WHERE la.org_id = o.id AND la.type = 'user_credit') AS held_amount,
 		       COALESCE(iv.calls, 0) AS calls,
 		       COALESCE(iv.spend, 0) AS spend,
-		       COALESCE(iv.last_active, '') AS last_active,
-		       COALESCE(e.feature_images, 1) AS feature_images,
-		       COALESCE(e.feature_video, 1) AS feature_video,
-		       COALESCE(e.max_members, 0) AS max_members,
-		       COALESCE(e.max_api_keys, 0) AS max_api_keys,
-		       COALESCE(sh.shard_count, 1) AS shard_count
+		       COALESCE(CAST(iv.last_active AS TEXT), '') AS last_active,
+		       o.feature_images AS feature_images,
+		       o.feature_video AS feature_video,
+		       o.max_members AS max_members,
+		       o.max_api_keys AS max_api_keys,
+		       o.credit_shards AS shard_count
 		FROM organizations o
 		LEFT JOIN org_members om ON om.org_id = o.id AND om.role = 'owner'
 		LEFT JOIN users u ON u.id = om.user_id
-		LEFT JOIN org_entitlements e ON e.org_id = o.id
-		LEFT JOIN ledger_account_shards sh ON sh.org_id = o.id AND sh.type = 'user_credit'
 		LEFT JOIN (
 		    SELECT org_id, COUNT(*) AS calls,
 		           COALESCE(SUM(cost_usd), 0) AS spend, MAX(created_at) AS last_active
@@ -1529,7 +1489,7 @@ func (s *Server) adminListUsers(c *gin.Context) {
 		       COALESCE(o.id, 0) AS org_id,
 		       (SELECT COALESCE(SUM(la.posted_balance), 0) FROM ledger_accounts la
 		           WHERE la.org_id = o.id AND la.type = 'user_credit') AS balance,
-		       COALESCE(o.group_name, 'default') AS `+"`group`"+`,
+		       COALESCE(o.group_name, 'default') AS "group",
 		       COALESCE(o.inviter_org_id, 0) AS inviter_org_id,
 		       (SELECT COUNT(*) FROM organizations oi WHERE oi.inviter_org_id = o.id) AS invited
 		FROM users u

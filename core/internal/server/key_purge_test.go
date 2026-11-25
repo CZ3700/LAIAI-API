@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,13 +26,34 @@ type keyPurgeHTTPFixture struct {
 	token   string
 }
 
+func keyPurgeSQL(t *testing.T, db *gorm.DB, query string, args ...any) {
+	t.Helper()
+	if err := db.Exec(query, args...).Error; err != nil {
+		t.Fatalf("sql %q: %v", query, err)
+	}
+}
+
+func keyPurgeFingerprints(t *testing.T, db *gorm.DB, tables ...string) map[string]string {
+	t.Helper()
+	out := make(map[string]string, len(tables))
+	for _, table := range tables {
+		var rows []map[string]any
+		if err := db.Table(table).Order("1").Find(&rows).Error; err != nil {
+			t.Fatalf("fingerprint %s: %v", table, err)
+		}
+		b, _ := json.Marshal(rows)
+		out[table] = string(b)
+	}
+	return out
+}
+
 func keyPurgeHTTP(t *testing.T, db *gorm.DB) *keyPurgeHTTPFixture {
 	t.Helper()
 	for _, org := range []int{1, 2} {
-		routingAdminSQL(t, db, "INSERT INTO organizations(id,slug,name) VALUES(?,?,?)", org, fmt.Sprintf("key-purge-%d", org), "Fixture")
+		keyPurgeSQL(t, db, "INSERT INTO organizations(id,slug,name) VALUES(?,?,?)", org, fmt.Sprintf("key-purge-%d", org), "Fixture")
 	}
-	routingAdminSQL(t, db, "INSERT INTO users(id,email,email_canonical) VALUES(1,'purge@example.test','purge@example.test')")
-	routingAdminSQL(t, db, "INSERT INTO org_members(org_id,user_id,role) VALUES(1,1,'owner')")
+	keyPurgeSQL(t, db, "INSERT INTO users(id,email,email_canonical) VALUES(1,'purge@example.test','purge@example.test')")
+	keyPurgeSQL(t, db, "INSERT INTO org_members(org_id,user_id,role) VALUES(1,1,'owner')")
 	token, _, err := identity.IssueSessionToken(testSecret, 1, 1, time.Hour, time.Now())
 	if err != nil {
 		t.Fatal("cannot create synthetic session")
@@ -52,10 +74,15 @@ func keyPurgeSQLite(t *testing.T) *keyPurgeHTTPFixture {
 	}
 	pool.SetMaxOpenConns(4)
 	t.Cleanup(func() { _ = pool.Close() })
-	routingAdminSQL(t, db, testSchema)
-	// Deliberately a reference-only HTTP fixture. Real financial state, DDL,
-	// exact DECIMAL and admission races are covered by the MySQL suite.
-	routingAdminSQL(t, db, "CREATE TABLE video_billing_snapshots(id INTEGER PRIMARY KEY,org_id INTEGER NOT NULL,api_key_id INTEGER NOT NULL)")
+	keyPurgeSQL(t, db, testSchema)
+	keyPurgeSQL(t, db, `CREATE TABLE IF NOT EXISTS tasks(
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		org_id INTEGER NOT NULL,
+		api_key_id INTEGER NOT NULL DEFAULT 0,
+		task_id TEXT NOT NULL DEFAULT '',
+		model TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'queued'
+	)`)
 	return keyPurgeHTTP(t, db)
 }
 
@@ -73,13 +100,13 @@ func keyPurgeInsertKey(t *testing.T, db *gorm.DB, id, org uint64, active bool) {
 	if active {
 		status = 1
 	}
-	routingAdminSQL(t, db, "INSERT INTO api_keys(id,org_id,name,prefix,key_hash,status) VALUES(?,?,'synthetic','test',?,?)", id, org, fmt.Sprintf("%064x", id), status)
+	keyPurgeSQL(t, db, "INSERT INTO api_keys(id,org_id,name,prefix,key_hash,status) VALUES(?,?,'synthetic','test',?,?)", id, org, fmt.Sprintf("%064x", id), status)
 }
 
 func keyPurgeStatus(t *testing.T, w *httptest.ResponseRecorder, want int) {
 	t.Helper()
 	if w.Code != want {
-		t.Fatalf("purge HTTP status=%d want=%d", w.Code, want)
+		t.Fatalf("purge HTTP status=%d want=%d body=%s", w.Code, want, w.Body.String())
 	}
 	for _, secret := range []string{"SELECT ", "private_purge_column", "key_hash", "dsn="} {
 		if strings.Contains(w.Body.String(), secret) {
@@ -93,15 +120,15 @@ func TestKeyPurgeHTTPPreservesHistoricalReferencesAndRevocation(t *testing.T) {
 	keyPurgeInsertKey(t, f.db, 1, 1, true)
 	keyPurgeInsertKey(t, f.db, 2, 1, false)
 	keyPurgeInsertKey(t, f.db, 3, 2, false)
-	routingAdminSQL(t, f.db, "INSERT INTO video_billing_snapshots(id,org_id,api_key_id) VALUES(1,1,1)")
+	keyPurgeSQL(t, f.db, "INSERT INTO tasks(id,org_id,api_key_id,task_id,model,status) VALUES(1,1,1,'t-active-1','seedance','queued')")
 	keyPurgeStatus(t, f.request("DELETE", 1, true), 400)
 	keyPurgeStatus(t, f.request("DELETE", 1, false), 200)
-	before := routingAdminFingerprints(t, f.db, "api_keys", "video_billing_snapshots", "routing_policy_events")
+	before := keyPurgeFingerprints(t, f.db, "api_keys", "tasks")
 	keyPurgeStatus(t, f.request("DELETE", 1, true), 409)
 	keyPurgeStatus(t, f.request("DELETE", 3, true), 404)
 	keyPurgeStatus(t, f.request("DELETE", 0, true), 404)
 	keyPurgeStatus(t, f.request("DELETE", 999, true), 404)
-	if after := routingAdminFingerprints(t, f.db, "api_keys", "video_billing_snapshots", "routing_policy_events"); !reflect.DeepEqual(before, after) {
+	if after := keyPurgeFingerprints(t, f.db, "api_keys", "tasks"); !reflect.DeepEqual(before, after) {
 		t.Fatal("denial changed historical references or revoked identity")
 	}
 	keyPurgeStatus(t, f.request("DELETE", 2, true), 200)
@@ -115,11 +142,11 @@ func TestKeyPurgeHTTPPreservesHistoricalReferencesAndRevocation(t *testing.T) {
 func TestKeyPurgeHTTPReferenceSQLFailureDoesNotDelete(t *testing.T) {
 	f := keyPurgeSQLite(t)
 	keyPurgeInsertKey(t, f.db, 1, 1, false)
-	before := routingAdminFingerprints(t, f.db, "api_keys")
+	before := keyPurgeFingerprints(t, f.db, "api_keys")
 	hits := 0
 	const name = "key_purge_real_sql_failure"
 	if err := f.db.Callback().Query().Before("gorm:query").Register(name, func(q *gorm.DB) {
-		if q.Statement.Table == "video_billing_snapshots" {
+		if q.Statement.Table == "tasks" {
 			hits++
 			q.Statement.Selects = []string{"private_purge_column"}
 		}
@@ -129,7 +156,7 @@ func TestKeyPurgeHTTPReferenceSQLFailureDoesNotDelete(t *testing.T) {
 	t.Cleanup(func() { _ = f.db.Callback().Query().Remove(name) })
 	w := f.request("DELETE", 1, true)
 	keyPurgeStatus(t, w, 503)
-	if hits != 1 || !reflect.DeepEqual(before, routingAdminFingerprints(t, f.db, "api_keys")) {
+	if hits != 1 || !reflect.DeepEqual(before, keyPurgeFingerprints(t, f.db, "api_keys")) {
 		t.Fatal("failed reference query deleted identity or missed SQL injection")
 	}
 }
@@ -140,7 +167,7 @@ func TestKeyPurgeHTTPRequiresCurrentSessionMembership(t *testing.T) {
 	for _, token := range []string{"", "sk-not-a-session"} {
 		keyPurgeStatus(t, routingAdminTestRequest(f.handler, context.Background(), "DELETE", "/api/keys/1/purge", token, "", ""), 401)
 	}
-	routingAdminSQL(t, f.db, "DELETE FROM org_members WHERE org_id=1 AND user_id=1")
+	keyPurgeSQL(t, f.db, "DELETE FROM org_members WHERE org_id=1 AND user_id=1")
 	w := f.request("DELETE", 1, true)
 	if w.Code < 400 {
 		t.Fatal("removed member purged key")

@@ -80,18 +80,19 @@ const (
 )
 
 type User struct {
-	DisplayCurrency string `gorm:"column:display_currency;default:USD"`
-	ID              uint64 `gorm:"primaryKey"`
-	Email           string `gorm:"column:email"`
-	EmailCanonical  string `gorm:"column:email_canonical"`
-	PasswordHash    string `gorm:"column:password_hash"`
-	DisplayName     string `gorm:"column:display_name"`
-	TOTPSecretEnc   string `gorm:"column:totp_secret_enc"` // 2FA 共享密钥（信封加密，0017）
-	TOTPEnabled     int8   `gorm:"column:totp_enabled"`    // 2FA 是否启用
-	Role            string `gorm:"column:role"`            // 平台角色（0020，RBAC）：user|support|admin|superadmin
-	Status          int8   `gorm:"column:status"`
-	EmailVerified   int8   `gorm:"column:email_verified"`        // 0030：邮箱是否已验证（注册时过验证码即 1，供邮件推送/未验证门控）
-	AdminRemark     string `gorm:"column:admin_remark" json:"-"` // 运营备注（0025，gap P2-B）：仅后台可见可改，json:"-" 防原样返回时外露给用户
+	DisplayCurrency     string `gorm:"column:display_currency;default:USD"`
+	ID                  uint64 `gorm:"primaryKey"`
+	Email               string `gorm:"column:email"`
+	EmailCanonical      string `gorm:"column:email_canonical"`
+	PasswordHash        string `gorm:"column:password_hash"`
+	DisplayName         string `gorm:"column:display_name"`
+	TOTPSecretEnc       string `gorm:"column:totp_secret_enc"` // 2FA 共享密钥（信封加密，0017）
+	TOTPEnabled         int8   `gorm:"column:totp_enabled"`    // 2FA 是否启用
+	TOTPBackupCodesJSON string `gorm:"column:totp_backup_codes_json" json:"-"`
+	Role                string `gorm:"column:role"` // 平台角色（0020，RBAC）：user|support|admin|superadmin
+	Status              int8   `gorm:"column:status"`
+	EmailVerified       int8   `gorm:"column:email_verified"`        // 0030：邮箱是否已验证（注册时过验证码即 1，供邮件推送/未验证门控）
+	AdminRemark         string `gorm:"column:admin_remark" json:"-"` // 运营备注（0025，gap P2-B）：仅后台可见可改，json:"-" 防原样返回时外露给用户
 }
 
 // 平台角色（0020 RBAC）。线性等级，rank 越大权越大。X-Admin-Token 视同 superadmin。
@@ -140,18 +141,26 @@ func ValidRole(role string) bool {
 func (User) TableName() string { return "users" }
 
 type Organization struct {
-	ID           uint64  `gorm:"primaryKey"`
-	Slug         string  `gorm:"column:slug"`
-	Name         string  `gorm:"column:name"`
-	Kind         int8    `gorm:"column:kind"`
-	WhiteLabel   int8    `gorm:"column:white_label"`
-	Group        string  `gorm:"column:group_name"`     // 计费分组（0011，差异化定价）
-	AffCode      *string `gorm:"column:aff_code"`       // 邀请码（0016，NULL=未生成）
-	InviterOrgID uint64  `gorm:"column:inviter_org_id"` // 邀请来源组织（0016）
-	Status       int8    `gorm:"column:status"`
-	// 余额低预警（0042）：阈值 0=关闭；alerted_at 用于 24h 防重发
-	LowBalanceAlertUSD  decimal.Decimal `gorm:"column:low_balance_alert_usd"`
-	LowBalanceAlertedAt *time.Time      `gorm:"column:low_balance_alerted_at"`
+	ID                     uint64          `gorm:"primaryKey"`
+	Slug                   string          `gorm:"column:slug"`
+	Name                   string          `gorm:"column:name"`
+	Kind                   int8            `gorm:"column:kind"`
+	WhiteLabel             int8            `gorm:"column:white_label"`
+	Group                  string          `gorm:"column:group_name"`     // 计费分组（0011，差异化定价）
+	AffCode                *string         `gorm:"column:aff_code"`       // 邀请码（0016，NULL=未生成）
+	InviterOrgID           uint64          `gorm:"column:inviter_org_id"` // 邀请来源组织（0016）
+	Status                 int8            `gorm:"column:status"`
+	LowBalanceAlertUSD     decimal.Decimal `gorm:"column:low_balance_alert_usd"`
+	LowBalanceAlertedAt    *time.Time      `gorm:"column:low_balance_alerted_at"`
+	FeatureImages          bool            `gorm:"column:feature_images"`
+	FeatureVideo           bool            `gorm:"column:feature_video"`
+	MaxMembers             int             `gorm:"column:max_members"`
+	MaxAPIKeys             int             `gorm:"column:max_api_keys"`
+	CreditShards           int             `gorm:"column:credit_shards"`
+	NotifyEmailEnabled     bool            `gorm:"column:notify_email_enabled"`
+	NotifyWebhookURL       string          `gorm:"column:notify_webhook_url"`
+	NotifyWebhookSecretEnc string          `gorm:"column:notify_webhook_secret_enc"`
+	NotifyEvents           string          `gorm:"column:notify_events"`
 }
 
 func (Organization) TableName() string { return "organizations" }
@@ -218,12 +227,13 @@ func Register(tx *gorm.DB, in RegisterInput) (*User, *Organization, error) {
 	}
 
 	u := &User{
-		Email:          strings.TrimSpace(in.Email),
-		EmailCanonical: canonical,
-		PasswordHash:   hash,
-		DisplayName:    name,
-		Status:         StatusActive,
-		EmailVerified:  b2i8(in.EmailVerified),
+		Email:               strings.TrimSpace(in.Email),
+		EmailCanonical:      canonical,
+		PasswordHash:        hash,
+		DisplayName:         name,
+		Status:              StatusActive,
+		EmailVerified:       b2i8(in.EmailVerified),
+		TOTPBackupCodesJSON: "[]",
 	}
 	if err := tx.Create(u).Error; err != nil {
 		if isDuplicate(err) {
@@ -242,13 +252,17 @@ func Register(tx *gorm.DB, in RegisterInput) (*User, *Organization, error) {
 	}
 	affCode := genAffCode()
 	org := &Organization{
-		Slug:         fmt.Sprintf("u-%d", u.ID), // 用户 ID 派生，天然唯一
-		Name:         name,
-		Kind:         OrgKindPersonal,
-		Group:        "default", // 默认计费分组（0011）；显式设避免 GORM 零值覆盖 DB 默认
-		AffCode:      &affCode,
-		InviterOrgID: inviterOrgID,
-		Status:       StatusActive,
+		Slug:          fmt.Sprintf("u-%d", u.ID), // 用户 ID 派生，天然唯一
+		Name:          name,
+		Kind:          OrgKindPersonal,
+		Group:         "default", // 默认计费分组（0011）；显式设避免 GORM 零值覆盖 DB 默认
+		AffCode:       &affCode,
+		InviterOrgID:  inviterOrgID,
+		Status:        StatusActive,
+		FeatureImages: true,
+		FeatureVideo:  true,
+		CreditShards:  1,
+		NotifyEvents:  "[]",
 	}
 	if err := tx.Create(org).Error; err != nil {
 		return nil, nil, err

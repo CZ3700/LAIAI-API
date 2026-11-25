@@ -1,20 +1,12 @@
 package server
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/laiai/laiai-next/core/internal/ark"
-	"github.com/laiai/laiai-next/core/internal/arkverification"
-	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/relay"
-	"github.com/laiai/laiai-next/core/internal/video"
-	"gorm.io/gorm"
 )
 
 type catalogGenericPrice struct {
@@ -34,224 +26,117 @@ func genericPriceProjection(p relay.ModelPrice) *catalogGenericPrice {
 	return &catalogGenericPrice{p.Model, p.InputUSDPer1M.String(), p.OutputUSDPer1M.String(), p.CachedInputUSDPer1M.String(), p.ImageUSD.String(), p.PerCallUSD.String(), p.TTSPer1KChars.String(), p.TranscriptionPerCall.String(), p.AudioInputUSDPer1M.String(), p.AudioOutputUSDPer1M.String()}
 }
 
-type catalogVideoConfiguration struct {
-	ChannelID         uint64 `json:"channel_id"`
-	ProviderScopeID   uint64 `json:"provider_scope_id"`
-	ConfigVersion     string `json:"config_version"`
-	PricingVersion    string `json:"pricing_version"`
-	CapabilityVersion string `json:"capability_version"`
-	Enabled           bool   `json:"enabled"`
-}
-
-func videoConfigProjection(cfg video.ModelConfig, cap ark.Capability) *catalogVideoConfiguration {
-	return &catalogVideoConfiguration{cfg.ChannelID, cfg.ProviderScopeID, cfg.Version, cfg.PricingVersion, cap.Version, cfg.Enabled}
-}
-
 type catalogProvider struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
 }
+
 type catalogChannel struct {
 	ID       uint64 `json:"id"`
 	Name     string `json:"name"`
 	Provider string `json:"provider"`
 	Status   int8   `json:"status"`
 }
+
 type catalogModel struct {
-	Key                   string                     `json:"key"`
-	Provider              string                     `json:"provider"`
-	ChannelID             uint64                     `json:"channel_id"`
-	Model                 string                     `json:"model"`
-	UpstreamModel         string                     `json:"upstream_model"`
-	PricingKind           string                     `json:"pricing_kind"`
-	RecognitionSource     string                     `json:"recognition_source"`
-	BillingModes          []string                   `json:"billing_modes"`
-	GenericPrice          *catalogGenericPrice       `json:"generic_price"`
-	Meta                  *ModelMeta                 `json:"meta"`
-	VideoModel            *string                    `json:"video_model"`
-	VideoConfiguration    *catalogVideoConfiguration `json:"video_configuration"`
-	UnsupportedReason     string                     `json:"unsupported_reason"`
-	Pricing               pricingDescriptor          `json:"pricing"`
-	OfficialPriceEvidence *arkverification.Tariff    `json:"official_price_evidence,omitempty"`
+	Key               string               `json:"key"`
+	Provider          string               `json:"provider"`
+	ChannelID         uint64               `json:"channel_id"`
+	Model             string               `json:"model"`
+	UpstreamModel     string               `json:"upstream_model"`
+	PricingKind       string               `json:"pricing_kind"`
+	RecognitionSource string               `json:"recognition_source"`
+	BillingModes      []string             `json:"billing_modes"`
+	GenericPrice      *catalogGenericPrice `json:"generic_price"`
+	Meta              *ModelMeta           `json:"meta"`
+	UnsupportedReason string               `json:"unsupported_reason"`
+	Pricing           pricingDescriptor    `json:"pricing"`
 }
 
-// A known family is an explicit identifier grammar, not a modality keyword guess.
-// It prevents legacy Seedance variants from entering a generic text price form.
-var seedanceStandardID = regexp.MustCompile(`^(?:doubao-)?seedance-(2[.-][05])(?:-[0-9]{6})?$`)
-var seedanceVariantID = regexp.MustCompile(`^(?:doubao-)?seedance-2[.-][05]-(?:fast|mini)(?:-[0-9]{6})?$`)
-var seedanceLegacyID = regexp.MustCompile(`^(?:doubao-)?seedance-1[.-][05](?:-(?:pro(?:-fast)?|lite|fast))?(?:-[0-9]{6})?$`)
-var seedance20TariffID = regexp.MustCompile(`^(?:doubao-)?seedance-2[.-]0-(fast(?:-260128)?|mini(?:-260615)?)$`)
-
-func variantTariffIdentity(model string) string {
-	match := seedance20TariffID.FindStringSubmatch(model)
-	if match == nil {
-		return ""
-	}
-	return "seedance-2.0-" + strings.SplitN(match[1], "-", 2)[0]
-}
-
-func officialVariantTariffModel(row catalogModel, ch relay.Channel) string {
-	if ch.OwnerOrgID != 0 || (ch.Provider != "volcengine" && ch.Provider != "modelark") || ch.BaseURL != "https://ark.cn-beijing.volces.com/api/v3" {
-		return ""
-	}
-	upstream := variantTariffIdentity(row.UpstreamModel)
-	if upstream == "" {
-		return ""
-	}
-	public := variantTariffIdentity(row.Model)
-	if public != "" && public != upstream {
-		return ""
-	}
-	canonical, reason := seedanceIdentity(row.Model)
-	if public == "" && (canonical != "" || reason != "") {
-		return ""
-	}
-	return upstream
-}
-
-func seedanceIdentity(model string) (canonical, reason string) {
-	if seedanceLegacyID.MatchString(model) {
-		return "", "seedance_1x_excluded"
-	}
-	if model == ark.Model20Fast || model == "doubao-seedance-2-0-fast-260128" {
-		return ark.Model20Fast, ""
-	}
-	if model == ark.Model20Mini || model == "doubao-seedance-2-0-mini-260615" {
-		return ark.Model20Mini, ""
-	}
-	if model == ark.Model25Flash || model == "doubao-seedance-2-5-flash" || strings.HasPrefix(model, "doubao-seedance-2-5-flash-") {
-		// flash 官方部署名无日期尾缀（doubao-seedance-2-5-flash，与
-		// ValidUpstreamModel 对齐）；带日期形式一并归一，核验/计价链路
-		// 的增量校验靠它识别上游身份（2026-11-15 上架轮次修正）。
-		return ark.Model25Flash, ""
-	}
-	if seedanceVariantID.MatchString(model) {
-		return "", "seedance_variant_not_supported"
-	}
-	if m := seedanceStandardID.FindStringSubmatch(model); m != nil {
-		return "seedance-" + strings.ReplaceAll(m[1], "-", "."), ""
-	}
-	return "", ""
-}
-
-// This is a read projection of existing model-global prices, never a default
-// tariff or a new channel-specific price. Metadata remains display-only.
+// adminPricingCatalog returns a read-only catalog projection of models, providers, and channels.
 func (s *Server) adminPricingCatalog(c *gin.Context) {
-	db := s.db.WithContext(c.Request.Context())
-	videoDetails := false
-	if value, ok := c.Get("actor_id"); ok {
-		if id, ok := value.(uint64); ok && id != 0 {
-			var actor identity.User
-			e := db.Select("id,role,status").Where("id = ?", id).Take(&actor).Error
-			if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
-				fail(c, 503, "pricing catalog unavailable")
-				return
-			}
-			videoDetails = e == nil && actor.Status == identity.StatusActive && actor.Role == identity.PlatRoleSuperadmin
-		}
-	}
-	channels := []relay.Channel{}
-	db = db.Begin()
+	db := s.db.WithContext(c.Request.Context()).Begin()
 	if db.Error != nil {
 		fail(c, 503, "pricing catalog unavailable")
 		return
 	}
 	defer db.Rollback()
-	prices := []relay.ModelPrice{}
-	metas := []ModelMeta{}
-	configs := []video.ModelConfig{}
-	// Explicit projection avoids even reading encrypted channel credentials,
-	// request overrides and other unrelated channel settings into this endpoint.
-	if e := db.Select("id,name,provider,base_url,models,model_mapping,status,owner_org_id").Order("id").Find(&channels).Error; e != nil {
+
+	var channels []relay.Channel
+	if err := db.Select("id,name,provider,base_url,models,model_mapping,status,owner_org_id").Order("id").Find(&channels).Error; err != nil {
 		fail(c, 503, "pricing catalog unavailable")
 		return
 	}
-	if e := db.Find(&prices).Error; e != nil {
+	var prices []relay.ModelPrice
+	if err := db.Find(&prices).Error; err != nil {
 		fail(c, 503, "pricing catalog unavailable")
 		return
 	}
-	if e := db.Find(&metas).Error; e != nil {
+	var metas []ModelMeta
+	if err := db.Find(&metas).Error; err != nil {
 		fail(c, 503, "pricing catalog unavailable")
 		return
 	}
-	if e := db.Order("public_model").Find(&configs).Error; e != nil {
-		fail(c, 503, "pricing catalog unavailable")
-		return
-	}
-	videoPrices, e := loadVideoPricingProjection(db, configs, channels, s.now().UTC())
-	if e != nil {
-		fail(c, 503, "pricing catalog unavailable")
-		return
-	}
-	priceMap := map[string]relay.ModelPrice{}
+
+	priceMap := make(map[string]relay.ModelPrice, len(prices))
 	for _, p := range prices {
 		priceMap[p.Model] = p
 	}
-	metaMap := map[string]ModelMeta{}
+	metaMap := make(map[string]ModelMeta, len(metas))
 	for _, m := range metas {
 		metaMap[m.Model] = m
 	}
-	providers := []catalogProvider{}
+
+	providers := make([]catalogProvider, 0, len(relay.ListProviders()))
 	seenProviders := map[string]bool{}
-	// Use the same registry as channel setup, including providers that do not
-	// have a channel yet. Only actual channels below contribute model rows.
 	for _, p := range relay.ListProviders() {
 		providers = append(providers, catalogProvider{p.Name, p.DisplayName})
 		seenProviders[p.Name] = true
 	}
-	channelRows := []catalogChannel{}
+
+	channelRows := make([]catalogChannel, 0, len(channels))
 	models := []catalogModel{}
-	verifiedTariffs := map[string]arkverification.Tariff{}
-	if videoDetails {
-		for _, model := range []string{"seedance-2.0-fast", "seedance-2.0-mini"} {
-			// A source mismatch removes the documentary badge; it must never
-			// alter existing pricing availability or take down the whole catalog.
-			if tariff, e := arkverification.LoadTariff(model); e == nil {
-				verifiedTariffs[model] = tariff
-			}
-		}
-	}
 	for _, ch := range channels {
 		if !seenProviders[ch.Provider] {
-			// Existing API-created custom providers remain selectable without
-			// rewriting their identity or adding them to channel setup's registry.
 			providers = append(providers, catalogProvider{ch.Provider, ch.Provider})
 			seenProviders[ch.Provider] = true
 		}
 		channelRows = append(channelRows, catalogChannel{ch.ID, ch.Name, ch.Provider, ch.Status})
 		seen := map[string]bool{}
-		for _, name := range strings.Split(ch.Models, ",") {
+		for name := range strings.SplitSeq(ch.Models, ",") {
 			name = strings.TrimSpace(name)
 			if name == "" || seen[name] {
 				continue
 			}
 			seen[name] = true
-			row := catalogModel{Key: fmt.Sprintf("%d:%s", ch.ID, name), Provider: ch.Provider, ChannelID: ch.ID, Model: name, UpstreamModel: ch.UpstreamModel(name), PricingKind: "unknown", RecognitionSource: "unknown", BillingModes: []string{}, UnsupportedReason: "pricing_kind_unknown"}
+			row := catalogModel{
+				Key:               fmt.Sprintf("%d:%s", ch.ID, name),
+				Provider:          ch.Provider,
+				ChannelID:         ch.ID,
+				Model:             name,
+				UpstreamModel:     ch.UpstreamModel(name),
+				PricingKind:       "unknown",
+				RecognitionSource: "unknown",
+				BillingModes:      []string{},
+				UnsupportedReason: "pricing_kind_unknown",
+			}
 			p, priced := priceMap[name]
 			if priced {
 				row.GenericPrice = genericPriceProjection(p)
 			}
 			if m, ok := metaMap[name]; ok {
-				copy := m
-				row.Meta = &copy
+				copyMeta := m
+				row.Meta = &copyMeta
 			}
-			classifyCatalogModel(&row, ch, p, priced, configs, videoDetails)
-			if tariff, ok := verifiedTariffs[officialVariantTariffModel(row, ch)]; ok {
-				copy := tariff
-				row.OfficialPriceEvidence = &copy
-			}
+			classifyCatalogModel(&row, ch, p, priced)
 			row.Pricing = genericDescriptor(row, p, priced, ch)
-			if row.VideoModel != nil && row.UnsupportedReason == "" {
-				if v, ok := videoPrices[*row.VideoModel]; ok && v.Config.ChannelID == ch.ID {
-					row.Pricing = v.Pricing
-				}
-			}
 			if ch.Status != 1 {
 				row.Pricing.Status = "disabled"
 			}
 			models = append(models, row)
 		}
 	}
+
 	sort.Slice(providers, func(i, j int) bool { return providers[i].Name < providers[j].Name })
 	sort.Slice(models, func(i, j int) bool {
 		if models[i].ChannelID != models[j].ChannelID {
@@ -260,90 +145,14 @@ func (s *Server) adminPricingCatalog(c *gin.Context) {
 		return models[i].Model < models[j].Model
 	})
 	c.Header("Cache-Control", "private, no-store")
-	if e := db.Commit().Error; e != nil {
+	if err := db.Commit().Error; err != nil {
 		fail(c, 503, "pricing catalog unavailable")
 		return
 	}
-	c.JSON(200, gin.H{"providers": providers, "channels": channelRows, "models": models, "permissions": gin.H{"video_details": videoDetails}, "price_scope": "public_model_global"})
+	c.JSON(200, gin.H{"providers": providers, "channels": channelRows, "models": models, "price_scope": "public_model_global"})
 }
 
-func classifyCatalogModel(row *catalogModel, ch relay.Channel, p relay.ModelPrice, priced bool, configs []video.ModelConfig, details bool) {
-	canonical, reason := seedanceIdentity(row.UpstreamModel)
-	publicCanonical, publicReason := seedanceIdentity(row.Model)
-	if publicReason != "" {
-		reason = publicReason
-	}
-	if canonical == "" && reason == "" {
-		canonical, reason = publicCanonical, publicReason
-	}
-	if reason != "" {
-		row.PricingKind = "video"
-		row.RecognitionSource = "provider_contract"
-		row.UnsupportedReason = reason
-		return
-	}
-	if publicCanonical != "" && canonical != "" && publicCanonical != canonical {
-		row.PricingKind = "video"
-		row.RecognitionSource = "provider_contract"
-		row.UnsupportedReason = "official_video_configuration_ambiguous"
-		return
-	}
-	var matches []video.ModelConfig
-	var caps []ark.Capability
-	matchingOtherChannel := false
-	for _, cfg := range configs {
-		if !ark.IsPublicModel(cfg.PublicModel) {
-			continue
-		}
-		var cap ark.Capability
-		if json.Unmarshal([]byte(cfg.CapabilityJSON), &cap) != nil || cap.PublicModel != cfg.PublicModel {
-			continue
-		}
-		upstreamCanonical, upstreamReason := seedanceIdentity(cap.UpstreamModel)
-		if upstreamCanonical != cfg.PublicModel || upstreamReason != "" {
-			continue
-		}
-		matchesName := row.UpstreamModel == cap.UpstreamModel || row.Model == cfg.PublicModel && row.UpstreamModel == row.Model
-		if !matchesName {
-			continue
-		}
-		if cfg.ChannelID != ch.ID || ch.OwnerOrgID != 0 || (ch.Provider != "volcengine" && ch.Provider != "modelark") || ch.BaseURL != "https://ark.cn-beijing.volces.com/api/v3" {
-			matchingOtherChannel = true
-			continue
-		}
-		matches = append(matches, cfg)
-		caps = append(caps, cap)
-	}
-	if len(matches) > 0 {
-		row.PricingKind = "video"
-		row.RecognitionSource = "video_config"
-		row.BillingModes = []string{"official_video_completion_tokens"}
-		row.UnsupportedReason = ""
-		if len(matches) != 1 {
-			row.UnsupportedReason = "official_video_configuration_ambiguous"
-			return
-		}
-		name := matches[0].PublicModel
-		row.VideoModel = &name
-		if details {
-			row.VideoConfiguration = videoConfigProjection(matches[0], caps[0])
-		}
-		return
-	}
-	if canonical != "" || matchingOtherChannel {
-		row.PricingKind = "video"
-		row.RecognitionSource = "provider_contract"
-		row.UnsupportedReason = "official_video_configuration_missing"
-		if matchingOtherChannel {
-			row.UnsupportedReason = "official_video_channel_mismatch"
-		}
-		// Keep the supported standard series discoverable, but only the bound
-		// configuration may be edited; a different channel cannot inherit it.
-		if canonical != "" {
-			row.VideoModel = &canonical
-		}
-		return
-	}
+func classifyCatalogModel(row *catalogModel, ch relay.Channel, p relay.ModelPrice, priced bool) {
 	profile, known := relay.ProfileFor(ch.Provider)
 	if known && profile.TaskOnly {
 		row.RecognitionSource = "provider_contract"

@@ -38,10 +38,12 @@ func testKeyring(t *testing.T) *crypto.Keyring {
 }
 
 const notifySchema = `
-CREATE TABLE notify_settings (
-    org_id INTEGER PRIMARY KEY, email_enabled INTEGER NOT NULL DEFAULT 0,
-    webhook_url TEXT NOT NULL DEFAULT '', webhook_secret_enc TEXT NOT NULL DEFAULT '',
-    events TEXT NOT NULL DEFAULT '', updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE organizations (
+    id INTEGER PRIMARY KEY,
+    notify_email_enabled BOOLEAN NOT NULL DEFAULT 0,
+    notify_webhook_url TEXT NOT NULL DEFAULT '',
+    notify_webhook_secret_enc TEXT NOT NULL DEFAULT '',
+    notify_events TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE notify_outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, event TEXT NOT NULL,
@@ -92,7 +94,7 @@ func TestEmitRequiresSubscription(t *testing.T) {
 		t.Fatalf("unsubscribed-event emit wrote %d rows, want 0", n)
 	}
 	// 事件启用 + webhook → 写一行 pending
-	db.Model(&Settings{}).Where("org_id = 1").Update("events", `["task.completed"]`)
+	db.Model(&Settings{}).Where("id = 1").Update("notify_events", `["task.completed"]`)
 	d.Emit(1, EventTaskCompleted, map[string]any{"task_id": "t1", "model": "seedance"})
 	db.Model(&Outbox{}).Count(&n)
 	if n != 1 {
@@ -119,7 +121,7 @@ func TestWebhookDeliveryAndSignature(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	db.Model(&Settings{}).Where("org_id = 5").Update("webhook_url", srv.URL)
+	db.Model(&Settings{}).Where("id = 5").Update("notify_webhook_url", srv.URL)
 
 	d := newDispatcher(t, db)
 	d.Keyring = kr

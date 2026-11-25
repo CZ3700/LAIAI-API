@@ -36,42 +36,51 @@ const (
 	StatusRunning   = "running"
 	StatusSucceeded = "succeeded"
 	StatusFailed    = "failed"
+	StatusCancelled = "cancelled"
 
 	pollBatch          = 50
 	defaultTaskTimeout = 30 * time.Minute
 )
 
 type Task struct {
-	ID               uint64          `gorm:"primaryKey" json:"-"`
-	TaskID           string          `gorm:"column:task_id" json:"id"`
-	OrgID            uint64          `gorm:"column:org_id" json:"-"`
-	UserID           *uint64         `gorm:"column:user_id" json:"-"`
-	APIKeyID         uint64          `gorm:"column:api_key_id" json:"-"`
-	Model            string          `gorm:"column:model" json:"model"`
-	ChannelID        uint64          `gorm:"column:channel_id" json:"-"`
-	Provider         string          `gorm:"column:provider" json:"-"`
-	Status           string          `gorm:"column:status" json:"status"`
-	FailReason       string          `gorm:"column:fail_reason" json:"fail_reason,omitempty"`
-	UpstreamTaskID   string          `gorm:"column:upstream_task_id" json:"-"`
-	ResultURL        string          `gorm:"column:result_url" json:"result_url,omitempty"`
-	ResultRef        string          `gorm:"column:result_ref" json:"-"` // 产物内部引用（0038）：平台 content 代理取流用，绝不外泄（veo URI 带渠道 key）
-	HoldID           uint64          `gorm:"column:hold_id" json:"-"`
-	CredentialID     uint64          `gorm:"column:credential_id" json:"-"` // 提交时选定的 key（0035）；轮询固定用它
-	EstTokens        int64           `gorm:"column:est_tokens" json:"-"`
-	ActualTokens     int64           `gorm:"column:actual_tokens" json:"completion_tokens,omitempty"`
-	CostUSD          decimal.Decimal `gorm:"column:cost_usd" json:"cost_usd"`
-	PriceOutUSDPer1M decimal.Decimal `gorm:"column:price_out_usd_per_1m" json:"-"` // 计费快照（陷阱 2）
-	PricePerCallUSD  decimal.Decimal `gorm:"column:price_per_call_usd" json:"-"`   // 按次计价快照（0048）：MJ 等 PerCallUSD 模型结算依据
-	HoldAmountUSD    decimal.Decimal `gorm:"column:hold_amount_usd" json:"-"`      // 冻结额快照 = key quota 预留额（0032）；0=旧行无预留
-	GroupRatio       decimal.Decimal `gorm:"column:group_ratio" json:"-"`          // 计费倍率快照（0032）：hold 与结算同值纪律
-	SubmittedAt      time.Time       `gorm:"column:submitted_at;autoCreateTime:milli" json:"submitted_at"`
-	StartedAt        *time.Time      `gorm:"column:started_at" json:"started_at,omitempty"`
-	FinishedAt       *time.Time      `gorm:"column:finished_at" json:"finished_at,omitempty"`
-	ForwardRuleEID   string          `gorm:"column:forward_rule_eid" json:"forward_rule_eid,omitempty"`
-	BillingRulePID   string          `gorm:"column:billing_rule_pid" json:"billing_rule_pid,omitempty"`
-	FeaturesJSON     string          `gorm:"column:features_json" json:"-"`
-	TimeMultiplier   decimal.Decimal `gorm:"column:time_multiplier" json:"-"`
-	BillingDetail    string          `gorm:"column:billing_detail" json:"billing_detail,omitempty"`
+	ID                uint64          `gorm:"primaryKey" json:"-"`
+	TaskID            string          `gorm:"column:task_id" json:"id"`
+	OrgID             uint64          `gorm:"column:org_id" json:"-"`
+	UserID            *uint64         `gorm:"column:user_id" json:"-"`
+	APIKeyID          uint64          `gorm:"column:api_key_id" json:"-"`
+	Model             string          `gorm:"column:model" json:"model"`
+	UpstreamModel     string          `gorm:"column:upstream_model" json:"-"`
+	Modality          string          `gorm:"column:modality" json:"modality,omitempty"`
+	Action            string          `gorm:"column:action" json:"action,omitempty"`
+	ChannelID         uint64          `gorm:"column:channel_id" json:"-"`
+	Provider          string          `gorm:"column:provider" json:"-"`
+	Status            string          `gorm:"column:status" json:"status"`
+	Progress          int             `gorm:"column:progress" json:"progress"`
+	FailReason        string          `gorm:"column:fail_reason" json:"fail_reason,omitempty"`
+	UpstreamTaskID    string          `gorm:"column:upstream_task_id" json:"-"`
+	ResultURL         string          `gorm:"column:result_url" json:"result_url,omitempty"`
+	ResultRef         string          `gorm:"column:result_ref" json:"-"` // 产物内部引用（0038）：平台 content 代理取流用，绝不外泄（veo URI 带渠道 key）
+	HoldID            uint64          `gorm:"column:hold_id" json:"-"`
+	CredentialID      uint64          `gorm:"column:credential_id" json:"-"` // 提交时选定的 key（0035）；轮询固定用它
+	EstTokens         int64           `gorm:"column:est_tokens" json:"-"`
+	ActualTokens      int64           `gorm:"column:actual_tokens" json:"completion_tokens,omitempty"`
+	CostUSD           decimal.Decimal `gorm:"column:cost_usd" json:"cost_usd"`
+	UpstreamCostRatio decimal.Decimal `gorm:"column:upstream_cost_ratio" json:"-"`
+	PriceOutUSDPer1M  decimal.Decimal `gorm:"column:price_out_usd_per_1m" json:"-"` // 计费快照（陷阱 2）
+	PricePerCallUSD   decimal.Decimal `gorm:"column:price_per_call_usd" json:"-"`   // 按次计价快照（0048）：MJ 等 PerCallUSD 模型结算依据
+	HoldAmountUSD     decimal.Decimal `gorm:"column:hold_amount_usd" json:"-"`      // 冻结额快照 = key quota 预留额（0032）；0=旧行无预留
+	GroupRatio        decimal.Decimal `gorm:"column:group_ratio" json:"-"`          // 计费倍率快照（0032）：hold 与结算同值纪律
+	SubmittedAt       time.Time       `gorm:"column:submitted_at;autoCreateTime:milli" json:"submitted_at"`
+	StartedAt         *time.Time      `gorm:"column:started_at" json:"started_at,omitempty"`
+	FinishedAt        *time.Time      `gorm:"column:finished_at" json:"finished_at,omitempty"`
+	UpdatedAt         time.Time       `gorm:"column:updated_at;autoUpdateTime:milli" json:"updated_at"`
+	ForwardRuleEID    string          `gorm:"column:forward_rule_eid" json:"forward_rule_eid,omitempty"`
+	BillingRulePID    string          `gorm:"column:billing_rule_pid" json:"billing_rule_pid,omitempty"`
+	FeaturesJSON      string          `gorm:"column:features_json" json:"-"`
+	RequestMetaJSON   string          `gorm:"column:request_meta_json" json:"-"`
+	TimeMultiplier    decimal.Decimal `gorm:"column:time_multiplier" json:"-"`
+	BillingDetail     string          `gorm:"column:billing_detail" json:"billing_detail,omitempty"`
+	PollAttempts      int             `gorm:"column:poll_attempts" json:"-"`
 }
 
 func (Task) TableName() string { return "tasks" }
@@ -112,7 +121,26 @@ type Service struct {
 	Notify      Notifier             // 终态通知（§4.9）；nil=不通知（best-effort，绝不影响结算）
 	Forward     *forward.Resolver    // 数据驱动转发规则解析器；nil=按默认 provider adaptor
 	pollCursor  uint64               // 轮询游标（B-4 饥饿修复）：上次轮询到的最大 task id，回绕轮转。
-	// 单 leader 串行调用 PollOnce（main.go ticker），无并发，无需锁。
+	wakeCh      chan struct{}        // 提交新任务即时唤醒信号，消除空转
+}
+
+// Wake 非阻塞通知后台轮询器有新任务到达。
+func (s *Service) Wake() {
+	if s == nil || s.wakeCh == nil {
+		return
+	}
+	select {
+	case s.wakeCh <- struct{}{}:
+	default:
+	}
+}
+
+// WakeChan 返回唤醒通道，供后台 worker select 等待。
+func (s *Service) WakeChan() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.wakeCh
 }
 
 // emitNotify：best-effort 终态通知（payload 元数据-only，红线 7）。nil-safe。
@@ -134,6 +162,7 @@ func NewService(db *gorm.DB, kr *crypto.Keyring, log *slog.Logger) *Service {
 		Log:         log,
 		Now:         time.Now,
 		TaskTimeout: defaultTaskTimeout,
+		wakeCh:      make(chan struct{}, 1),
 	}
 }
 
@@ -206,9 +235,6 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		}
 	}
 	ad, err := adaptorForTask(ch.Provider, fwd)
-	if officialArkChannel(ch) {
-		return nil, relay.ErrNoChannel
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -254,25 +280,29 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 	if !identity.ReserveKeyQuota(s.DB, in.APIKeyID, holdAmount) {
 		return nil, ErrKeyQuotaExceeded
 	}
+	modality := ModalityForProvider(ch.Provider)
 	t := &Task{
 		TaskID: "task_" + randHex(12),
 		OrgID:  in.OrgID, UserID: in.UserID, APIKeyID: in.APIKeyID,
-		Model: in.Model, ChannelID: ch.ID, Provider: ch.Provider,
+		Model: in.Model, UpstreamModel: ch.UpstreamModel(in.Model),
+		Modality: modality, Action: "generate",
+		ChannelID: ch.ID, Provider: ch.Provider,
 		Status: StatusQueued, EstTokens: estTokens,
-		PriceOutUSDPer1M: priceOutUSD,
-		PricePerCallUSD:  pricePerCallUSD, // 0048：按次计价快照（MJ 等），settle 与 hold 同口径
-
-		HoldAmountUSD: holdAmount, GroupRatio: ratio,
-		CredentialID:   credID, // 钉住提交用的 key（0035），轮询固定用它
-		ForwardRuleEID: fRuleEID,
-		BillingRulePID: bRulePID,
-		FeaturesJSON:   featuresJSON,
-		TimeMultiplier: timeMult,
+		PriceOutUSDPer1M:  priceOutUSD,
+		PricePerCallUSD:   pricePerCallUSD, // 0048：按次计价快照（MJ 等），settle 与 hold 同口径
+		UpstreamCostRatio: ch.EffectiveUpstreamCostRatio(),
+		HoldAmountUSD:     holdAmount, GroupRatio: ratio,
+		CredentialID:    credID, // 钉住提交用的 key（0035），轮询固定用它
+		ForwardRuleEID:  fRuleEID,
+		BillingRulePID:  bRulePID,
+		FeaturesJSON:    featuresJSON,
+		RequestMetaJSON: encodeRequestMeta(in.Params),
+		TimeMultiplier:  timeMult,
 	}
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
-		// 锁渠道行（MySQL FOR UPDATE；SQLite 测试靠单连接串行）
+		// 锁渠道行（PostgreSQL/MySQL FOR UPDATE；SQLite 测试靠单连接串行）
 		lockTx := tx
-		if tx.Dialector.Name() == "mysql" {
+		if tx.Dialector.Name() != "sqlite" {
 			lockTx = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 		}
 		lockCh := &relay.Channel{}
@@ -385,6 +415,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 				"task", t.TaskID, "upstream_id", upstreamID, "err", err)
 		}
 		t.UpstreamTaskID = upstreamID
+		s.Wake()
 		return t, nil
 	}
 	if lastErr == nil {
@@ -460,10 +491,6 @@ func (s *Service) nextSubmitCandidate(model string, attempt int, tried map[uint6
 		if err != nil {
 			return nil, nil, "", false // 无更多渠道
 		}
-		if officialArkChannel(ch) {
-			tried[ch.ID] = true
-			continue
-		}
 		ad, err := adaptorForTask(ch.Provider, fwd)
 		if err != nil {
 			tried[ch.ID] = true
@@ -493,17 +520,6 @@ func (s *Service) nextSubmitCandidate(model string, attempt int, tried map[uint6
 
 type repinResult int
 
-// Official Ark traffic must use the durable gateway even when an operator
-// configured a historical model alias on a legacy channel.
-func officialArkChannel(ch *relay.Channel) bool {
-	u, err := url.Parse(ch.BaseURL)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(u.Hostname())
-	return strings.HasPrefix(host, "ark.") && strings.HasSuffix(host, ".volces.com")
-}
-
 const (
 	repinOK repinResult = iota
 	repinChannelFull
@@ -517,7 +533,7 @@ func (s *Service) repinTask(t *Task, next *relay.Channel, credID uint64) repinRe
 	res := repinTaskGone
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		lockTx := tx
-		if tx.Dialector.Name() == "mysql" {
+		if tx.Dialector.Name() != "sqlite" {
 			lockTx = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 		}
 		lockCh := &relay.Channel{}
@@ -539,7 +555,13 @@ func (s *Service) repinTask(t *Task, next *relay.Channel, credID uint64) repinRe
 			return nil
 		}
 		upd := tx.Model(&Task{}).Where("id = ? AND status = ?", t.ID, StatusQueued).
-			Updates(map[string]any{"channel_id": next.ID, "provider": next.Provider, "credential_id": credID})
+			Updates(map[string]any{
+				"channel_id":          next.ID,
+				"provider":            next.Provider,
+				"credential_id":       credID,
+				"upstream_model":      next.UpstreamModel(t.Model),
+				"upstream_cost_ratio": next.EffectiveUpstreamCostRatio(),
+			})
 		if upd.Error != nil {
 			return upd.Error
 		}
@@ -567,27 +589,23 @@ func (s *Service) abortSubmit(t *Task, reason string) {
 // Get：org 隔离读取（红线 5）。
 func (s *Service) Get(orgID uint64, taskID string) (*Task, error) {
 	t := &Task{}
-	// Official video owns its authorization, deletion and evidence semantics.
-	// This guard also applies when that runtime is deliberately disabled.
-	if err := s.DB.Where("task_id = ? AND org_id = ? AND provider <> ?", taskID, orgID, "ark_official").First(t).Error; err != nil {
+	if err := s.DB.Where("task_id = ? AND org_id = ?", taskID, orgID).First(t).Error; err != nil {
 		return nil, err
 	}
 	return t, nil
 }
 
-// PollOnce：轮询一轮——超时清扫 + 未终态任务逐个查上游并转移。
+// PollOnce：轮询一轮——超时清扫 + 未终态任务逐个查上游并转移，返回本轮观测到的活跃任务数。
 // main 的轮询循环与测试都调用它（可测性：循环与逻辑分离）。
-func (s *Service) PollOnce(ctx context.Context) {
+func (s *Service) PollOnce(ctx context.Context) int {
 	s.sweepTimedOut()
 
 	// 游标轮转（B-4 饥饿修复）：从上次轮询到的 id 之后取一批，到尾回绕（cursor→0）。
-	// 此前固定 `Order(id) LIMIT 50` 在总在途 >50 时让尾部较新任务永远轮不到、只能靠 30min
-	// 超时误判失败退款（用户拿不到已生成的产物）。游标保证每个在途任务轮流被处理。
 	var tasks []Task
-	if err := s.DB.Where("status IN ? AND id > ? AND provider <> ?", []string{StatusQueued, StatusRunning}, s.pollCursor, "ark_official").
+	if err := s.DB.Where("status IN ? AND id > ?", []string{StatusQueued, StatusRunning}, s.pollCursor).
 		Order("id").Limit(pollBatch).Find(&tasks).Error; err != nil {
 		s.Log.Error("task poll query failed", "err", err)
-		return
+		return 0
 	}
 	if len(tasks) < pollBatch {
 		s.pollCursor = 0 // 本轮不足一批＝已到在途尾部 → 下轮从头，完成回绕
@@ -596,10 +614,11 @@ func (s *Service) PollOnce(ctx context.Context) {
 	}
 	for i := range tasks {
 		if ctx.Err() != nil {
-			return
+			return len(tasks)
 		}
 		s.pollOne(ctx, &tasks[i])
 	}
+	return len(tasks)
 }
 
 func (s *Service) pollOne(ctx context.Context, t *Task) {
@@ -909,8 +928,8 @@ func clipReason(sv string, maxBytes int) string {
 func (s *Service) sweepTimedOut() {
 	cutoff := s.Now().Add(-s.TaskTimeout)
 	var tasks []Task
-	if err := s.DB.Where("status IN ? AND submitted_at < ? AND provider <> ?",
-		[]string{StatusQueued, StatusRunning}, cutoff, "ark_official").Limit(100).Find(&tasks).Error; err != nil {
+	if err := s.DB.Where("status IN ? AND submitted_at < ?",
+		[]string{StatusQueued, StatusRunning}, cutoff).Limit(100).Find(&tasks).Error; err != nil {
 		return
 	}
 	for i := range tasks {

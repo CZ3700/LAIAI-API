@@ -3,79 +3,33 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/laiai/laiai-next/core/internal/crypto"
 )
 
 type Config struct {
-	DSN                               string          // LAIAI_DSN，必填
-	ListenAddr                        string          // LAIAI_LISTEN_ADDR，默认 :8080
-	AuthSecret                        []byte          // LAIAI_AUTH_SECRET，必填且 >= 32 字符（session token HMAC）
-	AdminToken                        []byte          // LAIAI_ADMIN_TOKEN，可选；设置则须 >= 32 字符，未设置 admin API 整组禁用
-	Keyring                           *crypto.Keyring // LAIAI_DATA_KEYS + LAIAI_DATA_KEY_ACTIVE，可选；未设置则渠道管理/relay 禁用
-	VideoHMACSecret                   []byte
-	VideoResponseInboxEnabled         bool // LAIAI_VIDEO_RESPONSE_INBOX, default false; only controls new attempt registration
-	VideoMutationResponseInboxEnabled bool // LAIAI_VIDEO_MUTATION_RESPONSE_INBOX, default false; independent cancel/delete producer gate
-	VideoPortraitCallbackURL          string
-	VideoPortraitReturnURL            string
-	VideoPortraitAutoLicense          bool          // LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE, default true; 认证成功自动登记 video_generation 许可并按官方组状态续验
-	VideoPortraitAutoLicenseValidity  time.Duration // LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE_VALIDITY, default 8760h
-	VideoAssetWriteConcurrency        int           // LAIAI_VIDEO_ASSET_WRITE_CONCURRENCY, default 8; 素材域写类官方调用并发池
-	VideoAssetQueryConcurrency        int           // LAIAI_VIDEO_ASSET_QUERY_CONCURRENCY, default 24; 素材域查询类官方调用并发池
-	VideoAssetArchive                 bool          // LAIAI_VIDEO_ASSET_ARCHIVE, default true; 素材自动归档（超保留期分批删除并释放官方存储）
-	VideoAssetArchiveTimezone         string        // LAIAI_VIDEO_ASSET_ARCHIVE_TIMEZONE, default Asia/Shanghai
-	VideoAssetArchiveWindowStart      string        // LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_START, default 02:00（本地时区）
-	VideoAssetArchiveWindowEnd        string        // LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_END, default 06:00
-	VideoAssetArchiveDailyLimit       int           // LAIAI_VIDEO_ASSET_ARCHIVE_DAILY_LIMIT, default 20000
-	VideoAssetArchiveBatch            int           // LAIAI_VIDEO_ASSET_ARCHIVE_BATCH, default 25; 每 tick 注入上限
-	VideoAssetArchiveUsageDays        int           // LAIAI_VIDEO_ASSET_ARCHIVE_USAGE_DAYS, default 7; 近 N 天无任务引用的素材才归档（唯一判据）
-	VideoAssetArchiveExemptRealGroups bool          // LAIAI_VIDEO_ASSET_ARCHIVE_EXEMPT_REAL_GROUPS, default true; 真人组素材豁免归档
-	VideoArkCallbackBase              string
-	VideoMediaRoot                    string
-	VideoMediaPublicBaseURL           string
-	VideoMediaSigningKey              []byte
-	VideoMediaFFProbePath             string
-	VideoMediaScanCommand             []string
-	// 去水印处理（LAIAI_VIDEO_WATERMARK_*，全部可选；总开关在管理后台 DB 标志）：
-	// 处理管线只在媒体存储已配置时接线；ffmpeg 参数默认复刻文档命令。
-	VideoWatermarkFilter        string        // 显式滤镜串覆盖；空=按源分辨率推导文档脚本滤镜
-	VideoWatermarkFFmpeg        string        // 默认 ffmpeg
-	VideoWatermarkFFProbe       string        // 默认 ffprobe
-	VideoWatermarkTimeout       time.Duration // 单次处理超时，默认 10m
-	VideoWatermarkConcurrency   int           // 并行 ffmpeg 数，默认 2
-	VideoWatermarkMaxBytes      int64         // 输入大小上限，默认 200MB
-	VideoWatermarkRetentionDays int           // 产物保留天数，默认 30
-	RedisAddr                   string        // LAIAI_REDIS_ADDR，可选（跨实例限流需要；空=退化进程内限流）
-	RedisPassword               string        // LAIAI_REDIS_PASSWORD，可选（compose 的 redis 启用 requirepass）
-	// 规模化（读副本 + 连接池可调，扩容旋钮）：
-	// LAIAI_DSN_REPLICAS：逗号分隔的只读副本 DSN，空=无副本（所有读走主库，行为不变）。
-	//   🚨 只把分析/用量历史/排行/公开价目这类「非金钱、容延迟」的只读路由到副本；余额/quota/hold
-	//   等金钱判定读**永远走主库**（复制延迟会致超发）——见 server.readDB 的使用约束。
-	ReplicaDSNs    []string // LAIAI_DSN_REPLICAS
-	DBMaxOpenConns int      // LAIAI_DB_MAX_OPEN_CONNS，默认 50（每实例；扩容旋钮）
-	DBMaxIdleConns int      // LAIAI_DB_MAX_IDLE_CONNS，默认 10
-	// LAIAI_INVOCATION_RETENTION_DAYS：Invocation Store 保留天数（设计 §6.1 默认 30；0 = 关闭清理）
+	DSN                     string          // LAIAI_DSN，必填
+	ListenAddr              string          // LAIAI_LISTEN_ADDR，默认 :8080
+	AuthSecret              []byte          // LAIAI_AUTH_SECRET，必填且 >= 32 字符（session token HMAC）
+	AdminToken              []byte          // LAIAI_ADMIN_TOKEN，可选；设置则须 >= 32 字符，未设置 admin API 整组禁用
+	Keyring                 *crypto.Keyring // LAIAI_DATA_KEYS + LAIAI_DATA_KEY_ACTIVE，可选；未设置则渠道管理/relay 禁用
+	RedisAddr               string          // LAIAI_REDIS_ADDR，可选（跨实例限流需要；空=退化进程内限流）
+	RedisPassword           string          // LAIAI_REDIS_PASSWORD，可选（compose 的 redis 启用 requirepass）
+	ReplicaDSNs             []string        // LAIAI_DSN_REPLICAS
+	DBMaxOpenConns          int             // LAIAI_DB_MAX_OPEN_CONNS，默认 50
+	DBMaxIdleConns          int             // LAIAI_DB_MAX_IDLE_CONNS，默认 10
 	InvocationRetentionDays int
-	// LAIAI_TRUSTED_PROXIES（指令 P1-2 生产边缘 IP 信任链）：逗号分隔的可信反代 CIDR/IP。
-	// 未设置 = 私网段默认（容器拓扑：core 仅经同网 Caddy 可达）；"none" = 不信任任何代理头
-	// （core 直接对公网时用，X-Forwarded-For 一律忽略）。ClientIP 是 keyGate IP 白名单 /
-	// 认证限流 / 审计 IP 的共同口径，信任链错配 = 三者同时失真。
-	TrustedProxies []string
-	// SMTP（0014，可选）：全空 = 邮件退化为日志，不真实发送
-	SMTPHost     string // LAIAI_SMTP_HOST
-	SMTPPort     int    // LAIAI_SMTP_PORT，默认 587
-	SMTPUsername string // LAIAI_SMTP_USERNAME
-	SMTPPassword string // LAIAI_SMTP_PASSWORD
-	SMTPFrom     string // LAIAI_SMTP_FROM，默认取 username
+	TrustedProxies          []string
+	SMTPHost                string // LAIAI_SMTP_HOST
+	SMTPPort                int    // LAIAI_SMTP_PORT，默认 587
+	SMTPUsername            string // LAIAI_SMTP_USERNAME
+	SMTPPassword            string // LAIAI_SMTP_PASSWORD
+	SMTPFrom                string // LAIAI_SMTP_FROM，默认取 username
 }
 
 // Load 读取并校验配置；任何关键项非法返回 error（调用方应直接退出）。
@@ -89,41 +43,17 @@ func Load() (*Config, error) {
 	if c.DSN == "" {
 		return nil, fmt.Errorf("config: LAIAI_DSN is required")
 	}
-	// 读副本 + 连接池（规模化旋钮，扩容时只改 env）。
 	for _, dsn := range strings.Split(os.Getenv("LAIAI_DSN_REPLICAS"), ",") {
 		if s := strings.TrimSpace(dsn); s != "" {
 			c.ReplicaDSNs = append(c.ReplicaDSNs, s)
 		}
 	}
 	var perr error
-	switch os.Getenv("LAIAI_VIDEO_RESPONSE_INBOX") {
-	case "", "false":
-		c.VideoResponseInboxEnabled = false
-	case "true":
-		c.VideoResponseInboxEnabled = true
-	default:
-		return nil, fmt.Errorf("config: LAIAI_VIDEO_RESPONSE_INBOX must be exactly true or false when set")
-	}
-	switch os.Getenv("LAIAI_VIDEO_MUTATION_RESPONSE_INBOX") {
-	case "", "false":
-		c.VideoMutationResponseInboxEnabled = false
-	case "true":
-		c.VideoMutationResponseInboxEnabled = true
-	default:
-		return nil, fmt.Errorf("config: LAIAI_VIDEO_MUTATION_RESPONSE_INBOX must be exactly true or false when set")
-	}
-	// open conns 最小 1：database/sql 中 0 = 无上限，高负载会打爆 MySQL max_connections（与旧默认相反）。
 	if c.DBMaxOpenConns, perr = getenvInt("LAIAI_DB_MAX_OPEN_CONNS", 50, 1); perr != nil {
 		return nil, perr
 	}
-	// idle conns 允许 0：显式设 0 可避免复用被 MySQL wait_timeout 杀掉的陈旧连接。
 	if c.DBMaxIdleConns, perr = getenvInt("LAIAI_DB_MAX_IDLE_CONNS", 10, 0); perr != nil {
 		return nil, perr
-	}
-	// MySQL DSN 必须带 parseTime=true：否则 DATETIME 列扫成 []byte，ledger/analytics 静默损坏。
-	// 失败要响——宁可启动即报错，不要上线后资金流水悄悄读不出。
-	if strings.Contains(c.DSN, "@tcp(") && !strings.Contains(c.DSN, "parseTime=true") {
-		return nil, fmt.Errorf("config: MySQL LAIAI_DSN must include parseTime=true (DATETIME scanning; ledger/analytics break silently without it)")
 	}
 	secret := os.Getenv("LAIAI_AUTH_SECRET")
 	if len(secret) < 32 {
@@ -147,8 +77,6 @@ func Load() (*Config, error) {
 		c.InvocationRetentionDays = n
 	}
 
-	// 可信反代（P1-2）：启动即校验 CIDR/IP 合法性——信任链配错宁可启动失败，不要上线后
-	// IP 白名单/限流/审计三处口径静默失真。"none" 原样传给 server 层解释（不信任任何代理头）。
 	for _, p := range strings.Split(os.Getenv("LAIAI_TRUSTED_PROXIES"), ",") {
 		s := strings.TrimSpace(p)
 		if s == "" {
@@ -161,8 +89,6 @@ func Load() (*Config, error) {
 		}
 		c.TrustedProxies = append(c.TrustedProxies, s)
 	}
-	// "none" 只能单独出现（对抗 review）：混填 "none,10.0.0.0/8" 语义矛盾，若放行会在运行期
-	// 被 gin 当无效 CIDR 静默降级为「不信任任何代理头」——Caddy 拓扑下 IP 白名单全体 403。
 	if len(c.TrustedProxies) > 1 {
 		for _, p := range c.TrustedProxies {
 			if p == "none" {
@@ -184,104 +110,6 @@ func Load() (*Config, error) {
 	}
 
 	c.SMTPHost = os.Getenv("LAIAI_SMTP_HOST")
-	if v := os.Getenv("LAIAI_VIDEO_HMAC_SECRET"); v != "" {
-		if len(v) < 32 || c.Keyring == nil {
-			return nil, fmt.Errorf("config: video gateway requires a separate HMAC secret of 32+ bytes and the data keyring")
-		}
-		c.VideoHMACSecret = []byte(v)
-	}
-	c.VideoPortraitCallbackURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_CALLBACK_URL")
-	c.VideoPortraitReturnURL = os.Getenv("LAIAI_VIDEO_PORTRAIT_RETURN_URL")
-	// 认证即授权：显式 false/0/off 才关闭，默认开启。
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE"))) {
-	case "false", "0", "off":
-		c.VideoPortraitAutoLicense = false
-	default:
-		c.VideoPortraitAutoLicense = true
-	}
-	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE_VALIDITY")); v != "" {
-		d, e := time.ParseDuration(v)
-		if e != nil || d <= 0 {
-			return nil, fmt.Errorf("config: LAIAI_VIDEO_PORTRAIT_AUTO_LICENSE_VALIDITY must be a positive Go duration: %w", e)
-		}
-		c.VideoPortraitAutoLicenseValidity = d
-	}
-	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_WRITE_CONCURRENCY")); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil || n < 0 {
-			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_WRITE_CONCURRENCY must be a non-negative integer: %w", e)
-		}
-		c.VideoAssetWriteConcurrency = n
-	}
-	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_QUERY_CONCURRENCY")); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil || n < 0 {
-			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_QUERY_CONCURRENCY must be a non-negative integer: %w", e)
-		}
-		c.VideoAssetQueryConcurrency = n
-	}
-	// 素材自动归档：显式 false/0/off 关闭，默认开启。
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE"))) {
-	case "false", "0", "off":
-		c.VideoAssetArchive = false
-	default:
-		c.VideoAssetArchive = true
-	}
-	c.VideoAssetArchiveTimezone = strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_TIMEZONE"))
-	c.VideoAssetArchiveWindowStart = strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_START"))
-	c.VideoAssetArchiveWindowEnd = strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_END"))
-	for _, item := range []struct{ name, value string }{
-		{"LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_START", c.VideoAssetArchiveWindowStart},
-		{"LAIAI_VIDEO_ASSET_ARCHIVE_WINDOW_END", c.VideoAssetArchiveWindowEnd},
-	} {
-		if item.value == "" {
-			continue
-		}
-		hm := strings.Split(item.value, ":")
-		if len(hm) != 2 {
-			return nil, fmt.Errorf("config: %s must be HH:MM", item.name)
-		}
-		if _, e1 := strconv.Atoi(hm[0]); e1 != nil {
-			return nil, fmt.Errorf("config: %s must be HH:MM", item.name)
-		}
-		if _, e2 := strconv.Atoi(hm[1]); e2 != nil {
-			return nil, fmt.Errorf("config: %s must be HH:MM", item.name)
-		}
-	}
-	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_DAILY_LIMIT")); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil || n < 0 {
-			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_ARCHIVE_DAILY_LIMIT must be a non-negative integer: %w", e)
-		}
-		c.VideoAssetArchiveDailyLimit = n
-	}
-	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_BATCH")); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil || n < 0 {
-			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_ARCHIVE_BATCH must be a non-negative integer: %w", e)
-		}
-		c.VideoAssetArchiveBatch = n
-	}
-	if v := strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_USAGE_DAYS")); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil || n < 0 {
-			return nil, fmt.Errorf("config: LAIAI_VIDEO_ASSET_ARCHIVE_USAGE_DAYS must be a non-negative integer: %w", e)
-		}
-		c.VideoAssetArchiveUsageDays = n
-	}
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ASSET_ARCHIVE_EXEMPT_REAL_GROUPS"))) {
-	case "false", "0", "off":
-		c.VideoAssetArchiveExemptRealGroups = false
-	default:
-		c.VideoAssetArchiveExemptRealGroups = true
-	}
-	c.VideoArkCallbackBase = strings.TrimSpace(os.Getenv("LAIAI_VIDEO_ARK_CALLBACK_BASE"))
-	if err := c.loadVideoMedia(); err != nil {
-		return nil, err
-	}
-	if err := c.loadVideoWatermark(); err != nil {
-		return nil, err
-	}
 	c.SMTPPort = 587
 	if v := os.Getenv("LAIAI_SMTP_PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -292,75 +120,6 @@ func Load() (*Config, error) {
 	c.SMTPPassword = os.Getenv("LAIAI_SMTP_PASSWORD")
 	c.SMTPFrom = os.Getenv("LAIAI_SMTP_FROM")
 	return c, nil
-}
-
-// Media upload is optional, but a partial configuration must never silently
-// accept unscanned files or publish unsigned download URLs.
-func (c *Config) loadVideoMedia() error {
-	c.VideoMediaRoot = os.Getenv("LAIAI_VIDEO_MEDIA_ROOT")
-	c.VideoMediaPublicBaseURL = os.Getenv("LAIAI_VIDEO_MEDIA_PUBLIC_BASE_URL")
-	c.VideoMediaSigningKey = []byte(os.Getenv("LAIAI_VIDEO_MEDIA_SIGNING_KEY"))
-	c.VideoMediaFFProbePath = os.Getenv("LAIAI_VIDEO_MEDIA_FFPROBE_PATH")
-	scan := os.Getenv("LAIAI_VIDEO_MEDIA_SCAN_COMMAND")
-	if c.VideoMediaRoot == "" && c.VideoMediaPublicBaseURL == "" && len(c.VideoMediaSigningKey) == 0 && c.VideoMediaFFProbePath == "" && scan == "" {
-		return nil
-	}
-	u, err := url.Parse(c.VideoMediaPublicBaseURL)
-	if len(c.VideoHMACSecret) == 0 || !filepath.IsAbs(c.VideoMediaRoot) || len(c.VideoMediaSigningKey) < 32 || c.VideoMediaFFProbePath == "" || err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.TrimRight(u.Path, "/") != "/api/video/media-source" {
-		return fmt.Errorf("config: video media requires the video gateway, a private absolute root, signing key of 32+ bytes, ffprobe and an HTTPS /api/video/media-source base URL")
-	}
-	if err := json.Unmarshal([]byte(scan), &c.VideoMediaScanCommand); err != nil || len(c.VideoMediaScanCommand) == 0 || strings.TrimSpace(c.VideoMediaScanCommand[0]) == "" {
-		return fmt.Errorf("config: LAIAI_VIDEO_MEDIA_SCAN_COMMAND must be a non-empty JSON array of executable and arguments")
-	}
-	for _, arg := range c.VideoMediaScanCommand {
-		if strings.ContainsRune(arg, '\x00') {
-			return fmt.Errorf("config: video media scanner arguments must not contain NUL")
-		}
-	}
-	return nil
-}
-
-// loadVideoWatermark reads the deferred watermark-removal knobs. Everything is
-// optional: the pipeline only exists when the media store is configured, the
-// superadmin toggle gates it at runtime, and unset knobs fall back to
-// defaults that reproduce the operator's script at 1280x720.
-func (c *Config) loadVideoWatermark() error {
-	var err error
-	c.VideoWatermarkFilter = os.Getenv("LAIAI_VIDEO_WATERMARK_FILTER")
-	c.VideoWatermarkFFmpeg = getenvDefault("LAIAI_VIDEO_WATERMARK_FFMPEG", "ffmpeg")
-	c.VideoWatermarkFFProbe = getenvDefault("LAIAI_VIDEO_WATERMARK_FFPROBE", "ffprobe")
-	c.VideoWatermarkTimeout, err = time.ParseDuration(getenvDefault("LAIAI_VIDEO_WATERMARK_TIMEOUT", "10m"))
-	if err != nil {
-		return fmt.Errorf("config: LAIAI_VIDEO_WATERMARK_TIMEOUT must be a Go duration: %w", err)
-	}
-	if c.VideoWatermarkTimeout <= 0 {
-		return fmt.Errorf("config: LAIAI_VIDEO_WATERMARK_TIMEOUT must be positive")
-	}
-	c.VideoWatermarkConcurrency, err = getenvInt("LAIAI_VIDEO_WATERMARK_CONCURRENCY", 2, 1)
-	if err != nil {
-		return err
-	}
-	c.VideoWatermarkMaxBytes, err = getenvInt64("LAIAI_VIDEO_WATERMARK_MAX_BYTES", 200_000_000, 1)
-	if err != nil {
-		return err
-	}
-	c.VideoWatermarkRetentionDays, err = getenvInt("LAIAI_VIDEO_WATERMARK_RETENTION_DAYS", 30, 1)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func getenvInt64(key string, def, min int64) (int64, error) {
-	v := os.Getenv(key)
-	if v == "" {
-		return def, nil
-	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil || n < min {
-		return 0, fmt.Errorf("config: %s must be an integer >= %d", key, min)
-	}
-	return n, nil
 }
 
 func getenvDefault(key, def string) string {

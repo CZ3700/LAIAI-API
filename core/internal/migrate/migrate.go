@@ -9,20 +9,18 @@ package migrate
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
-// advisoryLockName / advisoryLockTimeout：多副本并发迁移的 MySQL 会话级互斥（WS-3）。
-const (
-	advisoryLockName    = "laiai_migrate"
-	advisoryLockTimeout = 120 // 秒：足够最慢的一批迁移跑完；超时视为另一实例迁移中（entrypoint 会重试）
-)
+// advisoryLockID：多副本并发迁移的 PostgreSQL 会话级互斥锁 key。
+const advisoryLockID int64 = 7829140001
 
 type Record struct {
 	Version   string `gorm:"primaryKey;column:version"`
@@ -33,12 +31,11 @@ func (Record) TableName() string { return "schema_migrations" }
 
 // Up 应用 fsys 根目录下所有未应用的 *.sql 迁移，按文件名字典序。返回本次新应用的版本列表。
 //
-// 多副本安全（WS-3）：MySQL 上整个迁移流程用会话级 GET_LOCK 串行化——N 个 core 副本同时启动时
+// 多副本安全：PostgreSQL 上整个迁移流程用会话级 pg_advisory_lock 串行化——N 个 core 副本同时启动时
 // 只有一个进程执行迁移，其余阻塞到它释放后再跑（届时迁移已全部 applied，各自空过）。锁持在一条
-// 专用连接上直到显式 RELEASE_LOCK（GET_LOCK 是连接/会话级；conn.Close 只归还连接池不结束会话，
-// 故必须显式释放——对抗评审命中点）。SQLite 测试方言无 advisory lock，靠单连接串行兜底。
+// 专用连接上直到显式 pg_advisory_unlock。SQLite 测试方言无 advisory lock，靠单连接串行兜底。
 func Up(db *gorm.DB, fsys fs.FS) ([]string, error) {
-	if db.Dialector.Name() != "mysql" {
+	if db.Dialector.Name() != "postgres" {
 		return up(db, fsys)
 	}
 	sqlDB, err := db.DB()
@@ -46,33 +43,20 @@ func Up(db *gorm.DB, fsys fs.FS) ([]string, error) {
 		return nil, fmt.Errorf("migrate: db handle: %w", err)
 	}
 	ctx := context.Background()
-	conn, err := sqlDB.Conn(ctx) // 专用连接：锁随此连接的会话存活，直到 RELEASE_LOCK
+	conn, err := sqlDB.Conn(ctx) // 专用连接：锁随此连接的会话存活，直到 pg_advisory_unlock
 	if err != nil {
 		return nil, fmt.Errorf("migrate: dedicated conn: %w", err)
 	}
 	defer conn.Close()
-	var got sql.NullInt64
-	if err := conn.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT GET_LOCK('%s', %d)", advisoryLockName, advisoryLockTimeout)).Scan(&got); err != nil {
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", advisoryLockID); err != nil {
 		return nil, fmt.Errorf("migrate: acquire advisory lock: %w", err)
 	}
-	if !got.Valid || got.Int64 != 1 {
-		// 超时（另一实例正在迁移且 >timeout）或异常：报错让 entrypoint 重试，绝不在未持锁时迁移。
-		return nil, fmt.Errorf("migrate: could not acquire advisory lock %q within %ds (another instance migrating?)",
-			advisoryLockName, advisoryLockTimeout)
-	}
-	defer conn.ExecContext(ctx, fmt.Sprintf("SELECT RELEASE_LOCK('%s')", advisoryLockName)) //nolint:errcheck
+	defer conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", advisoryLockID) //nolint:errcheck
 	return up(db, fsys)
 }
 
 // up 是迁移主体（被 Up 在持有 advisory lock 后调用；SQLite 直接调）。
 func up(db *gorm.DB, fsys fs.FS) ([]string, error) {
-	return upWithSettlementShapeProfile(db, fsys, nil)
-}
-
-// The optional profile is only an internal test seam. Up uses the reviewed,
-// compile-time 0135 profile; no caller configuration or environment can bypass it.
-func upWithSettlementShapeProfile(db *gorm.DB, fsys fs.FS, profile *settlementShapeProfile) ([]string, error) {
 	if err := ensureTable(db); err != nil {
 		return nil, err
 	}
@@ -94,20 +78,6 @@ func upWithSettlementShapeProfile(db *gorm.DB, fsys fs.FS, profile *settlementSh
 	var ran []string
 	for _, f := range files {
 		version := strings.TrimSuffix(f, ".sql")
-		var shapeGuard *settlementShapeGuard
-		if version == settlementShapeMigration {
-			raw, readErr := fs.ReadFile(fsys, f)
-			if readErr != nil {
-				return ran, fmt.Errorf("migrate: read %s: %w", f, readErr)
-			}
-			shapeGuard, err = newSettlementShapeGuard(raw, profile)
-			if err != nil {
-				return ran, err
-			}
-			if err = shapeGuard.before(db, applied[version]); err != nil {
-				return ran, err
-			}
-		}
 		if applied[version] {
 			continue
 		}
@@ -119,31 +89,13 @@ func upWithSettlementShapeProfile(db *gorm.DB, fsys fs.FS, profile *settlementSh
 		if len(stmts) == 0 {
 			return nil, fmt.Errorf("migrate: %s contains no statements", f)
 		}
-		// ⚠️ MySQL 上 DDL 隐式提交、不可回滚：本事务对「单文件多条 DDL」不保证原子
-		// （仅 SQLite 测试方言下 DDL 才事务性）。安全靠 Lint（破坏性拦截 + 多 DDL 告警）+
-		// 纪律（单文件单 DDL / 多列合并为单条 ALTER）兜底，见 lint.go。
 		err = db.Transaction(func(tx *gorm.DB) error {
 			for i, s := range stmts {
 				if err := tx.Exec(s).Error; err != nil {
-					// 半应用恢复（对抗评审 high）：MySQL DDL 隐式提交不可回滚——多 DDL 文件若中途被杀
-					// （OOM/连接闪断/容器重启），前几条已落地但版本未记录，re-run 整个文件会撞「已存在」
-					// → 旧实现报错 → entrypoint 30 次全败 → 容器 crash-loop。这里容忍「已存在」类错误并
-					// 跳过该语句，使未记录版本的 re-run 幂等完成剩余语句并补记版本。安全前提：迁移是
-					// schema 唯一权威（红线禁 AutoMigrate），故「已存在」只可能源于本迁移的前次半应用。
 					if isAlreadyExists(err) {
-						if shapeGuard != nil {
-							if err := shapeGuard.after(tx); err != nil {
-								return err
-							}
-						}
 						continue
 					}
 					return fmt.Errorf("migrate: %s statement %d: %w", f, i+1, err)
-				}
-			}
-			if shapeGuard != nil {
-				if err := shapeGuard.after(tx); err != nil {
-					return err
 				}
 			}
 			return tx.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, CURRENT_TIMESTAMP)", version).Error
@@ -196,6 +148,13 @@ func ensureTable(db *gorm.DB) error {
 // MySQL（1050 表已存在 / 1060 重复列 / 1061 重复键名）与 SQLite（table/index already exists、
 // duplicate column name）。仅在迁移=schema 唯一权威的前提下容忍（红线禁 AutoMigrate）。
 func isAlreadyExists(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "42P07", "42701", "42710":
+			return true
+		}
+	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "already exists") ||
 		strings.Contains(s, "duplicate column") ||

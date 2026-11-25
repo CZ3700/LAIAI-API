@@ -8,6 +8,7 @@ import (
 // 备用码域逻辑：生成 10 个唯一码、消费一次即焚、重用/错码/归一化、计数、重置删旧。
 func TestBackupCodes(t *testing.T) {
 	db := setupDB(t)
+	db.Exec("INSERT INTO users(id, email, email_canonical) VALUES (1, 'u1@example.com', 'u1@example.com'), (2, 'u2@example.com', 'u2@example.com')")
 
 	codes, err := GenerateBackupCodes(db, 1, 1000)
 	if err != nil || len(codes) != backupCodeCount {

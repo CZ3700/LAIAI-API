@@ -43,73 +43,44 @@ func TestRunLogRetention(t *testing.T) {
 	}
 }
 
-// 0139：控制台访问日志（14 天）与任务生命周期日志（30 天）保留期清理。
-// outbox 只删 processed 行（pending 永不删）。sqlite 测试自建所需表。
-func TestRunLogRetentionVideoTables(t *testing.T) {
+// 任务表保留期清理（默认 30 天）：只删已终态且 finish_at 早于保留期的任务，queued 任务永不删。
+func TestRunLogRetentionTasksTable(t *testing.T) {
 	srv, db := setupRelayServer(t)
-	mustExecLogSchema(t, db)
-	db.Exec(`INSERT INTO api_request_logs (request_id, started_at) VALUES
-		('old1', '2000-01-01 00:00:00'), ('new1', CURRENT_TIMESTAMP)`)
-	db.Exec(`INSERT INTO video_request_contexts (request_id, created_at) VALUES
-		('old1', '2000-01-01 00:00:00'), ('new1', CURRENT_TIMESTAMP)`)
-	db.Exec(`INSERT INTO video_events (id, created_at) VALUES
-		('evt-old', '2000-01-01 00:00:00'), ('evt-new', CURRENT_TIMESTAMP)`)
-	db.Exec(`INSERT INTO video_attempts (id, observed_at) VALUES (1, '2000-01-01 00:00:00'), (2, CURRENT_TIMESTAMP)`)
-	db.Exec(`INSERT INTO video_outbox (event_id, status, created_at) VALUES
-		('obx-old-processed', 'processed', '2000-01-01 00:00:00'),
-		('obx-old-pending', 'pending', '2000-01-01 00:00:00'),
-		('obx-new', 'processed', CURRENT_TIMESTAMP)`)
-	db.Exec(`INSERT INTO video_asset_events (event_id, created_at) VALUES
-		('ae-old', '2000-01-01 00:00:00'), ('ae-new', CURRENT_TIMESTAMP)`)
+	if err := db.Exec(`INSERT INTO tasks (task_id, org_id, api_key_id, model, channel_id, provider, status, hold_id, finished_at) VALUES
+		('t-old-ok', 1, 1, 'm', 1, 'openai', 'succeeded', 1, '2000-01-01 00:00:00'),
+		('t-old-fail', 1, 1, 'm', 1, 'openai', 'failed', 2, '2000-01-01 00:00:00'),
+		('t-old-queued', 1, 1, 'm', 1, 'openai', 'queued', 3, '2000-01-01 00:00:00'),
+		('t-new-ok', 1, 1, 'm', 1, 'openai', 'succeeded', 4, CURRENT_TIMESTAMP)`).Error; err != nil {
+		t.Fatalf("insert tasks: %v", err)
+	}
 
-	db.Exec(`INSERT INTO ext_settings (name,value) VALUES
-		('request_log_retention_days','7'),('task_log_retention_days','7')`)
+	db.Exec(`INSERT INTO ext_settings (name,value) VALUES ('task_log_retention_days','7')`)
 	if _, _, err := srv.srv.RunLogRetention(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, q := range []string{
-		"SELECT COUNT(*) FROM api_request_logs WHERE request_id='old1'",
-		"SELECT COUNT(*) FROM video_request_contexts WHERE request_id='old1'",
-		"SELECT COUNT(*) FROM video_events WHERE event_id='evt-old'",
-		"SELECT COUNT(*) FROM video_attempts WHERE observed_at < '2020-01-01'",
-		"SELECT COUNT(*) FROM video_asset_events WHERE event_id='ae-old'",
-	} {
-		var n int64
-		db.Raw(q).Scan(&n)
-		if n != 0 {
-			t.Fatalf("old row survived: %s = %d", q, n)
-		}
+	var oldGone int64
+	db.Raw("SELECT COUNT(*) FROM tasks WHERE task_id IN ('t-old-ok','t-old-fail')").Scan(&oldGone)
+	if oldGone != 0 {
+		t.Fatalf("old terminal tasks survived: %d", oldGone)
 	}
-	var newRows int64
-	for _, q := range []string{
-		"SELECT COUNT(*) FROM api_request_logs WHERE request_id='new1'",
-		"SELECT COUNT(*) FROM video_request_contexts WHERE request_id='new1'",
-		"SELECT COUNT(*) FROM video_events WHERE id='evt-new'",
-		"SELECT COUNT(*) FROM video_outbox WHERE event_id IN ('obx-new','obx-old-pending')",
-		"SELECT COUNT(*) FROM video_asset_events WHERE event_id='ae-new'",
-	} {
-		db.Raw(q).Scan(&newRows)
-		if newRows == 0 {
-			t.Fatalf("recent/pending row deleted: %s = 0", q)
-		}
+	var kept int64
+	db.Raw("SELECT COUNT(*) FROM tasks WHERE task_id IN ('t-old-queued','t-new-ok')").Scan(&kept)
+	if kept != 2 {
+		t.Fatalf("queued/recent tasks kept = %d, want 2", kept)
 	}
 }
 
 func mustExecLogSchema(t *testing.T, db *gorm.DB) {
 	t.Helper()
-	for _, q := range []string{
-		`CREATE TABLE IF NOT EXISTS api_request_logs (request_id TEXT PRIMARY KEY, started_at DATETIME)`,
-		`CREATE TABLE IF NOT EXISTS video_request_contexts (request_id TEXT PRIMARY KEY, created_at DATETIME)`,
-		`CREATE TABLE IF NOT EXISTS video_events (id TEXT PRIMARY KEY, created_at DATETIME)`,
-		`CREATE TABLE IF NOT EXISTS video_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, observed_at DATETIME)`,
-		`CREATE TABLE IF NOT EXISTS video_outbox (event_id TEXT PRIMARY KEY, status TEXT, created_at DATETIME)`,
-		`CREATE TABLE IF NOT EXISTS video_asset_events (event_id TEXT PRIMARY KEY, created_at DATETIME)`,
-		// 0148 起保留清理覆盖回调 hint 表（按 id 主键 + received_at 时间列）。
-		`CREATE TABLE IF NOT EXISTS video_callback_hints (id INTEGER PRIMARY KEY AUTOINCREMENT, received_at DATETIME)`,
-	} {
-		if err := db.Exec(q).Error; err != nil {
-			t.Fatalf("schema exec: %v", err)
-		}
+	if err := db.Exec(`CREATE TABLE IF NOT EXISTS tasks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id TEXT,
+		org_id INTEGER DEFAULT 1,
+		model TEXT DEFAULT '',
+		status TEXT DEFAULT 'queued',
+		finished_at DATETIME
+	)`).Error; err != nil {
+		t.Fatalf("schema exec: %v", err)
 	}
 }
 

@@ -54,7 +54,7 @@ func (s *Server) v1FinanceRecharges(c *gin.Context) {
 	var args []any
 	if kw := strings.TrimSpace(c.Query("user_id")); kw != "" {
 		pat := "%" + escapeSQLLike(kw) + "%"
-		baseSQL += ` AND (u.email LIKE ? ESCAPE '\' OR u.display_name LIKE ? ESCAPE '\' OR CAST(u.id AS CHAR) = ? OR j.ref_id LIKE ? ESCAPE '\')`
+		baseSQL += ` AND (u.email LIKE ? ESCAPE '\' OR u.display_name LIKE ? ESCAPE '\' OR CAST(u.id AS TEXT) = ? OR j.ref_id LIKE ? ESCAPE '\')`
 		args = append(args, pat, pat, kw, pat)
 	}
 	if rt := strings.TrimSpace(c.Query("recharge_type")); rt != "" {
@@ -166,7 +166,7 @@ func (s *Server) v1FinanceOrders(c *gin.Context) {
 	var args []any
 	if kw := strings.TrimSpace(c.Query("search")); kw != "" {
 		pat := "%" + escapeSQLLike(kw) + "%"
-		baseSQL += ` AND (t.order_no LIKE ? ESCAPE '\' OR t.trade_no LIKE ? ESCAPE '\' OR u.email LIKE ? ESCAPE '\' OR CAST(t.org_id AS CHAR) = ?)`
+		baseSQL += ` AND (t.order_no LIKE ? ESCAPE '\' OR t.trade_no LIKE ? ESCAPE '\' OR u.email LIKE ? ESCAPE '\' OR CAST(t.org_id AS TEXT) = ?)`
 		args = append(args, pat, pat, pat, kw)
 	}
 	if st := strings.TrimSpace(c.Query("status")); st != "" {

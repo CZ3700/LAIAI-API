@@ -17,20 +17,17 @@ import (
 	"github.com/laiai/laiai-next/core/internal/notify"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/task"
-	"github.com/laiai/laiai-next/core/internal/video"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
 	"gorm.io/gorm"
 )
 
 type Options struct {
-	AuthSecret       []byte               // session token HMAC（必填）
-	AdminToken       []byte               // X-Admin-Token；空 = admin API 整组禁用
-	Keyring          *crypto.Keyring      // 渠道凭证信封加密；nil = 渠道管理禁用
-	Recorder         *invocation.Recorder // 调用记录；nil = relay 不记录
-	TaskService      *task.Service        // 异步任务服务；nil = 按默认构造（main 传入以共享轮询实例）
-	VideoService     *video.Service
-	VideoMediaSource http.Handler // Signed, short-lived media fetches for the provider.
+	AuthSecret  []byte               // session token HMAC（必填）
+	AdminToken  []byte               // X-Admin-Token；空 = admin API 整组禁用
+	Keyring     *crypto.Keyring      // 渠道凭证信封加密；nil = 渠道管理禁用
+	Recorder    *invocation.Recorder // 调用记录；nil = relay 不记录
+	TaskService *task.Service        // 异步任务服务；nil = 按默认构造（main 传入以共享轮询实例）
 	// AuthRateBurst：认证端点 per-IP 突发上限；0 = 生产默认 5。测试设大值绕开。
 	AuthRateBurst int
 	Mailer        mailer.Mailer // 邮件发送；nil = 邮件功能禁用（验证端点 503）
@@ -60,7 +57,6 @@ type Server struct {
 	relay               *relay.Relay       // 渠道一键测试用；nil = 测试端点 503
 	mailer              mailer.Mailer      // 邮件发送；nil = 邮件功能禁用
 	notify              *notify.Dispatcher // 统一通知层（§4.9）；nil = 通知禁用
-	video               *video.Service
 	log                 *slog.Logger
 	now                 func() time.Time    // 可注入时钟，测试用
 	invRetentionDefault int                 // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
@@ -68,6 +64,7 @@ type Server struct {
 	routingGroupReads   routingAdminReadGate
 	forwardResolver     *forward.Resolver
 	taskService         *task.Service
+	settingsCache       settingsCache
 }
 
 // readOnly 返回只读副本句柄（规模化：分析/用量/排行/公开价目等重读卸载到副本）；未配副本回退主库。
@@ -85,6 +82,14 @@ func (s *Server) Log() *slog.Logger {
 		return slog.Default()
 	}
 	return s.log
+}
+
+// NotifyWakeChan returns the wakeup channel for the outbox delivery worker.
+func (s *Server) NotifyWakeChan() <-chan struct{} {
+	if s == nil || s.notify == nil {
+		return nil
+	}
+	return s.notify.WakeChan()
 }
 
 const controlPlaneBodyLimit = 1 << 20 // 1MB：控制面 JSON 足够（审查 M2）
@@ -107,7 +112,6 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 	}
 	s := &Server{
 		db: db, readDB: opts.ReadDB, secret: opts.AuthSecret,
-		video:      opts.VideoService,
 		adminToken: opts.AdminToken, keyring: opts.Keyring,
 		authLimiter:         newIPLimiter(rate.Every(time.Second), authBurst),
 		twofaLimiter:        newIPLimiter(rate.Every(time.Second), authBurst), // 与 auth 同档（生产默认 5）；测试设大值绕开
@@ -163,16 +167,9 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		HTTP:       relay.NewGuardedClient(10*time.Second, false),
 		Now:        s.now,
 	}
+	s.notify.EnableWake()
 
 	r.GET("/healthz", s.healthz)
-	if opts.VideoMediaSource != nil {
-		r.GET("/api/video/media-source/*path", gin.WrapH(opts.VideoMediaSource))
-		r.HEAD("/api/video/media-source/*path", gin.WrapH(opts.VideoMediaSource))
-	}
-	// Streaming media has a per-type limit in its handler. Keep the ordinary
-	// JSON API's 1 MiB limit and all session/membership checks intact.
-	mediaOrg := r.Group("/api", s.authRequired(), s.requireActiveUser(), s.requireActiveMembership())
-	var videoConsoleOrg *gin.RouterGroup
 
 	api := r.Group("/api")
 	api.Use(bodyLimit(controlPlaneBodyLimit)) // 控制面体上限（审查 M2）
@@ -216,9 +213,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 
 			// —— org-scoped（P0-1：还需 org active + 当前会话用户仍是该 org 成员）——
 			org := authed.Group("", s.requireActiveMembership())
-			videoConsoleOrg = org
 			{
-				s.registerFundActivities(org)
 				org.POST("/keys", s.requireStepUpForKeys(), s.createKey) // 受开关保护：开启则需 step-up
 				org.GET("/keys", s.listKeys)
 				org.GET("/keys/video-access", s.keyVideoAccess)
@@ -227,7 +222,6 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 				org.GET("/usage", s.getUsage)
 				org.GET("/logs/unified", s.getUnifiedLogs) // 统一调用流水 + 异步视频任务聚合日志
 				org.GET("/usage/export", s.getUsageExport) // 调用明细 CSV 自助导出（Latency/Usage 页）
-				s.registerInvocationExportJobs(org)
 				org.GET("/usage/summary", s.getUsageSummary)
 				org.GET("/usage/by-model", s.getUsageByModel)
 				org.GET("/usage/by-key", s.getUsageByKey)         // 仪表盘密钥排行榜
@@ -322,22 +316,6 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			su := admin.Group("", s.requireSuperadmin())
 			{
 				s.registerRoutingGroupsAdmin(su)
-				s.registerVideoConfiguration(su)
-				s.registerVideoUserLimits(su)
-				s.registerVideoProviderQuotas(su)
-				s.registerArkBillingAdmin(su)
-				s.registerArkAssetAdmin(su)
-				s.registerArkAssetsConsole(videoConsoleOrg, su, mediaOrg)
-				s.registerArkPricingConsole(su)
-				s.registerArkVerification(su)
-				s.registerArkVariantPricePlans(su)
-				s.registerArkOfficialPriceCatalog(su)
-				su.GET("/video/models/:model/pricing/reference-candidates", s.getArkReferenceCandidates)
-				s.registerArkRequestLogs(videoConsoleOrg, su)
-				su.GET("/video/worker-observability", s.getArkWorkerObservability)
-				// 视频模型级受理限额（火山官方式 per-model 并发/RPM，superadmin）。
-				su.GET("/video/model-limits", s.adminListModelLimits)
-				su.PUT("/video/model-limits/:model", s.adminSetModelLimits)
 				// 跨租户全平台调用明细（org_id/user_id/model/cost）：限 superadmin（P2-3）
 				su.GET("/invocations", s.adminListInvocations)
 				su.GET("/invocations/export", func(c *gin.Context) { s.handleInvocationExportV1(c, true) })
@@ -412,16 +390,10 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		vg.POST("/api/v3/contents/generations/tasks", ts.HandleArkNativeCreate)
 		vg.GET("/api/v3/contents/generations/tasks/:id", ts.HandleArkNativeGet)
 		vg.DELETE("/api/v3/contents/generations/tasks/:id", ts.HandleArkNativeCancel)
-		if opts.VideoService != nil {
-			if opts.VideoService.Gate == nil {
-				opts.VideoService.Gate = rl
-			}
-			opts.VideoService.RegisterRoutes(vg, ts)
-		} else {
-			vg.POST("/v1/video/generations", video.DisabledOfficialCreate(ts.HandleCreate))
-			vg.GET("/v1/video/generations/:id", ts.HandleGet)
-			vg.GET("/v1/video/generations/:id/content", ts.HandleContent)
-		}
+		vg.POST("/v1/video/generations", ts.HandleCreate)
+		vg.GET("/v1/video/generations/:id", ts.HandleGet)
+		vg.GET("/v1/video/generations/:id/content", ts.HandleContent)
+		vg.DELETE("/v1/video/generations/:id", ts.HandleCancel)
 		// Midjourney（mjproxy 网关方言，丝滑度批 C-4）：MJ 客户端生态标准协议；task 骨架复用
 		vg.POST("/mj/submit/:action", ts.HandleMJSubmit)
 		vg.GET("/mj/task/:id/fetch", ts.HandleMJFetch)

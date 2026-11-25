@@ -15,7 +15,6 @@ import (
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/routinggroup"
-	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -137,13 +136,8 @@ func (s *Server) createKey(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		if videoWriteScope(effectiveScopes) {
-			// The administrator provisions grouped org execution policy. Only
-			// legacy issuance may use the owner's first-time consent shortcut.
-			consent := req.EnableVideoAsync && group == nil
-			if err := s.ensureKeyVideoAccess(tx, claims.OrgID, claims.UserID, consent, ent); err != nil {
-				return err
-			}
+		if videoWriteScope(effectiveScopes) && !ent.FeatureVideo {
+			return errVideoDisabled
 		}
 		uid := claims.UserID
 		plaintext, key, err = identity.IssueKey(tx, identity.IssueKeyInput{
@@ -172,7 +166,8 @@ func (s *Server) createKey(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "administrator routing group is inactive", "code": "routing_group_inactive"})
 		return
 	}
-	if replyKeyVideoError(c, err) {
+	if errors.Is(err, errVideoDisabled) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "video generation is disabled for this organization", "code": errVideoDisabled.Error()})
 		return
 	}
 	if errors.Is(err, identity.ErrKeyLimit) {
@@ -261,7 +256,7 @@ func (s *Server) deleteKey(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Second)
 	defer cancel()
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return identity.PurgeRevokedKeyTx(tx, claims.OrgID, id, videobilling.HasKeySnapshotReferenceTx)
+		return identity.PurgeRevokedKeyTx(tx, claims.OrgID, id, hasActiveTaskForKeyTx)
 	})
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		fail(c, http.StatusNotFound, "key not found")
@@ -272,7 +267,7 @@ func (s *Server) deleteKey(c *gin.Context) {
 		return
 	}
 	if errors.Is(err, identity.ErrKeyPurgeReferenced) {
-		fail(c, http.StatusConflict, "key is retained for video billing history; revocation remains effective")
+		fail(c, http.StatusConflict, "key has in-flight tasks; revoke stays active until tasks settle")
 		return
 	}
 	if err != nil {
@@ -280,4 +275,80 @@ func (s *Server) deleteKey(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": id})
+}
+
+var errVideoDisabled = errors.New("video_execution_disabled")
+
+func videoWriteScope(scopes string) bool {
+	for _, scope := range strings.FieldsFunc(scopes, func(r rune) bool { return r == ' ' || r == ',' }) {
+		if scope == "video:write" || scope == "video:*" || scope == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasActiveTaskForKeyTx(tx *gorm.DB, orgID, keyID uint64) (bool, error) {
+	var hitID uint64
+	err := tx.Table("tasks").Select("id").
+		Where("org_id = ? AND api_key_id = ? AND status IN ?", orgID, keyID, []string{"queued", "running"}).
+		Limit(1).Take(&hitID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Server) keyVideoAccess(c *gin.Context) {
+	claims := mustClaims(c)
+	ent, err := identity.LoadEntitlements(s.db, claims.OrgID)
+	if err != nil {
+		fail(c, http.StatusServiceUnavailable, "video access unavailable")
+		return
+	}
+	state := "disabled"
+	if ent.FeatureVideo {
+		state = "enabled"
+	}
+	var defaultGroup *struct {
+		ID   uint64 `json:"id"`
+		Name string `json:"name"`
+	}
+	defaultGroupState := "none"
+	_ = s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var row struct {
+			ID   uint64 `gorm:"column:id"`
+			Name string `gorm:"column:name"`
+		}
+		err := tx.Table("org_group_grants AS og").
+			Select("og.group_id AS id, COALESCE(routing_groups.name, '') AS name").
+			Joins("LEFT JOIN routing_groups ON routing_groups.id = og.group_id").
+			Where("og.org_id = ? AND og.default_slot = 1", claims.OrgID).Take(&row).Error
+		if err != nil {
+			return nil
+		}
+		defaultGroupState = "inactive"
+		defaultGroup = &struct {
+			ID   uint64 `json:"id"`
+			Name string `json:"name"`
+		}{ID: row.ID, Name: row.Name}
+		if id, gerr := routinggroup.DefaultKeyGroupTx(tx, claims.OrgID); gerr == nil && id != nil && *id == row.ID {
+			defaultGroupState = "active"
+		}
+		return nil
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"state":                    state,
+		"can_enable":               false,
+		"grouped_issuance_enabled": defaultGroupState == "active" && state == "enabled",
+		"default_group_configured": defaultGroup != nil,
+		"default_group_state":      defaultGroupState,
+		"default_group":            defaultGroup,
+	})
 }

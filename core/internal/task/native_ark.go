@@ -167,6 +167,38 @@ func encodeFeaturesSnapshot(feat pricing.ExtractedFeatures) string {
 	return string(b)
 }
 
+// ModalityForProvider maps task provider names to invocation modality values.
+func ModalityForProvider(provider string) string {
+	switch provider {
+	case "suno":
+		return "music"
+	case "midjourney":
+		return "image"
+	default:
+		return "video"
+	}
+}
+
+func encodeRequestMeta(params map[string]any) string {
+	if len(params) == 0 {
+		return "{}"
+	}
+	meta := make(map[string]any, 6)
+	for _, k := range []string{"duration", "resolution", "ratio", "size", "fps", "framespersecond", "generate_audio", "watermark", "service_tier"} {
+		if v, ok := params[k]; ok {
+			meta[k] = v
+		}
+	}
+	if len(meta) == 0 {
+		return "{}"
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
 func computeTaskRuleHold(b *pricing.ModelRuleBinding, rule *pricing.BillingRule, estTokens int64, ratio decimal.Decimal, feat pricing.ExtractedFeatures) decimal.Decimal {
 	disc := ratio.Mul(b.EffectiveDiscount())
 	cost, _ := pricing.ComputeCost(rule, pricing.UsageTokens{

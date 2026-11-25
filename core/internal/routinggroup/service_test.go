@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/glebarez/sqlite"
-	"github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -187,31 +187,31 @@ func TestGroupCreateDuplicateTextAndConfirmationFailureStayUnavailable(t *testin
 	}
 }
 
-type groupCreateMySQLDialect struct{ gorm.Dialector }
+type groupCreatePGDialect struct{ gorm.Dialector }
 
-func (groupCreateMySQLDialect) Name() string { return "mysql" }
+func (groupCreatePGDialect) Name() string { return "postgres" }
 
 func TestGroupInsertDuplicateClassifierUsesTypedDriverAndDialect(t *testing.T) {
 	s, _ := serviceFixture(t)
-	mysqlDB := s.DB.Session(&gorm.Session{})
-	config := *mysqlDB.Config
-	mysqlDB.Config = &config
-	mysqlDB.Dialector = groupCreateMySQLDialect{s.DB.Dialector}
+	pgDB := s.DB.Session(&gorm.Session{})
+	config := *pgDB.Config
+	pgDB.Config = &config
+	pgDB.Dialector = groupCreatePGDialect{s.DB.Dialector}
 	for _, test := range []struct {
 		err  error
 		want bool
 	}{
-		{&mysql.MySQLError{Number: 1062, Message: "private-values"}, true},
-		{fmt.Errorf("wrapped: %w", &mysql.MySQLError{Number: 1062}), true},
-		{&mysql.MySQLError{Number: 1213, Message: "Duplicate entry"}, false},
-		{errors.New("Duplicate entry for key uk_routing_group_slug"), false},
+		{&pgconn.PgError{Code: "23505", Message: "private-values"}, true},
+		{fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "23505"}), true},
+		{&pgconn.PgError{Code: "40001", Message: "Duplicate entry"}, false},
+		{errors.New("duplicate key value violates unique constraint"), false},
 		{gorm.ErrDuplicatedKey, false},
 	} {
-		if got := groupInsertDuplicate(mysqlDB, test.err); got != test.want {
-			t.Fatal("unexpected MySQL typed classification")
+		if got := groupInsertDuplicate(pgDB, test.err); got != test.want {
+			t.Fatal("unexpected PostgreSQL typed classification")
 		}
 		if groupInsertDuplicate(s.DB, test.err) {
-			t.Fatal("MySQL errors accepted on SQLite")
+			t.Fatal("PostgreSQL errors accepted on SQLite")
 		}
 	}
 	if strings.Contains(ErrExists.Error(), "private-values") {

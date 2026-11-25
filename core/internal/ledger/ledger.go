@@ -80,14 +80,14 @@ type Account struct {
 
 func (Account) TableName() string { return "ledger_accounts" }
 
-// AccountShardConfig：(org,type) 的物理分片数（缺省 1）。仅给触顶单账户行写吞吐的巨客户设 >1（规模化）。
+// AccountShardConfig maps org credit_shards onto organizations.
 type AccountShardConfig struct {
-	OrgID      uint64 `gorm:"column:org_id"`
-	Type       string `gorm:"column:type"`
-	ShardCount int    `gorm:"column:shard_count"`
+	OrgID      uint64 `gorm:"column:id;primaryKey"`
+	Type       string `gorm:"-"`
+	ShardCount int    `gorm:"column:credit_shards"`
 }
 
-func (AccountShardConfig) TableName() string { return "ledger_account_shards" }
+func (AccountShardConfig) TableName() string { return "organizations" }
 
 // Available 返回可用余额（posted - held）。
 func (a *Account) Available() decimal.Decimal { return a.PostedBalance.Sub(a.HeldAmount) }
@@ -155,18 +155,23 @@ func ensureAccountAt(tx *gorm.DB, orgID uint64, accType string, shard int) (*Acc
 
 // shardCountFor 返回 (org,type) 的分片数（无配置=1）。
 func shardCountFor(tx *gorm.DB, orgID uint64, accType string) (int, error) {
-	cfg := &AccountShardConfig{}
-	err := tx.Where("org_id = ? AND type = ?", orgID, accType).First(cfg).Error
+	if accType != AccountUserCredit {
+		return 1, nil
+	}
+	var row struct {
+		ShardCount int `gorm:"column:credit_shards"`
+	}
+	err := tx.Table("organizations").Select("credit_shards").Where("id = ?", orgID).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return 1, nil // 缺省单分片 → 与现状逐字一致
+		return 1, nil
 	}
 	if err != nil {
 		return 0, err
 	}
-	if cfg.ShardCount < 1 {
+	if row.ShardCount < 1 {
 		return 1, nil
 	}
-	return cfg.ShardCount, nil
+	return row.ShardCount, nil
 }
 
 // shardForKey 确定性哈希选片（同 key 总落同片）。幂等仍由 UNIQUE(idempotency_key) 全表兜底，与此无关。
@@ -274,7 +279,7 @@ func ShardAccountIDs(tx *gorm.DB, orgID uint64, accType string) ([]uint64, error
 // admin override 精确订正用：持锁到事务结束，期间各分片 posted 不被改动，delta=目标-Σposted 精确。
 func LockOrgPosted(tx *gorm.DB, orgID uint64, accType string) (decimal.Decimal, error) {
 	q := tx
-	if tx.Dialector.Name() == "mysql" {
+	if tx.Dialector.Name() != "sqlite" {
 		q = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
 	var accs []Account
@@ -327,8 +332,7 @@ type PostInput struct {
 	RefType        string
 	RefID          string
 	Reason         string
-	AllowNegative  bool            // 仅平台内部账户（如 platform_revenue 冲销）可置 true
-	Correction     *CorrectionLink // only the approved video billing correction path
+	AllowNegative  bool // 仅平台内部账户（如 platform_revenue 冲销）可置 true
 }
 
 // Post 过账一笔。返回 (entry, alreadyApplied, error)。
@@ -393,9 +397,6 @@ func Post(tx *gorm.DB, in PostInput) (*JournalEntry, bool, error) {
 		}
 		return nil, false, fmt.Errorf("ledger: post affected 0 rows on account %d", in.AccountID)
 	}
-	if err := recordPost(tx, entry, in.Correction); err != nil {
-		return nil, false, err
-	}
 	return entry, false, nil
 }
 
@@ -452,9 +453,6 @@ func CreateHold(tx *gorm.DB, in HoldInput) (*Hold, bool, error) {
 	}
 	if n == 0 {
 		return nil, false, ErrInsufficientBalance // 余额不足 → 上层回滚，hold 行随之撤销
-	}
-	if err := recordHold(tx, h); err != nil {
-		return nil, false, err
 	}
 	return h, false, nil
 }
@@ -517,9 +515,6 @@ func Capture(tx *gorm.DB, holdID uint64, actual decimal.Decimal, reason string) 
 		if err := tx.Create(entry).Error; err != nil {
 			return nil, err
 		}
-	}
-	if err := recordCapture(tx, h, actual, entry); err != nil {
-		return nil, err
 	}
 	return entry, nil
 }
@@ -585,7 +580,7 @@ func Release(tx *gorm.DB, holdID uint64) error {
 	if n == 0 {
 		return fmt.Errorf("ledger: release would drive held_amount negative on account %d (invariant violation)", h.AccountID)
 	}
-	return recordRelease(tx, h, h.Amount, "release")
+	return nil
 }
 
 // SweepStuckHolds 释放超时仍 Active 的 hold（审查 H-1）。
@@ -697,7 +692,7 @@ func CheckDrift(db *gorm.DB) ([]AccountDrift, error) {
 func lockHold(tx *gorm.DB, id uint64) (*Hold, error) {
 	h := &Hold{}
 	q := tx
-	if tx.Dialector.Name() == "mysql" {
+	if tx.Dialector.Name() != "sqlite" {
 		q = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
 	if err := q.First(h, id).Error; err != nil {

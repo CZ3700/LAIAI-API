@@ -27,7 +27,7 @@ func PurgeRevokedKeyTx(tx *gorm.DB, orgID, keyID uint64, guard KeyPurgeReference
 	if _, ok := tx.Statement.ConnPool.(gorm.TxCommitter); !ok {
 		return ErrKeyInvalid
 	}
-	if tx.Dialector.Name() != "mysql" && tx.Dialector.Name() != "sqlite" {
+	if name := tx.Dialector.Name(); name != "postgres" && name != "mysql" && name != "sqlite" {
 		return ErrKeyInvalid
 	}
 	q := tx.Session(&gorm.Session{NewDB: true, Context: tx.Statement.Context, Logger: logger.Discard})

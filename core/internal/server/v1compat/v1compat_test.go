@@ -25,18 +25,9 @@ CREATE TABLE api_docs (
     category_id INTEGER DEFAULT NULL,
     is_preset INTEGER NOT NULL DEFAULT 0,
     default_expanded INTEGER NOT NULL DEFAULT 0,
+    translations_json TEXT NOT NULL DEFAULT '{}',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE api_docs_intl (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    doc_id INTEGER NOT NULL,
-    lang TEXT NOT NULL,
-    title TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (doc_id, lang)
 );
 CREATE TABLE billing_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

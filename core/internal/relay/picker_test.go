@@ -25,7 +25,12 @@ CREATE TABLE channels (
     suggest_disable_reason TEXT NOT NULL DEFAULT '', suggest_disabled_at DATETIME,
     status INTEGER NOT NULL DEFAULT 1,
     category_id INTEGER NOT NULL DEFAULT 0,
-    upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1
+    upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1,
+    config_cid TEXT NOT NULL DEFAULT '',
+    sub_channels_json TEXT NOT NULL DEFAULT '[]',
+    quota_limit_usd NUMERIC NOT NULL DEFAULT -1,
+    used_quota_usd NUMERIC NOT NULL DEFAULT 0,
+    remark TEXT NOT NULL DEFAULT ''
 );
 `
 

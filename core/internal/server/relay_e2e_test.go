@@ -42,10 +42,6 @@ CREATE TABLE ledger_accounts (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (org_id, type, shard)
 );
-CREATE TABLE ledger_account_shards (
-    org_id INTEGER NOT NULL, type TEXT NOT NULL, shard_count INTEGER NOT NULL DEFAULT 1,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (org_id, type)
-);
 CREATE TABLE ledger_journal (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     idempotency_key TEXT NOT NULL UNIQUE, account_id INTEGER NOT NULL,
@@ -78,7 +74,38 @@ CREATE TABLE channels (
     status INTEGER NOT NULL DEFAULT 1,
     category_id INTEGER NOT NULL DEFAULT 0,
     upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1,
+    config_cid TEXT NOT NULL DEFAULT '',
+    sub_channels_json TEXT NOT NULL DEFAULT '[]',
+    quota_limit_usd NUMERIC NOT NULL DEFAULT -1,
+    used_quota_usd NUMERIC NOT NULL DEFAULT 0,
+    remark TEXT NOT NULL DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE channel_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    provider_type TEXT NOT NULL DEFAULT '兼容',
+    base_url TEXT NOT NULL DEFAULT '',
+    api_key_enc TEXT NOT NULL DEFAULT '',
+    api_key_mask TEXT NOT NULL DEFAULT '••••••••',
+    remark TEXT NOT NULL DEFAULT '',
+    yid TEXT NOT NULL DEFAULT '',
+    category_id INTEGER,
+    category_ids_json TEXT NOT NULL DEFAULT '[]',
+    status INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    rate NUMERIC NOT NULL DEFAULT 1,
+    upstream_currency TEXT NOT NULL DEFAULT '',
+    currency_rate NUMERIC NOT NULL DEFAULT 0,
+    quota_limit NUMERIC NOT NULL DEFAULT -1,
+    daily_quota_limit NUMERIC NOT NULL DEFAULT -1,
+    weekly_quota_limit NUMERIC NOT NULL DEFAULT -1,
+    monthly_quota_limit NUMERIC NOT NULL DEFAULT -1,
+    daily_reset_hour INTEGER NOT NULL DEFAULT 0,
+    daily_reset_minute INTEGER NOT NULL DEFAULT 0,
+    daily_reset_cooldown_minutes INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE channel_credentials (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,21 +118,26 @@ CREATE TABLE tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id TEXT NOT NULL UNIQUE,
     org_id INTEGER NOT NULL, user_id INTEGER, api_key_id INTEGER NOT NULL,
-    model TEXT NOT NULL, channel_id INTEGER NOT NULL, provider TEXT NOT NULL,
-    status TEXT NOT NULL, fail_reason TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL, upstream_model TEXT NOT NULL DEFAULT '',
+    modality TEXT NOT NULL DEFAULT 'video', action TEXT NOT NULL DEFAULT 'generate',
+    channel_id INTEGER NOT NULL, provider TEXT NOT NULL,
+    status TEXT NOT NULL, progress INTEGER NOT NULL DEFAULT 0, fail_reason TEXT NOT NULL DEFAULT '',
     upstream_task_id TEXT NOT NULL DEFAULT '', result_url TEXT NOT NULL DEFAULT '',
     result_ref TEXT NOT NULL DEFAULT '',
     hold_id INTEGER NOT NULL, credential_id INTEGER NOT NULL DEFAULT 0,
     est_tokens INTEGER NOT NULL DEFAULT 0,
     actual_tokens INTEGER NOT NULL DEFAULT 0, cost_usd NUMERIC NOT NULL DEFAULT 0,
-    price_out_usd_per_1m NUMERIC NOT NULL,
+    upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1,
+    price_out_usd_per_1m NUMERIC NOT NULL DEFAULT 0,
     price_per_call_usd NUMERIC NOT NULL DEFAULT 0,
     hold_amount_usd NUMERIC NOT NULL DEFAULT 0, group_ratio NUMERIC NOT NULL DEFAULT 1,
     submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     started_at DATETIME, finished_at DATETIME,
     forward_rule_eid TEXT NOT NULL DEFAULT '', billing_rule_pid TEXT NOT NULL DEFAULT '',
-    features_json TEXT, time_multiplier NUMERIC NOT NULL DEFAULT 1,
+    features_json TEXT NOT NULL DEFAULT '{}', request_meta_json TEXT NOT NULL DEFAULT '{}',
+    time_multiplier NUMERIC NOT NULL DEFAULT 1,
     billing_detail TEXT NOT NULL DEFAULT '',
+    poll_attempts INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE topup_orders (
@@ -168,6 +200,19 @@ CREATE TABLE invocations (
     forward_rule_eid TEXT NOT NULL DEFAULT '', billing_rule_pid TEXT NOT NULL DEFAULT '',
     upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE usage_daily_stats (
+    stat_date TEXT NOT NULL,
+    org_id INTEGER NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    request_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd NUMERIC NOT NULL DEFAULT 0,
+    PRIMARY KEY (stat_date, org_id, model)
 );
 `
 

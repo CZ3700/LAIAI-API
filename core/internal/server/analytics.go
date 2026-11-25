@@ -159,8 +159,9 @@ func (s *Server) adminAnalytics(c *gin.Context) {
 		Cost  decimal.Decimal `json:"cost"`
 	}
 	var callRows []dayAgg
-	rdb.Raw(`SELECT DATE(created_at) AS day, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS cost
-	         FROM invocations WHERE created_at >= ? GROUP BY DATE(created_at) ORDER BY day`, sinceDate).Scan(&callRows)
+	dayExpr := sqlDateExpr(rdb, "created_at")
+	rdb.Raw(`SELECT `+dayExpr+` AS day, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS cost
+	         FROM invocations WHERE created_at >= ? GROUP BY `+dayExpr+` ORDER BY day`, sinceDate).Scan(&callRows)
 	callsByDay := map[string]dayAgg{}
 	for _, r := range callRows {
 		callsByDay[r.Day] = r
@@ -265,7 +266,7 @@ func (s *Server) adminChannelHealth(c *gin.Context) {
 		       COALESCE(SUM(CASE WHEN i.status <> 'success' AND i.created_at >= ? THEN 1 ELSE 0 END), 0) AS errors1h,
 		       COALESCE(AVG(i.duration_ms), 0) AS avg_latency_ms,
 		       COALESCE(AVG(i.frt_ms), 0) AS avg_frt_ms,
-		       COALESCE(MAX(i.created_at), '') AS last_active
+		       COALESCE(CAST(MAX(i.created_at) AS TEXT), '') AS last_active
 		FROM channels c
 		LEFT JOIN invocations i ON i.channel_id = c.id AND i.created_at >= ?
 		GROUP BY c.id, c.name, c.provider, c.status

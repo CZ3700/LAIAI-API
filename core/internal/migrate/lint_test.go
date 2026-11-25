@@ -57,8 +57,8 @@ func TestLintClassifies(t *testing.T) {
 	if len(byFile["0004_modify.sql"]) == 0 || byFile["0004_modify.sql"][0].Severity != "danger" {
 		t.Errorf("MODIFY COLUMN should be danger, got %v", byFile["0004_modify.sql"])
 	}
-	if len(byFile["0002_multi.sql"]) == 0 || byFile["0002_multi.sql"][0].Severity != "warn" {
-		t.Errorf("multi-ADD-COLUMN should be warn, got %v", byFile["0002_multi.sql"])
+	if len(byFile["0002_multi.sql"]) != 0 {
+		t.Errorf("PostgreSQL transactional multi-DDL should be clean, got %v", byFile["0002_multi.sql"])
 	}
 	if len(byFile["0001_create.sql"]) != 0 {
 		t.Errorf("single CREATE TABLE should be clean, got %v", byFile["0001_create.sql"])

@@ -120,7 +120,7 @@ func (s *AdminReadService) read(ctx context.Context, fn func(*gorm.DB) error) er
 	if _, ok := s.DB.Statement.ConnPool.(gorm.TxCommitter); ok {
 		return ErrUnavailable
 	}
-	if s.DB.Dialector == nil || (s.DB.Dialector.Name() != "mysql" && s.DB.Dialector.Name() != "sqlite") {
+	if s.DB.Dialector == nil || (s.DB.Dialector.Name() != "postgres" && s.DB.Dialector.Name() != "mysql" && s.DB.Dialector.Name() != "sqlite") {
 		return ErrUnavailable
 	}
 	ctx, cancel := context.WithTimeout(ctx, adminReadWindow)

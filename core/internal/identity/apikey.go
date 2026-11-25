@@ -60,6 +60,19 @@ func (k *APIKey) AllowsModel(model string) bool {
 	return LegacyModelAllowed(k.ModelLimits, model)
 }
 
+// LegacyModelAllowed preserves the legacy CSV predicate.
+func LegacyModelAllowed(modelLimits, model string) bool {
+	if strings.TrimSpace(modelLimits) == "" {
+		return true
+	}
+	for _, entry := range strings.Split(modelLimits, ",") {
+		if strings.TrimSpace(entry) == model {
+			return true
+		}
+	}
+	return false
+}
+
 // AllowsIP 返回调用方 IP 是否在白名单内（空=不限）。支持精确 IP 与 CIDR。
 func (k *APIKey) AllowsIP(ip string) bool {
 	if strings.TrimSpace(k.AllowIPs) == "" {

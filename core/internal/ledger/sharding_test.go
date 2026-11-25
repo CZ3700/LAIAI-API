@@ -8,7 +8,7 @@ import (
 
 func setShardCount(t *testing.T, db *gorm.DB, orgID uint64, typ string, n int) {
 	t.Helper()
-	if err := db.Create(&AccountShardConfig{OrgID: orgID, Type: typ, ShardCount: n}).Error; err != nil {
+	if err := db.Exec("INSERT OR REPLACE INTO organizations(id, credit_shards) VALUES(?, ?)", orgID, n).Error; err != nil {
 		t.Fatalf("set shard count: %v", err)
 	}
 }
@@ -221,6 +221,9 @@ func TestRebalanceRespectsHeld(t *testing.T) {
 // SetShardConfig(upsert) + ListShardedOrgs + RebalanceAllShardedOrgs 串通。
 func TestSetShardConfigAndRebalanceAll(t *testing.T) {
 	db := setupDB(t)
+	if err := db.Exec("INSERT INTO organizations(id, credit_shards) VALUES(7, 1)").Error; err != nil {
+		t.Fatalf("seed org 7: %v", err)
+	}
 	if err := SetShardConfig(db, 7, AccountUserCredit, 2); err != nil {
 		t.Fatalf("set shard config: %v", err)
 	}

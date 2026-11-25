@@ -21,6 +21,11 @@ CREATE TABLE organizations (
     group_name TEXT NOT NULL DEFAULT 'default', aff_code TEXT, inviter_org_id INTEGER NOT NULL DEFAULT 0,
     status INTEGER NOT NULL DEFAULT 1,
     low_balance_alert_usd NUMERIC NOT NULL DEFAULT 0, low_balance_alerted_at DATETIME,
+    feature_images BOOLEAN NOT NULL DEFAULT 1, feature_video BOOLEAN NOT NULL DEFAULT 1,
+    max_members INTEGER NOT NULL DEFAULT 0, max_api_keys INTEGER NOT NULL DEFAULT 0,
+    credit_shards INTEGER NOT NULL DEFAULT 1,
+    notify_email_enabled BOOLEAN NOT NULL DEFAULT 0, notify_webhook_url TEXT NOT NULL DEFAULT '',
+    notify_webhook_secret_enc TEXT NOT NULL DEFAULT '', notify_events TEXT NOT NULL DEFAULT '[]',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -32,6 +37,7 @@ CREATE TABLE users (
     password_hash TEXT NOT NULL DEFAULT '',
     display_name TEXT NOT NULL DEFAULT '',
     totp_secret_enc TEXT NOT NULL DEFAULT '', totp_enabled INTEGER NOT NULL DEFAULT 0,
+    totp_backup_codes_json TEXT NOT NULL DEFAULT '[]',
     status INTEGER NOT NULL DEFAULT 1,
     role TEXT NOT NULL DEFAULT 'user', admin_remark TEXT NOT NULL DEFAULT '',
     email_verified INTEGER NOT NULL DEFAULT 0,
@@ -68,18 +74,6 @@ CREATE TABLE routing_policy_events (
     event_kind TEXT NOT NULL, org_id INTEGER, group_id INTEGER, channel_id INTEGER, key_id INTEGER,
     actor_user_id INTEGER NOT NULL, request_id TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL,
     UNIQUE(aggregate_type,aggregate_id,aggregate_version)
-);
-CREATE TABLE org_entitlements (
-    org_id INTEGER PRIMARY KEY,
-    feature_images INTEGER NOT NULL DEFAULT 1, feature_video INTEGER NOT NULL DEFAULT 1,
-    max_members INTEGER NOT NULL DEFAULT 0, max_api_keys INTEGER NOT NULL DEFAULT 0,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE twofa_backup_codes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL, code_hash TEXT NOT NULL,
-    used_at INTEGER, created_at INTEGER NOT NULL,
-    UNIQUE (user_id, code_hash)
 );
 `
 

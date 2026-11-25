@@ -155,6 +155,32 @@ func (s *Service) HandleGet(c *gin.Context) {
 	c.JSON(http.StatusOK, t)
 }
 
+// HandleCancel handles DELETE /v1/video/generations/:id to cancel queued or running tasks.
+func (s *Service) HandleCancel(c *gin.Context) {
+	key, ok := s.authKey(c)
+	if !ok {
+		return
+	}
+	if !key.AllowsIP(c.ClientIP()) {
+		taskErr(c, http.StatusForbidden, "this api key is not allowed from your ip address")
+		return
+	}
+	t, err := s.CancelTask(c.Request.Context(), key.OrgID, c.Param("id"), false)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			taskErr(c, http.StatusNotFound, "task not found")
+			return
+		}
+		if errors.Is(err, ErrTaskNotCancellable) {
+			taskErr(c, http.StatusConflict, "task cannot be cancelled in current state")
+			return
+		}
+		taskErr(c, http.StatusInternalServerError, "task cancel failed")
+		return
+	}
+	c.JSON(http.StatusOK, t)
+}
+
 // HandleContent：GET /v1/video/generations/:id/content —— 产物代理下发（§3.8 批次 4）。
 // sora 的产物是上游二进制流、veo 的产物 URI 带渠道 key（直接吐给用户=泄露凭证），
 // 平台用任务钉住的渠道凭证实时取流转发。鉴权/org 隔离与 HandleGet 同款；产物下发不额外计费。

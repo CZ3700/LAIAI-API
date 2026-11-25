@@ -38,8 +38,6 @@ func (f LintFinding) String() string {
 
 var (
 	reDestructive = regexp.MustCompile(`(?i)(\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bTRUNCATE\b|\bMODIFY\s+COLUMN\b|\bCHANGE\s+COLUMN\b|\bRENAME\s+TABLE\b|\bRENAME\s+COLUMN\b|\bALTER\s+TABLE\s+\S+\s+DROP\b)`)
-	reDDL         = regexp.MustCompile(`(?i)^(CREATE\s+TABLE|ALTER\s+TABLE|CREATE\s+(UNIQUE\s+)?INDEX|DROP\s+INDEX|CREATE\s+VIEW|DROP\s+VIEW)\b`)
-	reAddColumn   = regexp.MustCompile(`(?i)\bALTER\s+TABLE\b.*\bADD\s+COLUMN\b`)
 	// 显式确认标记：迁移文件含 `-- migrate:ack-destructive <理由>` 时，其破坏性 DDL 降级为
 	// "acknowledged"（已人工 runbook 评审），不再 fail CI gate。用于必要的破坏性变更（如分片改唯一键），
 	// 杜绝意外破坏性 DDL 漏网——必须有意识写入标记 + 留理由。
@@ -64,7 +62,6 @@ func Lint(fsys fs.FS) ([]LintFinding, error) {
 		}
 		stmts := splitStatements(string(raw))
 		acked := reAckDestructive.Match(raw) // 文件级显式确认标记
-		ddlCount, addColCount := 0, 0
 		for i, s := range stmts {
 			if reDestructive.MatchString(s) {
 				sev, detail := "danger", "破坏性/类型变更 DDL，须先备份 + 人工 runbook 确认"
@@ -75,19 +72,6 @@ func Lint(fsys fs.FS) ([]LintFinding, error) {
 					File: f, Stmt: i + 1, Severity: sev, Rule: "destructive-ddl", Detail: detail,
 				})
 			}
-			if reDDL.MatchString(s) {
-				ddlCount++
-			}
-			if reAddColumn.MatchString(s) {
-				addColCount++
-			}
-		}
-		if ddlCount > 1 {
-			detail := fmt.Sprintf("单文件 %d 条 DDL；MySQL 下 DDL 隐式提交、非原子，中途失败留半截 schema、re-run 撞已存在", ddlCount)
-			if addColCount > 1 {
-				detail += "；多条 ADD COLUMN 建议合并为单条 ALTER TABLE … ADD …, ADD …（一次原子 DDL）"
-			}
-			out = append(out, LintFinding{File: f, Severity: "warn", Rule: "multi-ddl-non-atomic", Detail: detail})
 		}
 	}
 	return out, nil

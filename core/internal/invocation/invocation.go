@@ -169,6 +169,8 @@ func (r *Recorder) worker() {
 		}
 		if err := r.db.CreateInBatches(batch, batchSize).Error; err != nil {
 			r.log.Error("invocation batch insert failed", "count", len(batch), "err", err)
+		} else if err := UpsertDailyStats(r.db, batch); err != nil && !isMissingDailyStatsTable(err) {
+			r.log.Warn("invocation daily stats rollup failed", "count", len(batch), "err", err)
 		}
 		batch = batch[:0]
 	}

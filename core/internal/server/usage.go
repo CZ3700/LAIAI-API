@@ -240,14 +240,10 @@ func (s *Server) getUsageSummary(c *gin.Context) {
 		days = 14
 	}
 	gran := c.DefaultQuery("granularity", "day")
-	bucket := "DATE(created_at)"
+	bucket := sqlDateExpr(s.readOnly(), "created_at")
 	var since string
 	if gran == "hour" {
-		if s.readOnly().Dialector.Name() == "mysql" {
-			bucket = "DATE_FORMAT(created_at, '%Y-%m-%d %H:00')"
-		} else { // sqlite（测试内存库）
-			bucket = "strftime('%Y-%m-%d %H:00', created_at)"
-		}
+		bucket = sqlHourExpr(s.readOnly(), "created_at")
 		since = s.now().UTC().Add(-24 * time.Hour).Format("2006-01-02 15:04:05")
 	} else {
 		gran = "day" // 未知值静默回落（与 days 越界钳制同风格）

@@ -1,3 +1,0 @@
-# Evidence SHA-256 covers original clipboard/export bytes, including line endings.
-# Terminal tabs are empty source cells, not formatting whitespace to remove.
-*.tsv -text whitespace=-blank-at-eol,cr-at-eol

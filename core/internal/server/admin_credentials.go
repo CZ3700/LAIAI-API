@@ -145,7 +145,7 @@ func (s *Server) adminDeleteChannelKey(c *gin.Context) {
 		// 锁渠道行串行化同渠道的并发 key 变更（对抗 review：非锁读的 count-then-delete 可让
 		// 两个并发删除都通过"至少剩 1 把"检查、把最后两把都删空）。SQLite 单连接天然串行。
 		lockTx := tx
-		if tx.Dialector.Name() == "mysql" {
+		if tx.Dialector.Name() != "sqlite" {
 			lockTx = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 		}
 		var ch relay.Channel

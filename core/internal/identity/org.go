@@ -228,7 +228,7 @@ func AcceptInvitation(tx *gorm.DB, invID, userID uint64) (*OrgInvitation, error)
 	// 串行化并发 accept（堵 max_members TOCTOU 超员，对抗评审 MEDIUM）：先行锁该 org 行
 	// （MySQL FOR UPDATE）。两个被邀请人同时 accept 接近满员的团队时，第二个会等第一个提交后再
 	// COUNT → 看到已更新计数，上限严格生效。SQLite（测试，单连接串行写）不支持也无需，故按方言跳过。
-	if tx.Dialector.Name() == "mysql" {
+	if tx.Dialector.Name() != "sqlite" {
 		var locked Organization
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ?", inv.OrgID).First(&locked).Error; err != nil {

@@ -40,7 +40,7 @@ func (s *Server) PurgeNotifyOutbox(ctx context.Context) (int64, error) {
 func (s *Server) getNotifySettings(c *gin.Context) {
 	claims := mustClaims(c)
 	st := &notify.Settings{}
-	if err := s.db.Where("org_id = ?", claims.OrgID).First(st).Error; err != nil {
+	if err := s.db.Where("id = ?", claims.OrgID).First(st).Error; err != nil {
 		// 未配置：返回空默认（前端渲染空表单）
 		c.JSON(http.StatusOK, gin.H{
 			"email_enabled": false, "webhook_url": "", "webhook_configured": false, "events": []string{},
@@ -94,7 +94,7 @@ func (s *Server) putNotifySettings(c *gin.Context) {
 
 	// 载入原行（保留未变更的加密密钥）
 	st := &notify.Settings{OrgID: claims.OrgID}
-	_ = s.db.Where("org_id = ?", claims.OrgID).First(st).Error
+	_ = s.db.Where("id = ?", claims.OrgID).First(st).Error
 
 	// webhook URL：非空则**强制 https**（对抗 review：复用的 advanced_custom 校验器放行 http，
 	// 但出站 webhook 红线要求 https——事件信封+签名绝不明文 HTTP 传）+ SSRF 校验（绝不放行私网）。
@@ -132,17 +132,17 @@ func (s *Server) putNotifySettings(c *gin.Context) {
 		return
 	}
 
-	row := &notify.Settings{
-		OrgID: claims.OrgID, EmailEnabled: req.EmailEnabled,
-		WebhookURL: req.WebhookURL, WebhookSecretEnc: secretEnc, Events: string(eventsJSON),
-	}
-	// upsert（主键 org_id）：save 全列覆盖
-	if err := s.db.Save(row).Error; err != nil {
+	if err := s.db.Model(&identity.Organization{}).Where("id = ?", claims.OrgID).Updates(map[string]any{
+		"notify_email_enabled":      req.EmailEnabled,
+		"notify_webhook_url":        req.WebhookURL,
+		"notify_webhook_secret_enc": secretEnc,
+		"notify_events":             string(eventsJSON),
+	}).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "save failed")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"email_enabled": row.EmailEnabled, "webhook_url": row.WebhookURL,
+		"email_enabled": req.EmailEnabled, "webhook_url": req.WebhookURL,
 		"webhook_configured": secretEnc != "", "events": events,
 	})
 }

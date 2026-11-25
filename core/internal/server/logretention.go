@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/invocation"
+	"github.com/laiai/laiai-next/core/internal/task"
 	"gorm.io/gorm"
 )
 
@@ -15,32 +16,25 @@ import (
 // 运营据此判断清理影响：各表总行数 + 最旧记录时间 + 当前生效保留期。空表 oldest 为 null。
 func (s *Server) adminLogStats(c *gin.Context) {
 	rdb := s.db.WithContext(c.Request.Context())
-	var invTotal, auditTotal int64
+	var invTotal, auditTotal, taskTotal int64
 	rdb.Model(&invocation.Invocation{}).Count(&invTotal)
 	rdb.Model(&AuditLog{}).Count(&auditTotal)
-	var reqTotal, ctxTotal, evtTotal, attTotal, obxTotal, aseTotal int64
-	rdb.Table("api_request_logs").Count(&reqTotal)
-	rdb.Table("video_request_contexts").Count(&ctxTotal)
-	rdb.Table("video_events").Count(&evtTotal)
-	rdb.Table("video_attempts").Count(&attTotal)
-	rdb.Table("video_outbox").Count(&obxTotal)
-	rdb.Table("video_asset_events").Count(&aseTotal)
+	rdb.Model(&task.Task{}).Count(&taskTotal)
 
-	var invOldest *string // invocations.created_at 是 DATETIME（字符串口径）
-	rdb.Model(&invocation.Invocation{}).Select("MIN(created_at)").Scan(&invOldest)
+	var invOldest *string
+	rdb.Model(&invocation.Invocation{}).Select("CAST(MIN(created_at) AS TEXT)").Scan(&invOldest)
 	var auditOldestMs *int64 // audit_logs.created_at 是 unix 毫秒
 	rdb.Model(&AuditLog{}).Select("MIN(created_at)").Scan(&auditOldestMs)
 
 	c.JSON(http.StatusOK, gin.H{
 		"invocations":    gin.H{"total": invTotal, "oldest_at": invOldest},
 		"audit_logs":     gin.H{"total": auditTotal, "oldest_at_ms": auditOldestMs},
-		"request_logs":   gin.H{"total": reqTotal, "contexts": ctxTotal},
-		"task_lifecycle": gin.H{"video_events": evtTotal, "video_attempts": attTotal, "video_outbox": obxTotal, "video_asset_events": aseTotal},
+		"request_logs":   gin.H{"total": invTotal, "contexts": 0},
+		"task_lifecycle": gin.H{"tasks": taskTotal},
 		"retention": gin.H{ // 当前生效保留期（已并入 env 回退），前端展示「清理将影响…」
-			"log_retention_days":         s.retentionDaysSetting("log_retention_days", s.invRetentionDefault),
-			"audit_log_retention_days":   s.retentionDaysSetting("audit_log_retention_days", 0),
-			"request_log_retention_days": s.retentionDaysSetting("request_log_retention_days", 14),
-			"task_log_retention_days":    s.retentionDaysSetting("task_log_retention_days", 30),
+			"log_retention_days":       s.retentionDaysSetting("log_retention_days", s.invRetentionDefault),
+			"audit_log_retention_days": s.retentionDaysSetting("audit_log_retention_days", 0),
+			"task_log_retention_days":  s.retentionDaysSetting("task_log_retention_days", 30),
 		},
 	})
 }
@@ -78,38 +72,16 @@ func (s *Server) RunLogRetention(ctx context.Context) (invDeleted, auditDeleted 
 			return invDeleted, auditDeleted, err
 		}
 	}
-	// —— 控制台访问日志（0138/0139：素材 GET 2xx 已不落库，存量按期清理）——
-	if d := s.retentionDaysSetting("request_log_retention_days", 14); d > 0 {
-		cutoff := s.now().UTC().AddDate(0, 0, -d)
-		for _, spec := range [][4]string{
-			{"api_request_logs", "request_id", "started_at", ""},
-			{"video_request_contexts", "request_id", "created_at", ""},
-		} {
-			n, err := purgeRowsOlderThan(s.db.WithContext(ctx), spec[0], spec[1], spec[2], cutoff, 1000, spec[3])
-			if err != nil {
-				return invDeleted, auditDeleted, err
-			}
-			if n > 0 {
-				s.Log().Info("log retention purged", "table", spec[0], "rows", n)
-			}
-		}
-	}
-	// —— 任务生命周期日志（默认 30 天；outbox 只删已 processed 的行）——
+	// 终态 task 行按任务日志保留期清理（仅清理已结束任务）。
 	if d := s.retentionDaysSetting("task_log_retention_days", 30); d > 0 {
 		cutoff := s.now().UTC().AddDate(0, 0, -d)
-		for _, spec := range [][4]string{
-			{"video_events", "id", "created_at", ""},
-			{"video_attempts", "id", "observed_at", ""},
-			{"video_outbox", "event_id", "created_at", "processed"},
-			{"video_asset_events", "event_id", "created_at", ""},
-			{"video_callback_hints", "id", "received_at", ""},
-		} {
-			n, err := purgeRowsOlderThan(s.db.WithContext(ctx), spec[0], spec[1], spec[2], cutoff, 1000, spec[3])
+		for _, status := range []string{task.StatusSucceeded, task.StatusFailed, task.StatusCancelled} {
+			n, err := purgeRowsOlderThan(s.db.WithContext(ctx), "tasks", "id", "finished_at", cutoff, 1000, status)
 			if err != nil {
 				return invDeleted, auditDeleted, err
 			}
 			if n > 0 {
-				s.Log().Info("log retention purged", "table", spec[0], "rows", n)
+				s.Log().Info("log retention purged", "table", "tasks", "status", status, "rows", n)
 			}
 		}
 	}

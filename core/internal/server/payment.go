@@ -342,25 +342,7 @@ func (s *Server) creditPaidOrder(provider, orderNo, tradeNo string, paidAmount d
 			"status": topupPaid, "trade_no": tradeNo, "paid_at": s.now().Unix(),
 		}).Error
 	}
-	if ledger.ActivityTrackingEnabled(s.db) {
-		// The hint supplies only the intent's organization and requested USD.
-		// Eligibility, actual amount and deduplication are rechecked under lock.
-		var hint TopupOrder
-		if e := s.db.Where("order_no = ?", orderNo).Take(&hint).Error; e != nil {
-			return false, fmt.Errorf("order not found: %s", orderNo)
-		}
-		var attempt [16]byte
-		if _, e := rand.Read(attempt[:]); e != nil {
-			return false, e
-		}
-		_, err = ledger.RunOperation(s.db, ledger.OperationIntent{
-			OrgID: hint.OrgID, IdempotencyKey: "topup-attempt:" + hex.EncodeToString(attempt[:]),
-			Type: "topup", Direction: "credit", RequestedAmount: hint.AmountUSD,
-			RefType: "topup", RefID: orderNo,
-		}, applyCredit)
-	} else {
-		err = s.db.Transaction(applyCredit)
-	}
+	err = s.db.Transaction(applyCredit)
 	return already, err
 }
 

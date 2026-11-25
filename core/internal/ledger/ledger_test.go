@@ -26,12 +26,9 @@ CREATE TABLE ledger_accounts (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (org_id, type, shard)
 );
-CREATE TABLE ledger_account_shards (
-    org_id INTEGER NOT NULL,
-    type TEXT NOT NULL,
-    shard_count INTEGER NOT NULL DEFAULT 1,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (org_id, type)
+CREATE TABLE organizations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    credit_shards INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE ledger_journal (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

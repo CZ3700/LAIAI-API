@@ -16,14 +16,12 @@ import (
 func groupedRelayFixture(t *testing.T) (*Relay, *gorm.DB, *identity.APIKey, []Channel, uint64, uint64) {
 	t.Helper()
 	db := pickerDB(t)
-	if err := db.Exec(`CREATE TABLE organizations(id INTEGER PRIMARY KEY,status INTEGER NOT NULL);
+	if err := db.Exec(`CREATE TABLE organizations(id INTEGER PRIMARY KEY,status INTEGER NOT NULL,feature_images INTEGER NOT NULL DEFAULT 1,feature_video INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE api_keys(id INTEGER PRIMARY KEY,org_id INTEGER NOT NULL,user_id INTEGER,status INTEGER NOT NULL,expires_at DATETIME,model_access_mode TEXT NOT NULL,routing_group_id INTEGER,policy_version INTEGER NOT NULL,model_limits TEXT NOT NULL,scopes TEXT NOT NULL);
-CREATE TABLE org_entitlements(org_id INTEGER PRIMARY KEY,feature_images INTEGER NOT NULL,feature_video INTEGER NOT NULL);
 CREATE TABLE routing_groups(id INTEGER PRIMARY KEY,owner_org_id INTEGER NOT NULL,status TEXT NOT NULL,policy_version INTEGER NOT NULL);
 CREATE TABLE org_group_grants(id INTEGER PRIMARY KEY,org_id INTEGER NOT NULL,group_id INTEGER NOT NULL,status TEXT NOT NULL,grant_version INTEGER NOT NULL);
 CREATE TABLE channel_group_bindings(group_id INTEGER NOT NULL,channel_id INTEGER NOT NULL,PRIMARY KEY(group_id,channel_id));
-INSERT INTO organizations VALUES(1,1);
-INSERT INTO org_entitlements VALUES(1,1,1);
+INSERT INTO organizations VALUES(1,1,1,1);
 INSERT INTO routing_groups VALUES(7,0,'enabled',1);
 INSERT INTO org_group_grants VALUES(9,1,7,'enabled',1);
 INSERT INTO api_keys VALUES(11,1,NULL,1,NULL,'inherit_group',7,1,'','video:read video:write');`).Error; err != nil {

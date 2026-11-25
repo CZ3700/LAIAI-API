@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -16,11 +17,11 @@ import (
 	"github.com/laiai/laiai-next/core/internal/pricing"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 const (
-	v1SettingChannelConfigs   = "v1_channel_configs_json"
 	v1SettingChannelProviders = "v1_channel_config_providers_json"
 	v1SettingChannelMeta      = "v1_channel_meta_json"
 )
@@ -555,42 +556,99 @@ func mapTkeProviderToRelay(p string) string {
 	}
 }
 
-func (s *Server) loadV1ChannelConfigs() []v1ChannelConfig {
-	raw := s.getSetting(v1SettingChannelConfigs)
-	if strings.TrimSpace(raw) == "" {
-		return []v1ChannelConfig{}
-	}
-	var list []v1ChannelConfig
-	if err := json.Unmarshal([]byte(raw), &list); err != nil {
-		return []v1ChannelConfig{}
-	}
-	return list
+type channelConfigRow struct {
+	ID                        uint64    `gorm:"primaryKey;autoIncrement"`
+	Name                      string    `gorm:"column:name"`
+	ProviderType              string    `gorm:"column:provider_type"`
+	BaseURL                   string    `gorm:"column:base_url"`
+	APIKeyEnc                 string    `gorm:"column:api_key_enc"`
+	APIKeyMask                string    `gorm:"column:api_key_mask"`
+	Remark                    string    `gorm:"column:remark"`
+	YID                       string    `gorm:"column:yid"`
+	CategoryID                *uint64   `gorm:"column:category_id"`
+	CategoryIDsJSON           string    `gorm:"column:category_ids_json"`
+	Status                    int8      `gorm:"column:status"`
+	SortOrder                 int       `gorm:"column:sort_order"`
+	Rate                      float64   `gorm:"column:rate"`
+	UpstreamCurrency          string    `gorm:"column:upstream_currency"`
+	CurrencyRate              float64   `gorm:"column:currency_rate"`
+	QuotaLimit                float64   `gorm:"column:quota_limit"`
+	DailyQuotaLimit           float64   `gorm:"column:daily_quota_limit"`
+	WeeklyQuotaLimit          float64   `gorm:"column:weekly_quota_limit"`
+	MonthlyQuotaLimit         float64   `gorm:"column:monthly_quota_limit"`
+	DailyResetHour            int       `gorm:"column:daily_reset_hour"`
+	DailyResetMinute          int       `gorm:"column:daily_reset_minute"`
+	DailyResetCooldownMinutes int       `gorm:"column:daily_reset_cooldown_minutes"`
+	CreatedAt                 time.Time `gorm:"column:created_at"`
+	UpdatedAt                 time.Time `gorm:"column:updated_at"`
 }
 
-func (s *Server) saveV1ChannelConfigs(list []v1ChannelConfig) error {
-	b, err := json.Marshal(list)
-	if err != nil {
-		return err
+func (channelConfigRow) TableName() string { return "channel_configs" }
+
+func (r channelConfigRow) toV1() v1ChannelConfig {
+	var catIDs []uint64
+	if strings.TrimSpace(r.CategoryIDsJSON) != "" {
+		_ = json.Unmarshal([]byte(r.CategoryIDsJSON), &catIDs)
 	}
-	return s.upsertRawSetting(v1SettingChannelConfigs, string(b))
+	mask := r.APIKeyMask
+	if mask == "" {
+		mask = "••••••••"
+	}
+	return v1ChannelConfig{
+		ID:                        r.ID,
+		Name:                      r.Name,
+		ProviderType:              r.ProviderType,
+		BaseURL:                   r.BaseURL,
+		APIKeyEnc:                 r.APIKeyEnc,
+		APIKeyMask:                mask,
+		Remark:                    r.Remark,
+		YID:                       cmp.Or(r.YID, "Y"+strconv.FormatUint(1000+r.ID, 10)),
+		CategoryID:                r.CategoryID,
+		CategoryIDs:               catIDs,
+		Status:                    r.Status,
+		SortOrder:                 r.SortOrder,
+		Rate:                      r.Rate,
+		UpstreamCurrency:          r.UpstreamCurrency,
+		CurrencyRate:              r.CurrencyRate,
+		QuotaLimit:                r.QuotaLimit,
+		DailyQuotaLimit:           r.DailyQuotaLimit,
+		WeeklyQuotaLimit:          r.WeeklyQuotaLimit,
+		MonthlyQuotaLimit:         r.MonthlyQuotaLimit,
+		DailyResetHour:            r.DailyResetHour,
+		DailyResetMinute:          r.DailyResetMinute,
+		DailyResetCooldownMinutes: r.DailyResetCooldownMinutes,
+		CreatedAt:                 r.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:                 r.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func (s *Server) loadV1ChannelConfigs() []v1ChannelConfig {
+	var rows []channelConfigRow
+	if err := s.db.Order("sort_order ASC, id DESC").Find(&rows).Error; err != nil {
+		return []v1ChannelConfig{}
+	}
+	out := make([]v1ChannelConfig, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.toV1())
+	}
+	return out
 }
 
 func (s *Server) findV1ChannelConfig(id uint64) (v1ChannelConfig, bool) {
-	for _, cfg := range s.loadV1ChannelConfigs() {
-		if cfg.ID == id {
-			return cfg, true
-		}
+	if id == 0 {
+		return v1ChannelConfig{}, false
 	}
-	return v1ChannelConfig{}, false
+	var row channelConfigRow
+	if err := s.db.First(&row, id).Error; err != nil {
+		return v1ChannelConfig{}, false
+	}
+	return row.toV1(), true
 }
 
 func (s *Server) v1ListChannelConfigs(c *gin.Context) {
 	list := s.loadV1ChannelConfigs()
 	for i := range list {
 		list[i].APIKeyEnc = ""
-		if list[i].APIKeyMask == "" {
-			list[i].APIKeyMask = "••••••••"
-		}
 	}
 	c.JSON(http.StatusOK, gin.H{"data": list})
 }
@@ -622,20 +680,19 @@ func (s *Server) v1CreateChannelConfig(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "name is required")
 		return
 	}
-	list := s.loadV1ChannelConfigs()
-	var maxID uint64
-	for _, it := range list {
-		if it.ID > maxID {
-			maxID = it.ID
-		}
-	}
 	enc := ""
 	if k := strings.TrimSpace(req.APIKey); k != "" && s.keyring != nil {
 		if ciph, err := s.keyring.Encrypt(k); err == nil {
 			enc = ciph
 		}
 	}
-	now := s.now().UTC().Format(time.RFC3339)
+	catIDsJSON := "[]"
+	if len(req.CategoryIDs) > 0 {
+		if b, err := json.Marshal(req.CategoryIDs); err == nil {
+			catIDsJSON = string(b)
+		}
+	}
+	now := s.now().UTC()
 	status := int8(1)
 	if req.Status != nil {
 		status = *req.Status
@@ -644,18 +701,16 @@ func (s *Server) v1CreateChannelConfig(c *gin.Context) {
 	if rate <= 0 {
 		rate = 1
 	}
-	id := maxID + 1
-	item := v1ChannelConfig{
-		ID:                        id,
+	row := channelConfigRow{
 		Name:                      strings.TrimSpace(req.Name),
 		ProviderType:              cmp.Or(strings.TrimSpace(req.ProviderType), "兼容"),
 		BaseURL:                   strings.TrimSpace(req.BaseURL),
 		APIKeyEnc:                 enc,
 		APIKeyMask:                "••••••••",
 		Remark:                    req.Remark,
-		YID:                       cmp.Or(strings.TrimSpace(req.YID), "Y"+strconv.FormatUint(1000+id, 10)),
+		YID:                       strings.TrimSpace(req.YID),
 		CategoryID:                req.CategoryID,
-		CategoryIDs:               req.CategoryIDs,
+		CategoryIDsJSON:           catIDsJSON,
 		Status:                    status,
 		SortOrder:                 req.SortOrder,
 		Rate:                      rate,
@@ -671,11 +726,16 @@ func (s *Server) v1CreateChannelConfig(c *gin.Context) {
 		CreatedAt:                 now,
 		UpdatedAt:                 now,
 	}
-	list = append([]v1ChannelConfig{item}, list...)
-	if err := s.saveV1ChannelConfigs(list); err != nil {
+	ctx := c.Request.Context()
+	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "save channel config failed")
 		return
 	}
+	if row.YID == "" {
+		row.YID = "Y" + strconv.FormatUint(1000+row.ID, 10)
+		_ = s.db.WithContext(ctx).Model(&row).Update("yid", row.YID).Error
+	}
+	item := row.toV1()
 	item.APIKeyEnc = ""
 	c.JSON(http.StatusCreated, gin.H{"data": item})
 }
@@ -690,45 +750,57 @@ func (s *Server) v1UpdateChannelConfig(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	list := s.loadV1ChannelConfigs()
-	for i := range list {
-		if list[i].ID != id {
-			continue
+	ctx := c.Request.Context()
+	var row channelConfigRow
+	if err := s.db.WithContext(ctx).First(&row, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			fail(c, http.StatusNotFound, "channel config not found")
+			return
 		}
-		if v, ok := req["name"].(string); ok && strings.TrimSpace(v) != "" {
-			list[i].Name = strings.TrimSpace(v)
-		}
-		if v, ok := req["provider_type"].(string); ok {
-			list[i].ProviderType = v
-		}
-		if v, ok := req["base_url"].(string); ok {
-			list[i].BaseURL = strings.TrimSpace(v)
-		}
-		if v, ok := req["api_key"].(string); ok && strings.TrimSpace(v) != "" && !strings.HasPrefix(v, "••••") && s.keyring != nil {
-			if ciph, err := s.keyring.Encrypt(strings.TrimSpace(v)); err == nil {
-				list[i].APIKeyEnc = ciph
-			}
-		}
-		if v, ok := req["remark"].(string); ok {
-			list[i].Remark = v
-		}
-		if v, ok := req["rate"].(float64); ok && v > 0 {
-			list[i].Rate = v
-		}
-		if v, ok := req["status"].(float64); ok {
-			list[i].Status = int8(v)
-		}
-		if v, ok := req["sort_order"].(float64); ok {
-			list[i].SortOrder = int(v)
-		}
-		list[i].UpdatedAt = s.now().UTC().Format(time.RFC3339)
-		_ = s.saveV1ChannelConfigs(list)
-		out := list[i]
-		out.APIKeyEnc = ""
-		c.JSON(http.StatusOK, gin.H{"data": out})
+		fail(c, http.StatusInternalServerError, "load channel config failed")
 		return
 	}
-	fail(c, http.StatusNotFound, "channel config not found")
+	updates := map[string]any{"updated_at": s.now().UTC()}
+	if v, ok := req["name"].(string); ok && strings.TrimSpace(v) != "" {
+		updates["name"] = strings.TrimSpace(v)
+	}
+	if v, ok := req["provider_type"].(string); ok {
+		updates["provider_type"] = v
+	}
+	if v, ok := req["base_url"].(string); ok {
+		updates["base_url"] = strings.TrimSpace(v)
+	}
+	if v, ok := req["api_key"].(string); ok && strings.TrimSpace(v) != "" && !strings.HasPrefix(v, "••••") && s.keyring != nil {
+		if ciph, err := s.keyring.Encrypt(strings.TrimSpace(v)); err == nil {
+			updates["api_key_enc"] = ciph
+		}
+	}
+	if v, ok := req["remark"].(string); ok {
+		updates["remark"] = v
+	}
+	if v, ok := req["rate"].(float64); ok && v > 0 {
+		updates["rate"] = v
+	}
+	if v, ok := req["status"].(float64); ok {
+		updates["status"] = int8(v)
+	}
+	if v, ok := req["sort_order"].(float64); ok {
+		updates["sort_order"] = int(v)
+	}
+	if v, ok := req["upstream_currency"].(string); ok {
+		updates["upstream_currency"] = v
+	}
+	if v, ok := req["currency_rate"].(float64); ok {
+		updates["currency_rate"] = v
+	}
+	if err := s.db.WithContext(ctx).Model(&row).Updates(updates).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "update channel config failed")
+		return
+	}
+	_ = s.db.WithContext(ctx).First(&row, id).Error
+	out := row.toV1()
+	out.APIKeyEnc = ""
+	c.JSON(http.StatusOK, gin.H{"data": out})
 }
 
 func (s *Server) v1DeleteChannelConfig(c *gin.Context) {
@@ -736,13 +808,15 @@ func (s *Server) v1DeleteChannelConfig(c *gin.Context) {
 	if !ok {
 		return
 	}
-	list := s.loadV1ChannelConfigs()
-	filtered := slices.DeleteFunc(list, func(it v1ChannelConfig) bool { return it.ID == id })
-	if len(filtered) == len(list) {
+	res := s.db.WithContext(c.Request.Context()).Delete(&channelConfigRow{}, id)
+	if res.Error != nil {
+		fail(c, http.StatusInternalServerError, "delete channel config failed")
+		return
+	}
+	if res.RowsAffected == 0 {
 		fail(c, http.StatusNotFound, "channel config not found")
 		return
 	}
-	_ = s.saveV1ChannelConfigs(filtered)
 	c.JSON(http.StatusOK, gin.H{"deleted": id})
 }
 
@@ -755,29 +829,32 @@ func (s *Server) v1CopyChannelConfig(c *gin.Context) {
 		Name string `json:"name"`
 	}
 	_ = c.ShouldBindJSON(&req)
-	list := s.loadV1ChannelConfigs()
-	var maxID uint64
-	var src *v1ChannelConfig
-	for i := range list {
-		if list[i].ID > maxID {
-			maxID = list[i].ID
+	ctx := c.Request.Context()
+	var src channelConfigRow
+	if err := s.db.WithContext(ctx).First(&src, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			fail(c, http.StatusNotFound, "channel config not found")
+			return
 		}
-		if list[i].ID == id {
-			src = &list[i]
-		}
-	}
-	if src == nil {
-		fail(c, http.StatusNotFound, "channel config not found")
+		fail(c, http.StatusInternalServerError, "load channel config failed")
 		return
 	}
-	copyItem := *src
-	copyItem.ID = maxID + 1
-	copyItem.Name = cmp.Or(strings.TrimSpace(req.Name), src.Name+" (副本)")
-	copyItem.YID = "Y" + strconv.FormatUint(1000+copyItem.ID, 10)
-	list = append([]v1ChannelConfig{copyItem}, list...)
-	_ = s.saveV1ChannelConfigs(list)
-	copyItem.APIKeyEnc = ""
-	c.JSON(http.StatusCreated, gin.H{"data": copyItem})
+	now := s.now().UTC()
+	copyRow := src
+	copyRow.ID = 0
+	copyRow.Name = cmp.Or(strings.TrimSpace(req.Name), src.Name+" (副本)")
+	copyRow.YID = ""
+	copyRow.CreatedAt = now
+	copyRow.UpdatedAt = now
+	if err := s.db.WithContext(ctx).Create(&copyRow).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "copy channel config failed")
+		return
+	}
+	copyRow.YID = "Y" + strconv.FormatUint(1000+copyRow.ID, 10)
+	_ = s.db.WithContext(ctx).Model(&copyRow).Update("yid", copyRow.YID).Error
+	out := copyRow.toV1()
+	out.APIKeyEnc = ""
+	c.JSON(http.StatusCreated, gin.H{"data": out})
 }
 
 func (s *Server) v1ChannelConfigProviders(c *gin.Context) {
@@ -890,10 +967,14 @@ func (s *Server) saveV1ChannelMeta(id uint64, meta v1ChannelMeta) {
 }
 
 func (s *Server) upsertRawSetting(name, val string) error {
-	return s.db.Clauses(clause.OnConflict{
+	err := s.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "name"}},
 		DoUpdates: clause.AssignmentColumns([]string{"value"}),
 	}).Create(&Setting{Name: name, Value: val}).Error
+	if err == nil {
+		s.invalidateSettingsCache()
+	}
+	return err
 }
 
 func (s *Server) v1ChannelConfigQuotaReset(c *gin.Context) {

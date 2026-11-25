@@ -34,18 +34,9 @@ func TestV1CompatE2EContractsAndSecurityRedlines(t *testing.T) {
 			category_id INTEGER DEFAULT NULL,
 			is_preset INTEGER NOT NULL DEFAULT 0,
 			default_expanded INTEGER NOT NULL DEFAULT 0,
+			translations_json TEXT NOT NULL DEFAULT '{}',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE TABLE IF NOT EXISTS api_docs_intl (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			doc_id INTEGER NOT NULL,
-			lang TEXT NOT NULL,
-			title TEXT NOT NULL,
-			content TEXT NOT NULL,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE (doc_id, lang)
 		);
 		CREATE TABLE IF NOT EXISTS model_meta (
 			model TEXT PRIMARY KEY,

@@ -15,9 +15,7 @@ import (
 //      导致非主片饿死（饿死后 hold 反复回退主片→分片退化为入金单点）。
 // 未配置(shard_count=1，今日全部 org)时这些都是 no-op，与现状逐字一致——零回归。
 
-// SetShardConfig 设置 (org,type) 物理分片数（count<1 视为 1）。upsert ledger_account_shards。
-// 扩容(增加分片)即时生效；缩容前应先 Rebalance/确认高 shard 资金可被搬回——OrgBalances 按 (org,type)
-// SUM 不漏钱，但 hold 选片范围缩小后高 shard 余额不再被新 hold 选中，需搬回低片才能继续动用。
+// SetShardConfig sets organizations.credit_shards (count<1 normalized to 1).
 func SetShardConfig(db *gorm.DB, orgID uint64, accType string, count int) error {
 	if orgID == 0 || accType == "" {
 		return fmt.Errorf("%w: orgID/accType required", ErrInvalidInput)
@@ -25,26 +23,28 @@ func SetShardConfig(db *gorm.DB, orgID uint64, accType string, count int) error 
 	if count < 1 {
 		count = 1
 	}
-	return db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "org_id"}, {Name: "type"}},
-		DoUpdates: clause.AssignmentColumns([]string{"shard_count"}),
-	}).Create(&AccountShardConfig{OrgID: orgID, Type: accType, ShardCount: count}).Error
+	return db.Table("organizations").Where("id = ?", orgID).Update("credit_shards", count).Error
 }
 
-// ShardedOrg：一条 shard_count>1 的配置。
+// ShardedOrg：一条 credit_shards>1 的配置。
 type ShardedOrg struct {
-	OrgID      uint64 `gorm:"column:org_id"`
-	Type       string `gorm:"column:type"`
-	ShardCount int    `gorm:"column:shard_count"`
+	OrgID      uint64 `gorm:"column:id"`
+	Type       string `gorm:"-"`
+	ShardCount int    `gorm:"column:credit_shards"`
 }
 
-// ListShardedOrgs 返回所有 shard_count>1 的 (org,type)（rebalancer 驱动遍历用）。
+// ListShardedOrgs 返回所有 credit_shards>1 的 org（rebalancer 驱动遍历用）。
 func ListShardedOrgs(db *gorm.DB) ([]ShardedOrg, error) {
 	var rows []ShardedOrg
-	err := db.Model(&AccountShardConfig{}).
-		Select("org_id, type, shard_count").
-		Where("shard_count > 1").Scan(&rows).Error
-	return rows, err
+	if err := db.Table("organizations").
+		Select("id, credit_shards").
+		Where("credit_shards > 1").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i].Type = AccountUserCredit
+	}
+	return rows, nil
 }
 
 // RebalanceOrgShards 把 (org,type) 各分片 posted 余额摊平到均值。单事务内：锁所有分片行 → 算均值 target →
@@ -63,7 +63,7 @@ func RebalanceOrgShards(db *gorm.DB, orgID uint64, accType, runID string) (int, 
 		}
 		// 锁所有分片行（MySQL FOR UPDATE），读 posted/held；缺的分片补建（posted=0）以纳入摊平目标。
 		q := tx
-		if tx.Dialector.Name() == "mysql" {
+		if tx.Dialector.Name() != "sqlite" {
 			q = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 		}
 		var accs []Account

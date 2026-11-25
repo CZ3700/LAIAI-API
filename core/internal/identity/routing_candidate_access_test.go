@@ -20,7 +20,8 @@ func routingCandidateDB(t *testing.T) *gorm.DB {
 	const schema = `CREATE TABLE users(id INTEGER PRIMARY KEY,status INTEGER NOT NULL);
 CREATE TABLE org_members(org_id INTEGER,user_id INTEGER);
 CREATE TABLE api_keys(id INTEGER PRIMARY KEY,org_id INTEGER,user_id INTEGER,status INTEGER,expires_at DATETIME,model_access_mode TEXT,routing_group_id INTEGER,policy_version INTEGER,model_limits TEXT,scopes TEXT);
-CREATE TABLE org_entitlements(org_id INTEGER PRIMARY KEY,feature_images BOOLEAN,feature_video BOOLEAN);
+ALTER TABLE organizations ADD COLUMN feature_images BOOLEAN NOT NULL DEFAULT 1;
+ALTER TABLE organizations ADD COLUMN feature_video BOOLEAN NOT NULL DEFAULT 1;
 INSERT INTO users VALUES(7,1);
 INSERT INTO org_members VALUES(1,7);
 INSERT INTO api_keys VALUES(8,1,7,1,NULL,'inherit_group',9,3,'','');`
@@ -34,7 +35,7 @@ func TestRoutingCandidateSubjectRealTxProjectionAndMembership(t *testing.T) {
 	tx := db.Begin()
 	defer tx.Rollback()
 	now := time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
-	if err := tx.Exec("INSERT INTO org_entitlements VALUES(1,0,0)").Error; err != nil {
+	if err := tx.Exec("UPDATE organizations SET feature_images=0, feature_video=0 WHERE id=1").Error; err != nil {
 		t.Fatal(err)
 	}
 	reads := 0
@@ -51,7 +52,7 @@ func TestRoutingCandidateSubjectRealTxProjectionAndMembership(t *testing.T) {
 	}
 	dirty := tx.Table("wrong_table").Select("password_hash").Where("org_id=999").Limit(0)
 	got, err := ReadRoutingCandidateSubjectTx(context.Background(), dirty, 1, 8, now)
-	if err != nil || !got.Found || !got.PrincipalActive || !got.KeyActive || got.Mode != "inherit_group" || got.KeyPolicyVersion != 3 || got.FeatureImages || got.FeatureVideo || reads != 3 {
+	if err != nil || !got.Found || !got.PrincipalActive || !got.KeyActive || got.Mode != "inherit_group" || got.KeyPolicyVersion != 3 || got.FeatureImages || got.FeatureVideo || reads != 2 {
 		t.Fatal(got, err, reads)
 	}
 	if err := tx.Exec("DELETE FROM org_members WHERE user_id=7").Error; err != nil {
@@ -68,22 +69,18 @@ func TestRoutingCandidateSubjectRealTxProjectionAndMembership(t *testing.T) {
 	if err != nil || !got.PrincipalActive {
 		t.Fatal("org key", got, err)
 	}
-	if err := tx.Exec("DELETE FROM org_entitlements").Error; err != nil {
+	if err := tx.Exec("UPDATE organizations SET feature_images=1, feature_video=1 WHERE id=1").Error; err != nil {
 		t.Fatal(err)
 	}
 	got, err = ReadRoutingCandidateSubjectTx(context.Background(), tx, 1, 8, now)
 	if err != nil || !got.FeatureImages || !got.FeatureVideo {
-		t.Fatal("explicit missing-row defaults", got, err)
+		t.Fatal("explicit defaults", got, err)
 	}
 	if err := tx.Rollback().Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Callback().Query().Remove("candidate_subject_reads"); err != nil {
 		t.Fatal(err)
-	}
-	var count int64
-	if err := db.Table("org_entitlements").Count(&count).Error; err != nil || count != 0 {
-		t.Fatal("reader committed caller changes", count, err)
 	}
 }
 func TestRoutingCandidateSubjectAbsentVersusFailedAndExpiry(t *testing.T) {
@@ -106,7 +103,7 @@ func TestRoutingCandidateSubjectAbsentVersusFailedAndExpiry(t *testing.T) {
 	if err != nil || !got.KeyExpired {
 		t.Fatal("expiry missed", got, err)
 	}
-	if err := tx.Exec("DROP TABLE org_entitlements").Error; err != nil {
+	if err := tx.Exec("DROP TABLE organizations").Error; err != nil {
 		t.Fatal(err)
 	}
 	got, err = ReadRoutingCandidateSubjectTx(context.Background(), tx, 1, 8, now)
@@ -200,7 +197,7 @@ func TestRoutingCandidateSubjectNoSQLDiagnosticLeak(t *testing.T) {
 }
 
 func TestRoutingCandidateMissingRowAfterSelectDeadlineIsNotDefault(t *testing.T) {
-	for _, table := range []string{"api_keys", "org_entitlements"} {
+	for _, table := range []string{"api_keys", "organizations"} {
 		t.Run(table, func(t *testing.T) {
 			db := routingCandidateDB(t)
 			if table == "api_keys" {

@@ -52,17 +52,16 @@ const (
 // backoffSteps：第 n 次失败后的重试间隔（指数退避，设计 §4.9）。
 var backoffSteps = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour, 12 * time.Hour}
 
-// Settings（0046 notify_settings）：每 org 一行的订阅配置。
+// Settings maps notification preferences onto organizations columns.
 type Settings struct {
-	OrgID            uint64    `gorm:"primaryKey;column:org_id"`
-	EmailEnabled     bool      `gorm:"column:email_enabled"`
-	WebhookURL       string    `gorm:"column:webhook_url"`
-	WebhookSecretEnc string    `gorm:"column:webhook_secret_enc"`
-	Events           string    `gorm:"column:events"` // JSON 数组
-	UpdatedAt        time.Time `gorm:"column:updated_at"`
+	OrgID            uint64 `gorm:"primaryKey;column:id"`
+	EmailEnabled     bool   `gorm:"column:notify_email_enabled"`
+	WebhookURL       string `gorm:"column:notify_webhook_url"`
+	WebhookSecretEnc string `gorm:"column:notify_webhook_secret_enc"`
+	Events           string `gorm:"column:notify_events"` // JSON 数组
 }
 
-func (Settings) TableName() string { return "notify_settings" }
+func (Settings) TableName() string { return "organizations" }
 
 // EventEnabled：events JSON 数组是否含该事件。
 func (s *Settings) EventEnabled(event string) bool {
@@ -105,8 +104,35 @@ type Dispatcher struct {
 	// MailActive：邮件通道当前是否可用（SMTP 已配）。nil 视为 false。
 	MailActive func() bool
 	// HTTP：出站 webhook 客户端——必须是 guarded client（SSRF 纪律，调用方注入）。
-	HTTP *http.Client
-	Now  func() time.Time
+	HTTP   *http.Client
+	Now    func() time.Time
+	wakeCh chan struct{}
+}
+
+// Wake non-blockingly signals the background outbox worker to drain pending items immediately.
+func (d *Dispatcher) Wake() {
+	if d == nil || d.wakeCh == nil {
+		return
+	}
+	select {
+	case d.wakeCh <- struct{}{}:
+	default:
+	}
+}
+
+// WakeChan returns the notification wakeup channel for the background outbox loop.
+func (d *Dispatcher) WakeChan() <-chan struct{} {
+	if d == nil {
+		return nil
+	}
+	return d.wakeCh
+}
+
+// EnableWake initializes the event wakeup channel on Dispatcher.
+func (d *Dispatcher) EnableWake() {
+	if d != nil && d.wakeCh == nil {
+		d.wakeCh = make(chan struct{}, 1)
+	}
 }
 
 // Emit：向 org 发出一个事件。查订阅 → 按启用通道写 outbox（best-effort：任何失败只记日志，
@@ -116,7 +142,7 @@ func (d *Dispatcher) Emit(orgID uint64, event string, payload map[string]any) {
 		return
 	}
 	st := &Settings{}
-	if err := d.DB.Where("org_id = ?", orgID).First(st).Error; err != nil {
+	if err := d.DB.Where("id = ?", orgID).First(st).Error; err != nil {
 		return // 未配置订阅 = 静默（绝大多数 org）
 	}
 	if !st.EventEnabled(event) {
@@ -144,7 +170,9 @@ func (d *Dispatcher) Emit(orgID uint64, event string, payload map[string]any) {
 	}
 	if err := d.DB.Create(&rows).Error; err != nil {
 		d.Log.Warn("notify outbox insert failed", "event", event, "err", err)
+		return
 	}
+	d.Wake()
 }
 
 // ownerEmails：org 全部 owner 的邮箱（与 balance_alert 同口径，org 自己的管理者、无跨界 PII）。
@@ -322,7 +350,7 @@ func (d *Dispatcher) HandlesEvent(orgID uint64, event string) bool {
 		return false
 	}
 	st := &Settings{}
-	if err := d.DB.Where("org_id = ?", orgID).First(st).Error; err != nil {
+	if err := d.DB.Where("id = ?", orgID).First(st).Error; err != nil {
 		return false
 	}
 	if !st.EventEnabled(event) {
@@ -379,7 +407,7 @@ func (d *Dispatcher) sendWebhook(ctx context.Context, row *Outbox) error {
 // webhookSecret：解出该 org 的签名密钥（信封加密落库）。
 func (d *Dispatcher) webhookSecret(orgID uint64) (string, error) {
 	st := &Settings{}
-	if err := d.DB.Where("org_id = ?", orgID).First(st).Error; err != nil {
+	if err := d.DB.Where("id = ?", orgID).First(st).Error; err != nil {
 		return "", err
 	}
 	if st.WebhookSecretEnc == "" {

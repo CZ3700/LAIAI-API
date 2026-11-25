@@ -105,7 +105,7 @@ func queryLogs(ctx context.Context, db *gorm.DB, scope QueryScope, filter QueryF
 	if ctx == nil || db == nil || db.Dialector == nil {
 		return QueryResult{}, ErrQueryUnavailable
 	}
-	if dialect := db.Dialector.Name(); dialect != "mysql" && dialect != "sqlite" {
+	if dialect := db.Dialector.Name(); dialect != "postgres" && dialect != "mysql" && dialect != "sqlite" {
 		return QueryResult{}, ErrQueryUnavailable
 	}
 	// A nested GORM transaction would use a savepoint in the caller's unknown
@@ -271,11 +271,11 @@ func querySelectPrefix(ctx context.Context, dialect string) (string, error) {
 
 const queryAggregateSQL = `COUNT(*) AS record_count,
 COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS success_count,
-CAST(COALESCE(SUM(prompt_tokens), 0) AS CHAR) AS prompt_tokens,
-CAST(COALESCE(SUM(completion_tokens), 0) AS CHAR) AS completion_tokens,
-CAST(COALESCE(SUM(cached_tokens), 0) AS CHAR) AS cached_tokens,
-CAST(COALESCE(SUM(reasoning_tokens), 0) AS CHAR) AS reasoning_tokens,
-CAST(COALESCE(SUM(cost_usd), 0) AS CHAR) AS cost_usd`
+CAST(COALESCE(SUM(prompt_tokens), 0) AS TEXT) AS prompt_tokens,
+CAST(COALESCE(SUM(completion_tokens), 0) AS TEXT) AS completion_tokens,
+CAST(COALESCE(SUM(cached_tokens), 0) AS TEXT) AS cached_tokens,
+CAST(COALESCE(SUM(reasoning_tokens), 0) AS TEXT) AS reasoning_tokens,
+CAST(COALESCE(SUM(cost_usd), 0) AS TEXT) AS cost_usd`
 
 type queryAggregate struct {
 	RecordCount      int64

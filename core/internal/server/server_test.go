@@ -22,17 +22,16 @@ CREATE TABLE organizations (
     group_name TEXT NOT NULL DEFAULT 'default', aff_code TEXT, inviter_org_id INTEGER NOT NULL DEFAULT 0,
     status INTEGER NOT NULL DEFAULT 1,
     low_balance_alert_usd NUMERIC NOT NULL DEFAULT 0, low_balance_alerted_at DATETIME,
+    feature_images BOOLEAN NOT NULL DEFAULT 1, feature_video BOOLEAN NOT NULL DEFAULT 1,
+    max_members INTEGER NOT NULL DEFAULT 0, max_api_keys INTEGER NOT NULL DEFAULT 0,
+    credit_shards INTEGER NOT NULL DEFAULT 1,
+    notify_email_enabled BOOLEAN NOT NULL DEFAULT 0, notify_webhook_url TEXT NOT NULL DEFAULT '',
+    notify_webhook_secret_enc TEXT NOT NULL DEFAULT '', notify_events TEXT NOT NULL DEFAULT '[]',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE email_verifications (
     email_canonical TEXT PRIMARY KEY, code TEXT NOT NULL,
     expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL
-);
-CREATE TABLE notify_settings (
-    org_id INTEGER PRIMARY KEY,
-    email_enabled INTEGER NOT NULL DEFAULT 0,
-    webhook_url TEXT NOT NULL DEFAULT '', webhook_secret_enc TEXT NOT NULL DEFAULT '',
-    events TEXT NOT NULL DEFAULT '', updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE notify_outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,7 +57,9 @@ CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL, email_canonical TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
-    totp_secret_enc TEXT NOT NULL DEFAULT '', totp_enabled INTEGER NOT NULL DEFAULT 0, status INTEGER NOT NULL DEFAULT 1,
+    totp_secret_enc TEXT NOT NULL DEFAULT '', totp_enabled INTEGER NOT NULL DEFAULT 0,
+    totp_backup_codes_json TEXT NOT NULL DEFAULT '[]',
+    status INTEGER NOT NULL DEFAULT 1,
     role TEXT NOT NULL DEFAULT 'user', admin_remark TEXT NOT NULL DEFAULT '',
     email_verified INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -98,18 +99,6 @@ CREATE TABLE routing_policy_events (
 CREATE TABLE routing_groups(id INTEGER PRIMARY KEY AUTOINCREMENT,slug TEXT NOT NULL,name TEXT NOT NULL,description TEXT NOT NULL,owner_org_id INTEGER NOT NULL,status TEXT NOT NULL,policy_version INTEGER NOT NULL,created_at DATETIME NOT NULL,updated_at DATETIME NOT NULL,UNIQUE(owner_org_id,slug));
 CREATE TABLE channel_group_bindings(group_id INTEGER NOT NULL,channel_id INTEGER NOT NULL,created_at DATETIME NOT NULL,updated_at DATETIME NOT NULL,PRIMARY KEY(group_id,channel_id));
 CREATE TABLE org_group_grants(id INTEGER PRIMARY KEY AUTOINCREMENT,org_id INTEGER NOT NULL,group_id INTEGER NOT NULL,status TEXT NOT NULL,grant_version INTEGER NOT NULL,default_slot INTEGER,created_at DATETIME NOT NULL,updated_at DATETIME NOT NULL,UNIQUE(org_id,group_id),UNIQUE(org_id,default_slot));
-CREATE TABLE org_entitlements (
-    org_id INTEGER PRIMARY KEY,
-    feature_images INTEGER NOT NULL DEFAULT 1, feature_video INTEGER NOT NULL DEFAULT 1,
-    max_members INTEGER NOT NULL DEFAULT 0, max_api_keys INTEGER NOT NULL DEFAULT 0,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE twofa_backup_codes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL, code_hash TEXT NOT NULL,
-    used_at INTEGER, created_at INTEGER NOT NULL,
-    UNIQUE (user_id, code_hash)
-);
 `
 
 var testSecret = []byte("test-secret-0123456789abcdef-0123456789abcdef")
@@ -339,11 +328,7 @@ func TestProfileAndPassword(t *testing.T) {
 
 // 密钥硬删除：活跃 key 不可删（需先吊销），吊销后可删。
 func TestDeleteKey(t *testing.T) {
-	srv, db := setupServer(t)
-	// Purge now checks durable billing references even when video is not enabled.
-	if err := db.Exec("CREATE TABLE video_billing_snapshots(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, api_key_id INTEGER NOT NULL)").Error; err != nil {
-		t.Fatal(err)
-	}
+	srv, _ := setupServer(t)
 	srv.do(t, "POST", "/api/auth/register", "", map[string]string{"email": "del@example.com", "password": "longenough1"})
 	_, login := srv.do(t, "POST", "/api/auth/login", "", map[string]string{"email": "del@example.com", "password": "longenough1"})
 	token := login["token"].(string)

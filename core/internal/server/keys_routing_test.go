@@ -6,11 +6,17 @@ import (
 
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/routinggroup"
-	"github.com/laiai/laiai-next/core/internal/video"
 	"gorm.io/gorm"
 )
 
-func TestCreateKeyRoutingGatePrecedesVideoConsent(t *testing.T) {
+func keyVideoFixture(t *testing.T) (*gin999, *gorm.DB, string) {
+	t.Helper()
+	srv, db := setupServer(t)
+	tok := registerAndLogin(t, srv, "keyowner@example.com")
+	return srv, db, tok
+}
+
+func TestCreateKeyRoutingGate(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		mode      any
@@ -45,7 +51,7 @@ func TestCreateKeyRoutingGatePrecedesVideoConsent(t *testing.T) {
 			if w.Code != tt.status || out["code"] != tt.code {
 				t.Fatalf("got %d %v", w.Code, out)
 			}
-			for _, model := range []any{&identity.APIKey{}, &video.Policy{}, &routinggroup.Event{}} {
+			for _, model := range []any{&identity.APIKey{}, &routinggroup.Event{}} {
 				var n int64
 				if err := db.Model(model).Count(&n).Error; err != nil || n != 0 {
 					t.Fatal("rejected routing request wrote state", err, n)
@@ -57,8 +63,7 @@ func TestCreateKeyRoutingGatePrecedesVideoConsent(t *testing.T) {
 
 func TestCreateKeyInheritsAdministratorDefaultGroupAndVideoScopes(t *testing.T) {
 	f, db, token := keyVideoFixture(t)
-	if err := db.Exec(`INSERT INTO video_org_policies(org_id,async_execution_allowed,capture_history,retention_days,updated_at) VALUES(1,1,0,1,CURRENT_TIMESTAMP);
-INSERT INTO routing_groups(id,slug,name,description,owner_org_id,status,policy_version,created_at,updated_at) VALUES(7,'seedance','Seedance','',0,'enabled',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+	if err := db.Exec(`INSERT INTO routing_groups(id,slug,name,description,owner_org_id,status,policy_version,created_at,updated_at) VALUES(7,'seedance','Seedance','',0,'enabled',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
 INSERT INTO org_group_grants(id,org_id,group_id,status,grant_version,default_slot,created_at,updated_at) VALUES(9,1,7,'enabled',1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);`).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -94,40 +99,28 @@ INSERT INTO org_group_grants(id,org_id,group_id,status,grant_version,default_slo
 	}
 }
 
-func TestGroupedKeyRequiresAdministratorVideoPolicy(t *testing.T) {
-	for _, scenario := range []string{"missing_policy", "disabled_policy", "feature_disabled"} {
-		t.Run(scenario, func(t *testing.T) {
-			f, db, token := keyVideoFixture(t)
-			if err := db.Exec(`INSERT INTO routing_groups(id,slug,name,description,owner_org_id,status,policy_version,created_at,updated_at) VALUES(7,'seedance','Seedance','',0,'enabled',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+func TestGroupedKeyRequiresVideoEntitlement(t *testing.T) {
+	f, db, token := keyVideoFixture(t)
+	if err := db.Exec(`INSERT INTO routing_groups(id,slug,name,description,owner_org_id,status,policy_version,created_at,updated_at) VALUES(7,'seedance','Seedance','',0,'enabled',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
 INSERT INTO org_group_grants(id,org_id,group_id,status,grant_version,default_slot,created_at,updated_at) VALUES(9,1,7,'enabled',1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);`).Error; err != nil {
-				t.Fatal(err)
-			}
-			switch scenario {
-			case "disabled_policy":
-				if err := db.Exec("INSERT INTO video_org_policies VALUES(1,0,0,1,CURRENT_TIMESTAMP)").Error; err != nil {
-					t.Fatal(err)
-				}
-			case "feature_disabled":
-				if err := db.Exec("INSERT INTO org_entitlements(org_id,feature_video) VALUES(1,0)").Error; err != nil {
-					t.Fatal(err)
-				}
-			}
-			w, out := f.do(t, "POST", "/api/keys", token, map[string]any{"name": "must-fail", "enable_video_async": true})
-			if w.Code != 403 || out["code"] == nil {
-				t.Fatal("grouped video policy bypass", w.Code, out)
-			}
-			var keys int64
-			if err := db.Model(&identity.APIKey{}).Count(&keys).Error; err != nil || keys != 0 {
-				t.Fatal("failed issue wrote key", err, keys)
-			}
-		})
+		t.Fatal(err)
+	}
+	if err := db.Model(&identity.Organization{}).Where("id = ?", 1).Update("feature_video", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	w, out := f.do(t, "POST", "/api/keys", token, map[string]any{"name": "must-fail", "enable_video_async": true})
+	if w.Code != 403 || out["code"] == nil {
+		t.Fatal("grouped video entitlement bypass", w.Code, out)
+	}
+	var keys int64
+	if err := db.Model(&identity.APIKey{}).Count(&keys).Error; err != nil || keys != 0 {
+		t.Fatal("failed issue wrote key", err, keys)
 	}
 }
 
 func TestDefaultGroupSwitchAffectsOnlyNewKeys(t *testing.T) {
 	f, db, token := keyVideoFixture(t)
-	if err := db.Exec(`INSERT INTO video_org_policies(org_id,async_execution_allowed,capture_history,retention_days,updated_at) VALUES(1,1,0,1,CURRENT_TIMESTAMP);
-INSERT INTO routing_groups(id,slug,name,description,owner_org_id,status,policy_version,created_at,updated_at) VALUES(7,'first','First','',0,'enabled',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),(8,'second','Second','',0,'enabled',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+	if err := db.Exec(`INSERT INTO routing_groups(id,slug,name,description,owner_org_id,status,policy_version,created_at,updated_at) VALUES(7,'first','First','',0,'enabled',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),(8,'second','Second','',0,'enabled',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
 INSERT INTO org_group_grants(id,org_id,group_id,status,grant_version,default_slot,created_at,updated_at) VALUES(9,1,7,'enabled',1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),(10,1,8,'enabled',1,NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);`).Error; err != nil {
 		t.Fatal(err)
 	}

@@ -69,7 +69,7 @@ func ReadRoutingCandidateSubjectTx(ctx context.Context, tx *gorm.DB, orgID, keyI
 	if _, ok := tx.Statement.ConnPool.(gorm.TxCommitter); !ok {
 		return out, ErrRoutingCandidateInvalid
 	}
-	if name := tx.Dialector.Name(); name != "mysql" && name != "sqlite" {
+	if name := tx.Dialector.Name(); name != "postgres" && name != "mysql" && name != "sqlite" {
 		return out, ErrRoutingCandidateInvalid
 	}
 	if err := ctx.Err(); err != nil {
@@ -126,18 +126,22 @@ func ReadRoutingCandidateSubjectTx(ctx context.Context, tx *gorm.DB, orgID, keyI
 		return out, ErrRoutingCandidateFacts
 	}
 	out = RoutingCandidateSubject{Found: true, OrgID: row.OrgID, KeyID: row.ID, KeyActive: row.Status == StatusActive, KeyExpired: row.ExpiresAt != nil && at.After(*row.ExpiresAt), Mode: row.ModelAccessMode, RoutingGroupID: row.RoutingGroupID, KeyPolicyVersion: row.PolicyVersion, ModelLimits: *row.ModelLimits, KeyScopes: *row.Scopes}
-	columns = "CASE WHEN o.status = 1 THEN 1 ELSE 0 END AS active"
+	columns = "CASE WHEN organizations.status = 1 THEN 1 ELSE 0 END AS active, organizations.feature_images AS feature_images, organizations.feature_video AS feature_video"
 	var args []any
 	if row.UserID != nil {
-		columns = "CASE WHEN o.status = 1 AND EXISTS (SELECT 1 FROM org_members m JOIN users u ON u.id = m.user_id WHERE m.org_id = o.id AND m.user_id = ? AND u.status = 1) THEN 1 ELSE 0 END AS active"
+		columns = "CASE WHEN organizations.status = 1 AND EXISTS (SELECT 1 FROM org_members m JOIN users u ON u.id = m.user_id WHERE m.org_id = organizations.id AND m.user_id = ? AND u.status = 1) THEN 1 ELSE 0 END AS active, organizations.feature_images AS feature_images, organizations.feature_video AS feature_video"
 		args = []any{*row.UserID}
 	}
 	q, cancel, err = routingCandidateSelect(ctx, tx, columns, args...)
 	if err != nil {
 		return RoutingCandidateSubject{}, err
 	}
-	var principal struct{ Active bool }
-	err = q.Table("organizations AS o").Where("o.id = ?", orgID).Take(&principal).Error
+	var principal struct {
+		Active        bool
+		FeatureImages bool
+		FeatureVideo  bool
+	}
+	err = q.Table("organizations").Where("id = ?", orgID).Take(&principal).Error
 	if contextErr := q.Statement.Context.Err(); contextErr != nil {
 		err = contextErr
 	}
@@ -148,25 +152,12 @@ func ReadRoutingCandidateSubjectTx(ctx context.Context, tx *gorm.DB, orgID, keyI
 	}
 	cancel()
 	out.PrincipalActive = err == nil && principal.Active
-	q, cancel, err = routingCandidateSelect(ctx, tx, "org_id, feature_images, feature_video")
-	if err != nil {
-		return RoutingCandidateSubject{}, err
+	if err == nil {
+		out.FeatureImages, out.FeatureVideo = principal.FeatureImages, principal.FeatureVideo
+	} else {
+		def := DefaultEntitlements(orgID)
+		out.FeatureImages, out.FeatureVideo = def.FeatureImages, def.FeatureVideo
 	}
-	var entitlement Entitlements
-	err = q.Where("org_id = ?", orgID).Take(&entitlement).Error
-	if contextErr := q.Statement.Context.Err(); contextErr != nil {
-		err = contextErr
-	}
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		safe := routingCandidateFailure(q.Statement.Context, err)
-		cancel()
-		return RoutingCandidateSubject{}, safe
-	}
-	cancel()
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		entitlement = DefaultEntitlements(orgID)
-	}
-	out.FeatureImages, out.FeatureVideo = entitlement.FeatureImages, entitlement.FeatureVideo
 	if err := ctx.Err(); err != nil {
 		return RoutingCandidateSubject{}, err
 	}

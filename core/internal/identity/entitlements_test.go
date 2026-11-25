@@ -15,6 +15,10 @@ func TestEntitlementsDefaultAndUpsert(t *testing.T) {
 		t.Fatalf("default = %+v, want all-on/unlimited", got)
 	}
 
+	if err := db.Exec("INSERT INTO organizations (id, slug, name) VALUES (42, 'org-42', 'Org 42')").Error; err != nil {
+		t.Fatal(err)
+	}
+
 	// 写入收紧配置 → 回读一致。
 	want := Entitlements{OrgID: 42, FeatureImages: false, FeatureVideo: true, MaxMembers: 3, MaxAPIKeys: 5}
 	if err := UpsertEntitlements(db, want); err != nil {
@@ -36,7 +40,7 @@ func TestEntitlementsDefaultAndUpsert(t *testing.T) {
 		t.Fatalf("after re-upsert = %+v, want %+v", got, want)
 	}
 	var n int64
-	db.Model(&Entitlements{}).Where("org_id = ?", 42).Count(&n)
+	db.Model(&Entitlements{}).Where("id = ?", 42).Count(&n)
 	if n != 1 {
 		t.Fatalf("rows for org 42 = %d, want 1 (upsert must not duplicate)", n)
 	}

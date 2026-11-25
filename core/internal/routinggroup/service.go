@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 
 	sqliteDriver "github.com/glebarez/go-sqlite"
-	"github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
@@ -150,9 +150,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Group, error) {
 // entire transaction. Driver text can include user values and is not parsed.
 func groupInsertDuplicate(tx *gorm.DB, err error) bool {
 	switch tx.Dialector.Name() {
-	case "mysql":
-		var duplicate *mysql.MySQLError
-		return errors.As(err, &duplicate) && duplicate.Number == 1062
+	case "postgres":
+		var pgErr *pgconn.PgError
+		return errors.As(err, &pgErr) && pgErr.Code == "23505"
 	case "sqlite":
 		var duplicate *sqliteDriver.Error
 		return errors.As(err, &duplicate) && duplicate.Code() == 2067 // SQLITE_CONSTRAINT_UNIQUE

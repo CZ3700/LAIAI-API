@@ -50,7 +50,7 @@ func TestNotifySettingsAPI(t *testing.T) {
 
 	// 落库 secret 是密文（信封加密），非明文
 	st := &notify.Settings{}
-	db.Where("org_id = ?", uint64(orgID)).First(st)
+	db.Where("id = ?", uint64(orgID)).First(st)
 	if st.WebhookSecretEnc == "" || st.WebhookSecretEnc == "whsec_supersecret" {
 		t.Fatalf("secret not envelope-encrypted: %q", st.WebhookSecretEnc)
 	}

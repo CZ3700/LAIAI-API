@@ -19,7 +19,6 @@ import (
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/routinggroup"
 	"github.com/laiai/laiai-next/core/internal/server/v1compat"
-	"github.com/laiai/laiai-next/core/internal/videobilling"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -795,11 +794,8 @@ func (s *Server) v1CreateToken(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		if videoWriteScope(effectiveScopes) {
-			consent := req.EnableVideoAsync && group == nil
-			if err := s.ensureKeyVideoAccess(tx, claims.OrgID, claims.UserID, consent, ent); err != nil {
-				return err
-			}
+		if videoWriteScope(effectiveScopes) && !ent.FeatureVideo {
+			return errVideoDisabled
 		}
 		uid := claims.UserID
 		plaintext, issued, err = identity.IssueKey(tx, identity.IssueKeyInput{
@@ -812,7 +808,8 @@ func (s *Server) v1CreateToken(c *gin.Context) {
 		})
 		return err
 	})
-	if replyKeyVideoError(c, err) {
+	if errors.Is(err, errVideoDisabled) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "video generation is disabled for this organization", "code": errVideoDisabled.Error()})
 		return
 	}
 	if errors.Is(err, identity.ErrKeyLimit) {
@@ -927,10 +924,10 @@ func (s *Server) v1DeleteToken(c *gin.Context) {
 		return
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return identity.PurgeRevokedKeyTx(tx, claims.OrgID, k.ID, videobilling.HasKeySnapshotReferenceTx)
+		return identity.PurgeRevokedKeyTx(tx, claims.OrgID, k.ID, hasActiveTaskForKeyTx)
 	})
 	if errors.Is(err, identity.ErrKeyPurgeReferenced) {
-		fail(c, http.StatusConflict, "key is retained for video billing history; revocation remains effective")
+		fail(c, http.StatusConflict, "key has in-flight tasks; revocation stays active until tasks settle")
 		return
 	}
 	if err != nil {

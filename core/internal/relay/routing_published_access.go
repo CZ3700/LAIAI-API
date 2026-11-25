@@ -61,7 +61,7 @@ func ReadRoutingPublishedChannelsTx(ctx context.Context, tx *gorm.DB, ids []uint
 	if _, ok := tx.Statement.ConnPool.(gorm.TxCommitter); !ok {
 		return nil, ErrRoutingPublishedInvalid
 	}
-	if name := tx.Dialector.Name(); name != "mysql" && name != "sqlite" {
+	if name := tx.Dialector.Name(); name != "postgres" && name != "mysql" && name != "sqlite" {
 		return nil, ErrRoutingPublishedInvalid
 	}
 	for i, id := range ids {

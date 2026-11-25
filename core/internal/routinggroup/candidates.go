@@ -112,7 +112,7 @@ func candidateTxValid(ctx context.Context, tx *gorm.DB) error {
 	if _, ok := tx.Statement.ConnPool.(gorm.TxCommitter); !ok {
 		return ErrCandidatesInvalid
 	}
-	if name := tx.Dialector.Name(); name != "mysql" && name != "sqlite" {
+	if name := tx.Dialector.Name(); name != "postgres" && name != "mysql" && name != "sqlite" {
 		return ErrCandidatesInvalid
 	}
 	if err := ctx.Err(); err != nil {

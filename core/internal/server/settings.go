@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -108,7 +111,85 @@ const settingEncPrefix = "enc:v1:"
 // secretMask：admin GET 对「已配置」secret 的占位回显；PUT 收到此值视为「不改」。
 const secretMask = "••••••••"
 
+const settingsCacheTTL = 60 * time.Second
+
+type settingsCache struct {
+	mu        sync.RWMutex
+	enabled   bool
+	values    map[string]string
+	expiresAt time.Time
+}
+
+// WarmCaches preloads operational settings into memory to eliminate per-request lookups.
+func (s *Server) WarmCaches(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	s.settingsCache.mu.Lock()
+	s.settingsCache.enabled = true
+	s.settingsCache.mu.Unlock()
+	return s.refreshSettingsCache(ctx)
+}
+
+func (s *Server) refreshSettingsCache(ctx context.Context) error {
+	var rows []Setting
+	if err := s.db.WithContext(ctx).Find(&rows).Error; err != nil {
+		return err
+	}
+	vals := make(map[string]string, len(rows))
+	for _, r := range rows {
+		vals[r.Name] = r.Value
+	}
+	nowFn := s.now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	s.settingsCache.mu.Lock()
+	s.settingsCache.enabled = true
+	s.settingsCache.values = vals
+	s.settingsCache.expiresAt = nowFn().Add(settingsCacheTTL)
+	s.settingsCache.mu.Unlock()
+	return nil
+}
+
+func (s *Server) invalidateSettingsCache() {
+	if s == nil {
+		return
+	}
+	s.settingsCache.mu.Lock()
+	s.settingsCache.expiresAt = time.Time{}
+	s.settingsCache.mu.Unlock()
+}
+
 func (s *Server) getSetting(name string) string {
+	nowFn := s.now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	s.settingsCache.mu.RLock()
+	enabled := s.settingsCache.enabled
+	if enabled && nowFn().Before(s.settingsCache.expiresAt) {
+		val, ok := s.settingsCache.values[name]
+		s.settingsCache.mu.RUnlock()
+		if ok {
+			return s.decodeSettingValue(name, val)
+		}
+		return settingDefaults[name]
+	}
+	s.settingsCache.mu.RUnlock()
+
+	if enabled {
+		if err := s.refreshSettingsCache(context.Background()); err == nil {
+			s.settingsCache.mu.RLock()
+			val, ok := s.settingsCache.values[name]
+			s.settingsCache.mu.RUnlock()
+			if ok {
+				return s.decodeSettingValue(name, val)
+			}
+			return settingDefaults[name]
+		}
+	}
+
 	var row Setting
 	if err := s.db.Where("name = ?", name).First(&row).Error; err == nil {
 		return s.decodeSettingValue(name, row.Value)
@@ -240,6 +321,7 @@ func (s *Server) adminSetSettings(c *gin.Context) {
 		fail(c, 500, "save failed")
 		return
 	}
+	s.invalidateSettingsCache()
 	updated := len(prepared)
 	s.writeAudit(c, "settings_update", "", "updated platform settings")
 	c.JSON(http.StatusOK, gin.H{"updated": updated})

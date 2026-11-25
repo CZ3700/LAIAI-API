@@ -30,9 +30,9 @@ func TestAdminSetOrgShards(t *testing.T) {
 		t.Fatalf("set shards = %d %v", w.Code, out)
 	}
 	var cnt int64
-	db.Table("ledger_account_shards").Where("org_id = ? AND type = ? AND shard_count = 4", orgID, "user_credit").Count(&cnt)
+	db.Table("organizations").Where("id = ? AND credit_shards = 4", orgID).Count(&cnt)
 	if cnt != 1 {
-		t.Fatalf("ledger_account_shards row = %d, want 1", cnt)
+		t.Fatalf("organizations credit_shards row = %d, want 1", cnt)
 	}
 
 	// upsert 改数 → 仍一行、count 更新为 2
@@ -40,8 +40,8 @@ func TestAdminSetOrgShards(t *testing.T) {
 		t.Fatalf("upsert shards = %d", w.Code)
 	}
 	var rows, two int64
-	db.Table("ledger_account_shards").Where("org_id = ?", orgID).Count(&rows)
-	db.Table("ledger_account_shards").Where("org_id = ? AND shard_count = 2", orgID).Count(&two)
+	db.Table("organizations").Where("id = ?", orgID).Count(&rows)
+	db.Table("organizations").Where("id = ? AND credit_shards = 2", orgID).Count(&two)
 	if rows != 1 || two != 1 {
 		t.Fatalf("after upsert rows=%d shard_count2=%d, want 1/1", rows, two)
 	}

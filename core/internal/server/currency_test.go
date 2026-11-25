@@ -4,85 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/payment"
 	"github.com/shopspring/decimal"
-	"gorm.io/gorm"
 )
 
 type currencyPaymentEngine struct {
 	mockPayEngine
 	request *payment.CreateRequest
-}
-
-func TestMySQLCurrencyPreferencesPreserveReservations(t *testing.T) {
-	f := arkBillMySQLFixture(t, "running")
-	r, _ := NewWithServer(f.db, Options{AuthSecret: f.s.secret, Keyring: f.s.keyring, AuthRateBurst: 1000})
-	var user identity.User
-	arkBillMust(t, f.db.First(&user, f.users[0]).Error)
-	if user.DisplayCurrency != "USD" {
-		t.Fatal("new user default", user.DisplayCurrency)
-	}
-	snapshot := func() string {
-		all := map[string]any{}
-		for _, table := range []string{"ledger_accounts", "ledger_journal", "ledger_holds", "api_keys", "video_billing_snapshots"} {
-			var rows []map[string]any
-			// Ledger journal is joined through its account because it has no org_id.
-			q := f.db.Table(table)
-			if table == "ledger_journal" {
-				q = q.Where("account_id IN (SELECT id FROM ledger_accounts WHERE org_id = ?)", f.org)
-			} else if table == "ledger_holds" {
-				q = q.Where("account_id IN (SELECT id FROM ledger_accounts WHERE org_id = ?)", f.org)
-			} else {
-				q = q.Where("org_id = ?", f.org)
-			}
-			arkBillMust(t, q.Order("id").Find(&rows).Error)
-			all[table] = rows
-		}
-		b, _ := json.Marshal(all)
-		return string(b)
-	}
-	before := snapshot()
-	for _, cur := range []string{"CNY", "USD", "CNY"} {
-		req := httptest.NewRequest("PUT", "/api/me/preferences", strings.NewReader(`{"display_currency":"`+cur+`"}`))
-		req.Header.Set("Authorization", "Bearer "+f.tokens[0])
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-		if w.Code != 200 {
-			t.Fatal(w.Code, w.Body.String())
-		}
-	}
-	if snapshot() != before {
-		t.Fatal("preference modified financial snapshot")
-	}
-	arkBillMust(t, f.db.First(&user, f.users[0]).Error)
-	if user.DisplayCurrency != "CNY" {
-		t.Fatal(user.DisplayCurrency)
-	}
-	// Exercise the original reservation at the original USD amount after changing
-	// preference; capture releases the remainder and preserves ledger drift zero.
-	arkBillMust(t, f.db.Transaction(func(tx *gorm.DB) error {
-		_, err := ledger.Capture(tx, f.holdID, decimal.RequireFromString("0.01"), "currency-regression")
-		return err
-	}))
-	posted, held, err := ledger.OrgBalances(f.db, f.org, ledger.AccountUserCredit)
-	arkBillMust(t, err)
-	if !posted.Equal(decimal.RequireFromString("99.99")) || !held.IsZero() {
-		t.Fatal(posted, held)
-	}
-	drifts, err := ledger.CheckDrift(f.db)
-	arkBillMust(t, err)
-	for _, d := range drifts {
-		if d.OrgID == f.org {
-			t.Fatal("currency fixture ledger drift", d)
-		}
-	}
 }
 
 func (m *currencyPaymentEngine) CreatePayment(ctx context.Context, req *payment.CreateRequest) (*payment.CreateResult, error) {
