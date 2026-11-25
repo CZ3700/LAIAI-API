@@ -1,14 +1,12 @@
 package relay
 
 import (
-	"bytes"
 	"context"
 	"net/http"
-	"net/url"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/forward"
 	"github.com/laiai/laiai-next/core/internal/pricing"
 	"github.com/shopspring/decimal"
@@ -19,7 +17,23 @@ type resolvedBillingRule struct {
 	Rule    *pricing.BillingRule
 }
 
-var cstZone = time.FixedZone("CST", 8*3600)
+var (
+	cstZone = time.FixedZone("CST", 8*3600)
+
+	targetAdaptersMu     sync.RWMutex
+	customTargetAdapters = make(map[string]func(*Channel) adapter)
+)
+
+// RegisterTargetAdapter 允许扩展包按 forward_rules.target_type 注册自定义同步协议适配器。
+func RegisterTargetAdapter(targetType string, factory func(*Channel) adapter) {
+	tt := strings.ToLower(strings.TrimSpace(targetType))
+	if tt == "" || factory == nil {
+		return
+	}
+	targetAdaptersMu.Lock()
+	customTargetAdapters[tt] = factory
+	targetAdaptersMu.Unlock()
+}
 
 func isMissingRuleTableErr(err error) bool {
 	if err == nil {
@@ -31,7 +45,8 @@ func isMissingRuleTableErr(err error) bool {
 		strings.Contains(msg, "does not exist")
 }
 
-// cachedBillingRule 读取 model_rule_bindings + billing_rules（45s TTL；未绑定或测试库缺表返回 nil）。
+// cachedBillingRule 读取 model_rule_bindings + billing_rules（45s TTL）。
+// 未绑定返回 (nil, nil) 并缓存空结构；真实 DB 故障返回 err 以免把瞬时故障缓存为“无规则”。
 func (r *Relay) cachedBillingRule(model string) (*pricing.ModelRuleBinding, *pricing.BillingRule) {
 	if r.billingRules == nil {
 		return nil, nil
@@ -42,12 +57,15 @@ func (r *Relay) cachedBillingRule(model string) (*pricing.ModelRuleBinding, *pri
 			if isMissingRuleTableErr(err) {
 				return &resolvedBillingRule{}, nil
 			}
-			// 无绑定时 ResolveModelRule 返回 gorm.ErrRecordNotFound → 视为未绑定，走 legacy model_prices
-			return &resolvedBillingRule{}, nil
+			return nil, err
 		}
 		return &resolvedBillingRule{Binding: b, Rule: rule}, nil
 	})
-	if err != nil || res == nil {
+	if err != nil {
+		r.Log.Warn("billing rule lookup failed, falling back to model_prices", "model", model, "err", err)
+		return nil, nil
+	}
+	if res == nil {
 		return nil, nil
 	}
 	return res.Binding, res.Rule
@@ -84,47 +102,16 @@ func inferInboundCategory(reqPath string) string {
 	}
 }
 
-// joinUpstreamURL 智能拼接渠道 base_url 与规则 upstream_path，避免 /api/v3 或 /v1 段重复叠加。
-func joinUpstreamURL(baseURL, upstreamPath string) string {
-	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	up := strings.TrimSpace(upstreamPath)
-	if up == "" {
-		return base
-	}
-	if !strings.HasPrefix(up, "/") {
-		up = "/" + up
-	}
-	if parsed, err := url.Parse(base); err == nil && parsed.Scheme != "" && parsed.Host != "" {
-		basePath := strings.TrimRight(parsed.Path, "/")
-		if basePath != "" && (up == basePath || strings.HasPrefix(up, basePath+"/")) {
-			return parsed.Scheme + "://" + parsed.Host + up
-		}
-	}
-	return base + up
-}
-
-func applyForwardAuth(req *http.Request, authType, credential string) {
-	switch strings.ToLower(strings.TrimSpace(authType)) {
-	case "x-api-key":
-		req.Header.Del("Authorization")
-		req.Header.Set("x-api-key", credential)
-	case "x-goog-api-key":
-		req.Header.Del("Authorization")
-		req.Header.Set("x-goog-api-key", credential)
-	case "query_key":
-		req.Header.Del("Authorization")
-		q := req.URL.Query()
-		q.Set("key", credential)
-		req.URL.RawQuery = q.Encode()
-	case "key":
-		req.Header.Set("Authorization", "Key "+credential)
-	default:
-		req.Header.Set("Authorization", "Bearer "+credential)
-	}
-}
-
 func adapterForTarget(targetType string, ch *Channel) adapter {
-	switch strings.ToLower(strings.TrimSpace(targetType)) {
+	tt := strings.ToLower(strings.TrimSpace(targetType))
+	targetAdaptersMu.RLock()
+	factory, ok := customTargetAdapters[tt]
+	targetAdaptersMu.RUnlock()
+	if ok {
+		return factory(ch)
+	}
+
+	switch tt {
 	case "anthropic":
 		return anthropicAdapter{}
 	case "gemini":
@@ -154,8 +141,9 @@ func buildForwardAwareRequest(
 		upReq, err := ad.buildRequest(ctx, ch, credential, req, stream)
 		return upReq, ad, err
 	}
+
 	ad := adapterForTarget(fwd.TargetType, ch)
-	// 复制渠道临时视图（绝不污染共享快照），注入规则定义的 upstream_path（适用于 OpenAI 家族与兼容路由）
+	// 浅拷贝渠道视图（绝不原地修改共享渠道快照）
 	chCopy := *ch
 	if fwd.UpstreamPath != "" {
 		chCopy.UpstreamPath = fwd.UpstreamPath
@@ -164,38 +152,20 @@ func buildForwardAwareRequest(
 	if err != nil {
 		return nil, ad, err
 	}
-	// 对非 OpenAI 原生 adapter 或跨版本路径重写，直接按智能拼接替换 Path 与 AuthType
 	if fwd.UpstreamPath != "" {
 		tt := strings.ToLower(strings.TrimSpace(fwd.TargetType))
 		if tt == "openai" || tt == "volcengine_chat" || tt == "" {
-			if targetURL := joinUpstreamURL(ch.BaseURL, fwd.UpstreamPath); targetURL != "" {
-				if parsed, perr := url.Parse(targetURL); perr == nil {
-					upReq.URL = parsed
-				}
+			parsedURL, uerr := forward.JoinUpstreamURL(ch.BaseURL, fwd.UpstreamPath)
+			if uerr != nil {
+				return nil, ad, uerr
 			}
+			upReq.URL = parsedURL
 		}
 	}
 	if strings.TrimSpace(fwd.AuthType) != "" {
-		applyForwardAuth(upReq, fwd.AuthType, credential)
+		forward.ApplyAuth(upReq, fwd.AuthType, credential)
 	}
-	// 当 fwd.UpstreamPath 与 baseURL 已构成完整原生请求且 Body 为 JSON 且需要确保流式 include_usage 时，
-	// ad.buildRequest 已完成 Canonical→Target 转换。
 	return upReq, ad, nil
-}
-
-// bindingSiteDiscount 计算模型绑定的站点折扣×全局折扣（未启用各自分别视作 1）。
-func bindingSiteDiscount(binding *pricing.ModelRuleBinding) decimal.Decimal {
-	d := decimal.NewFromInt(1)
-	if binding == nil {
-		return d
-	}
-	if binding.SiteDiscountEnabled == 1 && binding.SiteDiscount.IsPositive() {
-		d = d.Mul(binding.SiteDiscount)
-	}
-	if binding.GlobalDiscountEnabled == 1 && binding.GlobalDiscount.IsPositive() {
-		d = d.Mul(binding.GlobalDiscount)
-	}
-	return d
 }
 
 // computeBillingRuleHold 基于 billing_rules + model_rule_bindings 计算请求级预冻结金额。
@@ -208,7 +178,7 @@ func computeBillingRuleHold(
 	timeMult decimal.Decimal,
 	serviceTier string,
 ) decimal.Decimal {
-	disc := groupRatio.Mul(bindingSiteDiscount(binding))
+	disc := groupRatio.Mul(binding.EffectiveDiscount())
 	feat := pricing.ExtractedFeatures{
 		ServiceTier:    serviceTier,
 		TimeMultiplier: &timeMult,
@@ -238,7 +208,7 @@ func computeBillingRuleActual(
 	groupRatio, byok, timeMult decimal.Decimal,
 	serviceTier string,
 ) (decimal.Decimal, string) {
-	disc := groupRatio.Mul(bindingSiteDiscount(binding)).Mul(byok)
+	disc := groupRatio.Mul(binding.EffectiveDiscount()).Mul(byok)
 	ut := pricing.UsageTokens{
 		Prompt:          u.PromptTokens,
 		Completion:      u.CompletionTokens,
@@ -254,10 +224,5 @@ func computeBillingRuleActual(
 		ServiceTier:    serviceTier,
 		TimeMultiplier: &timeMult,
 	}
-	actual, detail := pricing.ComputeCost(rule, ut, disc, feat)
-	return actual, detail
+	return pricing.ComputeCost(rule, ut, disc, feat)
 }
-
-// suppressUnusedImport 保留 bytes 导入备用（如未来 multipart 包装）。
-var _ = bytes.MinRead
-var _ = (*gin.Context)(nil)

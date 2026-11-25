@@ -3,6 +3,7 @@ package forward
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,4 +169,72 @@ func TestResolverAndCacheInvalidation(t *testing.T) {
 	if freshGot.AuthType != "bearer" {
 		t.Fatalf("expected refreshed auth_type bearer after Invalidate, got %s", freshGot.AuthType)
 	}
+}
+
+func TestJoinUpstreamURLAndConfigSecurityGuards(t *testing.T) {
+	u, err := JoinUpstreamURL("https://ark.cn-beijing.volces.com/api/v3", "/api/v3/contents/generations/tasks?foo=1")
+	if err != nil || u.String() != "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks?foo=1" {
+		t.Fatalf("unexpected deduped URL: %v err=%v", u, err)
+	}
+
+	for _, bad := range []string{
+		"https://evil.example.com/steal",
+		"//evil.example.com/steal",
+		"/v1/../../etc/passwd",
+	} {
+		if _, err := JoinUpstreamURL("https://api.openai.com/v1", bad); err == nil {
+			t.Fatalf("expected JoinUpstreamURL to reject %q", bad)
+		}
+	}
+
+	if err := ValidateConfigJSON(`{"auth_type":"evil_header"}`); err == nil {
+		t.Fatal("expected unsupported auth_type to fail")
+	}
+	if err := ValidateConfigJSON(`{"poll_path":"https://evil.com/poll"}`); err == nil {
+		t.Fatal("expected full URL poll_path to fail")
+	}
+}
+
+func TestResolverConcurrentStampedeAndZeroValue(t *testing.T) {
+	db := setupForwardTestDB(t)
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(1)
+	}
+	rule := ForwardRule{
+		EID:      "10999",
+		Name:     "Concurrent Rule",
+		Category: "视频",
+		IsActive: 1,
+		ConfigJSON: `{
+			"target_type": "volcengine",
+			"auth_type": "bearer",
+			"path_passthrough": ["/api/v3/contents/generations/tasks"],
+			"poll_path": "/api/v3/contents/generations/tasks/${task_id}"
+		}`,
+	}
+	if err := db.Create(&rule).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(
+		`INSERT INTO model_rule_bindings (model, display_name, billing_rule_id, forward_rule_ids, is_listed, is_active) VALUES (?, ?, 0, ?, 1, 1)`,
+		"seedance-conc", "Seedance Conc", fmt.Sprintf("[%d]", rule.ID),
+	).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	var zeroRes Resolver // zero-value safety test
+	var wg sync.WaitGroup
+	for range 24 {
+		wg.Go(func() {
+			got, err := zeroRes.ResolveForModel(t.Context(), db, "seedance-conc", "视频", "/api/v3/contents/generations/tasks")
+			if err != nil || got == nil || got.EID != "10999" {
+				t.Errorf("concurrent ResolveForModel failed: %+v err=%v", got, err)
+			}
+			byEID, err := zeroRes.ResolveByEID(t.Context(), db, "10999", "/v1/videos", "seedance-conc")
+			if err != nil || byEID == nil || byEID.PollPath == "" {
+				t.Errorf("concurrent ResolveByEID failed: %+v err=%v", byEID, err)
+			}
+		})
+	}
+	wg.Wait()
 }

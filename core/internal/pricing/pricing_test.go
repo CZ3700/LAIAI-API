@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -151,9 +152,9 @@ func TestTokensClaudeAndKimiCache(t *testing.T) {
 func TestTokensDoubaoChatAndMultimodalAndGPT(t *testing.T) {
 	one := dec("1")
 	doubao := &BillingRule{
-		BillingType:  BillingTypeTokens,
-		BillingRule:  "doubao_chat",
-		PricingTiers: `[{"max_prompt_tokens": 32, "max_completion_tokens": 200, "prompt_rate": "0.8", "completion_rate": "2", "cached_rate": "0.16"}]`,
+		BillingType:    BillingTypeTokens,
+		BillingRule:    "doubao_chat",
+		PricingTiers:   `[{"max_prompt_tokens": 32, "max_completion_tokens": 200, "prompt_rate": "0.8", "completion_rate": "2", "cached_rate": "0.16"}]`,
 		ExtendedConfig: `{"web_search_rate": "30"}`,
 	}
 	// 10k prompt (2k cached) + 5k completion + 2 web searches
@@ -436,5 +437,37 @@ func TestResolveModelRuleSQLite(t *testing.T) {
 	}
 	if gotBind == nil || gotRule == nil || gotRule.PID != "60001" {
 		t.Fatalf("unexpected resolved rule: %+v / %+v", gotBind, gotRule)
+	}
+}
+
+func TestRegistryExtensibilityAndErrorDistinction(t *testing.T) {
+	RegisterCalculator(BillingTypeDuration, "custom_vendor_v1", func(rule *BillingRule, _ UsageTokens, discount decimal.Decimal, feat ExtractedFeatures) (decimal.Decimal, string) {
+		sec := feat.TotalVideoSeconds()
+		return sec.Mul(rule.DurationRate).Mul(discount), "custom_vendor_v1"
+	})
+	if !IsKnownBillingRule(BillingTypeDuration, "custom_vendor_v1") {
+		t.Fatal("expected custom_vendor_v1 to be recognized")
+	}
+	if IsKnownBillingRule(BillingTypeDuration, "non_existent_rule_xyz") {
+		t.Fatal("expected unknown rule to be rejected")
+	}
+	customRule := &BillingRule{
+		BillingType:  BillingTypeDuration,
+		BillingRule:  "custom_vendor_v1",
+		DurationRate: dec("1.5"),
+	}
+	cost, detail := ComputeCost(customRule, UsageTokens{}, dec("2"), ExtractedFeatures{DurationSeconds: ptrDec("4")})
+	assertDecEq(t, "custom registered calculator", cost, dec("12"))
+	if detail != "custom_vendor_v1" {
+		t.Fatalf("unexpected detail: %q", detail)
+	}
+
+	// Empty SQLite DB without model_rule_bindings table must return an error, NOT silently swallow it
+	bareDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ResolveModelRuleContext(context.Background(), bareDB, "any-model"); err == nil {
+		t.Fatal("expected real DB error when table is missing")
 	}
 }

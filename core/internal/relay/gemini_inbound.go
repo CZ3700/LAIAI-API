@@ -1,15 +1,18 @@
 package relay
 
 import (
-	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 )
+
+var _ gin.ResponseWriter = (*geminiInboundWriter)(nil)
 
 // HandleGeminiNative 处理 Google Gemini 原生入站端点：
 // POST /v1beta/models/:modelAction（实际通配路径 /v1beta/models/*action，支持 :generateContent 与 :streamGenerateContent）。
@@ -45,10 +48,7 @@ func (r *Relay) HandleGeminiNative(c *gin.Context) {
 
 	// 桥接鉴权头到标准 Authorization: Bearer，复用 HandleChatCompletions 全套校验/计费/路由/记录。
 	if c.GetHeader("Authorization") == "" {
-		apiKey := strings.TrimSpace(c.GetHeader("x-goog-api-key"))
-		if apiKey == "" {
-			apiKey = strings.TrimSpace(c.Query("key"))
-		}
+		apiKey := cmp.Or(strings.TrimSpace(c.GetHeader("x-goog-api-key")), strings.TrimSpace(c.Query("key")))
 		if apiKey != "" {
 			c.Request.Header.Set("Authorization", "Bearer "+apiKey)
 		}
@@ -77,6 +77,27 @@ func geminiErr(c *gin.Context, status int, grpcStatus, msg string) {
 	})
 }
 
+func geminiGRPCStatusFor(httpStatus int) string {
+	switch httpStatus {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge:
+		return "INVALID_ARGUMENT"
+	case http.StatusUnauthorized:
+		return "UNAUTHENTICATED"
+	case http.StatusPaymentRequired:
+		return "FAILED_PRECONDITION"
+	case http.StatusForbidden:
+		return "PERMISSION_DENIED"
+	case http.StatusNotFound:
+		return "NOT_FOUND"
+	case http.StatusTooManyRequests:
+		return "RESOURCE_EXHAUSTED"
+	case http.StatusServiceUnavailable, http.StatusBadGateway, http.StatusGatewayTimeout:
+		return "UNAVAILABLE"
+	default:
+		return "INTERNAL"
+	}
+}
+
 func geminiToOpenAIRequest(model string, stream bool, raw []byte) ([]byte, error) {
 	var in map[string]any
 	if len(bytes.TrimSpace(raw)) > 0 {
@@ -88,7 +109,7 @@ func geminiToOpenAIRequest(model string, stream bool, raw []byte) ([]byte, error
 		in = map[string]any{}
 	}
 
-	var msgs []map[string]any
+	msgs := []map[string]any{}
 	if sys, ok := in["systemInstruction"].(map[string]any); ok {
 		if txt := joinGeminiPartsText(sys["parts"]); txt != "" {
 			msgs = append(msgs, map[string]any{"role": "system", "content": txt})
@@ -101,14 +122,14 @@ func geminiToOpenAIRequest(model string, stream bool, raw []byte) ([]byte, error
 				continue
 			}
 			role, _ := cm["role"].(string)
-			if role == "model" {
+			switch role {
+			case "model":
 				role = "assistant"
-			} else if role == "" {
+			case "":
 				role = "user"
 			}
 			parts, _ := cm["parts"].([]any)
-			msg := convertGeminiPartsToOpenAIMessage(role, parts)
-			if msg != nil {
+			if msg := convertGeminiPartsToOpenAIMessage(role, parts); msg != nil {
 				msgs = append(msgs, msg)
 			}
 		}
@@ -165,9 +186,9 @@ func joinGeminiPartsText(v any) string {
 }
 
 func convertGeminiPartsToOpenAIMessage(role string, parts []any) map[string]any {
-	var textParts []string
-	var contentBlocks []map[string]any
-	var toolCalls []map[string]any
+	textParts := []string{}
+	contentBlocks := []map[string]any{}
+	toolCalls := []map[string]any{}
 
 	for idx, p := range parts {
 		pm, ok := p.(map[string]any)
@@ -190,9 +211,12 @@ func convertGeminiPartsToOpenAIMessage(role string, parts []any) map[string]any 
 		}
 		if fc, ok := pm["functionCall"].(map[string]any); ok {
 			name, _ := fc["name"].(string)
-			argsBytes, _ := json.Marshal(fc["args"])
+			argsBytes, err := json.Marshal(fc["args"])
+			if err != nil || len(argsBytes) == 0 || string(argsBytes) == "null" {
+				argsBytes = []byte("{}")
+			}
 			toolCalls = append(toolCalls, map[string]any{
-				"id":       "call_gemini_in_" + string(rune('0'+idx%10)),
+				"id":       "call_gemini_in_" + strconv.Itoa(idx),
 				"type":     "function",
 				"function": map[string]any{"name": name, "arguments": string(argsBytes)},
 			})
@@ -276,7 +300,6 @@ func (w *geminiInboundWriter) drainSSE() {
 	for {
 		line, err := w.sseBuf.ReadString('\n')
 		if err != nil {
-			// 未完整行写回缓冲
 			if line != "" {
 				rest := line + w.sseBuf.String()
 				w.sseBuf.Reset()
@@ -302,7 +325,7 @@ func (w *geminiInboundWriter) drainSSE() {
 		if json.Unmarshal([]byte(data), &chunk) != nil {
 			continue
 		}
-		var parts []gin.H
+		parts := []gin.H{}
 		var finishReason string
 		if len(chunk.Choices) > 0 {
 			ch := chunk.Choices[0]
@@ -316,15 +339,20 @@ func (w *geminiInboundWriter) drainSSE() {
 				finishReason = mapOpenAIFinishToGemini(*ch.FinishReason)
 			}
 		}
-		out := gin.H{
-			"modelVersion": w.model,
-			"candidates": []gin.H{{
-				"index":   0,
-				"content": gin.H{"role": "model", "parts": parts},
-			}},
+		// 跳过纯 role 宣告等无有效载荷帧，避免下发空 parts 触发严格 SDK 报错
+		if len(parts) == 0 && finishReason == "" && chunk.Usage == nil {
+			continue
+		}
+		cand := gin.H{
+			"index":   0,
+			"content": gin.H{"role": "model", "parts": parts},
 		}
 		if finishReason != "" {
-			out["candidates"].([]gin.H)[0]["finishReason"] = finishReason
+			cand["finishReason"] = finishReason
+		}
+		out := gin.H{
+			"modelVersion": w.model,
+			"candidates":   []gin.H{cand},
 		}
 		if chunk.Usage != nil {
 			out["usageMetadata"] = buildGeminiUsageMetadata(*chunk.Usage)
@@ -359,7 +387,7 @@ func (w *geminiInboundWriter) finalize() {
 			"error": gin.H{
 				"code":    w.status,
 				"message": msg,
-				"status":  "FAILED_PRECONDITION",
+				"status":  geminiGRPCStatusFor(w.status),
 			},
 		})
 		_, _ = w.ResponseWriter.Write(b)
@@ -395,7 +423,7 @@ func (w *geminiInboundWriter) finalize() {
 		_, _ = w.ResponseWriter.Write(raw)
 		return
 	}
-	var parts []gin.H
+	parts := []gin.H{}
 	finishReason := "STOP"
 	if len(parsed.Choices) > 0 {
 		ch := parsed.Choices[0]
@@ -416,12 +444,8 @@ func (w *geminiInboundWriter) finalize() {
 			finishReason = mapOpenAIFinishToGemini(ch.FinishReason)
 		}
 	}
-	modelVer := parsed.Model
-	if modelVer == "" {
-		modelVer = w.model
-	}
 	resp := gin.H{
-		"modelVersion": modelVer,
+		"modelVersion": cmp.Or(parsed.Model, w.model),
 		"candidates": []gin.H{{
 			"index":        0,
 			"content":      gin.H{"role": "model", "parts": parts},
@@ -455,5 +479,3 @@ func buildGeminiUsageMetadata(u usage) gin.H {
 		"thoughtsTokenCount":      u.CompletionTokensDetails.ReasoningTokens,
 	}
 }
-
-var _ = bufio.ErrBufferFull

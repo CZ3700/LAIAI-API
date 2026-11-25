@@ -3,7 +3,7 @@ package pricing
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shopspring/decimal"
@@ -261,8 +261,8 @@ func computeRequestsCost(
 
 		var tiers []VolcSeedreamTier
 		if json.Unmarshal([]byte(rule.PricingTiers), &tiers) == nil && len(tiers) > 0 {
-			sort.SliceStable(tiers, func(i, j int) bool {
-				return tiers[i].MaxPixelsWan.LessThan(tiers[j].MaxPixelsWan)
+			slices.SortStableFunc(tiers, func(a, b VolcSeedreamTier) int {
+				return a.MaxPixelsWan.Cmp(b.MaxPixelsWan)
 			})
 			var matched *VolcSeedreamTier
 			for i := range tiers {

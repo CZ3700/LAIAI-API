@@ -3,19 +3,18 @@ package pricing
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/shopspring/decimal"
 )
 
+var pixelSizeReplacer = strings.NewReplacer("*", "x", "\u00d7", "x", ":", "x")
+
 func splitPromptSubsets(prompt, cached, cacheWrite int64, billCached, billWrite, isOpenAI bool) (int64, int64, int64) {
-	if cached < 0 {
-		cached = 0
-	}
-	if cacheWrite < 0 {
-		cacheWrite = 0
-	}
+	cached = max(0, cached)
+	cacheWrite = max(0, cacheWrite)
 	var billC, billW int64
 	if billCached {
 		billC = cached
@@ -48,19 +47,7 @@ func extDecimal(ext map[string]json.RawMessage, key string) (decimal.Decimal, bo
 	if !ok {
 		return decimal.Zero, false
 	}
-	var num json.Number
-	if err := json.Unmarshal(raw, &num); err == nil {
-		if d, err := decimal.NewFromString(num.String()); err == nil {
-			return d, true
-		}
-	}
-	var str string
-	if err := json.Unmarshal(raw, &str); err == nil {
-		if d, err := decimal.NewFromString(strings.TrimSpace(str)); err == nil {
-			return d, true
-		}
-	}
-	return decimal.Zero, false
+	return parseJSONDecimal(raw)
 }
 
 func extBool(ext map[string]json.RawMessage, key string, def bool) bool {
@@ -81,11 +68,7 @@ func extBool(ext map[string]json.RawMessage, key string, def bool) bool {
 func freeImageCountFromExt(extJSON string, def int64) int64 {
 	ext := parseExtMap(extJSON)
 	if d, ok := extDecimal(ext, "free_image_count"); ok {
-		v := d.IntPart()
-		if v < 0 {
-			return 0
-		}
-		return v
+		return max(0, d.IntPart())
 	}
 	return def
 }
@@ -98,11 +81,10 @@ func lookupPriceTable(ext map[string]json.RawMessage, tableKey string) (decimal.
 	if rawDisabled, ok := ext["price_table_disabled"]; ok {
 		var disabled []string
 		if json.Unmarshal(rawDisabled, &disabled) == nil {
-			lk := strings.ToLower(tableKey)
-			for _, k := range disabled {
-				if strings.ToLower(k) == lk {
-					return decimal.Zero, false
-				}
+			if slices.ContainsFunc(disabled, func(k string) bool {
+				return strings.EqualFold(k, tableKey)
+			}) {
+				return decimal.Zero, false
 			}
 		}
 	}
@@ -119,9 +101,8 @@ func lookupPriceTable(ext map[string]json.RawMessage, tableKey string) (decimal.
 			return d, true
 		}
 	}
-	lk := strings.ToLower(tableKey)
 	for k, raw := range pt {
-		if strings.ToLower(k) == lk {
+		if strings.EqualFold(k, tableKey) {
 			if d, ok := parseJSONDecimal(raw); ok {
 				return d, true
 			}
@@ -220,19 +201,16 @@ func translateBillingKey(key string) string {
 // NormalizePixelSize 将 size 统一规范为 "WxH"（支持 x/*/\u00d7/: 与 1k/2k/4k）。
 func NormalizePixelSize(size string) string {
 	s := strings.ToLower(strings.TrimSpace(size))
-	if strings.HasSuffix(s, "k") {
-		numStr := strings.TrimSuffix(s, "k")
+	if numStr, ok := strings.CutSuffix(s, "k"); ok {
 		if d, err := decimal.NewFromString(numStr); err == nil && d.IsPositive() {
 			px := d.Mul(decimal.NewFromInt(1024)).Round(0).IntPart()
 			return fmt.Sprintf("%dx%d", px, px)
 		}
 	}
-	r := strings.NewReplacer("*", "x", "\u00d7", "x", ":", "x")
-	norm := r.Replace(s)
-	parts := strings.Split(norm, "x")
-	if len(parts) == 2 {
-		w, e1 := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 32)
-		h, e2 := strconv.ParseUint(strings.TrimSpace(parts[1]), 10, 32)
+	norm := pixelSizeReplacer.Replace(s)
+	if wRaw, hRaw, ok := strings.Cut(norm, "x"); ok && !strings.Contains(hRaw, "x") {
+		w, e1 := strconv.ParseUint(strings.TrimSpace(wRaw), 10, 32)
+		h, e2 := strconv.ParseUint(strings.TrimSpace(hRaw), 10, 32)
 		if e1 == nil && e2 == nil {
 			return fmt.Sprintf("%dx%d", w, h)
 		}

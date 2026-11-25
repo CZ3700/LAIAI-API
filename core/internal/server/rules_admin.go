@@ -1,12 +1,15 @@
 package server
 
 import (
+	"cmp"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -32,7 +35,7 @@ func isAllDigits(s string) bool {
 	if s == "" {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] < '0' || s[i] > '9' {
 			return false
 		}
@@ -40,22 +43,37 @@ func isAllDigits(s string) bool {
 	return true
 }
 
-func generateUniqueCode5(db *gorm.DB, table, col, prefix string) (string, error) {
+func generateUniqueCode5(ctx context.Context, db *gorm.DB, table, col, prefix string) (string, error) {
 	for range 25 {
 		n, err := rand.Int(rand.Reader, big.NewInt(10000))
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("read crypto/rand: %w", err)
 		}
 		code := fmt.Sprintf("%s%04d", prefix, n.Int64())
 		var cnt int64
-		if err := db.Table(table).Where(col+" = ?", code).Count(&cnt).Error; err != nil {
-			return "", err
+		if err := db.WithContext(ctx).Table(table).Where(col+" = ?", code).Count(&cnt).Error; err != nil {
+			return "", fmt.Errorf("check unique %s.%s: %w", table, col, err)
 		}
 		if cnt == 0 {
 			return code, nil
 		}
 	}
 	return "", errors.New("failed to allocate unique 5-digit code")
+}
+
+func deduplicateUint64s(in []uint64) []uint64 {
+	if len(in) <= 1 {
+		return slices.Clone(in)
+	}
+	seen := make(map[uint64]struct{}, len(in))
+	out := make([]uint64, 0, len(in))
+	for _, id := range in {
+		if _, dup := seen[id]; !dup {
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // ── 渠道分类 / 分组（channel_categories） ────────────────────────
@@ -68,8 +86,8 @@ type channelCategoryReq struct {
 }
 
 func (s *Server) adminListChannelCategories(c *gin.Context) {
-	var rows []forward.ChannelCategory
-	if err := s.readOnly().Order("sort_order ASC, id ASC").Find(&rows).Error; err != nil {
+	rows := []forward.ChannelCategory{}
+	if err := s.readOnly().WithContext(c.Request.Context()).Order("sort_order ASC, id ASC").Find(&rows).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "list channel categories failed")
 		return
 	}
@@ -97,7 +115,7 @@ func (s *Server) adminCreateChannelCategory(c *gin.Context) {
 		SortOrder:   req.SortOrder,
 		IsActive:    active,
 	}
-	if err := s.db.Create(cat).Error; err != nil {
+	if err := s.db.WithContext(c.Request.Context()).Create(cat).Error; err != nil {
 		fail(c, http.StatusConflict, "channel category already exists or invalid")
 		return
 	}
@@ -142,7 +160,7 @@ func (s *Server) adminUpdateChannelCategory(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "nothing to update")
 		return
 	}
-	res := s.db.Model(&forward.ChannelCategory{}).Where("id = ?", id).Updates(updates)
+	res := s.db.WithContext(c.Request.Context()).Model(&forward.ChannelCategory{}).Where("id = ?", id).Updates(updates)
 	if res.Error != nil {
 		fail(c, http.StatusConflict, "update channel category failed")
 		return
@@ -160,15 +178,20 @@ func (s *Server) adminDeleteChannelCategory(c *gin.Context) {
 	if !ok {
 		return
 	}
+	db := s.db.WithContext(c.Request.Context())
 	var used int64
-	if err := s.db.Table("channels").Where("category_id = ?", id).Count(&used).Error; err == nil && used > 0 {
+	if err := db.Table("channels").Where("category_id = ?", id).Count(&used).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "check channel category usage failed")
+		return
+	}
+	if used > 0 {
 		c.JSON(http.StatusConflict, gin.H{
-			"error":            "channel category is referenced by existing channels",
+			"error":           "channel category is referenced by existing channels",
 			"channels_in_use": used,
 		})
 		return
 	}
-	res := s.db.Where("id = ?", id).Delete(&forward.ChannelCategory{})
+	res := db.Where("id = ?", id).Delete(&forward.ChannelCategory{})
 	if res.Error != nil {
 		fail(c, http.StatusInternalServerError, "delete channel category failed")
 		return
@@ -202,11 +225,14 @@ type billingRuleReq struct {
 	SortOrder               *int             `json:"sort_order"`
 }
 
-func validateBillingRuleFields(billingType, pricingTiers, extConfig string, rates ...*decimal.Decimal) error {
+func validateBillingRuleFields(billingType, billingRule, pricingTiers, extConfig string, rates ...*decimal.Decimal) error {
 	switch billingType {
 	case pricing.BillingTypeTokens, pricing.BillingTypeRequests, pricing.BillingTypeDuration:
 	default:
 		return errors.New("billing_type must be tokens|requests|duration")
+	}
+	if !pricing.IsKnownBillingRule(billingType, billingRule) {
+		return fmt.Errorf("unknown billing_rule %q for billing_type %q", billingRule, billingType)
 	}
 	for _, r := range rates {
 		if r != nil && r.IsNegative() {
@@ -219,9 +245,10 @@ func validateBillingRuleFields(billingType, pricingTiers, extConfig string, rate
 	return pricing.ValidateTimeMultiplierConfig(extConfig)
 }
 
-func (s *Server) listedModelsUsingBillingRule(ruleID uint64) ([]string, error) {
-	var models []string
-	err := s.db.Table("model_rule_bindings").
+func (s *Server) listedModelsUsingBillingRule(ctx context.Context, ruleID uint64) ([]string, error) {
+	models := []string{}
+	err := s.db.WithContext(ctx).
+		Table("model_rule_bindings").
 		Where("billing_rule_id = ? AND is_listed = 1", ruleID).
 		Order("model ASC").
 		Pluck("model", &models).Error
@@ -229,8 +256,8 @@ func (s *Server) listedModelsUsingBillingRule(ruleID uint64) ([]string, error) {
 }
 
 func (s *Server) adminListBillingRules(c *gin.Context) {
-	var rows []pricing.BillingRule
-	if err := s.readOnly().Order("sort_order ASC, id ASC").Find(&rows).Error; err != nil {
+	rows := []pricing.BillingRule{}
+	if err := s.readOnly().WithContext(c.Request.Context()).Order("sort_order ASC, id ASC").Find(&rows).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "list billing rules failed")
 		return
 	}
@@ -238,6 +265,7 @@ func (s *Server) adminListBillingRules(c *gin.Context) {
 }
 
 func (s *Server) adminCreateBillingRule(c *gin.Context) {
+	ctx := c.Request.Context()
 	var req billingRuleReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid request body")
@@ -248,18 +276,10 @@ func (s *Server) adminCreateBillingRule(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "name required")
 		return
 	}
-	bType := strings.TrimSpace(req.BillingType)
-	if bType == "" {
-		bType = pricing.BillingTypeTokens
-	}
-	bRule := strings.TrimSpace(req.BillingRule)
-	if bRule == "" {
-		bRule = "standard"
-	}
-	pType := strings.TrimSpace(req.PricingType)
-	if pType == "" {
-		pType = "standard"
-	}
+	bType := cmp.Or(strings.TrimSpace(req.BillingType), pricing.BillingTypeTokens)
+	bRule := cmp.Or(strings.TrimSpace(req.BillingRule), "standard")
+	pType := cmp.Or(strings.TrimSpace(req.PricingType), "standard")
+
 	tiers := "[]"
 	if req.PricingTiers != nil && strings.TrimSpace(*req.PricingTiers) != "" {
 		tiers = strings.TrimSpace(*req.PricingTiers)
@@ -269,7 +289,7 @@ func (s *Server) adminCreateBillingRule(c *gin.Context) {
 		extCfg = strings.TrimSpace(*req.ExtendedConfig)
 	}
 	if err := validateBillingRuleFields(
-		bType, tiers, extCfg,
+		bType, bRule, tiers, extCfg,
 		req.PromptRate, req.CompletionRate, req.CachedRate,
 		req.ClaudeCacheCreationRate, req.ClaudeCacheReadRate, req.FixedRate, req.DurationRate,
 	); err != nil {
@@ -280,7 +300,7 @@ func (s *Server) adminCreateBillingRule(c *gin.Context) {
 	pid := strings.TrimSpace(req.PID)
 	if pid == "" {
 		var err error
-		pid, err = generateUniqueCode5(s.db, "billing_rules", "pid", "6")
+		pid, err = generateUniqueCode5(ctx, s.db, "billing_rules", "pid", "6")
 		if err != nil {
 			fail(c, http.StatusInternalServerError, "generate pid failed")
 			return
@@ -323,7 +343,7 @@ func (s *Server) adminCreateBillingRule(c *gin.Context) {
 		IsActive:                active,
 		SortOrder:               sortOrder,
 	}
-	if err := s.db.Create(rule).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(rule).Error; err != nil {
 		fail(c, http.StatusConflict, "billing rule pid or name already exists")
 		return
 	}
@@ -333,12 +353,14 @@ func (s *Server) adminCreateBillingRule(c *gin.Context) {
 }
 
 func (s *Server) adminUpdateBillingRule(c *gin.Context) {
+	ctx := c.Request.Context()
 	id, ok := parseUintIDParam(c, "id")
 	if !ok {
 		return
 	}
+	db := s.db.WithContext(ctx)
 	var cur pricing.BillingRule
-	if err := s.db.First(&cur, id).Error; err != nil {
+	if err := db.First(&cur, id).Error; err != nil {
 		fail(c, http.StatusNotFound, "billing rule not found")
 		return
 	}
@@ -348,26 +370,18 @@ func (s *Server) adminUpdateBillingRule(c *gin.Context) {
 		return
 	}
 
-	effType := cur.BillingType
-	if strings.TrimSpace(req.BillingType) != "" {
-		effType = strings.TrimSpace(req.BillingType)
-	}
+	effType := cmp.Or(strings.TrimSpace(req.BillingType), cur.BillingType)
+	effRule := cmp.Or(strings.TrimSpace(req.BillingRule), cur.BillingRule)
 	effTiers := cur.PricingTiers
 	if req.PricingTiers != nil {
-		effTiers = strings.TrimSpace(*req.PricingTiers)
-		if effTiers == "" {
-			effTiers = "[]"
-		}
+		effTiers = cmp.Or(strings.TrimSpace(*req.PricingTiers), "[]")
 	}
 	effExt := cur.ExtendedConfig
 	if req.ExtendedConfig != nil {
-		effExt = strings.TrimSpace(*req.ExtendedConfig)
-		if effExt == "" {
-			effExt = "{}"
-		}
+		effExt = cmp.Or(strings.TrimSpace(*req.ExtendedConfig), "{}")
 	}
 	if err := validateBillingRuleFields(
-		effType, effTiers, effExt,
+		effType, effRule, effTiers, effExt,
 		req.PromptRate, req.CompletionRate, req.CachedRate,
 		req.ClaudeCacheCreationRate, req.ClaudeCacheReadRate, req.FixedRate, req.DurationRate,
 	); err != nil {
@@ -376,7 +390,12 @@ func (s *Server) adminUpdateBillingRule(c *gin.Context) {
 	}
 
 	if req.IsActive != nil && !*req.IsActive && cur.IsActive == 1 {
-		if models, err := s.listedModelsUsingBillingRule(id); err == nil && len(models) > 0 {
+		models, err := s.listedModelsUsingBillingRule(ctx, id)
+		if err != nil {
+			fail(c, http.StatusInternalServerError, "check billing rule references failed")
+			return
+		}
+		if len(models) > 0 {
 			c.JSON(http.StatusConflict, gin.H{
 				"error":                    "billing rule is still used by listed models",
 				"listed_models_using_rule": models,
@@ -393,7 +412,7 @@ func (s *Server) adminUpdateBillingRule(c *gin.Context) {
 		updates["billing_type"] = effType
 	}
 	if strings.TrimSpace(req.BillingRule) != "" {
-		updates["billing_rule"] = strings.TrimSpace(req.BillingRule)
+		updates["billing_rule"] = effRule
 	}
 	if strings.TrimSpace(req.PricingType) != "" {
 		updates["pricing_type"] = strings.TrimSpace(req.PricingType)
@@ -436,7 +455,7 @@ func (s *Server) adminUpdateBillingRule(c *gin.Context) {
 		return
 	}
 
-	if err := s.db.Model(&pricing.BillingRule{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+	if err := db.Model(&pricing.BillingRule{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 		fail(c, http.StatusConflict, "update billing rule failed")
 		return
 	}
@@ -446,12 +465,14 @@ func (s *Server) adminUpdateBillingRule(c *gin.Context) {
 }
 
 func (s *Server) adminDeleteBillingRule(c *gin.Context) {
+	ctx := c.Request.Context()
 	id, ok := parseUintIDParam(c, "id")
 	if !ok {
 		return
 	}
+	db := s.db.WithContext(ctx)
 	var cur pricing.BillingRule
-	if err := s.db.First(&cur, id).Error; err != nil {
+	if err := db.First(&cur, id).Error; err != nil {
 		fail(c, http.StatusNotFound, "billing rule not found")
 		return
 	}
@@ -459,14 +480,19 @@ func (s *Server) adminDeleteBillingRule(c *gin.Context) {
 		fail(c, http.StatusConflict, "system billing rule cannot be deleted")
 		return
 	}
-	if models, err := s.listedModelsUsingBillingRule(id); err == nil && len(models) > 0 {
+	models, err := s.listedModelsUsingBillingRule(ctx, id)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "check billing rule references failed")
+		return
+	}
+	if len(models) > 0 {
 		c.JSON(http.StatusConflict, gin.H{
 			"error":                    "billing rule is still used by listed models",
 			"listed_models_using_rule": models,
 		})
 		return
 	}
-	if err := s.db.Where("id = ?", id).Delete(&pricing.BillingRule{}).Error; err != nil {
+	if err := db.Where("id = ?", id).Delete(&pricing.BillingRule{}).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "delete billing rule failed")
 		return
 	}
@@ -490,8 +516,8 @@ type forwardRuleReq struct {
 }
 
 func (s *Server) adminListForwardRules(c *gin.Context) {
-	var rows []forward.ForwardRule
-	if err := s.readOnly().Order("sort_order ASC, id ASC").Find(&rows).Error; err != nil {
+	rows := []forward.ForwardRule{}
+	if err := s.readOnly().WithContext(c.Request.Context()).Order("sort_order ASC, id ASC").Find(&rows).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "list forward rules failed")
 		return
 	}
@@ -499,6 +525,7 @@ func (s *Server) adminListForwardRules(c *gin.Context) {
 }
 
 func (s *Server) adminCreateForwardRule(c *gin.Context) {
+	ctx := c.Request.Context()
 	var req forwardRuleReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid request body")
@@ -521,7 +548,7 @@ func (s *Server) adminCreateForwardRule(c *gin.Context) {
 	eid := strings.TrimSpace(req.EID)
 	if eid == "" {
 		var err error
-		eid, err = generateUniqueCode5(s.db, "forward_rules", "eid", "1")
+		eid, err = generateUniqueCode5(ctx, s.db, "forward_rules", "eid", "1")
 		if err != nil {
 			fail(c, http.StatusInternalServerError, "generate eid failed")
 			return
@@ -531,14 +558,6 @@ func (s *Server) adminCreateForwardRule(c *gin.Context) {
 		return
 	}
 
-	ruleType := strings.TrimSpace(req.RuleType)
-	if ruleType == "" {
-		ruleType = "openai"
-	}
-	cat := strings.TrimSpace(req.Category)
-	if cat == "" {
-		cat = "聊天"
-	}
 	active := int8(1)
 	if req.IsActive != nil {
 		active = b2i8(*req.IsActive)
@@ -559,15 +578,15 @@ func (s *Server) adminCreateForwardRule(c *gin.Context) {
 	rule := &forward.ForwardRule{
 		EID:         eid,
 		Name:        name,
-		RuleType:    ruleType,
-		Category:    cat,
+		RuleType:    cmp.Or(strings.TrimSpace(req.RuleType), "openai"),
+		Category:    cmp.Or(strings.TrimSpace(req.Category), "聊天"),
 		ConfigJSON:  cfg,
 		Description: desc,
 		Remark:      remark,
 		IsActive:    active,
 		SortOrder:   sortOrder,
 	}
-	if err := s.db.Create(rule).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(rule).Error; err != nil {
 		fail(c, http.StatusConflict, "forward rule eid or name already exists")
 		return
 	}
@@ -577,12 +596,14 @@ func (s *Server) adminCreateForwardRule(c *gin.Context) {
 }
 
 func (s *Server) adminUpdateForwardRule(c *gin.Context) {
+	ctx := c.Request.Context()
 	id, ok := parseUintIDParam(c, "id")
 	if !ok {
 		return
 	}
+	db := s.db.WithContext(ctx)
 	var cur forward.ForwardRule
-	if err := s.db.First(&cur, id).Error; err != nil {
+	if err := db.First(&cur, id).Error; err != nil {
 		fail(c, http.StatusNotFound, "forward rule not found")
 		return
 	}
@@ -602,10 +623,7 @@ func (s *Server) adminUpdateForwardRule(c *gin.Context) {
 		updates["category"] = strings.TrimSpace(req.Category)
 	}
 	if req.ConfigJSON != nil {
-		cfg := strings.TrimSpace(*req.ConfigJSON)
-		if cfg == "" {
-			cfg = "{}"
-		}
+		cfg := cmp.Or(strings.TrimSpace(*req.ConfigJSON), "{}")
 		if err := forward.ValidateConfigJSON(cfg); err != nil {
 			fail(c, http.StatusBadRequest, err.Error())
 			return
@@ -628,7 +646,7 @@ func (s *Server) adminUpdateForwardRule(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "nothing to update")
 		return
 	}
-	if err := s.db.Model(&forward.ForwardRule{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+	if err := db.Model(&forward.ForwardRule{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 		fail(c, http.StatusConflict, "update forward rule failed")
 		return
 	}
@@ -638,12 +656,14 @@ func (s *Server) adminUpdateForwardRule(c *gin.Context) {
 }
 
 func (s *Server) adminDeleteForwardRule(c *gin.Context) {
+	ctx := c.Request.Context()
 	id, ok := parseUintIDParam(c, "id")
 	if !ok {
 		return
 	}
+	db := s.db.WithContext(ctx)
 	var cur forward.ForwardRule
-	if err := s.db.First(&cur, id).Error; err != nil {
+	if err := db.First(&cur, id).Error; err != nil {
 		fail(c, http.StatusNotFound, "forward rule not found")
 		return
 	}
@@ -651,7 +671,7 @@ func (s *Server) adminDeleteForwardRule(c *gin.Context) {
 		fail(c, http.StatusConflict, "system forward rule cannot be deleted")
 		return
 	}
-	if err := s.db.Where("id = ?", id).Delete(&forward.ForwardRule{}).Error; err != nil {
+	if err := db.Where("id = ?", id).Delete(&forward.ForwardRule{}).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "delete forward rule failed")
 		return
 	}
@@ -681,8 +701,8 @@ type modelRuleBindingReq struct {
 }
 
 func (s *Server) adminListModelRuleBindings(c *gin.Context) {
-	var rows []pricing.ModelRuleBinding
-	if err := s.readOnly().Order("sort_order ASC, model ASC").Find(&rows).Error; err != nil {
+	rows := []pricing.ModelRuleBinding{}
+	if err := s.readOnly().WithContext(c.Request.Context()).Order("sort_order ASC, model ASC").Find(&rows).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "list model rule bindings failed")
 		return
 	}
@@ -690,29 +710,29 @@ func (s *Server) adminListModelRuleBindings(c *gin.Context) {
 }
 
 func (s *Server) adminUpsertModelRuleBinding(c *gin.Context) {
+	ctx := c.Request.Context()
+	db := s.db.WithContext(ctx)
 	var req modelRuleBindingReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	model := strings.TrimSpace(c.Param("model"))
-	if model == "" {
-		model = strings.TrimSpace(req.Model)
-	}
+	model := cmp.Or(strings.TrimSpace(c.Param("model")), strings.TrimSpace(req.Model))
 	if model == "" {
 		fail(c, http.StatusBadRequest, "model required")
 		return
 	}
 	if req.BillingRuleID > 0 {
 		var cnt int64
-		if err := s.db.Table("billing_rules").Where("id = ?", req.BillingRuleID).Count(&cnt).Error; err != nil || cnt == 0 {
+		if err := db.Table("billing_rules").Where("id = ?", req.BillingRuleID).Count(&cnt).Error; err != nil || cnt == 0 {
 			fail(c, http.StatusBadRequest, "referenced billing_rule_id not found")
 			return
 		}
 	}
-	if len(req.ForwardRuleIDs) > 0 {
+	uniqueFwdIDs := deduplicateUint64s(req.ForwardRuleIDs)
+	if len(uniqueFwdIDs) > 0 {
 		var cnt int64
-		if err := s.db.Table("forward_rules").Where("id IN ?", req.ForwardRuleIDs).Count(&cnt).Error; err != nil || int(cnt) != len(req.ForwardRuleIDs) {
+		if err := db.Table("forward_rules").Where("id IN ?", uniqueFwdIDs).Count(&cnt).Error; err != nil || cnt != int64(len(uniqueFwdIDs)) {
 			fail(c, http.StatusBadRequest, "referenced forward_rule_ids contain unknown id")
 			return
 		}
@@ -743,8 +763,8 @@ func (s *Server) adminUpsertModelRuleBinding(c *gin.Context) {
 		preDed = *req.PreDeduction
 	}
 	fwdJSON := "[]"
-	if len(req.ForwardRuleIDs) > 0 {
-		b, _ := json.Marshal(req.ForwardRuleIDs)
+	if len(uniqueFwdIDs) > 0 {
+		b, _ := json.Marshal(uniqueFwdIDs)
 		fwdJSON = string(b)
 	}
 	isListed := int8(1)
@@ -785,7 +805,7 @@ func (s *Server) adminUpsertModelRuleBinding(c *gin.Context) {
 		IsActive:              isActive,
 		SortOrder:             req.SortOrder,
 	}
-	if err := s.db.Clauses(clause.OnConflict{
+	if err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "model"}},
 		UpdateAll: true,
 	}).Create(&row).Error; err != nil {
@@ -804,7 +824,7 @@ func (s *Server) adminDeleteModelRuleBinding(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "model required")
 		return
 	}
-	res := s.db.Where("model = ?", model).Delete(&pricing.ModelRuleBinding{})
+	res := s.db.WithContext(c.Request.Context()).Where("model = ?", model).Delete(&pricing.ModelRuleBinding{})
 	if res.Error != nil {
 		fail(c, http.StatusInternalServerError, "delete model rule binding failed")
 		return

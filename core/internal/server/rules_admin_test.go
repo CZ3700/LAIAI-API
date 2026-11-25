@@ -183,6 +183,15 @@ func TestRulesAdminCRUDAndGuards(t *testing.T) {
 		t.Fatalf("invalid time window: got %d, want 400", wBadTM.Code)
 	}
 
+	wBadRuleName := adminDo(t, f, http.MethodPost, "/api/admin/billing-rules", map[string]any{
+		"name":         "Typo Billing Rule",
+		"billing_type": "duration",
+		"billing_rule": "kling_typo_unknown",
+	}, true)
+	if wBadRuleName.Code != http.StatusBadRequest {
+		t.Fatalf("unknown billing_rule: got %d, want 400", wBadRuleName.Code)
+	}
+
 	wBR := adminDo(t, f, http.MethodPost, "/api/admin/billing-rules", map[string]any{
 		"name":         "Seedance 2.0",
 		"billing_type": "tokens",
@@ -209,12 +218,19 @@ func TestRulesAdminCRUDAndGuards(t *testing.T) {
 		t.Fatalf("expected auto 5-digit 6xxxx pid, got %q", brResp.Rule.PID)
 	}
 
-	// 4. Forward Rule CRUD + invalid JSON guard
+	// 4. Forward Rule CRUD + invalid JSON & SSRF path guard
 	wBadFR := adminDo(t, f, http.MethodPost, "/api/admin/forward-rules", map[string]any{
 		"name": "bad json", "config_json": "{broken",
 	}, true)
 	if wBadFR.Code != http.StatusBadRequest {
 		t.Fatalf("invalid forward config_json: got %d, want 400", wBadFR.Code)
+	}
+	wSSRFPath := adminDo(t, f, http.MethodPost, "/api/admin/forward-rules", map[string]any{
+		"name":        "ssrf poll path",
+		"config_json": `{"poll_path":"https://evil.example.com/poll"}`,
+	}, true)
+	if wSSRFPath.Code != http.StatusBadRequest {
+		t.Fatalf("ssrf poll_path should be rejected with 400, got %d", wSSRFPath.Code)
 	}
 
 	wFR := adminDo(t, f, http.MethodPost, "/api/admin/forward-rules", map[string]any{
@@ -243,12 +259,12 @@ func TestRulesAdminCRUDAndGuards(t *testing.T) {
 		t.Fatalf("expected auto 5-digit 1xxxx eid, got %q", frResp.Rule.EID)
 	}
 
-	// 5. Bind Model -> BillingRule + ForwardRule + test forwardResolver & 409 guards
+	// 5. Bind Model -> BillingRule + ForwardRule (with duplicate IDs deduplicated) + test forwardResolver & 409 guards
 	wBind := adminDo(t, f, http.MethodPost, "/api/admin/model-rule-bindings", map[string]any{
 		"model":            "doubao-seedance-2-0",
 		"display_name":     "Seedance 2.0",
 		"billing_rule_id":  brResp.Rule.ID,
-		"forward_rule_ids": []uint64{frResp.Rule.ID},
+		"forward_rule_ids": []uint64{frResp.Rule.ID, frResp.Rule.ID},
 		"is_listed":        true,
 	}, true)
 	if wBind.Code != http.StatusOK {

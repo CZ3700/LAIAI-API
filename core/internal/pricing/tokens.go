@@ -3,7 +3,7 @@ package pricing
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -133,8 +133,8 @@ func computeTokensCost(
 	if !isOverridden && rule.BillingRule == "tiered" {
 		var tiers []PricingTier
 		_ = json.Unmarshal([]byte(rule.PricingTiers), &tiers)
-		sort.SliceStable(tiers, func(i, j int) bool {
-			return tiers[i].MaxPromptTokens.LessThan(tiers[j].MaxPromptTokens)
+		slices.SortStableFunc(tiers, func(a, b PricingTier) int {
+			return a.MaxPromptTokens.Cmp(b.MaxPromptTokens)
 		})
 		pK := decimal.NewFromInt(promptTokens).Div(oneThousand)
 		cK := decimal.NewFromInt(completionTokens).Div(oneThousand)
@@ -172,8 +172,8 @@ func computeTokensCost(
 	} else if !isOverridden && rule.BillingRule == "doubao_chat" {
 		var tiers []PricingTier
 		_ = json.Unmarshal([]byte(rule.PricingTiers), &tiers)
-		sort.SliceStable(tiers, func(i, j int) bool {
-			return tiers[i].MaxPromptTokens.LessThan(tiers[j].MaxPromptTokens)
+		slices.SortStableFunc(tiers, func(a, b PricingTier) int {
+			return a.MaxPromptTokens.Cmp(b.MaxPromptTokens)
 		})
 		pK := decimal.NewFromInt(promptTokens).Div(oneThousand)
 		cK := decimal.NewFromInt(completionTokens).Div(oneThousand)

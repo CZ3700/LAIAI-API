@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -34,9 +34,12 @@ func isMissingRuleTable(err error) bool {
 		strings.Contains(msg, "does not exist")
 }
 
-func resolveTaskBillingRule(db *gorm.DB, model string) (*pricing.ModelRuleBinding, *pricing.BillingRule) {
-	b, rule, err := pricing.ResolveModelRule(db, model)
+func (s *Service) resolveTaskBillingRule(ctx context.Context, model string) (*pricing.ModelRuleBinding, *pricing.BillingRule) {
+	b, rule, err := pricing.ResolveModelRuleContext(ctx, s.DB, model)
 	if err != nil {
+		if !isMissingRuleTable(err) && s.Log != nil {
+			s.Log.Warn("task billing rule lookup failed, falling back to model_prices", "model", model, "err", err)
+		}
 		return nil, nil
 	}
 	return b, rule
@@ -47,15 +50,26 @@ func (s *Service) resolveTaskForward(ctx context.Context, model, reqPath string)
 		return nil
 	}
 	fwd, err := s.Forward.ResolveForModel(ctx, s.DB, model, "视频", reqPath)
-	if err != nil && !isMissingRuleTable(err) {
+	if err != nil && !isMissingRuleTable(err) && s.Log != nil {
 		s.Log.Warn("task forward rule resolve failed", "model", model, "err", err)
 	}
 	return fwd
 }
 
 func (s *Service) resolveTaskForwardByEID(ctx context.Context, eid, model string) *forward.ResolvedForward {
-	if strings.TrimSpace(eid) == "" || s.DB == nil {
+	eid = strings.TrimSpace(eid)
+	if eid == "" || s.DB == nil {
 		return nil
+	}
+	// 优先走内存快照缓存，避免轮询协程每轮查库
+	if s.Forward != nil {
+		fwd, err := s.Forward.ResolveByEID(ctx, s.DB, eid, "/v1/videos", model)
+		if err == nil {
+			return fwd
+		}
+		if !isMissingRuleTable(err) && s.Log != nil {
+			s.Log.Warn("task forward EID cache lookup failed", "eid", eid, "err", err)
+		}
 	}
 	var row forward.ForwardRule
 	if err := s.DB.WithContext(ctx).Where("eid = ? AND is_active = 1", eid).First(&row).Error; err != nil {
@@ -153,22 +167,8 @@ func encodeFeaturesSnapshot(feat pricing.ExtractedFeatures) string {
 	return string(b)
 }
 
-func bindingSiteDiscount(b *pricing.ModelRuleBinding) decimal.Decimal {
-	d := decimal.NewFromInt(1)
-	if b == nil {
-		return d
-	}
-	if b.SiteDiscountEnabled == 1 && b.SiteDiscount.IsPositive() {
-		d = d.Mul(b.SiteDiscount)
-	}
-	if b.GlobalDiscountEnabled == 1 && b.GlobalDiscount.IsPositive() {
-		d = d.Mul(b.GlobalDiscount)
-	}
-	return d
-}
-
 func computeTaskRuleHold(b *pricing.ModelRuleBinding, rule *pricing.BillingRule, estTokens int64, ratio decimal.Decimal, feat pricing.ExtractedFeatures) decimal.Decimal {
-	disc := ratio.Mul(bindingSiteDiscount(b))
+	disc := ratio.Mul(b.EffectiveDiscount())
 	cost, _ := pricing.ComputeCost(rule, pricing.UsageTokens{
 		Prompt:     estTokens,
 		Completion: estTokens,
@@ -190,48 +190,10 @@ func computeTaskRuleActual(b *pricing.ModelRuleBinding, rule *pricing.BillingRul
 	if timeMult.IsPositive() {
 		feat.TimeMultiplier = &timeMult
 	}
-	disc := ratio.Mul(bindingSiteDiscount(b))
+	disc := ratio.Mul(b.EffectiveDiscount())
 	return pricing.ComputeCost(rule, pricing.UsageTokens{
 		Completion: completionTokens,
 	}, disc, feat)
-}
-
-func joinTaskURL(baseURL, path string) string {
-	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	p := strings.TrimSpace(path)
-	if p == "" {
-		return base
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	if parsed, err := url.Parse(base); err == nil && parsed.Scheme != "" && parsed.Host != "" {
-		bp := strings.TrimRight(parsed.Path, "/")
-		if bp != "" && (p == bp || strings.HasPrefix(p, bp+"/")) {
-			return parsed.Scheme + "://" + parsed.Host + p
-		}
-	}
-	return base + p
-}
-
-func applyTaskAuth(req *http.Request, authType, credential string) {
-	switch strings.ToLower(strings.TrimSpace(authType)) {
-	case "x-api-key":
-		req.Header.Del("Authorization")
-		req.Header.Set("x-api-key", credential)
-	case "x-goog-api-key":
-		req.Header.Del("Authorization")
-		req.Header.Set("x-goog-api-key", credential)
-	case "query_key":
-		req.Header.Del("Authorization")
-		q := req.URL.Query()
-		q.Set("key", credential)
-		req.URL.RawQuery = q.Encode()
-	case "key":
-		req.Header.Set("Authorization", "Key "+credential)
-	default:
-		req.Header.Set("Authorization", "Bearer "+credential)
-	}
 }
 
 func adaptorForTask(provider string, fwd *forward.ResolvedForward) (Adaptor, error) {
@@ -247,9 +209,9 @@ func buildTaskSubmitRequest(ctx context.Context, ad Adaptor, ch *relay.Channel, 
 	if fwd != nil && fwd.ContentToPrompt {
 		prompt, _ := taskContentParts(in.Content)
 		if prompt != "" {
-			cp := make(map[string]any, len(in.Params)+1)
-			for k, v := range in.Params {
-				cp[k] = v
+			cp := maps.Clone(in.Params)
+			if cp == nil {
+				cp = make(map[string]any, 1)
 			}
 			if _, exists := cp["prompt"]; !exists {
 				cp["prompt"] = prompt
@@ -262,14 +224,15 @@ func buildTaskSubmitRequest(ctx context.Context, ad Adaptor, ch *relay.Channel, 
 		return req, err
 	}
 	if fwd.UpstreamPath != "" {
-		if target := joinTaskURL(ch.BaseURL, forward.ExpandUpstreamPath(fwd.UpstreamPath, ch.UpstreamModel(in.Model), "")); target != "" {
-			if parsed, perr := url.Parse(target); perr == nil {
-				req.URL = parsed
-			}
+		expanded := forward.ExpandUpstreamPath(fwd.UpstreamPath, ch.UpstreamModel(in.Model), "")
+		parsedURL, uerr := forward.JoinUpstreamURL(ch.BaseURL, expanded)
+		if uerr != nil {
+			return nil, uerr
 		}
+		req.URL = parsedURL
 	}
 	if fwd.AuthType != "" {
-		applyTaskAuth(req, fwd.AuthType, credential)
+		forward.ApplyAuth(req, fwd.AuthType, credential)
 	}
 	return req, nil
 }
@@ -280,14 +243,15 @@ func buildTaskQueryRequest(ctx context.Context, ad Adaptor, ch *relay.Channel, f
 		return req, err
 	}
 	if fwd.PollPath != "" {
-		if target := joinTaskURL(ch.BaseURL, forward.ExpandUpstreamPath(fwd.PollPath, "", upstreamTaskID)); target != "" {
-			if parsed, perr := url.Parse(target); perr == nil {
-				req.URL = parsed
-			}
+		expanded := forward.ExpandUpstreamPath(fwd.PollPath, "", upstreamTaskID)
+		parsedURL, uerr := forward.JoinUpstreamURL(ch.BaseURL, expanded)
+		if uerr != nil {
+			return nil, uerr
 		}
+		req.URL = parsedURL
 	}
 	if fwd.AuthType != "" {
-		applyTaskAuth(req, fwd.AuthType, credential)
+		forward.ApplyAuth(req, fwd.AuthType, credential)
 	}
 	return req, nil
 }
@@ -347,8 +311,7 @@ func (s *Service) HandleArkNativeCreate(c *gin.Context) {
 	}
 	req, err := bindArkNativeCreate(c)
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		if _, isTooLarge := errors.AsType[*http.MaxBytesError](err); isTooLarge {
 			taskErr(c, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
@@ -369,14 +332,19 @@ func (s *Service) HandleArkNativeCreate(c *gin.Context) {
 		return
 	}
 	t, err := s.Submit(c.Request.Context(), SubmitInput{
-		OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID,
-		Model: req.Model, Content: req.Content, Params: req.Params,
+		OrgID:       key.OrgID,
+		UserID:      key.UserID,
+		APIKeyID:    key.ID,
+		Model:       req.Model,
+		Content:     req.Content,
+		Params:      req.Params,
 		RequestPath: c.Request.URL.Path,
 	})
-	var rejected *UpstreamRejectedError
-	switch {
-	case errors.As(err, &rejected):
+	if rejected, ok := errors.AsType[*UpstreamRejectedError](err); ok {
 		taskErr(c, http.StatusBadRequest, clipReason("upstream rejected task parameters: "+rejected.Message, 300))
+		return
+	}
+	switch {
 	case errors.Is(err, relay.ErrModelNotPriced) || errors.Is(err, relay.ErrNoChannel):
 		taskErr(c, http.StatusBadRequest, "model not available")
 	case errors.Is(err, ErrConcurrencyLimit):

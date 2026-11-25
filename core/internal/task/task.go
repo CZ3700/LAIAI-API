@@ -174,7 +174,7 @@ func (e *UpstreamRejectedError) Error() string {
 // Submit：计费快照 → 并发闸 → hold → 上游提交 → 落任务行。
 // 上游提交失败 → release，不留任务行。
 func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
-	binding, bRule := resolveTaskBillingRule(s.DB, in.Model)
+	binding, bRule := s.resolveTaskBillingRule(ctx, in.Model)
 	var price *relay.ModelPrice
 	if bRule == nil {
 		var perr error
@@ -708,7 +708,7 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 	billingDetail := ""
 	ledgerReason := fmt.Sprintf("task model=%s tokens=%d", t.Model, result.CompletionTokens)
 	if t.BillingRulePID != "" {
-		if b, bRule := resolveTaskBillingRule(s.DB, t.Model); bRule != nil {
+		if b, bRule := s.resolveTaskBillingRule(context.Background(), t.Model); bRule != nil {
 			billTokens := result.CompletionTokens
 			if billTokens <= 0 {
 				billTokens = t.EstTokens

@@ -79,6 +79,21 @@ type ModelRuleBinding struct {
 
 func (ModelRuleBinding) TableName() string { return "model_rule_bindings" }
 
+// EffectiveDiscount 返回模型绑定的站点折扣×全局折扣乘积（未启用或非正数按 1 处理）。
+func (b *ModelRuleBinding) EffectiveDiscount() decimal.Decimal {
+	d := decimal.NewFromInt(1)
+	if b == nil {
+		return d
+	}
+	if b.SiteDiscountEnabled == 1 && b.SiteDiscount.IsPositive() {
+		d = d.Mul(b.SiteDiscount)
+	}
+	if b.GlobalDiscountEnabled == 1 && b.GlobalDiscount.IsPositive() {
+		d = d.Mul(b.GlobalDiscount)
+	}
+	return d
+}
+
 // UsageTokens 上游响应与请求特征抽取后的统一 Token 计量结构。
 type UsageTokens struct {
 	Prompt            int64 `json:"prompt"`
