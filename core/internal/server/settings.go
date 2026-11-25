@@ -25,13 +25,15 @@ func (Setting) TableName() string { return "ext_settings" }
 // 所以「前端表单/引擎用到的每个键」都必须在此登记，否则保存会被当未知键拒绝。
 var settingDefaults = map[string]string{
 	// —— 通用 / 门面 ——
-	"site_name":        "LAIAI",
-	"announcement":     "",
-	"terms_of_service": "",
-	"privacy_policy":   "",
-	"support_email":    "",
-	"footer_text":      "",
-	"maintenance_mode": "false",
+	"site_name":          "LAIAI",
+	"admin_path":         "admin",
+	"announcement":       "",
+	"announcements_json": "[]",
+	"terms_of_service":   "",
+	"privacy_policy":     "",
+	"support_email":      "",
+	"footer_text":        "",
+	"maintenance_mode":   "false",
 	// —— 注册 / 登录 ——
 	"register_enabled":           "true",
 	"email_verification_enabled": "true", // 默认开启：注册必须验证真实邮箱（绑定邮箱供后续推送，用户要求）。须配 SMTP 才能发码，否则注册 fail-closed。

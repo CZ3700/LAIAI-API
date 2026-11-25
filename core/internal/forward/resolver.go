@@ -151,6 +151,7 @@ func buildResolvedForward(
 		UpstreamPath:           ExpandUpstreamPath(upstreamPath, model, ""),
 		AuthType:               cmp.Or(strings.TrimSpace(cfg.AuthType), defaultAuth),
 		PollPath:               strings.TrimSpace(cfg.PollPath),
+		CancelPath:             strings.TrimSpace(cfg.CancelPath),
 		IsPassthrough:          isPassthrough,
 		AssetConvert:           cfg.AssetConvert,
 		AssetConvertNS:         cmp.Or(strings.TrimSpace(cfg.AssetConvertNS), "asset_manager"),
@@ -208,6 +209,9 @@ func ValidateConfigJSON(configJSON string) error {
 	}
 	if err := ValidatePathTemplate(cfg.PollPath); err != nil {
 		return fmt.Errorf("invalid poll_path: %w", err)
+	}
+	if err := ValidatePathTemplate(cfg.CancelPath); err != nil {
+		return fmt.Errorf("invalid cancel_path: %w", err)
 	}
 	for _, rw := range CollectRewrites(cfg) {
 		if err := ValidatePathTemplate(rw.Old); err != nil {

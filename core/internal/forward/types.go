@@ -53,6 +53,7 @@ type ForwardConfig struct {
 	PathPassthrough        []string          `json:"path_passthrough,omitempty"`
 	PathAccept             []string          `json:"path_accept,omitempty"`
 	PollPath               string            `json:"poll_path,omitempty"`
+	CancelPath             string            `json:"cancel_path,omitempty"`
 	AssetConvert           bool              `json:"asset_convert,omitempty"`
 	AssetConvertNS         string            `json:"asset_convert_ns,omitempty"`
 	UpstreamAssetConvert   bool              `json:"upstream_asset_convert,omitempty"`
@@ -80,6 +81,7 @@ type ResolvedForward struct {
 	UpstreamPath           string                     `json:"upstream_path"`
 	AuthType               string                     `json:"auth_type"`
 	PollPath               string                     `json:"poll_path,omitempty"`
+	CancelPath             string                     `json:"cancel_path,omitempty"`
 	IsPassthrough          bool                       `json:"is_passthrough"`
 	AssetConvert           bool                       `json:"asset_convert"`
 	AssetConvertNS         string                     `json:"asset_convert_ns"`

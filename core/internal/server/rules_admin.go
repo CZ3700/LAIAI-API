@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -76,13 +77,52 @@ func deduplicateUint64s(in []uint64) []uint64 {
 	return out
 }
 
+type flexBool bool
+
+func (b *flexBool) UnmarshalJSON(raw []byte) error {
+	s := strings.TrimSpace(string(raw))
+	switch strings.ToLower(s) {
+	case "true", "1", `"true"`, `"1"`:
+		*b = true
+		return nil
+	case "false", "0", `"false"`, `"0"`:
+		*b = false
+		return nil
+	default:
+		return fmt.Errorf("invalid bool value %s", s)
+	}
+}
+
+type flexJSONString string
+
+func (j *flexJSONString) UnmarshalJSON(raw []byte) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*j = ""
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		*j = flexJSONString(s)
+		return nil
+	}
+	if !json.Valid(trimmed) {
+		return errors.New("invalid JSON payload")
+	}
+	*j = flexJSONString(trimmed)
+	return nil
+}
+
 // ── 渠道分类 / 分组（channel_categories） ────────────────────────
 
 type channelCategoryReq struct {
-	Name        string `json:"name" binding:"required"`
-	Description string `json:"description"`
-	SortOrder   int    `json:"sort_order"`
-	IsActive    *bool  `json:"is_active"`
+	Name        string    `json:"name" binding:"required"`
+	Description string    `json:"description"`
+	SortOrder   int       `json:"sort_order"`
+	IsActive    *flexBool `json:"is_active"`
 }
 
 func (s *Server) adminListChannelCategories(c *gin.Context) {
@@ -107,7 +147,7 @@ func (s *Server) adminCreateChannelCategory(c *gin.Context) {
 	}
 	active := int8(1)
 	if req.IsActive != nil {
-		active = b2i8(*req.IsActive)
+		active = b2i8(bool(*req.IsActive))
 	}
 	cat := &forward.ChannelCategory{
 		Name:        name,
@@ -129,10 +169,10 @@ func (s *Server) adminUpdateChannelCategory(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Name        *string `json:"name"`
-		Description *string `json:"description"`
-		SortOrder   *int    `json:"sort_order"`
-		IsActive    *bool   `json:"is_active"`
+		Name        *string   `json:"name"`
+		Description *string   `json:"description"`
+		SortOrder   *int      `json:"sort_order"`
+		IsActive    *flexBool `json:"is_active"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid request body")
@@ -154,7 +194,7 @@ func (s *Server) adminUpdateChannelCategory(c *gin.Context) {
 		updates["sort_order"] = *req.SortOrder
 	}
 	if req.IsActive != nil {
-		updates["is_active"] = b2i8(*req.IsActive)
+		updates["is_active"] = b2i8(bool(*req.IsActive))
 	}
 	if len(updates) == 0 {
 		fail(c, http.StatusBadRequest, "nothing to update")
@@ -219,9 +259,9 @@ type billingRuleReq struct {
 	ClaudeCacheReadRate     *decimal.Decimal `json:"claude_cache_read_rate"`
 	FixedRate               *decimal.Decimal `json:"fixed_rate"`
 	DurationRate            *decimal.Decimal `json:"duration_rate"`
-	PricingTiers            *string          `json:"pricing_tiers"`
-	ExtendedConfig          *string          `json:"extended_config"`
-	IsActive                *bool            `json:"is_active"`
+	PricingTiers            *flexJSONString  `json:"pricing_tiers"`
+	ExtendedConfig          *flexJSONString  `json:"extended_config"`
+	IsActive                *flexBool        `json:"is_active"`
 	SortOrder               *int             `json:"sort_order"`
 }
 
@@ -281,12 +321,12 @@ func (s *Server) adminCreateBillingRule(c *gin.Context) {
 	pType := cmp.Or(strings.TrimSpace(req.PricingType), "standard")
 
 	tiers := "[]"
-	if req.PricingTiers != nil && strings.TrimSpace(*req.PricingTiers) != "" {
-		tiers = strings.TrimSpace(*req.PricingTiers)
+	if req.PricingTiers != nil && strings.TrimSpace(string(*req.PricingTiers)) != "" {
+		tiers = strings.TrimSpace(string(*req.PricingTiers))
 	}
 	extCfg := "{}"
-	if req.ExtendedConfig != nil && strings.TrimSpace(*req.ExtendedConfig) != "" {
-		extCfg = strings.TrimSpace(*req.ExtendedConfig)
+	if req.ExtendedConfig != nil && strings.TrimSpace(string(*req.ExtendedConfig)) != "" {
+		extCfg = strings.TrimSpace(string(*req.ExtendedConfig))
 	}
 	if err := validateBillingRuleFields(
 		bType, bRule, tiers, extCfg,
@@ -318,7 +358,7 @@ func (s *Server) adminCreateBillingRule(c *gin.Context) {
 	}
 	active := int8(1)
 	if req.IsActive != nil {
-		active = b2i8(*req.IsActive)
+		active = b2i8(bool(*req.IsActive))
 	}
 	sortOrder := 0
 	if req.SortOrder != nil {
@@ -349,7 +389,7 @@ func (s *Server) adminCreateBillingRule(c *gin.Context) {
 	}
 	s.writeAudit(c, "billing_rule_create", strconv.FormatUint(rule.ID, 10), "created billing rule "+rule.Name+" pid="+rule.PID)
 	s.invalidateCache(relay.KindBillingRule, "")
-	c.JSON(http.StatusCreated, gin.H{"rule": rule})
+	c.JSON(http.StatusCreated, gin.H{"id": rule.ID, "pid": rule.PID, "rule": rule})
 }
 
 func (s *Server) adminUpdateBillingRule(c *gin.Context) {
@@ -374,11 +414,11 @@ func (s *Server) adminUpdateBillingRule(c *gin.Context) {
 	effRule := cmp.Or(strings.TrimSpace(req.BillingRule), cur.BillingRule)
 	effTiers := cur.PricingTiers
 	if req.PricingTiers != nil {
-		effTiers = cmp.Or(strings.TrimSpace(*req.PricingTiers), "[]")
+		effTiers = cmp.Or(strings.TrimSpace(string(*req.PricingTiers)), "[]")
 	}
 	effExt := cur.ExtendedConfig
 	if req.ExtendedConfig != nil {
-		effExt = cmp.Or(strings.TrimSpace(*req.ExtendedConfig), "{}")
+		effExt = cmp.Or(strings.TrimSpace(string(*req.ExtendedConfig)), "{}")
 	}
 	if err := validateBillingRuleFields(
 		effType, effRule, effTiers, effExt,
@@ -389,7 +429,7 @@ func (s *Server) adminUpdateBillingRule(c *gin.Context) {
 		return
 	}
 
-	if req.IsActive != nil && !*req.IsActive && cur.IsActive == 1 {
+	if req.IsActive != nil && !bool(*req.IsActive) && cur.IsActive == 1 {
 		models, err := s.listedModelsUsingBillingRule(ctx, id)
 		if err != nil {
 			fail(c, http.StatusInternalServerError, "check billing rule references failed")
@@ -445,7 +485,7 @@ func (s *Server) adminUpdateBillingRule(c *gin.Context) {
 		updates["extended_config"] = effExt
 	}
 	if req.IsActive != nil {
-		updates["is_active"] = b2i8(*req.IsActive)
+		updates["is_active"] = b2i8(bool(*req.IsActive))
 	}
 	if req.SortOrder != nil {
 		updates["sort_order"] = *req.SortOrder
@@ -461,7 +501,12 @@ func (s *Server) adminUpdateBillingRule(c *gin.Context) {
 	}
 	s.writeAudit(c, "billing_rule_update", strconv.FormatUint(id, 10), "updated billing rule "+cur.PID)
 	s.invalidateCache(relay.KindBillingRule, "")
-	c.JSON(http.StatusOK, gin.H{"updated": id})
+	var updated pricing.BillingRule
+	if err := db.First(&updated, id).Error; err == nil {
+		c.JSON(http.StatusOK, gin.H{"updated": id, "id": updated.ID, "pid": updated.PID, "rule": updated})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"updated": id, "id": id})
 }
 
 func (s *Server) adminDeleteBillingRule(c *gin.Context) {
@@ -504,15 +549,15 @@ func (s *Server) adminDeleteBillingRule(c *gin.Context) {
 // ── 数据驱动转发规则（forward_rules） ────────────────────────
 
 type forwardRuleReq struct {
-	EID         string  `json:"eid"`
-	Name        string  `json:"name"`
-	RuleType    string  `json:"rule_type"`
-	Category    string  `json:"category"`
-	ConfigJSON  *string `json:"config_json"`
-	Description *string `json:"description"`
-	Remark      *string `json:"remark"`
-	IsActive    *bool   `json:"is_active"`
-	SortOrder   *int    `json:"sort_order"`
+	EID         string          `json:"eid"`
+	Name        string          `json:"name"`
+	RuleType    string          `json:"rule_type"`
+	Category    string          `json:"category"`
+	ConfigJSON  *flexJSONString `json:"config_json"`
+	Description *string         `json:"description"`
+	Remark      *string         `json:"remark"`
+	IsActive    *flexBool       `json:"is_active"`
+	SortOrder   *int            `json:"sort_order"`
 }
 
 func (s *Server) adminListForwardRules(c *gin.Context) {
@@ -537,8 +582,8 @@ func (s *Server) adminCreateForwardRule(c *gin.Context) {
 		return
 	}
 	cfg := "{}"
-	if req.ConfigJSON != nil && strings.TrimSpace(*req.ConfigJSON) != "" {
-		cfg = strings.TrimSpace(*req.ConfigJSON)
+	if req.ConfigJSON != nil && strings.TrimSpace(string(*req.ConfigJSON)) != "" {
+		cfg = strings.TrimSpace(string(*req.ConfigJSON))
 	}
 	if err := forward.ValidateConfigJSON(cfg); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
@@ -560,7 +605,7 @@ func (s *Server) adminCreateForwardRule(c *gin.Context) {
 
 	active := int8(1)
 	if req.IsActive != nil {
-		active = b2i8(*req.IsActive)
+		active = b2i8(bool(*req.IsActive))
 	}
 	sortOrder := 0
 	if req.SortOrder != nil {
@@ -592,7 +637,7 @@ func (s *Server) adminCreateForwardRule(c *gin.Context) {
 	}
 	s.writeAudit(c, "forward_rule_create", strconv.FormatUint(rule.ID, 10), "created forward rule "+rule.Name+" eid="+rule.EID)
 	s.invalidateCache(relay.KindForwardRule, "")
-	c.JSON(http.StatusCreated, gin.H{"rule": rule})
+	c.JSON(http.StatusCreated, gin.H{"id": rule.ID, "eid": rule.EID, "rule": rule})
 }
 
 func (s *Server) adminUpdateForwardRule(c *gin.Context) {
@@ -623,7 +668,7 @@ func (s *Server) adminUpdateForwardRule(c *gin.Context) {
 		updates["category"] = strings.TrimSpace(req.Category)
 	}
 	if req.ConfigJSON != nil {
-		cfg := cmp.Or(strings.TrimSpace(*req.ConfigJSON), "{}")
+		cfg := cmp.Or(strings.TrimSpace(string(*req.ConfigJSON)), "{}")
 		if err := forward.ValidateConfigJSON(cfg); err != nil {
 			fail(c, http.StatusBadRequest, err.Error())
 			return
@@ -637,7 +682,7 @@ func (s *Server) adminUpdateForwardRule(c *gin.Context) {
 		updates["remark"] = strings.TrimSpace(*req.Remark)
 	}
 	if req.IsActive != nil {
-		updates["is_active"] = b2i8(*req.IsActive)
+		updates["is_active"] = b2i8(bool(*req.IsActive))
 	}
 	if req.SortOrder != nil {
 		updates["sort_order"] = *req.SortOrder
@@ -652,7 +697,7 @@ func (s *Server) adminUpdateForwardRule(c *gin.Context) {
 	}
 	s.writeAudit(c, "forward_rule_update", strconv.FormatUint(id, 10), "updated forward rule "+cur.EID)
 	s.invalidateCache(relay.KindForwardRule, "")
-	c.JSON(http.StatusOK, gin.H{"updated": id})
+	c.JSON(http.StatusOK, gin.H{"updated": id, "id": id, "eid": cur.EID})
 }
 
 func (s *Server) adminDeleteForwardRule(c *gin.Context) {

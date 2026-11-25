@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -155,9 +156,10 @@ type SubmitInput struct {
 }
 
 var (
-	ErrConcurrencyLimit = fmt.Errorf("task: channel concurrency limit reached")
-	ErrNoTaskAdaptor    = fmt.Errorf("task: provider has no task adaptor")
-	ErrKeyQuotaExceeded = fmt.Errorf("task: api key quota exceeded")
+	ErrConcurrencyLimit   = fmt.Errorf("task: channel concurrency limit reached")
+	ErrNoTaskAdaptor      = fmt.Errorf("task: provider has no task adaptor")
+	ErrKeyQuotaExceeded   = fmt.Errorf("task: api key quota exceeded")
+	ErrTaskNotCancellable = errors.New("task: task cannot be cancelled in current state")
 )
 
 // UpstreamRejectedError：上游同步拒绝提交（400 参数类错误——参数透传后客户端自己的问题）。
@@ -922,4 +924,125 @@ func randHex(n int) string {
 		return fmt.Sprintf("t%x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
+}
+
+func (s *Service) findScopedTask(ctx context.Context, orgID uint64, idOrTaskID string, admin bool) (*Task, error) {
+	ref := strings.TrimSpace(idOrTaskID)
+	if ref == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	q := s.DB.WithContext(ctx).Model(&Task{})
+	if !admin || orgID > 0 {
+		q = q.Where("org_id = ?", orgID)
+	}
+	t := &Task{}
+	if err := q.Where("task_id = ?", ref).First(t).Error; err == nil {
+		return t, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	if numID, err := strconv.ParseUint(ref, 10, 64); err == nil && numID > 0 {
+		qNum := s.DB.WithContext(ctx).Model(&Task{})
+		if !admin || orgID > 0 {
+			qNum = qNum.Where("org_id = ?", orgID)
+		}
+		if err := qNum.Where("id = ?", numID).First(t).Error; err != nil {
+			return nil, err
+		}
+		return t, nil
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+// SyncTask 主动向游离上游查询在途任务最新状态并落库结算（用于控制台「手动同步」）。
+func (s *Service) SyncTask(ctx context.Context, orgID uint64, idOrTaskID string, admin bool) (*Task, error) {
+	t, err := s.findScopedTask(ctx, orgID, idOrTaskID, admin)
+	if err != nil {
+		return nil, err
+	}
+	if (t.Status == StatusQueued || t.Status == StatusRunning) && t.UpstreamTaskID != "" && s.Keyring != nil {
+		s.pollOne(ctx, t)
+		reloaded := &Task{}
+		if err := s.DB.WithContext(ctx).First(reloaded, t.ID).Error; err == nil {
+			return reloaded, nil
+		}
+	}
+	return t, nil
+}
+
+// CancelTask 取消在途任务并原子触发 CAS 失败退款（ledger.Release + Key 配额回退）。
+func (s *Service) CancelTask(ctx context.Context, orgID uint64, idOrTaskID string, admin bool) (*Task, error) {
+	t, err := s.findScopedTask(ctx, orgID, idOrTaskID, admin)
+	if err != nil {
+		return nil, err
+	}
+	if t.Status != StatusQueued && t.Status != StatusRunning {
+		return nil, ErrTaskNotCancellable
+	}
+	fwd := s.resolveTaskForwardByEID(ctx, t.ForwardRuleEID, t.Model)
+	cancelPath := ""
+	authType := ""
+	if fwd != nil {
+		cancelPath = strings.TrimSpace(fwd.CancelPath)
+		authType = strings.TrimSpace(fwd.AuthType)
+	}
+	if !admin && t.Status == StatusRunning {
+		if cancelPath == "" {
+			return nil, ErrTaskNotCancellable
+		}
+		if err := s.sendUpstreamCancel(ctx, t, cancelPath, authType); err != nil {
+			return nil, err
+		}
+	} else if t.UpstreamTaskID != "" && s.Keyring != nil && cancelPath != "" {
+		_ = s.sendUpstreamCancel(ctx, t, cancelPath, authType)
+	}
+	s.settleFailure(t, "cancelled via console", false)
+	reloaded := &Task{}
+	if err := s.DB.WithContext(ctx).First(reloaded, t.ID).Error; err == nil {
+		return reloaded, nil
+	}
+	return t, nil
+}
+
+func (s *Service) sendUpstreamCancel(ctx context.Context, t *Task, cancelPath, authType string) error {
+	if s.Keyring == nil || t.UpstreamTaskID == "" || cancelPath == "" {
+		return ErrTaskNotCancellable
+	}
+	ch := &relay.Channel{}
+	if err := s.DB.WithContext(ctx).First(ch, t.ChannelID).Error; err != nil {
+		return err
+	}
+	credEnc, credOK := ch.CredentialEnc, ch.CredentialEnc != ""
+	if t.CredentialID != 0 {
+		credEnc, credOK = relay.CredentialByID(s.DB, t.CredentialID)
+	}
+	if !credOK {
+		return ErrTaskNotCancellable
+	}
+	credential, err := s.Keyring.Decrypt(credEnc)
+	if err != nil {
+		return err
+	}
+	expanded := forward.ExpandUpstreamPath(cancelPath, ch.UpstreamModel(t.Model), t.UpstreamTaskID)
+	parsedURL, err := forward.JoinUpstreamURL(ch.BaseURL, expanded)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, parsedURL.String(), nil)
+	if err != nil {
+		return err
+	}
+	if authType == "" {
+		authType = forward.AuthBearer
+	}
+	forward.ApplyAuth(req, authType, credential)
+	resp, err := s.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("upstream cancel returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }

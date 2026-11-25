@@ -67,6 +67,7 @@ type Server struct {
 	invocationQueries   invocationQueryGate // v1 metadata queries: global 4, subject 2, zero wait.
 	routingGroupReads   routingAdminReadGate
 	forwardResolver     *forward.Resolver
+	taskService         *task.Service
 }
 
 // readOnly 返回只读副本句柄（规模化：分析/用量/排行/公开价目等重读卸载到副本）；未配副本回退主库。
@@ -426,7 +427,20 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		vg.GET("/mj/task/:id/fetch", ts.HandleMJFetch)
 		vg.POST("/mj/task/list-by-condition", ts.HandleMJList)
 		vg.GET("/mj/image/:id", ts.HandleMJImage)
+		s.taskService = ts
+	} else if opts.TaskService != nil {
+		if opts.TaskService.Forward == nil {
+			opts.TaskService.Forward = s.forwardResolver
+		}
+		s.taskService = opts.TaskService
+	} else {
+		ts := task.NewService(db, opts.Keyring, log.With("component", "task"))
+		ts.Rec = opts.Recorder
+		ts.Forward = s.forwardResolver
+		s.taskService = ts
 	}
+
+	s.registerV1CompatRoutes(r)
 
 	return r, s
 }

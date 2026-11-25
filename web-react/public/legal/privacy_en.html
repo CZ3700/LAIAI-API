@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Privacy Policy-laiai - LLM API Gateway</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      overflow-x: hidden;
+    }
+    body {
+      min-height: 100vh;
+      background-color: #09090b;
+      color: #e4e4e7;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.8;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      -webkit-font-smoothing: antialiased;
+    }
+    .container {
+      max-width: 860px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 48px 24px 40px;
+      flex: 1;
+      box-sizing: border-box;
+    }
+    .page-title {
+      color: #ffffff;
+      font-size: 26px;
+      font-weight: 600;
+      text-align: center;
+      margin-bottom: 36px;
+      letter-spacing: -0.01em;
+      word-break: break-word;
+      overflow-wrap: break-word;
+    }
+    .ql-editor {
+      font-size: 15px;
+      line-height: 1.85;
+      color: rgba(255, 255, 255, 0.85);
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      word-wrap: break-word;
+      white-space: normal;
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+    }
+    .ql-editor h1, .ql-editor h2, .ql-editor h3, .ql-editor h4 {
+      color: #ffffff;
+      margin-top: 30px;
+      margin-bottom: 12px;
+      font-weight: 600;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    .ql-editor h1 { font-size: 24px; }
+    .ql-editor h2 { font-size: 20px; }
+    .ql-editor h3 { font-size: 17px; }
+    .ql-editor h4 { font-size: 15px; }
+    .ql-editor p {
+      margin-bottom: 14px;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    .ql-editor ul, .ql-editor ol {
+      padding-left: 24px;
+      margin-bottom: 16px;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    .ql-editor li {
+      margin-bottom: 6px;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    .ql-editor strong {
+      color: #ffffff;
+      font-weight: 600;
+    }
+    .ql-editor a {
+      color: #60a5fa;
+      text-decoration: underline;
+      word-break: break-all;
+      overflow-wrap: anywhere;
+    }
+    .ql-editor a:hover {
+      color: #93c5fd;
+    }
+    .ql-editor blockquote {
+      border-left: 3px solid #3b82f6;
+      padding: 10px 16px;
+      margin: 18px 0;
+      color: rgba(255, 255, 255, 0.75);
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 0 6px 6px 0;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    .ql-editor table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 18px 0;
+      font-size: 14px;
+      word-break: break-word;
+    }
+    .ql-editor th, .ql-editor td {
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      padding: 10px 14px;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .ql-editor th {
+      background: rgba(255, 255, 255, 0.05);
+      font-weight: 600;
+      color: #ffffff;
+    }
+
+    /* Quill 对齐扩展支持 */
+    .ql-editor .ql-align-center { text-align: center; }
+    .ql-editor .ql-align-right { text-align: right; }
+    .ql-editor .ql-align-justify { text-align: justify; }
+
+    /* Quill 缩进扩展支持 */
+    .ql-editor .ql-indent-1 { padding-left: 2em; }
+    .ql-editor .ql-indent-2 { padding-left: 4em; }
+    .ql-editor .ql-indent-3 { padding-left: 6em; }
+    .ql-editor .ql-indent-4 { padding-left: 8em; }
+    .ql-editor .ql-indent-5 { padding-left: 10em; }
+    .ql-editor .ql-indent-6 { padding-left: 12em; }
+    .ql-editor .ql-indent-7 { padding-left: 14em; }
+    .ql-editor .ql-indent-8 { padding-left: 16em; }
+
+    /* Quill 字号扩展支持 */
+    .ql-editor .ql-size-small { font-size: 13px; }
+    .ql-editor .ql-size-large { font-size: 18px; }
+    .ql-editor .ql-size-huge { font-size: 22px; }
+
+    /* Quill 代码块支持 */
+    .ql-editor pre, .ql-editor pre.ql-syntax {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      padding: 12px 16px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      overflow-x: auto;
+      margin: 14px 0;
+      color: #93c5fd;
+    }
+    .ql-editor code {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .footer {
+      width: 100%;
+      text-align: center;
+      font-size: 13px;
+      line-height: 1.6;
+      color: rgba(255, 255, 255, 0.45);
+      padding: 24px 24px 36px;
+      user-select: none;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      box-sizing: border-box;
+    }
+    @media (max-width: 640px) {
+      .container { padding: 32px 16px 24px; }
+      .page-title { font-size: 21px; margin-bottom: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1 class="page-title">Privacy Policy</h1>
+    <div class="ql-editor">
+      <p>We are committed to safeguarding your privacy and personal data. This Privacy Policy explains how we collect, use, process, disclose, and protect your information when you access our platform, register an account, utilize our APIs, or interact with our services. Please review this policy carefully.</p>
+
+<h3>1. Information We Collect</h3>
+<p>We collect only the minimum necessary data required to deliver reliable and secure AI API relay services:</p>
+<ul>
+  <li><strong>Account & Profile Data:</strong> Username, email address, authentication credentials, or authorization identifiers from third-party OAuth providers (e.g., GitHub, Google, WeChat).</li>
+  <li><strong>API Keys & Configurations:</strong> API tokens created in your dashboard, permission scopes, model routing rules, IP whitelists, and rate limit settings.</li>
+  <li><strong>Usage & Operational Logs:</strong> Request timestamps, requested model names, token consumption metrics, client IP addresses, HTTP status codes, and request durations for billing and auditing purposes.</li>
+  <li><strong>Billing & Assets:</strong> Top-up order history, balance ledgers, redemption code records, and files or assets uploaded in your creative workspace.</li>
+</ul>
+
+<h3>2. How We Use Your Information</h3>
+<p>Your information is used strictly for the following purposes:</p>
+<ol>
+  <li><strong>Service Delivery:</strong> Authenticating API requests, performing real-time request routing, streaming responses, and managing platform features;</li>
+  <li><strong>Billing & Account Management:</strong> Calculating real-time token and credit consumption to maintain accurate ledger balances;</li>
+  <li><strong>Security & Abuse Prevention:</strong> Detecting fraudulent calls, enforcing rate limits, mitigating malicious traffic, and ensuring platform integrity;</li>
+  <li><strong>Infrastructure Optimization:</strong> Monitoring system reliability, debugging performance bottlenecks, and improving user experience;</li>
+  <li><strong>Compliance & Support:</strong> Responding to support inquiries and complying with statutory audit and legal retention requirements.</li>
+</ol>
+
+<h3>3. Data Privacy of Prompts & Generated Content</h3>
+<p>3.1. Prompts, messages, images, and other inputs submitted through our APIs or playground are transmitted in real time to the selected upstream AI model providers solely for inference execution.</p>
+<p>3.2. We do <strong>NOT</strong> sell your prompts or proprietary business data to third parties, nor do we use your private data for unconsented model training.</p>
+<p>3.3. Technical logs are retained only for the duration necessary for audit, debugging, and billing validation, after which they are systematically purged.</p>
+
+<h3>4. Data Sharing & Third-Party Providers</h3>
+<p>4.1. <strong>Upstream AI Providers:</strong> In order to fulfill your API requests, necessary payload data is forwarded to the designated upstream providers (such as OpenAI, Anthropic, Google, Zhipu, Alibaba Cloud, etc.), who process data in accordance with their respective privacy policies.</p>
+<p>4.2. We do not sell, rent, or trade your personal data to third parties. We disclose data only when legally required by judicial or regulatory authorities.</p>
+
+<h3>5. Data Security Measures</h3>
+<p>We implement robust technical and organizational security measures, including end-to-end TLS/HTTPS encryption, strong cryptographic password hashing (e.g., bcrypt/argon2), and strict role-based access controls to prevent unauthorized access, alteration, or disclosure of your data.</p>
+
+<h3>6. Your Rights and Contact</h3>
+<p>You have the right to access, update, or revoke your API keys and profile information at any time via the console. If you have questions regarding this Privacy Policy or wish to request account deletion, please contact platform support.</p>
+    </div>
+  </div>
+  <footer class="footer">laiai</footer>
+</body>
+</html>

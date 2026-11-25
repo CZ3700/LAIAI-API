@@ -1,0 +1,476 @@
+/* ==========================================================================
+   插件 DocsApi 文档 - 独立 CSS 样式表 (DocsApi.css)
+   说明：修改本文件仅影响 插件 DocsApi 系统 (路由 /docs 及 插件文档管理)
+   绝不会影响 站点插件/站点门户增强插件 (Site Portal DOCS)
+   ========================================================================== */
+
+/* 1. 基础容器与头部按钮 */
+.docs-api-system .docs-header-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: #71717a;
+  cursor: pointer;
+  transition: color 0.2s ease, filter 0.2s ease;
+  text-decoration: none;
+  padding: 0;
+  flex-shrink: 0;
+  box-shadow: none;
+}
+.docs-api-system .docs-header-icon-btn:hover {
+  color: #18181b;
+  background: transparent;
+}
+.dark .docs-api-system .docs-header-icon-btn {
+  color: #a1a1aa;
+}
+.dark .docs-api-system .docs-header-icon-btn:hover {
+  color: #fafafa;
+  background: transparent;
+}
+
+/* 2. 分类标签按钮 — 与页面 zinc 中性主色一致 */
+.docs-api-system .docs-category-btn {
+  color: var(--muted-foreground, #71717a);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: all 0.25s ease;
+}
+.docs-api-system .docs-category-btn:hover {
+  color: var(--foreground, #09090b);
+  background: rgba(24, 24, 27, 0.06);
+}
+.dark .docs-api-system .docs-category-btn:hover,
+body[data-theme='dark'] .docs-api-system .docs-category-btn:hover {
+  color: #fafafa;
+  background: rgba(250, 250, 250, 0.08);
+}
+.docs-api-system .docs-category-btn.active,
+.docs-api-system .docs-category-btn.active:hover {
+  background: #18181b;
+  color: #fafafa;
+  font-weight: 600;
+  box-shadow: none;
+}
+.dark .docs-api-system .docs-category-btn.active,
+.dark .docs-api-system .docs-category-btn.active:hover,
+body[data-theme='dark'] .docs-api-system .docs-category-btn.active,
+body[data-theme='dark'] .docs-api-system .docs-category-btn.active:hover {
+  background: #fafafa;
+  color: #18181b;
+}
+
+/* 顶栏毛玻璃：与控制台及模型广场对齐 */
+.docs-api-system .docs-top-nav-glass,
+.cyber-hacker-docs .docs-top-nav-glass {
+  -webkit-backdrop-filter: blur(18px) saturate(180%) !important;
+  backdrop-filter: blur(18px) saturate(180%) !important;
+}
+
+[data-theme='light'] .docs-api-system .docs-top-nav-glass,
+body[data-theme='light'] .docs-api-system .docs-top-nav-glass,
+[data-theme='light'] .cyber-hacker-docs .docs-top-nav-glass,
+body[data-theme='light'] .cyber-hacker-docs .docs-top-nav-glass {
+  -webkit-backdrop-filter: blur(16px) !important;
+  backdrop-filter: blur(16px) !important;
+}
+
+/* 3. Markdown 文章视觉排版 (Fumadocs 极简科技风) */
+.docs-api-system #docs-main-content {
+  scroll-behavior: smooth;
+  scroll-padding-top: 72px;
+}
+.docs-api-system .docs-content-article h1 {
+  font-size: 2.1rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+  color: #0f172a;
+  background: linear-gradient(135deg, #0f172a 0%, #334155 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article h1 {
+  background: linear-gradient(135deg, #f8fafc 0%, #cbd5e1 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.docs-api-system .docs-content-article h2 {
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-top: 2.2rem;
+  margin-bottom: 1rem;
+  color: #1e293b;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.8);
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article h2 {
+  color: #f1f5f9;
+  border-bottom-color: rgba(39, 39, 42, 0.8);
+}
+.docs-api-system .docs-content-article h2::before {
+  content: '';
+  display: inline-block;
+  width: 4px;
+  height: 1.1em;
+  background: linear-gradient(180deg, #18181b 0%, #71717a 100%);
+  border-radius: 4px;
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article h2::before {
+  background: linear-gradient(180deg, #fafafa 0%, #a1a1aa 100%);
+}
+.docs-api-system .docs-content-article h3 {
+  font-size: 1.12rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: 1.8rem;
+  margin-bottom: 0.75rem;
+  color: #334155;
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article h3 {
+  color: #cbd5e1;
+}
+.docs-api-system .docs-content-article p {
+  margin-top: 0;
+  margin-bottom: 1.25rem;
+  line-height: 1.75;
+  color: #334155;
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article p {
+  color: #cbd5e1;
+}
+.docs-api-system .docs-content-article :not(pre) > code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.84em;
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  background: rgba(24, 24, 27, 0.06);
+  border: 1px solid rgba(24, 24, 27, 0.12);
+  color: #3f3f46;
+  font-weight: 500;
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article :not(pre) > code {
+  background: rgba(250, 250, 250, 0.08);
+  border-color: rgba(250, 250, 250, 0.14);
+  color: #d4d4d8;
+}
+.docs-api-system .docs-content-article table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin-top: 1.5rem;
+  margin-bottom: 1.5rem;
+  font-size: 13.5px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article table {
+  border-color: #27272a;
+}
+.docs-api-system .docs-content-article th {
+  background: #f1f5f9;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 10px 14px;
+  font-weight: 600;
+  text-align: left;
+  color: #0f172a !important;
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article th {
+  background: #1f1f23;
+  border-bottom-color: #27272a;
+  color: #f8fafc !important;
+}
+.docs-api-system .docs-content-article td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 10px 14px;
+  color: #334155 !important;
+  transition: background 0.15s ease;
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article td {
+  border-bottom-color: #27272a;
+  color: #cbd5e1 !important;
+}
+.docs-api-system .docs-content-article td code,
+.docs-api-system .docs-content-article th code {
+  color: #3f3f46 !important;
+  background: rgba(24, 24, 27, 0.06) !important;
+  border: 1px solid rgba(24, 24, 27, 0.12) !important;
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article td code,
+body[data-theme='dark'] .docs-api-system .docs-content-article th code {
+  color: #d4d4d8 !important;
+  background: rgba(250, 250, 250, 0.08) !important;
+  border-color: rgba(250, 250, 250, 0.14) !important;
+}
+.docs-api-system .docs-content-article tr:last-child td {
+  border-bottom: none;
+}
+.docs-api-system .docs-content-article tr:hover td {
+  background: rgba(24, 24, 27, 0.03);
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article tr:hover td {
+  background: rgba(250, 250, 250, 0.04);
+}
+.docs-api-system .docs-content-article blockquote {
+  border-left: 4px solid #a1a1aa;
+  background: linear-gradient(135deg, rgba(24, 24, 27, 0.04) 0%, rgba(24, 24, 27, 0.02) 100%);
+  padding: 12px 18px;
+  margin: 1.5rem 0;
+  border-radius: 0 8px 8px 0;
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article blockquote {
+  border-left-color: #52525b;
+  background: linear-gradient(135deg, rgba(250, 250, 250, 0.05) 0%, rgba(250, 250, 250, 0.02) 100%);
+}
+.docs-api-system .docs-content-article blockquote p,
+.docs-api-system .docs-content-article blockquote span,
+.docs-api-system .docs-content-article blockquote div {
+  margin: 0;
+  color: #334155 !important;
+  font-style: normal;
+}
+body[data-theme='dark'] .docs-api-system .docs-content-article blockquote p,
+body[data-theme='dark'] .docs-api-system .docs-content-article blockquote span,
+body[data-theme='dark'] .docs-api-system .docs-content-article blockquote div {
+  color: #cbd5e1 !important;
+}
+.docs-api-system .docs-content-article a {
+  color: #3b82f6;
+  text-decoration: none;
+}
+.docs-api-system .docs-content-article a:hover {
+  text-decoration: underline;
+}
+.docs-api-system .docs-content-article ul,
+.docs-api-system .docs-content-article ol {
+  margin-bottom: 16px;
+  padding-left: 20px;
+}
+.docs-api-system .docs-content-article li {
+  margin-bottom: 6px;
+  line-height: 1.6;
+}
+
+/* 4. 滚动条与步骤条 */
+.docs-api-system .docs-sidebar-scroll::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.docs-api-system .docs-sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.docs-api-system .docs-sidebar-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+}
+body[data-theme='dark'] .docs-api-system .docs-sidebar-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+}
+.docs-api-system .no-scrollbar::-webkit-scrollbar {
+  display: none !important;
+}
+.docs-api-system .no-scrollbar {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}
+
+.docs-api-system .docs-steps-container {
+  counter-reset: step-counter;
+  border-left: 2px solid var(--border-custom);
+  margin-left: 1rem;
+  padding-left: 1.5rem;
+  position: relative;
+  margin-top: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+.docs-api-system .docs-steps-container h3,
+.docs-api-system .docs-steps-container h2 {
+  counter-increment: step-counter;
+  position: relative;
+}
+.docs-api-system .docs-steps-container h3::before,
+.docs-api-system .docs-steps-container h2::before {
+  content: counter(step-counter);
+  position: absolute;
+  left: -2.25rem;
+  top: 0.15rem;
+  width: 1.5rem;
+  height: 1.5rem;
+  background: var(--background);
+  border: 2px solid var(--border-custom);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--foreground);
+}
+
+/* 5. 后台文档管理 (DocsManager) 独立样式 */
+.docs-api-system .ant-tree .ant-tree-treenode {
+  display: flex !important;
+  align-items: center !important;
+  padding: 2px 0 !important;
+  border-radius: 6px;
+  min-height: 28px !important;
+  transition: background 0.15s, border-left 0.15s;
+  position: relative;
+}
+.docs-api-system .ant-tree .ant-tree-indent-unit {
+  width: 12px !important;
+}
+.docs-api-system .ant-tree .ant-tree-draggable-icon {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  opacity: 0.35;
+  width: 14px !important;
+  height: 24px !important;
+  margin: 0 1px 0 0 !important;
+  padding: 0 !important;
+  font-size: 13px !important;
+  cursor: grab !important;
+  transition: opacity 0.15s;
+}
+.docs-api-system .ant-tree .ant-tree-treenode:hover .ant-tree-draggable-icon {
+  opacity: 0.7;
+}
+.docs-api-system .ant-tree .ant-tree-switcher {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 16px !important;
+  height: 24px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  transition: color 0.15s;
+}
+.docs-api-system .ant-tree .ant-tree-node-content-wrapper {
+  display: flex !important;
+  align-items: center !important;
+  flex: 1 !important;
+  min-width: 0 !important;
+  padding: 0 2px !important;
+  height: 24px !important;
+  background: transparent !important;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.docs-api-system .tree-node-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+.docs-api-system .tree-actions-btn {
+  opacity: 0;
+  transition: opacity 0.15s, transform 0.15s;
+  transform: translateX(4px);
+}
+.docs-api-system .tree-node-row:hover .tree-actions-btn {
+  opacity: 1;
+  transform: translateX(0);
+}
+.docs-api-system .github-theme {
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+  font-size: 14px !important;
+  line-height: 1.7 !important;
+}
+
+/* 文档编辑器全屏 / 预览 / 裁剪：后台内容层 z-index 为 1，会把 fixed 层压在顶栏和侧栏下面，并被 overflow 裁切 */
+body:has(.docs-api-system .md-editor.md-editor-fullscreen) .ant-layout-content,
+body:has(.docs-api-system .medium-zoom-image--opened) .ant-layout-content,
+body:has(.md-editor-modal-mask) .ant-layout-content {
+  z-index: 2000 !important;
+  overflow: visible !important;
+}
+body:has(.docs-api-system .md-editor.md-editor-fullscreen) .docs-api-system,
+body:has(.docs-api-system .md-editor.md-editor-fullscreen) .docs-api-system > div,
+body:has(.docs-api-system .medium-zoom-image--opened) .docs-api-system,
+body:has(.docs-api-system .medium-zoom-image--opened) .docs-api-system > div,
+body:has(.md-editor-modal-mask) .docs-api-system,
+body:has(.md-editor-modal-mask) .docs-api-system > div {
+  overflow: visible !important;
+}
+.docs-api-system .md-editor.md-editor-fullscreen {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  z-index: 1 !important;
+  overflow: hidden !important;
+}
+.docs-api-system .md-editor-preview img {
+  max-width: 100%;
+  height: auto;
+}
+body:has(.docs-api-system .medium-zoom-image--opened) .docs-api-system .md-editor,
+body:has(.docs-api-system .medium-zoom-image--opened) .docs-api-system .md-editor-preview-wrapper {
+  overflow: visible !important;
+}
+.medium-zoom-overlay {
+  z-index: 1500 !important;
+}
+.medium-zoom-image--opened {
+  z-index: 2101 !important;
+}
+.md-editor-modal-mask {
+  z-index: 2100 !important;
+}
+.md-editor-modal {
+  z-index: 2101 !important;
+}
+.md-editor-modal-clip .md-editor-modal[style*="width: 100%"],
+.md-editor-modal-clip .md-editor-modal[style*="width:100%"] {
+  inset-inline-start: 0 !important;
+  inset-block-start: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+.md-editor-modal-clip .md-editor-modal[style*="width: 100%"] .md-editor-modal-body,
+.md-editor-modal-clip .md-editor-modal[style*="width:100%"] .md-editor-modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.md-editor-modal-clip .md-editor-modal[style*="width: 100%"] .md-editor-clip,
+.md-editor-modal-clip .md-editor-modal[style*="width:100%"] .md-editor-clip {
+  flex: 1;
+  height: auto !important;
+  min-height: 0;
+}
+.md-editor-clip-preview {
+  background: #111;
+  overflow: hidden;
+}
+.md-editor-clip-preview-target,
+.md-editor-clip-preview-target > div {
+  width: 100% !important;
+  height: 100% !important;
+  overflow: hidden;
+}

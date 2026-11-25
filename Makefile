@@ -58,7 +58,10 @@ build: toolchain-check ## 编译检查（不产出二进制）
 web: ## Console 类型检查 + 构建（需要 Node 20+）
 	cd web && npm run build
 
-ci-all: ci web ## 全栈门禁（Go + Console）
+web-react: ## React 19 控制台类型检查 + 构建（需要 Node 20+）
+	cd web-react && npm run build
+
+ci-all: ci web web-react ## 全栈门禁（Go + Vue Console + React Console）
 
 release-check: ## Linux 隔离发布脚本测试；外部 git/docker/HTTP 使用测试替身，不访问生产
 	bash -n infra/release.sh
