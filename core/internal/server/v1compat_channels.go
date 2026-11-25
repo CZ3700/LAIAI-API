@@ -2,7 +2,9 @@ package server
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/forward"
+	"github.com/laiai/laiai-next/core/internal/pricing"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm/clause"
@@ -27,7 +30,7 @@ type v1ChannelConfig struct {
 	Name                      string   `json:"name"`
 	ProviderType              string   `json:"provider_type"`
 	BaseURL                   string   `json:"base_url"`
-	APIKeyEnc                 string   `json:"-"`
+	APIKeyEnc                 string   `json:"api_key_enc,omitempty"`
 	APIKeyMask                string   `json:"api_key"`
 	Remark                    string   `json:"remark"`
 	YID                       string   `json:"yid"`
@@ -50,12 +53,134 @@ type v1ChannelConfig struct {
 }
 
 type v1ChannelMeta struct {
+	RawProviderType   string          `json:"raw_provider_type,omitempty"`
 	PresetID          *uint64         `json:"preset_id,omitempty"`
+	ModelMids         []string        `json:"model_mids,omitempty"`
 	GroupAID          string          `json:"group_aid,omitempty"`
 	SortOrder         int             `json:"sort_order,omitempty"`
 	UserGroups        []string        `json:"user_groups,omitempty"`
 	ExcludeUserGroups []string        `json:"exclude_user_groups,omitempty"`
 	Config            json.RawMessage `json:"config,omitempty"`
+}
+
+func (s *Server) resolveCanonicalChannelModels(ctx context.Context, raw []string) ([]string, []string) {
+	midToModel := map[string]string{}
+	extMap := s.loadV1ModelExtMap()
+	for modelName, ext := range extMap {
+		if ext.Mid != "" {
+			midToModel[ext.Mid] = modelName
+		}
+		midToModel["m-"+strconv.FormatUint(modelNumericID(modelName), 10)] = modelName
+	}
+	var bindings []pricing.ModelRuleBinding
+	if err := s.readOnly().WithContext(ctx).Select("model").Find(&bindings).Error; err == nil {
+		for _, b := range bindings {
+			midToModel["m-"+strconv.FormatUint(modelNumericID(b.Model), 10)] = b.Model
+		}
+	}
+	var prices []relay.ModelPrice
+	if err := s.readOnly().WithContext(ctx).Select("model").Find(&prices).Error; err == nil {
+		for _, p := range prices {
+			midToModel["m-"+strconv.FormatUint(modelNumericID(p.Model), 10)] = p.Model
+		}
+	}
+
+	canonical := make([]string, 0, len(raw))
+	rawList := make([]string, 0, len(raw))
+	seenCanon := make(map[string]struct{}, len(raw))
+	seenRaw := make(map[string]struct{}, len(raw))
+	for _, item := range raw {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seenRaw[trimmed]; !ok {
+			seenRaw[trimmed] = struct{}{}
+			rawList = append(rawList, trimmed)
+		}
+		resolved := trimmed
+		if mapped, ok := midToModel[trimmed]; ok && mapped != "" {
+			resolved = mapped
+		}
+		if _, ok := seenCanon[resolved]; !ok {
+			seenCanon[resolved] = struct{}{}
+			canonical = append(canonical, resolved)
+		}
+	}
+	return canonical, rawList
+}
+
+func (s *Server) resolveV1SubChannels(presetID *uint64, rawConfig json.RawMessage) (*v1ChannelConfig, []v1ChannelConfig) {
+	all := s.loadV1ChannelConfigs()
+	byID := make(map[uint64]v1ChannelConfig, len(all))
+	for _, item := range all {
+		byID[item.ID] = item
+	}
+
+	var parsed struct {
+		SubChannels []uint64 `json:"sub_channels"`
+	}
+	if len(rawConfig) > 0 {
+		_ = json.Unmarshal(rawConfig, &parsed)
+	}
+	subs := make([]v1ChannelConfig, 0, len(parsed.SubChannels))
+	seen := make(map[uint64]struct{}, len(parsed.SubChannels))
+	for _, sid := range parsed.SubChannels {
+		if _, ok := seen[sid]; ok {
+			continue
+		}
+		if cfg, ok := byID[sid]; ok {
+			seen[sid] = struct{}{}
+			subs = append(subs, cfg)
+		}
+	}
+
+	var primary *v1ChannelConfig
+	if presetID != nil && *presetID > 0 {
+		if cfg, ok := byID[*presetID]; ok {
+			c := cfg
+			primary = &c
+		}
+	}
+	if primary == nil && len(subs) > 0 {
+		c := subs[0]
+		primary = &c
+	}
+	return primary, subs
+}
+
+func (s *Server) syncChannelSubCredentials(ctx context.Context, channelID uint64, subs []v1ChannelConfig) {
+	if channelID == 0 || len(subs) == 0 {
+		return
+	}
+	rows := make([]relay.ChannelCredential, 0, len(subs))
+	for _, sub := range subs {
+		if strings.TrimSpace(sub.APIKeyEnc) == "" {
+			continue
+		}
+		fp := "cfg-" + strconv.FormatUint(sub.ID, 10)
+		if s.keyring != nil {
+			if plain, err := s.keyring.Decrypt(sub.APIKeyEnc); err == nil && plain != "" {
+				fp = relay.CredentialFingerprint(plain)
+			}
+		}
+		st := int8(1)
+		if sub.Status == 0 {
+			st = 0
+		}
+		rows = append(rows, relay.ChannelCredential{
+			ChannelID:     channelID,
+			CredentialEnc: sub.APIKeyEnc,
+			Fingerprint:   fp,
+			Status:        st,
+			ModeWeight:    1,
+		})
+	}
+	if len(rows) == 0 {
+		return
+	}
+	_ = s.db.WithContext(ctx).Where("channel_id = ?", channelID).Delete(&relay.ChannelCredential{}).Error
+	_ = s.db.WithContext(ctx).Create(&rows).Error
 }
 
 func (s *Server) v1ListChannels(c *gin.Context) {
@@ -75,9 +200,13 @@ func (s *Server) v1ListChannels(c *gin.Context) {
 
 func (s *Server) formatV1TkeChannel(ch relay.Channel, meta v1ChannelMeta) gin.H {
 	models := []string{}
-	for item := range strings.SplitSeq(ch.Models, ",") {
-		if m := strings.TrimSpace(item); m != "" {
-			models = append(models, m)
+	if len(meta.ModelMids) > 0 {
+		models = slices.Clone(meta.ModelMids)
+	} else {
+		for item := range strings.SplitSeq(ch.Models, ",") {
+			if m := strings.TrimSpace(item); m != "" {
+				models = append(models, m)
+			}
 		}
 	}
 	mapping := map[string]string{}
@@ -101,7 +230,7 @@ func (s *Server) formatV1TkeChannel(ch relay.Channel, meta v1ChannelMeta) gin.H 
 	return gin.H{
 		"id":                  ch.ID,
 		"name":                ch.Name,
-		"provider_type":       ch.Provider,
+		"provider_type":       cmp.Or(meta.RawProviderType, ch.Provider),
 		"base_url":            ch.BaseURL,
 		"models":              models,
 		"model_mapping":       mapping,
@@ -156,18 +285,19 @@ func (s *Server) v1CreateChannel(c *gin.Context) {
 	provider := mapTkeProviderToRelay(cmp.Or(req.ProviderType, "openai"))
 	baseURL := strings.TrimSpace(req.BaseURL)
 	apiKey := strings.TrimSpace(req.APIKey)
+	primary, subs := s.resolveV1SubChannels(req.PresetID, req.Config)
 
 	var credEnc string
-	if req.PresetID != nil && *req.PresetID > 0 {
-		if cfg, ok := s.findV1ChannelConfig(*req.PresetID); ok {
-			if baseURL == "" {
-				baseURL = cfg.BaseURL
-			}
-			if apiKey == "" {
-				credEnc = cfg.APIKeyEnc
-			}
-			if req.ProviderType == "" && cfg.ProviderType != "" {
-				provider = mapTkeProviderToRelay(cfg.ProviderType)
+	if primary != nil {
+		if baseURL == "" {
+			baseURL = primary.BaseURL
+		}
+		if apiKey == "" {
+			credEnc = primary.APIKeyEnc
+		}
+		if req.ProviderType == "" || req.ProviderType == "high_availability_group" || req.ProviderType == "custom" {
+			if primary.ProviderType != "" {
+				provider = mapTkeProviderToRelay(primary.ProviderType)
 			}
 		}
 	}
@@ -199,6 +329,8 @@ func (s *Server) v1CreateChannel(c *gin.Context) {
 	rateDec := decimal.NewFromInt(1)
 	if req.Rate > 0 {
 		rateDec = decimal.NewFromFloat(req.Rate)
+	} else if primary != nil && primary.Rate > 0 {
+		rateDec = decimal.NewFromFloat(primary.Rate)
 	}
 	status := int8(1)
 	if req.Status != nil {
@@ -209,12 +341,13 @@ func (s *Server) v1CreateChannel(c *gin.Context) {
 		weight = 1
 	}
 
+	canonicalModels, rawModelMids := s.resolveCanonicalChannelModels(c.Request.Context(), req.Models)
 	ch := relay.Channel{
 		Name:               strings.TrimSpace(req.Name),
 		Provider:           provider,
 		BaseURL:            baseURL,
 		CredentialEnc:      credEnc,
-		Models:             joinTrim(req.Models),
+		Models:             joinTrim(canonicalModels),
 		ModelMapping:       mappingJSON,
 		Priority:           req.Priority,
 		Weight:             weight,
@@ -227,9 +360,12 @@ func (s *Server) v1CreateChannel(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "create channel failed")
 		return
 	}
+	s.syncChannelSubCredentials(c.Request.Context(), ch.ID, subs)
 
 	meta := v1ChannelMeta{
+		RawProviderType:   strings.TrimSpace(req.ProviderType),
 		PresetID:          req.PresetID,
+		ModelMids:         rawModelMids,
 		GroupAID:          "A" + strconv.FormatUint(ch.ID, 10),
 		SortOrder:         req.SortOrder,
 		UserGroups:        req.UserGroups,
@@ -297,8 +433,11 @@ func (s *Server) v1UpdateChannel(c *gin.Context) {
 		}
 		updates["credential_enc"] = enc
 	}
+	var updatedModelMids []string
 	if req.Models != nil {
-		updates["models"] = joinTrim(*req.Models)
+		canonicalModels, rawMids := s.resolveCanonicalChannelModels(c.Request.Context(), *req.Models)
+		updates["models"] = joinTrim(canonicalModels)
+		updatedModelMids = rawMids
 	}
 	if req.ModelMapping != nil {
 		if b, err := json.Marshal(*req.ModelMapping); err == nil {
@@ -329,6 +468,12 @@ func (s *Server) v1UpdateChannel(c *gin.Context) {
 
 	metaMap := s.loadV1ChannelMetaMap()
 	meta := metaMap[id]
+	if req.Models != nil {
+		meta.ModelMids = updatedModelMids
+	}
+	if req.ProviderType != nil {
+		meta.RawProviderType = strings.TrimSpace(*req.ProviderType)
+	}
 	if req.PresetID != nil {
 		meta.PresetID = req.PresetID
 	}
@@ -343,6 +488,25 @@ func (s *Server) v1UpdateChannel(c *gin.Context) {
 	}
 	if len(req.Config) > 0 {
 		meta.Config = req.Config
+	}
+	primary, subs := s.resolveV1SubChannels(meta.PresetID, meta.Config)
+	if len(subs) > 0 {
+		s.syncChannelSubCredentials(c.Request.Context(), id, subs)
+	}
+	if primary != nil {
+		subUp := map[string]any{}
+		if primary.BaseURL != "" && (req.BaseURL == nil || strings.TrimSpace(*req.BaseURL) == "") {
+			subUp["base_url"] = primary.BaseURL
+		}
+		if primary.APIKeyEnc != "" && (req.APIKey == nil || strings.TrimSpace(*req.APIKey) == "") {
+			subUp["credential_enc"] = primary.APIKeyEnc
+		}
+		if primary.ProviderType != "" && (meta.RawProviderType == "" || meta.RawProviderType == "high_availability_group") {
+			subUp["provider"] = mapTkeProviderToRelay(primary.ProviderType)
+		}
+		if len(subUp) > 0 {
+			_ = s.db.WithContext(c.Request.Context()).Model(&relay.Channel{}).Where("id = ?", id).Updates(subUp).Error
+		}
 	}
 	s.saveV1ChannelMeta(id, meta)
 
@@ -730,4 +894,550 @@ func (s *Server) upsertRawSetting(name, val string) error {
 		Columns:   []clause.Column{{Name: "name"}},
 		DoUpdates: clause.AssignmentColumns([]string{"value"}),
 	}).Create(&Setting{Name: name, Value: val}).Error
+}
+
+func (s *Server) v1ChannelConfigQuotaReset(c *gin.Context) {
+	id, ok := parseUintIDParam(c, "id")
+	if !ok {
+		return
+	}
+	s.writeAudit(c, "v1_channel_config_quota_reset", strconv.FormatUint(id, 10), "reset channel config quota")
+	c.JSON(http.StatusOK, gin.H{"ok": true, "id": id})
+}
+
+func (s *Server) v1ChannelConfigsVolcBalance(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"configured":        false,
+		"available_balance": 0.0,
+		"currency":          "CNY",
+		"message":           "请先配置火山引擎主账号凭证后查询实时余额",
+	})
+}
+
+func (s *Server) v1TestChannel(c *gin.Context) {
+	if s.relay == nil {
+		fail(c, http.StatusServiceUnavailable, "relay not configured")
+		return
+	}
+	id, ok := parseUintIDParam(c, "id")
+	if !ok {
+		return
+	}
+	var ch relay.Channel
+	if err := s.readOnly().WithContext(c.Request.Context()).First(&ch, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "channel not found")
+		return
+	}
+	var req struct {
+		Model         string         `json:"model"`
+		ForwardRuleID *uint64        `json:"forward_rule_id"`
+		SubChannelID  *uint64        `json:"sub_channel_id"`
+		Scenario      string         `json:"scenario"`
+		CustomBody    map[string]any `json:"custom_body"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	targetModel := strings.TrimSpace(req.Model)
+	if targetModel != "" {
+		if resolved, _ := s.resolveCanonicalChannelModels(c.Request.Context(), []string{targetModel}); len(resolved) > 0 {
+			targetModel = resolved[0]
+		}
+	}
+	if targetModel == "" {
+		for item := range strings.SplitSeq(ch.Models, ",") {
+			if m := strings.TrimSpace(item); m != "" {
+				targetModel = m
+				break
+			}
+		}
+	}
+	if targetModel == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"err_msg": "channel has no models configured",
+			"latency": 0,
+		})
+		return
+	}
+
+	metaMap := s.loadV1ChannelMetaMap()
+	meta := metaMap[ch.ID]
+	chCopy := ch
+	if req.SubChannelID != nil && *req.SubChannelID > 0 {
+		if subCfg, found := s.findV1ChannelConfig(*req.SubChannelID); found {
+			if subCfg.BaseURL != "" {
+				chCopy.BaseURL = subCfg.BaseURL
+			}
+			if subCfg.APIKeyEnc != "" {
+				chCopy.CredentialEnc = subCfg.APIKeyEnc
+			}
+			if subCfg.ProviderType != "" {
+				chCopy.Provider = mapTkeProviderToRelay(subCfg.ProviderType)
+			}
+		}
+	} else if primary, _ := s.resolveV1SubChannels(meta.PresetID, meta.Config); primary != nil {
+		if chCopy.BaseURL == "" || chCopy.BaseURL == "https://api.openai.com" {
+			if primary.BaseURL != "" {
+				chCopy.BaseURL = primary.BaseURL
+			}
+		}
+		if primary.APIKeyEnc != "" {
+			chCopy.CredentialEnc = primary.APIKeyEnc
+		}
+	}
+
+	var matchedRule gin.H
+	entryPath := "/v1/chat/completions"
+	if req.ForwardRuleID != nil && *req.ForwardRuleID > 0 {
+		var fr forward.ForwardRule
+		if err := s.readOnly().WithContext(c.Request.Context()).First(&fr, *req.ForwardRuleID).Error; err == nil {
+			matchedRule = gin.H{
+				"id":        fr.ID,
+				"eid":       fr.EID,
+				"name":      fr.Name,
+				"rule_type": fr.RuleType,
+				"category":  fr.Category,
+			}
+			var cfg struct {
+				PathAccept []string `json:"path_accept"`
+			}
+			if json.Unmarshal([]byte(fr.ConfigJSON), &cfg) == nil && len(cfg.PathAccept) > 0 && strings.TrimSpace(cfg.PathAccept[0]) != "" {
+				entryPath = cfg.PathAccept[0]
+			}
+		}
+	}
+
+	res := s.relay.TestChannel(c.Request.Context(), &chCopy, targetModel)
+	upstreamModel := chCopy.UpstreamModel(targetModel)
+	targetURL := strings.TrimRight(chCopy.BaseURL, "/") + "/chat/completions"
+	reqData := gin.H{
+		"url":        targetURL,
+		"model":      upstreamModel,
+		"messages":   []gin.H{{"role": "user", "content": "ping"}},
+		"max_tokens": 16,
+	}
+	if len(req.CustomBody) > 0 {
+		reqData["custom_body"] = req.CustomBody
+	}
+	curlCmd := fmt.Sprintf(
+		`curl -X POST %q -H "Content-Type: application/json" -H "Authorization: Bearer sk-****" -d '{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":16}'`,
+		targetURL, upstreamModel,
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":    res.OK,
+		"err_msg":    res.Message,
+		"latency":    res.LatencyMs,
+		"status":     res.Status,
+		"entry_path": entryPath,
+		"scenario":   cmp.Or(strings.TrimSpace(req.Scenario), "default"),
+		"matched_rule": func() any {
+			if matchedRule == nil {
+				return nil
+			}
+			return matchedRule
+		}(),
+		"request_data": reqData,
+		"response_data": gin.H{
+			"ok":         res.OK,
+			"status":     res.Status,
+			"latency_ms": res.LatencyMs,
+			"message":    res.Message,
+		},
+		"curl_command": curlCmd,
+	})
+}
+
+func (s *Server) v1SimulateChannelBilling(c *gin.Context) {
+	id, ok := parseUintIDParam(c, "id")
+	if !ok {
+		return
+	}
+	ctx := c.Request.Context()
+	rdb := s.readOnly().WithContext(ctx)
+
+	var ch relay.Channel
+	if err := rdb.First(&ch, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "channel not found")
+		return
+	}
+
+	var req struct {
+		Model              string   `json:"model"`
+		SubChannelID       *uint64  `json:"sub_channel_id"`
+		UserLevelID        *uint64  `json:"user_level_id"`
+		UserID             string   `json:"user_id"`
+		CustomDiscount     *float64 `json:"custom_discount"`
+		CustomUpstreamRate *float64 `json:"custom_upstream_rate"`
+		SimulatedTime      string   `json:"simulated_time"`
+		MockUserBalance    *float64 `json:"mock_user_balance"`
+		Usage              struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+			CachedTokens     int64 `json:"cached_tokens"`
+			CacheWriteTokens int64 `json:"cache_write_tokens"`
+			AudioTokens      int64 `json:"audio_tokens"`
+		} `json:"usage"`
+		Features struct {
+			WebSearch       int64    `json:"web_search"`
+			Resolution      string   `json:"resolution"`
+			DurationSeconds *float64 `json:"duration_seconds"`
+			ImageCount      *int64   `json:"image_count"`
+			Size            string   `json:"size"`
+			TextCharacters  *int64   `json:"text_characters"`
+		} `json:"features"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid simulate request")
+		return
+	}
+
+	reqModel := strings.TrimSpace(req.Model)
+	if reqModel != "" {
+		if resolved, _ := s.resolveCanonicalChannelModels(ctx, []string{reqModel}); len(resolved) > 0 {
+			reqModel = resolved[0]
+		}
+	}
+	if reqModel == "" {
+		for item := range strings.SplitSeq(ch.Models, ",") {
+			if m := strings.TrimSpace(item); m != "" {
+				reqModel = m
+				break
+			}
+		}
+	}
+	if reqModel == "" {
+		fail(c, http.StatusBadRequest, "model is required for billing simulation")
+		return
+	}
+
+	metaMap := s.loadV1ChannelMetaMap()
+	meta := metaMap[ch.ID]
+	primary, subs := s.resolveV1SubChannels(meta.PresetID, meta.Config)
+
+	subOptions := make([]gin.H, 0, len(subs))
+	for _, sub := range subs {
+		r := sub.Rate
+		if r <= 0 {
+			r = 1
+		}
+		subOptions = append(subOptions, gin.H{
+			"id":            sub.ID,
+			"name":          sub.Name,
+			"rate":          r,
+			"status":        sub.Status,
+			"provider_type": sub.ProviderType,
+		})
+	}
+
+	upstreamName := "自定义上游"
+	upstreamRateDec := ch.UpstreamCostRatio
+	if !upstreamRateDec.IsPositive() {
+		upstreamRateDec = decimal.NewFromInt(1)
+	}
+	if req.CustomUpstreamRate != nil && *req.CustomUpstreamRate >= 0 {
+		upstreamName = "自定义上游 (手动指定倍率)"
+		upstreamRateDec = decimal.NewFromFloat(*req.CustomUpstreamRate)
+	} else if req.SubChannelID != nil && *req.SubChannelID > 0 {
+		for _, sub := range subs {
+			if sub.ID == *req.SubChannelID {
+				upstreamName = "HA子渠道: " + sub.Name
+				if sub.Rate > 0 {
+					upstreamRateDec = decimal.NewFromFloat(sub.Rate)
+				}
+				break
+			}
+		}
+	} else if len(subs) > 0 {
+		upstreamName = "HA子渠道(默认首项): " + subs[0].Name
+		if subs[0].Rate > 0 {
+			upstreamRateDec = decimal.NewFromFloat(subs[0].Rate)
+		}
+	} else if primary != nil {
+		upstreamName = "上游预设: " + primary.Name
+		if primary.Rate > 0 {
+			upstreamRateDec = decimal.NewFromFloat(primary.Rate)
+		}
+	}
+
+	resolvedModel := ch.UpstreamModel(reqModel)
+	mappingHit := resolvedModel != reqModel
+	mappingSource := "未启用模型映射"
+	if mappingHit {
+		mappingSource = "精确匹配"
+	}
+
+	var binding pricing.ModelRuleBinding
+	hasBinding := rdb.Where("model = ?", reqModel).First(&binding).Error == nil
+	if !hasBinding && resolvedModel != reqModel {
+		hasBinding = rdb.Where("model = ?", resolvedModel).First(&binding).Error == nil
+	}
+
+	var rule *pricing.BillingRule
+	if hasBinding && binding.BillingRuleID > 0 {
+		var r pricing.BillingRule
+		if rdb.Where("id = ?", binding.BillingRuleID).First(&r).Error == nil {
+			rule = &r
+		}
+	}
+
+	levelDisc := decimal.NewFromInt(1)
+	if req.UserLevelID != nil && *req.UserLevelID > 0 {
+		var ratios []GroupRatio
+		_ = rdb.Order("name").Find(&ratios).Error
+		idx := int(*req.UserLevelID) - 1
+		if idx >= 0 && idx < len(ratios) && ratios[idx].Ratio.IsPositive() {
+			levelDisc = ratios[idx].Ratio
+		}
+	}
+	if req.CustomDiscount != nil && *req.CustomDiscount >= 0 {
+		levelDisc = decimal.NewFromFloat(*req.CustomDiscount)
+	}
+
+	modelDisc := decimal.NewFromInt(1)
+	if hasBinding {
+		modelDisc = binding.EffectiveDiscount()
+	}
+	effectiveDisc := levelDisc.Mul(modelDisc)
+	floorClamped := false
+	floorRate := decimal.Zero
+	if hasBinding && binding.SiteDiscountEnabled == 1 && binding.SiteDiscount.IsPositive() {
+		floorRate = binding.SiteDiscount
+		if effectiveDisc.LessThan(floorRate) {
+			effectiveDisc = floorRate
+			floorClamped = true
+		}
+	}
+
+	cstLoc := time.FixedZone("CST", 8*3600)
+	simTime := s.now().In(cstLoc)
+	if rawT := strings.TrimSpace(req.SimulatedTime); rawT != "" {
+		layout := "15:04:05"
+		if len(rawT) == 5 {
+			layout = "15:04"
+		}
+		if parsed, err := time.ParseInLocation(layout, rawT, cstLoc); err == nil {
+			simTime = time.Date(simTime.Year(), simTime.Month(), simTime.Day(), parsed.Hour(), parsed.Minute(), parsed.Second(), 0, cstLoc)
+		}
+	}
+	timeMult := pricing.ResolveTimeMultiplierAt(rule, simTime, cstLoc)
+
+	ut := pricing.UsageTokens{
+		Prompt:        req.Usage.PromptTokens,
+		Completion:    req.Usage.CompletionTokens,
+		Total:         req.Usage.PromptTokens + req.Usage.CompletionTokens,
+		Cached:        req.Usage.CachedTokens,
+		CacheWrite:    req.Usage.CacheWriteTokens,
+		CacheCreation: req.Usage.CacheWriteTokens,
+		AudioTokens:   req.Usage.AudioTokens,
+		WebSearch:     req.Features.WebSearch,
+	}
+	featNoTime := pricing.ExtractedFeatures{
+		Resolution: req.Features.Resolution,
+		Size:       req.Features.Size,
+		ImageCount: req.Features.ImageCount,
+		WebSearch:  func() *int64 { v := req.Features.WebSearch; return &v }(),
+	}
+	if req.Features.DurationSeconds != nil {
+		d := decimal.NewFromFloat(*req.Features.DurationSeconds)
+		featNoTime.DurationSeconds = &d
+		featNoTime.HasVideo = true
+	}
+	if req.Features.TextCharacters != nil {
+		featNoTime.TextCharacters = req.Features.TextCharacters
+	}
+	featWithTime := featNoTime
+	featWithTime.TimeMultiplier = &timeMult
+
+	baseCostDec, _ := pricing.ComputeCostRaw(rule, ut, decimal.NewFromInt(1), featNoTime)
+	baseCostDec = pricing.RoundMoney(baseCostDec)
+	actualCostDec, billDetail := pricing.ComputeCost(rule, ut, effectiveDisc, featWithTime)
+
+	preDeductDec := actualCostDec
+	if hasBinding && binding.PreDeduction.IsPositive() && binding.PreDeduction.GreaterThan(preDeductDec) {
+		preDeductDec = pricing.RoundMoney(binding.PreDeduction)
+	}
+	refundDec := decimal.Zero
+	addDeductDec := decimal.Zero
+	if preDeductDec.GreaterThan(actualCostDec) {
+		refundDec = pricing.RoundMoney(preDeductDec.Sub(actualCostDec))
+	} else if actualCostDec.GreaterThan(preDeductDec) {
+		addDeductDec = pricing.RoundMoney(actualCostDec.Sub(preDeductDec))
+	}
+
+	upstreamCostDec := pricing.RoundMoney(baseCostDec.Mul(upstreamRateDec))
+	grossProfitDec := actualCostDec.Sub(upstreamCostDec)
+	marginPctDec := decimal.Zero
+	if actualCostDec.IsPositive() {
+		marginPctDec = grossProfitDec.Div(actualCostDec).Mul(decimal.NewFromInt(100))
+	} else if upstreamCostDec.IsPositive() {
+		marginPctDec = decimal.NewFromInt(-100)
+	}
+
+	baseF, _ := baseCostDec.Float64()
+	preF, _ := preDeductDec.Float64()
+	actF, _ := actualCostDec.Float64()
+	refundF, _ := refundDec.Float64()
+	addF, _ := addDeductDec.Float64()
+	upRateF, _ := upstreamRateDec.Float64()
+	upCostF, _ := upstreamCostDec.Float64()
+	profitF, _ := grossProfitDec.Float64()
+	marginF, _ := marginPctDec.Float64()
+	discF, _ := effectiveDisc.Float64()
+	timeMultF, _ := timeMult.Float64()
+	chRateF, _ := ch.UpstreamCostRatio.Float64()
+
+	var warningMsg string
+	if ch.Status == 0 {
+		warningMsg = "当前渠道处于禁用状态，线上调用将被拦截；此处仅演算理论计费。"
+	} else if req.MockUserBalance != nil && decimal.NewFromFloat(*req.MockUserBalance).LessThan(preDeductDec) {
+		warningMsg = fmt.Sprintf("模拟钱包余额 ($%.4f) 低于预扣冻结 ($%.6f)，线上将被余额不足拦截。", *req.MockUserBalance, preF)
+	}
+
+	ruleInfo := gin.H{
+		"rule_name":           "系统默认兜底规则",
+		"pricing_type":        "standard",
+		"billing_type":        "tokens",
+		"is_default_fallback": true,
+		"rates":               gin.H{},
+	}
+	if rule != nil {
+		pF, _ := rule.PromptRate.Float64()
+		cF, _ := rule.CompletionRate.Float64()
+		ruleInfo = gin.H{
+			"rule_id":             rule.ID,
+			"rule_name":           rule.Name,
+			"pricing_type":        rule.PricingType,
+			"billing_type":        rule.BillingType,
+			"is_default_fallback": false,
+			"rates": gin.H{
+				"prompt_rate":     pF,
+				"completion_rate": cF,
+			},
+		}
+	}
+
+	isLoss := grossProfitDec.IsNegative()
+	floorStatus := "pass"
+	floorDesc := fmt.Sprintf("有效折扣率 %.4fx 未低于保底限价。", discF)
+	if floorClamped {
+		floorStatus = "warn"
+		floorDesc = fmt.Sprintf("触发模型站点保底折扣限价，强制夹紧至 %sx。", floorRate.String())
+	}
+	marginStatus := "pass"
+	if isLoss {
+		marginStatus = "danger"
+	}
+
+	trace := []gin.H{
+		{
+			"step":        1,
+			"stage":       "routing",
+			"title":       "模型路由与名称映射",
+			"formula":     fmt.Sprintf("%s -> %s", reqModel, resolvedModel),
+			"description": mappingSource,
+			"status":      "normal",
+		},
+		{
+			"step":        2,
+			"stage":       "pre_deduct",
+			"title":       "请求预冻结检查",
+			"formula":     fmt.Sprintf("预扣冻结: %.6f USD", preF),
+			"description": "进入上游转发前创建账本 Hold 冻结资金。",
+			"value":       preF,
+			"status":      "normal",
+		},
+		{
+			"step":        3,
+			"stage":       "base_cost",
+			"title":       "基础计费规则原价",
+			"formula":     fmt.Sprintf("基础原价 = %.6f USD", baseF),
+			"description": fmt.Sprintf("依据计费规则 %s 按 1.0x 原价核算。", ruleInfo["rule_name"]),
+			"value":       baseF,
+			"status":      "pass",
+		},
+		{
+			"step":        4,
+			"stage":       "discount",
+			"title":       "分组与模型折扣折算",
+			"formula":     fmt.Sprintf("有效折扣率 = %.4fx", discF),
+			"description": "合并分组/等级倍率与模型绑定折扣。",
+			"value":       discF,
+			"status":      "normal",
+		},
+		{
+			"step":        5,
+			"stage":       "channel_rate_and_floor",
+			"title":       "折扣保底防倒贴校验",
+			"formula":     fmt.Sprintf("最终折扣倍率 = %.4fx", discF),
+			"description": floorDesc,
+			"value":       discF,
+			"status":      floorStatus,
+		},
+		{
+			"step":        6,
+			"stage":       "time_multiplier",
+			"title":       "峰谷时段倍率核算",
+			"formula":     fmt.Sprintf("时段倍率 = %.4fx", timeMultF),
+			"description": fmt.Sprintf("按东八区时刻 %s 匹配时段乘数。", simTime.Format("15:04:05")),
+			"value":       timeMultF,
+			"status":      "normal",
+		},
+		{
+			"step":        7,
+			"stage":       "settlement",
+			"title":       "终态账本结算退补",
+			"formula":     fmt.Sprintf("实扣 %.6f USD (退还 %.6f / 补扣 %.6f)", actF, refundF, addF),
+			"description": billDetail,
+			"value":       actF,
+			"status":      "pass",
+		},
+		{
+			"step":        8,
+			"stage":       "cost_and_margin",
+			"title":       "上游采购成本与平台毛利",
+			"formula":     fmt.Sprintf("毛利 %+.6f USD (%.2f%%)", profitF, marginF),
+			"description": fmt.Sprintf("%s · 采购倍率 %.4fx", upstreamName, upRateF),
+			"value":       profitF,
+			"status":      marginStatus,
+		},
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"channel_info": gin.H{
+			"channel_id":    ch.ID,
+			"channel_name":  ch.Name,
+			"channel_rate":  chRateF,
+			"provider_type": cmp.Or(meta.RawProviderType, ch.Provider),
+			"group_aid":     cmp.Or(meta.GroupAID, "A"+strconv.FormatUint(ch.ID, 10)),
+			"status":        ch.Status,
+			"is_disabled":   ch.Status == 0,
+		},
+		"available_sub_channels": subOptions,
+		"routing": gin.H{
+			"requested_model":   reqModel,
+			"resolved_model":    resolvedModel,
+			"model_mapping_hit": mappingHit,
+			"mapping_source":    mappingSource,
+		},
+		"billing_rule":   ruleInfo,
+		"pipeline_trace": trace,
+		"settlement": gin.H{
+			"pre_deducted":        preF,
+			"actual_cost":         actF,
+			"refund_amount":       refundF,
+			"additional_deduct":   addF,
+			"billing_detail_text": billDetail,
+		},
+		"cost_and_margin": gin.H{
+			"upstream_name":  upstreamName,
+			"upstream_rate":  upRateF,
+			"upstream_cost":  upCostF,
+			"gross_profit":   profitF,
+			"margin_percent": marginF,
+			"is_loss_making": isLoss,
+		},
+		"warning": warningMsg,
+	})
 }

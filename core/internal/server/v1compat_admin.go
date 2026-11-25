@@ -417,45 +417,66 @@ func (s *Server) v1AdminListModels(c *gin.Context) {
 			fwdJSON = "[]"
 		}
 
+		var globalDisc decimal.Decimal = decimal.NewFromInt(1)
+		var globalDiscEn bool
+		var discountSchedule string
+		if hasB {
+			if b.GlobalDiscount.IsPositive() {
+				globalDisc = b.GlobalDiscount
+			}
+			globalDiscEn = b.GlobalDiscountEnabled == 1
+			discountSchedule = b.DiscountSchedule
+		}
+		var brObj any
+		if hasB && b.BillingRuleID > 0 {
+			if br, ok := brMap[b.BillingRuleID]; ok {
+				brObj = br
+			}
+		}
+
 		out = append(out, gin.H{
-			"id":                    numID,
-			"mid":                   cmp.Or(ext.Mid, "m-"+strconv.FormatUint(numID, 10)),
-			"model":                 modelName,
-			"model_id":              modelName,
-			"original_id":           cmp.Or(ext.OriginalID, modelName),
-			"model_id_alias":        b.ModelAlias,
-			"name":                  displayName,
-			"model_alias":           b.ModelAlias,
-			"provider_id":           ext.ProviderID,
-			"api_provider_id":       ext.APIProviderID,
-			"type_id":               ext.TypeID,
-			"vendor":                meta.Vendor,
-			"category":              meta.Category,
-			"description":           meta.Description,
-			"remark":                ext.Remark,
-			"feature_attributes":    cmp.Or(ext.FeatureAttributes, "[]"),
-			"group_ratios":          cmp.Or(ext.GroupRatios, "{}"),
-			"context_length":        meta.ContextLength,
-			"logo":                  meta.Icon,
-			"icon":                  meta.Icon,
-			"billing_rule_id":       b.BillingRuleID,
-			"billing_rule_name":     brName,
-			"billing_rule_pid":      brPID,
-			"forward_rule_ids":      fwdJSON,
-			"forward_rule_id_list":  fwdIDs,
-			"forward_rule_names":    fwdNames,
-			"pre_deduction":         preDed,
-			"site_discount":         siteDisc,
-			"site_discount_enabled": map[bool]int{true: 1, false: 0}[siteDiscEn],
-			"enable_log_content":    b.EnableLogContent,
-			"input_usd_per_1m":      p.InputUSDPer1M,
-			"output_usd_per_1m":     p.OutputUSDPer1M,
-			"image_usd":             p.ImageUSD,
-			"per_call_usd":          p.PerCallUSD,
-			"is_listed":             map[bool]int{true: 1, false: 0}[isListed],
-			"is_active":             map[bool]int{true: 1, false: 0}[isActive],
-			"sort_order":            sortOrder,
-			"created_at":            b.CreatedAt,
+			"id":                      numID,
+			"mid":                     cmp.Or(ext.Mid, "m-"+strconv.FormatUint(numID, 10)),
+			"model":                   modelName,
+			"model_id":                modelName,
+			"original_id":             cmp.Or(ext.OriginalID, modelName),
+			"model_id_alias":          b.ModelAlias,
+			"name":                    displayName,
+			"model_alias":             b.ModelAlias,
+			"provider_id":             ext.ProviderID,
+			"api_provider_id":         ext.APIProviderID,
+			"type_id":                 ext.TypeID,
+			"vendor":                  meta.Vendor,
+			"category":                meta.Category,
+			"description":             meta.Description,
+			"remark":                  ext.Remark,
+			"feature_attributes":      cmp.Or(ext.FeatureAttributes, "[]"),
+			"group_ratios":            cmp.Or(ext.GroupRatios, "{}"),
+			"context_length":          meta.ContextLength,
+			"logo":                    meta.Icon,
+			"icon":                    meta.Icon,
+			"billing_rule_id":         b.BillingRuleID,
+			"billing_rule_name":       brName,
+			"billing_rule_pid":        brPID,
+			"billing_rule":            brObj,
+			"forward_rule_ids":        fwdJSON,
+			"forward_rule_id_list":    fwdIDs,
+			"forward_rule_names":      fwdNames,
+			"pre_deduction":           preDed,
+			"site_discount":           siteDisc,
+			"site_discount_enabled":   map[bool]int{true: 1, false: 0}[siteDiscEn],
+			"global_discount":         globalDisc,
+			"global_discount_enabled": map[bool]int{true: 1, false: 0}[globalDiscEn],
+			"discount_schedule":       discountSchedule,
+			"enable_log_content":      b.EnableLogContent,
+			"input_usd_per_1m":        p.InputUSDPer1M,
+			"output_usd_per_1m":       p.OutputUSDPer1M,
+			"image_usd":               p.ImageUSD,
+			"per_call_usd":            p.PerCallUSD,
+			"is_listed":               map[bool]int{true: 1, false: 0}[isListed],
+			"is_active":               map[bool]int{true: 1, false: 0}[isActive],
+			"sort_order":              sortOrder,
+			"created_at":              b.CreatedAt,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"data": out})
@@ -464,37 +485,40 @@ func (s *Server) v1AdminListModels(c *gin.Context) {
 func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 	ctx := c.Request.Context()
 	var req struct {
-		Model               string           `json:"model"`
-		ModelID             string           `json:"model_id"`
-		OriginalID          string           `json:"original_id"`
-		Name                string           `json:"name"`
-		ModelAlias          string           `json:"model_alias"`
-		ModelIDAlias        string           `json:"model_id_alias"`
-		Vendor              string           `json:"vendor"`
-		Category            string           `json:"category"`
-		Description         string           `json:"description"`
-		Remark              string           `json:"remark"`
-		FeatureAttributes   string           `json:"feature_attributes"`
-		GroupRatios         string           `json:"group_ratios"`
-		ContextLength       int              `json:"context_length"`
-		Icon                string           `json:"icon"`
-		Logo                string           `json:"logo"`
-		ProviderID          uint64           `json:"provider_id"`
-		APIProviderID       uint64           `json:"api_provider_id"`
-		TypeID              uint64           `json:"type_id"`
-		BillingRuleID       uint64           `json:"billing_rule_id"`
-		ForwardRuleIDsRaw   json.RawMessage  `json:"forward_rule_ids"`
-		PreDeduction        *decimal.Decimal `json:"pre_deduction"`
-		SiteDiscount        *decimal.Decimal `json:"site_discount"`
-		SiteDiscountEnabled *flexBool        `json:"site_discount_enabled"`
-		EnableLogContent    *flexBool        `json:"enable_log_content"`
-		InputUSDPer1M       *decimal.Decimal `json:"input_usd_per_1m"`
-		OutputUSDPer1M      *decimal.Decimal `json:"output_usd_per_1m"`
-		ImageUSD            *decimal.Decimal `json:"image_usd"`
-		PerCallUSD          *decimal.Decimal `json:"per_call_usd"`
-		IsListed            *flexBool        `json:"is_listed"`
-		IsActive            *flexBool        `json:"is_active"`
-		SortOrder           int              `json:"sort_order"`
+		Model                 string           `json:"model"`
+		ModelID               string           `json:"model_id"`
+		OriginalID            string           `json:"original_id"`
+		Name                  string           `json:"name"`
+		ModelAlias            string           `json:"model_alias"`
+		ModelIDAlias          string           `json:"model_id_alias"`
+		Vendor                string           `json:"vendor"`
+		Category              string           `json:"category"`
+		Description           string           `json:"description"`
+		Remark                string           `json:"remark"`
+		FeatureAttributes     string           `json:"feature_attributes"`
+		GroupRatios           string           `json:"group_ratios"`
+		ContextLength         int              `json:"context_length"`
+		Icon                  string           `json:"icon"`
+		Logo                  string           `json:"logo"`
+		ProviderID            uint64           `json:"provider_id"`
+		APIProviderID         uint64           `json:"api_provider_id"`
+		TypeID                uint64           `json:"type_id"`
+		BillingRuleID         uint64           `json:"billing_rule_id"`
+		ForwardRuleIDsRaw     json.RawMessage  `json:"forward_rule_ids"`
+		PreDeduction          *decimal.Decimal `json:"pre_deduction"`
+		SiteDiscount          *decimal.Decimal `json:"site_discount"`
+		SiteDiscountEnabled   *flexBool        `json:"site_discount_enabled"`
+		GlobalDiscount        *decimal.Decimal `json:"global_discount"`
+		GlobalDiscountEnabled *flexBool        `json:"global_discount_enabled"`
+		DiscountSchedule      *string          `json:"discount_schedule"`
+		EnableLogContent      *flexBool        `json:"enable_log_content"`
+		InputUSDPer1M         *decimal.Decimal `json:"input_usd_per_1m"`
+		OutputUSDPer1M        *decimal.Decimal `json:"output_usd_per_1m"`
+		ImageUSD              *decimal.Decimal `json:"image_usd"`
+		PerCallUSD            *decimal.Decimal `json:"per_call_usd"`
+		IsListed              *flexBool        `json:"is_listed"`
+		IsActive              *flexBool        `json:"is_active"`
+		SortOrder             int              `json:"sort_order"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid request body")
@@ -626,20 +650,34 @@ func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 		if bRuleID == 0 && req.Model == "" && req.ModelID == "" && existingB.BillingRuleID > 0 {
 			bRuleID = existingB.BillingRuleID
 		}
+		globalDisc := cmp.Or(existingB.GlobalDiscount, decimal.NewFromInt(1))
+		if req.GlobalDiscount != nil && req.GlobalDiscount.IsPositive() {
+			globalDisc = *req.GlobalDiscount
+		}
+		globalEn := existingB.GlobalDiscountEnabled
+		if req.GlobalDiscountEnabled != nil {
+			globalEn = b2i8(bool(*req.GlobalDiscountEnabled))
+		}
+		discSched := existingB.DiscountSchedule
+		if req.DiscountSchedule != nil {
+			discSched = *req.DiscountSchedule
+		}
 		binding := pricing.ModelRuleBinding{
-			Model:               model,
-			DisplayName:         cmp.Or(strings.TrimSpace(req.Name), existingB.DisplayName, model),
-			ModelAlias:          alias,
-			BillingRuleID:       bRuleID,
-			ForwardRuleIDs:      fwdStr,
-			PreDeduction:        preDed,
-			EnableLogContent:    logContent,
-			SiteDiscount:        siteDisc,
-			SiteDiscountEnabled: siteEn,
-			GlobalDiscount:      decimal.NewFromInt(1),
-			IsListed:            isListed,
-			IsActive:            isActive,
-			SortOrder:           req.SortOrder,
+			Model:                 model,
+			DisplayName:           cmp.Or(strings.TrimSpace(req.Name), existingB.DisplayName, model),
+			ModelAlias:            alias,
+			BillingRuleID:         bRuleID,
+			ForwardRuleIDs:        fwdStr,
+			PreDeduction:          preDed,
+			EnableLogContent:      logContent,
+			SiteDiscount:          siteDisc,
+			SiteDiscountEnabled:   siteEn,
+			GlobalDiscount:        globalDisc,
+			GlobalDiscountEnabled: globalEn,
+			DiscountSchedule:      discSched,
+			IsListed:              isListed,
+			IsActive:              isActive,
+			SortOrder:             req.SortOrder,
 		}
 		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "model"}}, UpdateAll: true}).Create(&binding).Error
 	})
