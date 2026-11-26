@@ -60,7 +60,7 @@ import useAuthStore from '../store/auth';
 import useSettingsStore from '../store/settings';
 import { useThemeStore } from '../store/theme';
 import request, { coreApi } from '../utils/request';
-import { LANG_NAME_MAP, persistUserLanguagePreference } from '../utils/language';
+import { LANG_NAME_MAP, persistUserLanguagePreference, resolveContentLang } from '../utils/language';
 import { getAnnouncementDisplayTime } from '../utils/announcement';
 import { formatApiDateTime } from '../utils/timedisplay';
 import { getSiderMenuTokens, solidAccent } from '../theme/tokens';
@@ -205,16 +205,16 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
   const adminBase = `/${adminPath}`;
   const adminMenuItems: MenuProps['items'] = useMemo(
     () => [
-      { key: `${adminBase}/dashboard`, icon: <DashboardOutlined />, label: t('menu.dashboard', '系统概览') },
+      { key: `${adminBase}/dashboard`, icon: <DashboardOutlined />, label: t('menu.admin_dashboard', '系统概览') },
       { key: `${adminBase}/apikeys`, icon: <KeyOutlined />, label: t('menu.tokens', '令牌管理') },
-      { key: `${adminBase}/logs`, icon: <UnorderedListOutlined />, label: t('menu.logs', '日志记录') },
-      { key: `${adminBase}/task-logs`, icon: <VideoCameraOutlined />, label: t('menu.task_logs', '任务列表') },
+      { key: `${adminBase}/logs`, icon: <UnorderedListOutlined />, label: t('menu.admin_logs', '日志记录') },
+      { key: `${adminBase}/task-logs`, icon: <VideoCameraOutlined />, label: t('menu.admin_task_logs', '任务列表') },
       {
         key: 'sub-channels',
         icon: <CloudServerOutlined />,
         label: t('menu.channel_management', '渠道管理'),
         children: [
-          { key: `${adminBase}/channels`, icon: <CloudServerOutlined />, label: t('menu.channels', '渠道列表') },
+          { key: `${adminBase}/channels`, icon: <CloudServerOutlined />, label: t('menu.channel_list', '渠道列表') },
           { key: `${adminBase}/channel-configs`, icon: <SlidersOutlined />, label: t('menu.channel_configs', '渠道配置') },
           { key: `${adminBase}/payment-channels`, icon: <CreditCardOutlined />, label: t('admin.payment_channels', '支付通道') },
           { key: `${adminBase}/ark-monitor`, icon: <VideoCameraOutlined />, label: t('menu.ark_monitor', '火山方舟监控') },
@@ -226,7 +226,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
         icon: <ApiOutlined />,
         label: t('menu.model_management', '模型管理'),
         children: [
-          { key: `${adminBase}/models`, icon: <ApiOutlined />, label: t('menu.models', '模型列表') },
+          { key: `${adminBase}/models`, icon: <ApiOutlined />, label: t('menu.model_list', '模型列表') },
           { key: `${adminBase}/billing-rules`, icon: <DollarOutlined />, label: t('menu.billing_rules', '计费规则') },
           { key: `${adminBase}/forward-rules`, icon: <NodeIndexOutlined />, label: t('menu.forward_rules', '转发规则') },
         ],
@@ -340,6 +340,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
     }
   }, [activeSubKey]);
 
+  const activeLangCode = resolveContentLang(i18n.language);
   const langMenu: MenuProps['items'] = Object.entries(LANG_NAME_MAP).map(([code, label]) => ({
     key: code,
     label,
@@ -410,7 +411,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
                 {siteTitle}
               </Typography.Text>
               <Tag color={mode === 'admin' ? 'indigo' : 'default'} style={{ margin: 0, fontSize: 11 }}>
-                {mode === 'admin' ? 'Admin' : 'Console'}
+                {mode === 'admin' ? t('menu.badge_admin', '管理端') : t('menu.badge_console', '控制台')}
               </Tag>
             </div>
           )}
@@ -498,7 +499,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
               <Button type="text" icon={isLight ? <MoonOutlined /> : <SunOutlined />} onClick={toggleTheme} />
             </Tooltip>
 
-            <Dropdown menu={{ items: langMenu }} placement="bottomRight">
+            <Dropdown menu={{ items: langMenu, selectable: true, selectedKeys: [activeLangCode] }} placement="bottomRight">
               <Button type="text" icon={<GlobalOutlined />} />
             </Dropdown>
 
@@ -515,7 +516,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
                   {
                     key: 'wallet',
                     icon: <WalletOutlined />,
-                    label: t('menu.wallet', '钱包流水'),
+                    label: t('menu.wallet_ledger', '钱包流水'),
                     onClick: () => navigate('/wallet'),
                   },
                   { type: 'divider' },
@@ -529,11 +530,11 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
                 ],
               }}
             >
-              <Space style={{ cursor: 'pointer', padding: '4px 8px', borderRadius: 8 }}>
-                <Avatar size={28} style={{ backgroundColor: accent.background, color: accent.color }}>
+              <Space style={{ cursor: 'pointer', padding: '4px 8px', borderRadius: 8, maxWidth: 168 }}>
+                <Avatar size={28} style={{ backgroundColor: accent.background, color: accent.color, flexShrink: 0 }}>
                   {(user?.username || user?.email || 'U').slice(0, 1).toUpperCase()}
                 </Avatar>
-                <Typography.Text style={{ fontSize: 13 }} ellipsis>
+                <Typography.Text style={{ fontSize: 13, maxWidth: 108 }} ellipsis>
                   {user?.username || user?.email || 'User'}
                 </Typography.Text>
               </Space>
@@ -554,7 +555,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
       >
         <List
           dataSource={announcements}
-          locale={{ emptyText: t('common.no_data', '暂无公告') }}
+          locale={{ emptyText: t('common.no_announcements', '暂无公告') }}
           renderItem={(item) => (
             <List.Item>
               <List.Item.Meta

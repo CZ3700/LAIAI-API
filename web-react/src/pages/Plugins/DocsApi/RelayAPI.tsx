@@ -30,7 +30,7 @@ import './DocsApi.css';
 
 import request from '../../../utils/request';
 import { fetchActivePlugins, peekActivePlugins } from '../../../utils/activePlugins';
-import { persistUserLanguagePreference, LANG_NAME_MAP } from '../../../utils/language';
+import { persistUserLanguagePreference, LANG_NAME_MAP, resolveContentLang } from '../../../utils/language';
 import { useThemeStore } from '../../../store/theme';
 import useSettingsStore from '../../../store/settings';
 import useAuthStore from '../../../store/auth';
@@ -396,7 +396,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
     return '/docs';
   }, [baseRoute]);
 
-  const isEn = i18n.language === 'en';
+  const isEn = resolveContentLang(i18n.language) === 'en';
   const enableThemeToggle = settings?.site?.enable_theme_toggle !== false;
   const enableMultilingual = settings?.site?.enable_multilingual !== false;
   const siteName = settings?.site?.name || 'laiai';
@@ -546,7 +546,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
     const fetchDocTree = async () => {
       try {
         const res: any = await request.get(
-          `${resolvedApiPrefix}/public/tree?lang=${i18n.language}`,
+          `${resolvedApiPrefix}/public/tree?lang=${resolveContentLang(i18n.language)}`,
         );
         if (res && res.tree) {
           const cleanedTree = cleanTreeTitles(res.tree);
@@ -683,7 +683,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
     try {
       setDetailLoading(true);
       const res: any = await request.get(
-        `${resolvedApiPrefix}/public/docs/${id}?lang=${i18n.language}`,
+        `${resolvedApiPrefix}/public/docs/${id}?lang=${resolveContentLang(i18n.language)}`,
       );
       if (res && res.doc) {
         setDocDetail({

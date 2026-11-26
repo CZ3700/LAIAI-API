@@ -6,6 +6,7 @@ import { type ClassificationCount } from '../../types';
 import { useThemeStore } from '../../store/theme';
 import { Image as ImageIcon, Video, AudioLines, MessageSquare, Cuboid, LayoutGrid, ListOrdered, Sparkles } from 'lucide-react';
 import SmartSvgIcon from '../SmartSvgIcon';
+import { localizeClassificationName } from '../../utils/language';
 
 const { Text } = Typography;
 const { useBreakpoint } = Grid;
@@ -130,7 +131,7 @@ const ClassificationFilter: React.FC<ClassificationFilterProps> = ({
               return <div style={{ width: iconBoxSize, height: iconBoxSize, borderRadius: 3, background: 'rgba(128,128,128,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: compact ? 8.5 : 9.5 }}>{(item.name_en || item.name).charAt(0)}</div>;
             })()}
             <div style={{ display: 'flex', alignItems: 'center' }}>
-              {(isEn && item.name_en) ? item.name_en : item.name} <span style={{ opacity: 0.65, marginLeft: compact ? 2 : 3, fontSize: compact ? '11px' : '12px' }}>{item.count}</span>
+              {localizeClassificationName(item, i18n.language, t)} <span style={{ opacity: 0.65, marginLeft: compact ? 2 : 3, fontSize: compact ? '11px' : '12px' }}>{item.count}</span>
             </div>
           </div>
         ))}

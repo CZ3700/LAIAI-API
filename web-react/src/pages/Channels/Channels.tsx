@@ -8,6 +8,7 @@ import { PlusOutlined, EditOutlined, DeleteOutlined, ArrowLeftOutlined, ArrowRig
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useLocation, useParams, useSearchParams, Navigate } from 'react-router-dom';
 import request from '../../utils/request';
+import { localizeFeatureTag } from '../../utils/language';
 import useSettingsStore from '../../store/settings';
 import type { Channel, ChannelCategory } from '../../types';
 import { useThemeStore } from '../../store/theme';
@@ -1739,7 +1740,7 @@ const Channels: React.FC = () => {
     const subIds = providerType === 'high_availability_group' ? selectedSubChannelAids.filter((n: any) => Number(n) > 0) : [];
 
     if (!customUrl && !validPresetId && subIds.length === 0 && !editingChannel?.id) {
-      message.warning('请先选择上游渠道或填写探测地址 (Base URL)');
+      message.warning(t('channels.probe_require_source', '请先选择上游渠道或填写探测地址 (Base URL)'));
       return;
     }
 
@@ -1758,9 +1759,9 @@ const Channels: React.FC = () => {
       setProbeSourceInfo({ baseUrl: resp?.detected_base_url, source: resp?.source });
       setSelectedProbedIds(list.filter((m: any) => !m.exists).map((m: any) => m.model_id));
       if (list.length === 0) {
-        message.warning(resp?.message || '未探测到可用模型');
+        message.warning(resp?.message || t('channels.probe_empty', '未探测到可用模型'));
       } else {
-        message.success(`探测到 ${list.length} 个模型（未入库 ${resp?.new_count ?? 0} 个）`);
+        message.success(t('channels.probe_found_summary', { total: list.length, newCount: resp?.new_count ?? 0, defaultValue: `探测到 ${list.length} 个模型（未入库 ${resp?.new_count ?? 0} 个）` }));
       }
     } catch (e) {
       console.error(e);
@@ -1788,7 +1789,7 @@ const Channels: React.FC = () => {
   const handleImportProbedModels = async (bindToChannel: boolean) => {
     const chosen = probedModels.filter((m) => selectedProbedIds.includes(m.model_id));
     if (chosen.length === 0) {
-      message.warning('请先勾选至少一个模型');
+      message.warning(t('channels.probe_select_at_least_one', '请先勾选至少一个模型'));
       return;
     }
     setImportingProbedModels(true);
@@ -1816,9 +1817,9 @@ const Channels: React.FC = () => {
         const addedMids = returnedModels.map((m: any) => String(m.mid)).filter(Boolean);
         const merged = Array.from(new Set([...channelModelMids.map(String), ...addedMids]));
         handleModelsChange(merged);
-        message.success(`已导入 ${resp?.imported_count ?? 0} 个新模型并绑定 ${addedMids.length} 个模型到当前渠道`);
+        message.success(t('channels.probe_imported_and_bound', { imported: resp?.imported_count ?? 0, bound: addedMids.length, defaultValue: `已导入 ${resp?.imported_count ?? 0} 个新模型并绑定 ${addedMids.length} 个模型到当前渠道` }));
       } else {
-        message.success(`已放入模型库（新增 ${resp?.imported_count ?? 0} 个，已存在 ${returnedModels.length - (resp?.imported_count ?? 0)} 个）`);
+        message.success(t('channels.probe_imported_only', { imported: resp?.imported_count ?? 0, existing: returnedModels.length - (resp?.imported_count ?? 0), defaultValue: `已放入模型库（新增 ${resp?.imported_count ?? 0} 个，已存在 ${returnedModels.length - (resp?.imported_count ?? 0)} 个）` }));
       }
       setProbeModalOpen(false);
     } catch (e) {
@@ -4744,7 +4745,7 @@ const Channels: React.FC = () => {
                             onModelsLoaded={(models) => setAvailableModels(models)}
                             allowDuplicateModelId={false}
                             isLightTheme={isLight}
-                            title="选择模型"
+                            title={t('channels.select_models', '选择模型')}
                             refreshKey={modelSelectorRefreshKey}
                             headerExtra={
                               <Button
@@ -4754,7 +4755,7 @@ const Channels: React.FC = () => {
                                 icon={<CloudDownloadOutlined />}
                                 onClick={handleOpenProbeModal}
                               >
-                                从上游探测模型
+                                {t('channels.probe_from_upstream', '从上游探测模型')}
                               </Button>
                             }
                           />
@@ -4770,7 +4771,7 @@ const Channels: React.FC = () => {
                           const providerType = form.getFieldValue('provider_type');
                           return (
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
-                              <Title level={4} style={{ margin: 0 }}>选择上游渠道</Title>
+                              <Title level={4} style={{ margin: 0 }}>{t('channels.select_upstream_channel', '选择上游渠道')}</Title>
                               <Space size={8} style={{ flexWrap: 'wrap' }}>
                                 <Button
                                   type="default"
@@ -4778,7 +4779,7 @@ const Channels: React.FC = () => {
                                   size="small"
                                   onClick={handleOpenProbeModal}
                                 >
-                                  探测上游模型
+                                  {t('channels.probe_upstream_models', '探测上游模型')}
                                 </Button>
                                 {/* 按钮一：高可用虚拟渠道组 */}
                                 <Tooltip title={!activePlugins['high_availability_channel'] ? '高可用上游渠道系统插件未开启' : ''}>
@@ -6165,19 +6166,19 @@ const Channels: React.FC = () => {
       />
 
       <Modal
-        title="从上游探测并导入模型"
+        title={t('channels.probe_modal_title', '从上游探测并导入模型')}
         open={probeModalOpen}
         onCancel={() => setProbeModalOpen(false)}
         width={880}
         footer={[
-          <Button key="cancel" onClick={() => setProbeModalOpen(false)}>关闭</Button>,
+          <Button key="cancel" onClick={() => setProbeModalOpen(false)}>{t('common.close', '关闭')}</Button>,
           <Button
             key="import-only"
             loading={importingProbedModels}
             disabled={selectedProbedIds.length === 0}
             onClick={() => handleImportProbedModels(false)}
           >
-            仅放入模型库 ({selectedProbedIds.length})
+            {t('channels.probe_import_only', { count: selectedProbedIds.length, defaultValue: `仅放入模型库 (${selectedProbedIds.length})` })}
           </Button>,
           <Button
             key="import-bind"
@@ -6186,7 +6187,7 @@ const Channels: React.FC = () => {
             disabled={selectedProbedIds.length === 0}
             onClick={() => handleImportProbedModels(true)}
           >
-            放入模型库并绑定当前渠道 ({selectedProbedIds.length})
+            {t('channels.probe_import_and_bind', { count: selectedProbedIds.length, defaultValue: `放入模型库并绑定当前渠道 (${selectedProbedIds.length})` })}
           </Button>,
         ]}
       >
@@ -6194,7 +6195,7 @@ const Channels: React.FC = () => {
           <Row gutter={8} align="middle">
             <Col xs={24} md={11}>
               <Input
-                placeholder="探测地址 (如 https://mux.la 或 https://api.openai.com)"
+                placeholder={t('channels.probe_url_placeholder', '探测地址 (如 https://mux.la 或 https://api.openai.com)')}
                 value={probeCustomUrl}
                 onChange={(e) => setProbeCustomUrl(e.target.value)}
                 allowClear
@@ -6202,7 +6203,7 @@ const Channels: React.FC = () => {
             </Col>
             <Col xs={24} md={9}>
               <Input.Password
-                placeholder="API Key (NewAPI 公开 /api/pricing 可留空)"
+                placeholder={t('channels.probe_key_placeholder', 'API Key (NewAPI 公开 /api/pricing 可留空)')}
                 value={probeCustomKey}
                 onChange={(e) => setProbeCustomKey(e.target.value)}
               />
@@ -6215,7 +6216,7 @@ const Channels: React.FC = () => {
                 loading={probingModels}
                 onClick={() => handleRunProbeModels()}
               >
-                开始探测
+                {t('channels.probe_start_btn', '开始探测')}
               </Button>
             </Col>
           </Row>
@@ -6224,7 +6225,12 @@ const Channels: React.FC = () => {
             <Alert
               type="info"
               showIcon
-              message={`探测来源: ${probeSourceInfo.baseUrl} (${probeSourceInfo.source || 'auto'})，共 ${probedModels.length} 个模型；已自动推断厂商、模型类型与默认二级功能属性，导入后可直接勾选并前往连通拨测。`}
+              message={t('channels.probe_source_banner', {
+                baseUrl: probeSourceInfo.baseUrl,
+                source: probeSourceInfo.source || 'auto',
+                count: probedModels.length,
+                defaultValue: `探测来源: ${probeSourceInfo.baseUrl} (${probeSourceInfo.source || 'auto'})，共 ${probedModels.length} 个模型；已自动推断厂商、模型类型与默认二级功能属性，导入后可直接勾选并前往连通拨测。`,
+              })}
             />
           )}
 
@@ -6247,16 +6253,16 @@ const Channels: React.FC = () => {
                     <Segmented
                       size="small"
                       options={[
-                        { label: `全部 (${probedModels.length})`, value: 'all' },
-                        { label: `未入库 (${probedModels.filter((m) => !m.exists).length})`, value: 'new' },
-                        { label: `已入库 (${probedModels.filter((m) => m.exists).length})`, value: 'exists' },
+                        { label: `${t('common.all', '全部')} (${probedModels.length})`, value: 'all' },
+                        { label: `${t('channels.probe_status_new', '未入库')} (${probedModels.filter((m) => !m.exists).length})`, value: 'new' },
+                        { label: `${t('channels.probe_status_exists', '已入库')} (${probedModels.filter((m) => m.exists).length})`, value: 'exists' },
                       ]}
                       value={probeFilterStatus}
                       onChange={(val) => setProbeFilterStatus(val as 'all' | 'new' | 'exists')}
                     />
                     <Input.Search
                       size="small"
-                      placeholder="过滤模型 ID / 厂商..."
+                      placeholder={t('channels.probe_filter_placeholder', '过滤模型 ID / 厂商...')}
                       value={probeKeyword}
                       onChange={(e) => setProbeKeyword(e.target.value)}
                       style={{ width: 200 }}
@@ -6264,9 +6270,9 @@ const Channels: React.FC = () => {
                     />
                   </Space>
                   <Space>
-                    <Button size="small" onClick={() => setSelectedProbedIds(newOnly)} disabled={newOnly.length === 0}>全选未入库</Button>
-                    <Button size="small" onClick={() => setSelectedProbedIds(allFilteredIds)} disabled={allFilteredIds.length === 0}>全选当前</Button>
-                    <Button size="small" onClick={() => setSelectedProbedIds([])} disabled={selectedProbedIds.length === 0}>清空</Button>
+                    <Button size="small" onClick={() => setSelectedProbedIds(newOnly)} disabled={newOnly.length === 0}>{t('channels.probe_select_new', '全选未入库')}</Button>
+                    <Button size="small" onClick={() => setSelectedProbedIds(allFilteredIds)} disabled={allFilteredIds.length === 0}>{t('channels.probe_select_current', '全选当前')}</Button>
+                    <Button size="small" onClick={() => setSelectedProbedIds([])} disabled={selectedProbedIds.length === 0}>{t('common.clear', '清空')}</Button>
                   </Space>
                 </div>
 
@@ -6283,37 +6289,37 @@ const Channels: React.FC = () => {
                   }}
                   columns={[
                     {
-                      title: '模型 ID',
+                      title: t('models.model_id', '模型 ID'),
                       dataIndex: 'model_id',
                       key: 'model_id',
                       ellipsis: true,
                       render: (v: string, rec: any) => (
                         <div>
                           <Text strong style={{ fontSize: 13 }}>{v}</Text>
-                          {rec.exists && <Tag color="green" style={{ marginLeft: 6, fontSize: 11 }}>已入库</Tag>}
-                          {!rec.exists && <Tag color="blue" style={{ marginLeft: 6, fontSize: 11 }}>新模型</Tag>}
+                          {rec.exists && <Tag color="green" style={{ marginLeft: 6, fontSize: 11 }}>{t('channels.probe_tag_exists', '已入库')}</Tag>}
+                          {!rec.exists && <Tag color="blue" style={{ marginLeft: 6, fontSize: 11 }}>{t('channels.probe_tag_new', '新模型')}</Tag>}
                         </div>
                       ),
                     },
                     {
-                      title: '服务商 / 类型',
+                      title: t('channels.probe_col_meta', '服务商 / 类型'),
                       key: 'meta',
                       width: 170,
                       render: (_: any, rec: any) => (
                         <Space size={4}>
-                          <Tag style={{ margin: 0 }}>{rec.provider_name || rec.vendor_name || '其他'}</Tag>
-                          <Tag color="geekblue" style={{ margin: 0 }}>{rec.type_name || '聊天'}</Tag>
+                          <Tag style={{ margin: 0 }}>{rec.provider_name || rec.vendor_name || t('common.other', '其他')}</Tag>
+                          <Tag color="geekblue" style={{ margin: 0 }}>{rec.type_name || t('models.sys_names.chat', '聊天')}</Tag>
                         </Space>
                       ),
                     },
                     {
-                      title: '默认二级功能属性',
+                      title: t('models.default_secondary_features', '默认二级功能属性'),
                       dataIndex: 'default_features',
                       key: 'default_features',
                       render: (feats: string[]) => (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                           {(feats || []).slice(0, 4).map((f) => (
-                            <Tag key={f} style={{ margin: 0, fontSize: 11 }}>{f}</Tag>
+                            <Tag key={f} style={{ margin: 0, fontSize: 11 }}>{localizeFeatureTag(f, t)}</Tag>
                           ))}
                           {(feats || []).length > 4 && <Tag style={{ margin: 0, fontSize: 11 }}>+{feats.length - 4}</Tag>}
                         </div>

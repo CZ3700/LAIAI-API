@@ -129,10 +129,10 @@ export const WalletPage: React.FC = () => {
                   dataSource={recharges}
                   columns={[
                     { title: t('common.time', '创建时间'), dataIndex: 'created_at', render: (v: string) => formatApiDateTime(v) },
-                    { title: 'Order No', dataIndex: 'order_no', render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
+                    { title: t('wallet.order_no', '订单号'), dataIndex: 'order_no', render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
                     { title: t('wallet.provider', '支付渠道'), dataIndex: 'provider' },
                     {
-                      title: t('wallet.amount', { unit: '$', defaultValue: '金额 ($)' }),
+                      title: t('wallet.amount_col', '金额 ($)'),
                       dataIndex: 'amount_usd',
                       render: (v: string | number) => `$${Number(v || 0).toFixed(2)}`,
                     },

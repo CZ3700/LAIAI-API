@@ -59,7 +59,7 @@ export const PaymentChannelsPage: React.FC = () => {
     const v = await form.validateFields();
     let config: Record<string, string> | undefined;
     if (v.config_json?.trim()) {
-      try { config = JSON.parse(v.config_json); } catch { message.error('config 必须是 JSON 对象（字符串值）'); return; }
+      try { config = JSON.parse(v.config_json); } catch { message.error(t('admin.config_json_invalid', 'config 必须是 JSON 对象（字符串值）')); return; }
     }
     await coreApi.post('/admin/payment-channels', {
       code: v.code.trim(), display_name: v.display_name, protocol: v.protocol, priority: v.priority ?? 0,
@@ -73,41 +73,41 @@ export const PaymentChannelsPage: React.FC = () => {
   return (
     <Card title={<Space><CreditCardOutlined />{t('admin.payment_channels', '支付渠道')}</Space>}
       extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); form.setFieldsValue({ enabled: false, priority: 0, protocol: 'epay' }); setOpen(true); }}>{t('common.add', '新建')}</Button>}>
-      <Alert type="info" showIcon style={{ marginBottom: 12 }} title="新建渠道默认禁用；测试连通后再启用。密钥只写不回显。微信/支付宝直连按需后续补充。" />
+      <Alert type="info" showIcon style={{ marginBottom: 12 }} title={t('admin.payment_channels_notice', '新建渠道默认禁用；测试连通后再启用。密钥只写不回显。微信/支付宝直连按需后续补充。')} />
       <Table rowKey="id" dataSource={rows} pagination={false}
         columns={[
           { title: 'Code', dataIndex: 'code' },
-          { title: '名称', dataIndex: 'display_name' },
-          { title: '协议', dataIndex: 'protocol', render: (v: string) => <Tag>{v}</Tag> },
-          { title: '优先级', dataIndex: 'priority', width: 80 },
-          { title: '状态', dataIndex: 'enabled', width: 80, render: (v: any) => <Tag color={v ? 'green' : 'default'}>{v ? 'ON' : 'OFF'}</Tag> },
+          { title: t('common.name', '名称'), dataIndex: 'display_name' },
+          { title: t('admin.protocol', '协议'), dataIndex: 'protocol', render: (v: string) => <Tag>{v}</Tag> },
+          { title: t('admin.priority', '优先级'), dataIndex: 'priority', width: 80 },
+          { title: t('common.status', '状态'), dataIndex: 'enabled', width: 80, render: (v: any) => <Tag color={v ? 'green' : 'default'}>{v ? 'ON' : 'OFF'}</Tag> },
           { title: t('common.actions', '操作'), width: 190, render: (_: unknown, r: any) => (
             <Space size={4}>
-              <Button size="small" onClick={async () => { await coreApi.post(`/admin/payment-channels/${r.id}/test`); message.success('测试通过'); }}>测试</Button>
+              <Button size="small" onClick={async () => { await coreApi.post(`/admin/payment-channels/${r.id}/test`); message.success(t('admin.test_passed', '测试通过')); }}>{t('common.test', '测试')}</Button>
               <Button size="small" onClick={() => {
                 form.setFieldsValue({ code: r.code, display_name: r.display_name, protocol: r.protocol, priority: r.priority, pay_methods: r.pay_methods, currency: r.currency, enabled: Boolean(r.enabled), config_json: '' });
                 setOpen(true);
-              }}>编辑</Button>
-              <Popconfirm title="确认删除？" onConfirm={async () => { await coreApi.delete(`/admin/payment-channels/${r.id}`); await load(); }}>
+              }}>{t('common.edit', '编辑')}</Button>
+              <Popconfirm title={t('common.confirm_delete', '确认删除？')} onConfirm={async () => { await coreApi.delete(`/admin/payment-channels/${r.id}`); await load(); }}>
                 <Button size="small" danger icon={<DeleteOutlined />} />
               </Popconfirm>
             </Space>
           ) },
         ]} />
-      <Modal title="支付渠道" open={open} onCancel={() => setOpen(false)} onOk={onSave}>
+      <Modal title={t('admin.payment_channels', '支付渠道')} open={open} onCancel={() => setOpen(false)} onOk={onSave}>
         <Form form={form} layout="vertical">
-          <Form.Item name="code" label="Code（唯一，协议不可改）" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="display_name" label="显示名称"><Input /></Form.Item>
-          <Form.Item name="protocol" label="协议" rules={[{ required: true }]}>
+          <Form.Item name="code" label={t('admin.payment_code_label', 'Code（唯一，协议不可改）')} rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="display_name" label={t('auth.display_name', '显示名称')}><Input /></Form.Item>
+          <Form.Item name="protocol" label={t('admin.protocol', '协议')} rules={[{ required: true }]}>
             <Select options={['stripe', 'epay', 'crypto', 'webhook', 'custom', 'paypal'].map((p) => ({ value: p, label: p }))} />
           </Form.Item>
           <Space size={12}>
-            <Form.Item name="priority" label="优先级"><InputNumber /></Form.Item>
-            <Form.Item name="currency" label="币种"><Input style={{ width: 100 }} /></Form.Item>
-            <Form.Item name="pay_methods" label="支付方式"><Input placeholder="alipay,wxpay" /></Form.Item>
-            <Form.Item name="enabled" label="启用" valuePropName="checked"><Switch /></Form.Item>
+            <Form.Item name="priority" label={t('admin.priority', '优先级')}><InputNumber /></Form.Item>
+            <Form.Item name="currency" label={t('admin.currency', '币种')}><Input style={{ width: 100 }} /></Form.Item>
+            <Form.Item name="pay_methods" label={t('wallet.method', '支付方式')}><Input placeholder="alipay,wxpay" /></Form.Item>
+            <Form.Item name="enabled" label={t('common.enabled', '启用')} valuePropName="checked"><Switch /></Form.Item>
           </Space>
-          <Form.Item name="config_json" label="配置 JSON（留空保持原配置）"><Input.TextArea rows={4} placeholder='{"api_key":"..."}' /></Form.Item>
+          <Form.Item name="config_json" label={t('admin.config_json_label', '配置 JSON（留空保持原配置）')}><Input.TextArea rows={4} placeholder='{"api_key":"..."}' /></Form.Item>
         </Form>
       </Modal>
     </Card>
@@ -185,11 +185,11 @@ export const AuditLogsPage: React.FC = () => {
     <Card title={<Space><AuditOutlined />{t('admin.audit_logs', '审计日志')}</Space>}>
       <Table loading={loading} rowKey="id" dataSource={rows} scroll={{ x: 900 }}
         columns={[
-          { title: '时间', dataIndex: 'created_at', width: 170, render: (v: number | string) => (typeof v === 'number' ? formatApiDateTime(new Date(v * (v < 1e12 ? 1000 : 1)).toISOString()) : formatApiDateTime(v)) },
-          { title: 'Actor', dataIndex: 'actor', width: 120 },
-          { title: 'Action', dataIndex: 'action', render: (v: string) => <Tag>{v}</Tag> },
-          { title: 'Target', dataIndex: 'target', ellipsis: true },
-          { title: 'Detail', dataIndex: 'detail', ellipsis: true },
+          { title: t('common.time', '时间'), dataIndex: 'created_at', width: 170, render: (v: number | string) => (typeof v === 'number' ? formatApiDateTime(new Date(v * (v < 1e12 ? 1000 : 1)).toISOString()) : formatApiDateTime(v)) },
+          { title: t('admin.audit_actor', '操作者'), dataIndex: 'actor', width: 120 },
+          { title: t('admin.audit_action', '动作'), dataIndex: 'action', render: (v: string) => <Tag>{v}</Tag> },
+          { title: t('admin.audit_target', '目标'), dataIndex: 'target', ellipsis: true },
+          { title: t('common.detail', '详情'), dataIndex: 'detail', ellipsis: true },
           { title: 'IP', dataIndex: 'ip', width: 130 },
         ]} />
     </Card>

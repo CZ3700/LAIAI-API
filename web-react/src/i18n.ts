@@ -1,7 +1,7 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import LanguageDetector from 'i18next-browser-languagedetector';
-import { normalizeLanguage } from './utils/language';
+import { getUserLanguagePreference, normalizeLanguage } from './utils/language';
 
 import enTranslation from './locales/en.json';
 import zhTranslation from './locales/zh.json';
@@ -11,6 +11,7 @@ export const resources: Record<string, Record<string, Record<string, any>>> = {
   en: { translation: { ...enTranslation } },
   zh: { translation: { ...zhTranslation } },
   zhTW: { translation: { ...zhTWTranslation } },
+  'zh-TW': { translation: { ...zhTWTranslation } },
 };
 
 const PLUGIN_NS_MAP: Record<string, string> = {
@@ -27,29 +28,35 @@ for (const [path, mod] of Object.entries(pluginLocaleModules)) {
   if (!match) continue;
   const pluginDir = match[1];
   const rawLang = match[2];
-  const targetLang = rawLang === 'zh-TW' ? 'zhTW' : normalizeLanguage(rawLang);
+  const targetLang = normalizeLanguage(rawLang);
   if (!resources[targetLang]) continue;
   const content = (mod && typeof mod === 'object' && 'default' in mod ? mod.default : mod) as Record<string, any>;
   if (content && typeof content === 'object') {
     const ns = PLUGIN_NS_MAP[pluginDir] || pluginDir.toLowerCase();
-    resources[targetLang][ns] = {
-      ...(resources[targetLang][ns] || {}),
-      ...content,
-    };
-    resources[targetLang].translation = {
-      ...resources[targetLang].translation,
-      ...content,
-    };
+    const targets = targetLang === 'zhTW' ? ['zhTW', 'zh-TW'] : [targetLang];
+    for (const lng of targets) {
+      resources[lng][ns] = {
+        ...(resources[lng][ns] || {}),
+        ...content,
+      };
+      resources[lng].translation = {
+        ...resources[lng].translation,
+        ...content,
+      };
+    }
   }
 }
+
+const initialUserLang = getUserLanguagePreference();
 
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
     resources,
+    lng: initialUserLang ? normalizeLanguage(initialUserLang) : undefined,
     fallbackLng: 'zh',
-    supportedLngs: ['zh', 'zhTW', 'en'],
+    supportedLngs: ['zh', 'zhTW', 'zh-TW', 'en'],
     ns: ['translation', 'docs_api', 'model_marketplace'],
     defaultNS: 'translation',
     interpolation: {

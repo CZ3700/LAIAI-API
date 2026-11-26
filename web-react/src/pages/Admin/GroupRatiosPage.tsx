@@ -22,7 +22,7 @@ export const GroupRatiosPage: React.FC = () => {
     <Card title={<Space><DollarOutlined />{t('admin.group_ratios', '分组倍率')}</Space>}>
       <Tabs items={[
         {
-          key: 'g', label: '分组倍率',
+          key: 'g', label: t('admin.group_ratios', '分组倍率'),
           children: (
             <Space direction="vertical" style={{ width: '100%' }}>
               <Form form={gForm} layout="inline" onFinish={async (v) => {
@@ -30,16 +30,16 @@ export const GroupRatiosPage: React.FC = () => {
                 gForm.resetFields();
                 await load();
               }}>
-                <Form.Item name="name" rules={[{ required: true }]}><Input placeholder="分组名" /></Form.Item>
-                <Form.Item name="ratio" rules={[{ required: true }]}><InputNumber min={0} step={0.01} placeholder="倍率" /></Form.Item>
-                <Button type="primary" htmlType="submit">保存 / 更新</Button>
+                <Form.Item name="name" rules={[{ required: true }]}><Input placeholder={t('admin.group_name_ph', '分组名')} /></Form.Item>
+                <Form.Item name="ratio" rules={[{ required: true }]}><InputNumber min={0} step={0.01} placeholder={t('admin.ratio_ph', '倍率')} /></Form.Item>
+                <Button type="primary" htmlType="submit">{t('admin.save_or_update', '保存 / 更新')}</Button>
               </Form>
               <Table rowKey="name" size="small" pagination={false} dataSource={groups}
                 columns={[
-                  { title: '分组', dataIndex: 'name' },
-                  { title: '倍率', dataIndex: 'ratio', render: (v: any) => Number(v) },
+                  { title: t('admin.group', '分组'), dataIndex: 'name' },
+                  { title: t('admin.ratio_ph', '倍率'), dataIndex: 'ratio', render: (v: any) => Number(v) },
                   { title: '', width: 80, render: (_: unknown, r: any) => r.name !== 'default' && (
-                    <Popconfirm title="确认删除？" onConfirm={async () => { await coreApi.delete(`/admin/group-ratios/${encodeURIComponent(r.name)}`); await load(); }}>
+                    <Popconfirm title={t('common.confirm_delete', '确认删除？')} onConfirm={async () => { await coreApi.delete(`/admin/group-ratios/${encodeURIComponent(r.name)}`); await load(); }}>
                       <Button size="small" danger icon={<DeleteOutlined />} />
                     </Popconfirm>
                   ) },
@@ -48,7 +48,7 @@ export const GroupRatiosPage: React.FC = () => {
           ),
         },
         {
-          key: 'm', label: '(分组, 模型) 二层倍率',
+          key: 'm', label: t('admin.model_group_ratios', '(分组, 模型) 二层倍率'),
           children: (
             <Space direction="vertical" style={{ width: '100%' }}>
               <Form form={mForm} layout="inline" onFinish={async (v) => {
@@ -56,18 +56,18 @@ export const GroupRatiosPage: React.FC = () => {
                 mForm.resetFields();
                 await load();
               }}>
-                <Form.Item name="group_name" rules={[{ required: true }]}><Input placeholder="分组名" /></Form.Item>
-                <Form.Item name="model" rules={[{ required: true }]}><Input placeholder="模型" /></Form.Item>
-                <Form.Item name="ratio" rules={[{ required: true }]}><InputNumber min={0} step={0.01} placeholder="倍率" /></Form.Item>
-                <Button type="primary" htmlType="submit">保存 / 更新</Button>
+                <Form.Item name="group_name" rules={[{ required: true }]}><Input placeholder={t('admin.group_name_ph', '分组名')} /></Form.Item>
+                <Form.Item name="model" rules={[{ required: true }]}><Input placeholder={t('common.model', '模型')} /></Form.Item>
+                <Form.Item name="ratio" rules={[{ required: true }]}><InputNumber min={0} step={0.01} placeholder={t('admin.ratio_ph', '倍率')} /></Form.Item>
+                <Button type="primary" htmlType="submit">{t('admin.save_or_update', '保存 / 更新')}</Button>
               </Form>
               <Table rowKey={(r: any) => `${r.group_name}/${r.model}`} size="small" pagination={false} dataSource={mgr}
                 columns={[
-                  { title: '分组', dataIndex: 'group_name' },
-                  { title: '模型', dataIndex: 'model' },
-                  { title: '倍率', dataIndex: 'ratio', render: (v: any) => Number(v) },
+                  { title: t('admin.group', '分组'), dataIndex: 'group_name' },
+                  { title: t('common.model', '模型'), dataIndex: 'model' },
+                  { title: t('admin.ratio_ph', '倍率'), dataIndex: 'ratio', render: (v: any) => Number(v) },
                   { title: '', width: 80, render: (_: unknown, r: any) => (
-                    <Popconfirm title="确认删除？" onConfirm={async () => {
+                    <Popconfirm title={t('common.confirm_delete', '确认删除？')} onConfirm={async () => {
                       await coreApi.delete('/admin/model-group-ratios', { params: { group_name: r.group_name, model: r.model } });
                       await load();
                     }}>

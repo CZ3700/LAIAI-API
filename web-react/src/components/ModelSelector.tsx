@@ -22,7 +22,9 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Input, Button, Space, Row, Col, Tag, Typography, Spin } from 'antd';
+import { useTranslation } from 'react-i18next';
 import request from '../utils/request';
+import { localizeClassificationName } from '../utils/language';
 import { modelMatchesKeyword } from '../utils/modelKeywordMatch';
 import ListPagination from './ListPagination';
 
@@ -45,12 +47,14 @@ interface ModelSelectorModel {
 interface ModelSelectorProvider {
   id: number;
   name: string;
+  name_en?: string;
   logo?: string;
 }
 
 interface ModelSelectorType {
   id: number;
   name: string;
+  name_en?: string;
   logo?: string;
 }
 
@@ -80,12 +84,14 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   onModelsLoaded,
   allowDuplicateModelId = false,
   isLightTheme = false,
-  title = '选择模型',
+  title,
   includeModel,
   pageSize,
   refreshKey = 0,
   headerExtra,
 }) => {
+  const { t, i18n } = useTranslation();
+  const resolvedTitle = title || t('channels.select_models', '选择模型');
   // ── 组件内部数据加载 ──
   const [availableModels, setAvailableModels] = useState<ModelSelectorModel[]>([]);
   const [allProviders, setAllProviders] = useState<ModelSelectorProvider[]>([]);
@@ -221,14 +227,14 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   /** 渲染一行筛选标签（公共函数，消除重复代码） */
   const renderFilterRow = (
     label: string,
-    items: { id: number; name: string; logo?: string }[],
+    items: { id: number; name: string; name_en?: string; logo?: string }[],
     selected: number | null,
     onSelect: (id: number | null) => void,
     countBase: ModelSelectorModel[],
     countField: 'provider_id' | 'api_provider_id' | 'type_id',
   ) => (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-      <Text type="secondary" style={{ fontSize: 12, paddingTop: 3, width: 64, whiteSpace: 'nowrap', flexShrink: 0 }}>{label}</Text>
+      <Text type="secondary" style={{ fontSize: 12, paddingTop: 3, width: 76, whiteSpace: 'nowrap', flexShrink: 0 }}>{label}</Text>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
         <div
           onClick={() => onSelect(null)}
@@ -239,7 +245,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
             border: `1px solid ${selected === null ? '#1677ff' : (isLightTheme ? '#e5e4e7' : 'rgba(255,255,255,0.15)')}`,
             cursor: 'pointer', transition: 'all 0.2s',
           }}
-        >全部</div>
+        >{t('common.all', '全部')}</div>
         {items.map(p => {
           const hasModels = scopeModels.some(m => m[countField] === p.id);
           if (!hasModels && selected !== p.id) return null;
@@ -259,7 +265,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
               }}
             >
               {p.logo && <img src={`/assets/icons/lobe/${p.logo}.svg`} alt="" style={{ width: 12, height: 12 }} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
-              <span>{p.name} <span style={{ opacity: isSelected ? 0.8 : 0.45, fontSize: 11, marginLeft: 2 }}>{count}</span></span>
+              <span>{localizeClassificationName(p, i18n.language, t)} <span style={{ opacity: isSelected ? 0.8 : 0.45, fontSize: 11, marginLeft: 2 }}>{count}</span></span>
             </div>
           );
         })}
@@ -270,7 +276,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   if (loading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200 }}>
-        <Spin tip="加载模型数据..."><div style={{ padding: 40 }} /></Spin>
+        <Spin tip={t('models.loading_data', '加载模型数据...')}><div style={{ padding: 40 }} /></Spin>
       </div>
     );
   }
@@ -279,28 +285,28 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     <div style={{ animation: 'fadeIn 0.2s' }}>
       {/* 标题和操作栏 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 8, flexWrap: 'wrap' }}>
-        <Title level={4} style={{ margin: 0 }}>{title}</Title>
+        <Title level={4} style={{ margin: 0 }}>{resolvedTitle}</Title>
         <Space wrap>
           {headerExtra}
           <Input.Search
-            placeholder="搜索模型名称或ID"
+            placeholder={t('models.search_name_or_id', '搜索模型名称或ID')}
             value={modelSearch}
             onChange={(e) => setModelSearch(e.target.value)}
             style={{ width: 200 }}
             allowClear
           />
-          <Button onClick={handleSelectAll}>全选</Button>
-          <Button onClick={() => onSelectionChange([])} disabled={selectedMids.length === 0}>清空</Button>
+          <Button onClick={handleSelectAll}>{t('common.select_all', '全选')}</Button>
+          <Button onClick={() => onSelectionChange([])} disabled={selectedMids.length === 0}>{t('common.clear', '清空')}</Button>
         </Space>
       </div>
 
       {/* 筛选面板 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16, padding: '12px', background: isLightTheme ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.02)', borderRadius: 6 }}>
-        {renderFilterRow('官方服务商', allProviders, selectedProvider, setSelectedProvider, providerCountBase, 'provider_id')}
+        {renderFilterRow(t('models.provider', '官方服务商'), allProviders, selectedProvider, setSelectedProvider, providerCountBase, 'provider_id')}
         {allApiProviders.length > 0 &&
-          renderFilterRow('API服务商', allApiProviders, selectedApiProvider, setSelectedApiProvider, apiProviderCountBase, 'api_provider_id')
+          renderFilterRow(t('models.api_provider', 'API服务商'), allApiProviders, selectedApiProvider, setSelectedApiProvider, apiProviderCountBase, 'api_provider_id')
         }
-        {renderFilterRow('类型', allTypes, selectedType, setSelectedType, typeCountBase, 'type_id')}
+        {renderFilterRow(t('models.type', '类型'), allTypes, selectedType, setSelectedType, typeCountBase, 'type_id')}
       </div>
 
       {/* 模型卡片列表 */}
@@ -337,8 +343,8 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
                     <div style={{ fontSize: 12, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.model_id}</div>
                     <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
                       <span>MID: {m.mid}</span>
-                      {m.provider_id && <Tag style={{ margin: 0, padding: '0 4px', fontSize: 10, lineHeight: '14px', border: 'none', background: isLightTheme ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.08)' }}>{allProviders.find(p => p.id === m.provider_id)?.name || m.provider_id}</Tag>}
-                      {m.type_id && <Tag style={{ margin: 0, padding: '0 4px', fontSize: 10, lineHeight: '14px', border: 'none', background: isLightTheme ? 'rgba(22,119,255,0.08)' : 'rgba(22,119,255,0.15)', color: '#1677ff' }}>{allTypes.find(t => t.id === m.type_id)?.name || m.type_id}</Tag>}
+                      {m.provider_id && <Tag style={{ margin: 0, padding: '0 4px', fontSize: 10, lineHeight: '14px', border: 'none', background: isLightTheme ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.08)' }}>{localizeClassificationName(allProviders.find(p => p.id === m.provider_id), i18n.language, t) || m.provider_id}</Tag>}
+                      {m.type_id && <Tag style={{ margin: 0, padding: '0 4px', fontSize: 10, lineHeight: '14px', border: 'none', background: isLightTheme ? 'rgba(22,119,255,0.08)' : 'rgba(22,119,255,0.15)', color: '#1677ff' }}>{localizeClassificationName(allTypes.find(tp => tp.id === m.type_id), i18n.language, t) || m.type_id}</Tag>}
                     </div>
                   </div>
                 </div>

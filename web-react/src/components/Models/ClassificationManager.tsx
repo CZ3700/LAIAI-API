@@ -7,6 +7,7 @@ import { type ModelProvider, type ModelType } from '../../types';
 import IconPicker from '../IconPicker';
 import SmartSvgIcon from '../SmartSvgIcon';
 import { Image as ImageIcon, Video, AudioLines, MessageSquare, Cuboid, ListOrdered, Sparkles } from 'lucide-react';
+import { localizeClassificationName, localizeFeatureTag } from '../../utils/language';
 
 interface ClassificationItem {
   id: number;
@@ -187,7 +188,7 @@ const ClassificationManager: React.FC<ClassificationManagerProps> = ({
       title: t('common.name'),
       dataIndex: 'name',
       key: 'name',
-      render: (_: any, record: ClassificationItem) => isEn && record.name_en ? record.name_en : record.name,
+      render: (_: any, record: ClassificationItem) => localizeClassificationName(record, i18n.language, t),
     },
     {
       title: t('models.model_count', '模型数量'),
@@ -278,13 +279,17 @@ const ClassificationManager: React.FC<ClassificationManagerProps> = ({
             <Input placeholder="例如：OpenAI" disabled={editingItem?.is_system === 1} />
           </Form.Item>
           <Form.Item name="name_en" label={t('common.name_en', '英文名称')}>
-            <Input placeholder="例如：OpenAI" />
+            <Input placeholder="e.g. OpenAI" />
           </Form.Item>
-          <Form.Item name="logo" label="Logo 图标">
+          <Form.Item name="logo" label={t('models.logo_icon', 'Logo 图标')}>
             <IconPicker
               value={form.getFieldValue('logo')}
               onChange={(icon) => form.setFieldsValue({ logo: icon?.name || undefined })}
-              placeholder={`选择${type === 'provider' ? '服务商' : '类型'}图标`}
+              placeholder={
+                type === 'provider'
+                  ? t('models.select_provider_icon', '选择服务商图标')
+                  : t('models.select_type_icon', '选择类型图标')
+              }
             />
           </Form.Item>
           <Form.Item name="sort_order" label={t('models.sort_order')}>
@@ -305,26 +310,26 @@ const ClassificationManager: React.FC<ClassificationManagerProps> = ({
             }
             if (editingItem?.is_system === 1 && presetTags.length > 0) {
               return (
-                <Form.Item label="二级功能默认属性">
+                <Form.Item label={t('models.default_secondary_features', '二级功能默认属性')}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                     {presetTags.map((label) => (
                       <Tag key={label} style={{ margin: 0, padding: '4px 12px', fontSize: 13, lineHeight: '22px' }}>
-                        {label}
+                        {localizeFeatureTag(label, t)}
                       </Tag>
                     ))}
                   </div>
                   <div style={{ marginTop: 8, color: 'var(--text-secondary)', fontSize: 12 }}>
-                    系统预制，不可修改。模型编辑时可从中勾选或自定义补充。
+                    {t('models.system_preset_features_hint', '系统预制，不可修改。模型编辑时可从中勾选或自定义补充。')}
                   </div>
                 </Form.Item>
               );
             }
             return (
-              <Form.Item name="default_features_list" label="二级功能默认属性">
+              <Form.Item name="default_features_list" label={t('models.default_secondary_features', '二级功能默认属性')}>
                 <Select
                   mode="tags"
                   tokenSeparators={[',']}
-                  placeholder="输入二级功能属性标签后回车添加，如：文生图"
+                  placeholder={t('models.default_features_input_placeholder', '输入二级功能属性标签后回车添加，如：文生图')}
                   style={{ width: '100%' }}
                 />
               </Form.Item>

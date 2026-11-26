@@ -127,7 +127,7 @@ func normalizeDocLang(lang string) string {
 	switch {
 	case l == "" || l == "zh" || l == "zh-cn" || l == "zh-hans" || l == "zh-sg":
 		return ""
-	case strings.HasPrefix(l, "zh-tw") || strings.HasPrefix(l, "zh-hk") || strings.HasPrefix(l, "zh-mo"):
+	case strings.HasPrefix(l, "zh-tw") || l == "zhtw" || strings.HasPrefix(l, "zh-hk") || strings.HasPrefix(l, "zh-mo"):
 		return "zh-TW"
 	case strings.HasPrefix(l, "en"):
 		return "en"

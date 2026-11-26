@@ -4,6 +4,7 @@ import MobileCardList, { MobileCard, CardRow, CardActions } from '../../componen
 import ListPagination, { listPagination, useListPager } from '../../components/ListPagination';
 import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, RightOutlined, ArrowLeftOutlined, ArrowRightOutlined, CloseOutlined, FilterOutlined, FolderOutlined, UnorderedListOutlined, SettingOutlined, CheckSquareOutlined, CheckCircleOutlined, StopOutlined, FileTextOutlined, FileOutlined, CloudUploadOutlined, CloudDownloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { localizeClassificationName, localizeFeatureTag } from '../../utils/language';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import request from '../../utils/request';
 import { QueryGuard, isRequestAborted } from '../../utils/queryGuard';
@@ -486,6 +487,7 @@ const GroupedModelTable: React.FC<{ group: { key: string; model_id: string; chil
 };
 
 const FeatureTagsSelect = ({ value = [], onChange, options = [] }: any) => {
+  const { t } = useTranslation();
   const [inputValue, setInputValue] = useState('');
   
   const toggleOption = (opt: string) => {
@@ -525,7 +527,7 @@ const FeatureTagsSelect = ({ value = [], onChange, options = [] }: any) => {
             lineHeight: '22px'
           }}
         >
-          {opt}
+          {localizeFeatureTag(opt, t)}
         </Tag.CheckableTag>
       ))}
       {customTags.map((opt: string) => (
@@ -536,13 +538,13 @@ const FeatureTagsSelect = ({ value = [], onChange, options = [] }: any) => {
           color="blue"
           style={{ padding: '4px 12px', fontSize: 13, border: 'none', lineHeight: '22px' }}
         >
-          {opt}
+          {localizeFeatureTag(opt, t)}
         </Tag>
       ))}
       <Input 
         size="small" 
-        style={{ width: 140, height: 32, borderRadius: 6 }} 
-        placeholder="+ 自定义并回车" 
+        style={{ width: 148, height: 32, borderRadius: 6 }} 
+        placeholder={t('models.custom_feature_placeholder', '+ 自定义并回车')} 
         value={inputValue}
         onChange={e => setInputValue(e.target.value)}
         onKeyDown={handleAddCustom}
@@ -1379,17 +1381,17 @@ const Models: React.FC = () => {
 
   const getProviderName = (id?: number) => {
     const p = providersStats.find(p => p.id === id);
-    return p ? (isEn && p.name_en ? p.name_en : p.name) : null;
+    return p ? localizeClassificationName(p, i18n.language, t) : null;
   };
 
   const getApiProviderName = (id?: number) => {
     const p = apiProvidersStats.find(p => p.id === id);
-    return p ? (isEn && p.name_en ? p.name_en : p.name) : null;
+    return p ? localizeClassificationName(p, i18n.language, t) : null;
   };
 
   const getTypeName = (id?: number) => {
-    const t = typesStats.find(t => t.id === id);
-    return t ? (isEn && t.name_en ? t.name_en : t.name) : null;
+    const item = typesStats.find(tp => tp.id === id);
+    return item ? localizeClassificationName(item, i18n.language, t) : null;
   };
 
   const colWidths = isLibrary
@@ -2812,13 +2814,13 @@ const Models: React.FC = () => {
         <div style={{ animation: 'fadeIn 0.3s' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-              <Button icon={<ArrowLeftOutlined />} onClick={handleCloseEditor}>返回</Button>
+              <Button icon={<ArrowLeftOutlined />} onClick={handleCloseEditor}>{t('common.back', '返回')}</Button>
               <Title level={3} style={{ margin: 0 }}>
                 {editingModel ? t('models.edit_model') : t('models.add_model')}
               </Title>
             </div>
             <Space>
-              <Button onClick={handleCloseEditor}>取消</Button>
+              <Button onClick={handleCloseEditor}>{t('common.cancel', '取消')}</Button>
               <Button
                 type="primary"
                 loading={saving}
@@ -2828,7 +2830,7 @@ const Models: React.FC = () => {
                   form.submit();
                 }}
               >
-                保存模型
+                {t('models.save_model', '保存模型')}
               </Button>
             </Space>
           </div>
@@ -2848,8 +2850,8 @@ const Models: React.FC = () => {
               {/* Hidden inputs to preserve form data for the custom fields */}
               <Form.Item name="provider_id" hidden><Input /></Form.Item>
               <Form.Item name="api_provider_id" hidden><Input /></Form.Item>
-              <Form.Item name="type_id" hidden rules={[{ required: true, message: '请选择模型类型' }]}><Input /></Form.Item>
-              <Form.Item name="billing_rule_id" hidden rules={[{ required: true, message: '请选择计费模版' }]}><Input /></Form.Item>
+              <Form.Item name="type_id" hidden rules={[{ required: true, message: t('models.type_required', '请选择模型类型') }]}><Input /></Form.Item>
+              <Form.Item name="billing_rule_id" hidden rules={[{ required: true, message: t('models.billing_rule_required', '请选择计费模版') }]}><Input /></Form.Item>
               <Form.Item 
                 name="forward_rule_ids" 
                 hidden 
@@ -2857,10 +2859,10 @@ const Models: React.FC = () => {
                   {
                     validator: async (_, value) => {
                       if (!value || !Array.isArray(value) || value.length === 0) {
-                        return Promise.reject(new Error('请选择挂载转发规则组合'));
+                        return Promise.reject(new Error(t('models.forward_rule_required', '请选择挂载转发规则组合')));
                       }
                       if (value.length > 1) {
-                        return Promise.reject(new Error('只能选择一个转发规则组合'));
+                        return Promise.reject(new Error(t('models.forward_rule_single', '只能选择一个转发规则组合')));
                       }
                       return Promise.resolve();
                     }
@@ -2878,29 +2880,29 @@ const Models: React.FC = () => {
                       <Input placeholder="e.g. GPT-4o" />
                     </Form.Item>
                     
-                    <Form.Item name="model_id" label={<Text strong>{t('models.model_id')}(模型请求ID)</Text>} rules={[{ required: true }]} style={{ marginBottom: 12 }}>
+                    <Form.Item name="model_id" label={<Text strong>{t('models.model_request_id_label', `${t('models.model_id')}(模型请求ID)`)}</Text>} rules={[{ required: true }]} style={{ marginBottom: 12 }}>
                       <Input placeholder="e.g. gpt-4o" />
                     </Form.Item>
 
                     {/* 模型ID别名映射 */}
                     <div style={{ marginBottom: 12, padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border-color, #f0f0f0)', background: isLight ? '#fafafa' : 'rgba(255,255,255,0.02)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: aliasEnabled ? 8 : 0 }}>
-                        <Text style={{ fontSize: 13 }}>模型ID别名映射</Text>
+                        <Text style={{ fontSize: 13 }}>{t('models.alias_mapping', '模型ID别名映射')}</Text>
                         <Switch size="small" checked={aliasEnabled} onChange={(checked) => { setAliasEnabled(checked); if (!checked) form.setFieldsValue({ model_id_alias: '' }); }} />
                       </div>
                       {aliasEnabled && (
                         <>
                           <Form.Item name="model_id_alias" style={{ marginBottom: 4 }}>
-                            <Input placeholder="填写真实的上游模型ID，如 Kling@3.0" />
+                            <Input placeholder={t('models.alias_placeholder', '填写真实的上游模型ID，如 Kling@3.0')} />
                           </Form.Item>
                           <div style={{ fontSize: 11, color: 'var(--text-secondary, #8c8c8c)' }}>
-                            渠道的模型映射优先级最高。只有渠道未设置映射时，才会使用此处的模型别名。
+                            {t('models.alias_hint', '渠道的模型映射优先级最高。只有渠道未设置映射时，才会使用此处的模型别名。')}
                           </div>
                         </>
                       )}
                     </div>
                     
-                    <Form.Item name="original_id" label={<Text strong>模型原始ID(把所有的相同的模型合并显示)</Text>} style={{ marginBottom: 12 }} extra={<span style={{ fontSize: 11, color: 'var(--text-secondary, #8c8c8c)' }}>如果不填，默认使用模型请求ID合并。</span>}>
+                    <Form.Item name="original_id" label={<Text strong>{t('models.original_id_label', '模型原始ID(把所有的相同的模型合并显示)')}</Text>} style={{ marginBottom: 12 }} extra={<span style={{ fontSize: 11, color: 'var(--text-secondary, #8c8c8c)' }}>{t('models.original_id_hint', '如果不填，默认使用模型请求ID合并。')}</span>}>
                       <Input placeholder="e.g. gpt-4o" />
                     </Form.Item>
                     
@@ -2915,7 +2917,7 @@ const Models: React.FC = () => {
                           if (existingCount > 0) {
                             return (
                               <div style={{ marginTop: -8, marginBottom: 12, padding: '6px 10px', borderRadius: 6, background: 'rgba(22,119,255,0.08)', border: '1px solid rgba(22,119,255,0.2)', fontSize: 12, color: '#1677ff' }}>
-                                💡 该ID ({targetId}) 已有 {existingCount} 个模型，新模型将在模型广场中与其自动归为同组显示。
+                                {t('models.original_id_merge_tip', { id: targetId, count: existingCount, defaultValue: `💡 该ID (${targetId}) 已有 ${existingCount} 个模型，新模型将在模型广场中与其自动归为同组显示。` })}
                               </div>
                             );
                           }
@@ -2935,9 +2937,9 @@ const Models: React.FC = () => {
                             return (
                               <div onClick={() => setActiveRightPanel('provider')} style={{ padding: '8px 12px', borderRadius: 6, border: isActive ? '1px solid var(--text)' : (isLight ? '1px solid #e5e4e7' : '1px solid rgba(255,255,255,0.08)'), background: isActive ? (isLight ? '#f9fafb' : 'rgba(255,255,255,0.04)') : (isLight ? '#fff' : 'rgba(255,255,255,0.02)'), cursor: 'pointer', transition: 'all 0.2s' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                                  <Text strong={isActive} style={{ color: isActive ? 'var(--text)' : 'inherit', flexShrink: 0 }}>官方服务商</Text>
+                                  <Text strong={isActive} style={{ color: isActive ? 'var(--text)' : 'inherit', flexShrink: 0 }}>{t('models.provider', '官方服务商')}</Text>
                                   <span style={{ fontSize: 13, color: isActive ? 'var(--text)' : 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {provider ? (isEn && provider.name_en ? provider.name_en : provider.name) : <span style={{ opacity: 0.5 }}>点击选择</span>} <ArrowRightOutlined style={{ marginLeft: 4 }} />
+                                    {provider ? localizeClassificationName(provider, i18n.language, t) : <span style={{ opacity: 0.5 }}>{t('models.click_to_select', '点击选择')}</span>} <ArrowRightOutlined style={{ marginLeft: 4 }} />
                                   </span>
                                 </div>
                               </div>
@@ -2954,9 +2956,9 @@ const Models: React.FC = () => {
                             return (
                               <div onClick={() => setActiveRightPanel('api_provider')} style={{ padding: '8px 12px', borderRadius: 6, border: isActive ? '1px solid var(--text)' : (isLight ? '1px solid #e5e4e7' : '1px solid rgba(255,255,255,0.08)'), background: isActive ? (isLight ? '#f9fafb' : 'rgba(255,255,255,0.04)') : (isLight ? '#fff' : 'rgba(255,255,255,0.02)'), cursor: 'pointer', transition: 'all 0.2s' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                                  <Text strong={isActive} style={{ color: isActive ? 'var(--text)' : 'inherit', flexShrink: 0 }}>API服务商</Text>
+                                  <Text strong={isActive} style={{ color: isActive ? 'var(--text)' : 'inherit', flexShrink: 0 }}>{t('models.api_provider', 'API服务商')}</Text>
                                   <span style={{ fontSize: 13, color: isActive ? 'var(--text)' : 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {apiProvider ? (isEn && apiProvider.name_en ? apiProvider.name_en : apiProvider.name) : <span style={{ opacity: 0.5 }}>点击选择</span>} <ArrowRightOutlined style={{ marginLeft: 4 }} />
+                                    {apiProvider ? localizeClassificationName(apiProvider, i18n.language, t) : <span style={{ opacity: 0.5 }}>{t('models.click_to_select', '点击选择')}</span>} <ArrowRightOutlined style={{ marginLeft: 4 }} />
                                   </span>
                                 </div>
                               </div>
@@ -2968,7 +2970,7 @@ const Models: React.FC = () => {
 
                     <Form.Item
                       name="logo"
-                      label={<Text strong>模型 Logo</Text>}
+                      label={<Text strong>{t('models.model_logo', '模型 Logo')}</Text>}
                       style={{ marginBottom: 12 }}
                       getValueFromEvent={(icon) => icon?.name || undefined}
                     >
@@ -2977,22 +2979,22 @@ const Models: React.FC = () => {
                           logoManuallyEditedRef.current = Boolean(icon?.name);
                           form.setFieldsValue({ logo: icon?.name || undefined });
                         }}
-                        placeholder="选择模型图标"
+                        placeholder={t('models.select_model_icon', '选择模型图标')}
                       />
                     </Form.Item>
 
-                    <Form.Item name="description" label={<Text strong>模型简介</Text>} style={{ marginBottom: 12 }}>
-                      <Input.TextArea placeholder="模型简介，可以在前台展示给用户" rows={1} />
+                    <Form.Item name="description" label={<Text strong>{t('models.model_desc_label', '模型简介')}</Text>} style={{ marginBottom: 12 }}>
+                      <Input.TextArea placeholder={t('models.model_desc_placeholder', '模型简介，可以在前台展示给用户')} rows={1} />
                     </Form.Item>
 
-                    <Form.Item name="remark" label={<Text strong>内部备注</Text>} style={{ marginBottom: 12 }}>
-                      <Input.TextArea placeholder="内部备注信息，仅管理员可见" rows={1} />
+                    <Form.Item name="remark" label={<Text strong>{t('models.internal_remark', '内部备注')}</Text>} style={{ marginBottom: 12 }}>
+                      <Input.TextArea placeholder={t('models.internal_remark_placeholder', '内部备注信息，仅管理员可见')} rows={1} />
                     </Form.Item>
 
 
 
                     <div style={{ marginBottom: 16 }}>
-                      <Text strong style={{ display: 'block', marginBottom: 8 }}>关联设置</Text>
+                      <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('models.association_settings', '关联设置')}</Text>
 
                       {/* Type */}
                       <Form.Item shouldUpdate={(prev, cur) => prev.type_id !== cur.type_id} noStyle>
@@ -3004,10 +3006,10 @@ const Models: React.FC = () => {
                             <div onClick={() => setActiveRightPanel('type')} style={{ padding: '8px 12px', borderRadius: 6, marginBottom: 6, border: isActive ? '1px solid var(--text)' : (isLight ? '1px solid #e5e4e7' : '1px solid rgba(255,255,255,0.08)'), background: isActive ? (isLight ? '#f9fafb' : 'rgba(255,255,255,0.04)') : (isLight ? '#fff' : 'rgba(255,255,255,0.02)'), cursor: 'pointer', transition: 'all 0.2s' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <Text strong={isActive} style={{ color: isActive ? 'var(--text)' : 'inherit' }}>
-                                  <span style={{ color: '#ff4d4f', marginRight: 4, fontFamily: 'SimSun, sans-serif' }}>*</span>模型类型
+                                  <span style={{ color: '#ff4d4f', marginRight: 4, fontFamily: 'SimSun, sans-serif' }}>*</span>{t('models.type', '模型类型')}
                                 </Text>
                                 <span style={{ fontSize: 13, color: isActive ? 'var(--text)' : 'var(--text-secondary)' }}>
-                                  {type ? (isEn && type.name_en ? type.name_en : type.name) : <span style={{ opacity: 0.5 }}>点击选择</span>} <ArrowRightOutlined style={{ marginLeft: 4 }} />
+                                  {type ? localizeClassificationName(type, i18n.language, t) : <span style={{ opacity: 0.5 }}>{t('models.click_to_select', '点击选择')}</span>} <ArrowRightOutlined style={{ marginLeft: 4 }} />
                                 </span>
                               </div>
                             </div>
@@ -3025,7 +3027,7 @@ const Models: React.FC = () => {
                             <div onClick={() => setActiveRightPanel('billing_rule')} style={{ padding: '8px 12px', borderRadius: 6, marginBottom: 6, border: isActive ? '1px solid var(--text)' : (isLight ? '1px solid #e5e4e7' : '1px solid rgba(255,255,255,0.08)'), background: isActive ? (isLight ? '#f9fafb' : 'rgba(255,255,255,0.04)') : (isLight ? '#fff' : 'rgba(255,255,255,0.02)'), cursor: 'pointer', transition: 'all 0.2s' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <Text strong={isActive} style={{ color: isActive ? 'var(--text)' : 'inherit' }}>
-                                  <span style={{ color: '#ff4d4f', marginRight: 4, fontFamily: 'SimSun, sans-serif' }}>*</span>计费模板
+                                  <span style={{ color: '#ff4d4f', marginRight: 4, fontFamily: 'SimSun, sans-serif' }}>*</span>{t('models.billing_template', '计费模板')}
                                 </Text>
                                 <span style={{ fontSize: 13, color: isActive ? 'var(--text)' : 'var(--text-secondary)' }}>
                                   {br ? (
@@ -3034,9 +3036,9 @@ const Models: React.FC = () => {
                                       {br.pid && <span style={{ opacity: 0.6, marginLeft: 6 }}>(PID: {br.pid})</span>}
                                     </>
                                   ) : val ? (
-                                    <span style={{ color: '#ff4d4f' }}>原模板已停用或不存在，请重新选择</span>
+                                    <span style={{ color: '#ff4d4f' }}>{t('models.billing_template_invalid', '原模板已停用或不存在，请重新选择')}</span>
                                   ) : (
-                                    <span style={{ opacity: 0.5 }}>点击选择</span>
+                                    <span style={{ opacity: 0.5 }}>{t('models.click_to_select', '点击选择')}</span>
                                   )} <ArrowRightOutlined style={{ marginLeft: 4 }} />
                                 </span>
                               </div>
@@ -3055,7 +3057,7 @@ const Models: React.FC = () => {
                             <div onClick={() => setActiveRightPanel('forward_rules')} style={{ padding: '8px 12px', borderRadius: 6, marginBottom: 6, border: isActive ? '1px solid var(--text)' : (isLight ? '1px solid #e5e4e7' : '1px solid rgba(255,255,255,0.08)'), background: isActive ? (isLight ? '#f9fafb' : 'rgba(255,255,255,0.04)') : (isLight ? '#fff' : 'rgba(255,255,255,0.02)'), cursor: 'pointer', transition: 'all 0.2s' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <Text strong={isActive} style={{ color: isActive ? 'var(--text)' : 'inherit' }}>
-                                  <span style={{ color: '#ff4d4f', marginRight: 4, fontFamily: 'SimSun, sans-serif' }}>*</span>挂载转发规则组合
+                                  <span style={{ color: '#ff4d4f', marginRight: 4, fontFamily: 'SimSun, sans-serif' }}>*</span>{t('models.mount_forward_rules', '挂载转发规则组合')}
                                 </Text>
                                 <span style={{ fontSize: 13, color: isActive ? 'var(--text)' : 'var(--text-secondary)' }}>
                                   {selectedRule ? (
@@ -3064,7 +3066,7 @@ const Models: React.FC = () => {
                                       {selectedRule.eid && <span style={{ opacity: 0.6, marginLeft: 6 }}>(EID: {selectedRule.eid})</span>}
                                     </>
                                   ) : (
-                                    <span style={{ opacity: 0.5 }}>点击选择</span>
+                                    <span style={{ opacity: 0.5 }}>{t('models.click_to_select', '点击选择')}</span>
                                   )} <ArrowRightOutlined style={{ marginLeft: 4 }} />
                                 </span>
                               </div>
@@ -3076,8 +3078,8 @@ const Models: React.FC = () => {
 
                     <Row gutter={16}>
                        <Col span={12}>
-                           <Form.Item name="sort_order" label={<Text strong>页面排序</Text>} initialValue={0} extra={<span style={{ fontSize: 11, color: 'var(--text-secondary, #8c8c8c)' }}>数值越大在列表中显示越靠前</span>}>
-                              <InputNumber style={{ width: '100%' }} precision={0} placeholder="越大越靠前" />
+                           <Form.Item name="sort_order" label={<Text strong>{t('models.sort_order', '页面排序')}</Text>} initialValue={0} extra={<span style={{ fontSize: 11, color: 'var(--text-secondary, #8c8c8c)' }}>{t('models.sort_order_hint', '数值越大在列表中显示越靠前')}</span>}>
+                              <InputNumber style={{ width: '100%' }} precision={0} placeholder={t('models.sort_order_placeholder', '越大越靠前')} />
                            </Form.Item>
                        </Col>
                        <Col span={12}>
@@ -3091,10 +3093,10 @@ const Models: React.FC = () => {
                               return (
                                 <Form.Item
                                   name="pre_deduction"
-                                  label={<Text strong>{`预扣费 (${settings?.currency?.default_currency || 'USD'})`}</Text>}
+                                  label={<Text strong>{t('models.pre_deduction_with_currency', { currency: settings?.currency?.default_currency || 'USD', defaultValue: `预扣费 (${settings?.currency?.default_currency || 'USD'})` })}</Text>}
                                   initialValue={1}
                                   rules={[
-                                    { required: true, message: '请填写预扣费' },
+                                    { required: true, message: t('models.pre_deduction_required', '请填写预扣费') },
                                     {
                                       validator: async (_, value) => {
                                         if (value === undefined || value === null || value === '') {
@@ -3102,13 +3104,13 @@ const Models: React.FC = () => {
                                         }
                                         const num = Number(value);
                                         if (!Number.isFinite(num) || num <= 0) {
-                                          return Promise.reject(new Error('预扣费必须大于 0'));
+                                          return Promise.reject(new Error(t('models.pre_deduction_gt_zero', '预扣费必须大于 0')));
                                         }
                                         return Promise.resolve();
                                       },
                                     },
                                   ]}
-                                  extra={isVideo ? <span style={{ fontSize: 11, color: '#faad14' }}>提示：视频模型按「预扣费 × 视频秒数」进行预扣冻结，防止透支</span> : undefined}
+                                  extra={isVideo ? <span style={{ fontSize: 11, color: '#faad14' }}>{t('models.pre_deduction_video_tip', '提示：视频模型按「预扣费 × 视频秒数」进行预扣冻结，防止透支')}</span> : undefined}
                                 >
                                   <InputNumber style={{ width: '100%' }} precision={6} min={0} placeholder="1" />
                                 </Form.Item>
@@ -3122,13 +3124,13 @@ const Models: React.FC = () => {
                            </Form.Item>
                        </Col>
                        <Col span={12}>
-                           <Form.Item name="enable_log_content" htmlFor={undefined} label={<Text strong>记录上下文</Text>} valuePropName="checked" initialValue={false}>
+                           <Form.Item name="enable_log_content" htmlFor={undefined} label={<Text strong>{t('models.enable_log_content', '记录上下文')}</Text>} valuePropName="checked" initialValue={false}>
                               <Switch />
                            </Form.Item>
                        </Col>
                        <Col span={12}>
-                           <Form.Item name="site_discount_enabled" htmlFor={undefined} label={<Text strong>折扣限价</Text>} valuePropName="checked" initialValue={true}>
-                              <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                           <Form.Item name="site_discount_enabled" htmlFor={undefined} label={<Text strong>{t('models.site_discount_floor', '折扣限价')}</Text>} valuePropName="checked" initialValue={true}>
+                              <Switch checkedChildren={t('common.on', '开启')} unCheckedChildren={t('common.off', '关闭')} />
                            </Form.Item>
                        </Col>
                     </Row>
@@ -3137,9 +3139,9 @@ const Models: React.FC = () => {
                       {({ getFieldValue }: any) => getFieldValue('site_discount_enabled') ? (
                         <Form.Item
                           name="site_discount"
-                          label={<Text strong>折扣限价倍率</Text>}
+                          label={<Text strong>{t('models.site_discount_rate', '折扣限价倍率')}</Text>}
                           initialValue={1.0}
-                          extra="已勾选折扣项取最低值后，不低于此倍率保底。不填为原价 1.0，不可填 0（免费请用下方高级设置）"
+                          extra={t('models.site_discount_rate_hint', '已勾选折扣项取最低值后，不低于此倍率保底。不填为原价 1.0，不可填 0（免费请用下方高级设置）')}
                           rules={[{
                             validator: (_: any, value: number) => {
                               if (value == null || (value as unknown) === '') {
@@ -3147,21 +3149,21 @@ const Models: React.FC = () => {
                               }
                               const num = Number(value);
                               if (!Number.isFinite(num) || num <= 0) {
-                                return Promise.reject('折扣限价倍率必须大于 0（不填代表跟随计费规则原价；免费请在下方高级设置中配置）');
+                                return Promise.reject(t('models.site_discount_rate_gt_zero', '折扣限价倍率必须大于 0（不填代表跟随计费规则原价；免费请在下方高级设置中配置）'));
                               }
                               return Promise.resolve();
                             },
                           }]}
                         >
-                          <InputNumber style={{ width: '100%' }} precision={3} step={0.1} min={0} placeholder="不填为原价 1.0" />
+                          <InputNumber style={{ width: '100%' }} precision={3} step={0.1} min={0} placeholder={t('models.discount_rate_placeholder', '不填为原价 1.0')} />
                         </Form.Item>
                       ) : null}
                     </Form.Item>
 
                     <Row gutter={16}>
                        <Col span={12}>
-                           <Form.Item name="global_discount_enabled" htmlFor={undefined} label={<Text strong>全站折扣</Text>} valuePropName="checked" initialValue={false}>
-                              <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                           <Form.Item name="global_discount_enabled" htmlFor={undefined} label={<Text strong>{t('models.global_discount', '全站折扣')}</Text>} valuePropName="checked" initialValue={false}>
+                              <Switch checkedChildren={t('common.on', '开启')} unCheckedChildren={t('common.off', '关闭')} />
                            </Form.Item>
                        </Col>
                     </Row>
@@ -3181,7 +3183,7 @@ const Models: React.FC = () => {
                         return (
                           <Form.Item
                             name="global_discount"
-                            label={<Text strong>全站折扣倍率</Text>}
+                            label={<Text strong>{t('models.global_discount_rate', '全站折扣倍率')}</Text>}
                             initialValue={1.0}
                             dependencies={['site_discount', 'site_discount_enabled']}
                             extra={
@@ -3197,11 +3199,11 @@ const Models: React.FC = () => {
                                         form.validateFields(['site_discount', 'global_discount']).catch(() => {});
                                       }}
                                     >
-                                      👉 点击将上方「折扣限价倍率」同步设为 {globalNum}
+                                      {t('models.sync_site_discount_tip', { rate: globalNum, defaultValue: `👉 点击将上方「折扣限价倍率」同步设为 ${globalNum}` })}
                                     </Button>
                                   </div>
                                 )}
-                                <div>与用户等级已勾选折扣项取最低值，再受折扣限价保底。不填为原价 1.0，不可填 0（免费请用下方高级设置）</div>
+                                <div>{t('models.global_discount_rate_hint', '与用户等级已勾选折扣项取最低值，再受折扣限价保底。不填为原价 1.0，不可填 0（免费请用下方高级设置）')}</div>
                               </div>
                             }
                             rules={[{
@@ -3209,16 +3211,16 @@ const Models: React.FC = () => {
                                 const isEmpty = value == null || (value as unknown) === '';
                                 const num = isEmpty ? 1.0 : Number(value);
                                 if (!isEmpty && (!Number.isFinite(num) || num <= 0)) {
-                                  return Promise.reject('全站折扣倍率必须大于 0（不填代表跟随计费规则原价；免费请在下方高级设置中配置）');
+                                  return Promise.reject(t('models.global_discount_rate_gt_zero', '全站折扣倍率必须大于 0（不填代表跟随计费规则原价；免费请在下方高级设置中配置）'));
                                 }
                                 if (siteEnabled && num < siteDiscount) {
-                                  return Promise.reject(`全站折扣 ${num} 低于折扣限价 ${siteDiscount}，设置后将被限价覆盖，请调整`);
+                                  return Promise.reject(t('models.global_discount_below_floor', { global: num, floor: siteDiscount, defaultValue: `全站折扣 ${num} 低于折扣限价 ${siteDiscount}，设置后将被限价覆盖，请调整` }));
                                 }
                                 return Promise.resolve();
                               },
                             }]}
                           >
-                            <InputNumber style={{ width: '100%' }} precision={3} step={0.1} min={0} placeholder="不填为原价 1.0" />
+                            <InputNumber style={{ width: '100%' }} precision={3} step={0.1} min={0} placeholder={t('models.discount_rate_placeholder', '不填为原价 1.0')} />
                           </Form.Item>
                         );
                       }}
@@ -3243,8 +3245,8 @@ const Models: React.FC = () => {
                           return (
                             <div style={{ animation: 'fadeIn 0.2s' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                                <Title level={4} style={{ margin: 0 }}>选择官方服务商</Title>
-                                <Button type="dashed" size="small" onClick={() => setIsProviderManagerVisible(true)}>管理官方服务商</Button>
+                                <Title level={4} style={{ margin: 0 }}>{t('models.select_provider', '选择官方服务商')}</Title>
+                                <Button type="dashed" size="small" onClick={() => setIsProviderManagerVisible(true)}>{t('models.manage_providers', '管理官方服务商')}</Button>
                               </div>
                               <Row gutter={[6, 6]}>
                                 <Col xs={6} sm={4} md={3}>
@@ -3272,11 +3274,12 @@ const Models: React.FC = () => {
                                     }}
                                   >
                                     <CloseOutlined style={{ fontSize: 16, color: 'var(--text-secondary)' }} />
-                                    <span style={{ fontWeight: !form.getFieldValue('provider_id') ? 600 : 400, fontSize: 11, color: 'var(--text-secondary)', textAlign: 'center' }}>清除选择</span>
+                                    <span style={{ fontWeight: !form.getFieldValue('provider_id') ? 600 : 400, fontSize: 11, color: 'var(--text-secondary)', textAlign: 'center' }}>{t('models.clear_selection', '清除选择')}</span>
                                   </div>
                                 </Col>
                                 {allProviders.map(p => {
                                   const selected = form.getFieldValue('provider_id') === p.id;
+                                  const label = localizeClassificationName(p, i18n.language, t);
                                   return (
                                     <Col xs={6} sm={4} md={3} key={p.id}>
                                       <div 
@@ -3307,7 +3310,7 @@ const Models: React.FC = () => {
                                         ) : (
                                           <div style={{ width: 20, height: 20, borderRadius: 4, flexShrink: 0, background: 'rgba(128,128,128,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600 }}>{(p.name_en || p.name).charAt(0)}</div>
                                         )}
-                                        <span style={{ fontWeight: selected ? 600 : 400, fontSize: 11.5, textAlign: 'center', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{(isEn && p.name_en) ? p.name_en : p.name}</span>
+                                        <span title={label} style={{ fontWeight: selected ? 600 : 400, fontSize: 11.5, textAlign: 'center', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
                                       </div>
                                     </Col>
                                   );
@@ -3322,8 +3325,8 @@ const Models: React.FC = () => {
                           return (
                             <div style={{ animation: 'fadeIn 0.2s' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                                <Title level={4} style={{ margin: 0 }}>选择API服务商</Title>
-                                <Button type="dashed" size="small" onClick={() => setIsApiProviderManagerVisible(true)}>管理API服务商</Button>
+                                <Title level={4} style={{ margin: 0 }}>{t('models.select_api_provider', '选择API服务商')}</Title>
+                                <Button type="dashed" size="small" onClick={() => setIsApiProviderManagerVisible(true)}>{t('models.manage_api_providers', '管理API服务商')}</Button>
                               </div>
                               <Row gutter={[6, 6]}>
                                 <Col xs={6} sm={4} md={3}>
@@ -3345,11 +3348,12 @@ const Models: React.FC = () => {
                                     }}
                                   >
                                     <CloseOutlined style={{ fontSize: 16, color: 'var(--text-secondary)' }} />
-                                    <span style={{ fontSize: 11, fontWeight: form.getFieldValue('api_provider_id') === null ? 600 : 400, color: 'var(--text-secondary)', textAlign: 'center' }}>清除选择</span>
+                                    <span style={{ fontSize: 11, fontWeight: form.getFieldValue('api_provider_id') === null ? 600 : 400, color: 'var(--text-secondary)', textAlign: 'center' }}>{t('models.clear_selection', '清除选择')}</span>
                                   </div>
                                 </Col>
                                 {allApiProviders.map(p => {
                                   const selected = form.getFieldValue('api_provider_id') === p.id;
+                                  const label = localizeClassificationName(p, i18n.language, t);
                                   return (
                                     <Col xs={6} sm={4} md={3} key={p.id}>
                                       <div
@@ -3374,8 +3378,8 @@ const Models: React.FC = () => {
                                         ) : (
                                           <div style={{ width: 20, height: 20, borderRadius: 4, flexShrink: 0, background: 'rgba(128,128,128,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600 }}>{(p.name_en || p.name).charAt(0)}</div>
                                         )}
-                                        <div style={{ fontSize: 11.5, fontWeight: selected ? 600 : 400, textAlign: 'center', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                          {isEn && p.name_en ? p.name_en : p.name}
+                                        <div title={label} style={{ fontSize: 11.5, fontWeight: selected ? 600 : 400, textAlign: 'center', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                          {label}
                                         </div>
                                       </div>
                                     </Col>
@@ -3390,19 +3394,20 @@ const Models: React.FC = () => {
                           return (
                             <div style={{ animation: 'fadeIn 0.2s' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                                <Title level={4} style={{ margin: 0 }}>选择模型类型</Title>
-                                <Button type="dashed" size="small" onClick={() => setIsTypeManagerVisible(true)}>管理类型</Button>
+                                <Title level={4} style={{ margin: 0 }}>{t('models.select_type', '选择模型类型')}</Title>
+                                <Button type="dashed" size="small" onClick={() => setIsTypeManagerVisible(true)}>{t('models.manage_types', '管理类型')}</Button>
                               </div>
                               <Row gutter={[6, 6]}>
-                                {allTypes.map(t => {
-                                  const selected = form.getFieldValue('type_id') === t.id;
-                                  const sysIcon = renderTypeSystemIcon(t.name_en || t.name, 18);
+                                {allTypes.map(item => {
+                                  const selected = form.getFieldValue('type_id') === item.id;
+                                  const sysIcon = renderTypeSystemIcon(item.name_en || item.name, 18);
+                                  const label = localizeClassificationName(item, i18n.language, t);
                                   return (
-                                    <Col xs={6} sm={4} md={3} key={t.id}>
+                                    <Col xs={6} sm={4} md={3} key={item.id}>
                                       <div 
                                         onClick={() => {
-                                          if (form.getFieldValue('type_id') !== t.id) {
-                                            form.setFieldsValue({ type_id: t.id, feature_attributes: [] });
+                                          if (form.getFieldValue('type_id') !== item.id) {
+                                            form.setFieldsValue({ type_id: item.id, feature_attributes: [] });
                                           }
                                         }}
                                         style={{ 
@@ -3424,12 +3429,12 @@ const Models: React.FC = () => {
                                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, color: selected ? '#1677ff' : (isLight ? 'rgba(0,0,0,0.7)' : 'rgba(255,255,255,0.8)') }}>
                                             {sysIcon}
                                           </div>
-                                        ) : t.logo ? (
-                                          <SmartSvgIcon src={`/assets/icons/lobe/${t.logo}.svg`} alt="" style={{ width: 20, height: 20, flexShrink: 0, objectFit: 'contain' }} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                                        ) : item.logo ? (
+                                          <SmartSvgIcon src={`/assets/icons/lobe/${item.logo}.svg`} alt="" style={{ width: 20, height: 20, flexShrink: 0, objectFit: 'contain' }} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
                                         ) : (
-                                          <div style={{ width: 20, height: 20, borderRadius: 4, flexShrink: 0, background: 'rgba(128,128,128,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600 }}>{(t.name_en || t.name).charAt(0)}</div>
+                                          <div style={{ width: 20, height: 20, borderRadius: 4, flexShrink: 0, background: 'rgba(128,128,128,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600 }}>{(item.name_en || item.name).charAt(0)}</div>
                                         )}
-                                        <span style={{ fontWeight: selected ? 600 : 400, fontSize: 11.5, textAlign: 'center', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{(isEn && t.name_en) ? t.name_en : t.name}</span>
+                                        <span title={label} style={{ fontWeight: selected ? 600 : 400, fontSize: 11.5, textAlign: 'center', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
                                       </div>
                                     </Col>
                                   );
@@ -3442,7 +3447,7 @@ const Models: React.FC = () => {
                                   const typeId = getFieldValue('type_id');
                                   if (!typeId) return null; // 只有选择了类型才显示
 
-                                  const typeObj = allTypes.find(t => t.id === typeId);
+                                  const typeObj = allTypes.find(tp => tp.id === typeId);
                                   let options: {label: string, value: string}[] = [];
                                   
                                   if (typeObj && typeObj.default_features) {
@@ -3460,7 +3465,7 @@ const Models: React.FC = () => {
                                   return (
                                     <div style={{ marginTop: 24, padding: '16px', background: isLight ? '#fff' : 'rgba(255,255,255,0.02)', borderRadius: 8, border: isLight ? '1px solid #e5e4e7' : '1px solid #303030' }}>
                                       <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-                                        <Text strong>二级功能属性选择</Text>
+                                        <Text strong>{t('models.secondary_features_title', '二级功能属性选择')}</Text>
                                         <Space size={8}>
                                           {options.length > 0 && (
                                             <>
@@ -3470,7 +3475,7 @@ const Models: React.FC = () => {
                                                 style={{ padding: 0, height: 'auto', fontSize: 12 }}
                                                 onClick={() => form.setFieldsValue({ feature_attributes: options.map(o => o.value) })}
                                               >
-                                                全选默认
+                                                {t('models.select_all_default', '全选默认')}
                                               </Button>
                                               <Button
                                                 type="link"
@@ -3478,11 +3483,11 @@ const Models: React.FC = () => {
                                                 style={{ padding: 0, height: 'auto', fontSize: 12 }}
                                                 onClick={() => form.setFieldsValue({ feature_attributes: [] })}
                                               >
-                                                清空
+                                                {t('common.clear', '清空')}
                                               </Button>
                                             </>
                                           )}
-                                          <Text type="secondary" style={{ fontSize: 12 }}>支持自定义输入添加</Text>
+                                          <Text type="secondary" style={{ fontSize: 12 }}>{t('models.custom_feature_hint', '支持自定义输入添加')}</Text>
                                         </Space>
                                       </div>
                                       <Form.Item name="feature_attributes" style={{ marginBottom: 0 }}>
@@ -3509,9 +3514,9 @@ const Models: React.FC = () => {
                           return (
                             <div style={{ animation: 'fadeIn 0.2s' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
-                                <Title level={4} style={{ margin: 0 }}>选择计费基础定价模板</Title>
+                                <Title level={4} style={{ margin: 0 }}>{t('models.select_billing_template', '选择计费基础定价模板')}</Title>
                                 <Input 
-                                  placeholder="搜索模板名称..." 
+                                  placeholder={t('models.search_template_placeholder', '搜索模板名称...')} 
                                   prefix={<SearchOutlined style={{ color: 'var(--text-secondary)' }} />} 
                                   style={{ width: 170 }} 
                                   value={billingSearchKeyword}
@@ -3521,7 +3526,7 @@ const Models: React.FC = () => {
                               </div>
                               <div style={{ marginBottom: 8 }}>
                                 <div style={{ color: 'var(--text-secondary)', fontSize: 12, lineHeight: '18px', marginBottom: 4 }}>
-                                  <span style={{ color: '#ff4d4f', marginRight: 3, fontFamily: 'SimSun, sans-serif' }}>*</span>计费类型
+                                  <span style={{ color: '#ff4d4f', marginRight: 3, fontFamily: 'SimSun, sans-serif' }}>*</span>{t('models.billing_type_label', '计费类型')}
                                 </div>
                                 <Radio.Group 
                                   value={billingTypeFilter} 
@@ -3532,17 +3537,21 @@ const Models: React.FC = () => {
                                   buttonStyle="solid"
                                   size="small"
                                 >
-                                  <Radio.Button value="all" style={{ fontSize: 11.5, paddingInline: 8, height: 22, lineHeight: '20px' }}>全部</Radio.Button>
-                                  <Radio.Button value="tokens" style={{ fontSize: 11.5, paddingInline: 8, height: 22, lineHeight: '20px' }}>Token计费</Radio.Button>
-                                  <Radio.Button value="requests" style={{ fontSize: 11.5, paddingInline: 8, height: 22, lineHeight: '20px' }}>按次计费</Radio.Button>
-                                  <Radio.Button value="duration" style={{ fontSize: 11.5, paddingInline: 8, height: 22, lineHeight: '20px' }}>时长计费</Radio.Button>
+                                  <Radio.Button value="all" style={{ fontSize: 11.5, paddingInline: 8, height: 22, lineHeight: '20px' }}>{t('common.all', '全部')}</Radio.Button>
+                                  <Radio.Button value="tokens" style={{ fontSize: 11.5, paddingInline: 8, height: 22, lineHeight: '20px' }}>{t('models.billing_type_tokens', 'Token计费')}</Radio.Button>
+                                  <Radio.Button value="requests" style={{ fontSize: 11.5, paddingInline: 8, height: 22, lineHeight: '20px' }}>{t('models.billing_type_requests', '按次计费')}</Radio.Button>
+                                  <Radio.Button value="duration" style={{ fontSize: 11.5, paddingInline: 8, height: 22, lineHeight: '20px' }}>{t('models.billing_type_duration', '时长计费')}</Radio.Button>
                                 </Radio.Group>
                               </div>
                               {billingTypeFilter !== 'all' && (
                                 <div style={{ marginBottom: 10 }}>
                                   <div style={{ color: 'var(--text-secondary)', fontSize: 12, lineHeight: '18px', marginBottom: 4 }}>
                                     <span style={{ color: '#ff4d4f', marginRight: 3, fontFamily: 'SimSun, sans-serif' }}>*</span>
-                                    {billingTypeFilter === 'tokens' ? 'token计费规则' : billingTypeFilter === 'requests' ? '按次计费规则' : '时长计费规则'}
+                                    {billingTypeFilter === 'tokens'
+                                      ? t('models.token_billing_rule_label', 'token计费规则')
+                                      : billingTypeFilter === 'requests'
+                                        ? t('models.request_billing_rule_label', '按次计费规则')
+                                        : t('models.duration_billing_rule_label', '时长计费规则')}
                                   </div>
                                   <Radio.Group
                                     value={billingRuleFilter}
@@ -3551,48 +3560,48 @@ const Models: React.FC = () => {
                                     size="small"
                                     style={{ display: 'flex', flexWrap: 'wrap', rowGap: 4 }}
                                   >
-                                    <Radio.Button value="all" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>全部</Radio.Button>
+                                    <Radio.Button value="all" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('common.all', '全部')}</Radio.Button>
                                     {billingTypeFilter === 'tokens' && (
                                       <>
                                         <Radio.Button value="standard" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_standard')}</Radio.Button>
                                         <Radio.Button value="claude" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_claude', 'Claude 计费')}</Radio.Button>
-                                        <Radio.Button value="kimi_chat" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>Kimi 缓存</Radio.Button>
+                                        <Radio.Button value="kimi_chat" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_kimi_cache', 'Kimi 缓存')}</Radio.Button>
                                         <Radio.Button value="multimodal" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_multimodal')}</Radio.Button>
-                                        <Radio.Button value="gpt_billing" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>GPT图片计费</Radio.Button>
+                                        <Radio.Button value="gpt_billing" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_gpt_image', 'GPT图片计费')}</Radio.Button>
                                         <Radio.Button value="tiered" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_tiered')}</Radio.Button>
-                                        <Radio.Button value="doubao_chat" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>豆包聊天阶梯</Radio.Button>
-                                        <Radio.Button value="seedance2.0" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>Seedance 2 规则</Radio.Button>
-                                        <Radio.Button value="seedance1.5pro" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>Seedance 1.5 规则</Radio.Button>
-                                        <Radio.Button value="seedance1.0" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>Seedance 1 规则</Radio.Button>
+                                        <Radio.Button value="doubao_chat" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_doubao_chat', '豆包聊天阶梯')}</Radio.Button>
+                                        <Radio.Button value="seedance2.0" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_seedance2', 'Seedance 2 规则')}</Radio.Button>
+                                        <Radio.Button value="seedance1.5pro" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_seedance15', 'Seedance 1.5 规则')}</Radio.Button>
+                                        <Radio.Button value="seedance1.0" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_seedance1', 'Seedance 1 规则')}</Radio.Button>
                                         <Radio.Button value="glm_5_3" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>glm 5.3</Radio.Button>
                                       </>
                                     )}
                                     {billingTypeFilter === 'requests' && (
                                       <>
-                                        <Radio.Button value="fixed" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>固定费率</Radio.Button>
-                                        <Radio.Button value="per_image" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>按张收费</Radio.Button>
-                                        <Radio.Button value="image_resolution" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>分辨率 K</Radio.Button>
-                                        <Radio.Button value="image_resolution_io" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>分辨率 K(双向)</Radio.Button>
-                                        <Radio.Button value="image_size_pixel" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>分辨率像素</Radio.Button>
-                                        <Radio.Button value="vidu_image" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>Vidu 图片</Radio.Button>
-                                        <Radio.Button value="volc_seedream_pro" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>火山 Seedream 5.0 Pro</Radio.Button>
-                                        <Radio.Button value="characters" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>字符计费</Radio.Button>
+                                        <Radio.Button value="fixed" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_fixed_rate', '固定费率')}</Radio.Button>
+                                        <Radio.Button value="per_image" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_per_image', '按张收费')}</Radio.Button>
+                                        <Radio.Button value="image_resolution" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_image_resolution', '分辨率 K')}</Radio.Button>
+                                        <Radio.Button value="image_resolution_io" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_image_resolution_io', '分辨率 K(双向)')}</Radio.Button>
+                                        <Radio.Button value="image_size_pixel" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_image_size_pixel', '分辨率像素')}</Radio.Button>
+                                        <Radio.Button value="vidu_image" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_vidu_image', 'Vidu 图片')}</Radio.Button>
+                                        <Radio.Button value="volc_seedream_pro" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_volc_seedream_pro', '火山 Seedream 5.0 Pro')}</Radio.Button>
+                                        <Radio.Button value="characters" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_characters', '字符计费')}</Radio.Button>
                                       </>
                                     )}
                                     {billingTypeFilter === 'duration' && (
                                       <>
-                                        <Radio.Button value="standard" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>固定时长</Radio.Button>
-                                        <Radio.Button value="video_resolution" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>分辨率阶梯</Radio.Button>
-                                        <Radio.Button value="minimax_h3" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>MiniMax (秒价+参考图)</Radio.Button>
-                                        <Radio.Button value="video_seconds_io" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>双向秒价 + 参考图</Radio.Button>
-                                        <Radio.Button value="video_seconds_ref" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>双向秒价 + 参考视频</Radio.Button>
+                                        <Radio.Button value="standard" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_fixed_duration', '固定时长')}</Radio.Button>
+                                        <Radio.Button value="video_resolution" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_video_resolution', '分辨率阶梯')}</Radio.Button>
+                                        <Radio.Button value="minimax_h3" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_minimax_h3', 'MiniMax (秒价+参考图)')}</Radio.Button>
+                                        <Radio.Button value="video_seconds_io" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_video_seconds_io', '双向秒价 + 参考图')}</Radio.Button>
+                                        <Radio.Button value="video_seconds_ref" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_video_seconds_ref', '双向秒价 + 参考视频')}</Radio.Button>
                                         <Radio.Button value="fal_ref_video" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>fal H3-MAX</Radio.Button>
-                                        <Radio.Button value="video_quality" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>画质与帧率</Radio.Button>
-                                        <Radio.Button value="kling_video" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>可灵视频</Radio.Button>
-                                        <Radio.Button value="kling4_video" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>可灵 4.0 视频</Radio.Button>
-                                        <Radio.Button value="vidu_video" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>Vidu 视频</Radio.Button>
+                                        <Radio.Button value="video_quality" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_video_quality', '画质与帧率')}</Radio.Button>
+                                        <Radio.Button value="kling_video" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_kling_video', '可灵视频')}</Radio.Button>
+                                        <Radio.Button value="kling4_video" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_kling4_video', '可灵 4.0 视频')}</Radio.Button>
+                                        <Radio.Button value="vidu_video" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_vidu_video', 'Vidu 视频')}</Radio.Button>
                                         {allBillingRules.some(b => b.billing_rule === 'volc_enhance_cascade') && (
-                                          <Radio.Button value="volc_enhance_cascade" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>火山级联封装</Radio.Button>
+                                          <Radio.Button value="volc_enhance_cascade" style={{ fontSize: 11.5, paddingInline: 7, height: 22, lineHeight: '20px' }}>{t('models.rule_volc_enhance_cascade', '火山级联封装')}</Radio.Button>
                                         )}
                                       </>
                                     )}
@@ -3623,7 +3632,11 @@ const Models: React.FC = () => {
                                           <span style={{ fontWeight: selected ? 600 : 500, fontSize: 13.5, color: selected ? '#1677ff' : 'inherit' }}>{b.name}</span>
                                           {b.pid && <Tag color="blue" variant="filled" style={{ margin: 0, fontSize: 10, padding: '0 4px', lineHeight: '16px' }}>PID: {b.pid}</Tag>}
                                           <Tag color={b.billing_type === 'tokens' ? 'green' : (b.billing_type === 'requests' ? 'orange' : 'purple')} variant="filled" style={{ margin: 0, fontSize: 10, padding: '0 4px', lineHeight: '16px' }}>
-                                            {b.billing_type === 'tokens' ? '按Token' : (b.billing_type === 'requests' ? '按次' : '按时长')}
+                                            {b.billing_type === 'tokens'
+                                              ? t('models.billing_tag_tokens', '按Token')
+                                              : b.billing_type === 'requests'
+                                                ? t('models.billing_tag_requests', '按次')
+                                                : t('models.billing_tag_duration', '按时长')}
                                           </Tag>
                                         </div>
                                         <div style={{ background: isLight ? 'rgba(0,0,0,0.025)' : 'rgba(255,255,255,0.03)', padding: '3px 8px', borderRadius: 4, fontSize: 11.5, lineHeight: '1.4' }}>
@@ -3642,7 +3655,7 @@ const Models: React.FC = () => {
                                       }} />
                                     </div>
                                   );
-                                }) : <Empty description="未找到匹配的计费模板" style={{ margin: '40px 0' }} />}
+                                }) : <Empty description={t('models.no_matching_billing_templates', '未找到匹配的计费模板')} style={{ margin: '40px 0' }} />}
                               </div>
                             </div>
                           );
@@ -3667,9 +3680,9 @@ const Models: React.FC = () => {
                           return (
                             <div style={{ animation: 'fadeIn 0.2s' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
-                                <Title level={4} style={{ margin: 0 }}>挂载转发规则组合</Title>
+                                <Title level={4} style={{ margin: 0 }}>{t('models.mount_forward_rules', '挂载转发规则组合')}</Title>
                                 <Input 
-                                  placeholder="搜索名称或 EID..." 
+                                  placeholder={t('models.search_name_or_eid', '搜索名称或 EID...')} 
                                   prefix={<SearchOutlined style={{ color: 'var(--text-secondary)' }} />} 
                                   style={{ width: 170 }} 
                                   value={forwardRuleSearchKeyword}
@@ -3680,7 +3693,7 @@ const Models: React.FC = () => {
                               {categories.length > 0 && (
                                 <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                                   <span style={{ color: 'var(--text-secondary)', fontSize: 13, flexShrink: 0 }}>
-                                    所属分类
+                                    {t('models.category_label', '所属分类')}
                                   </span>
                                   <Radio.Group 
                                     value={forwardRuleCategoryFilter} 
@@ -3688,7 +3701,7 @@ const Models: React.FC = () => {
                                     buttonStyle="solid"
                                     size="small"
                                   >
-                                    <Radio.Button value="all">全部</Radio.Button>
+                                    <Radio.Button value="all">{t('common.all', '全部')}</Radio.Button>
                                     {categories.map(cat => (
                                        <Radio.Button key={String(cat)} value={String(cat)}>{String(cat)}</Radio.Button>
                                     ))}
@@ -3743,7 +3756,7 @@ const Models: React.FC = () => {
                                       }} />
                                     </div>
                                   );
-                                }) : <Empty description="未找到匹配的转发规则" style={{ margin: '40px 0' }} />}
+                                }) : <Empty description={t('models.no_matching_forward_rules', '未找到匹配的转发规则')} style={{ margin: '40px 0' }} />}
                               </div>
                             </div>
                           );
@@ -3754,7 +3767,7 @@ const Models: React.FC = () => {
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)' }}>
                             <Space direction="vertical" align="center" size={16}>
                               <div style={{ fontSize: 48, opacity: 0.2 }}>👈</div>
-                              <span>请在左侧点击配置项，以在此处查看更多选项</span>
+                              <span>{t('models.click_left_item_hint', '请在左侧点击配置项，以在此处查看更多选项')}</span>
                             </Space>
                           </div>
                         );

@@ -59,7 +59,7 @@ export const UsersOrgsPage: React.FC = () => {
           key: 'users', label: t('admin.users', '用户'),
           children: (
             <Space direction="vertical" style={{ width: '100%' }}>
-              <Input.Search allowClear placeholder="邮箱 / 昵称" style={{ width: 260 }} value={kw}
+              <Input.Search allowClear placeholder={t('admin.search_user_placeholder', '邮箱 / 昵称')} style={{ width: 260 }} value={kw}
                 onChange={(e) => setKw(e.target.value)} onSearch={(v) => { setPage(1); void loadUsers(1, v); }} />
               <Table loading={loading} rowKey="id" dataSource={users} scroll={{ x: 900 }}
                 pagination={{ current: page, pageSize: 30, total, showSizeChanger: false, onChange: (p) => { setPage(p); void loadUsers(p); } }}
@@ -68,7 +68,7 @@ export const UsersOrgsPage: React.FC = () => {
                   { title: t('auth.email', '邮箱'), dataIndex: 'email' },
                   { title: t('common.role', '角色'), dataIndex: 'role', width: 100, render: (v: string) => <Tag>{v}</Tag> },
                   { title: t('wallet.balance', '余额 ($)'), dataIndex: 'balance', width: 110, render: (v: any) => Number(v || 0).toFixed(4) },
-                  { title: t('common.status', '状态'), dataIndex: 'status', width: 90, render: (v: number) => <Tag color={v === 1 ? 'green' : 'red'}>{v === 1 ? 'active' : 'banned'}</Tag> },
+                  { title: t('common.status', '状态'), dataIndex: 'status', width: 90, render: (v: number) => <Tag color={v === 1 ? 'green' : 'red'}>{v === 1 ? t('common.active', 'active') : t('admin.banned', 'banned')}</Tag> },
                   { title: t('common.actions', '操作'), width: 200, fixed: 'right', render: (_: unknown, r: any) => (
                     <Space size={4}>
                       <Button size="small" icon={<DollarOutlined />} disabled={!r.org_id}
@@ -76,7 +76,7 @@ export const UsersOrgsPage: React.FC = () => {
                       <Button size="small" danger={r.status === 1} onClick={async () => {
                         await coreApi.post(`/admin/users/${r.id}/manage`, { action: r.status === 1 ? 'ban' : 'unban' });
                         await loadUsers();
-                      }}>{r.status === 1 ? '封禁' : '解封'}</Button>
+                      }}>{r.status === 1 ? t('admin.ban', '封禁') : t('admin.unban', '解封')}</Button>
                     </Space>
                   ) },
                 ]} />
@@ -90,8 +90,8 @@ export const UsersOrgsPage: React.FC = () => {
               columns={[
                 { title: 'ID', dataIndex: 'id', width: 70 },
                 { title: t('common.name', '名称'), dataIndex: 'name' },
-                { title: 'Owner', dataIndex: 'owner_email' },
-                { title: 'Group', dataIndex: 'group', width: 100, render: (v: string) => <Tag>{v}</Tag> },
+                { title: t('admin.owner', 'Owner'), dataIndex: 'owner_email' },
+                { title: t('admin.group', 'Group'), dataIndex: 'group', width: 100, render: (v: string) => <Tag>{v}</Tag> },
                 { title: t('wallet.balance', '余额 ($)'), dataIndex: 'balance', width: 110, render: (v: any) => Number(v || 0).toFixed(4) },
                 { title: t('admin.spend', '累计消耗 ($)'), dataIndex: 'spend', width: 120, render: (v: any) => Number(v || 0).toFixed(4) },
                 { title: t('admin.calls', '调用数'), dataIndex: 'calls', width: 90 },
@@ -105,11 +105,15 @@ export const UsersOrgsPage: React.FC = () => {
       <Modal title={`${t('admin.adjust', '余额调账')} - ${creditOrg?.label || ''}`} open={Boolean(creditOrg)}
         onCancel={() => setCreditOrg(null)} onOk={onCredit}>
         <Form form={form} layout="vertical" initialValues={{ mode: 'add' }}>
-          <Form.Item name="mode" label="模式">
-            <Radio.Group options={[{ value: 'add', label: '授信 (+)' }, { value: 'subtract', label: '扣减 (-)' }, { value: 'override', label: '订正为目标值' }]} />
+          <Form.Item name="mode" label={t('admin.adjust_mode', '模式')}>
+            <Radio.Group options={[
+              { value: 'add', label: t('admin.adjust_add', '授信 (+)') },
+              { value: 'subtract', label: t('admin.adjust_subtract', '扣减 (-)') },
+              { value: 'override', label: t('admin.adjust_override', '订正为目标值') },
+            ]} />
           </Form.Item>
-          <Form.Item name="amount_usd" label="金额 ($)" rules={[{ required: true }]}><InputNumber min={0} step={0.01} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="reason" label="原因（写入审计）" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="amount_usd" label={t('admin.amount_usd', '金额 ($)')} rules={[{ required: true }]}><InputNumber min={0} step={0.01} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="reason" label={t('admin.adjust_reason', '原因（写入审计）')} rules={[{ required: true }]}><Input /></Form.Item>
         </Form>
       </Modal>
     </Card>

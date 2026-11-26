@@ -25,6 +25,7 @@ import {
   ReloadOutlined,
   SyncOutlined,
 } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 
 const { Title, Text } = Typography;
@@ -72,6 +73,7 @@ interface ArkTaskRow {
 }
 
 const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' }) => {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [accounts, setAccounts] = useState<ArkAccountRow[]>([]);
@@ -122,7 +124,14 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
       const res: any = await request.post('/plugins/volcengine_ark_monitor/sync');
       const s = res?.summary || {};
       message.success(
-        `同步完成：账号 ${s.accounts_processed ?? 0}，拉取任务 ${s.tasks_upserted ?? 0}，核销 ${s.bills_reconciled ?? 0}，熔断 ${s.endpoints_fused ?? 0}，恢复 ${s.endpoints_recovered ?? 0}`,
+        t('ark_monitor.sync_summary', {
+          accounts: s.accounts_processed ?? 0,
+          tasks: s.tasks_upserted ?? 0,
+          bills: s.bills_reconciled ?? 0,
+          fused: s.endpoints_fused ?? 0,
+          recovered: s.endpoints_recovered ?? 0,
+          defaultValue: `同步完成：账号 ${s.accounts_processed ?? 0}，拉取任务 ${s.tasks_upserted ?? 0}，核销 ${s.bills_reconciled ?? 0}，熔断 ${s.endpoints_fused ?? 0}，恢复 ${s.endpoints_recovered ?? 0}`,
+        }),
       );
       await loadData();
     } catch {
@@ -137,7 +146,12 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
       const res: any = await request.post(`/plugins/volcengine_ark_monitor/accounts/${id}/balance`);
       const bal = res?.balance;
       message.info(
-        `[${name}] 可用余额 ¥${Number(bal?.available_balance ?? 0).toFixed(2)}（现金 ¥${Number(bal?.cash_balance ?? 0).toFixed(2)}）`,
+        t('ark_monitor.balance_info', {
+          name,
+          available: Number(bal?.available_balance ?? 0).toFixed(2),
+          cash: Number(bal?.cash_balance ?? 0).toFixed(2),
+          defaultValue: `[${name}] 可用余额 ¥${Number(bal?.available_balance ?? 0).toFixed(2)}（现金 ¥${Number(bal?.cash_balance ?? 0).toFixed(2)}）`,
+        }),
       );
     } catch {
       // handled by interceptor
@@ -147,7 +161,7 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
   const handleCreateAccount = async () => {
     const values = await accountForm.validateFields();
     await request.post('/plugins/volcengine_ark_monitor/accounts', values);
-    message.success('火山方舟主账号已保存');
+    message.success(t('ark_monitor.account_saved', '火山方舟主账号已保存'));
     setAccountModalOpen(false);
     accountForm.resetFields();
     await loadData();
@@ -156,7 +170,7 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
   const handleCreateBinding = async () => {
     const values = await bindingForm.validateFields();
     await request.post('/plugins/volcengine_ark_monitor/bindings', values);
-    message.success('接入点绑定已保存');
+    message.success(t('ark_monitor.binding_saved', '接入点绑定已保存'));
     setBindingModalOpen(false);
     bindingForm.resetFields();
     await loadData();
@@ -165,66 +179,72 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
   const handleToggleBinding = async (row: ArkBindingRow) => {
     const target = row.status === 1 ? 0 : 1;
     await request.post(`/plugins/volcengine_ark_monitor/bindings/${row.id}/toggle`, { status: target });
-    message.success(target === 1 ? '接入点已恢复启用' : '接入点已手动停用（不会自动拉起）');
+    message.success(
+      target === 1
+        ? t('ark_monitor.binding_enabled', '接入点已恢复启用')
+        : t('ark_monitor.binding_disabled', '接入点已手动停用（不会自动拉起）'),
+    );
     await loadData();
   };
 
   const bindingColumns = [
     ...(mode === 'admin' ? [{ title: 'ID', dataIndex: 'id', width: 70 }] : []),
-    { title: '接入点 ID (Endpoint)', dataIndex: 'endpoint_id', render: (v: string) => <Text code>{v}</Text> },
+    { title: t('ark_monitor.col_endpoint_id', '接入点 ID (Endpoint)'), dataIndex: 'endpoint_id', render: (v: string) => <Text code>{v}</Text> },
     ...(mode === 'admin'
       ? [
-          { title: '主账号 ID', dataIndex: 'account_id', width: 100 },
-          { title: '组织 ID', dataIndex: 'org_id', width: 90 },
+          { title: t('ark_monitor.col_account_id', '主账号 ID'), dataIndex: 'account_id', width: 100 },
+          { title: t('ark_monitor.col_org_id', '组织 ID'), dataIndex: 'org_id', width: 90 },
           { title: 'API Key', dataIndex: 'api_key_mask', render: (v: string) => v || '-' },
         ]
       : []),
     {
-      title: '累计用量 (CNY)',
+      title: t('ark_monitor.col_used_quota', '累计用量 (CNY)'),
       dataIndex: 'used_quota',
       render: (v: string | number) => `¥${Number(v || 0).toFixed(4)}`,
     },
     ...(mode === 'admin'
       ? [
           {
-            title: '已入账锚点 (CNY)',
+            title: t('ark_monitor.col_wallet_anchor', '已入账锚点 (CNY)'),
             dataIndex: 'wallet_charged_quota',
             render: (v: string | number) => `¥${Number(v || 0).toFixed(4)}`,
           },
           {
-            title: '组织可用余额 (USD)',
+            title: t('ark_monitor.col_org_available', '组织可用余额 (USD)'),
             dataIndex: 'org_available_usd',
             render: (v: string | number) => `$${Number(v || 0).toFixed(4)}`,
           },
         ]
       : []),
     {
-      title: '状态',
+      title: t('common.status', '状态'),
       dataIndex: 'status',
       render: (v: number, row: ArkBindingRow) =>
         v === 1 ? (
-          <Tag color="green">运行中</Tag>
+          <Tag color="green">{t('ark_monitor.status_running', '运行中')}</Tag>
         ) : (
           <Tag color={row.fuse_reason === 'manual' ? 'default' : 'red'}>
-            {row.fuse_reason === 'manual' ? '已手动停用' : '余额熔断停用'}
+            {row.fuse_reason === 'manual'
+              ? t('ark_monitor.status_manual_stopped', '已手动停用')
+              : t('ark_monitor.status_fused', '余额熔断停用')}
           </Tag>
         ),
     },
     ...(mode === 'admin'
       ? [
           {
-            title: '操作',
+            title: t('common.actions', '操作'),
             width: 170,
             render: (_: any, row: ArkBindingRow) => (
               <Space>
                 <Button size="small" onClick={() => void handleToggleBinding(row)}>
-                  {row.status === 1 ? '停用' : '启用'}
+                  {row.status === 1 ? t('ark_monitor.btn_disable', '停用') : t('ark_monitor.btn_enable', '启用')}
                 </Button>
                 <Popconfirm
-                  title="确认删除该绑定?"
+                  title={t('ark_monitor.confirm_delete_binding', '确认删除该绑定?')}
                   onConfirm={async () => {
                     await request.delete(`/plugins/volcengine_ark_monitor/bindings/${row.id}`);
-                    message.success('已删除绑定');
+                    message.success(t('ark_monitor.binding_deleted', '已删除绑定'));
                     await loadData();
                   }}
                 >
@@ -238,29 +258,31 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
   ];
 
   const taskColumns = [
-    { title: '方舟任务 ID', dataIndex: 'task_id', render: (v: string) => <Text code>{v}</Text> },
-    { title: '接入点', dataIndex: 'endpoint_id' },
-    { title: '模型', dataIndex: 'model' },
+    { title: t('ark_monitor.col_task_id', '方舟任务 ID'), dataIndex: 'task_id', render: (v: string) => <Text code>{v}</Text> },
+    { title: t('ark_monitor.col_endpoint', '接入点'), dataIndex: 'endpoint_id' },
+    { title: t('common.model', '模型'), dataIndex: 'model' },
     {
-      title: '状态',
+      title: t('common.status', '状态'),
       dataIndex: 'status',
       render: (v: string) => (
         <Tag color={v === 'succeeded' || v === 'success' ? 'green' : v === 'failed' ? 'red' : 'blue'}>{v}</Tag>
       ),
     },
-    { title: '规格', render: (_: any, r: ArkTaskRow) => `${r.resolution || '-'} / ${r.duration || 0}s` },
+    { title: t('ark_monitor.col_spec', '规格'), render: (_: any, r: ArkTaskRow) => `${r.resolution || '-'} / ${r.duration || 0}s` },
     { title: 'Token', dataIndex: 'total_tokens' },
     {
-      title: '金额 (CNY)',
+      title: t('ark_monitor.col_amount_cny', '金额 (CNY)'),
       dataIndex: 'split_amount',
       render: (v: string | number, r: ArkTaskRow) => (
         <Space size={4}>
           <span>¥{Number(v || 0).toFixed(4)}</span>
-          <Tag color={r.is_estimated ? 'orange' : 'cyan'}>{r.is_estimated ? '估算中' : '账单确认'}</Tag>
+          <Tag color={r.is_estimated ? 'orange' : 'cyan'}>
+            {r.is_estimated ? t('ark_monitor.tag_estimated', '估算中') : t('ark_monitor.tag_reconciled', '账单确认')}
+          </Tag>
         </Space>
       ),
     },
-    { title: '方舟创建时间', dataIndex: 'created_time' },
+    { title: t('ark_monitor.col_created_time', '方舟创建时间'), dataIndex: 'created_time' },
   ];
 
   if (mode === 'user') {
@@ -269,31 +291,31 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
         <Row gutter={16}>
           <Col xs={24} sm={8}>
             <Card>
-              <Statistic title="组织钱包可用余额 (USD)" value={Number(orgAvailableUSD || 0)} precision={4} prefix="$" />
+              <Statistic title={t('ark_monitor.user_org_balance', '组织钱包可用余额 (USD)')} value={Number(orgAvailableUSD || 0)} precision={4} prefix="$" />
             </Card>
           </Col>
           <Col xs={24} sm={8}>
             <Card>
-              <Statistic title="已绑定接入点数" value={bindings.length} />
+              <Statistic title={t('ark_monitor.user_binding_count', '已绑定接入点数')} value={bindings.length} />
             </Card>
           </Col>
           <Col xs={24} sm={8}>
             <Card>
-              <Statistic title="同步方舟任务数" value={tasks.length} />
+              <Statistic title={t('ark_monitor.user_task_count', '同步方舟任务数')} value={tasks.length} />
             </Card>
           </Col>
         </Row>
         <Card
-          title="我的接入点绑定与熔断状态"
+          title={t('ark_monitor.user_bindings_title', '我的接入点绑定与熔断状态')}
           extra={
             <Button icon={<ReloadOutlined />} onClick={() => void loadData()} loading={loading}>
-              刷新
+              {t('common.refresh', '刷新')}
             </Button>
           }
         >
           <Table rowKey="id" dataSource={bindings} columns={bindingColumns} pagination={false} loading={loading} />
         </Card>
-        <Card title="火山方舟视频任务对账明细">
+        <Card title={t('ark_monitor.user_tasks_title', '火山方舟视频任务对账明细')}>
           <Table rowKey="id" dataSource={tasks} columns={taskColumns} loading={loading} pagination={{ pageSize: 20 }} />
         </Card>
       </Space>
@@ -306,18 +328,18 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <div>
             <Title level={4} style={{ margin: 0 }}>
-              火山方舟视频监控与对账熔断
+              {t('ark_monitor.page_title', '火山方舟视频监控与对账熔断')}
             </Title>
             <Text type="secondary">
-              管理火山方舟主账号 AK/SK、接入点 Endpoint 与组织钱包绑定、分账账单 1:1 核销及欠费自动 StopEndpoint 熔断
+              {t('ark_monitor.page_desc', '管理火山方舟主账号 AK/SK、接入点 Endpoint 与组织钱包绑定、分账账单 1:1 核销及欠费自动 StopEndpoint 熔断')}
             </Text>
           </div>
           <Space>
             <Button icon={<ReloadOutlined />} onClick={() => void loadData()} loading={loading}>
-              刷新
+              {t('common.refresh', '刷新')}
             </Button>
             <Button type="primary" icon={<SyncOutlined />} loading={syncing} onClick={() => void handleSyncNow()}>
-              立即同步对账
+              {t('ark_monitor.sync_now', '立即同步对账')}
             </Button>
           </Space>
         </div>
@@ -328,12 +350,12 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
           items={[
             {
               key: 'accounts',
-              label: `主账号凭证 (${accounts.length})`,
+              label: `${t('ark_monitor.tab_accounts', '主账号凭证')} (${accounts.length})`,
               children: (
                 <>
                   <div style={{ marginBottom: 12 }}>
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => setAccountModalOpen(true)}>
-                      新增主账号 AK/SK
+                      {t('ark_monitor.add_account', '新增主账号 AK/SK')}
                     </Button>
                   </div>
                   <Table
@@ -343,14 +365,14 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
                     pagination={{ pageSize: 20 }}
                     columns={[
                       { title: 'ID', dataIndex: 'id', width: 70 },
-                      { title: '名称', dataIndex: 'name' },
-                      { title: '火山账号 ID', dataIndex: 'volc_account_id', render: (v: string) => v || '-' },
+                      { title: t('common.name', '名称'), dataIndex: 'name' },
+                      { title: t('ark_monitor.col_volc_account_id', '火山账号 ID'), dataIndex: 'volc_account_id', render: (v: string) => v || '-' },
                       { title: 'AccessKey', dataIndex: 'access_key' },
                       { title: 'SecretKey', dataIndex: 'secret_key_mask' },
-                      { title: '区域', dataIndex: 'region' },
-                      { title: '备注', dataIndex: 'remark' },
+                      { title: t('ark_monitor.col_region', '区域'), dataIndex: 'region' },
+                      { title: t('common.remark', '备注'), dataIndex: 'remark' },
                       {
-                        title: '操作',
+                        title: t('common.actions', '操作'),
                         width: 190,
                         render: (_: any, row: ArkAccountRow) => (
                           <Space>
@@ -359,13 +381,13 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
                               icon={<DollarOutlined />}
                               onClick={() => void handleCheckBalance(row.id, row.name)}
                             >
-                              余额
+                              {t('ark_monitor.btn_balance', '余额')}
                             </Button>
                             <Popconfirm
-                              title="确认删除主账号及其绑定?"
+                              title={t('ark_monitor.confirm_delete_account', '确认删除主账号及其绑定?')}
                               onConfirm={async () => {
                                 await request.delete(`/plugins/volcengine_ark_monitor/accounts/${row.id}`);
-                                message.success('已删除主账号');
+                                message.success(t('ark_monitor.account_deleted', '已删除主账号'));
                                 await loadData();
                               }}
                             >
@@ -381,12 +403,12 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
             },
             {
               key: 'bindings',
-              label: `接入点绑定 (${bindings.length})`,
+              label: `${t('ark_monitor.tab_bindings', '接入点绑定')} (${bindings.length})`,
               children: (
                 <>
                   <div style={{ marginBottom: 12 }}>
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => setBindingModalOpen(true)}>
-                      新增接入点绑定
+                      {t('ark_monitor.add_binding', '新增接入点绑定')}
                     </Button>
                   </div>
                   <Table rowKey="id" loading={loading} dataSource={bindings} columns={bindingColumns} pagination={{ pageSize: 20 }} />
@@ -395,18 +417,18 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
             },
             {
               key: 'tasks',
-              label: `方舟视频任务 (${tasks.length})`,
+              label: `${t('ark_monitor.tab_tasks', '方舟视频任务')} (${tasks.length})`,
               children: (
                 <>
                   <Space style={{ marginBottom: 12 }}>
                     <Input
-                      placeholder="按接入点 ep-xxx 过滤"
+                      placeholder={t('ark_monitor.filter_endpoint_placeholder', '按接入点 ep-xxx 过滤')}
                       value={endpointFilter}
                       onChange={(e) => setEndpointFilter(e.target.value)}
                       style={{ width: 240 }}
                       allowClear
                     />
-                    <Button onClick={() => void loadData()}>查询</Button>
+                    <Button onClick={() => void loadData()}>{t('common.search', '查询')}</Button>
                   </Space>
                   <Table rowKey="id" loading={loading} dataSource={tasks} columns={taskColumns} pagination={{ pageSize: 20 }} />
                 </>
@@ -417,18 +439,18 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
       </Card>
 
       <Modal
-        title="新增火山方舟主账号"
+        title={t('ark_monitor.modal_add_account', '新增火山方舟主账号')}
         open={accountModalOpen}
         onOk={() => void handleCreateAccount()}
         onCancel={() => setAccountModalOpen(false)}
         destroyOnHidden
       >
         <Form form={accountForm} layout="vertical" initialValues={{ region: 'cn-beijing' }}>
-          <Form.Item name="name" label="账号别名" rules={[{ required: true }]}>
-            <Input placeholder="例如：主账号-华北" />
+          <Form.Item name="name" label={t('ark_monitor.field_account_alias', '账号别名')} rules={[{ required: true }]}>
+            <Input placeholder={t('ark_monitor.ph_account_alias', '例如：主账号-华北')} />
           </Form.Item>
-          <Form.Item name="volc_account_id" label="火山官方 AccountID">
-            <Input placeholder="可选，用于标识" />
+          <Form.Item name="volc_account_id" label={t('ark_monitor.field_volc_account_id', '火山官方 AccountID')}>
+            <Input placeholder={t('ark_monitor.ph_volc_account_id', '可选，用于标识')} />
           </Form.Item>
           <Form.Item name="access_key" label="AccessKey (AK)" rules={[{ required: true }]}>
             <Input />
@@ -439,38 +461,38 @@ const ArkMonitorPage: React.FC<{ mode?: 'admin' | 'user' }> = ({ mode = 'admin' 
           <Form.Item name="region" label="Region">
             <Select
               options={[
-                { value: 'cn-beijing', label: 'cn-beijing (国内)' },
-                { value: 'ap-southeast-1', label: 'ap-southeast-1 (BytePlus 国际)' },
+                { value: 'cn-beijing', label: t('ark_monitor.region_cn', 'cn-beijing (国内)') },
+                { value: 'ap-southeast-1', label: t('ark_monitor.region_intl', 'ap-southeast-1 (BytePlus 国际)') },
               ]}
             />
           </Form.Item>
-          <Form.Item name="remark" label="备注">
+          <Form.Item name="remark" label={t('common.remark', '备注')}>
             <Input />
           </Form.Item>
         </Form>
       </Modal>
 
       <Modal
-        title="新增 Endpoint 接入点绑定"
+        title={t('ark_monitor.modal_add_binding', '新增 Endpoint 接入点绑定')}
         open={bindingModalOpen}
         onOk={() => void handleCreateBinding()}
         onCancel={() => setBindingModalOpen(false)}
         destroyOnHidden
       >
         <Form form={bindingForm} layout="vertical" initialValues={{ org_id: 1 }}>
-          <Form.Item name="account_id" label="所属主账号" rules={[{ required: true }]}>
+          <Form.Item name="account_id" label={t('ark_monitor.field_parent_account', '所属主账号')} rules={[{ required: true }]}>
             <Select options={accounts.map((a) => ({ value: a.id, label: `${a.name} (#${a.id})` }))} />
           </Form.Item>
-          <Form.Item name="endpoint_id" label="接入点 Endpoint ID" rules={[{ required: true }]}>
-            <Input placeholder="例如：ep-2026xxxx-xxxx" />
+          <Form.Item name="endpoint_id" label={t('ark_monitor.field_endpoint_id', '接入点 Endpoint ID')} rules={[{ required: true }]}>
+            <Input placeholder="e.g. ep-2026xxxx-xxxx" />
           </Form.Item>
-          <Form.Item name="org_id" label="关联扣费组织 ID" rules={[{ required: true }]}>
+          <Form.Item name="org_id" label={t('ark_monitor.field_org_id', '关联扣费组织 ID')} rules={[{ required: true }]}>
             <InputNumber min={1} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="api_key" label="方舟静态 Bearer API Key" rules={[{ required: true }]}>
-            <Input.Password placeholder="用于 ListVideos 拉取任务状态与 token 估算" />
+          <Form.Item name="api_key" label={t('ark_monitor.field_api_key', '方舟静态 Bearer API Key')} rules={[{ required: true }]}>
+            <Input.Password placeholder={t('ark_monitor.ph_api_key', '用于 ListVideos 拉取任务状态与 token 估算')} />
           </Form.Item>
-          <Form.Item name="remark" label="备注">
+          <Form.Item name="remark" label={t('common.remark', '备注')}>
             <Input />
           </Form.Item>
         </Form>

@@ -213,7 +213,7 @@ export const ApiKeysPage: React.FC = () => {
               render: (_: unknown, row: TokenItem) => {
                 const used = Number(row.used_amount || 0).toFixed(4);
                 const lim = Number(row.quota_limit || 0);
-                return lim > 0 ? `$${used} / $${lim.toFixed(2)}` : `$${used} / 无限`;
+                return lim > 0 ? `$${used} / $${lim.toFixed(2)}` : `$${used} / ${t('common.unlimited', '无限')}`;
               },
             },
             {
@@ -226,7 +226,7 @@ export const ApiKeysPage: React.FC = () => {
               title: t('apikeys.rpm', 'RPM 限流'),
               dataIndex: 'rpm_limit',
               width: 100,
-              render: (v: number) => (v > 0 ? v : '不限'),
+              render: (v: number) => (v > 0 ? v : t('common.unlimited', '不限')),
             },
             {
               title: t('apikeys.expires_at', '过期时间'),
@@ -273,10 +273,10 @@ export const ApiKeysPage: React.FC = () => {
           <Form.Item name="route_policy" label={t('apikeys.route_policy', '渠道选择策略')}>
             <Select
               options={[
-                { value: 'order', label: '优先级顺序 (order)' },
-                { value: 'latency', label: '最低首字延迟 (latency)' },
-                { value: 'throughput', label: '最高吞吐量 (throughput)' },
-                { value: 'price', label: '最低成本 (price)' },
+                { value: 'order', label: t('apikeys.route_order', '优先级顺序 (order)') },
+                { value: 'latency', label: t('apikeys.route_latency', '最低首字延迟 (latency)') },
+                { value: 'throughput', label: t('apikeys.route_throughput', '最高吞吐量 (throughput)') },
+                { value: 'price', label: t('apikeys.route_price', '最低成本 (price)') },
               ]}
             />
           </Form.Item>

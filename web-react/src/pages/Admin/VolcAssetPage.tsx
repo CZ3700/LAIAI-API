@@ -23,6 +23,7 @@ import {
   SearchOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 
 const { Title, Text } = Typography;
@@ -67,6 +68,7 @@ interface PluginAssetRow {
 }
 
 const VolcAssetPage: React.FC = () => {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [uarBindings, setUarBindings] = useState<UarBindingRow[]>([]);
   const [channelConfigs, setChannelConfigs] = useState<ChannelCfgOption[]>([]);
@@ -116,14 +118,14 @@ const VolcAssetPage: React.FC = () => {
   const handleSaveAssetConfig = async () => {
     const values = await cfgForm.validateFields();
     await request.put('/assets/admin/config', { ns: assetNS, ...values });
-    message.success(`素材管理凭证 (${assetNS}) 已保存`);
+    message.success(t('volc_assets.config_saved', { ns: assetNS, defaultValue: `素材管理凭证 (${assetNS}) 已保存` }));
     await loadAll();
   };
 
   const handleCreateUarBinding = async () => {
     const values = await uarForm.validateFields();
     await request.post('/plugins/upstream_asset_relay/bindings', values);
-    message.success('上游视频转素材绑定已创建');
+    message.success(t('volc_assets.binding_created', '上游视频转素材绑定已创建'));
     setUarModalOpen(false);
     uarForm.resetFields();
     await loadAll();
@@ -131,7 +133,7 @@ const VolcAssetPage: React.FC = () => {
 
   const handleGenerateRule = async (id: number) => {
     const res: any = await request.post(`/plugins/upstream_asset_relay/bindings/${id}/generate-rule`);
-    message.success(`已生成转发规则 #${res?.data?.id ?? ''} (${res?.data?.eid ?? ''})`);
+    message.success(t('volc_assets.rule_generated', { id: res?.data?.id ?? '', eid: res?.data?.eid ?? '', defaultValue: `已生成转发规则 #${res?.data?.id ?? ''} (${res?.data?.eid ?? ''})` }));
     await loadAll();
   };
 
@@ -147,14 +149,14 @@ const VolcAssetPage: React.FC = () => {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <div>
             <Title level={4} style={{ margin: 0 }}>
-              火山方舟素材转换与代理中心
+              {t('volc_assets.page_title', '火山方舟素材转换与代理中心')}
             </Title>
             <Text type="secondary">
-              支持 `asset_convert`（主账号 AK/SK）与 `upstream_asset_relay`（渠道 Bearer 代理 + `/v1/plugin/{'{rid}'}/assets`）自动将请求媒体 URL 转为 `asset://`
+              {t('volc_assets.page_desc', '支持 asset_convert（主账号 AK/SK）与 upstream_asset_relay（渠道 Bearer 代理 + /v1/plugin/{rid}/assets）自动将请求媒体 URL 转为 asset://')}
             </Text>
           </div>
           <Button icon={<ReloadOutlined />} onClick={() => void loadAll()} loading={loading}>
-            刷新
+            {t('common.refresh', '刷新')}
           </Button>
         </div>
       </Card>
@@ -164,12 +166,12 @@ const VolcAssetPage: React.FC = () => {
           items={[
             {
               key: 'uar_bindings',
-              label: `火山视频转素材ID (${uarBindings.length})`,
+              label: `${t('volc_assets.tab_bindings', '火山视频转素材ID')} (${uarBindings.length})`,
               children: (
                 <>
                   <Space style={{ marginBottom: 12 }}>
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => setUarModalOpen(true)}>
-                      新增上游素材绑定
+                      {t('volc_assets.add_binding', '新增上游素材绑定')}
                     </Button>
                   </Space>
                   <Table
@@ -179,31 +181,31 @@ const VolcAssetPage: React.FC = () => {
                     pagination={{ pageSize: 20 }}
                     columns={[
                       { title: 'ID', dataIndex: 'id', width: 65 },
-                      { title: '名称', dataIndex: 'name' },
+                      { title: t('common.name', '名称'), dataIndex: 'name' },
                       {
-                        title: '代理端点 (RID)',
+                        title: t('volc_assets.col_rid', '代理端点 (RID)'),
                         dataIndex: 'rid',
                         render: (v: string) => <Text copyable code>{`/v1/plugin/${v}/assets`}</Text>,
                       },
                       {
-                        title: '来源模式',
+                        title: t('volc_assets.col_source_mode', '来源模式'),
                         dataIndex: 'source_type',
                         render: (v: string, r: UarBindingRow) =>
                           v === 'volc_account' ? (
-                            <Tag color="blue">直连官方AK</Tag>
+                            <Tag color="blue">{t('volc_assets.source_volc_ak', '直连官方AK')}</Tag>
                           ) : (
-                            <Tag color="purple">渠道配置 #{r.channel_config_id}</Tag>
+                            <Tag color="purple">{t('volc_assets.source_channel_cfg', { id: r.channel_config_id, defaultValue: `渠道配置 #${r.channel_config_id}` })}</Tag>
                           ),
                       },
-                      { title: '协议', dataIndex: 'asset_protocol' },
-                      { title: '素材组 GroupId', dataIndex: 'group_id', render: (v: string) => v || '自动创建' },
+                      { title: t('volc_assets.col_protocol', '协议'), dataIndex: 'asset_protocol' },
+                      { title: t('volc_assets.col_group_id', '素材组 GroupId'), dataIndex: 'group_id', render: (v: string) => v || t('volc_assets.auto_create', '自动创建') },
                       {
-                        title: '生成转发规则',
+                        title: t('volc_assets.col_forward_rule', '生成转发规则'),
                         dataIndex: 'forward_rule_id',
-                        render: (v: number) => (v > 0 ? <Tag color="green">规则 #{v}</Tag> : <Tag>未生成</Tag>),
+                        render: (v: number) => (v > 0 ? <Tag color="green">{t('volc_assets.rule_tag', { id: v, defaultValue: `规则 #${v}` })}</Tag> : <Tag>{t('volc_assets.rule_not_generated', '未生成')}</Tag>),
                       },
                       {
-                        title: '操作',
+                        title: t('common.actions', '操作'),
                         width: 210,
                         render: (_: any, row: UarBindingRow) => (
                           <Space>
@@ -214,13 +216,13 @@ const VolcAssetPage: React.FC = () => {
                               icon={<ThunderboltOutlined />}
                               onClick={() => void handleGenerateRule(row.id)}
                             >
-                              生成规则
+                              {t('volc_assets.btn_generate_rule', '生成规则')}
                             </Button>
                             <Popconfirm
-                              title="确认删除该上游绑定?"
+                              title={t('volc_assets.confirm_delete_binding', '确认删除该上游绑定?')}
                               onConfirm={async () => {
                                 await request.delete(`/plugins/upstream_asset_relay/bindings/${row.id}`);
-                                message.success('已删除绑定');
+                                message.success(t('volc_assets.binding_deleted', '已删除绑定'));
                                 await loadAll();
                               }}
                             >
@@ -236,23 +238,23 @@ const VolcAssetPage: React.FC = () => {
             },
             {
               key: 'asset_config',
-              label: '系统素材审核凭证',
+              label: t('volc_assets.tab_config', '系统素材审核凭证'),
               children: (
                 <Space direction="vertical" size={16} style={{ width: '100%', maxWidth: 640 }}>
                   <Alert
                     type="info"
                     showIcon
-                    message="转发规则开启 asset_convert=true 时使用此凭证调用 CreateAsset / GetAsset，支持标准国内版 (cn-beijing) 与国际版 (ap-southeast-1)。"
+                    message={t('volc_assets.config_alert', '转发规则开启 asset_convert=true 时使用此凭证调用 CreateAsset / GetAsset，支持标准国内版 (cn-beijing) 与国际版 (ap-southeast-1)。')}
                   />
                   <Space>
-                    <Text strong>命名空间：</Text>
+                    <Text strong>{t('volc_assets.namespace_label', '命名空间：')}</Text>
                     <Select
                       value={assetNS}
                       onChange={(v) => setAssetNS(v)}
                       style={{ width: 260 }}
                       options={[
-                        { value: 'asset_manager', label: '国内版 (asset_manager)' },
-                        { value: 'asset_manager_intl', label: '国际版 (asset_manager_intl)' },
+                        { value: 'asset_manager', label: t('volc_assets.ns_cn', '国内版 (asset_manager)') },
+                        { value: 'asset_manager_intl', label: t('volc_assets.ns_intl', '国际版 (asset_manager_intl)') },
                       ]}
                     />
                   </Space>
@@ -260,20 +262,20 @@ const VolcAssetPage: React.FC = () => {
                     <Form.Item name="volc_access_key" label="AccessKey ID" rules={[{ required: true }]}>
                       <Input />
                     </Form.Item>
-                    <Form.Item name="volc_secret_key" label="SecretAccessKey（留空保持不变）">
-                      <Input.Password placeholder="新建时必填，更新时留空保留原密钥" />
+                    <Form.Item name="volc_secret_key" label={t('volc_assets.field_secret_key', 'SecretAccessKey（留空保持不变）')}>
+                      <Input.Password placeholder={t('volc_assets.ph_secret_key', '新建时必填，更新时留空保留原密钥')} />
                     </Form.Item>
-                    <Form.Item name="volc_project_name" label="方舟 ProjectName">
+                    <Form.Item name="volc_project_name" label={t('volc_assets.field_project_name', '方舟 ProjectName')}>
                       <Input placeholder="default" />
                     </Form.Item>
-                    <Form.Item name="volc_region" label="接入区域 Region">
-                      <Input placeholder="cn-beijing 或 ap-southeast-1" />
+                    <Form.Item name="volc_region" label={t('volc_assets.field_region', '接入区域 Region')}>
+                      <Input placeholder="cn-beijing / ap-southeast-1" />
                     </Form.Item>
-                    <Form.Item name="volc_group_id" label="默认素材组 GroupId（留空自动 CreateAssetGroup）">
+                    <Form.Item name="volc_group_id" label={t('volc_assets.field_group_id', '默认素材组 GroupId（留空自动 CreateAssetGroup）')}>
                       <Input />
                     </Form.Item>
                     <Button type="primary" onClick={() => void handleSaveAssetConfig()}>
-                      保存配置
+                      {t('common.save', '保存配置')}
                     </Button>
                   </Form>
                 </Space>
@@ -281,20 +283,20 @@ const VolcAssetPage: React.FC = () => {
             },
             {
               key: 'asset_cache',
-              label: `素材缓存记录 (${assets.length})`,
+              label: `${t('volc_assets.tab_cache', '素材缓存记录')} (${assets.length})`,
               children: (
                 <>
                   <Space style={{ marginBottom: 12 }}>
                     <Select
                       allowClear
-                      placeholder="按来源过滤"
-                      style={{ width: 220 }}
+                      placeholder={t('volc_assets.filter_source_placeholder', '按来源过滤')}
+                      style={{ width: 240 }}
                       value={sourceFilter || undefined}
                       onChange={(v) => setSourceFilter(v || '')}
                       options={[
-                        { value: 'relay_convert', label: '网关自动转换 (relay_convert)' },
-                        { value: 'upstream_relay_convert', label: '上游中转转换 (upstream_relay_convert)' },
-                        { value: 'api_proxy', label: 'API 透传创建 (api_proxy)' },
+                        { value: 'relay_convert', label: t('volc_assets.src_relay_convert', '网关自动转换 (relay_convert)') },
+                        { value: 'upstream_relay_convert', label: t('volc_assets.src_upstream_relay', '上游中转转换 (upstream_relay_convert)') },
+                        { value: 'api_proxy', label: t('volc_assets.src_api_proxy', 'API 透传创建 (api_proxy)') },
                       ]}
                     />
                   </Space>
@@ -305,25 +307,25 @@ const VolcAssetPage: React.FC = () => {
                     pagination={{ pageSize: 20 }}
                     columns={[
                       { title: 'ID', dataIndex: 'id', width: 65 },
-                      { title: '组织', dataIndex: 'org_id', width: 70 },
-                      { title: '命名空间', dataIndex: 'plugin_ns', width: 140 },
-                      { title: '来源', dataIndex: 'source', width: 170 },
-                      { title: '类型', dataIndex: 'asset_type', width: 80 },
+                      { title: t('volc_assets.col_org', '组织'), dataIndex: 'org_id', width: 70 },
+                      { title: t('volc_assets.col_ns', '命名空间'), dataIndex: 'plugin_ns', width: 140 },
+                      { title: t('volc_assets.col_source', '来源'), dataIndex: 'source', width: 170 },
+                      { title: t('common.type', '类型'), dataIndex: 'asset_type', width: 80 },
                       {
-                        title: '方舟素材 ID',
+                        title: t('volc_assets.col_asset_id', '方舟素材 ID'),
                         dataIndex: 'asset_id',
                         render: (v: string) => <Text copyable code>{`asset://${v}`}</Text>,
                       },
-                      { title: '原媒体 URL', dataIndex: 'file_url', ellipsis: true },
+                      { title: t('volc_assets.col_file_url', '原媒体 URL'), dataIndex: 'file_url', ellipsis: true },
                       {
-                        title: '操作',
+                        title: t('common.actions', '操作'),
                         width: 80,
                         render: (_: any, row: PluginAssetRow) => (
                           <Popconfirm
-                            title="确认删除缓存记录?"
+                            title={t('volc_assets.confirm_delete_cache', '确认删除缓存记录?')}
                             onConfirm={async () => {
                               await request.delete(`/assets/admin/${row.id}`);
-                              message.success('已删除');
+                              message.success(t('common.success', '已删除'));
                               await loadAll();
                             }}
                           >
@@ -338,7 +340,7 @@ const VolcAssetPage: React.FC = () => {
             },
             {
               key: 'moderation',
-              label: '风控拦截查询',
+              label: t('volc_assets.tab_moderation', '风控拦截查询'),
               children: (
                 <Space direction="vertical" size={16} style={{ width: '100%', maxWidth: 640 }}>
                   <Form
@@ -346,15 +348,15 @@ const VolcAssetPage: React.FC = () => {
                     layout="vertical"
                     initialValues={{ ns: 'asset_manager', type: 'asset_id' }}
                   >
-                    <Form.Item name="ns" label="插件命名空间">
+                    <Form.Item name="ns" label={t('volc_assets.field_plugin_ns', '插件命名空间')}>
                       <Select
                         options={[
-                          { value: 'asset_manager', label: '国内版 (asset_manager)' },
-                          { value: 'asset_manager_intl', label: '国际版 (asset_manager_intl)' },
+                          { value: 'asset_manager', label: t('volc_assets.ns_cn', '国内版 (asset_manager)') },
+                          { value: 'asset_manager_intl', label: t('volc_assets.ns_intl', '国际版 (asset_manager_intl)') },
                         ]}
                       />
                     </Form.Item>
-                    <Form.Item name="type" label="ID 类型">
+                    <Form.Item name="type" label={t('volc_assets.field_id_type', 'ID 类型')}>
                       <Select
                         options={[
                           { value: 'asset_id', label: 'asset_id' },
@@ -363,11 +365,11 @@ const VolcAssetPage: React.FC = () => {
                         ]}
                       />
                     </Form.Item>
-                    <Form.Item name="id" label="目标 ID" rules={[{ required: true }]}>
-                      <Input placeholder="输入 asset-xxxx 或 cgt-xxxx" />
+                    <Form.Item name="id" label={t('volc_assets.field_target_id', '目标 ID')} rules={[{ required: true }]}>
+                      <Input placeholder={t('volc_assets.ph_target_id', '输入 asset-xxxx 或 cgt-xxxx')} />
                     </Form.Item>
                     <Button type="primary" icon={<SearchOutlined />} onClick={() => void handleQueryModeration()}>
-                      查询审核原因 (GetModerationResult)
+                      {t('volc_assets.btn_query_moderation', '查询审核原因 (GetModerationResult)')}
                     </Button>
                   </Form>
                   {modResult && (
@@ -383,7 +385,7 @@ const VolcAssetPage: React.FC = () => {
       </Card>
 
       <Modal
-        title="新增上游素材中转绑定"
+        title={t('volc_assets.modal_add_binding', '新增上游素材中转绑定')}
         open={uarModalOpen}
         onOk={() => void handleCreateUarBinding()}
         onCancel={() => setUarModalOpen(false)}
@@ -394,29 +396,29 @@ const VolcAssetPage: React.FC = () => {
           layout="vertical"
           initialValues={{ source_type: 'channel', asset_protocol: 'ark_action', volc_project_name: 'default', volc_region: 'cn-beijing' }}
         >
-          <Form.Item name="name" label="绑定名称" rules={[{ required: true }]}>
-            <Input placeholder="例如：火山转素材主通道" />
+          <Form.Item name="name" label={t('volc_assets.field_binding_name', '绑定名称')} rules={[{ required: true }]}>
+            <Input placeholder={t('volc_assets.ph_binding_name', '例如：火山转素材主通道')} />
           </Form.Item>
-          <Form.Item name="source_type" label="凭证来源模式">
+          <Form.Item name="source_type" label={t('volc_assets.field_source_mode', '凭证来源模式')}>
             <Select
               options={[
-                { value: 'channel', label: '关联上游渠道配置 (channel_configs Bearer)' },
-                { value: 'volc_account', label: '直连火山官方账号 (AK/SK)' },
+                { value: 'channel', label: t('volc_assets.opt_channel_cfg', '关联上游渠道配置 (channel_configs Bearer)') },
+                { value: 'volc_account', label: t('volc_assets.opt_volc_ak', '直连火山官方账号 (AK/SK)') },
               ]}
             />
           </Form.Item>
-          <Form.Item name="asset_protocol" label="素材协议">
+          <Form.Item name="asset_protocol" label={t('volc_assets.field_protocol', '素材协议')}>
             <Select
               options={[
-                { value: 'ark_action', label: 'ark_action (火山方舟 CreateAsset)' },
+                { value: 'ark_action', label: t('volc_assets.proto_ark_action', 'ark_action (火山方舟 CreateAsset)') },
                 { value: 'portrait_rest', label: 'portrait_rest (Seedance Portrait REST)' },
-                { value: 'tencent_vod', label: 'tencent_vod (腾讯云 VOD 素材)' },
+                { value: 'tencent_vod', label: t('volc_assets.proto_tencent_vod', 'tencent_vod (腾讯云 VOD 素材)') },
               ]}
             />
           </Form.Item>
           {sourceTypeWatch !== 'volc_account' ? (
             <>
-              <Form.Item name="channel_config_id" label="关联上游渠道配置" rules={[{ required: true }]}>
+              <Form.Item name="channel_config_id" label={t('volc_assets.field_channel_cfg', '关联上游渠道配置')} rules={[{ required: true }]}>
                 <Select
                   showSearch
                   optionFilterProp="label"
@@ -426,16 +428,16 @@ const VolcAssetPage: React.FC = () => {
                   }))}
                 />
               </Form.Item>
-              <Form.Item name="asset_base_path" label="素材基础路径（可选）">
-                <Input placeholder="留空直接拼接 ?Action=CreateAsset" />
+              <Form.Item name="asset_base_path" label={t('volc_assets.field_base_path', '素材基础路径（可选）')}>
+                <Input placeholder={t('volc_assets.ph_base_path', '留空直接拼接 ?Action=CreateAsset')} />
               </Form.Item>
             </>
           ) : (
             <>
-              <Form.Item name="volc_ak" label="火山 AccessKey" rules={[{ required: true }]}>
+              <Form.Item name="volc_ak" label="Volcengine AccessKey" rules={[{ required: true }]}>
                 <Input />
               </Form.Item>
-              <Form.Item name="volc_sk" label="火山 SecretKey" rules={[{ required: true }]}>
+              <Form.Item name="volc_sk" label="Volcengine SecretKey" rules={[{ required: true }]}>
                 <Input.Password />
               </Form.Item>
               <Form.Item name="volc_project_name" label="ProjectName">

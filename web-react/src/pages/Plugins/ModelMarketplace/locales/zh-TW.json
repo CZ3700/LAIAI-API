@@ -238,5 +238,15 @@
   "fallback_seedance_title": "Seedance 2.0 專題",
   "fallback_seedance_desc": "字節跳動推出的全新 SOTA 級影片生成模型，即刻體驗驚艷的視聽合一生成能力。",
   "fallback_grok_title": "Grok Imagine 專題",
-  "fallback_grok_desc": "由 xAI 強力驅動的高品質影片、圖像與自然語音生成模型系列。"
+  "fallback_grok_desc": "由 xAI 強力驅動的高品質影片、圖像與自然語音生成模型系列。",
+  "kimi_chat_rates": "Kimi 上下文快取計費",
+  "claude_rates": "Claude 計費",
+  "claude_cache_create": "Claude 快取建立",
+  "claude_cache_create_5m": "Claude 5分鐘建立 (5m)",
+  "claude_cache_create_1h": "Claude 1小時長效建立 (1h)",
+  "claude_cache_read": "Claude 快取讀取",
+  "claude_cache_create_short": "Claude建立",
+  "claude_cache_create_5m_short": "Claude建立(5m)",
+  "claude_cache_create_1h_short": "Claude建立(1h)",
+  "claude_cache_read_short": "Claude讀緩"
 }

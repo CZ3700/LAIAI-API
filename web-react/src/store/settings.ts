@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { AllSettings } from '../types';
 import i18n from '../i18n';
 import request from '../utils/request';
-import { getUserLanguagePreference } from '../utils/language';
+import { getUserLanguagePreference, normalizeLanguage } from '../utils/language';
 import { useThemeStore } from './theme';
 
 interface SettingsState {
@@ -26,10 +26,12 @@ const applySiteSettings = (site?: AllSettings['site']) => {
     themeStore.setTheme(site.default_theme);
   }
   const userLang = getUserLanguagePreference();
-  if (userLang && i18n.language !== userLang) {
-    void i18n.changeLanguage(userLang);
-  } else if (!userLang && site.default_language && i18n.language !== site.default_language) {
-    void i18n.changeLanguage(site.default_language);
+  const targetRaw = userLang || site.default_language;
+  if (targetRaw) {
+    const target = normalizeLanguage(targetRaw);
+    if (normalizeLanguage(i18n.language) !== target) {
+      void i18n.changeLanguage(target);
+    }
   }
 };
 

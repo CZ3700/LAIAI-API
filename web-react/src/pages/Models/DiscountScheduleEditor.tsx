@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Button, Col, DatePicker, Form, InputNumber, Radio, Row, Switch, Tag, TimePicker, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
@@ -25,19 +26,20 @@ dayjs.extend(timezone);
 const { Text } = Typography;
 
 const WEEKDAY_CHIPS = [
-  { v: 1, l: '一' },
-  { v: 2, l: '二' },
-  { v: 3, l: '三' },
-  { v: 4, l: '四' },
-  { v: 5, l: '五' },
-  { v: 6, l: '六' },
-  { v: 7, l: '日' },
+  { v: 1, key: 'mon', l: '一' },
+  { v: 2, key: 'tue', l: '二' },
+  { v: 3, key: 'wed', l: '三' },
+  { v: 4, key: 'thu', l: '四' },
+  { v: 5, key: 'fri', l: '五' },
+  { v: 6, key: 'sat', l: '六' },
+  { v: 7, key: 'sun', l: '日' },
 ];
 
 const WeekdayPicker: React.FC<{
   value?: number[];
   onChange?: (v: number[]) => void;
 }> = ({ value, onChange }) => {
+  const { t } = useTranslation();
   const selected = normalizeWeekdays(value);
   const toggle = (day: number) => {
     const next = selected.includes(day)
@@ -58,13 +60,13 @@ const WeekdayPicker: React.FC<{
             onClick={() => toggle(chip.v)}
             style={{ minWidth: 28, padding: '0 6px' }}
           >
-            {chip.l}
+            {t(`models.weekdays.${chip.key}`, chip.l)}
           </Button>
         );
       })}
-      <Button type="link" size="small" style={{ padding: '0 4px' }} onClick={() => onChange?.([...ALL_WEEKDAYS])}>每天</Button>
-      <Button type="link" size="small" style={{ padding: '0 4px' }} onClick={() => onChange?.([1, 2, 3, 4, 5])}>工作日</Button>
-      <Button type="link" size="small" style={{ padding: '0 4px' }} onClick={() => onChange?.([6, 7])}>周末</Button>
+      <Button type="link" size="small" style={{ padding: '0 4px' }} onClick={() => onChange?.([...ALL_WEEKDAYS])}>{t('models.everyday', '每天')}</Button>
+      <Button type="link" size="small" style={{ padding: '0 4px' }} onClick={() => onChange?.([1, 2, 3, 4, 5])}>{t('models.weekdays_btn', '工作日')}</Button>
+      <Button type="link" size="small" style={{ padding: '0 4px' }} onClick={() => onChange?.([6, 7])}>{t('models.weekend_btn', '周末')}</Button>
     </div>
   );
 };
@@ -80,10 +82,6 @@ function currentClock(defaultTz: string) {
     return now;
   }
   return now;
-}
-
-function discountRateText(rate: number): string {
-  return isFreeTimeMultiplier(rate) ? '免费' : formatRate(rate);
 }
 
 /** 秒级时钟文字：独立组件自刷新，不牵动父级编辑器重绘 */
@@ -103,6 +101,8 @@ const DiscountRateInput: React.FC<{
   placeholder?: string;
   min?: number;
 }> = ({ value, onChange, addonBefore, placeholder, min = 0 }) => {
+  const { t } = useTranslation();
+  const freeLabel = t('common.free', '免费');
   const [editing, setEditing] = useState(false);
   return (
     <InputNumber
@@ -127,12 +127,12 @@ const DiscountRateInput: React.FC<{
         if (info?.userTyping) return info.input;
         if (raw == null || (raw as unknown) === '') return '';
         const n = Number(raw);
-        if (isFreeTimeMultiplier(n)) return editing ? '0' : '免费';
+        if (isFreeTimeMultiplier(n)) return editing ? '0' : freeLabel;
         return String(raw);
       }}
       parser={(raw) => {
         const str = String(raw ?? '');
-        if (str.includes('免费')) return 0;
+        if (str.includes('免费') || str.includes('免費') || str.toLowerCase() === 'free') return 0;
         const text = str.trim();
         if (text === '' || text === '.') return '' as unknown as number;
         const n = Number(text);
@@ -148,6 +148,8 @@ const DiscountScheduleEditor: React.FC<{
   adminTz: string;
   allBillingRules?: any[];
 }> = ({ isLight, operationTz, adminTz, allBillingRules = [] }) => {
+  const { t } = useTranslation();
+  const discountRateText = (rate: number): string => (isFreeTimeMultiplier(rate) ? t('common.free', '免费') : formatRate(rate));
   const form = Form.useFormInstance();
   const enabled = Form.useWatch('discount_schedule_enabled', form);
   const limitedEnabled = !!Form.useWatch('limited_discount_enabled', form);
@@ -231,27 +233,31 @@ const DiscountScheduleEditor: React.FC<{
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: limitedEnabled ? 10 : 0 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              <Text strong>高级设置 · 限时折扣</Text>
+              <Text strong>{t('models.limited_discount_title', '高级设置 · 限时折扣')}</Text>
               <Tag color={isSeedance2 ? 'purple' : 'blue'} style={{ margin: 0, fontSize: 10.5, lineHeight: '16px', paddingInline: 5 }}>
-                {isSeedance2 ? 'Seedance 2 按分辨率' : '通用单折扣'}
+                {isSeedance2 ? t('models.limited_seedance2_tag', 'Seedance 2 按分辨率') : t('models.limited_general_tag', '通用单折扣')}
               </Tag>
               {limitedEnabled && (
                 <Tag color={isLimitedExpired ? 'default' : 'success'} style={{ margin: 0, fontSize: 10.5, lineHeight: '16px', paddingInline: 5 }}>
-                  {isLimitedExpired ? '已到期 · 已恢复全站折扣倍率' : (limitedHasEnd && limitedEndStr ? `生效中 · 截止 ${limitedEndStr}` : '长期生效中')}
+                  {isLimitedExpired
+                    ? t('models.discount_expired_restored', '已到期 · 已恢复全站折扣倍率')
+                    : (limitedHasEnd && limitedEndStr
+                        ? t('models.discount_active_until', { end: limitedEndStr, defaultValue: `生效中 · 截止 ${limitedEndStr}` })
+                        : t('models.discount_long_term_active', '长期生效中'))}
                 </Tag>
               )}
             </div>
             <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
               {isSeedance2
-                ? '按分辨率设置活动折扣；可设结束时间，到期自动恢复上方全站折扣倍率'
-                : '设置活动折扣；可设结束时间，到期自动恢复上方全站折扣倍率'}
+                ? t('models.limited_seedance2_desc', '按分辨率设置活动折扣；可设结束时间，到期自动恢复上方全站折扣倍率')
+                : t('models.limited_general_desc', '设置活动折扣；可设结束时间，到期自动恢复上方全站折扣倍率')}
             </Text>
           </div>
           <Form.Item name="limited_discount_enabled" valuePropName="checked" initialValue={false} style={{ margin: 0 }}>
             <Switch
               size="small"
-              checkedChildren="开启"
-              unCheckedChildren="关闭"
+              checkedChildren={t('common.on', '开启')}
+              unCheckedChildren={t('common.off', '关闭')}
               onChange={(checked) => {
                 if (checked) {
                   form.setFieldValue('discount_schedule_enabled', false);
@@ -265,19 +271,19 @@ const DiscountScheduleEditor: React.FC<{
           <Row gutter={[10, 10]}>
             <Col xs={24} sm={12} style={{ display: siteOn ? 'block' : 'none' }}>
               <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
-                活动限价（0 为免费，留空沿用 {discountRateText(siteFallback)}）
+                {t('models.promo_floor_label', { fallback: discountRateText(siteFallback), defaultValue: `活动限价（0 为免费，留空沿用 ${discountRateText(siteFallback)}）` })}
               </Text>
               <Form.Item name="limited_site_discount" style={{ marginBottom: 0 }}>
-                <DiscountRateInput addonBefore="限价" placeholder={`默认 ${discountRateText(siteFallback)}`} />
+                <DiscountRateInput addonBefore={t('models.floor_short', '限价')} placeholder={t('models.default_rate_ph', { rate: discountRateText(siteFallback), defaultValue: `默认 ${discountRateText(siteFallback)}` })} />
               </Form.Item>
             </Col>
             {!isSeedance2 && (
               <Col xs={24} sm={12}>
                 <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
-                  活动折扣（0 为免费）
+                  {t('models.promo_discount_label', '活动折扣（0 为免费）')}
                 </Text>
                 <Form.Item name="limited_discount_rate" style={{ marginBottom: 0 }}>
-                  <DiscountRateInput addonBefore="折扣" placeholder="输入活动折扣" />
+                  <DiscountRateInput addonBefore={t('models.discount_short', '折扣')} placeholder={t('models.enter_promo_discount', '输入活动折扣')} />
                 </Form.Item>
               </Col>
             )}
@@ -286,7 +292,7 @@ const DiscountScheduleEditor: React.FC<{
           {isSeedance2 && (
             <div style={{ marginTop: 10 }}>
               <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
-                各分辨率活动折扣（0 为免费，留空沿用全站折扣倍率 {discountRateText(globalFallback)}）
+                {t('models.promo_res_discount_label', { fallback: discountRateText(globalFallback), defaultValue: `各分辨率活动折扣（0 为免费，留空沿用全站折扣倍率 ${discountRateText(globalFallback)}）` })}
               </Text>
               <Row gutter={[10, 8]}>
                 {sd2Resolutions.map((resKey) => (
@@ -297,7 +303,7 @@ const DiscountScheduleEditor: React.FC<{
                     >
                       <DiscountRateInput
                         addonBefore={resKey}
-                        placeholder={`默认 ${discountRateText(globalFallback)}`}
+                        placeholder={t('models.default_rate_ph', { rate: discountRateText(globalFallback), defaultValue: `默认 ${discountRateText(globalFallback)}` })}
                       />
                     </Form.Item>
                   </Col>
@@ -308,7 +314,7 @@ const DiscountScheduleEditor: React.FC<{
 
           {siteOn && (
             <Text type="secondary" style={{ fontSize: 11.5, display: 'block', marginTop: 6 }}>
-              活动折扣低于限价时自动放行。
+              {t('models.promo_below_floor_hint', '活动折扣低于限价时自动放行。')}
             </Text>
           )}
 
@@ -320,11 +326,11 @@ const DiscountScheduleEditor: React.FC<{
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: limitedHasEnd ? 8 : 4 }}>
-              <Text style={{ fontSize: 12 }}>折扣有效期</Text>
+              <Text style={{ fontSize: 12 }}>{t('models.discount_validity', '折扣有效期')}</Text>
               <Form.Item name="limited_discount_has_end" initialValue={false} style={{ margin: 0 }}>
                 <Radio.Group size="small" buttonStyle="solid">
-                  <Radio.Button value={false}>长期有效</Radio.Button>
-                  <Radio.Button value={true}>设置结束时间</Radio.Button>
+                  <Radio.Button value={false}>{t('models.long_term', '长期有效')}</Radio.Button>
+                  <Radio.Button value={true}>{t('models.set_end_time', '设置结束时间')}</Radio.Button>
                 </Radio.Group>
               </Form.Item>
             </div>
@@ -344,26 +350,36 @@ const DiscountScheduleEditor: React.FC<{
                     form.setFieldValue('limited_discount_end_at', dayjs(converted));
                   }}
                 >
-                  <Radio.Button value="operation">运营时区</Radio.Button>
-                  <Radio.Button value="admin_display">后台时区</Radio.Button>
+                  <Radio.Button value="operation">{t('models.operation_tz', '运营时区')}</Radio.Button>
+                  <Radio.Button value="admin_display">{t('models.admin_tz', '后台时区')}</Radio.Button>
                 </Radio.Group>
               </Form.Item>
               <Form.Item name="limited_discount_end_at" style={{ marginBottom: 4 }}>
                 <DatePicker
                   showTime
                   format="YYYY-MM-DD HH:mm:ss"
-                  placeholder="选择活动结束时间"
+                  placeholder={t('models.select_promo_end_time', '选择活动结束时间')}
                   style={{ width: '100%' }}
                   needConfirm={false}
                 />
               </Form.Item>
               <Text type="secondary" style={{ fontSize: 11.5, display: 'block' }}>
-                按{limitedTzMode === 'admin_display' ? '后台时区' : '运营时区'} ({limitedTz}，当前 <LiveClock tz={limitedTz} />) 填写，保存后按运营时区 ({operationTz}) 判定；到期恢复全站折扣倍率 ({discountRateText(globalFallback)})。
+                {t('models.tz_end_hint_prefix', {
+                  tzMode: limitedTzMode === 'admin_display' ? t('models.admin_tz', '后台时区') : t('models.operation_tz', '运营时区'),
+                  tz: limitedTz,
+                  defaultValue: `按${limitedTzMode === 'admin_display' ? '后台时区' : '运营时区'} (${limitedTz}，`,
+                })}
+                <LiveClock tz={limitedTz} />
+                {t('models.tz_end_hint_suffix', {
+                  opTz: operationTz,
+                  rate: discountRateText(globalFallback),
+                  defaultValue: `) 填写，保存后按运营时区 (${operationTz}) 判定；到期恢复全站折扣倍率 (${discountRateText(globalFallback)})。`,
+                })}
               </Text>
             </div>
             {!limitedHasEnd && (
               <Text type="secondary" style={{ fontSize: 11.5, display: 'block' }}>
-                不设结束时间即长期有效；关闭开关即恢复全站折扣倍率 ({discountRateText(globalFallback)})。
+                {t('models.no_end_time_hint', { rate: discountRateText(globalFallback), defaultValue: `不设结束时间即长期有效；关闭开关即恢复全站折扣倍率 (${discountRateText(globalFallback)})。` })}
               </Text>
             )}
           </div>
@@ -382,27 +398,31 @@ const DiscountScheduleEditor: React.FC<{
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: limitedEnabled ? 0 : 8 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              <Text strong>高级设置 · 按天规划时段折扣</Text>
+              <Text strong>{t('models.schedule_discount_title', '高级设置 · 按天规划时段折扣')}</Text>
               {scheduleActive && (
                 <Tag color={isScheduleExpired ? 'default' : 'success'} style={{ margin: 0, fontSize: 10.5, lineHeight: '16px', paddingInline: 5 }}>
-                  {isScheduleExpired ? '已到期 · 已恢复全站折扣倍率' : (scheduleEndStr ? `生效中 · 截止 ${scheduleEndStr}` : '长期生效中')}
+                  {isScheduleExpired
+                    ? t('models.discount_expired_restored', '已到期 · 已恢复全站折扣倍率')
+                    : (scheduleEndStr
+                        ? t('models.discount_active_until', { end: scheduleEndStr, defaultValue: `生效中 · 截止 ${scheduleEndStr}` })
+                        : t('models.discount_long_term_active', '长期生效中'))}
                 </Tag>
               )}
             </div>
             {limitedEnabled ? (
               <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
-                已开启「高级设置 · 限时折扣」，按天规划时段折扣不可同时使用
+                {t('models.schedule_disabled_by_limited', '已开启「高级设置 · 限时折扣」，按天规划时段折扣不可同时使用')}
               </Text>
             ) : (
               <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
-                {inputTzMode === 'admin_display' ? '后台时间' : '运营时间'}: <LiveClock tz={clockTz} /> · {clockTz}
-                {scheduleLive && siteOn ? ` · 此刻折扣限价 ${discountRateText(siteNow)}` : ''}
-                {scheduleLive && globalOn ? ` · 全站折扣 ${discountRateText(globalNow)}` : ''}
+                {inputTzMode === 'admin_display' ? t('models.admin_time_label', '后台时间') : t('models.operation_time_label', '运营时间')}: <LiveClock tz={clockTz} /> · {clockTz}
+                {scheduleLive && siteOn ? ` · ${t('models.site_discount_floor', '折扣限价')} ${discountRateText(siteNow)}` : ''}
+                {scheduleLive && globalOn ? ` · ${t('models.global_discount', '全站折扣')} ${discountRateText(globalNow)}` : ''}
               </Text>
             )}
           </div>
           <Form.Item name="discount_schedule_enabled" valuePropName="checked" initialValue={false} style={{ margin: 0 }}>
-            <Switch size="small" disabled={limitedEnabled} checkedChildren="开启" unCheckedChildren="关闭" />
+            <Switch size="small" disabled={limitedEnabled} checkedChildren={t('common.on', '开启')} unCheckedChildren={t('common.off', '关闭')} />
           </Form.Item>
         </div>
         {!limitedEnabled && (
@@ -421,12 +441,12 @@ const DiscountScheduleEditor: React.FC<{
                   });
                 }}
               >
-                <Radio.Button value="operation">运营时区</Radio.Button>
-                <Radio.Button value="admin_display">后台时区</Radio.Button>
+                <Radio.Button value="operation">{t('models.operation_tz', '运营时区')}</Radio.Button>
+                <Radio.Button value="admin_display">{t('models.admin_tz', '后台时区')}</Radio.Button>
               </Radio.Group>
             </Form.Item>
             <Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
-              按所选时区填时段，保存后按运营时区计费；未命中用上方统一折扣。填 0 为免费，全站免费时限价也须为 0。
+              {t('models.schedule_tz_hint', '按所选时区填时段，保存后按运营时区计费；未命中用上方统一折扣。填 0 为免费，全站免费时限价也须为 0。')}
             </Text>
           </>
         )}
@@ -438,8 +458,8 @@ const DiscountScheduleEditor: React.FC<{
                 const row = slots[listName] || {};
                 const allDay = isAllDayMultiplier(row);
                 const daysLabel = isAllWeekdays(row.days)
-                  ? '每天'
-                  : formatWeekdayRange(row.days, WEEKDAY_CHIPS.map((chip) => chip.l), '每天');
+                  ? t('models.everyday', '每天')
+                  : formatWeekdayRange(row.days, WEEKDAY_CHIPS.map((chip) => t(`models.weekdays.${chip.key}`, chip.l)), t('models.everyday', '每天'));
                 return (
                   <div
                     key={key}
@@ -453,9 +473,9 @@ const DiscountScheduleEditor: React.FC<{
                   >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <Text style={{ fontSize: 13 }}>{allDay ? '全天' : '时段'}</Text>
+                        <Text style={{ fontSize: 13 }}>{allDay ? t('models.all_day', '全天') : t('models.time_slot', '时段')}</Text>
                         <Form.Item {...restField} name={[listName, 'all_day']} valuePropName="checked" style={{ margin: 0 }}>
-                          <Switch size="small" checkedChildren="全天" unCheckedChildren="时段" />
+                          <Switch size="small" checkedChildren={t('models.all_day', '全天')} unCheckedChildren={t('models.time_slot', '时段')} />
                         </Form.Item>
                       </div>
                       <Button type="text" danger icon={<DeleteOutlined />} onClick={() => remove(listName)} size="small" />
@@ -466,20 +486,20 @@ const DiscountScheduleEditor: React.FC<{
                           <Form.Item
                             {...restField}
                             name={[listName, 'start']}
-                            rules={globalOn && scheduleActive && !allDay ? [{ required: true, message: '选择开始时间' }] : []}
+                            rules={globalOn && scheduleActive && !allDay ? [{ required: true, message: t('models.select_start_time', '选择开始时间') }] : []}
                             style={{ marginBottom: 8 }}
                           >
-                            <TimePicker placeholder="开始时间" format="HH:mm" style={{ width: '100%' }} allowClear={false} needConfirm={false} />
+                            <TimePicker placeholder={t('models.start_time', '开始时间')} format="HH:mm" style={{ width: '100%' }} allowClear={false} needConfirm={false} />
                           </Form.Item>
                         </Col>
                         <Col xs={24} sm={12}>
                           <Form.Item
                             {...restField}
                             name={[listName, 'end']}
-                            rules={globalOn && scheduleActive && !allDay ? [{ required: true, message: '选择结束时间' }] : []}
+                            rules={globalOn && scheduleActive && !allDay ? [{ required: true, message: t('models.select_end_time', '选择结束时间') }] : []}
                             style={{ marginBottom: 8 }}
                           >
-                            <TimePicker placeholder="结束时间" format="HH:mm" style={{ width: '100%' }} allowClear={false} needConfirm={false} />
+                            <TimePicker placeholder={t('models.end_time', '结束时间')} format="HH:mm" style={{ width: '100%' }} allowClear={false} needConfirm={false} />
                           </Form.Item>
                         </Col>
                       </Row>
@@ -492,7 +512,7 @@ const DiscountScheduleEditor: React.FC<{
                           style={{ marginBottom: 8 }}
                           initialValue={siteFallback}
                         >
-                          <DiscountRateInput addonBefore="限价" placeholder={`默认 ${discountRateText(siteFallback)}`} />
+                          <DiscountRateInput addonBefore={t('models.floor_short', '限价')} placeholder={t('models.default_rate_ph', { rate: discountRateText(siteFallback), defaultValue: `默认 ${discountRateText(siteFallback)}` })} />
                         </Form.Item>
                       </Col>
                       <Col xs={24} sm={12} style={{ display: globalOn ? 'block' : 'none' }}>
@@ -502,18 +522,20 @@ const DiscountScheduleEditor: React.FC<{
                           style={{ marginBottom: 8 }}
                           initialValue={globalFallback}
                         >
-                          <DiscountRateInput addonBefore="全站" placeholder={`默认 ${discountRateText(globalFallback)}`} />
+                          <DiscountRateInput addonBefore={t('models.global_short', '全站')} placeholder={t('models.default_rate_ph', { rate: discountRateText(globalFallback), defaultValue: `默认 ${discountRateText(globalFallback)}` })} />
                         </Form.Item>
                       </Col>
                     </Row>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
-                      <Text type="secondary" style={{ fontSize: 12 }}>星期</Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>{t('models.weekday_label', '星期')}</Text>
                       <Form.Item {...restField} name={[listName, 'days']} initialValue={[...ALL_WEEKDAYS]} style={{ marginBottom: 0, flex: 1 }}>
                         <WeekdayPicker />
                       </Form.Item>
                     </div>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      {allDay ? `${daysLabel}全天` : `${daysLabel}：此时段用上面折扣，其余用统一折扣`}
+                      {allDay
+                        ? `${daysLabel} ${t('models.all_day', '全天')}`
+                        : t('models.slot_days_desc', { days: daysLabel, defaultValue: `${daysLabel}：此时段用上面折扣，其余用统一折扣` })}
                     </Text>
                   </div>
                 );
@@ -530,7 +552,7 @@ const DiscountScheduleEditor: React.FC<{
                     global_discount: globalFallback,
                   })}
                 >
-                  添加时段
+                  {t('models.add_time_slot', '添加时段')}
                 </Button>
                 <Button
                   type="dashed"
@@ -550,7 +572,7 @@ const DiscountScheduleEditor: React.FC<{
                     });
                   }}
                 >
-                  添加某天全天
+                  {t('models.add_all_day_slot', '添加某天全天')}
                 </Button>
               </div>
             </>
@@ -561,8 +583,8 @@ const DiscountScheduleEditor: React.FC<{
             items={discountChartItems(slots, 'site_discount', siteFallback)}
             invert={false}
             isLight={isLight}
-            title="折扣限价"
-            description="色块是该时段折扣限价，空白用上方统一限价。"
+            title={t('models.site_discount_floor', '折扣限价')}
+            description={t('models.site_floor_chart_desc', '色块是该时段折扣限价，空白用上方统一限价。')}
           />
         )}
         {scheduleActive && slots.length > 0 && globalOn && (
@@ -570,8 +592,8 @@ const DiscountScheduleEditor: React.FC<{
             items={discountChartItems(slots, 'global_discount', globalFallback)}
             invert={false}
             isLight={isLight}
-            title="全站折扣"
-            description="色块是该时段全站折扣，空白用上方统一折扣。"
+            title={t('models.global_discount', '全站折扣')}
+            description={t('models.global_chart_desc', '色块是该时段全站折扣，空白用上方统一折扣。')}
           />
         )}
         <div
@@ -582,11 +604,11 @@ const DiscountScheduleEditor: React.FC<{
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: scheduleHasEnd ? 8 : 4 }}>
-            <Text style={{ fontSize: 12 }}>规划有效期</Text>
+            <Text style={{ fontSize: 12 }}>{t('models.schedule_validity', '规划有效期')}</Text>
             <Form.Item name="discount_schedule_has_end" initialValue={false} style={{ margin: 0 }}>
               <Radio.Group size="small" buttonStyle="solid">
-                <Radio.Button value={false}>长期有效</Radio.Button>
-                <Radio.Button value={true}>设置结束时间</Radio.Button>
+                <Radio.Button value={false}>{t('models.long_term', '长期有效')}</Radio.Button>
+                <Radio.Button value={true}>{t('models.set_end_time', '设置结束时间')}</Radio.Button>
               </Radio.Group>
             </Form.Item>
           </div>
@@ -595,18 +617,18 @@ const DiscountScheduleEditor: React.FC<{
               <DatePicker
                 showTime
                 format="YYYY-MM-DD HH:mm:ss"
-                placeholder="选择规划结束时间"
+                placeholder={t('models.select_schedule_end_time', '选择规划结束时间')}
                 style={{ width: '100%' }}
                 needConfirm={false}
               />
             </Form.Item>
             <Text type="secondary" style={{ fontSize: 11.5, display: 'block' }}>
-              按上方所选时区 ({clockTz}) 填写，保存后按运营时区 ({operationTz}) 判定；到期恢复全站折扣倍率 ({discountRateText(globalFallback)})。
+              {t('models.schedule_end_hint', { clockTz, opTz: operationTz, rate: discountRateText(globalFallback), defaultValue: `按上方所选时区 (${clockTz}) 填写，保存后按运营时区 (${operationTz}) 判定；到期恢复全站折扣倍率 (${discountRateText(globalFallback)})。` })}
             </Text>
           </div>
           {!scheduleHasEnd && (
             <Text type="secondary" style={{ fontSize: 11.5, display: 'block' }}>
-              不设结束时间即长期有效；关闭开关即恢复全站折扣倍率 ({discountRateText(globalFallback)})。
+              {t('models.no_end_time_hint', { rate: discountRateText(globalFallback), defaultValue: `不设结束时间即长期有效；关闭开关即恢复全站折扣倍率 (${discountRateText(globalFallback)})。` })}
             </Text>
           )}
         </div>

@@ -168,7 +168,7 @@ export const TeamByokPage: React.FC = () => {
               key: 'byok',
               label: (
                 <span>
-                  <CloudOutlined /> BYOK 私有渠道
+                  <CloudOutlined /> {t('team.byok_private', 'BYOK 私有渠道')}
                 </span>
               ),
               children: (
