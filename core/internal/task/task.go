@@ -102,6 +102,22 @@ type Notifier interface {
 	Emit(orgID uint64, event string, payload map[string]any)
 }
 
+// AssetConvertError 表示视频前置素材转 asset:// 失败，客户端可直接按 400 处理。
+type AssetConvertError struct {
+	Message string
+}
+
+func (e *AssetConvertError) Error() string { return e.Message }
+
+// AssetConverter 在规则启用 asset_convert / upstream_asset_convert 时将请求中的媒体 URL 转为 asset://。
+type AssetConverter func(
+	ctx context.Context,
+	fwd *forward.ResolvedForward,
+	orgID uint64,
+	userID uint64,
+	body map[string]any,
+) ([]string, error)
+
 // 通知事件名（与 notify 包常量对齐；此处独立声明避免包依赖倒置）。
 const (
 	eventTaskCompleted = "task.completed"
@@ -110,18 +126,19 @@ const (
 
 // Service：任务编排服务。M1 驻 core 进程，与 relay 同享 DB/Keyring。
 type Service struct {
-	DB          *gorm.DB
-	Keyring     *crypto.Keyring
-	Client      *http.Client
-	Log         *slog.Logger
-	Now         func() time.Time
-	TaskTimeout time.Duration        // 超过此时长未终态 → failed + 全退（陷阱 8：可配置，不硬编码）
-	Gate        Gate                 // 准入（P0-1）：server 装配时注入 relay 实例；HandleCreate 缺装配即拒绝
-	Rec         *invocation.Recorder // 任务终态落 Invocation Store（请求日志可见视频消费）；nil=不记录
-	Notify      Notifier             // 终态通知（§4.9）；nil=不通知（best-effort，绝不影响结算）
-	Forward     *forward.Resolver    // 数据驱动转发规则解析器；nil=按默认 provider adaptor
-	pollCursor  uint64               // 轮询游标（B-4 饥饿修复）：上次轮询到的最大 task id，回绕轮转。
-	wakeCh      chan struct{}        // 提交新任务即时唤醒信号，消除空转
+	DB             *gorm.DB
+	Keyring        *crypto.Keyring
+	Client         *http.Client
+	Log            *slog.Logger
+	Now            func() time.Time
+	TaskTimeout    time.Duration        // 超过此时长未终态 → failed + 全退（陷阱 8：可配置，不硬编码）
+	Gate           Gate                 // 准入（P0-1）：server 装配时注入 relay 实例；HandleCreate 缺装配即拒绝
+	Rec            *invocation.Recorder // 任务终态落 Invocation Store（请求日志可见视频消费）；nil=不记录
+	Notify         Notifier             // 终态通知（§4.9）；nil=不通知（best-effort，绝不影响结算）
+	Forward        *forward.Resolver    // 数据驱动转发规则解析器；nil=按默认 provider adaptor
+	AssetConverter AssetConverter       // 前置火山素材转换回调（asset_convert / upstream_asset_convert）
+	pollCursor     uint64               // 轮询游标（B-4 饥饿修复）：上次轮询到的最大 task id，回绕轮转。
+	wakeCh         chan struct{}        // 提交新任务即时唤醒信号，消除空转
 }
 
 // Wake 非阻塞通知后台轮询器有新任务到达。
@@ -176,12 +193,16 @@ type SubmitInput struct {
 	// watermark/resolution 等），原样透传上游。同时喂给 EstimateOutputTokens 做
 	// duration/resolution 感知的 hold 上界（§3.8 "按 duration、resolution 预扣"）。
 	Params map[string]any
-	// PinChannelID：引用类动作（MJ change/modal）钉回原任务渠道。上游任务 id 是单个 mjproxy
-	// 网关本地的——按权重独立选路/换渠道故障转移都会把续操作投给不持有该任务的网关（对抗
-	// review CONFIRMED）。非 0 时跳过选路与 failover。
+	// RawBody：可选的原始请求体（国内原生协议如可灵 contents/settings、百炼 input/parameters、Vidu sounds 等）。
+	RawBody map[string]any
+	// PinChannelID：引用类动作（MJ change/modal 或 Seedance draft_task_id）钉回原任务渠道。
 	PinChannelID uint64
+	// PinCredentialID：引用类动作（Seedance draft_task_id）钉回原任务提交使用的凭证 ID。
+	PinCredentialID uint64
 	// RequestPath：入站路由路径（如 /api/v3/contents/generations/tasks），供 forward_rules 匹配。
 	RequestPath string
+	// InboundPath：触发本次创建的原始 HTTP 路由路径（用于按入站协议包装响应）。
+	InboundPath string
 }
 
 var (
@@ -205,6 +226,9 @@ func (e *UpstreamRejectedError) Error() string {
 // Submit：计费快照 → 并发闸 → hold → 上游提交 → 落任务行。
 // 上游提交失败 → release，不留任务行。
 func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
+	// Seedance 样片转正片（draft_task_id）：强制钉回原任务渠道 + 凭证并改写为上游 draft task ID。
+	in = s.resolveDraftTaskPinning(ctx, in)
+
 	binding, bRule := s.resolveTaskBillingRule(ctx, in.Model)
 	var price *relay.ModelPrice
 	if bRule == nil {
@@ -222,7 +246,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 	// 健康分传 nil：异步任务（视频）独立于 relay 的内存健康态，沿用纯权重选路。
 	var ch *relay.Channel
 	if in.PinChannelID != 0 {
-		// 渠道亲和（MJ change/modal）：引用任务的上游 id 只在原网关存在，强制钉回。
+		// 渠道亲和（MJ change/modal 或 Seedance draft_task_id）：引用任务的上游 id 只在原网关存在，强制钉回。
 		ch = &relay.Channel{}
 		if err := s.DB.First(ch, in.PinChannelID).Error; err != nil || ch.Status != 1 {
 			return nil, relay.ErrNoChannel
@@ -234,16 +258,29 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 			return nil, err
 		}
 	}
+	if fwd == nil {
+		fwd = forward.InferVideoForwardFromBaseURL(ch.BaseURL)
+	}
 	ad, err := adaptorForTask(ch.Provider, fwd)
 	if err != nil {
 		return nil, err
 	}
 
-	// 选 key（0034 Multi-key）：任务渠道同样支持多 key（低 QPS，直查 DB）。task 不做 key 级
-	// 自动禁用（异步轮询与提交分离，禁用语义留给 relay 主链路的健康信号）。
-	// 提交选定的 credID 钉在任务行（0035）：轮询固定用同一把 key，绝不与提交用不同 key
-	// 导致上游查不到任务（对抗 review 修复）。
-	credID, credEnc, credOK := relay.SelectCredential(s.DB, ch)
+	// 选 key（0034 Multi-key）：若 draft_task_id 钉住了 CredentialID 则优先复用，保证同账号可查到样片。
+	var (
+		credID  uint64
+		credEnc string
+		credOK  bool
+	)
+	if in.PinCredentialID != 0 {
+		credEnc, credOK = relay.CredentialByID(s.DB, in.PinCredentialID)
+		if credOK {
+			credID = in.PinCredentialID
+		}
+	}
+	if !credOK {
+		credID, credEnc, credOK = relay.SelectCredential(s.DB, ch)
+	}
 	if !credOK {
 		return nil, fmt.Errorf("task: channel has no usable credential")
 	}
@@ -252,13 +289,71 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		return nil, fmt.Errorf("task: channel credential: %w", err)
 	}
 
+	// 若命中的是级联超分转发规则，先校验分辨率合法性与配额限制，分离「客户端目标参数（用于计费/展示）」
+	// 与「一阶段上游提交参数（底稿分辨率）」。
+	var cascadeState *cascadePrepareResult
+	upstreamIn := in
+	if fwd != nil && fwd.IsCascade {
+		var cerr error
+		cascadeState, upstreamIn, cerr = s.prepareCascadeSubmit(ctx, fwd, bRule, in)
+		if cerr != nil {
+			return nil, cerr
+		}
+	}
+
+	// 若规则启用素材转换（asset_convert / upstream_asset_convert），提交上游前将 HTTP 媒体 URL 转为 asset://<id>
+	var assetConvertDetail string
+	if s.AssetConverter != nil && fwd != nil && (fwd.AssetConvert || fwd.UpstreamAssetConvert) {
+		convBody := map[string]any{}
+		if len(upstreamIn.RawBody) > 0 {
+			for k, v := range upstreamIn.RawBody {
+				convBody[k] = v
+			}
+		}
+		if _, hasContent := convBody["content"]; !hasContent {
+			if _, hasFI := convBody["FileInfos"]; !hasFI {
+				if built := forward.BuildVolcengineContentArray(convBody); len(built) > 0 {
+					convBody["content"] = built
+				} else if len(upstreamIn.Content) > 0 {
+					convBody["content"] = upstreamIn.Content
+				}
+			}
+		}
+		var acUserID uint64
+		if in.UserID != nil {
+			acUserID = *in.UserID
+		}
+		logs, acErr := s.AssetConverter(ctx, fwd, in.OrgID, acUserID, convBody)
+		if acErr != nil {
+			return nil, &AssetConvertError{Message: acErr.Error()}
+		}
+		if convertedContent, ok := convBody["content"].([]any); ok && len(convertedContent) > 0 {
+			upstreamIn.Content = convertedContent
+			in.Content = convertedContent
+		}
+		if upstreamIn.RawBody != nil {
+			for k, v := range convBody {
+				upstreamIn.RawBody[k] = v
+			}
+		}
+		if len(logs) > 0 {
+			assetConvertDetail = "素材转换: " + strings.Join(logs, " | ")
+		}
+	}
+
 	// 原子预占（审查 M-2）：渠道行 FOR UPDATE 串行化同渠道的所有 Submit →
 	// 同事务内重新计数 → hold + 插入 queued 任务行（即"占住槽位"，下一个 Submit 数得到它）。
 	// 消灭 count-then-act 竞态：N 个并发不会全部过闸。
 	estTokens := ad.EstimateOutputTokens(in.Model, in.Content, in.Params)
+	if cascadeState != nil && cascadeState.ResMul > 0 {
+		estTokens = scaleTokensByMul(estTokens, cascadeState.ResMul)
+	}
 	ratio := relay.EffectiveRatio(s.DB, in.OrgID, in.Model)
 	timeMult := pricing.ResolveTimeMultiplierAt(bRule, s.Now(), taskCSTZone)
 	features := extractTaskVideoFeatures(in.Content, in.Params, timeMult)
+	if cascadeState != nil && cascadeState.TargetResolution != "" {
+		features.Resolution = cascadeState.TargetResolution
+	}
 	featuresJSON := encodeFeaturesSnapshot(features)
 
 	var holdAmount decimal.Decimal
@@ -281,6 +376,10 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		return nil, ErrKeyQuotaExceeded
 	}
 	modality := ModalityForProvider(ch.Provider)
+	var cascadeMeta *cascadeTaskMeta
+	if cascadeState != nil {
+		cascadeMeta = cascadeState.Meta
+	}
 	t := &Task{
 		TaskID: "task_" + randHex(12),
 		OrgID:  in.OrgID, UserID: in.UserID, APIKeyID: in.APIKeyID,
@@ -296,8 +395,9 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		ForwardRuleEID:  fRuleEID,
 		BillingRulePID:  bRulePID,
 		FeaturesJSON:    featuresJSON,
-		RequestMetaJSON: encodeRequestMeta(in.Params),
+		RequestMetaJSON: encodeRequestMetaFull(in, cascadeMeta),
 		TimeMultiplier:  timeMult,
+		BillingDetail:   assetConvertDetail,
 	}
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
 		// 锁渠道行（PostgreSQL/MySQL FOR UPDATE；SQLite 测试靠单连接串行）
@@ -363,7 +463,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (*Task, error) {
 		}
 		tried[ch.ID] = true
 
-		upReq, err := buildTaskSubmitRequest(ctx, ad, ch, fwd, credential, in)
+		upReq, err := buildTaskSubmitRequest(ctx, ad, ch, fwd, credential, upstreamIn)
 		if err != nil {
 			lastErr = err
 			continue // 构建失败：换渠道（不同 provider 构建路径不同）
@@ -634,6 +734,13 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 		return
 	}
 	fwd := s.resolveTaskForwardByEID(ctx, t.ForwardRuleEID, t.Model)
+	if fwd == nil {
+		fwd = forward.InferVideoForwardFromBaseURL(ch.BaseURL)
+	}
+	if meta := parseTaskRequestMeta(t.RequestMetaJSON); meta != nil && meta.Cascade != nil {
+		s.pollCascadeTask(ctx, t, ch, fwd, meta)
+		return
+	}
 	ad, err := adaptorForTask(t.Provider, fwd)
 	if err != nil {
 		s.Log.Error("task adaptor missing", "task", t.TaskID, "provider", t.Provider)
@@ -765,17 +872,25 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 		actual = t.HoldAmountUSD
 	}
 	won := false
+	reqMetaJSON := t.RequestMetaJSON
+	if result.LastFrameURL != "" {
+		reqMetaJSON = updateRequestMetaLastFrame(reqMetaJSON, result.LastFrameURL)
+	}
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		now := s.Now()
+		updMap := map[string]any{
+			"status": StatusSucceeded, "result_url": result.ResultURL,
+			"result_ref":    result.ResultRef, // 代理下发厂商的内部引用（0038；其余厂商为空/审计留痕）
+			"actual_tokens": result.CompletionTokens, "cost_usd": actual,
+			"billing_detail": clipReason(billingDetail, 500),
+			"finished_at":    now,
+		}
+		if reqMetaJSON != "" && reqMetaJSON != t.RequestMetaJSON {
+			updMap["request_meta_json"] = reqMetaJSON
+		}
 		res := tx.Model(&Task{}).
 			Where("id = ? AND status IN ?", t.ID, []string{StatusQueued, StatusRunning}).
-			Updates(map[string]any{
-				"status": StatusSucceeded, "result_url": result.ResultURL,
-				"result_ref":    result.ResultRef, // 代理下发厂商的内部引用（0038；其余厂商为空/审计留痕）
-				"actual_tokens": result.CompletionTokens, "cost_usd": actual,
-				"billing_detail": clipReason(billingDetail, 500),
-				"finished_at":    now,
-			})
+			Updates(updMap)
 		if res.Error != nil {
 			return res.Error
 		}

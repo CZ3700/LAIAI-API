@@ -230,11 +230,21 @@ func computeTaskRuleActual(b *pricing.ModelRuleBinding, rule *pricing.BillingRul
 
 func adaptorForTask(provider string, fwd *forward.ResolvedForward) (Adaptor, error) {
 	if fwd != nil && strings.TrimSpace(fwd.TargetType) != "" {
-		if ad, err := adaptorFor(strings.TrimSpace(fwd.TargetType)); err == nil {
+		tt := strings.TrimSpace(fwd.TargetType)
+		if tt == "openai" {
+			return openaiVideoTask{}, nil
+		}
+		if ad, err := adaptorFor(tt); err == nil {
 			return ad, nil
 		}
 	}
 	return adaptorFor(provider)
+}
+
+// ForwardAwareAdaptor 允许适配器直接消费 ResolvedForward（用于动态路径选路、body+URL 联合签名与异步 Header）。
+type ForwardAwareAdaptor interface {
+	SubmitRequestWithForward(ctx context.Context, ch *relay.Channel, fwd *forward.ResolvedForward, credential string, in SubmitInput) (*http.Request, error)
+	QueryRequestWithForward(ctx context.Context, ch *relay.Channel, fwd *forward.ResolvedForward, credential, upstreamTaskID string) (*http.Request, error)
 }
 
 func buildTaskSubmitRequest(ctx context.Context, ad Adaptor, ch *relay.Channel, fwd *forward.ResolvedForward, credential string, in SubmitInput) (*http.Request, error) {
@@ -250,6 +260,9 @@ func buildTaskSubmitRequest(ctx context.Context, ad Adaptor, ch *relay.Channel, 
 			}
 			in.Params = cp
 		}
+	}
+	if fa, ok := ad.(ForwardAwareAdaptor); ok {
+		return fa.SubmitRequestWithForward(ctx, ch, fwd, credential, in)
 	}
 	req, err := ad.SubmitRequest(ctx, ch, credential, in)
 	if err != nil || fwd == nil {
@@ -270,6 +283,9 @@ func buildTaskSubmitRequest(ctx context.Context, ad Adaptor, ch *relay.Channel, 
 }
 
 func buildTaskQueryRequest(ctx context.Context, ad Adaptor, ch *relay.Channel, fwd *forward.ResolvedForward, credential, upstreamTaskID string) (*http.Request, error) {
+	if fa, ok := ad.(ForwardAwareAdaptor); ok {
+		return fa.QueryRequestWithForward(ctx, ch, fwd, credential, upstreamTaskID)
+	}
 	req, err := ad.QueryRequest(ctx, ch, credential, upstreamTaskID)
 	if err != nil || fwd == nil {
 		return req, err
@@ -300,6 +316,10 @@ func bindArkNativeCreate(c *gin.Context) (*createReq, error) {
 	if err := json.Unmarshal(raw, &all); err != nil {
 		return nil, err
 	}
+	rawCopy := make(map[string]any, len(all))
+	for k, v := range all {
+		rawCopy[k] = v
+	}
 	req := &createReq{}
 	req.Model, _ = all["model"].(string)
 	req.Content, _ = all["content"].([]any)
@@ -316,15 +336,25 @@ func bindArkNativeCreate(c *gin.Context) (*createReq, error) {
 			delete(all, k)
 		}
 	}
-	// 兼容仅传顶层 prompt 的客户端请求
+	// 兼容仅传顶层 prompt / draft_task_id / images 的客户端请求
 	if len(req.Content) == 0 {
 		if p, ok := all["prompt"].(string); ok && strings.TrimSpace(p) != "" {
 			req.Content = []any{map[string]any{"type": "text", "text": p}}
+		} else if did, ok := all["draft_task_id"].(string); ok && strings.TrimSpace(did) != "" {
+			req.Content = []any{map[string]any{"type": "draft_task", "draft_task": map[string]any{"id": strings.TrimSpace(did)}}}
+		} else if _, hasImgs := all["images"]; hasImgs {
+			req.Content = []any{map[string]any{"type": "text", "text": ""}}
+		} else if _, hasVids := all["videos"]; hasVids {
+			req.Content = []any{map[string]any{"type": "text", "text": ""}}
 		}
 	}
 	if req.Model == "" || len(req.Content) == 0 {
 		return nil, errMissingModelContent
 	}
+	delete(rawCopy, "model")
+	delete(rawCopy, "Model")
+	delete(rawCopy, "MODEL")
+	req.RawBody = rawCopy
 	if len(all) > 0 {
 		req.Params = all
 	}
@@ -370,7 +400,9 @@ func (s *Service) HandleArkNativeCreate(c *gin.Context) {
 		Model:       req.Model,
 		Content:     req.Content,
 		Params:      req.Params,
+		RawBody:     req.RawBody,
 		RequestPath: c.Request.URL.Path,
+		InboundPath: c.Request.URL.Path,
 	})
 	if rejected, ok := errors.AsType[*UpstreamRejectedError](err); ok {
 		taskErr(c, http.StatusBadRequest, clipReason("upstream rejected task parameters: "+rejected.Message, 300))
@@ -420,29 +452,7 @@ func (s *Service) HandleArkNativeGet(c *gin.Context) {
 		taskErr(c, http.StatusInternalServerError, "task query failed")
 		return
 	}
-	resp := gin.H{
-		"id":               t.TaskID,
-		"model":            t.Model,
-		"status":           t.Status,
-		"created_at":       t.SubmittedAt.Unix(),
-		"cost_usd":         t.CostUSD,
-		"billing_detail":   t.BillingDetail,
-		"forward_rule_eid": t.ForwardRuleEID,
-		"billing_rule_pid": t.BillingRulePID,
-	}
-	if t.ResultURL != "" {
-		resp["content"] = gin.H{"video_url": t.ResultURL}
-	}
-	if t.ActualTokens > 0 {
-		resp["usage"] = gin.H{"completion_tokens": t.ActualTokens}
-	}
-	if t.FailReason != "" {
-		resp["error"] = gin.H{"code": "TaskFailed", "message": t.FailReason}
-	}
-	if t.FinishedAt != nil {
-		resp["updated_at"] = t.FinishedAt.Unix()
-	}
-	c.JSON(http.StatusOK, resp)
+	c.JSON(http.StatusOK, forward.WrapVolcengineQuery(taskToOfficialView(t)))
 }
 
 // HandleArkNativeCancel 处理 DELETE /api/v3/contents/generations/tasks/:id（仅 queued 态可取消退款）。

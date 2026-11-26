@@ -14,9 +14,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 
+	"github.com/laiai/laiai-next/core/internal/forward"
 	"github.com/laiai/laiai-next/core/internal/relay"
 )
 
@@ -93,6 +95,89 @@ func viduSubmitPath(params map[string]any) string {
 	default:
 		return "/reference2video"
 	}
+}
+
+func (viduTask) SubmitRequestWithForward(
+	ctx context.Context,
+	ch *relay.Channel,
+	fwd *forward.ResolvedForward,
+	credential string,
+	in SubmitInput,
+) (*http.Request, error) {
+	if fwd == nil && len(in.RawBody) == 0 {
+		return (viduTask{}).SubmitRequest(ctx, ch, credential, in)
+	}
+	raw := maps.Clone(in.RawBody)
+	if raw == nil {
+		raw = maps.Clone(in.Params)
+	}
+	if raw == nil {
+		raw = map[string]any{}
+	}
+	if _, ok := raw["prompt"]; !ok {
+		if prompt, _ := taskContentParts(in.Content); prompt != "" {
+			raw["prompt"] = prompt
+		}
+	}
+	if _, ok := raw["images"]; !ok {
+		if _, imgs := taskContentParts(in.Content); len(imgs) > 0 {
+			raw["images"] = toAnySlice(imgs)
+		}
+	}
+	upstreamModel := ch.UpstreamModel(in.Model)
+	dynPath := forward.ResolveViduDynamicPath("/ent/v2/img2video", in.RequestPath, raw)
+	if strings.HasSuffix(dynPath, "/reference2video") && strings.Contains(upstreamModel, "viduq2") {
+		upstreamModel = "viduq2"
+	}
+	payload := forward.BuildViduVideoBody(upstreamModel, raw)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	parsedURL, err := forward.JoinUpstreamURL(ch.BaseURL, dynPath)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parsedURL.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	authType := forward.AuthToken
+	if fwd != nil && fwd.AuthType != "" {
+		authType = fwd.AuthType
+	}
+	forward.ApplyAuth(req, authType, credential)
+	return req, nil
+}
+
+func (viduTask) QueryRequestWithForward(
+	ctx context.Context,
+	ch *relay.Channel,
+	fwd *forward.ResolvedForward,
+	credential string,
+	upstreamTaskID string,
+) (*http.Request, error) {
+	pollPath := "/ent/v2/tasks/" + upstreamTaskID + "/creations"
+	if fwd != nil && fwd.PollPath != "" {
+		pollPath = forward.ExpandUpstreamPath(fwd.PollPath, "", upstreamTaskID)
+	}
+	parsedURL, err := forward.JoinUpstreamURL(ch.BaseURL, pollPath)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	authType := forward.AuthToken
+	if fwd != nil && fwd.AuthType != "" {
+		authType = fwd.AuthType
+	}
+	forward.ApplyAuth(req, authType, credential)
+	return req, nil
 }
 
 func (viduTask) SubmitRequest(ctx context.Context, ch *relay.Channel, credential string, in SubmitInput) (*http.Request, error) {

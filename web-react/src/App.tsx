@@ -46,6 +46,8 @@ const GroupRatiosPage = lazy(() => import('./pages/Admin/GroupRatiosPage'));
 const Finance = import('./pages/Admin/FinanceOpsPages');
 const PaymentChannelsPage = lazy(() => Finance.then((m) => ({ default: m.PaymentChannelsPage })));
 const AuditLogsPage = lazy(() => Finance.then((m) => ({ default: m.AuditLogsPage })));
+const ArkMonitorPage = lazy(() => import('./pages/Admin/ArkMonitorPage'));
+const VolcAssetPage = lazy(() => import('./pages/Admin/VolcAssetPage'));
 
 const Loading = () => (
   <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
@@ -106,6 +108,7 @@ const App: React.FC = () => {
           <Route path="/task-logs/:logType" element={<TaskLogs />} />
           <Route path="/wallet" element={<WalletPage />} />
           <Route path="/team" element={<TeamByokPage />} />
+          <Route path="/ark-video-monitor" element={<ArkMonitorPage mode="user" />} />
           <Route path="/profile" element={<ProfilePage />} />
         </Route>
 
@@ -129,6 +132,8 @@ const App: React.FC = () => {
           <Route path={`/${adminPath}/channel-configs`} element={<ChannelConfigs />} />
           <Route path={`/${adminPath}/channel-configs/system/:systemKey`} element={<ChannelConfigs />} />
           <Route path={`/${adminPath}/payment-channels`} element={<PaymentChannelsPage />} />
+          <Route path={`/${adminPath}/ark-monitor`} element={<ArkMonitorPage mode="admin" />} />
+          <Route path={`/${adminPath}/volc-assets`} element={<VolcAssetPage />} />
 
           <Route path={`/${adminPath}/models`} element={<Models />} />
           <Route path={`/${adminPath}/models/new`} element={<Models />} />

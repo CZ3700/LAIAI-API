@@ -21,8 +21,9 @@ import (
 // 与 relay 同款 API Key 认证；org 隔离在 Get 的查询谓词强制。
 
 type createReq struct {
-	Model   string `json:"model" binding:"required"`
-	Content []any  `json:"content" binding:"required"`
+	Model   string         `json:"model" binding:"required"`
+	Content []any          `json:"content" binding:"required"`
+	RawBody map[string]any `json:"-"`
 	// Params：model/content 之外的全部顶层参数，原样透传上游（薄透传纪律——Seedance 2.0 的
 	// generate_audio/ratio/duration/watermark/resolution 等任务参数不做二次发明，真机验证 2026-07-05）。
 	// 计费安全：任务按上游 usage 结算且 hold 上界按 duration/resolution 感知估算（EstimateOutputTokens），
@@ -40,6 +41,10 @@ func bindCreateReq(c *gin.Context) (*createReq, error) {
 	if err := c.ShouldBindJSON(&all); err != nil {
 		return nil, err
 	}
+	rawCopy := make(map[string]any, len(all))
+	for k, v := range all {
+		rawCopy[k] = v
+	}
 	req := &createReq{}
 	req.Model, _ = all["model"].(string)
 	req.Content, _ = all["content"].([]any)
@@ -56,8 +61,31 @@ func bindCreateReq(c *gin.Context) (*createReq, error) {
 			delete(all, k)
 		}
 	}
+	// 兼容 OpenAI 扁平风格（prompt + images/videos/audios/draft_task_id，无 content 数组）
+	fromFlat := false
+	if len(req.Content) == 0 {
+		if p, ok := all["prompt"].(string); ok && strings.TrimSpace(p) != "" {
+			req.Content = []any{map[string]any{"type": "text", "text": strings.TrimSpace(p)}}
+			fromFlat = true
+		} else if did, ok := all["draft_task_id"].(string); ok && strings.TrimSpace(did) != "" {
+			req.Content = []any{map[string]any{"type": "draft_task", "draft_task": map[string]any{"id": strings.TrimSpace(did)}}}
+			fromFlat = true
+		} else if _, hasImgs := all["images"]; hasImgs {
+			req.Content = []any{map[string]any{"type": "text", "text": ""}}
+			fromFlat = true
+		} else if _, hasVids := all["videos"]; hasVids {
+			req.Content = []any{map[string]any{"type": "text", "text": ""}}
+			fromFlat = true
+		}
+	}
 	if req.Model == "" || len(req.Content) == 0 {
 		return nil, errMissingModelContent
+	}
+	if fromFlat {
+		delete(rawCopy, "model")
+		delete(rawCopy, "Model")
+		delete(rawCopy, "MODEL")
+		req.RawBody = rawCopy
 	}
 	if len(all) > 0 {
 		req.Params = all
@@ -106,10 +134,14 @@ func (s *Service) HandleCreate(c *gin.Context) {
 	}
 	t, err := s.Submit(c.Request.Context(), SubmitInput{
 		OrgID: key.OrgID, UserID: key.UserID, APIKeyID: key.ID,
-		Model: req.Model, Content: req.Content, Params: req.Params,
+		Model: req.Model, Content: req.Content, Params: req.Params, RawBody: req.RawBody,
+		RequestPath: c.Request.URL.Path, InboundPath: c.Request.URL.Path,
 	})
 	var rejected *UpstreamRejectedError
+	var assetErr *AssetConvertError
 	switch {
+	case errors.As(err, &assetErr):
+		taskErr(c, http.StatusBadRequest, clipReason(assetErr.Message, 300))
 	case errors.As(err, &rejected):
 		// 上游 400 = 客户端任务参数问题（透传后常态错误面）：带上游解释转 400——
 		// 只进客户端响应（与透传上游错误体同性质），不进日志（红线 7）。

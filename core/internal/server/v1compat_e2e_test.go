@@ -285,8 +285,8 @@ func TestV1CompatStage3Endpoints(t *testing.T) {
 		t.Fatalf("GET /api/v1/forward-rules status=%d body=%s", wFR.Code, wFR.Body.String())
 	}
 	var frList []map[string]any
-	if err := json.Unmarshal(wFR.Body.Bytes(), &frList); err != nil || len(frList) != 46 {
-		t.Fatalf("expected 46 visible forward rules, got %d (err=%v)", len(frList), err)
+	if err := json.Unmarshal(wFR.Body.Bytes(), &frList); err != nil || len(frList) != 52 {
+		t.Fatalf("expected 52 visible forward rules, got %d (err=%v)", len(frList), err)
 	}
 
 	// 2. Dashboard / Live Metrics / Models 30d

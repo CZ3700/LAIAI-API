@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/laiai/laiai-next/core/internal/forward"
 	"github.com/laiai/laiai-next/core/internal/relay"
 )
 
@@ -81,11 +82,14 @@ func klingCredential(credential string) (ak, sk string, err error) {
 }
 
 func klingBearer(credential string, now time.Time) (string, error) {
-	ak, sk, err := klingCredential(credential)
-	if err != nil {
-		return "", err
+	if strings.Contains(credential, "|") {
+		ak, sk, err := klingCredential(credential)
+		if err != nil {
+			return "", err
+		}
+		return klingJWT(ak, sk, now)
 	}
-	return klingJWT(ak, sk, now)
+	return forward.ResolveKlingBearer(credential, now)
 }
 
 // seedanceResolutionPixels 之外，kling 的计费档：mode(std|pro) × duration(5|10s) 的单位数上界表。

@@ -14,9 +14,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 
+	"github.com/laiai/laiai-next/core/internal/forward"
 	"github.com/laiai/laiai-next/core/internal/relay"
 )
 
@@ -43,6 +45,94 @@ func (aliTask) EstimateOutputTokens(model string, content []any, params map[stri
 		units = 1
 	}
 	return int64(units * 1_000_000)
+}
+
+func (aliTask) SubmitRequestWithForward(
+	ctx context.Context,
+	ch *relay.Channel,
+	fwd *forward.ResolvedForward,
+	credential string,
+	in SubmitInput,
+) (*http.Request, error) {
+	if fwd == nil && len(in.RawBody) == 0 {
+		return (aliTask{}).SubmitRequest(ctx, ch, credential, in)
+	}
+	raw := maps.Clone(in.RawBody)
+	if raw == nil {
+		raw = maps.Clone(in.Params)
+	}
+	if raw == nil {
+		raw = map[string]any{}
+	}
+	if _, ok := raw["input"]; !ok {
+		prompt, imgs := taskContentParts(in.Content)
+		if prompt != "" && raw["prompt"] == nil {
+			raw["prompt"] = prompt
+		}
+		if len(imgs) > 0 && raw["images"] == nil && raw["img_url"] == nil {
+			anyImgs := make([]any, len(imgs))
+			for i, u := range imgs {
+				anyImgs[i] = u
+			}
+			raw["images"] = anyImgs
+		}
+	}
+	upstreamModel := ch.UpstreamModel(in.Model)
+	payload := forward.BuildDashScopeVideoBody(upstreamModel, raw)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	upPath := "/api/v1/services/aigc/video-generation/video-synthesis"
+	if fwd != nil && fwd.UpstreamPath != "" {
+		upPath = forward.ExpandUpstreamPath(fwd.UpstreamPath, upstreamModel, "")
+	}
+	parsedURL, err := forward.JoinUpstreamURL(ch.BaseURL, upPath)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parsedURL.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DashScope-Async", "enable")
+	if fwd != nil && fwd.AssetModeration {
+		req.Header.Set("X-DashScope-DataInspection", `{"input":"disable","output":"disable"}`)
+	}
+	authType := forward.AuthBearer
+	if fwd != nil && fwd.AuthType != "" {
+		authType = fwd.AuthType
+	}
+	forward.ApplyAuth(req, authType, credential)
+	return req, nil
+}
+
+func (aliTask) QueryRequestWithForward(
+	ctx context.Context,
+	ch *relay.Channel,
+	fwd *forward.ResolvedForward,
+	credential string,
+	upstreamTaskID string,
+) (*http.Request, error) {
+	pollPath := "/api/v1/tasks/" + upstreamTaskID
+	if fwd != nil && fwd.PollPath != "" {
+		pollPath = forward.ExpandUpstreamPath(fwd.PollPath, "", upstreamTaskID)
+	}
+	parsedURL, err := forward.JoinUpstreamURL(ch.BaseURL, pollPath)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	authType := forward.AuthBearer
+	if fwd != nil && fwd.AuthType != "" {
+		authType = fwd.AuthType
+	}
+	forward.ApplyAuth(req, authType, credential)
+	return req, nil
 }
 
 func (aliTask) SubmitRequest(ctx context.Context, ch *relay.Channel, credential string, in SubmitInput) (*http.Request, error) {

@@ -2,9 +2,29 @@
 package forward
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
+
+// FlexBool 兼容 JSON 中的布尔值、0/1 数值与字符串布尔表示（对齐 tkeapi config_json）。
+type FlexBool bool
+
+func (b *FlexBool) UnmarshalJSON(raw []byte) error {
+	s := strings.ToLower(strings.TrimSpace(string(bytes.TrimSpace(raw))))
+	switch s {
+	case "true", "1", `"true"`, `"1"`:
+		*b = true
+		return nil
+	case "false", "0", `"false"`, `"0"`, "null", "":
+		*b = false
+		return nil
+	default:
+		return fmt.Errorf("invalid flex bool %s", s)
+	}
+}
 
 // ChannelCategory 对应数据库表 channel_categories。
 type ChannelCategory struct {
@@ -46,29 +66,44 @@ type PathRewritePair struct {
 
 // ForwardConfig 对应 forward_rules.config_json 结构。
 type ForwardConfig struct {
-	TargetType             string            `json:"target_type"`
-	AuthType               string            `json:"auth_type"`
-	PathRewrite            *PathRewritePair  `json:"path_rewrite,omitempty"`
-	PathRewrites           []PathRewritePair `json:"path_rewrites,omitempty"`
-	PathPassthrough        []string          `json:"path_passthrough,omitempty"`
-	PathAccept             []string          `json:"path_accept,omitempty"`
-	PollPath               string            `json:"poll_path,omitempty"`
-	CancelPath             string            `json:"cancel_path,omitempty"`
-	AssetConvert           bool              `json:"asset_convert,omitempty"`
-	AssetConvertNS         string            `json:"asset_convert_ns,omitempty"`
-	UpstreamAssetConvert   bool              `json:"upstream_asset_convert,omitempty"`
-	UpstreamAssetBindingID int64             `json:"upstream_asset_binding_id,omitempty"`
-	Moderation             bool              `json:"moderation,omitempty"`
-	ContentToPrompt        bool              `json:"content_to_prompt,omitempty"`
-	FastResponse           bool              `json:"fast_response,omitempty"`
-	AllowedResolutions     []string          `json:"allowed_resolutions,omitempty"`
-	AllowedQualities       []string          `json:"allowed_qualities,omitempty"`
-	MaxRefImages           *int              `json:"max_ref_images,omitempty"`
-	MinPixels              *float64          `json:"min_pixels,omitempty"`
-	MaxPixels              *float64          `json:"max_pixels,omitempty"`
-	AutoDowngrade          bool              `json:"auto_downgrade,omitempty"`
-	Step                   *int              `json:"step,omitempty"`
-	MaxAspectRatio         *int              `json:"max_aspect_ratio,omitempty"`
+	TargetType             string              `json:"target_type"`
+	AuthType               string              `json:"auth_type"`
+	PathRewrite            *PathRewritePair    `json:"path_rewrite,omitempty"`
+	PathRewrites           []PathRewritePair   `json:"path_rewrites,omitempty"`
+	PathPassthrough        []string            `json:"path_passthrough,omitempty"`
+	PathAccept             []string            `json:"path_accept,omitempty"`
+	PollPath               string              `json:"poll_path,omitempty"`
+	CancelPath             string              `json:"cancel_path,omitempty"`
+	AssetConvert           FlexBool            `json:"asset_convert,omitempty"`
+	AssetConvertNS         string              `json:"asset_convert_ns,omitempty"`
+	UpstreamAssetConvert   FlexBool            `json:"upstream_asset_convert,omitempty"`
+	UpstreamAssetBindingID int64               `json:"upstream_asset_binding_id,omitempty"`
+	Moderation             FlexBool            `json:"moderation,omitempty"`
+	ContentToPrompt        FlexBool            `json:"content_to_prompt,omitempty"`
+	FastResponse           FlexBool            `json:"fast_response,omitempty"`
+	AllowedResolutions     []string            `json:"allowed_resolutions,omitempty"`
+	AllowedQualities       []string            `json:"allowed_qualities,omitempty"`
+	MaxRefImages           *int                `json:"max_ref_images,omitempty"`
+	MinPixels              *float64            `json:"min_pixels,omitempty"`
+	MaxPixels              *float64            `json:"max_pixels,omitempty"`
+	AutoDowngrade          FlexBool            `json:"auto_downgrade,omitempty"`
+	Step                   *int                `json:"step,omitempty"`
+	MaxAspectRatio         *int                `json:"max_aspect_ratio,omitempty"`
+	IsCascade              FlexBool            `json:"is_cascade,omitempty"`
+	CascadeEngine          string              `json:"cascade_engine,omitempty"`
+	CascadeS2Model         string              `json:"cascade_s2_model,omitempty"`
+	Crop480p               FlexBool            `json:"crop_480p,omitempty"`
+	CropTiming             string              `json:"crop_timing,omitempty"`
+	CropCoords480p         *[4]uint32          `json:"crop_coords_480p,omitempty"`
+	CropCoords720p         *[4]uint32          `json:"crop_coords_720p,omitempty"`
+	ResMul                 map[string]float64  `json:"res_mul,omitempty"`
+	ResEnhanceEnabled      map[string]FlexBool `json:"res_enhance_enabled,omitempty"`
+	ResEnhance             map[string]string   `json:"res_enhance,omitempty"`
+	ResBase                map[string]string   `json:"res_base,omitempty"`
+	ResScene               string              `json:"res_scene,omitempty"`
+	ResLimit               map[string]int      `json:"res_limit,omitempty"`
+	ResLimitFallback       string              `json:"res_limit_fallback,omitempty"`
+	S2TimeoutMins          uint64              `json:"s2_timeout_mins,omitempty"`
 }
 
 // ResolvedForward 经过请求路径匹配与模板解析后的转发指令。
@@ -98,5 +133,20 @@ type ResolvedForward struct {
 	AutoDowngrade          bool                       `json:"auto_downgrade,omitempty"`
 	Step                   *int                       `json:"step,omitempty"`
 	MaxAspectRatio         *int                       `json:"max_aspect_ratio,omitempty"`
+	IsCascade              bool                       `json:"is_cascade,omitempty"`
+	CascadeEngine          string                     `json:"cascade_engine,omitempty"`
+	CascadeS2Model         string                     `json:"cascade_s2_model,omitempty"`
+	Crop480p               bool                       `json:"crop_480p,omitempty"`
+	CropTiming             string                     `json:"crop_timing,omitempty"`
+	CropCoords480p         *[4]uint32                 `json:"crop_coords_480p,omitempty"`
+	CropCoords720p         *[4]uint32                 `json:"crop_coords_720p,omitempty"`
+	ResMul                 map[string]float64         `json:"res_mul,omitempty"`
+	ResEnhanceEnabled      map[string]bool            `json:"res_enhance_enabled,omitempty"`
+	ResEnhance             map[string]string          `json:"res_enhance,omitempty"`
+	ResBase                map[string]string          `json:"res_base,omitempty"`
+	ResScene               string                     `json:"res_scene,omitempty"`
+	ResLimit               map[string]int             `json:"res_limit,omitempty"`
+	ResLimitFallback       string                     `json:"res_limit_fallback,omitempty"`
+	S2TimeoutMins          uint64                     `json:"s2_timeout_mins,omitempty"`
 	Raw                    map[string]json.RawMessage `json:"-"`
 }

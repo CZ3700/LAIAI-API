@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/glebarez/sqlite"
+	"github.com/laiai/laiai-next/core/internal/forward"
 	"github.com/laiai/laiai-next/core/internal/pricing"
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/server/v1compat"
@@ -218,5 +219,54 @@ func TestBuildPublicMarketplacePrivacyAndBilling(t *testing.T) {
 	}
 	if models[0].ModelID != "doubao-seedance-2-0-260128" || models[0].TypeName != "视频" {
 		t.Fatalf("expected sorted seedance first with 视频 category, got %+v", models[0])
+	}
+}
+
+func TestPresetForwardRulesAllValidAndCascadeVisible(t *testing.T) {
+	ctx := t.Context()
+	db := openCompatDB(t)
+	if err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS forward_rules (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			eid TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL UNIQUE,
+			rule_type TEXT NOT NULL DEFAULT 'openai',
+			category TEXT NOT NULL DEFAULT '聊天',
+			config_json TEXT NOT NULL DEFAULT '{}',
+			description TEXT NOT NULL DEFAULT '',
+			remark TEXT NOT NULL DEFAULT '',
+			is_active INTEGER NOT NULL DEFAULT 1,
+			is_system INTEGER NOT NULL DEFAULT 0,
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+	`).Error; err != nil {
+		t.Fatalf("create forward_rules: %v", err)
+	}
+	if err := v1compat.EnsurePresetRules(ctx, db); err != nil {
+		t.Fatalf("EnsurePresetRules: %v", err)
+	}
+	var rules []forward.ForwardRule
+	if err := db.Find(&rules).Error; err != nil {
+		t.Fatalf("find forward_rules: %v", err)
+	}
+	if len(rules) < 50 {
+		t.Fatalf("expected >=50 preset forward rules, got %d", len(rules))
+	}
+	var foundCascade bool
+	for _, r := range rules {
+		if err := forward.ValidateConfigJSON(r.ConfigJSON); err != nil {
+			t.Fatalf("preset forward rule %s (%s) invalid config_json: %v", r.EID, r.Name, err)
+		}
+		if r.EID == "12184" {
+			foundCascade = true
+			if v1compat.ShouldHidePluginGatedForwardRule(r) {
+				t.Fatalf("cascade forward rule 12184 (%s) must be visible", r.Name)
+			}
+		}
+	}
+	if !foundCascade {
+		t.Fatal("missing cascade forward rule 12184")
 	}
 }

@@ -169,6 +169,11 @@ func runCore(log *slog.Logger) (code int) {
 			} else if credited > 0 {
 				log.Warn("topup reconcile credited orphans", "checked", checked, "credited", credited)
 			}
+			if sum, err := apiSrv.SyncArkMonitor(ctx); err != nil {
+				log.Warn("ark monitor sync failed", "err", err)
+			} else if sum != nil && (sum.TasksUpserted > 0 || sum.BillsReconciled > 0 || sum.EndpointsFused > 0 || sum.EndpointsRecovered > 0) {
+				log.Info("ark monitor synced", "accounts", sum.AccountsProcessed, "tasks", sum.TasksUpserted, "reconciled", sum.BillsReconciled, "fused", sum.EndpointsFused, "recovered", sum.EndpointsRecovered)
+			}
 		})
 	})
 
@@ -260,6 +265,14 @@ func runHourlyMaintenance(ctx context.Context, db *gorm.DB, apiSrv *server.Serve
 		log.Error("shard rebalance failed", "err", err)
 	} else if moves > 0 {
 		log.Info("shard rebalance applied", "orgs", orgsN, "moves", moves)
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if deleted, err := apiSrv.CleanupExpiredArkAssets(ctx); err != nil {
+		log.Warn("ark asset retention cleanup failed", "err", err)
+	} else if deleted > 0 {
+		log.Info("ark expired assets cleaned", "deleted", deleted)
 	}
 }
 

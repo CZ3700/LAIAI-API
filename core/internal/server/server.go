@@ -65,6 +65,9 @@ type Server struct {
 	forwardResolver     *forward.Resolver
 	taskService         *task.Service
 	settingsCache       settingsCache
+	arkHTTPClient       *http.Client
+	arkOpenAIOverride   string
+	arkPollOverride     time.Duration
 }
 
 // readOnly 返回只读副本句柄（规模化：分析/用量/排行/公开价目等重读卸载到副本）；未配副本回退主库。
@@ -388,12 +391,48 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		vg := r.Group("", bodyLimit(relay.MaxRequestBodySize))
 		// Seedance / 火山方舟原生异步视频任务入站（/api/v3/contents/generations/tasks）
 		vg.POST("/api/v3/contents/generations/tasks", ts.HandleArkNativeCreate)
+		vg.GET("/api/v3/contents/generations/tasks", ts.HandleArkNativeList)
 		vg.GET("/api/v3/contents/generations/tasks/:id", ts.HandleArkNativeGet)
 		vg.DELETE("/api/v3/contents/generations/tasks/:id", ts.HandleArkNativeCancel)
+		// 火山方舟素材资产代理（/api?Action=CreateAsset&...）与上游素材转ID（/v1/plugin/:rid/assets）
+		vg.POST("/api", s.handleArkAssetProxy)
+		vg.POST("/v1/plugin/:rid/assets", s.handleUpstreamAssetProxy)
+		// Vidu 官方原生入口（/ent/v2/*）
+		vg.POST("/ent/v2/text2video", ts.HandleViduNativeCreate)
+		vg.POST("/ent/v2/img2video", ts.HandleViduNativeCreate)
+		vg.POST("/ent/v2/start-end2video", ts.HandleViduNativeCreate)
+		vg.POST("/ent/v2/reference2video", ts.HandleViduNativeCreate)
+		vg.GET("/ent/v2/tasks/:id/creations", ts.HandleViduNativeGet)
+		// MiniMax V2 官方原生入口（/v2/video_generation）
+		vg.POST("/v2/video_generation", ts.HandleMiniMaxV2NativeCreate)
+		vg.GET("/v2/query/video_generation/:id", ts.HandleMiniMaxV2NativeGet)
+		vg.GET("/v2/query/video_generation", ts.HandleMiniMaxV2NativeGet)
+		// 可灵 3.0 / Omni 原生入口（顶层与 /v1 兼容）
+		vg.POST("/text-to-video/:model_id", ts.HandleKlingV3NativeCreate)
+		vg.POST("/image-to-video/:model_id", ts.HandleKlingV3NativeCreate)
+		vg.POST("/omni-video/:model_id", ts.HandleKlingV3NativeCreate)
+		vg.GET("/tasks", ts.HandleKlingV3NativeList)
+		vg.POST("/v1/text-to-video/:model_id", ts.HandleKlingV3NativeCreate)
+		vg.POST("/v1/image-to-video/:model_id", ts.HandleKlingV3NativeCreate)
+		vg.POST("/v1/omni-video/:model_id", ts.HandleKlingV3NativeCreate)
+		vg.GET("/v1/tasks", ts.HandleKlingV3NativeList)
+		// 阿里百炼 DashScope 原生 + 火山 MediaKit 视频增强入口
+		vg.POST("/api/v1/services/aigc/video-generation/video-synthesis", ts.HandleDashScopeNativeCreate)
+		vg.GET("/api/v1/tasks/:id", ts.HandleDashScopeNativeGet)
+		vg.POST("/api/v1/tools/enhance-video", ts.HandleMediaKitNativeCreate)
+		vg.POST("/api/v1/tools/enhance-video-fast", ts.HandleMediaKitNativeCreate)
+		vg.POST("/api/v1/tools/enhance-video-generative", ts.HandleMediaKitNativeCreate)
+		// OpenAI 视频标准兼容入口（/v1/video/generations + /v1/videos + /v1/tasks/:id）
 		vg.POST("/v1/video/generations", ts.HandleCreate)
 		vg.GET("/v1/video/generations/:id", ts.HandleGet)
 		vg.GET("/v1/video/generations/:id/content", ts.HandleContent)
 		vg.DELETE("/v1/video/generations/:id", ts.HandleCancel)
+		vg.POST("/v1/videos", ts.HandleCreate)
+		vg.POST("/v1/videos/generations", ts.HandleCreate)
+		vg.GET("/v1/videos/*rest", ts.HandleVideosWildcardGet)
+		vg.DELETE("/v1/videos/*rest", ts.HandleVideosWildcardDelete)
+		vg.GET("/v1/tasks/:id", ts.HandleGet)
+		vg.DELETE("/v1/tasks/:id", ts.HandleCancel)
 		// Midjourney（mjproxy 网关方言，丝滑度批 C-4）：MJ 客户端生态标准协议；task 骨架复用
 		vg.POST("/mj/submit/:action", ts.HandleMJSubmit)
 		vg.GET("/mj/task/:id/fetch", ts.HandleMJFetch)
@@ -411,6 +450,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		ts.Forward = s.forwardResolver
 		s.taskService = ts
 	}
+	s.wireTaskAssetConverter(s.taskService)
 
 	s.registerV1CompatRoutes(r)
 

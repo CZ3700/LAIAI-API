@@ -6,7 +6,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 
@@ -137,44 +136,18 @@ func PresetBillingRuleByPIDOrName(pid, name string) (pricing.BillingRule, bool) 
 	return pricing.BillingRule{}, false
 }
 
-var pluginGatedForwardRuleNames = []string{
-	"火山方舟 级联视频生成",
-	"火山方舟 视频素材转换",
-	"火山方舟 视频素材转换(国际版)",
-	"火山方舟 视频素材免审核转换(国际版)",
-	"ComfyUI",
-}
-
-// ShouldHidePluginGatedForwardRule 对齐 tkeapi forward_rules.rs：隐藏未开启封装/素材插件的规则。
+// ShouldHidePluginGatedForwardRule 对齐 tkeapi forward_rules.rs：仅隐藏未装载 ComfyUI/MediaKit 图像工具插件的规则；
+// 火山方舟素材转换（asset_convert）、级联超分（is_cascade）与 MediaKit 视频增强规则已开放接入，默认可见。
 func ShouldHidePluginGatedForwardRule(r forward.ForwardRule) bool {
-	if r.Category == "封装" || strings.Contains(r.Name, "MediaKit") {
-		return true
-	}
-	if slices.Contains(pluginGatedForwardRuleNames, r.Name) {
+	if r.Name == "ComfyUI" {
 		return true
 	}
 	var cfg struct {
-		TargetType     string `json:"target_type"`
-		IsCascade      any    `json:"is_cascade"`
-		AssetConvertNS string `json:"asset_convert_ns"`
+		TargetType string `json:"target_type"`
 	}
 	if err := json.Unmarshal([]byte(r.ConfigJSON), &cfg); err == nil {
-		if cfg.TargetType == "volcengine_media_enhance" || cfg.AssetConvertNS != "" {
+		if cfg.TargetType == "volcengine_media_enhance" && strings.Contains(r.ConfigJSON, "tools-sync/") {
 			return true
-		}
-		switch v := cfg.IsCascade.(type) {
-		case bool:
-			if v {
-				return true
-			}
-		case float64:
-			if v == 1 {
-				return true
-			}
-		case string:
-			if v == "1" || strings.EqualFold(v, "true") {
-				return true
-			}
 		}
 	}
 	return false
@@ -196,16 +169,16 @@ func EnsurePresetRules(ctx context.Context, db *gorm.DB) error {
 
 func ensureForwardRulePresetsTx(tx *gorm.DB, presets []forward.ForwardRule) error {
 	var existing []forward.ForwardRule
-	if err := tx.Select("name, eid").Find(&existing).Error; err != nil {
+	if err := tx.Select("id, name, eid, is_system").Find(&existing).Error; err != nil {
 		if IsMissingTable(err) {
 			return nil
 		}
 		return fmt.Errorf("load forward rules: %w", err)
 	}
-	existingNames := make(map[string]struct{}, len(existing))
+	existingByName := make(map[string]forward.ForwardRule, len(existing))
 	usedEIDs := make(map[string]struct{}, len(existing)+len(presets))
 	for _, r := range existing {
-		existingNames[r.Name] = struct{}{}
+		existingByName[r.Name] = r
 		if r.EID != "" {
 			usedEIDs[r.EID] = struct{}{}
 		}
@@ -213,7 +186,11 @@ func ensureForwardRulePresetsTx(tx *gorm.DB, presets []forward.ForwardRule) erro
 	nextFallback := 19000
 	toInsert := make([]forward.ForwardRule, 0)
 	for _, item := range presets {
-		if _, exists := existingNames[item.Name]; exists {
+		if cur, exists := existingByName[item.Name]; exists {
+			if cur.IsSystem == 1 {
+				_ = tx.Model(&forward.ForwardRule{}).Where("id = ? AND is_system = 1", cur.ID).
+					Updates(map[string]any{"config_json": item.ConfigJSON, "description": item.Description}).Error
+			}
 			continue
 		}
 		eid := item.EID
@@ -223,7 +200,7 @@ func ensureForwardRulePresetsTx(tx *gorm.DB, presets []forward.ForwardRule) erro
 			eid = allocateUniqueCode(usedEIDs, &nextFallback)
 		}
 		usedEIDs[eid] = struct{}{}
-		existingNames[item.Name] = struct{}{}
+		existingByName[item.Name] = item
 		row := item
 		row.EID = eid
 		toInsert = append(toInsert, row)

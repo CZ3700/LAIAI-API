@@ -1313,6 +1313,16 @@ func (s *Server) v1SimulateChannelBilling(c *gin.Context) {
 		AudioTokens:   req.Usage.AudioTokens,
 		WebSearch:     req.Features.WebSearch,
 	}
+	cascadeMul := 1.0
+	cascadeNote := ""
+	if s.forwardResolver != nil {
+		if fwd, ferr := s.forwardResolver.ResolveForModel(ctx, s.db, reqModel, "视频", "/v1/video/generations"); ferr == nil && fwd != nil && fwd.IsCascade {
+			cascadeMul = fwd.LookupResMul(req.Features.Resolution)
+			ut.Completion = int64(float64(ut.Completion) * cascadeMul)
+			ut.Total = ut.Prompt + ut.Completion
+			cascadeNote = fmt.Sprintf("级联超分 %s 倍率 %.2fx (rule=%s)", cmp.Or(req.Features.Resolution, "720p"), cascadeMul, fwd.EID)
+		}
+	}
 	featNoTime := pricing.ExtractedFeatures{
 		Resolution: req.Features.Resolution,
 		Size:       req.Features.Size,
@@ -1501,6 +1511,8 @@ func (s *Server) v1SimulateChannelBilling(c *gin.Context) {
 			"resolved_model":    resolvedModel,
 			"model_mapping_hit": mappingHit,
 			"mapping_source":    mappingSource,
+			"cascade_res_mul":   cascadeMul,
+			"cascade_note":      cascadeNote,
 		},
 		"billing_rule":   ruleInfo,
 		"pipeline_trace": trace,

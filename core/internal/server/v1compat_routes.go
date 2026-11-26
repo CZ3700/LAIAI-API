@@ -80,6 +80,10 @@ func (s *Server) registerV1CompatRoutes(r *gin.Engine) {
 
 			org.GET("/user/wallet", s.v1UserWallet)
 			org.GET("/user/recharge_records", s.v1UserRechargeRecords)
+			org.GET("/ark-monitor/overview", s.v1ArkUserOverview)
+			org.GET("/assets/user/list", s.v1AssetsUserList)
+			org.GET("/assets/user/groups", s.v1AssetsUserGroups)
+			org.GET("/assets/user/storage-info", s.v1AssetsUserStorageInfo)
 		}
 	}
 
@@ -179,6 +183,35 @@ func (s *Server) registerV1CompatRoutes(r *gin.Engine) {
 		admin.GET("/plugins/high_availability_channel/ha-config", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"enabled": false, "items": []any{}})
 		})
+		admin.GET("/plugins/volcengine_enhance/volcengine-enhance-config", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"enabled": true, "credentials": []any{}, "config": gin.H{}})
+		})
+
+		// 火山方舟视频监控插件（主账号 / Endpoint 绑定 / 任务列表 / 同步对账与熔断）
+		admin.GET("/plugins/volcengine_ark_monitor/accounts", s.v1ArkAccountsList)
+		admin.POST("/plugins/volcengine_ark_monitor/accounts", s.v1ArkAccountsCreate)
+		admin.PUT("/plugins/volcengine_ark_monitor/accounts/:id", s.v1ArkAccountsUpdate)
+		admin.DELETE("/plugins/volcengine_ark_monitor/accounts/:id", s.v1ArkAccountsDelete)
+		admin.POST("/plugins/volcengine_ark_monitor/accounts/:id/balance", s.v1ArkAccountsBalance)
+		admin.GET("/plugins/volcengine_ark_monitor/bindings", s.v1ArkBindingsList)
+		admin.POST("/plugins/volcengine_ark_monitor/bindings", s.v1ArkBindingsCreate)
+		admin.PUT("/plugins/volcengine_ark_monitor/bindings/:id", s.v1ArkBindingsUpdate)
+		admin.DELETE("/plugins/volcengine_ark_monitor/bindings/:id", s.v1ArkBindingsDelete)
+		admin.POST("/plugins/volcengine_ark_monitor/bindings/:id/toggle", s.v1ArkBindingsToggle)
+		admin.GET("/plugins/volcengine_ark_monitor/tasks", s.v1ArkTasksList)
+		admin.POST("/plugins/volcengine_ark_monitor/sync", s.v1ArkMonitorSync)
+
+		// 火山视频转素材ID (upstream_asset_relay) 与素材资产管理 (asset_manager)
+		admin.GET("/plugins/upstream_asset_relay/bindings", s.v1UpstreamAssetBindingsList)
+		admin.POST("/plugins/upstream_asset_relay/bindings", s.v1UpstreamAssetBindingsCreate)
+		admin.PUT("/plugins/upstream_asset_relay/bindings/:id", s.v1UpstreamAssetBindingsUpdate)
+		admin.DELETE("/plugins/upstream_asset_relay/bindings/:id", s.v1UpstreamAssetBindingsDelete)
+		admin.POST("/plugins/upstream_asset_relay/bindings/:id/generate-rule", s.v1UpstreamAssetBindingGenerateRule)
+		admin.GET("/assets/admin/config", s.v1AssetsAdminConfigGet)
+		admin.PUT("/assets/admin/config", s.v1AssetsAdminConfigPut)
+		admin.GET("/assets/admin/list", s.v1AssetsAdminList)
+		admin.DELETE("/assets/admin/:id", s.v1AssetsAdminDelete)
+		admin.POST("/assets/admin/moderation-result", s.v1AssetsAdminModerationResult)
 
 		admin.GET("/announcements", s.v1AdminListAnnouncements)
 		admin.POST("/announcements", s.v1AdminCreateAnnouncement)
@@ -385,22 +418,21 @@ func (s *Server) v1PublicSettings(c *gin.Context) {
 	})
 }
 
+func v1BuiltinActivePlugins() []gin.H {
+	return []gin.H{
+		{"name": "model_marketplace", "is_enabled": true, "allowed_levels": "all", "mp_allow_guest": true},
+		{"name": "docs_api", "is_enabled": true, "allowed_levels": "all", "mp_allow_guest": true},
+		{"name": "volcengine_enhance", "is_enabled": true, "allowed_levels": "all"},
+		{"name": "volcengine_ark_monitor", "is_enabled": true, "allowed_levels": "all"},
+		{"name": "asset_manager", "is_enabled": true, "allowed_levels": "all"},
+		{"name": "asset_manager_intl", "is_enabled": true, "allowed_levels": "all"},
+		{"name": "upstream_asset_relay", "is_enabled": true, "allowed_levels": "all"},
+	}
+}
+
 func (s *Server) v1ActivePlugins(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"active_plugins": []gin.H{
-			{
-				"name":           "model_marketplace",
-				"is_enabled":     true,
-				"allowed_levels": "all",
-				"mp_allow_guest": true,
-			},
-			{
-				"name":           "docs_api",
-				"is_enabled":     true,
-				"allowed_levels": "all",
-				"mp_allow_guest": true,
-			},
-		},
+		"active_plugins": v1BuiltinActivePlugins(),
 	})
 }
 
@@ -478,12 +510,9 @@ func (s *Server) v1ConsoleBootstrap(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"user":          s.buildV1UserDTO(user, claims.OrgID),
-		"announcements": active,
-		"active_plugins": []gin.H{
-			{"name": "model_marketplace", "is_enabled": true, "allowed_levels": "all", "mp_allow_guest": true},
-			{"name": "docs_api", "is_enabled": true, "allowed_levels": "all", "mp_allow_guest": true},
-		},
+		"user":           s.buildV1UserDTO(user, claims.OrgID),
+		"announcements":  active,
+		"active_plugins": v1BuiltinActivePlugins(),
 	})
 }
 

@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 
+	"github.com/laiai/laiai-next/core/internal/forward"
 	"github.com/laiai/laiai-next/core/internal/relay"
 )
 
@@ -28,6 +30,7 @@ type Adaptor interface {
 type QueryResult struct {
 	Status           string // 归一化到本包 Status* 常量
 	ResultURL        string
+	LastFrameURL     string
 	CompletionTokens int64
 	FailReason       string
 	// ResultRef：产物二跳取件的中间引用（如 hailuo 的 file_id）——succeeded 时若 ResultURL 为空
@@ -67,17 +70,21 @@ type ContentStreamer interface {
 var taskAdaptors = map[string]Adaptor{
 	"volcengine": volcengineTask{},
 	"modelark":   volcengineTask{},
+	"atp_video":  volcengineTask{},
 	// §3.8 批次 2（2026-07-05，知识移植自 New API 参考库）：字段/协议按其生产解析结构体移植，
 	// 真机验证走各自 env 门控 smoke。kling=JWT-HS256/A 类；vidu=Token 头/A 类。
-	"kling": klingTask{},
-	"vidu":  viduTask{},
+	"kling":       klingTask{},
+	"kling_video": klingV3Task{},
+	"vidu":        viduTask{},
 	// §3.8 批次 3（2026-07-05，同移植纪律）：三家 trivial 鉴权、B 类计费。用专属 TaskOnly provider code
 	// （不复用 minimax/qwen 等 chat provider 名，避免 chat/task 分发歧义）。
 	// hailuo=bearer + file_id 二跳（ResultFetcher）；wan/ali=bearer+async 头/直链；suno=bearer/音乐/批量查询退化单元。
-	"hailuo": hailuoTask{},
-	"wan":    aliTask{}, // 通义万相视频
-	"ali":    aliTask{}, // 别名（ali 非 chat provider 名，无冲突）
-	"suno":   sunoTask{},
+	"hailuo":        hailuoTask{},
+	"minimax_video": minimaxV2Task{},
+	"wan":           aliTask{}, // 通义万相视频
+	"ali":           aliTask{}, // 别名（ali 非 chat provider 名，无冲突）
+	"dashscope":     aliTask{},
+	"suno":          sunoTask{},
 	// §3.8 批次 4（2026-07-05，同移植纪律）：产物经平台代理下发（ContentStreamer + 0038 result_ref）。
 	// sora=bearer/A 类 seconds×size 回显结算/content 二进制；veo=x-goog-api-key/LRO 推导/B 类/带 key URI。
 	"sora": soraTask{},
@@ -85,6 +92,10 @@ var taskAdaptors = map[string]Adaptor{
 	// 丝滑度批 C-4（2026-07-11，知识移植自 midjourney-proxy 方言 + NewAPI 生产解析）：
 	// MJ 按 action 建模（mj_imagine 等）PerCallUSD 按次计价（0048 快照）；对外 /mj/* 方言路由。
 	"midjourney": midjourneyTask{},
+	// 国内生态拓展：即梦 CV V4、腾讯云点播 VOD AIGC TC3、火山 MediaKit 画质增强与标准 OpenAI 视频兼容。
+	"jimeng_video":             jimengVideoTask{},
+	"tencent_vod_video":        tencentVodVideoTask{},
+	"volcengine_media_enhance": volcMediaEnhanceTask{},
 }
 
 // adaptorFor：先按 provider code 精确查注册表；未命中再按 provider 档案的 Adapter 家族回退一次
@@ -215,26 +226,92 @@ func (volcengineTask) EstimateOutputTokens(model string, content []any, params m
 }
 
 func (volcengineTask) SubmitRequest(ctx context.Context, ch *relay.Channel, credential string, in SubmitInput) (*http.Request, error) {
-	// 薄透传：客户端直接说 ModelArk 方言。content 数组 + 顶层任务参数（generate_audio/ratio/
-	// duration/watermark/resolution 等，Seedance 2.0 真机验证 2026-07-05）原样透传，不做二次发明。
-	// model/content 由平台字段权威覆盖（防 Params 注入同名键顶掉准入校验过的值）。
-	payload := make(map[string]any, len(in.Params)+2)
-	for k, v := range in.Params {
-		payload[k] = v
+	return (volcengineTask{}).SubmitRequestWithForward(ctx, ch, nil, credential, in)
+}
+
+func (volcengineTask) SubmitRequestWithForward(
+	ctx context.Context,
+	ch *relay.Channel,
+	fwd *forward.ResolvedForward,
+	credential string,
+	in SubmitInput,
+) (*http.Request, error) {
+	upstreamModel := ch.UpstreamModel(in.Model)
+	var payload map[string]any
+	if len(in.RawBody) > 0 || (len(in.Content) == 0 && len(in.Params) > 0) {
+		raw := maps.Clone(in.RawBody)
+		if raw == nil {
+			raw = maps.Clone(in.Params)
+		}
+		if raw == nil {
+			raw = map[string]any{}
+		}
+		if len(in.Content) > 0 {
+			if _, ok := raw["content"]; !ok {
+				raw["content"] = in.Content
+			}
+		}
+		if r, ok := in.Params["resolution"]; ok {
+			raw["resolution"] = r
+		}
+		payload = forward.BuildVolcengineVideoBody(upstreamModel, raw)
+	} else {
+		payload = make(map[string]any, len(in.Params)+2)
+		for k, v := range in.Params {
+			payload[k] = v
+		}
+		payload["model"] = upstreamModel
+		payload["content"] = forward.EnsureImageRolesForMultimodal(in.Content)
 	}
-	payload["model"] = in.Model
-	payload["content"] = in.Content
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(ch.BaseURL, "/")+"/contents/generations/tasks", bytes.NewReader(body))
+	upPath := "/contents/generations/tasks"
+	if fwd != nil && fwd.UpstreamPath != "" {
+		upPath = forward.ExpandUpstreamPath(fwd.UpstreamPath, upstreamModel, "")
+	}
+	parsedURL, err := forward.JoinUpstreamURL(ch.BaseURL, upPath)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parsedURL.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+credential)
+	authType := forward.AuthBearer
+	if fwd != nil && fwd.AuthType != "" {
+		authType = fwd.AuthType
+	}
+	forward.ApplyAuth(req, authType, credential)
+	return req, nil
+}
+
+func (volcengineTask) QueryRequestWithForward(
+	ctx context.Context,
+	ch *relay.Channel,
+	fwd *forward.ResolvedForward,
+	credential string,
+	upstreamTaskID string,
+) (*http.Request, error) {
+	upPath := "/contents/generations/tasks/" + upstreamTaskID
+	if fwd != nil && fwd.PollPath != "" {
+		upPath = forward.ExpandUpstreamPath(fwd.PollPath, ch.UpstreamModel(""), upstreamTaskID)
+	}
+	parsedURL, err := forward.JoinUpstreamURL(ch.BaseURL, upPath)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	authType := forward.AuthBearer
+	if fwd != nil && fwd.AuthType != "" {
+		authType = fwd.AuthType
+	}
+	forward.ApplyAuth(req, authType, credential)
 	return req, nil
 }
 
@@ -311,7 +388,8 @@ func (volcengineTask) ParseQuery(resp *http.Response) (QueryResult, error) {
 	var parsed struct {
 		Status  string `json:"status"`
 		Content struct {
-			VideoURL string `json:"video_url"`
+			VideoURL     string `json:"video_url"`
+			LastFrameURL string `json:"last_frame_url"`
 		} `json:"content"`
 		Usage struct {
 			CompletionTokens int64 `json:"completion_tokens"`
@@ -325,6 +403,7 @@ func (volcengineTask) ParseQuery(resp *http.Response) (QueryResult, error) {
 	}
 	out := QueryResult{
 		ResultURL:        parsed.Content.VideoURL,
+		LastFrameURL:     parsed.Content.LastFrameURL,
 		CompletionTokens: parsed.Usage.CompletionTokens,
 		FailReason:       parsed.Error.Message,
 	}

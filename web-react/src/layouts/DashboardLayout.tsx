@@ -41,6 +41,7 @@ import {
   NodeIndexOutlined,
   NotificationOutlined,
   PayCircleOutlined,
+  PictureOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
   ShopOutlined,
@@ -193,6 +194,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
         label: collapsed ? undefined : t('menu.resources', '模型与文档'),
         children: [
           { key: '/home/models', icon: <ShopOutlined />, label: t('menu.marketplace', '模型广场') },
+          { key: '/ark-video-monitor', icon: <VideoCameraOutlined />, label: t('menu.ark_video_monitor', '方舟视频监控') },
           { key: '/docs/quickstart/doc0003', icon: <BookOutlined />, label: t('menu.docs', '接口文档') },
         ],
       },
@@ -215,6 +217,8 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
           { key: `${adminBase}/channels`, icon: <CloudServerOutlined />, label: t('menu.channels', '渠道列表') },
           { key: `${adminBase}/channel-configs`, icon: <SlidersOutlined />, label: t('menu.channel_configs', '渠道配置') },
           { key: `${adminBase}/payment-channels`, icon: <CreditCardOutlined />, label: t('admin.payment_channels', '支付通道') },
+          { key: `${adminBase}/ark-monitor`, icon: <VideoCameraOutlined />, label: t('menu.ark_monitor', '火山方舟监控') },
+          { key: `${adminBase}/volc-assets`, icon: <PictureOutlined />, label: t('menu.volc_assets', '火山素材转换') },
         ],
       },
       {
@@ -284,6 +288,8 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
       if (p.includes('/logs')) return `${adminBase}/logs`;
       if (p.includes('/channel-configs')) return `${adminBase}/channel-configs`;
       if (p.includes('/payment-channels')) return `${adminBase}/payment-channels`;
+      if (p.includes('/ark-monitor')) return `${adminBase}/ark-monitor`;
+      if (p.includes('/volc-assets')) return `${adminBase}/volc-assets`;
       if (p.includes('/channels')) return `${adminBase}/channels`;
       if (p.includes('/billing-rules')) return `${adminBase}/billing-rules`;
       if (p.includes('/forward-rules')) return `${adminBase}/forward-rules`;
@@ -303,7 +309,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
 
   const activeSubKey = useMemo(() => {
     if (mode !== 'admin') return '';
-    if (selectedKey.includes('/channels') || selectedKey.includes('/channel-configs') || selectedKey.includes('/payment-channels')) {
+    if (selectedKey.includes('/channels') || selectedKey.includes('/channel-configs') || selectedKey.includes('/payment-channels') || selectedKey.includes('/ark-monitor') || selectedKey.includes('/volc-assets')) {
       return 'sub-channels';
     }
     if (selectedKey.includes('/models') || selectedKey.includes('/billing-rules') || selectedKey.includes('/forward-rules')) {

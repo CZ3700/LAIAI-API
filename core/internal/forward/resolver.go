@@ -21,13 +21,26 @@ func CategoryEndpoint(category string) string {
 	case "图片", "image", "images":
 		return "/v1/images/generations"
 	case "视频", "video", "videos":
-		return "/v1/videos"
+		return "/v1/video/generations"
 	case "音频", "audio", "speech", "tts":
 		return "/v1/audio/speech"
-	case "嵌入", "embedding", "embeddings":
+	case "嵌入", "向量", "embedding", "embeddings":
 		return "/v1/embeddings"
+	case "排序", "rerank", "reranks":
+		return "/v1/rerank"
 	default:
 		return "/v1/chat/completions"
+	}
+}
+
+// IsOpenAIVideoPath 判断路径是否属于 OpenAI 兼容的视频生成入口（兼容 /v1/video/generations、/v1/videos、/v1/videos/generations）。
+func IsOpenAIVideoPath(path string) bool {
+	clean := strings.Trim(strings.TrimSpace(path), "/")
+	switch clean {
+	case "v1/video/generations", "v1/videos", "v1/videos/generations", "video/generations", "videos":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -76,7 +89,7 @@ func CollectRewrites(cfg ForwardConfig) []PathRewritePair {
 
 func pathListHit(list []string, reqPath string) bool {
 	return slices.ContainsFunc(list, func(p string) bool {
-		return p != "" && pathEq(reqPath, p)
+		return p != "" && (pathEq(reqPath, p) || PathMatches(reqPath, p))
 	})
 }
 
@@ -153,21 +166,36 @@ func buildResolvedForward(
 		PollPath:               strings.TrimSpace(cfg.PollPath),
 		CancelPath:             strings.TrimSpace(cfg.CancelPath),
 		IsPassthrough:          isPassthrough,
-		AssetConvert:           cfg.AssetConvert,
+		AssetConvert:           bool(cfg.AssetConvert),
 		AssetConvertNS:         cmp.Or(strings.TrimSpace(cfg.AssetConvertNS), "asset_manager"),
-		UpstreamAssetConvert:   cfg.UpstreamAssetConvert,
+		UpstreamAssetConvert:   bool(cfg.UpstreamAssetConvert),
 		UpstreamAssetBindingID: cfg.UpstreamAssetBindingID,
-		AssetModeration:        cfg.Moderation,
-		ContentToPrompt:        cfg.ContentToPrompt,
-		FastResponse:           cfg.FastResponse,
+		AssetModeration:        bool(cfg.Moderation),
+		ContentToPrompt:        bool(cfg.ContentToPrompt),
+		FastResponse:           bool(cfg.FastResponse),
 		AllowedResolutions:     slices.Clone(cfg.AllowedResolutions),
 		AllowedQualities:       slices.Clone(cfg.AllowedQualities),
 		MaxRefImages:           cfg.MaxRefImages,
 		MinPixels:              cfg.MinPixels,
 		MaxPixels:              cfg.MaxPixels,
-		AutoDowngrade:          cfg.AutoDowngrade,
+		AutoDowngrade:          bool(cfg.AutoDowngrade),
 		Step:                   cfg.Step,
 		MaxAspectRatio:         cfg.MaxAspectRatio,
+		IsCascade:              bool(cfg.IsCascade),
+		CascadeEngine:          strings.ToLower(strings.TrimSpace(cfg.CascadeEngine)),
+		CascadeS2Model:         strings.TrimSpace(cfg.CascadeS2Model),
+		Crop480p:               bool(cfg.Crop480p),
+		CropTiming:             strings.TrimSpace(cfg.CropTiming),
+		CropCoords480p:         cfg.CropCoords480p,
+		CropCoords720p:         cfg.CropCoords720p,
+		ResMul:                 cloneLowerFloatMap(cfg.ResMul),
+		ResEnhanceEnabled:      cloneLowerBoolMap(cfg.ResEnhanceEnabled),
+		ResEnhance:             cloneLowerStringMap(cfg.ResEnhance),
+		ResBase:                cloneLowerStringMap(cfg.ResBase),
+		ResScene:               strings.TrimSpace(cfg.ResScene),
+		ResLimit:               cloneLowerIntMap(cfg.ResLimit),
+		ResLimitFallback:       strings.TrimSpace(cfg.ResLimitFallback),
+		S2TimeoutMins:          cfg.S2TimeoutMins,
 		Raw:                    maps.Clone(raw),
 	}
 }
@@ -238,11 +266,13 @@ func scoreForwardConfig(cfg ForwardConfig, openaiClean, requestPath string, isOp
 	if pathListHit(cfg.PathPassthrough, requestPath) || pathListHit(cfg.PathAccept, requestPath) {
 		return 3
 	}
+	isVideoOpenAI := IsOpenAIVideoPath(openaiClean)
 	score := 0
 	for _, p := range CollectRewrites(cfg) {
 		oldClean := strings.TrimLeft(strings.TrimSpace(p.Old), "/")
 		newClean := strings.TrimLeft(strings.TrimSpace(p.New), "/")
-		supportsOpenAI := oldClean == "" || oldClean == openaiClean || strings.HasSuffix(openaiClean, oldClean)
+		supportsOpenAI := oldClean == "" || oldClean == openaiClean || strings.HasSuffix(openaiClean, oldClean) ||
+			(isVideoOpenAI && IsOpenAIVideoPath(oldClean))
 		matchNew := PathMatches(requestPath, p.New)
 		matchOld := PathMatches(requestPath, p.Old)
 
@@ -250,7 +280,7 @@ func scoreForwardConfig(cfg ForwardConfig, openaiClean, requestPath string, isOp
 		switch {
 		case !isOpenAIReq && (matchNew || matchOld):
 			s = 3
-		case isOpenAIReq && supportsOpenAI && oldClean == newClean:
+		case isOpenAIReq && supportsOpenAI && (oldClean == newClean || (isVideoOpenAI && IsOpenAIVideoPath(newClean))):
 			s = 2
 		case isOpenAIReq && supportsOpenAI:
 			s = 1
@@ -294,7 +324,8 @@ func SelectBestForwardRule(rules []ForwardRule, category, requestPath string) (*
 	openaiPath := CategoryEndpoint(cat)
 	openaiClean := strings.TrimLeft(openaiPath, "/")
 	reqClean := strings.TrimLeft(strings.TrimSpace(requestPath), "/")
-	isOpenAIReq := reqClean == openaiClean || strings.HasSuffix(reqClean, openaiClean)
+	isOpenAIReq := reqClean == openaiClean || strings.HasSuffix(reqClean, openaiClean) ||
+		(IsOpenAIVideoPath(openaiClean) && IsOpenAIVideoPath(requestPath))
 
 	var best *ForwardRule
 	bestScore := 0
@@ -509,7 +540,8 @@ func (r *Resolver) ResolveForModel(
 	openaiPath := CategoryEndpoint(cat)
 	openaiClean := strings.TrimLeft(openaiPath, "/")
 	reqClean := strings.TrimLeft(strings.TrimSpace(requestPath), "/")
-	isOpenAIReq := reqClean == openaiClean || strings.HasSuffix(reqClean, openaiClean)
+	isOpenAIReq := reqClean == openaiClean || strings.HasSuffix(reqClean, openaiClean) ||
+		(IsOpenAIVideoPath(openaiClean) && IsOpenAIVideoPath(requestPath))
 
 	var best *cachedRuleEntry
 	bestScore := 0
@@ -572,4 +604,64 @@ func (r *Resolver) ResolveByEID(
 		model,
 	)
 	return &resolved, nil
+}
+
+// InferVideoForwardFromBaseURL 在未绑定转发规则时按渠道域名智能推断国内主流视频协议（对齐 tkeapi resolve.rs）。
+// 仅对已知厂商域名返回推断结果；未知或本地 mock 地址返回 nil，交由渠道 provider 默认适配器处理。
+func InferVideoForwardFromBaseURL(baseURL string) *ResolvedForward {
+	u := strings.ToLower(strings.TrimSpace(baseURL))
+	if u == "" {
+		return nil
+	}
+	switch {
+	case strings.Contains(u, "dashscope"):
+		return &ResolvedForward{
+			TargetType:   "dashscope",
+			UpstreamPath: "/api/v1/services/aigc/video-generation/video-synthesis",
+			PollPath:     "/api/v1/tasks/${task_id}",
+			AuthType:     AuthBearer,
+		}
+	case strings.Contains(u, "visual.volcengineapi.com"):
+		return &ResolvedForward{
+			TargetType:   "jimeng_video",
+			UpstreamPath: "/",
+			AuthType:     AuthJimeng,
+		}
+	case strings.Contains(u, "volces.com") || strings.Contains(u, "volcengine") || strings.Contains(u, "bytepluses.com"):
+		return &ResolvedForward{
+			TargetType:   "volcengine",
+			UpstreamPath: "/api/v3/contents/generations/tasks",
+			PollPath:     "/api/v3/contents/generations/tasks/${task_id}",
+			AuthType:     AuthBearer,
+		}
+	case strings.Contains(u, "klingai.com"):
+		return &ResolvedForward{
+			TargetType:   "kling_video",
+			UpstreamPath: "/text-to-video/${model}",
+			PollPath:     "/tasks?task_ids=${task_id}",
+			AuthType:     AuthBearer,
+		}
+	case strings.Contains(u, "vidu."):
+		return &ResolvedForward{
+			TargetType:   "vidu",
+			UpstreamPath: "/ent/v2/img2video",
+			PollPath:     "/ent/v2/tasks/${task_id}/creations",
+			AuthType:     AuthToken,
+		}
+	case strings.Contains(u, "minimaxi.com") || strings.Contains(u, "minimax.io"):
+		return &ResolvedForward{
+			TargetType:   "minimax_video",
+			UpstreamPath: "/v2/video_generation",
+			PollPath:     "/v2/query/video_generation/${task_id}",
+			AuthType:     AuthBearer,
+		}
+	case strings.Contains(u, "tencentcloudapi.com"):
+		return &ResolvedForward{
+			TargetType:   "tencent_vod_video",
+			UpstreamPath: "/",
+			AuthType:     AuthTencentVOD,
+		}
+	default:
+		return nil
+	}
 }

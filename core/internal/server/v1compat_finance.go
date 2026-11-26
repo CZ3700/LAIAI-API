@@ -17,7 +17,7 @@ import (
 )
 
 func (s *Server) v1FinanceRechargeTypes(c *gin.Context) {
-	c.JSON(http.StatusOK, []string{"online_recharge", "admin_add", "admin_deduct", "admin_override", "gift"})
+	c.JSON(http.StatusOK, []string{"online_recharge", "admin_add", "admin_deduct", "admin_override", "gift", "ark_video_consume", "ark_video_refund"})
 }
 
 func (s *Server) v1FinanceRecharges(c *gin.Context) {
@@ -67,6 +67,10 @@ func (s *Server) v1FinanceRecharges(c *gin.Context) {
 			baseSQL += " AND j.kind = 'debit' AND j.ref_type IN ('admin_debit', 'admin_override')"
 		case "gift":
 			baseSQL += " AND j.kind = 'grant' AND j.ref_type IN ('topup_bonus', 'welcome_grant', 'invite_grant')"
+		case "ark_video_consume":
+			baseSQL += " AND j.ref_type = 'ark_video_consume'"
+		case "ark_video_refund":
+			baseSQL += " AND j.ref_type = 'ark_video_refund'"
 		}
 	}
 	if startUnix, endUnix, ok := parseFinanceUnixRange(c); ok {
@@ -126,6 +130,12 @@ func (s *Server) v1FinanceRecharges(c *gin.Context) {
 }
 
 func mapLedgerKindToRechargeType(kind, refType string, delta decimal.Decimal) string {
+	switch refType {
+	case "ark_video_consume":
+		return "ark_video_consume"
+	case "ark_video_refund":
+		return "ark_video_refund"
+	}
 	switch kind {
 	case ledger.KindCredit:
 		if refType == "topup" || refType == "payment" {
