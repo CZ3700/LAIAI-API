@@ -705,7 +705,13 @@
     "bind_need_email": "創建 API 令牌前請先綁定郵箱",
     "bind_need_account": "創建 API 令牌前請先完成賬號綁定",
     "duration_dh": "{{days}}天 {{hours}}小時",
-    "duration_hm": "{{hours}}小時 {{minutes}}分鐘"
+    "duration_hm": "{{hours}}小時 {{minutes}}分鐘",
+    "created_key_title": "API 金鑰已建立（請立即儲存）",
+    "created_key_warning": "出於安全考量，完整金鑰僅在建立時顯示這一次，關閉後將無法再次檢視。請立即複製並妥善保管。",
+    "created_key_label": "完整 API Key",
+    "copy_full_key": "複製完整金鑰",
+    "copy_kid_hint": "複製金鑰 ID（完整金鑰僅於建立時可見）",
+    "saved_confirm": "我已儲存金鑰"
   },
   "logs": {
     "title": "日誌記錄",
@@ -3309,8 +3315,7 @@
     "route_price": "最低成本 (price)",
     "route_throughput": "最高吞吐量 (throughput)",
     "rpm": "RPM 限流",
-    "security_notice": "安全策略：API Key 僅在建立成功時展示一次明文，平台僅儲存不可逆雜湊，不支援二次檢視。請妥善保存。",
-    "video_async": "授予影片非同步生成權限 (video:write)"
+    "security_notice": "安全策略：API Key 僅在建立成功時展示一次明文，平台僅儲存不可逆雜湊，不支援二次檢視。請妥善保存。"
   },
   "ark_monitor": {
     "account_deleted": "已刪除主帳號",

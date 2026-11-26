@@ -93,6 +93,14 @@ func (r *Relay) allowKeyRate(keyID uint64, limit int) bool {
 	return r.allowWindowed(fmt.Sprintf("k:%d", keyID), limit)
 }
 
+// allowKeyRPS：key 级每秒请求上限（api_keys.rps_limit）。0=不限。
+func (r *Relay) allowKeyRPS(keyID uint64, limit int) bool {
+	if limit <= 0 {
+		return true
+	}
+	return r.allowWindowedDur(fmt.Sprintf("ks:%d", keyID), limit, time.Second)
+}
+
 // AllowModelCreateRPM：平台级每模型受理 RPM（task.Gate，火山官方 create_task_rpm 的
 // 我方镜像；视频受理侧按 video_model_configs.create_rpm 调用）。bucket `vm:<model>`
 // 与租户级 `m:`/key 级 `k:` 共用同一 allowWindowed 状态（Redis 跨实例或进程内），
@@ -104,18 +112,23 @@ func (r *Relay) AllowModelCreateRPM(model string, limit int) bool {
 	return r.allowWindowed(fmt.Sprintf("vm:%s", model), limit)
 }
 
-// allowWindowed：固定 60s 窗口计数（bucket 为限流维度标识）。Redis 跨实例，未配则进程内；
-// fail-open（限流是保护、不是收费闸）。
 func (r *Relay) allowWindowed(bucket string, limit int) bool {
-	now := r.Now()
+	return r.allowWindowedDur(bucket, limit, time.Minute)
+}
 
-	// 跨实例路径：Redis 固定窗口（key 含窗口纪元，天然每分钟重置）。
+// allowWindowedDur：固定窗口计数（支持秒/分窗口）。Redis 跨实例，未配则进程内；
+// fail-open（限流是保护、不是收费闸）。
+func (r *Relay) allowWindowedDur(bucket string, limit int, windowDur time.Duration) bool {
+	now := r.Now()
+	secs := max(int64(1), int64(windowDur.Seconds()))
+
+	// 跨实例路径：Redis 固定窗口（key 含窗口纪元，天然每周期重置）。
 	if r.rate != nil {
-		window := now.Unix() / 60
+		window := now.Unix() / secs
 		key := fmt.Sprintf("rl:%s:%d", bucket, window)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		n, err := r.rate.incr(ctx, key, 2*time.Minute) // 2m 过期 > 窗口，安全清理
+		n, err := r.rate.incr(ctx, key, windowDur*2)
 		if err != nil {
 			// fail-open：Redis 抖动绝不挡流量（P2-2 用户体验红线），放行并告警
 			r.Log.Warn("rate limiter redis error, failing open", "bucket", bucket, "err", err)
@@ -137,7 +150,7 @@ func (r *Relay) allowWindowed(bucket string, limit int) bool {
 		r.rateLastEvic = now
 	}
 	w := r.rateWindows[bucket]
-	if w == nil || now.Sub(w.start) >= time.Minute {
+	if w == nil || now.Sub(w.start) >= windowDur {
 		r.rateWindows[bucket] = &rateWindow{start: now, count: 1}
 		return true
 	}

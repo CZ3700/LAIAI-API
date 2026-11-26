@@ -80,25 +80,21 @@ CREATE TABLE org_invitations (
 CREATE TABLE api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     org_id INTEGER NOT NULL, user_id INTEGER,
-    name TEXT NOT NULL DEFAULT '', prefix TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '', prefix TEXT NOT NULL, kid TEXT NOT NULL DEFAULT '',
     key_hash TEXT NOT NULL UNIQUE, scopes TEXT NOT NULL DEFAULT '',
     status INTEGER NOT NULL DEFAULT 1, expires_at DATETIME,
     quota_limit NUMERIC NOT NULL DEFAULT 0, used_amount NUMERIC NOT NULL DEFAULT 0,
+    daily_quota_limit REAL NOT NULL DEFAULT -1, daily_quota_used REAL NOT NULL DEFAULT 0,
+    weekly_quota_limit REAL NOT NULL DEFAULT -1, weekly_quota_used REAL NOT NULL DEFAULT 0,
+    monthly_quota_limit REAL NOT NULL DEFAULT -1, monthly_quota_used REAL NOT NULL DEFAULT 0,
+    last_reset_day TEXT NOT NULL DEFAULT '', last_reset_week TEXT NOT NULL DEFAULT '', last_reset_month TEXT NOT NULL DEFAULT '',
     model_limits TEXT NOT NULL DEFAULT '', allow_ips TEXT NOT NULL DEFAULT '',
-    rpm_limit INTEGER NOT NULL DEFAULT 0, route_policy TEXT NOT NULL DEFAULT '',
-    routing_group_id INTEGER, model_access_mode TEXT NOT NULL DEFAULT 'legacy', policy_version INTEGER NOT NULL DEFAULT 1,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    rps_limit INTEGER NOT NULL DEFAULT 0, rpm_limit INTEGER NOT NULL DEFAULT 0, route_policy TEXT NOT NULL DEFAULT '',
+    high_availability INTEGER NOT NULL DEFAULT 1,
+    last_used_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-CREATE TABLE routing_policy_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    aggregate_type TEXT NOT NULL, aggregate_id INTEGER NOT NULL, aggregate_version INTEGER NOT NULL,
-    event_kind TEXT NOT NULL, org_id INTEGER, group_id INTEGER, channel_id INTEGER, key_id INTEGER,
-    actor_user_id INTEGER NOT NULL, request_id TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL,
-    UNIQUE(aggregate_type,aggregate_id,aggregate_version)
-);
-CREATE TABLE routing_groups(id INTEGER PRIMARY KEY AUTOINCREMENT,slug TEXT NOT NULL,name TEXT NOT NULL,description TEXT NOT NULL,owner_org_id INTEGER NOT NULL,status TEXT NOT NULL,policy_version INTEGER NOT NULL,created_at DATETIME NOT NULL,updated_at DATETIME NOT NULL,UNIQUE(owner_org_id,slug));
-CREATE TABLE channel_group_bindings(group_id INTEGER NOT NULL,channel_id INTEGER NOT NULL,created_at DATETIME NOT NULL,updated_at DATETIME NOT NULL,PRIMARY KEY(group_id,channel_id));
-CREATE TABLE org_group_grants(id INTEGER PRIMARY KEY AUTOINCREMENT,org_id INTEGER NOT NULL,group_id INTEGER NOT NULL,status TEXT NOT NULL,grant_version INTEGER NOT NULL,default_slot INTEGER,created_at DATETIME NOT NULL,updated_at DATETIME NOT NULL,UNIQUE(org_id,group_id),UNIQUE(org_id,default_slot));
 `
 
 var testSecret = []byte("test-secret-0123456789abcdef-0123456789abcdef")

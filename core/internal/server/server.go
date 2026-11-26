@@ -62,7 +62,6 @@ type Server struct {
 	now                 func() time.Time    // 可注入时钟，测试用
 	invRetentionDefault int                 // 调用日志保留天数的启动期默认（ext_settings 未配置时回退）
 	invocationQueries   invocationQueryGate // v1 metadata queries: global 4, subject 2, zero wait.
-	routingGroupReads   routingAdminReadGate
 	forwardResolver     *forward.Resolver
 	taskService         *task.Service
 	settingsCache       settingsCache
@@ -226,7 +225,6 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			{
 				org.POST("/keys", s.requireStepUpForKeys(), s.createKey) // 受开关保护：开启则需 step-up
 				org.GET("/keys", s.listKeys)
-				org.GET("/keys/video-access", s.keyVideoAccess)
 				org.DELETE("/keys/:id", s.revokeKey)
 				org.DELETE("/keys/:id/purge", s.deleteKey)
 				org.GET("/usage", s.getUsage)
@@ -325,7 +323,6 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 			// —— superadmin 级（资金 / 系统设置 / 定价策略 / 授权）——（对标 NewAPI RootAuth）
 			su := admin.Group("", s.requireSuperadmin())
 			{
-				s.registerRoutingGroupsAdmin(su)
 				// 跨租户全平台调用明细（org_id/user_id/model/cost）：限 superadmin（P2-3）
 				su.GET("/invocations", s.adminListInvocations)
 				su.GET("/invocations/export", func(c *gin.Context) { s.handleInvocationExportV1(c, true) })

@@ -73,3 +73,17 @@ func TestLintClassifies(t *testing.T) {
 		t.Fatalf("danger count = %d, want 2 (drop + modify)", danger)
 	}
 }
+
+func TestCreatedTablesTracksDropTable(t *testing.T) {
+	fsys := fstest.MapFS{
+		"0001_init.sql": {Data: []byte("CREATE TABLE a (id INT); CREATE TABLE b (id INT);")},
+		"0002_drop.sql": {Data: []byte("DROP TABLE IF EXISTS a;")},
+	}
+	got, err := CreatedTables(fsys)
+	if err != nil {
+		t.Fatalf("CreatedTables: %v", err)
+	}
+	if len(got) != 1 || got[0] != "b" {
+		t.Fatalf("CreatedTables = %v, want [b]", got)
+	}
+}

@@ -58,22 +58,22 @@ CREATE TABLE api_keys (
     user_id INTEGER,
     name TEXT NOT NULL DEFAULT '',
     prefix TEXT NOT NULL,
+    kid TEXT NOT NULL DEFAULT '',
     key_hash TEXT NOT NULL UNIQUE,
     scopes TEXT NOT NULL DEFAULT '',
     status INTEGER NOT NULL DEFAULT 1,
     expires_at DATETIME,
     quota_limit NUMERIC NOT NULL DEFAULT 0, used_amount NUMERIC NOT NULL DEFAULT 0,
+    daily_quota_limit REAL NOT NULL DEFAULT -1, daily_quota_used REAL NOT NULL DEFAULT 0,
+    weekly_quota_limit REAL NOT NULL DEFAULT -1, weekly_quota_used REAL NOT NULL DEFAULT 0,
+    monthly_quota_limit REAL NOT NULL DEFAULT -1, monthly_quota_used REAL NOT NULL DEFAULT 0,
+    last_reset_day TEXT NOT NULL DEFAULT '', last_reset_week TEXT NOT NULL DEFAULT '', last_reset_month TEXT NOT NULL DEFAULT '',
     model_limits TEXT NOT NULL DEFAULT '', allow_ips TEXT NOT NULL DEFAULT '',
-    rpm_limit INTEGER NOT NULL DEFAULT 0, route_policy TEXT NOT NULL DEFAULT '',
-    routing_group_id INTEGER, model_access_mode TEXT NOT NULL DEFAULT 'legacy', policy_version INTEGER NOT NULL DEFAULT 1,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE routing_policy_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    aggregate_type TEXT NOT NULL, aggregate_id INTEGER NOT NULL, aggregate_version INTEGER NOT NULL,
-    event_kind TEXT NOT NULL, org_id INTEGER, group_id INTEGER, channel_id INTEGER, key_id INTEGER,
-    actor_user_id INTEGER NOT NULL, request_id TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL,
-    UNIQUE(aggregate_type,aggregate_id,aggregate_version)
+    rps_limit INTEGER NOT NULL DEFAULT 0, rpm_limit INTEGER NOT NULL DEFAULT 0, route_policy TEXT NOT NULL DEFAULT '',
+    high_availability INTEGER NOT NULL DEFAULT 1,
+    last_used_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `
 

@@ -3,21 +3,21 @@ package server
 import (
 	"cmp"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
 	"github.com/laiai/laiai-next/core/internal/ledger"
 	"github.com/laiai/laiai-next/core/internal/relay"
-	"github.com/laiai/laiai-next/core/internal/routinggroup"
 	"github.com/laiai/laiai-next/core/internal/server/v1compat"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -426,6 +426,7 @@ func v1BuiltinActivePlugins() []gin.H {
 	return []gin.H{
 		{"name": "model_marketplace", "is_enabled": true, "allowed_levels": "all", "mp_allow_guest": true},
 		{"name": "docs_api", "is_enabled": true, "allowed_levels": "all", "mp_allow_guest": true},
+		{"name": "high_availability_channel", "is_enabled": true, "allowed_levels": "all"},
 		{"name": "volcengine_enhance", "is_enabled": true, "allowed_levels": "all"},
 		{"name": "volcengine_ark_monitor", "is_enabled": true, "allowed_levels": "all"},
 		{"name": "asset_manager", "is_enabled": true, "allowed_levels": "all"},
@@ -711,7 +712,44 @@ func (s *Server) v1DashboardStats(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-func (s *Server) formatV1Token(k identity.APIKey) gin.H {
+func (s *Server) siteLocation() *time.Location {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return time.FixedZone("CST", 8*3600)
+	}
+	return loc
+}
+
+func (s *Server) orgAvailableBalance(ctx context.Context, orgID uint64) (decimal.Decimal, bool) {
+	posted, held, err := ledger.OrgBalances(s.readOnly().WithContext(ctx), orgID, ledger.AccountUserCredit)
+	if err != nil {
+		return decimal.Zero, false
+	}
+	return posted.Sub(held), true
+}
+
+func parseFlexibleExpiry(raw string) (*time.Time, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return nil, nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02T15:04", "2006-01-02"} {
+		if t, err := time.Parse(layout, v); err == nil {
+			u := t.UTC()
+			return &u, nil
+		}
+	}
+	return nil, errors.New("invalid expires_at")
+}
+
+func validPeriodicQuota(v *float64) bool {
+	if v == nil {
+		return true
+	}
+	return !math.IsNaN(*v) && !math.IsInf(*v, 0)
+}
+
+func (s *Server) formatV1Token(k identity.APIKey, availableBalance decimal.Decimal, hasBalance bool) gin.H {
 	models := []string{}
 	if strings.TrimSpace(k.ModelLimits) != "" {
 		for item := range strings.SplitSeq(k.ModelLimits, ",") {
@@ -724,35 +762,87 @@ func (s *Server) formatV1Token(k identity.APIKey) gin.H {
 	if k.QuotaLimit.IsPositive() {
 		quotaLimit, _ = k.QuotaLimit.Float64()
 	}
+	usedQuota := decFloat(k.UsedAmount)
+	now := s.now().UTC()
+	loc := s.siteLocation()
+	effDaily, effWeekly, effMonthly := k.EffectivePeriodUsage(now, loc)
+	kid := cmp.Or(strings.TrimSpace(k.KID), k.Prefix)
+
+	var unavailableReason any
+	if k.Status == 1 {
+		switch {
+		case hasBalance && availableBalance.IsNegative():
+			unavailableReason = "arrears"
+		case hasBalance && availableBalance.IsZero():
+			unavailableReason = "no_funds"
+		case k.ExpiresAt != nil && k.ExpiresAt.Before(now):
+			unavailableReason = "expired"
+		default:
+			if r := k.ExhaustedQuotaCode(now, loc); r != "" {
+				unavailableReason = r
+			}
+		}
+	}
+
+	userIDStr := ""
+	if k.UserID != nil && *k.UserID > 0 {
+		userIDStr = strconv.FormatUint(*k.UserID, 10)
+	}
 	return gin.H{
-		"id":             k.ID,
-		"name":           k.Name,
-		"key_prefix":     k.Prefix,
-		"masked_key":     k.Prefix + "••••••••••••••••",
-		"is_active":      k.Status,
-		"status":         k.Status,
-		"scopes":         k.Scopes,
-		"quota_limit":    k.QuotaLimit,
-		"quota_limit_f":  quotaLimit,
-		"used_amount":    k.UsedAmount,
-		"allowed_models": models,
-		"allowed_ips":    k.AllowIPs,
-		"rpm_limit":      k.RPMLimit,
-		"route_policy":   k.RoutePolicy,
-		"expires_at":     k.ExpiresAt,
+		"id":                          k.ID,
+		"user_id":                     userIDStr,
+		"org_id":                      k.OrgID,
+		"name":                        k.Name,
+		"kid":                         kid,
+		"token_key":                   k.Prefix + "••••••••••••••••",
+		"key_prefix":                  k.Prefix,
+		"masked_key":                  k.Prefix + "••••••••••••••••",
+		"is_active":                   k.Status,
+		"status":                      k.Status,
+		"scopes":                      k.Scopes,
+		"quota_limit":                 quotaLimit,
+		"quota_limit_f":               quotaLimit,
+		"quota_used":                  usedQuota,
+		"used_amount":                 usedQuota,
+		"daily_quota_limit":           k.DailyQuotaLimit,
+		"daily_quota_used":            k.DailyQuotaUsed,
+		"current_daily_quota_used":    effDaily,
+		"weekly_quota_limit":          k.WeeklyQuotaLimit,
+		"weekly_quota_used":           k.WeeklyQuotaUsed,
+		"current_weekly_quota_used":   effWeekly,
+		"monthly_quota_limit":         k.MonthlyQuotaLimit,
+		"monthly_quota_used":          k.MonthlyQuotaUsed,
+		"current_monthly_quota_used":  effMonthly,
+		"last_reset_day":              k.LastResetDay,
+		"last_reset_week":             k.LastResetWeek,
+		"last_reset_month":            k.LastResetMonth,
+		"allowed_models":              models,
+		"allowed_ips":                 k.AllowIPs,
+		"rps_limit":                   k.RPSLimit,
+		"rpm_limit":                   k.RPMLimit,
+		"route_policy":                k.RoutePolicy,
+		"billing_rule":                cmp.Or(k.RoutePolicy, "order"),
+		"high_availability":           k.HighAvailability,
+		"expires_at":                  k.ExpiresAt,
+		"last_used_at":                k.LastUsedAt,
+		"created_at":                  k.CreatedAt,
+		"updated_at":                  k.UpdatedAt,
+		"unavailable_reason":          unavailableReason,
 	}
 }
 
 func (s *Server) v1ListTokens(c *gin.Context) {
 	claims := mustClaims(c)
+	ctx := c.Request.Context()
 	var keys []identity.APIKey
-	if err := s.db.WithContext(c.Request.Context()).Where("org_id = ?", claims.OrgID).Order("id DESC").Find(&keys).Error; err != nil {
+	if err := s.readOnly().WithContext(ctx).Where("org_id = ?", claims.OrgID).Order("id DESC").Find(&keys).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "list tokens failed")
 		return
 	}
+	avail, hasBal := s.orgAvailableBalance(ctx, claims.OrgID)
 	out := make([]gin.H, 0, len(keys))
 	for _, k := range keys {
-		out = append(out, s.formatV1Token(k))
+		out = append(out, s.formatV1Token(k, avail, hasBal))
 	}
 	c.JSON(http.StatusOK, gin.H{"data": out})
 }
@@ -760,27 +850,45 @@ func (s *Server) v1ListTokens(c *gin.Context) {
 func (s *Server) v1CreateToken(c *gin.Context) {
 	claims := mustClaims(c)
 	var req struct {
-		Name             string          `json:"name"`
-		Scopes           string          `json:"scopes"`
-		ExpiresInDays    int             `json:"expires_in_days"`
-		QuotaLimit       decimal.Decimal `json:"quota_limit"`
-		AllowedModels    []string        `json:"allowed_models"`
-		ModelLimits      []string        `json:"model_limits"`
-		AllowedIPs       string          `json:"allowed_ips"`
-		AllowIPs         string          `json:"allow_ips"`
-		RPMLimit         int             `json:"rpm_limit"`
-		RoutePolicy      string          `json:"route_policy"`
-		EnableVideoAsync bool            `json:"enable_video_async"`
+		Name              string          `json:"name"`
+		Scopes            string          `json:"scopes"`
+		ExpiresInDays     int             `json:"expires_in_days"`
+		ExpiresAt         *string         `json:"expires_at"`
+		QuotaLimit        decimal.Decimal `json:"quota_limit"`
+		DailyQuotaLimit   *float64        `json:"daily_quota_limit"`
+		WeeklyQuotaLimit  *float64        `json:"weekly_quota_limit"`
+		MonthlyQuotaLimit *float64        `json:"monthly_quota_limit"`
+		AllowedModels     []string        `json:"allowed_models"`
+		ModelLimits       []string        `json:"model_limits"`
+		AllowedIPs        string          `json:"allowed_ips"`
+		AllowIPs          string          `json:"allow_ips"`
+		RPSLimit          int             `json:"rps_limit"`
+		RPMLimit          int             `json:"rpm_limit"`
+		RoutePolicy       string          `json:"route_policy"`
+		HighAvailability  *int8           `json:"high_availability"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		fail(c, http.StatusBadRequest, "token name cannot be empty")
+		return
+	}
+	if utf8.RuneCountInString(name) > 24 {
+		fail(c, http.StatusBadRequest, "token name must be 24 characters or fewer")
+		return
+	}
 	if req.QuotaLimit.IsNegative() {
 		req.QuotaLimit = decimal.Zero
 	}
-	if req.RPMLimit < 0 {
-		fail(c, http.StatusBadRequest, "rpm_limit must be non-negative")
+	if !validPeriodicQuota(req.DailyQuotaLimit) || !validPeriodicQuota(req.WeeklyQuotaLimit) || !validPeriodicQuota(req.MonthlyQuotaLimit) {
+		fail(c, http.StatusBadRequest, "invalid period quota limit")
+		return
+	}
+	if req.RPSLimit < 0 || req.RPMLimit < 0 {
+		fail(c, http.StatusBadRequest, "rps_limit and rpm_limit must be non-negative")
 		return
 	}
 	if !relay.ValidRoutePolicy(req.RoutePolicy) {
@@ -793,14 +901,22 @@ func (s *Server) v1CreateToken(c *gin.Context) {
 	}
 	allowIPs := cmp.Or(strings.TrimSpace(req.AllowIPs), strings.TrimSpace(req.AllowedIPs))
 	var expires *time.Time
-	if req.ExpiresInDays > 0 {
+	if req.ExpiresAt != nil && strings.TrimSpace(*req.ExpiresAt) != "" {
+		parsed, perr := parseFlexibleExpiry(*req.ExpiresAt)
+		if perr != nil {
+			fail(c, http.StatusBadRequest, "invalid expires_at timestamp")
+			return
+		}
+		expires = parsed
+	} else if req.ExpiresInDays > 0 {
 		t := s.now().AddDate(0, 0, req.ExpiresInDays)
 		expires = &t
 	}
-	requestID := rand.Text()
+
 	var plaintext string
 	var issued *identity.APIKey
-	err := s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	ctx := c.Request.Context()
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var org identity.Organization
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", claims.OrgID).Take(&org).Error; err != nil {
 			return err
@@ -808,56 +924,41 @@ func (s *Server) v1CreateToken(c *gin.Context) {
 		if err := identity.VerifyActiveMembership(tx, claims.UserID, claims.OrgID); err != nil {
 			return err
 		}
-		effectiveScopes := req.Scopes
-		effectiveModels := joinTrim(models)
-		group, err := routinggroup.DefaultKeyGroupTx(tx, claims.OrgID)
-		if err != nil {
-			return err
-		}
-		var mode *string
-		if group != nil {
-			if effectiveModels != "" {
-				return identity.ErrModelAccessLimits
-			}
-			inherit := identity.ModelAccessInheritGroup
-			mode = &inherit
-			effectiveScopes = "video:read video:write"
-		}
 		ent, err := identity.LoadEntitlements(tx, claims.OrgID)
 		if err != nil {
 			return err
 		}
-		if videoWriteScope(effectiveScopes) && !ent.FeatureVideo {
-			return errVideoDisabled
-		}
 		uid := claims.UserID
 		plaintext, issued, err = identity.IssueKey(tx, identity.IssueKeyInput{
-			OrgID: claims.OrgID, UserID: &uid,
-			Name: req.Name, Scopes: effectiveScopes, ExpiresAt: expires,
-			QuotaLimit: req.QuotaLimit, ModelLimits: effectiveModels, AllowIPs: allowIPs,
-			RPMLimit: req.RPMLimit, RoutePolicy: req.RoutePolicy, MaxKeys: ent.MaxAPIKeys,
-			ModelAccessMode: mode, RoutingGroupID: group,
-			PolicyAudit: routinggroup.Audit{ActorUserID: claims.UserID, RequestID: requestID},
+			OrgID:             claims.OrgID,
+			UserID:            &uid,
+			Name:              name,
+			Scopes:            req.Scopes,
+			ExpiresAt:         expires,
+			QuotaLimit:        req.QuotaLimit,
+			DailyQuotaLimit:   req.DailyQuotaLimit,
+			WeeklyQuotaLimit:  req.WeeklyQuotaLimit,
+			MonthlyQuotaLimit: req.MonthlyQuotaLimit,
+			ModelLimits:       joinTrim(models),
+			AllowIPs:          allowIPs,
+			RPSLimit:          req.RPSLimit,
+			RPMLimit:          req.RPMLimit,
+			RoutePolicy:       req.RoutePolicy,
+			HighAvailability:  req.HighAvailability,
+			MaxKeys:           ent.MaxAPIKeys,
 		})
 		return err
 	})
-	if errors.Is(err, errVideoDisabled) {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "video generation is disabled for this organization", "code": errVideoDisabled.Error()})
-		return
-	}
 	if errors.Is(err, identity.ErrKeyLimit) {
 		fail(c, http.StatusForbidden, "api key limit reached for this organization")
-		return
-	}
-	if errors.Is(err, identity.ErrModelAccessLimits) {
-		fail(c, http.StatusBadRequest, "model whitelist is inherited from routing group")
 		return
 	}
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "create token failed")
 		return
 	}
-	out := s.formatV1Token(*issued)
+	avail, hasBal := s.orgAvailableBalance(ctx, claims.OrgID)
+	out := s.formatV1Token(*issued, avail, hasBal)
 	out["key"] = plaintext // 红线 7：明文仅创建时返回一次
 	c.JSON(http.StatusCreated, out)
 }
@@ -869,14 +970,20 @@ func (s *Server) v1UpdateToken(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Name          *string          `json:"name"`
-		IsActive      *int8            `json:"is_active"`
-		QuotaLimit    *decimal.Decimal `json:"quota_limit"`
-		AllowedModels *[]string        `json:"allowed_models"`
-		AllowIPs      *string          `json:"allow_ips"`
-		AllowedIPs    *string          `json:"allowed_ips"`
-		RPMLimit      *int             `json:"rpm_limit"`
-		RoutePolicy   *string          `json:"route_policy"`
+		Name              *string          `json:"name"`
+		IsActive          *int8            `json:"is_active"`
+		ExpiresAt         *string          `json:"expires_at"`
+		QuotaLimit        *decimal.Decimal `json:"quota_limit"`
+		DailyQuotaLimit   *float64         `json:"daily_quota_limit"`
+		WeeklyQuotaLimit  *float64         `json:"weekly_quota_limit"`
+		MonthlyQuotaLimit *float64         `json:"monthly_quota_limit"`
+		AllowedModels     *[]string        `json:"allowed_models"`
+		AllowIPs          *string          `json:"allow_ips"`
+		AllowedIPs        *string          `json:"allowed_ips"`
+		RPSLimit          *int             `json:"rps_limit"`
+		RPMLimit          *int             `json:"rpm_limit"`
+		RoutePolicy       *string          `json:"route_policy"`
+		HighAvailability  *int8            `json:"high_availability"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid request body")
@@ -890,13 +997,34 @@ func (s *Server) v1UpdateToken(c *gin.Context) {
 	}
 	updates := map[string]any{}
 	if req.Name != nil {
-		updates["name"] = strings.TrimSpace(*req.Name)
+		name := strings.TrimSpace(*req.Name)
+		if name == "" {
+			fail(c, http.StatusBadRequest, "token name cannot be empty")
+			return
+		}
+		if utf8.RuneCountInString(name) > 24 {
+			fail(c, http.StatusBadRequest, "token name must be 24 characters or fewer")
+			return
+		}
+		updates["name"] = name
 	}
 	if req.IsActive != nil {
 		if *req.IsActive == 0 {
 			updates["status"] = 0
 		} else {
 			updates["status"] = 1
+		}
+	}
+	if req.ExpiresAt != nil {
+		if strings.TrimSpace(*req.ExpiresAt) == "" {
+			updates["expires_at"] = nil
+		} else {
+			parsed, perr := parseFlexibleExpiry(*req.ExpiresAt)
+			if perr != nil {
+				fail(c, http.StatusBadRequest, "invalid expires_at timestamp")
+				return
+			}
+			updates["expires_at"] = parsed
 		}
 	}
 	if req.QuotaLimit != nil {
@@ -906,6 +1034,39 @@ func (s *Server) v1UpdateToken(c *gin.Context) {
 		}
 		updates["quota_limit"] = q
 	}
+	if req.DailyQuotaLimit != nil {
+		if !validPeriodicQuota(req.DailyQuotaLimit) {
+			fail(c, http.StatusBadRequest, "invalid daily_quota_limit")
+			return
+		}
+		v := *req.DailyQuotaLimit
+		if v < 0 {
+			v = -1
+		}
+		updates["daily_quota_limit"] = v
+	}
+	if req.WeeklyQuotaLimit != nil {
+		if !validPeriodicQuota(req.WeeklyQuotaLimit) {
+			fail(c, http.StatusBadRequest, "invalid weekly_quota_limit")
+			return
+		}
+		v := *req.WeeklyQuotaLimit
+		if v < 0 {
+			v = -1
+		}
+		updates["weekly_quota_limit"] = v
+	}
+	if req.MonthlyQuotaLimit != nil {
+		if !validPeriodicQuota(req.MonthlyQuotaLimit) {
+			fail(c, http.StatusBadRequest, "invalid monthly_quota_limit")
+			return
+		}
+		v := *req.MonthlyQuotaLimit
+		if v < 0 {
+			v = -1
+		}
+		updates["monthly_quota_limit"] = v
+	}
 	if req.AllowedModels != nil {
 		updates["model_limits"] = joinTrim(*req.AllowedModels)
 	}
@@ -914,7 +1075,18 @@ func (s *Server) v1UpdateToken(c *gin.Context) {
 	} else if req.AllowedIPs != nil {
 		updates["allow_ips"] = strings.TrimSpace(*req.AllowedIPs)
 	}
-	if req.RPMLimit != nil && *req.RPMLimit >= 0 {
+	if req.RPSLimit != nil {
+		if *req.RPSLimit < 0 {
+			fail(c, http.StatusBadRequest, "rps_limit must be non-negative")
+			return
+		}
+		updates["rps_limit"] = *req.RPSLimit
+	}
+	if req.RPMLimit != nil {
+		if *req.RPMLimit < 0 {
+			fail(c, http.StatusBadRequest, "rpm_limit must be non-negative")
+			return
+		}
 		updates["rpm_limit"] = *req.RPMLimit
 	}
 	if req.RoutePolicy != nil {
@@ -924,14 +1096,23 @@ func (s *Server) v1UpdateToken(c *gin.Context) {
 		}
 		updates["route_policy"] = *req.RoutePolicy
 	}
+	if req.HighAvailability != nil {
+		if *req.HighAvailability == 0 {
+			updates["high_availability"] = int8(0)
+		} else {
+			updates["high_availability"] = int8(1)
+		}
+	}
 	if len(updates) > 0 {
+		updates["updated_at"] = s.now().UTC()
 		if err := s.db.WithContext(ctx).Model(&identity.APIKey{}).Where("id = ? AND org_id = ?", id, claims.OrgID).Updates(updates).Error; err != nil {
 			fail(c, http.StatusInternalServerError, "update token failed")
 			return
 		}
 	}
 	_ = s.db.WithContext(ctx).Where("id = ? AND org_id = ?", id, claims.OrgID).First(&k).Error
-	c.JSON(http.StatusOK, s.formatV1Token(k))
+	avail, hasBal := s.orgAvailableBalance(ctx, claims.OrgID)
+	c.JSON(http.StatusOK, s.formatV1Token(k, avail, hasBal))
 }
 
 func (s *Server) v1ResetTokenUsage(c *gin.Context) {
@@ -941,9 +1122,16 @@ func (s *Server) v1ResetTokenUsage(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+	now := s.now().UTC()
 	res := s.db.WithContext(ctx).Model(&identity.APIKey{}).
 		Where("id = ? AND org_id = ?", id, claims.OrgID).
-		Update("used_amount", decimal.Zero)
+		Updates(map[string]any{
+			"used_amount":        decimal.Zero,
+			"daily_quota_used":   0.0,
+			"weekly_quota_used":  0.0,
+			"monthly_quota_used": 0.0,
+			"updated_at":         now,
+		})
 	if res.Error != nil {
 		fail(c, http.StatusInternalServerError, "reset token usage failed")
 		return
@@ -952,8 +1140,17 @@ func (s *Server) v1ResetTokenUsage(c *gin.Context) {
 		fail(c, http.StatusNotFound, "token not found")
 		return
 	}
-	s.writeAudit(c, "v1_token_reset_usage", strconv.FormatUint(id, 10), "reset token used_amount")
-	c.JSON(http.StatusOK, gin.H{"message": "已清零令牌已用额度", "used_quota": 0.0})
+	s.writeAudit(c, "v1_token_reset_usage", strconv.FormatUint(id, 10), "reset token usage counters")
+	var k identity.APIKey
+	if err := s.db.WithContext(ctx).Where("id = ? AND org_id = ?", id, claims.OrgID).First(&k).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "已清零令牌已用额度", "used_quota": 0.0})
+		return
+	}
+	avail, hasBal := s.orgAvailableBalance(ctx, claims.OrgID)
+	out := s.formatV1Token(k, avail, hasBal)
+	out["message"] = "已清零令牌已用额度"
+	out["used_quota"] = 0.0
+	c.JSON(http.StatusOK, out)
 }
 
 func (s *Server) v1DeleteToken(c *gin.Context) {
@@ -970,19 +1167,17 @@ func (s *Server) v1DeleteToken(c *gin.Context) {
 	}
 	if k.Status != 0 {
 		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			return identity.RevokeKeyWithAudit(tx, k.ID, claims.OrgID, routinggroup.Audit{ActorUserID: claims.UserID, RequestID: rand.Text()})
+			return identity.RevokeKeyScoped(tx, k.ID, claims.OrgID)
 		}); err != nil {
 			fail(c, http.StatusInternalServerError, "revoke token failed")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"revoked": k.ID})
-		return
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return identity.PurgeRevokedKeyTx(tx, claims.OrgID, k.ID, hasActiveTaskForKeyTx)
 	})
 	if errors.Is(err, identity.ErrKeyPurgeReferenced) {
-		fail(c, http.StatusConflict, "key has in-flight tasks; revocation stays active until tasks settle")
+		c.JSON(http.StatusOK, gin.H{"revoked": k.ID, "retained": true})
 		return
 	}
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/invocation"
@@ -661,5 +662,97 @@ func TestV1CompatChannelSubmitSimulateAndRelayBilling(t *testing.T) {
 	}
 	if strings.Contains(wLogs.Body.String(), `"channel_id"`) || strings.Contains(wLogs.Body.String(), `"channel_name"`) {
 		t.Fatalf("tenant /api/v1/logs leaked channel metadata: %s", wLogs.Body.String())
+	}
+}
+
+func TestV1TokenTkeapiParityAndTaskLogFilters(t *testing.T) {
+	f, db, _, userToken, _ := setupStage2Server(t)
+	wMe, meOut := f.do(t, http.MethodGet, "/api/me", userToken, nil)
+	if wMe.Code != http.StatusOK {
+		t.Fatalf("GET /api/me failed: %d", wMe.Code)
+	}
+	orgID := uint64(meOut["org_id"].(float64))
+	userID := uint64(meOut["user_id"].(float64))
+
+	// Name > 24 runes must be rejected
+	wBadName, _ := f.do(t, http.MethodPost, "/api/v1/tokens", userToken, map[string]any{
+		"name": strings.Repeat("字", 25),
+	})
+	if wBadName.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for >24 rune token name, got %d body=%s", wBadName.Code, wBadName.Body.String())
+	}
+
+	// Create token with periodic quotas, RPS, HA=0
+	wCreate, created := f.do(t, http.MethodPost, "/api/v1/tokens", userToken, map[string]any{
+		"name":                "seedance-token",
+		"quota_limit":         100,
+		"daily_quota_limit":   5.5,
+		"weekly_quota_limit":  20,
+		"monthly_quota_limit": 50,
+		"rps_limit":           12,
+		"rpm_limit":           120,
+		"high_availability":   0,
+		"allowed_models":      []string{"doubao-seedance-2-0"},
+	})
+	if wCreate.Code != http.StatusCreated {
+		t.Fatalf("create token failed: %d %s", wCreate.Code, wCreate.Body.String())
+	}
+	tokID := uint64(created["id"].(float64))
+	kid, _ := created["kid"].(string)
+	if len(kid) != 6 {
+		t.Fatalf("expected 6-digit kid on token, got %q", kid)
+	}
+	if created["unavailable_reason"] != nil {
+		t.Fatalf("expected nil unavailable_reason, got %v", created["unavailable_reason"])
+	}
+
+	// Simulate exhausted daily quota -> unavailable_reason = quota_daily
+	dayKey, weekKey, monthKey := identity.QuotaPeriodKeys(time.Now().UTC(), time.FixedZone("CST", 8*3600))
+	_ = db.Model(&identity.APIKey{}).Where("id = ?", tokID).Updates(map[string]any{
+		"daily_quota_used":   6.0,
+		"weekly_quota_used":  6.0,
+		"monthly_quota_used": 6.0,
+		"last_reset_day":     dayKey,
+		"last_reset_week":    weekKey,
+		"last_reset_month":   monthKey,
+	}).Error
+
+	wList, listOut := f.do(t, http.MethodGet, "/api/v1/tokens", userToken, nil)
+	if wList.Code != http.StatusOK {
+		t.Fatalf("list tokens failed: %d", wList.Code)
+	}
+	rows := listOut["data"].([]any)
+	first := rows[0].(map[string]any)
+	if first["unavailable_reason"] != "quota_daily" {
+		t.Fatalf("expected unavailable_reason=quota_daily, got %v", first["unavailable_reason"])
+	}
+
+	// Reset usage clears periodic counters too
+	wReset, resetOut := f.do(t, http.MethodPost, "/api/v1/tokens/"+strconv.FormatUint(tokID, 10)+"/reset-usage", userToken, nil)
+	if wReset.Code != http.StatusOK || resetOut["unavailable_reason"] != nil {
+		t.Fatalf("reset usage failed: code=%d body=%v", wReset.Code, resetOut)
+	}
+
+	// Task log hydration + token_kid / status=cancelled filtering
+	now := time.Now().UTC()
+	tRow := task.Task{
+		TaskID: "cgt-filter-1", OrgID: orgID, UserID: &userID, APIKeyID: tokID,
+		ChannelID: 1, Provider: "volcengine", Model: "doubao-seedance-2-0",
+		Status: task.StatusCancelled, SubmittedAt: now, FinishedAt: &now,
+	}
+	if err := db.Create(&tRow).Error; err != nil {
+		t.Fatalf("create task row: %v", err)
+	}
+	wTL, tlOut := f.do(t, http.MethodGet, "/api/v1/task_logs?token_kid="+kid+"&status=cancelled&action_type=video", userToken, nil)
+	if wTL.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/task_logs failed: %d %s", wTL.Code, wTL.Body.String())
+	}
+	tlRows := tlOut["data"].([]any)
+	if len(tlRows) != 1 {
+		t.Fatalf("expected 1 filtered task log, got %d (%v)", len(tlRows), tlOut)
+	}
+	gotTL := tlRows[0].(map[string]any)
+	if gotTL["token_kid"] != kid || gotTL["token_name"] != "seedance-token" || int(gotTL["status_code"].(float64)) != 499 {
+		t.Fatalf("unexpected hydrated task log row: %+v", gotTL)
 	}
 }

@@ -1,10 +1,8 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -14,52 +12,25 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/laiai/laiai-next/core/internal/identity"
 	"github.com/laiai/laiai-next/core/internal/relay"
-	"github.com/laiai/laiai-next/core/internal/routinggroup"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-var errEnableVideoScope = errors.New("enable_video_async requires video write scope")
-
 type createKeyReq struct {
-	EnableVideoAsync bool            `json:"enable_video_async"`
-	Name             string          `json:"name"`
-	Scopes           string          `json:"scopes"`
-	ExpiresInDays    int             `json:"expires_in_days"` // 0 = 永不过期
-	QuotaLimit       string          `json:"quota_limit"`     // 累计消费上限 USD，空/0=无限
-	ModelLimits      []string        `json:"model_limits"`    // 模型白名单，空=不限
-	AllowIPs         string          `json:"allow_ips"`       // IP 白名单（逗号/换行），空=不限
-	RPMLimit         int             `json:"rpm_limit"`       // key 级每分钟请求上限，0=不限（0041）
-	RoutePolicy      string          `json:"route_policy"`    // key 级路由策略（0043）：''|order|latency|throughput|price
-	ModelAccessMode  json.RawMessage `json:"model_access_mode"`
-	RoutingGroupID   json.RawMessage `json:"routing_group_id"`
-}
-
-func (r createKeyReq) routing() (*string, *uint64, error) {
-	var mode *string
-	var group *uint64
-	if len(r.ModelAccessMode) != 0 {
-		var value string
-		if bytes.Equal(bytes.TrimSpace(r.ModelAccessMode), []byte("null")) || json.Unmarshal(r.ModelAccessMode, &value) != nil {
-			return nil, nil, identity.ErrModelAccessMode
-		}
-		mode = &value
-	}
-	if len(r.RoutingGroupID) != 0 && !bytes.Equal(bytes.TrimSpace(r.RoutingGroupID), []byte("null")) {
-		var value uint64
-		if json.Unmarshal(r.RoutingGroupID, &value) != nil {
-			return nil, nil, identity.ErrRoutingGroup
-		}
-		group = &value
-	}
-	_, err := identity.ValidateKeyRouting(mode, group, joinTrim(r.ModelLimits))
-	// The public endpoint never lets a caller choose or bypass a routing group.
-	// Grouped issuance is derived from the administrator's current org default.
-	if err == nil && mode != nil && *mode != identity.ModelAccessLegacy {
-		err = identity.ErrGroupRoutingDisabled
-	}
-	return mode, group, err
+	Name              string   `json:"name"`
+	Scopes            string   `json:"scopes"`
+	ExpiresInDays     int      `json:"expires_in_days"`     // 0 = 永不过期
+	QuotaLimit        string   `json:"quota_limit"`         // 累计消费上限 USD，空/0=无限
+	DailyQuotaLimit   *float64 `json:"daily_quota_limit"`   // 日上限，空/-1=无限
+	WeeklyQuotaLimit  *float64 `json:"weekly_quota_limit"`  // 周上限，空/-1=无限
+	MonthlyQuotaLimit *float64 `json:"monthly_quota_limit"` // 月上限，空/-1=无限
+	ModelLimits       []string `json:"model_limits"`        // 模型白名单，空=不限
+	AllowIPs          string   `json:"allow_ips"`           // IP 白名单（逗号/换行），空=不限
+	RPSLimit          int      `json:"rps_limit"`           // key 级每秒请求上限，0=不限
+	RPMLimit          int      `json:"rpm_limit"`           // key 级每分钟请求上限，0=不限
+	RoutePolicy       string   `json:"route_policy"`        // key 级路由策略：''|order|latency|throughput|price
+	HighAvailability  *int8    `json:"high_availability"`   // 高可用开关，默认 1
 }
 
 func (s *Server) createKey(c *gin.Context) {
@@ -67,15 +38,6 @@ func (s *Server) createKey(c *gin.Context) {
 	var req createKeyReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	mode, group, err := req.routing()
-	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, identity.ErrGroupRoutingDisabled) {
-			status = http.StatusConflict
-		}
-		c.AbortWithStatusJSON(status, gin.H{"error": err.Error(), "code": err.Error()})
 		return
 	}
 	requestID := rand.Text()
@@ -93,8 +55,8 @@ func (s *Server) createKey(c *gin.Context) {
 			return
 		}
 	}
-	if req.RPMLimit < 0 {
-		fail(c, http.StatusBadRequest, "rpm_limit must be non-negative")
+	if req.RPSLimit < 0 || req.RPMLimit < 0 {
+		fail(c, http.StatusBadRequest, "rps_limit and rpm_limit must be non-negative")
 		return
 	}
 	if !relay.ValidRoutePolicy(req.RoutePolicy) {
@@ -103,8 +65,7 @@ func (s *Server) createKey(c *gin.Context) {
 	}
 	var plaintext string
 	var key *identity.APIKey
-	err = s.db.Transaction(func(tx *gorm.DB) error {
-		// Serialize key admission and first-time policy creation with admin policy writes.
+	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var org identity.Organization
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", claims.OrgID).Take(&org).Error; err != nil {
 			return err
@@ -112,64 +73,31 @@ func (s *Server) createKey(c *gin.Context) {
 		if err := identity.VerifyActiveMembership(tx, claims.UserID, claims.OrgID); err != nil {
 			return err
 		}
-		effectiveScopes := req.Scopes
-		effectiveModels := joinTrim(req.ModelLimits)
-		group, err = routinggroup.DefaultKeyGroupTx(tx, claims.OrgID)
-		if err != nil {
-			return err
-		}
-		if group != nil {
-			if effectiveModels != "" {
-				return identity.ErrModelAccessLimits
-			}
-			inherit := identity.ModelAccessInheritGroup
-			mode = &inherit
-			// A grouped Seedance key receives both official video and asset
-			// API scopes. Group membership and org policies remain independent
-			// runtime gates; these scopes alone confer no model or project.
-			effectiveScopes = "video:read video:write"
-		}
-		if req.EnableVideoAsync && !videoWriteScope(effectiveScopes) {
-			return errEnableVideoScope
-		}
 		ent, err := identity.LoadEntitlements(tx, claims.OrgID)
 		if err != nil {
 			return err
 		}
-		if videoWriteScope(effectiveScopes) && !ent.FeatureVideo {
-			return errVideoDisabled
-		}
 		uid := claims.UserID
 		plaintext, key, err = identity.IssueKey(tx, identity.IssueKeyInput{
-			OrgID: claims.OrgID, UserID: &uid,
-			Name: req.Name, Scopes: effectiveScopes, ExpiresAt: expires,
-			QuotaLimit:      quota,
-			ModelLimits:     effectiveModels,
-			AllowIPs:        req.AllowIPs,
-			RPMLimit:        req.RPMLimit,
-			RoutePolicy:     req.RoutePolicy,
-			MaxKeys:         ent.MaxAPIKeys, // entitlements 上限（红线：原子在 IssueKey 内强制）
-			ModelAccessMode: mode, RoutingGroupID: group,
-			PolicyAudit: routinggroup.Audit{ActorUserID: claims.UserID, RequestID: requestID},
+			OrgID:             claims.OrgID,
+			UserID:            &uid,
+			Name:              req.Name,
+			Scopes:            req.Scopes,
+			ExpiresAt:         expires,
+			QuotaLimit:        quota,
+			DailyQuotaLimit:   req.DailyQuotaLimit,
+			WeeklyQuotaLimit:  req.WeeklyQuotaLimit,
+			MonthlyQuotaLimit: req.MonthlyQuotaLimit,
+			ModelLimits:       joinTrim(req.ModelLimits),
+			AllowIPs:          req.AllowIPs,
+			RPSLimit:          req.RPSLimit,
+			RPMLimit:          req.RPMLimit,
+			RoutePolicy:       req.RoutePolicy,
+			HighAvailability:  req.HighAvailability,
+			MaxKeys:           ent.MaxAPIKeys,
 		})
 		return err
 	})
-	if errors.Is(err, errEnableVideoScope) {
-		fail(c, http.StatusBadRequest, errEnableVideoScope.Error())
-		return
-	}
-	if errors.Is(err, identity.ErrModelAccessLimits) {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model whitelist is inherited from the administrator's routing group", "code": identity.ErrModelAccessLimits.Error()})
-		return
-	}
-	if errors.Is(err, routinggroup.ErrInactive) || errors.Is(err, routinggroup.ErrOwnership) {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "administrator routing group is inactive", "code": "routing_group_inactive"})
-		return
-	}
-	if errors.Is(err, errVideoDisabled) {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "video generation is disabled for this organization", "code": errVideoDisabled.Error()})
-		return
-	}
 	if errors.Is(err, identity.ErrKeyLimit) {
 		fail(c, http.StatusForbidden, "api key limit reached for this organization")
 		return
@@ -178,16 +106,19 @@ func (s *Server) createKey(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "key issue failed")
 		return
 	}
-	// 明文仅此一次返回（红线 8）
+	// 明文仅此一次返回（红线 7）
 	c.JSON(http.StatusCreated, gin.H{
-		"id": key.ID, "key": plaintext, "prefix": key.Prefix, "name": key.Name,
+		"id":     key.ID,
+		"key":    plaintext,
+		"prefix": key.Prefix,
+		"kid":    key.KID,
+		"name":   key.Name,
 	})
 }
 
 func (s *Server) listKeys(c *gin.Context) {
 	claims := mustClaims(c)
 	var keys []identity.APIKey
-	// org_id 谓词强制（红线 5：org 隔离在 repository 层）
 	if err := s.db.Where("org_id = ?", claims.OrgID).Order("id DESC").Find(&keys).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "list failed")
 		return
@@ -195,19 +126,33 @@ func (s *Server) listKeys(c *gin.Context) {
 	out := make([]gin.H, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, gin.H{
-			"id": k.ID, "prefix": k.Prefix, "name": k.Name,
-			"scopes": k.Scopes, "status": k.Status, "expires_at": k.ExpiresAt,
-			"quota_limit": k.QuotaLimit, "used_amount": k.UsedAmount,
-			"model_limits": k.ModelLimits, "allow_ips": k.AllowIPs, "rpm_limit": k.RPMLimit,
-			"route_policy":     k.RoutePolicy,
-			"routing_group_id": k.RoutingGroupID, "model_access_mode": k.ModelAccessMode, "policy_version": k.PolicyVersion,
-			"grouped_key_issuance_enabled": k.ModelAccessMode == identity.ModelAccessInheritGroup,
+			"id":                  k.ID,
+			"prefix":              k.Prefix,
+			"kid":                 k.KID,
+			"name":                k.Name,
+			"scopes":              k.Scopes,
+			"status":              k.Status,
+			"expires_at":          k.ExpiresAt,
+			"quota_limit":         k.QuotaLimit,
+			"used_amount":         k.UsedAmount,
+			"daily_quota_limit":   k.DailyQuotaLimit,
+			"daily_quota_used":    k.DailyQuotaUsed,
+			"weekly_quota_limit":  k.WeeklyQuotaLimit,
+			"weekly_quota_used":   k.WeeklyQuotaUsed,
+			"monthly_quota_limit": k.MonthlyQuotaLimit,
+			"monthly_quota_used":  k.MonthlyQuotaUsed,
+			"model_limits":        k.ModelLimits,
+			"allow_ips":           k.AllowIPs,
+			"rps_limit":           k.RPSLimit,
+			"rpm_limit":           k.RPMLimit,
+			"route_policy":        k.RoutePolicy,
+			"high_availability":   k.HighAvailability,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"keys": out})
 }
 
-// joinTrim：去空白后逗号连接（空切片 → 空串 = 不限）。
+// joinTrim：去空白后逗号连接（空切片 -> 空串 = 不限）。
 func joinTrim(items []string) string {
 	cleaned := make([]string, 0, len(items))
 	for _, s := range items {
@@ -225,14 +170,13 @@ func (s *Server) revokeKey(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid key id")
 		return
 	}
-	// 先校验归属（org 隔离），再吊销
 	k := &identity.APIKey{}
 	if err := s.db.Where("id = ? AND org_id = ?", id, claims.OrgID).First(k).Error; err != nil {
 		fail(c, http.StatusNotFound, "key not found")
 		return
 	}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		return identity.RevokeKeyWithAudit(tx, k.ID, claims.OrgID, routinggroup.Audit{ActorUserID: claims.UserID, RequestID: rand.Text()})
+		return identity.RevokeKeyScoped(tx, k.ID, claims.OrgID)
 	}); err != nil {
 		fail(c, http.StatusInternalServerError, "revoke failed")
 		return
@@ -241,7 +185,6 @@ func (s *Server) revokeKey(c *gin.Context) {
 }
 
 // deleteKey retains revoked Keys referenced by historical video billing.
-// Revocation stops authentication; retention allows settlement and corrections.
 func (s *Server) deleteKey(c *gin.Context) {
 	claims := mustClaims(c)
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -277,17 +220,6 @@ func (s *Server) deleteKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"deleted": id})
 }
 
-var errVideoDisabled = errors.New("video_execution_disabled")
-
-func videoWriteScope(scopes string) bool {
-	for _, scope := range strings.FieldsFunc(scopes, func(r rune) bool { return r == ' ' || r == ',' }) {
-		if scope == "video:write" || scope == "video:*" || scope == "*" {
-			return true
-		}
-	}
-	return false
-}
-
 func hasActiveTaskForKeyTx(tx *gorm.DB, orgID, keyID uint64) (bool, error) {
 	var hitID uint64
 	err := tx.Table("tasks").Select("id").
@@ -303,52 +235,4 @@ func hasActiveTaskForKeyTx(tx *gorm.DB, orgID, keyID uint64) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-func (s *Server) keyVideoAccess(c *gin.Context) {
-	claims := mustClaims(c)
-	ent, err := identity.LoadEntitlements(s.db, claims.OrgID)
-	if err != nil {
-		fail(c, http.StatusServiceUnavailable, "video access unavailable")
-		return
-	}
-	state := "disabled"
-	if ent.FeatureVideo {
-		state = "enabled"
-	}
-	var defaultGroup *struct {
-		ID   uint64 `json:"id"`
-		Name string `json:"name"`
-	}
-	defaultGroupState := "none"
-	_ = s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		var row struct {
-			ID   uint64 `gorm:"column:id"`
-			Name string `gorm:"column:name"`
-		}
-		err := tx.Table("org_group_grants AS og").
-			Select("og.group_id AS id, COALESCE(routing_groups.name, '') AS name").
-			Joins("LEFT JOIN routing_groups ON routing_groups.id = og.group_id").
-			Where("og.org_id = ? AND og.default_slot = 1", claims.OrgID).Take(&row).Error
-		if err != nil {
-			return nil
-		}
-		defaultGroupState = "inactive"
-		defaultGroup = &struct {
-			ID   uint64 `json:"id"`
-			Name string `json:"name"`
-		}{ID: row.ID, Name: row.Name}
-		if id, gerr := routinggroup.DefaultKeyGroupTx(tx, claims.OrgID); gerr == nil && id != nil && *id == row.ID {
-			defaultGroupState = "active"
-		}
-		return nil
-	})
-	c.JSON(http.StatusOK, gin.H{
-		"state":                    state,
-		"can_enable":               false,
-		"grouped_issuance_enabled": defaultGroupState == "active" && state == "enabled",
-		"default_group_configured": defaultGroup != nil,
-		"default_group_state":      defaultGroupState,
-		"default_group":            defaultGroup,
-	})
 }

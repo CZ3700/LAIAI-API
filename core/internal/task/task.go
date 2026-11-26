@@ -817,6 +817,12 @@ func (s *Service) pollOne(ctx context.Context, t *Task) {
 			return
 		}
 		s.settleSuccess(t, result)
+	case StatusCancelled:
+		reason := result.FailReason
+		if reason == "" {
+			reason = "cancelled upstream"
+		}
+		s.settleCancel(t, reason)
 	case StatusFailed:
 		s.settleFailure(t, result.FailReason, true) // FailReason 是上游原文（可能回显 prompt 片段）
 	}
@@ -918,14 +924,25 @@ func (s *Service) settleSuccess(t *Task, result QueryResult) {
 	s.Log.Info("task succeeded", "task", t.TaskID, "cost", actual)
 }
 
-// settleFailure：CAS 终态转移 + 全额退款。upstreamOrigin=true 表示 reason 是上游原文
-// （审核类失败 message 可能回显 prompt 片段）：完整 clipped 原文只落 tasks.fail_reason
-// （org 隔离、用户可见的 API 数据，与向客户端转发上游错误同性质）；invocation error_brief
-// 与 stdout 日志一律用合成摘要——上游可控文本不进操作日志/请求日志（红线 7，对抗 review）。
 func (s *Service) settleFailure(t *Task, reason string, upstreamOrigin bool) {
 	if reason == "" {
 		reason = "upstream reported failure"
 	}
+	s.settleTerminalRelease(t, StatusFailed, reason, upstreamOrigin, http.StatusBadGateway)
+}
+
+func (s *Service) settleCancel(t *Task, reason string) {
+	if reason == "" {
+		reason = "cancelled"
+	}
+	s.settleTerminalRelease(t, StatusCancelled, reason, false, 499)
+}
+
+// settleTerminalRelease：failed/cancelled 共用 CAS 终态转移 + 全额退款。upstreamOrigin=true 表示 reason 是上游原文
+// （审核类失败 message 可能回显 prompt 片段）：完整 clipped 原文只落 tasks.fail_reason
+// （org 隔离、用户可见的 API 数据，与向客户端转发上游错误同性质）；invocation error_brief
+// 与 stdout 日志一律用合成摘要——上游可控文本不进操作日志/请求日志（红线 7，对抗 review）。
+func (s *Service) settleTerminalRelease(t *Task, targetStatus, reason string, upstreamOrigin bool, invCode int) {
 	reason = clipReason(reason, 1024) // fail_reason VARCHAR(1024) 上限（0156；按字节截断比字符限制更保守）
 	brief := reason
 	if upstreamOrigin {
@@ -936,7 +953,7 @@ func (s *Service) settleFailure(t *Task, reason string, upstreamOrigin bool) {
 		now := s.Now()
 		res := tx.Model(&Task{}).
 			Where("id = ? AND status IN ?", t.ID, []string{StatusQueued, StatusRunning}).
-			Updates(map[string]any{"status": StatusFailed, "fail_reason": reason, "finished_at": now})
+			Updates(map[string]any{"status": targetStatus, "fail_reason": reason, "finished_at": now})
 		if res.Error != nil {
 			return res.Error
 		}
@@ -944,7 +961,7 @@ func (s *Service) settleFailure(t *Task, reason string, upstreamOrigin bool) {
 			return nil // CAS 输了
 		}
 		won = true
-		return ledger.Release(tx, t.HoldID) // 失败全退
+		return ledger.Release(tx, t.HoldID) // 失败/取消全退
 	})
 	if err != nil {
 		s.Log.Error("TASK FAIL-RELEASE FAILED — funds stuck", "task", t.TaskID, "err", err)
@@ -956,10 +973,10 @@ func (s *Service) settleFailure(t *Task, reason string, upstreamOrigin bool) {
 	if t.HoldAmountUSD.IsPositive() {
 		_ = identity.AddKeyUsageSigned(s.DB, t.APIKeyID, t.HoldAmountUSD.Neg()) // 预留全退（与 ledger Release 同向）
 	}
-	t.Status = StatusFailed
-	s.recordInvocation(t, invocation.StatusUpstreamError, http.StatusBadGateway, 0, decimal.Zero, "", brief)
+	t.Status = targetStatus
+	s.recordInvocation(t, invocation.StatusUpstreamError, invCode, 0, decimal.Zero, "", brief)
 	s.emitNotify(t, eventTaskFailed) // 终态通知（§4.9）：CAS 赢者唯一 emit 点
-	s.Log.Warn("task failed", "task", t.TaskID, "reason", brief)
+	s.Log.Warn("task ended without charge", "status", targetStatus, "task", t.TaskID, "reason", brief)
 }
 
 // recordInvocation：任务终态落 Invocation Store（视频消费进请求日志/用量口径，P0-1 配套）。
@@ -1120,6 +1137,9 @@ func (s *Service) CancelTask(ctx context.Context, orgID uint64, idOrTaskID strin
 		cancelPath = strings.TrimSpace(fwd.CancelPath)
 		authType = strings.TrimSpace(fwd.AuthType)
 	}
+	if cancelPath == "" && (t.Provider == "volcengine" || t.Provider == "ark") {
+		cancelPath = "/api/v3/contents/generations/tasks/${task_id}"
+	}
 	if !admin && t.Status == StatusRunning {
 		if cancelPath == "" {
 			return nil, ErrTaskNotCancellable
@@ -1130,7 +1150,7 @@ func (s *Service) CancelTask(ctx context.Context, orgID uint64, idOrTaskID strin
 	} else if t.UpstreamTaskID != "" && s.Keyring != nil && cancelPath != "" {
 		_ = s.sendUpstreamCancel(ctx, t, cancelPath, authType)
 	}
-	s.settleFailure(t, "cancelled via console", false)
+	s.settleCancel(t, "cancelled via console")
 	reloaded := &Task{}
 	if err := s.DB.WithContext(ctx).First(reloaded, t.ID).Error; err == nil {
 		return reloaded, nil
@@ -1175,6 +1195,9 @@ func (s *Service) sendUpstreamCancel(ctx context.Context, t *Task, cancelPath, a
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("upstream cancel returned HTTP %d", resp.StatusCode)
 	}

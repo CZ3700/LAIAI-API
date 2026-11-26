@@ -705,7 +705,13 @@
     "duration_hm": "{{hours}}h {{minutes}}m",
     "active_status_desc": "When enabled, this API key can call the gateway; when disabled, requests are rejected",
     "reason_inactive_30d": "Inactive",
-    "reason_inactive_30d_tip": "Automatically disabled after 30 days of inactivity; re-enable manually before use"
+    "reason_inactive_30d_tip": "Automatically disabled after 30 days of inactivity; re-enable manually before use",
+    "created_key_title": "API Key Created (Save It Now)",
+    "created_key_warning": "For security reasons, the plaintext secret key is shown only once at creation time and cannot be revealed again later. Copy and store it safely now.",
+    "created_key_label": "Secret API Key",
+    "copy_full_key": "Copy Secret Key",
+    "copy_kid_hint": "Copy Key ID (secret key is only shown once at creation)",
+    "saved_confirm": "I Have Saved the Key"
   },
   "logs": {
     "title": "Request Logs",
@@ -3357,8 +3363,7 @@
     "route_price": "Lowest Cost (price)",
     "route_throughput": "Highest Throughput (throughput)",
     "rpm": "RPM Limit",
-    "security_notice": "Security Notice: Your API Key plaintext is shown only once upon creation. Only an irreversible hash is stored.",
-    "video_async": "Grant Async Video Generation Scope (video:write)"
+    "security_notice": "Security Notice: Your API Key plaintext is shown only once upon creation. Only an irreversible hash is stored."
   },
   "ark_monitor": {
     "account_deleted": "Account deleted",

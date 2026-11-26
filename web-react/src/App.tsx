@@ -15,7 +15,7 @@ const DocsManager = lazy(() => import('./pages/Plugins/DocsApi/DocsManager'));
 // Shared & User Console Pages
 const Dashboard = lazy(() => import('./pages/Dashboard/Dashboard'));
 const ModelDistribution30dPage = lazy(() => import('./pages/Dashboard/ModelDistribution30dPage'));
-const ApiKeysPage = lazy(() => import('./pages/Console/ApiKeysPage'));
+const Tokens = lazy(() => import('./pages/Tokens/Tokens'));
 const Logs = lazy(() => import('./pages/Logs/Logs'));
 const TaskLogs = lazy(() => import('./pages/Logs/TaskLogs'));
 const WalletPage = lazy(() => import('./pages/Console/WalletPage'));
@@ -100,8 +100,8 @@ const App: React.FC = () => {
         <Route element={<RequireAuth adminPath={adminPath}><DashboardLayout mode="user" /></RequireAuth>}>
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/dashboard/model-distribution" element={<ModelDistribution30dPage />} />
-          <Route path="/apikeys" element={<ApiKeysPage />} />
-          <Route path="/tokens" element={<Navigate to="/apikeys" replace />} />
+          <Route path="/apikeys" element={<Tokens />} />
+          <Route path="/tokens" element={<Tokens />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/logs/:logType" element={<Logs />} />
           <Route path="/task-logs" element={<TaskLogs />} />
@@ -116,8 +116,8 @@ const App: React.FC = () => {
         <Route element={a(<DashboardLayout mode="admin" />)}>
           <Route path={`/${adminPath}/dashboard`} element={<Dashboard />} />
           <Route path={`/${adminPath}/dashboard/model-distribution`} element={<ModelDistribution30dPage />} />
-          <Route path={`/${adminPath}/apikeys`} element={<ApiKeysPage />} />
-          <Route path={`/${adminPath}/tokens`} element={<Navigate to={`/${adminPath}/apikeys`} replace />} />
+          <Route path={`/${adminPath}/apikeys`} element={<Tokens />} />
+          <Route path={`/${adminPath}/tokens`} element={<Tokens />} />
 
           <Route path={`/${adminPath}/logs`} element={<Logs />} />
           <Route path={`/${adminPath}/logs/:logType`} element={<Logs />} />

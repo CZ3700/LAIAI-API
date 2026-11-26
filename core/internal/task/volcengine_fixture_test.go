@@ -197,13 +197,31 @@ func TestVolcengineEstimateCalibration(t *testing.T) {
 	}
 }
 
-// ParseQuery 终态别名："canceled" 单 L 拼写不得落 default→running（方言漂移会拖 30min 超时）。
+// ParseQuery 终态别名："canceled" 单 L 拼写不得落 default→running（方言漂移会拖 30min 超时）；cancelled/canceled 映射 StatusCancelled。
 func TestVolcengineParseQueryCanceledAlias(t *testing.T) {
 	ad := volcengineTask{}
-	for _, st := range []string{"failed", "cancelled", "canceled"} {
+	rFailed, err := ad.ParseQuery(fixtureResp(200, `{"id":"cgt-f","status":"failed","error":{"message":"boom"}}`))
+	if err != nil || rFailed.Status != StatusFailed {
+		t.Fatalf("status %q → %+v (err %v), want StatusFailed", "failed", rFailed, err)
+	}
+	for _, st := range []string{"cancelled", "canceled"} {
 		r, err := ad.ParseQuery(fixtureResp(200, `{"id":"cgt-x","status":"`+st+`","error":{"message":"boom"}}`))
-		if err != nil || r.Status != StatusFailed {
-			t.Fatalf("status %q → %+v (err %v), want StatusFailed", st, r, err)
+		if err != nil || r.Status != StatusCancelled {
+			t.Fatalf("status %q → %+v (err %v), want StatusCancelled", st, r, err)
 		}
+	}
+	// total_tokens fallback when completion_tokens omitted
+	rSucc, err := ad.ParseQuery(fixtureResp(200, `{"id":"cgt-s","status":"succeeded","content":{"video_url":"https://cdn.example.com/v.mp4"},"usage":{"total_tokens":123456}}`))
+	if err != nil || rSucc.Status != StatusSucceeded || rSucc.CompletionTokens != 123456 {
+		t.Fatalf("total_tokens fallback → %+v (err %v)", rSucc, err)
+	}
+}
+
+func TestVolcengineEstimateSmartDurationMinusOne(t *testing.T) {
+	ad := volcengineTask{}
+	estAuto := ad.EstimateOutputTokens("doubao-seedance-2-0", nil, map[string]any{"duration": float64(-1), "resolution": "720p"})
+	est10s := ad.EstimateOutputTokens("doubao-seedance-2-0", nil, map[string]any{"duration": float64(10), "resolution": "720p"})
+	if estAuto <= 0 || estAuto != est10s {
+		t.Fatalf("duration=-1 est=%d, want equal to 10s est=%d", estAuto, est10s)
 	}
 }

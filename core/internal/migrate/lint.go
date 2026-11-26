@@ -87,9 +87,12 @@ func HasDanger(findings []LintFinding) bool {
 	return false
 }
 
-var reCreateTable = regexp.MustCompile("(?i)^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?`?([A-Za-z0-9_]+)`?")
+var (
+	reCreateTable = regexp.MustCompile("(?i)^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?`?([A-Za-z0-9_]+)`?")
+	reDropTable   = regexp.MustCompile("(?i)^DROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?`?([A-Za-z0-9_]+)`?")
+)
 
-// CreatedTables 解析所有迁移里 CREATE TABLE 的表名（即 schema 期望存在的表集），
+// CreatedTables 解析所有迁移里最终应存在的表名（CREATE TABLE 加入、DROP TABLE 移除），
 // 去重、按名排序。schema-doctor 据此探测线上是否被迁移外手段删表（漂移）。
 func CreatedTables(fsys fs.FS) ([]string, error) {
 	files, err := fs.Glob(fsys, "*.sql")
@@ -97,8 +100,7 @@ func CreatedTables(fsys fs.FS) ([]string, error) {
 		return nil, err
 	}
 	sort.Strings(files)
-	seen := map[string]bool{}
-	var out []string
+	present := map[string]bool{}
 	for _, f := range files {
 		raw, err := fs.ReadFile(fsys, f)
 		if err != nil {
@@ -106,12 +108,15 @@ func CreatedTables(fsys fs.FS) ([]string, error) {
 		}
 		for _, s := range splitStatements(string(raw)) {
 			if m := reCreateTable.FindStringSubmatch(s); m != nil {
-				if name := m[1]; !seen[name] {
-					seen[name] = true
-					out = append(out, name)
-				}
+				present[m[1]] = true
+			} else if m := reDropTable.FindStringSubmatch(s); m != nil {
+				delete(present, m[1])
 			}
 		}
+	}
+	out := make([]string, 0, len(present))
+	for name := range present {
+		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out, nil

@@ -58,7 +58,7 @@ func TestTaskHeaderIsolationMediaHandlers(t *testing.T) {
 	defer sqlDB.Close()
 	for _, sql := range []string{
 		`CREATE TABLE organizations (id INTEGER PRIMARY KEY, status INTEGER)`,
-		`CREATE TABLE api_keys (id INTEGER PRIMARY KEY, org_id INTEGER, key_hash TEXT, status INTEGER, model_access_mode TEXT, policy_version INTEGER)`,
+		`CREATE TABLE api_keys (id INTEGER PRIMARY KEY, org_id INTEGER, user_id INTEGER, name TEXT DEFAULT '', prefix TEXT DEFAULT '', kid TEXT DEFAULT '', key_hash TEXT, scopes TEXT DEFAULT '', status INTEGER, expires_at DATETIME, quota_limit NUMERIC DEFAULT 0, used_amount NUMERIC DEFAULT 0, daily_quota_limit REAL DEFAULT -1, daily_quota_used REAL DEFAULT 0, weekly_quota_limit REAL DEFAULT -1, weekly_quota_used REAL DEFAULT 0, monthly_quota_limit REAL DEFAULT -1, monthly_quota_used REAL DEFAULT 0, last_reset_day TEXT DEFAULT '', last_reset_week TEXT DEFAULT '', last_reset_month TEXT DEFAULT '', model_limits TEXT DEFAULT '', allow_ips TEXT DEFAULT '', rps_limit INTEGER DEFAULT 0, rpm_limit INTEGER DEFAULT 0, route_policy TEXT DEFAULT '', high_availability INTEGER DEFAULT 1, last_used_at DATETIME, created_at DATETIME, updated_at DATETIME)`,
 		`CREATE TABLE tasks (id INTEGER PRIMARY KEY, task_id TEXT, org_id INTEGER, provider TEXT, status TEXT, channel_id INTEGER, credential_id INTEGER, result_ref TEXT, result_url TEXT)`,
 		`CREATE TABLE channels (id INTEGER PRIMARY KEY, provider TEXT, base_url TEXT, credential_enc TEXT)`,
 		`CREATE TABLE ext_settings (name TEXT PRIMARY KEY, value TEXT)`,
@@ -71,7 +71,7 @@ func TestTaskHeaderIsolationMediaHandlers(t *testing.T) {
 	}
 	key := "sk-laiai-synthetic-media-test"
 	sum := sha256.Sum256([]byte(key))
-	if err := db.Exec(`INSERT INTO api_keys VALUES (1,1,?,1,'legacy',1)`, hex.EncodeToString(sum[:])).Error; err != nil {
+	if err := db.Exec(`INSERT INTO api_keys (id, org_id, key_hash, status) VALUES (1,1,?,1)`, hex.EncodeToString(sum[:])).Error; err != nil {
 		t.Fatal(err)
 	}
 	kr, err := crypto.NewKeyring("test:"+base64.StdEncoding.EncodeToString(make([]byte, 32)), "test")

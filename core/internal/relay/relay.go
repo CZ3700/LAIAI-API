@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -376,14 +377,12 @@ func (r *Relay) clearSuggestDisable(channelID uint64) {
 	}()
 }
 
-// keyGate：API Key 精细管控校验（0012）。返回 (HTTP 码, 文案, 是否放行)。
-// IP 白名单 / 累计额度 / 模型白名单，任一不过即拒（被拒请求不计费不入上游）。
-// 数据面入口请调 r.gateKey（含 key 级 RPM）；本函数保留为纯校验单元。
+// keyGate：API Key 精细管控校验（IP 白名单 / 累计及周期额度 / 模型白名单）。返回 (HTTP 码, 文案, 是否放行)。
 func keyGate(key *identity.APIKey, clientIP, model string) (int, string, bool) {
 	if !key.AllowsIP(clientIP) {
 		return http.StatusForbidden, "this api key is not allowed from your ip address", false
 	}
-	if key.QuotaExhausted() {
+	if key.QuotaExhaustedAt(time.Now().UTC(), nil) {
 		return http.StatusPaymentRequired, "this api key has reached its quota limit", false
 	}
 	if !key.AllowsModel(model) {
@@ -392,46 +391,47 @@ func keyGate(key *identity.APIKey, clientIP, model string) (int, string, bool) {
 	return 0, "", true
 }
 
-// gateKey preserves legacy key admission and the exported task gate. Grouped
-// relay handlers use gateRelayKey with an authoritative model observation.
-// 429 的 Retry-After 头由 relayErr 统一设置。
+// gateKey 校验 Key 管控（IP/累计及周期额度/模型/RPS/RPM）。
 func (r *Relay) gateKey(key *identity.APIKey, clientIP, model string) (int, string, bool) {
-	if code, msg, ok := keyGate(key, clientIP, model); !ok {
-		return code, msg, false
-	}
-	if !r.allowKeyRate(key.ID, key.RPMLimit) {
-		return http.StatusTooManyRequests, "this api key has exceeded its rpm limit, slow down", false
-	}
-	return 0, "", true
-}
-
-// GateKey / AllowModelRate：准入原语的导出封装（指令 P0-1 统一 admission）。
-// task/video 等非本包数据面入口复用同一实例——同一 gateKey 语义、同一 (org,model)
-// 限流窗口（Redis 或进程内），不另建第二套状态。
-func (r *Relay) GateKey(key *identity.APIKey, clientIP, model string) (code int, msg string, ok bool) {
-	return r.gateKey(key, clientIP, model)
-}
-
-// GateOfficialVideoKey applies the key's IP, monetary quota and RPM controls.
-// A grouped key's model and bound channel are checked by the calling video
-// or relay admission path before this model-independent control runs.
-func (r *Relay) GateOfficialVideoKey(key *identity.APIKey, clientIP, model string) (code int, msg string, ok bool) {
 	if key == nil {
 		return http.StatusUnauthorized, "invalid api key", false
-	}
-	if key.ModelAccessMode != identity.ModelAccessInheritGroup {
-		return r.gateKey(key, clientIP, model)
 	}
 	if !key.AllowsIP(clientIP) {
 		return http.StatusForbidden, "this api key is not allowed from your ip address", false
 	}
-	if key.QuotaExhausted() {
+	if key.QuotaExhaustedAt(r.Now(), nil) {
 		return http.StatusPaymentRequired, "this api key has reached its quota limit", false
+	}
+	if !key.AllowsModel(model) {
+		return http.StatusForbidden, "this api key is not allowed to use model " + model, false
+	}
+	if !r.allowKeyRPS(key.ID, key.RPSLimit) {
+		return http.StatusTooManyRequests, "this api key has exceeded its rps limit, slow down", false
 	}
 	if !r.allowKeyRate(key.ID, key.RPMLimit) {
 		return http.StatusTooManyRequests, "this api key has exceeded its rpm limit, slow down", false
 	}
 	return 0, "", true
+}
+
+// GateKey / AllowModelRate：准入原语的导出封装（task/video 与 chat 共用同一限流窗口与校验语义）。
+func (r *Relay) GateKey(key *identity.APIKey, clientIP, model string) (code int, msg string, ok bool) {
+	return r.gateKey(key, clientIP, model)
+}
+
+func (r *Relay) gateRelayKey(_ context.Context, key *identity.APIKey, clientIP, model string) (int, string, bool) {
+	return r.gateKey(key, clientIP, model)
+}
+
+func (r *Relay) relayModelAllowed(_ context.Context, key *identity.APIKey, model string) bool {
+	return key != nil && key.AllowsModel(model)
+}
+
+func (r *Relay) pickRelayChannel(_ context.Context, key *identity.APIKey, channels []Channel, model string, attempt int, exclude map[uint64]bool, policy string, pref *providerPref) (*Channel, error) {
+	if key == nil {
+		return nil, ErrNoChannel
+	}
+	return r.pickSnapshotPolicy(channels, model, attempt, exclude, policy, key.OrgID, pref)
 }
 
 func (r *Relay) AllowModelRate(orgID uint64, model string) (ok bool, rpm int) {

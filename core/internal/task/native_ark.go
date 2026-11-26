@@ -100,9 +100,14 @@ func extractTaskVideoFeatures(content []any, params map[string]any, timeMult dec
 		if ga, ok := params["generate_audio"].(bool); ok {
 			feat.HasAudio = ga
 		}
-		if d, ok := anyFloat64(params["duration"]); ok && d > 0 {
-			dd := decimal.NewFromFloat(d)
-			feat.DurationSeconds = &dd
+		if d, ok := anyFloat64(params["duration"]); ok {
+			if d == -1 {
+				d = 10
+			}
+			if d > 0 {
+				dd := decimal.NewFromFloat(d)
+				feat.DurationSeconds = &dd
+			}
 		}
 		if f, ok := anyFloat64(params["fps"]); ok && f > 0 {
 			fd := decimal.NewFromFloat(f)
@@ -455,7 +460,8 @@ func (s *Service) HandleArkNativeGet(c *gin.Context) {
 	c.JSON(http.StatusOK, forward.WrapVolcengineQuery(taskToOfficialView(t)))
 }
 
-// HandleArkNativeCancel 处理 DELETE /api/v3/contents/generations/tasks/:id（仅 queued 态可取消退款）。
+// HandleArkNativeCancel 处理 DELETE /api/v3/contents/generations/tasks/:id。
+// queued 态直接取消退款；running 态对 Volcengine/Ark 等支持上游 DELETE 的渠道先调用上游取消后再结算退款。
 func (s *Service) HandleArkNativeCancel(c *gin.Context) {
 	key, ok := s.authKey(c)
 	if !ok {
@@ -474,15 +480,28 @@ func (s *Service) HandleArkNativeCancel(c *gin.Context) {
 		taskErr(c, http.StatusInternalServerError, "task query failed")
 		return
 	}
-	if t.Status != StatusQueued {
+	if t.Status != StatusQueued && t.Status != StatusRunning {
 		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
 			"error": gin.H{
 				"code":    "InvalidTaskState",
-				"message": "only queued tasks can be cancelled",
+				"message": "task cannot be cancelled in current state",
 			},
 		})
 		return
 	}
-	s.settleFailure(t, "cancelled by client", false)
-	c.JSON(http.StatusOK, gin.H{"id": t.TaskID, "status": StatusFailed})
+	cancelled, err := s.CancelTask(c.Request.Context(), key.OrgID, t.TaskID, false)
+	if err != nil {
+		if errors.Is(err, ErrTaskNotCancellable) {
+			c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+				"error": gin.H{
+					"code":    "InvalidTaskState",
+					"message": "task cannot be cancelled in current state",
+				},
+			})
+			return
+		}
+		taskErr(c, http.StatusInternalServerError, "task cancel failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"id": cancelled.TaskID, "status": cancelled.Status})
 }

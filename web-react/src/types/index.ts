@@ -401,8 +401,10 @@ export interface ApiToken {
   id: number;
   user_id: string;
   token_key: string;
+  key?: string;
   kid?: string;
   name: string;
+  expires_at?: string | null;
   quota_limit: number;
   quota_used: number;
   allowed_models: string[];

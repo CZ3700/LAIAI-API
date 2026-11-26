@@ -397,7 +397,9 @@ func (s *Server) applyV1LogFilters(c *gin.Context, isAdmin bool, orgID uint64) *
 			q = q.Where("status_code = ?", sc)
 		}
 	}
-	if at := mapTkeActionToModality(c.Query("action_type")); at != "" {
+	if at := mapTkeActionToModality(c.Query("action_type")); at == "vision" {
+		q = q.Where("modality IN ?", []string{"image", "video"})
+	} else if at != "" {
 		q = q.Where("modality = ?", at)
 	} else if mod := strings.TrimSpace(c.Query("modality")); mod != "" {
 		q = q.Where("modality = ?", mod)
@@ -405,6 +407,33 @@ func (s *Server) applyV1LogFilters(c *gin.Context, isAdmin bool, orgID uint64) *
 	if kw := strings.TrimSpace(cmp.Or(c.Query("search_keyword"), c.Query("q"))); kw != "" {
 		pat := "%" + escapeSQLLike(kw) + "%"
 		q = q.Where(`request_id LIKE ? ESCAPE '\' OR upstream_request_id LIKE ? ESCAPE '\' OR model LIKE ? ESCAPE '\'`, pat, pat, pat)
+	}
+	if lid := strings.TrimSpace(c.Query("log_id")); lid != "" {
+		q = q.Where("request_id LIKE ? ESCAPE '\\'", "%"+escapeSQLLike(lid)+"%")
+	}
+	if tkid := strings.TrimSpace(c.Query("token_kid")); tkid != "" {
+		var keyIDs []uint64
+		pat := "%" + escapeSQLLike(tkid) + "%"
+		kq := s.readOnly().WithContext(c.Request.Context()).Model(&identity.APIKey{}).Where(`kid LIKE ? ESCAPE '\' OR prefix LIKE ? ESCAPE '\'`, pat, pat)
+		if !isAdmin {
+			kq = kq.Where("org_id = ?", orgID)
+		}
+		_ = kq.Pluck("id", &keyIDs).Error
+		if len(keyIDs) == 0 {
+			q = q.Where("1 = 0")
+		} else {
+			q = q.Where("api_key_id IN ?", keyIDs)
+		}
+	}
+	if sd := strings.TrimSpace(c.Query("start_date")); sd != "" {
+		if t, err := time.ParseInLocation("2006-01-02", sd, s.siteLocation()); err == nil {
+			q = q.Where("created_at >= ?", t.UTC())
+		}
+	}
+	if ed := strings.TrimSpace(c.Query("end_date")); ed != "" {
+		if t, err := time.ParseInLocation("2006-01-02", ed, s.siteLocation()); err == nil {
+			q = q.Where("created_at < ?", t.AddDate(0, 0, 1).UTC())
+		}
 	}
 	return q
 }
@@ -433,7 +462,7 @@ func (s *Server) formatInvocationRowsForV1(c *gin.Context, rows []invocation.Inv
 		}
 		if len(keyIDs) > 0 {
 			var ks []identity.APIKey
-			_ = rdb.Select("id, name, prefix").Where("id IN ?", keyIDs).Find(&ks).Error
+			_ = rdb.Select("id, name, prefix, kid").Where("id IN ?", keyIDs).Find(&ks).Error
 			for _, k := range ks {
 				keyMap[k.ID] = k
 			}
@@ -467,7 +496,7 @@ func (s *Server) formatInvocationRowsForV1(c *gin.Context, rows []invocation.Inv
 			"request_id":        inv.RequestID,
 			"api_key_id":        inv.APIKeyID,
 			"token_name":        k.Name,
-			"token_kid":         k.Prefix,
+			"token_kid":         cmp.Or(strings.TrimSpace(k.KID), k.Prefix),
 			"model":             inv.Model,
 			"modality":          inv.Modality,
 			"action_type":       modalityToCN(inv.Modality),
@@ -570,79 +599,163 @@ func (s *Server) v1ExportLogs(c *gin.Context) {
 }
 
 func (s *Server) formatV1TaskRow(t task.Task, isAdmin bool) gin.H {
-	durMs := 0
-	if t.FinishedAt != nil {
-		durMs = max(0, int(t.FinishedAt.Sub(t.SubmittedAt).Milliseconds()))
+	rows := s.formatV1TaskRows(s.db, []task.Task{t}, isAdmin)
+	if len(rows) > 0 {
+		return rows[0]
 	}
-	previews := []string{}
-	if strings.TrimSpace(t.ResultURL) != "" {
-		previews = []string{t.ResultURL}
+	return gin.H{}
+}
+
+func (s *Server) formatV1TaskRows(db *gorm.DB, rows []task.Task, isAdmin bool) []gin.H {
+	keyMap := map[uint64]identity.APIKey{}
+	chanMap := map[uint64]relay.Channel{}
+	userMap := map[uint64]identity.User{}
+	if len(rows) > 0 && db != nil {
+		keyIDs := make([]uint64, 0, len(rows))
+		userIDs := make([]uint64, 0, len(rows))
+		chanIDs := make([]uint64, 0, len(rows))
+		for _, r := range rows {
+			if r.APIKeyID > 0 {
+				keyIDs = append(keyIDs, r.APIKeyID)
+			}
+			if r.UserID != nil && *r.UserID > 0 {
+				userIDs = append(userIDs, *r.UserID)
+			}
+			if isAdmin && r.ChannelID > 0 {
+				chanIDs = append(chanIDs, r.ChannelID)
+			}
+		}
+		if len(keyIDs) > 0 {
+			var ks []identity.APIKey
+			_ = db.Select("id, name, prefix, kid").Where("id IN ?", keyIDs).Find(&ks).Error
+			for _, k := range ks {
+				keyMap[k.ID] = k
+			}
+		}
+		if len(userIDs) > 0 {
+			var us []identity.User
+			_ = db.Select("id, email, display_name, admin_remark").Where("id IN ?", userIDs).Find(&us).Error
+			for _, u := range us {
+				userMap[u.ID] = u
+			}
+		}
+		if isAdmin && len(chanIDs) > 0 {
+			var chs []relay.Channel
+			_ = db.Select("id, name, provider").Where("id IN ?", chanIDs).Find(&chs).Error
+			for _, ch := range chs {
+				chanMap[ch.ID] = ch
+			}
+		}
 	}
-	statusCode := 0
-	switch t.Status {
-	case task.StatusSucceeded:
-		statusCode = http.StatusOK
-	case task.StatusFailed:
-		statusCode = http.StatusInternalServerError
-	case "cancelled", "canceled":
-		statusCode = 499
+
+	out := make([]gin.H, 0, len(rows))
+	for _, t := range rows {
+		durMs := 0
+		if t.FinishedAt != nil {
+			durMs = max(0, int(t.FinishedAt.Sub(t.SubmittedAt).Milliseconds()))
+		}
+		previews := []string{}
+		if strings.TrimSpace(t.ResultURL) != "" {
+			previews = []string{t.ResultURL}
+		}
+		statusCode := 0
+		switch t.Status {
+		case task.StatusSucceeded:
+			statusCode = http.StatusOK
+		case task.StatusFailed:
+			statusCode = http.StatusInternalServerError
+		case task.StatusCancelled, "canceled":
+			statusCode = 499
+		}
+		respPayload, _ := json.Marshal(gin.H{
+			"status":     t.Status,
+			"task_id":    t.TaskID,
+			"result_url": t.ResultURL,
+			"error":      t.FailReason,
+		})
+		k := keyMap[t.APIKeyID]
+		isCompleted := t.FinishedAt != nil
+		hasVideo := strings.TrimSpace(t.ResultURL) != ""
+		billingPresent := t.CostUSD.IsPositive() || t.BillingDetail != "" || t.BillingRulePID != ""
+		billingFailed := t.Status == task.StatusSucceeded && t.CostUSD.IsZero() && !t.PricePerCallUSD.IsPositive() && t.ActualTokens > 0
+		actionType := "视频"
+		modality := "video"
+		switch t.Provider {
+		case "suno":
+			actionType = "音频"
+			modality = "audio"
+		case "midjourney":
+			actionType = "图片"
+			modality = "image"
+		}
+		entry := gin.H{
+			"id":                t.ID,
+			"log_id":            t.TaskID,
+			"task_id":           t.TaskID,
+			"api_key_id":        t.APIKeyID,
+			"token_name":        k.Name,
+			"token_kid":         cmp.Or(strings.TrimSpace(k.KID), k.Prefix),
+			"model":             t.Model,
+			"endpoint":          protocolToEndpoint(t.Provider, modality),
+			"action_type":       actionType,
+			"status":            t.Status,
+			"status_code":       statusCode,
+			"is_completed":      isCompleted,
+			"billing_present":   billingPresent,
+			"billing_failed":    billingFailed,
+			"has_video":         hasVideo,
+			"fail_reason":       t.FailReason,
+			"error_message":     t.FailReason,
+			"response_content":  string(respPayload),
+			"result_url":        t.ResultURL,
+			"preview_urls":      previews,
+			"prompt_tokens":     t.EstTokens,
+			"completion_tokens": t.ActualTokens,
+			"est_tokens":        t.EstTokens,
+			"actual_tokens":     t.ActualTokens,
+			"hold_amount_usd":   t.HoldAmountUSD,
+			"cost":              decFloat(t.CostUSD),
+			"cost_usd":          t.CostUSD,
+			"billing_frozen":    !isCompleted && t.HoldAmountUSD.IsPositive(),
+			"billing_pid":       t.BillingRulePID,
+			"billing_rule_pid":  t.BillingRulePID,
+			"forward_eid":       t.ForwardRuleEID,
+			"forward_rule_eid":  t.ForwardRuleEID,
+			"billing_detail":    t.BillingDetail,
+			"features_json":     t.FeaturesJSON,
+			"time_multiplier":   t.TimeMultiplier,
+			"latency_ms":        durMs,
+			"duration_ms":       durMs,
+			"submitted_at":      t.SubmittedAt,
+			"started_at":        t.StartedAt,
+			"finished_at":       t.FinishedAt,
+			"created_at":        t.SubmittedAt,
+		}
+		if t.UserID != nil {
+			entry["user_id"] = strconv.FormatUint(*t.UserID, 10)
+			entry["user_uid"] = strconv.FormatUint(*t.UserID, 10)
+			if u, ok := userMap[*t.UserID]; ok {
+				entry["user_nickname"] = cmp.Or(u.DisplayName, u.Email)
+				if isAdmin && strings.TrimSpace(u.AdminRemark) != "" {
+					entry["user_remark"] = u.AdminRemark
+				}
+			}
+		}
+		if isAdmin {
+			chName := t.Provider
+			if ch, ok := chanMap[t.ChannelID]; ok && strings.TrimSpace(ch.Name) != "" {
+				chName = ch.Name
+			}
+			entry["org_id"] = t.OrgID
+			entry["channel_id"] = t.ChannelID
+			entry["channel_name"] = chName
+			entry["provider"] = t.Provider
+			entry["upstream_task_id"] = t.UpstreamTaskID
+			entry["upstream_request_id"] = t.UpstreamTaskID
+		}
+		out = append(out, entry)
 	}
-	respPayload, _ := json.Marshal(gin.H{
-		"status":     t.Status,
-		"task_id":    t.TaskID,
-		"result_url": t.ResultURL,
-		"error":      t.FailReason,
-	})
-	entry := gin.H{
-		"id":                t.ID,
-		"log_id":            t.TaskID,
-		"task_id":           t.TaskID,
-		"api_key_id":        t.APIKeyID,
-		"model":             t.Model,
-		"endpoint":          "/v1/video/generations",
-		"action_type":       "视频",
-		"status":            t.Status,
-		"status_code":       statusCode,
-		"fail_reason":       t.FailReason,
-		"error_message":     t.FailReason,
-		"response_content":  string(respPayload),
-		"result_url":        t.ResultURL,
-		"preview_urls":      previews,
-		"prompt_tokens":     t.EstTokens,
-		"completion_tokens": t.ActualTokens,
-		"est_tokens":        t.EstTokens,
-		"actual_tokens":     t.ActualTokens,
-		"hold_amount_usd":   t.HoldAmountUSD,
-		"cost":              decFloat(t.CostUSD),
-		"cost_usd":          t.CostUSD,
-		"billing_frozen":    t.FinishedAt == nil && t.HoldAmountUSD.IsPositive(),
-		"billing_pid":       t.BillingRulePID,
-		"billing_rule_pid":  t.BillingRulePID,
-		"forward_eid":       t.ForwardRuleEID,
-		"forward_rule_eid":  t.ForwardRuleEID,
-		"billing_detail":    t.BillingDetail,
-		"features_json":     t.FeaturesJSON,
-		"time_multiplier":   t.TimeMultiplier,
-		"latency_ms":        durMs,
-		"duration_ms":       durMs,
-		"submitted_at":      t.SubmittedAt,
-		"started_at":        t.StartedAt,
-		"finished_at":       t.FinishedAt,
-		"created_at":        t.SubmittedAt,
-	}
-	if t.UserID != nil {
-		entry["user_id"] = strconv.FormatUint(*t.UserID, 10)
-		entry["user_uid"] = strconv.FormatUint(*t.UserID, 10)
-	}
-	if isAdmin {
-		entry["org_id"] = t.OrgID
-		entry["channel_id"] = t.ChannelID
-		entry["channel_name"] = t.Provider
-		entry["provider"] = t.Provider
-		entry["upstream_task_id"] = t.UpstreamTaskID
-		entry["upstream_request_id"] = t.UpstreamTaskID
-	}
-	return entry
+	return out
 }
 
 func (s *Server) v1ListTaskLogs(c *gin.Context) {
@@ -665,10 +778,7 @@ func (s *Server) v1ListTaskLogs(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "query task logs failed")
 		return
 	}
-	out := make([]gin.H, 0, len(rows))
-	for _, t := range rows {
-		out = append(out, s.formatV1TaskRow(t, isAdmin))
-	}
+	out := s.formatV1TaskRows(s.readOnly().WithContext(c.Request.Context()), rows, isAdmin)
 	c.JSON(http.StatusOK, gin.H{
 		"data":          out,
 		"total":         total,
@@ -688,16 +798,60 @@ func (s *Server) applyV1TaskFilters(c *gin.Context, isAdmin bool, orgID uint64) 
 		}
 	}
 	if m := strings.TrimSpace(c.Query("model")); m != "" {
-		q = q.Where("model LIKE ?", "%"+escapeSQLLike(m)+"%")
+		q = q.Where("model LIKE ? ESCAPE '\\'", "%"+escapeSQLLike(m)+"%")
+	}
+	if tid := strings.TrimSpace(cmp.Or(c.Query("task_id"), c.Query("log_id"))); tid != "" {
+		pat := "%" + escapeSQLLike(tid) + "%"
+		q = q.Where(`task_id LIKE ? ESCAPE '\' OR upstream_task_id LIKE ? ESCAPE '\'`, pat, pat)
 	}
 	if st := strings.TrimSpace(c.Query("status")); st != "" {
-		switch st {
+		switch strings.ToLower(st) {
 		case "pending", "processing":
 			q = q.Where("status IN ?", []string{task.StatusQueued, task.StatusRunning})
-		case "success":
+		case "success", "succeeded":
 			q = q.Where("status = ?", task.StatusSucceeded)
+		case "cancelled", "canceled":
+			q = q.Where("status = ?", task.StatusCancelled)
 		default:
 			q = q.Where("status = ?", st)
+		}
+	}
+	if at := strings.TrimSpace(c.Query("action_type")); at != "" {
+		switch mapTkeActionToModality(at) {
+		case "vision":
+			q = q.Where("provider <> ?", "suno")
+		case "video":
+			q = q.Where("provider NOT IN ?", []string{"suno", "midjourney"})
+		case "audio":
+			q = q.Where("provider = ?", "suno")
+		case "image":
+			q = q.Where("provider = ?", "midjourney")
+		default:
+			q = q.Where("1 = 0")
+		}
+	}
+	if tkid := strings.TrimSpace(c.Query("token_kid")); tkid != "" {
+		var keyIDs []uint64
+		pat := "%" + escapeSQLLike(tkid) + "%"
+		kq := s.readOnly().WithContext(c.Request.Context()).Model(&identity.APIKey{}).Where(`kid LIKE ? ESCAPE '\' OR prefix LIKE ? ESCAPE '\'`, pat, pat)
+		if !isAdmin {
+			kq = kq.Where("org_id = ?", orgID)
+		}
+		_ = kq.Pluck("id", &keyIDs).Error
+		if len(keyIDs) == 0 {
+			q = q.Where("1 = 0")
+		} else {
+			q = q.Where("api_key_id IN ?", keyIDs)
+		}
+	}
+	if sd := strings.TrimSpace(c.Query("start_date")); sd != "" {
+		if t, err := time.ParseInLocation("2006-01-02", sd, s.siteLocation()); err == nil {
+			q = q.Where("submitted_at >= ?", t.UTC())
+		}
+	}
+	if ed := strings.TrimSpace(c.Query("end_date")); ed != "" {
+		if t, err := time.ParseInLocation("2006-01-02", ed, s.siteLocation()); err == nil {
+			q = q.Where("submitted_at < ?", t.AddDate(0, 0, 1).UTC())
 		}
 	}
 	if kw := strings.TrimSpace(cmp.Or(c.Query("search_keyword"), c.Query("q"))); kw != "" {
@@ -810,6 +964,8 @@ func mapTkeActionToModality(raw string) string {
 		return "image"
 	case "视频", "video":
 		return "video"
+	case "视觉", "vision":
+		return "vision"
 	case "音频", "audio":
 		return "audio"
 	case "向量", "embedding":

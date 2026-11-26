@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -91,7 +90,11 @@ func (f *keyPurgeHTTPFixture) request(method string, id uint64, purge bool) *htt
 	if purge {
 		path += "/purge"
 	}
-	return routingAdminTestRequest(f.handler, context.Background(), method, path, f.token, "", "")
+	req := httptest.NewRequest(method, path, nil)
+	req.Header.Set("Authorization", "Bearer "+f.token)
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, req)
+	return w
 }
 
 func keyPurgeInsertKey(t *testing.T, db *gorm.DB, id, org uint64, active bool) {
@@ -165,7 +168,13 @@ func TestKeyPurgeHTTPRequiresCurrentSessionMembership(t *testing.T) {
 	f := keyPurgeSQLite(t)
 	keyPurgeInsertKey(t, f.db, 1, 1, false)
 	for _, token := range []string{"", "sk-not-a-session"} {
-		keyPurgeStatus(t, routingAdminTestRequest(f.handler, context.Background(), "DELETE", "/api/keys/1/purge", token, "", ""), 401)
+		req := httptest.NewRequest(http.MethodDelete, "/api/keys/1/purge", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, req)
+		keyPurgeStatus(t, w, 401)
 	}
 	keyPurgeSQL(t, f.db, "DELETE FROM org_members WHERE org_id=1 AND user_id=1")
 	w := f.request("DELETE", 1, true)

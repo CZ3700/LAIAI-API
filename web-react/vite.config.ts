@@ -14,12 +14,12 @@ export default defineConfig({
     host: '0.0.0.0',
     port: frontendPort,
     proxy: {
-      '/api': { target: apiTarget, changeOrigin: true },
-      '/v1': { target: apiTarget, changeOrigin: true },
-      '/v1beta': { target: apiTarget, changeOrigin: true },
-      '/anthropic': { target: apiTarget, changeOrigin: true },
-      '/mj': { target: apiTarget, changeOrigin: true },
-      '/healthz': { target: apiTarget, changeOrigin: true },
+      '^/api(/|$)': { target: apiTarget, changeOrigin: true },
+      '^/v1(/|$)': { target: apiTarget, changeOrigin: true },
+      '^/v1beta(/|$)': { target: apiTarget, changeOrigin: true },
+      '^/anthropic(/|$)': { target: apiTarget, changeOrigin: true },
+      '^/mj(/|$)': { target: apiTarget, changeOrigin: true },
+      '^/healthz$': { target: apiTarget, changeOrigin: true },
     },
   },
   build: {

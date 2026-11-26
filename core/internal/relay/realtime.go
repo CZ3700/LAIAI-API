@@ -136,17 +136,7 @@ func (r *Relay) HandleRealtime(c *gin.Context) {
 		return
 	}
 	// 3. 选渠道 + 凭证（realtime 用纯权重选路，不喂健康分）
-	var ch *Channel
-	if key.ModelAccessMode == identity.ModelAccessInheritGroup {
-		channels, loadErr := r.cachedChannels()
-		if loadErr != nil {
-			relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
-			return
-		}
-		ch, err = r.pickRelayChannel(c.Request.Context(), key, channels, model, 0, nil, "", nil)
-	} else {
-		ch, err = PickChannelForAttempt(r.DB, model, 0, nil, nil)
-	}
+	ch, err := PickChannelForAttempt(r.DB, model, 0, nil, nil)
 	if err != nil {
 		relayErr(c, http.StatusServiceUnavailable, "no upstream available for this model")
 		return

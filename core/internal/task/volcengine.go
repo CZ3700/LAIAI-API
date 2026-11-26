@@ -183,10 +183,14 @@ func (volcengineTask) EstimateOutputTokens(model string, content []any, params m
 	duration := 5.0 // 上游默认 5s（家族一致文档口径）
 	if v, exists := params["duration"]; exists {
 		f, ok := v.(float64)
-		if !ok || f <= 0 || f > 3600 {
+		if ok && f == -1 {
+			// Seedance 支持 duration=-1 智能时长：保守按 10s 预估并冻结。
+			duration = 10.0
+		} else if !ok || f <= 0 || f > 3600 {
 			return estCap
+		} else {
+			duration = f
 		}
-		duration = f
 	}
 	fps := 24.0 // 真机回显 framespersecond=24
 	if v, exists := params["fps"]; exists {
@@ -393,6 +397,7 @@ func (volcengineTask) ParseQuery(resp *http.Response) (QueryResult, error) {
 		} `json:"content"`
 		Usage struct {
 			CompletionTokens int64 `json:"completion_tokens"`
+			TotalTokens      int64 `json:"total_tokens"`
 		} `json:"usage"`
 		Error struct {
 			Message string `json:"message"`
@@ -401,10 +406,14 @@ func (volcengineTask) ParseQuery(resp *http.Response) (QueryResult, error) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return QueryResult{}, fmt.Errorf("task: upstream query parse: %w", err)
 	}
+	completionTokens := parsed.Usage.CompletionTokens
+	if completionTokens <= 0 && parsed.Usage.TotalTokens > 0 {
+		completionTokens = parsed.Usage.TotalTokens
+	}
 	out := QueryResult{
 		ResultURL:        parsed.Content.VideoURL,
 		LastFrameURL:     parsed.Content.LastFrameURL,
-		CompletionTokens: parsed.Usage.CompletionTokens,
+		CompletionTokens: completionTokens,
 		FailReason:       parsed.Error.Message,
 	}
 	switch parsed.Status {
@@ -414,10 +423,9 @@ func (volcengineTask) ParseQuery(resp *http.Response) (QueryResult, error) {
 		out.Status = StatusRunning
 	case "succeeded":
 		out.Status = StatusSucceeded
-	// ⚠️ failed/cancelled 腿的形态是文档推导（succeeded/running/error 响应均已真机验证 2026-07-05；
-	// 终态失败无法安全按需触发——运行中任务不可删除[真机 409]，违规内容不做）。
-	// "canceled" 单 L 拼写按别名收编：方言漂移落 default→running 会拖到 30min 超时清扫才退款。
-	case "failed", "cancelled", "canceled":
+	case "cancelled", "canceled":
+		out.Status = StatusCancelled
+	case "failed":
 		out.Status = StatusFailed
 	default:
 		// 未知状态保守按 running 处理（下轮再看），不误杀任务
