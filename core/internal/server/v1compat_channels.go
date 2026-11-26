@@ -26,31 +26,61 @@ const (
 	v1SettingChannelMeta      = "v1_channel_meta_json"
 )
 
+type v1BoundChannelSummary struct {
+	ID                uint64 `json:"id"`
+	Name              string `json:"name"`
+	GroupAID          string `json:"group_aid,omitempty"`
+	IsHA              bool   `json:"is_ha"`
+	Status            int8   `json:"status"`
+	EffectivePriority int    `json:"effective_priority"`
+	EffectiveWeight   int    `json:"effective_weight"`
+}
+
 type v1ChannelConfig struct {
-	ID                        uint64   `json:"id"`
-	Name                      string   `json:"name"`
-	ProviderType              string   `json:"provider_type"`
-	BaseURL                   string   `json:"base_url"`
-	APIKeyEnc                 string   `json:"api_key_enc,omitempty"`
-	APIKeyMask                string   `json:"api_key"`
-	Remark                    string   `json:"remark"`
-	YID                       string   `json:"yid"`
-	CategoryID                *uint64  `json:"category_id,omitempty"`
-	CategoryIDs               []uint64 `json:"category_ids,omitempty"`
-	Status                    int8     `json:"status"`
-	SortOrder                 int      `json:"sort_order"`
-	Rate                      float64  `json:"rate"`
-	UpstreamCurrency          string   `json:"upstream_currency,omitempty"`
-	CurrencyRate              float64  `json:"currency_rate,omitempty"`
-	QuotaLimit                float64  `json:"quota_limit"`
-	DailyQuotaLimit           float64  `json:"daily_quota_limit"`
-	WeeklyQuotaLimit          float64  `json:"weekly_quota_limit"`
-	MonthlyQuotaLimit         float64  `json:"monthly_quota_limit"`
-	DailyResetHour            int      `json:"daily_reset_hour"`
-	DailyResetMinute          int      `json:"daily_reset_minute"`
-	DailyResetCooldownMinutes int      `json:"daily_reset_cooldown_minutes"`
-	CreatedAt                 string   `json:"created_at"`
-	UpdatedAt                 string   `json:"updated_at"`
+	ID                          uint64                  `json:"id"`
+	Name                        string                  `json:"name"`
+	ProviderType                string                  `json:"provider_type"`
+	BaseURL                     string                  `json:"base_url"`
+	APIKeyEnc                   string                  `json:"api_key_enc,omitempty"`
+	APIKeyMask                  string                  `json:"api_key"`
+	HasAPIKey                   bool                    `json:"has_api_key"`
+	Remark                      string                  `json:"remark"`
+	YID                         string                  `json:"yid"`
+	CategoryID                  *uint64                 `json:"category_id,omitempty"`
+	CategoryIDs                 []uint64                `json:"category_ids,omitempty"`
+	Status                      int8                    `json:"status"`
+	SortOrder                   int                     `json:"sort_order"`
+	Priority                    int                     `json:"priority"`
+	Weight                      int                     `json:"weight"`
+	Rate                        float64                 `json:"rate"`
+	UpstreamSystem              string                  `json:"upstream_system,omitempty"`
+	UpstreamGroup               string                  `json:"upstream_group,omitempty"`
+	UpstreamSyncIntervalMinutes int                     `json:"upstream_sync_interval_minutes"`
+	UpstreamSyncRateAdd         float64                 `json:"upstream_sync_rate_add"`
+	UpstreamCurrency            string                  `json:"upstream_currency,omitempty"`
+	SiteCurrency                string                  `json:"site_currency,omitempty"`
+	CurrencyRate                float64                 `json:"currency_rate,omitempty"`
+	UpstreamCurrencyRate        float64                 `json:"upstream_currency_rate,omitempty"`
+	UpstreamUserID              string                  `json:"upstream_user_id,omitempty"`
+	UpstreamAccessToken         string                  `json:"upstream_access_token,omitempty"`
+	HasUpstreamAccessToken      bool                    `json:"has_upstream_access_token"`
+	UpstreamSyncedAt            *string                 `json:"upstream_synced_at,omitempty"`
+	VolcAK                      string                  `json:"volc_ak,omitempty"`
+	VolcSK                      string                  `json:"volc_sk,omitempty"`
+	HasVolcCredentials          bool                    `json:"has_volc_credentials"`
+	UpstreamBalance             *float64                `json:"upstream_balance,omitempty"`
+	UpstreamBalanceUpdatedAt    *string                 `json:"upstream_balance_updated_at,omitempty"`
+	BoundChannelCount           int                     `json:"bound_channel_count"`
+	BoundChannels               []v1BoundChannelSummary `json:"bound_channels"`
+	QuotaLimit                  float64                 `json:"quota_limit"`
+	DailyQuotaLimit             float64                 `json:"daily_quota_limit"`
+	WeeklyQuotaLimit            float64                 `json:"weekly_quota_limit"`
+	MonthlyQuotaLimit           float64                 `json:"monthly_quota_limit"`
+	DailyResetHour              int                     `json:"daily_reset_hour"`
+	DailyResetMinute            int                     `json:"daily_reset_minute"`
+	DailyResetCooldownMinutes   int                     `json:"daily_reset_cooldown_minutes"`
+	CreatedAt                   string                  `json:"created_at"`
+	UpdatedAt                   string                  `json:"updated_at"`
 }
 
 type v1ChannelMeta struct {
@@ -557,30 +587,45 @@ func mapTkeProviderToRelay(p string) string {
 }
 
 type channelConfigRow struct {
-	ID                        uint64    `gorm:"primaryKey;autoIncrement"`
-	Name                      string    `gorm:"column:name"`
-	ProviderType              string    `gorm:"column:provider_type"`
-	BaseURL                   string    `gorm:"column:base_url"`
-	APIKeyEnc                 string    `gorm:"column:api_key_enc"`
-	APIKeyMask                string    `gorm:"column:api_key_mask"`
-	Remark                    string    `gorm:"column:remark"`
-	YID                       string    `gorm:"column:yid"`
-	CategoryID                *uint64   `gorm:"column:category_id"`
-	CategoryIDsJSON           string    `gorm:"column:category_ids_json"`
-	Status                    int8      `gorm:"column:status"`
-	SortOrder                 int       `gorm:"column:sort_order"`
-	Rate                      float64   `gorm:"column:rate"`
-	UpstreamCurrency          string    `gorm:"column:upstream_currency"`
-	CurrencyRate              float64   `gorm:"column:currency_rate"`
-	QuotaLimit                float64   `gorm:"column:quota_limit"`
-	DailyQuotaLimit           float64   `gorm:"column:daily_quota_limit"`
-	WeeklyQuotaLimit          float64   `gorm:"column:weekly_quota_limit"`
-	MonthlyQuotaLimit         float64   `gorm:"column:monthly_quota_limit"`
-	DailyResetHour            int       `gorm:"column:daily_reset_hour"`
-	DailyResetMinute          int       `gorm:"column:daily_reset_minute"`
-	DailyResetCooldownMinutes int       `gorm:"column:daily_reset_cooldown_minutes"`
-	CreatedAt                 time.Time `gorm:"column:created_at"`
-	UpdatedAt                 time.Time `gorm:"column:updated_at"`
+	ID                          uint64     `gorm:"primaryKey;autoIncrement"`
+	Name                        string     `gorm:"column:name"`
+	ProviderType                string     `gorm:"column:provider_type"`
+	BaseURL                     string     `gorm:"column:base_url"`
+	APIKeyEnc                   string     `gorm:"column:api_key_enc"`
+	APIKeyMask                  string     `gorm:"column:api_key_mask"`
+	Remark                      string     `gorm:"column:remark"`
+	YID                         string     `gorm:"column:yid"`
+	CategoryID                  *uint64    `gorm:"column:category_id"`
+	CategoryIDsJSON             string     `gorm:"column:category_ids_json"`
+	Status                      int8       `gorm:"column:status"`
+	SortOrder                   int        `gorm:"column:sort_order"`
+	Priority                    int        `gorm:"column:priority"`
+	Weight                      int        `gorm:"column:weight"`
+	Rate                        float64    `gorm:"column:rate"`
+	UpstreamSystem              string     `gorm:"column:upstream_system"`
+	UpstreamGroup               string     `gorm:"column:upstream_group"`
+	UpstreamSyncIntervalMinutes int        `gorm:"column:upstream_sync_interval_minutes"`
+	UpstreamSyncRateAdd         float64    `gorm:"column:upstream_sync_rate_add"`
+	UpstreamCurrency            string     `gorm:"column:upstream_currency"`
+	SiteCurrency                string     `gorm:"column:site_currency"`
+	CurrencyRate                float64    `gorm:"column:currency_rate"`
+	UpstreamCurrencyRate        float64    `gorm:"column:upstream_currency_rate"`
+	UpstreamUserID              string     `gorm:"column:upstream_user_id"`
+	UpstreamAccessTokenEnc      string     `gorm:"column:upstream_access_token_enc"`
+	UpstreamSyncedAt            *time.Time `gorm:"column:upstream_synced_at"`
+	VolcAK                      string     `gorm:"column:volc_ak"`
+	VolcSKEnc                   string     `gorm:"column:volc_sk_enc"`
+	UpstreamBalance             *float64   `gorm:"column:upstream_balance"`
+	UpstreamBalanceUpdatedAt    *time.Time `gorm:"column:upstream_balance_updated_at"`
+	QuotaLimit                  float64    `gorm:"column:quota_limit"`
+	DailyQuotaLimit             float64    `gorm:"column:daily_quota_limit"`
+	WeeklyQuotaLimit            float64    `gorm:"column:weekly_quota_limit"`
+	MonthlyQuotaLimit           float64    `gorm:"column:monthly_quota_limit"`
+	DailyResetHour              int        `gorm:"column:daily_reset_hour"`
+	DailyResetMinute            int        `gorm:"column:daily_reset_minute"`
+	DailyResetCooldownMinutes   int        `gorm:"column:daily_reset_cooldown_minutes"`
+	CreatedAt                   time.Time  `gorm:"column:created_at"`
+	UpdatedAt                   time.Time  `gorm:"column:updated_at"`
 }
 
 func (channelConfigRow) TableName() string { return "channel_configs" }
@@ -590,35 +635,89 @@ func (r channelConfigRow) toV1() v1ChannelConfig {
 	if strings.TrimSpace(r.CategoryIDsJSON) != "" {
 		_ = json.Unmarshal([]byte(r.CategoryIDsJSON), &catIDs)
 	}
-	mask := r.APIKeyMask
-	if mask == "" {
-		mask = "••••••••"
+	if catIDs == nil {
+		catIDs = []uint64{}
+	}
+	hasAPIKey := strings.TrimSpace(r.APIKeyEnc) != ""
+	mask := ""
+	if hasAPIKey {
+		mask = cmp.Or(r.APIKeyMask, "••••••••")
+	}
+	hasAccessTok := strings.TrimSpace(r.UpstreamAccessTokenEnc) != ""
+	accessTokMask := ""
+	if hasAccessTok {
+		accessTokMask = "••••••••"
+	}
+	hasVolc := strings.TrimSpace(r.VolcAK) != "" && strings.TrimSpace(r.VolcSKEnc) != ""
+	volcSKMask := ""
+	if strings.TrimSpace(r.VolcSKEnc) != "" {
+		volcSKMask = "••••••••"
+	}
+	var syncedAtStr *string
+	if r.UpstreamSyncedAt != nil {
+		s := r.UpstreamSyncedAt.UTC().Format(time.RFC3339)
+		syncedAtStr = &s
+	}
+	var balUpdatedStr *string
+	if r.UpstreamBalanceUpdatedAt != nil {
+		s := r.UpstreamBalanceUpdatedAt.UTC().Format(time.RFC3339)
+		balUpdatedStr = &s
+	}
+	upCurrRate := r.UpstreamCurrencyRate
+	if upCurrRate <= 0 {
+		upCurrRate = r.CurrencyRate
+	}
+	if upCurrRate <= 0 {
+		upCurrRate = defaultUpstreamCurrencyRate
+	}
+	w := r.Weight
+	if w <= 0 {
+		w = 1
 	}
 	return v1ChannelConfig{
-		ID:                        r.ID,
-		Name:                      r.Name,
-		ProviderType:              r.ProviderType,
-		BaseURL:                   r.BaseURL,
-		APIKeyEnc:                 r.APIKeyEnc,
-		APIKeyMask:                mask,
-		Remark:                    r.Remark,
-		YID:                       cmp.Or(r.YID, "Y"+strconv.FormatUint(1000+r.ID, 10)),
-		CategoryID:                r.CategoryID,
-		CategoryIDs:               catIDs,
-		Status:                    r.Status,
-		SortOrder:                 r.SortOrder,
-		Rate:                      r.Rate,
-		UpstreamCurrency:          r.UpstreamCurrency,
-		CurrencyRate:              r.CurrencyRate,
-		QuotaLimit:                r.QuotaLimit,
-		DailyQuotaLimit:           r.DailyQuotaLimit,
-		WeeklyQuotaLimit:          r.WeeklyQuotaLimit,
-		MonthlyQuotaLimit:         r.MonthlyQuotaLimit,
-		DailyResetHour:            r.DailyResetHour,
-		DailyResetMinute:          r.DailyResetMinute,
-		DailyResetCooldownMinutes: r.DailyResetCooldownMinutes,
-		CreatedAt:                 r.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:                 r.UpdatedAt.UTC().Format(time.RFC3339),
+		ID:                          r.ID,
+		Name:                        r.Name,
+		ProviderType:                r.ProviderType,
+		BaseURL:                     r.BaseURL,
+		APIKeyEnc:                   r.APIKeyEnc,
+		APIKeyMask:                  mask,
+		HasAPIKey:                   hasAPIKey,
+		Remark:                      r.Remark,
+		YID:                         cmp.Or(r.YID, "Y"+strconv.FormatUint(1000+r.ID, 10)),
+		CategoryID:                  r.CategoryID,
+		CategoryIDs:                 catIDs,
+		Status:                      r.Status,
+		SortOrder:                   r.SortOrder,
+		Priority:                    r.Priority,
+		Weight:                      w,
+		Rate:                        r.Rate,
+		UpstreamSystem:              r.UpstreamSystem,
+		UpstreamGroup:               r.UpstreamGroup,
+		UpstreamSyncIntervalMinutes: r.UpstreamSyncIntervalMinutes,
+		UpstreamSyncRateAdd:         r.UpstreamSyncRateAdd,
+		UpstreamCurrency:            r.UpstreamCurrency,
+		SiteCurrency:                cmp.Or(r.SiteCurrency, "USD"),
+		CurrencyRate:                upCurrRate,
+		UpstreamCurrencyRate:        upCurrRate,
+		UpstreamUserID:              r.UpstreamUserID,
+		UpstreamAccessToken:         accessTokMask,
+		HasUpstreamAccessToken:      hasAccessTok,
+		UpstreamSyncedAt:            syncedAtStr,
+		VolcAK:                      r.VolcAK,
+		VolcSK:                      volcSKMask,
+		HasVolcCredentials:          hasVolc,
+		UpstreamBalance:             r.UpstreamBalance,
+		UpstreamBalanceUpdatedAt:    balUpdatedStr,
+		BoundChannels:               []v1BoundChannelSummary{},
+		QuotaLimit:                  r.QuotaLimit,
+		DailyQuotaLimit:             r.DailyQuotaLimit,
+		WeeklyQuotaLimit:            r.WeeklyQuotaLimit,
+		MonthlyQuotaLimit:           r.MonthlyQuotaLimit,
+		DailyResetHour:              r.DailyResetHour,
+		DailyResetMinute:            r.DailyResetMinute,
+		DailyResetCooldownMinutes:   r.DailyResetCooldownMinutes,
+		CreatedAt:                   r.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:                   r.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -647,45 +746,72 @@ func (s *Server) findV1ChannelConfig(id uint64) (v1ChannelConfig, bool) {
 
 func (s *Server) v1ListChannelConfigs(c *gin.Context) {
 	list := s.loadV1ChannelConfigs()
+	boundMap := s.collectBoundChannelsByConfigID(c.Request.Context())
 	for i := range list {
 		list[i].APIKeyEnc = ""
+		if b := boundMap[list[i].ID]; len(b) > 0 {
+			list[i].BoundChannels = b
+			list[i].BoundChannelCount = len(b)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"data": list})
 }
 
 func (s *Server) v1CreateChannelConfig(c *gin.Context) {
 	var req struct {
-		Name                      string   `json:"name" binding:"required"`
-		ProviderType              string   `json:"provider_type"`
-		BaseURL                   string   `json:"base_url"`
-		APIKey                    string   `json:"api_key"`
-		Remark                    string   `json:"remark"`
-		YID                       string   `json:"yid"`
-		CategoryID                *uint64  `json:"category_id"`
-		CategoryIDs               []uint64 `json:"category_ids"`
-		Status                    *int8    `json:"status"`
-		SortOrder                 int      `json:"sort_order"`
-		Rate                      float64  `json:"rate"`
-		UpstreamCurrency          string   `json:"upstream_currency"`
-		CurrencyRate              float64  `json:"currency_rate"`
-		QuotaLimit                float64  `json:"quota_limit"`
-		DailyQuotaLimit           float64  `json:"daily_quota_limit"`
-		WeeklyQuotaLimit          float64  `json:"weekly_quota_limit"`
-		MonthlyQuotaLimit         float64  `json:"monthly_quota_limit"`
-		DailyResetHour            int      `json:"daily_reset_hour"`
-		DailyResetMinute          int      `json:"daily_reset_minute"`
-		DailyResetCooldownMinutes int      `json:"daily_reset_cooldown_minutes"`
+		Name                        string   `json:"name" binding:"required"`
+		ProviderType                string   `json:"provider_type"`
+		BaseURL                     string   `json:"base_url"`
+		APIKey                      string   `json:"api_key"`
+		Remark                      string   `json:"remark"`
+		YID                         string   `json:"yid"`
+		CategoryID                  *uint64  `json:"category_id"`
+		CategoryIDs                 []uint64 `json:"category_ids"`
+		Status                      *int8    `json:"status"`
+		SortOrder                   int      `json:"sort_order"`
+		Priority                    int      `json:"priority"`
+		Weight                      int      `json:"weight"`
+		Rate                        float64  `json:"rate"`
+		UpstreamSystem              string   `json:"upstream_system"`
+		UpstreamGroup               string   `json:"upstream_group"`
+		UpstreamSyncIntervalMinutes int      `json:"upstream_sync_interval_minutes"`
+		UpstreamSyncRateAdd         float64  `json:"upstream_sync_rate_add"`
+		UpstreamCurrency            string   `json:"upstream_currency"`
+		SiteCurrency                string   `json:"site_currency"`
+		CurrencyRate                float64  `json:"currency_rate"`
+		UpstreamCurrencyRate        float64  `json:"upstream_currency_rate"`
+		UpstreamUserID              string   `json:"upstream_user_id"`
+		UpstreamAccessToken         string   `json:"upstream_access_token"`
+		VolcAK                      string   `json:"volc_ak"`
+		VolcSK                      string   `json:"volc_sk"`
+		QuotaLimit                  float64  `json:"quota_limit"`
+		DailyQuotaLimit             float64  `json:"daily_quota_limit"`
+		WeeklyQuotaLimit            float64  `json:"weekly_quota_limit"`
+		MonthlyQuotaLimit           float64  `json:"monthly_quota_limit"`
+		DailyResetHour              int      `json:"daily_reset_hour"`
+		DailyResetMinute            int      `json:"daily_reset_minute"`
+		DailyResetCooldownMinutes   int      `json:"daily_reset_cooldown_minutes"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "name is required")
 		return
 	}
-	enc := ""
-	if k := strings.TrimSpace(req.APIKey); k != "" && s.keyring != nil {
-		if ciph, err := s.keyring.Encrypt(k); err == nil {
-			enc = ciph
+	encryptSecret := func(raw string) string {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || isMaskedSecret(trimmed) {
+			return ""
 		}
+		if s.keyring != nil {
+			if ciph, err := s.keyring.Encrypt(trimmed); err == nil {
+				return ciph
+			}
+		}
+		return trimmed
 	}
+	enc := encryptSecret(req.APIKey)
+	accessTokEnc := encryptSecret(req.UpstreamAccessToken)
+	volcSKEnc := encryptSecret(req.VolcSK)
+
 	catIDsJSON := "[]"
 	if len(req.CategoryIDs) > 0 {
 		if b, err := json.Marshal(req.CategoryIDs); err == nil {
@@ -701,30 +827,53 @@ func (s *Server) v1CreateChannelConfig(c *gin.Context) {
 	if rate <= 0 {
 		rate = 1
 	}
+	weight := req.Weight
+	if weight <= 0 {
+		weight = 1
+	}
+	upCurrRate := req.UpstreamCurrencyRate
+	if upCurrRate <= 0 {
+		upCurrRate = req.CurrencyRate
+	}
+	if upCurrRate <= 0 {
+		upCurrRate = defaultUpstreamCurrencyRate
+	}
 	row := channelConfigRow{
-		Name:                      strings.TrimSpace(req.Name),
-		ProviderType:              cmp.Or(strings.TrimSpace(req.ProviderType), "兼容"),
-		BaseURL:                   strings.TrimSpace(req.BaseURL),
-		APIKeyEnc:                 enc,
-		APIKeyMask:                "••••••••",
-		Remark:                    req.Remark,
-		YID:                       strings.TrimSpace(req.YID),
-		CategoryID:                req.CategoryID,
-		CategoryIDsJSON:           catIDsJSON,
-		Status:                    status,
-		SortOrder:                 req.SortOrder,
-		Rate:                      rate,
-		UpstreamCurrency:          req.UpstreamCurrency,
-		CurrencyRate:              req.CurrencyRate,
-		QuotaLimit:                cmp.Or(req.QuotaLimit, -1),
-		DailyQuotaLimit:           cmp.Or(req.DailyQuotaLimit, -1),
-		WeeklyQuotaLimit:          cmp.Or(req.WeeklyQuotaLimit, -1),
-		MonthlyQuotaLimit:         cmp.Or(req.MonthlyQuotaLimit, -1),
-		DailyResetHour:            req.DailyResetHour,
-		DailyResetMinute:          req.DailyResetMinute,
-		DailyResetCooldownMinutes: req.DailyResetCooldownMinutes,
-		CreatedAt:                 now,
-		UpdatedAt:                 now,
+		Name:                        strings.TrimSpace(req.Name),
+		ProviderType:                cmp.Or(strings.TrimSpace(req.ProviderType), "兼容"),
+		BaseURL:                     strings.TrimSpace(req.BaseURL),
+		APIKeyEnc:                   enc,
+		APIKeyMask:                  "••••••••",
+		Remark:                      req.Remark,
+		YID:                         strings.TrimSpace(req.YID),
+		CategoryID:                  req.CategoryID,
+		CategoryIDsJSON:             catIDsJSON,
+		Status:                      status,
+		SortOrder:                   req.SortOrder,
+		Priority:                    req.Priority,
+		Weight:                      weight,
+		Rate:                        rate,
+		UpstreamSystem:              strings.TrimSpace(req.UpstreamSystem),
+		UpstreamGroup:               strings.TrimSpace(req.UpstreamGroup),
+		UpstreamSyncIntervalMinutes: max(0, req.UpstreamSyncIntervalMinutes),
+		UpstreamSyncRateAdd:         max(0, req.UpstreamSyncRateAdd),
+		UpstreamCurrency:            strings.TrimSpace(req.UpstreamCurrency),
+		SiteCurrency:                cmp.Or(strings.TrimSpace(req.SiteCurrency), "USD"),
+		CurrencyRate:                upCurrRate,
+		UpstreamCurrencyRate:        upCurrRate,
+		UpstreamUserID:              strings.TrimSpace(req.UpstreamUserID),
+		UpstreamAccessTokenEnc:      accessTokEnc,
+		VolcAK:                      strings.TrimSpace(req.VolcAK),
+		VolcSKEnc:                   volcSKEnc,
+		QuotaLimit:                  cmp.Or(req.QuotaLimit, -1),
+		DailyQuotaLimit:             cmp.Or(req.DailyQuotaLimit, -1),
+		WeeklyQuotaLimit:            cmp.Or(req.WeeklyQuotaLimit, -1),
+		MonthlyQuotaLimit:           cmp.Or(req.MonthlyQuotaLimit, -1),
+		DailyResetHour:              req.DailyResetHour,
+		DailyResetMinute:            req.DailyResetMinute,
+		DailyResetCooldownMinutes:   req.DailyResetCooldownMinutes,
+		CreatedAt:                   now,
+		UpdatedAt:                   now,
 	}
 	ctx := c.Request.Context()
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
@@ -734,6 +883,11 @@ func (s *Server) v1CreateChannelConfig(c *gin.Context) {
 	if row.YID == "" {
 		row.YID = "Y" + strconv.FormatUint(1000+row.ID, 10)
 		_ = s.db.WithContext(ctx).Model(&row).Update("yid", row.YID).Error
+	}
+	if strings.EqualFold(row.UpstreamSystem, "newapi") && row.UpstreamGroup != "" {
+		if syncedRow, _, err := s.syncSingleChannelConfigRate(ctx, row.ID, "save"); err == nil && syncedRow != nil {
+			row = *syncedRow
+		}
 	}
 	item := row.toV1()
 	item.APIKeyEnc = ""
@@ -765,39 +919,131 @@ func (s *Server) v1UpdateChannelConfig(c *gin.Context) {
 		updates["name"] = strings.TrimSpace(v)
 	}
 	if v, ok := req["provider_type"].(string); ok {
-		updates["provider_type"] = v
+		updates["provider_type"] = strings.TrimSpace(v)
 	}
 	if v, ok := req["base_url"].(string); ok {
 		updates["base_url"] = strings.TrimSpace(v)
 	}
-	if v, ok := req["api_key"].(string); ok && strings.TrimSpace(v) != "" && !strings.HasPrefix(v, "••••") && s.keyring != nil {
-		if ciph, err := s.keyring.Encrypt(strings.TrimSpace(v)); err == nil {
-			updates["api_key_enc"] = ciph
+	if v, ok := req["api_key"].(string); ok {
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			updates["api_key_enc"] = ""
+		} else if !isMaskedSecret(trimmed) && s.keyring != nil {
+			if ciph, err := s.keyring.Encrypt(trimmed); err == nil {
+				updates["api_key_enc"] = ciph
+			}
 		}
 	}
 	if v, ok := req["remark"].(string); ok {
 		updates["remark"] = v
 	}
-	if v, ok := req["rate"].(float64); ok && v > 0 {
-		updates["rate"] = v
+	if v, ok := req["rate"]; ok {
+		if f, ok := parseFlexibleNumber(v); ok && f > 0 {
+			updates["rate"] = f
+		}
 	}
-	if v, ok := req["status"].(float64); ok {
-		updates["status"] = int8(v)
+	if v, ok := req["status"]; ok {
+		if f, ok := parseFlexibleNumber(v); ok {
+			updates["status"] = int8(f)
+		}
 	}
-	if v, ok := req["sort_order"].(float64); ok {
-		updates["sort_order"] = int(v)
+	if v, ok := req["sort_order"]; ok {
+		if f, ok := parseFlexibleNumber(v); ok {
+			updates["sort_order"] = int(f)
+		}
+	}
+	if v, ok := req["priority"]; ok {
+		if f, ok := parseFlexibleNumber(v); ok {
+			updates["priority"] = int(f)
+		}
+	}
+	if v, ok := req["weight"]; ok {
+		if f, ok := parseFlexibleNumber(v); ok && f > 0 {
+			updates["weight"] = int(f)
+		}
+	}
+	if rawCat, exists := req["category_id"]; exists {
+		if rawCat == nil {
+			updates["category_id"] = nil
+		} else if f, ok := parseFlexibleNumber(rawCat); ok && f > 0 {
+			catVal := uint64(f)
+			updates["category_id"] = &catVal
+		}
+	}
+	if rawCats, exists := req["category_ids"]; exists {
+		if b, err := json.Marshal(rawCats); err == nil {
+			updates["category_ids_json"] = string(b)
+		}
+	}
+	if v, ok := req["upstream_system"].(string); ok {
+		updates["upstream_system"] = strings.TrimSpace(v)
+	}
+	if v, ok := req["upstream_group"].(string); ok {
+		updates["upstream_group"] = strings.TrimSpace(v)
+	}
+	if v, ok := req["upstream_sync_interval_minutes"]; ok {
+		if f, ok := parseFlexibleNumber(v); ok {
+			updates["upstream_sync_interval_minutes"] = max(0, int(f))
+		}
+	}
+	if v, ok := req["upstream_sync_rate_add"]; ok {
+		if f, ok := parseFlexibleNumber(v); ok {
+			updates["upstream_sync_rate_add"] = max(0, f)
+		}
 	}
 	if v, ok := req["upstream_currency"].(string); ok {
-		updates["upstream_currency"] = v
+		updates["upstream_currency"] = strings.TrimSpace(v)
 	}
-	if v, ok := req["currency_rate"].(float64); ok {
-		updates["currency_rate"] = v
+	if v, ok := req["site_currency"].(string); ok {
+		updates["site_currency"] = strings.TrimSpace(v)
+	}
+	if v, ok := req["currency_rate"]; ok {
+		if f, ok := parseFlexibleNumber(v); ok && f > 0 {
+			updates["currency_rate"] = f
+		}
+	}
+	if v, ok := req["upstream_currency_rate"]; ok {
+		if f, ok := parseFlexibleNumber(v); ok && f > 0 {
+			updates["upstream_currency_rate"] = f
+			updates["currency_rate"] = f
+		}
+	}
+	if v, ok := req["upstream_user_id"].(string); ok {
+		updates["upstream_user_id"] = strings.TrimSpace(v)
+	}
+	if v, ok := req["upstream_access_token"].(string); ok {
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			updates["upstream_access_token_enc"] = ""
+		} else if !isMaskedSecret(trimmed) && s.keyring != nil {
+			if ciph, err := s.keyring.Encrypt(trimmed); err == nil {
+				updates["upstream_access_token_enc"] = ciph
+			}
+		}
+	}
+	if v, ok := req["volc_ak"].(string); ok {
+		updates["volc_ak"] = strings.TrimSpace(v)
+	}
+	if v, ok := req["volc_sk"].(string); ok {
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			updates["volc_sk_enc"] = ""
+		} else if !isMaskedSecret(trimmed) && s.keyring != nil {
+			if ciph, err := s.keyring.Encrypt(trimmed); err == nil {
+				updates["volc_sk_enc"] = ciph
+			}
+		}
 	}
 	if err := s.db.WithContext(ctx).Model(&row).Updates(updates).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "update channel config failed")
 		return
 	}
 	_ = s.db.WithContext(ctx).First(&row, id).Error
+	if strings.EqualFold(row.UpstreamSystem, "newapi") && row.UpstreamGroup != "" {
+		if syncedRow, _, err := s.syncSingleChannelConfigRate(ctx, row.ID, "save"); err == nil && syncedRow != nil {
+			row = *syncedRow
+		}
+	}
 	out := row.toV1()
 	out.APIKeyEnc = ""
 	c.JSON(http.StatusOK, gin.H{"data": out})
@@ -808,7 +1054,8 @@ func (s *Server) v1DeleteChannelConfig(c *gin.Context) {
 	if !ok {
 		return
 	}
-	res := s.db.WithContext(c.Request.Context()).Delete(&channelConfigRow{}, id)
+	ctx := c.Request.Context()
+	res := s.db.WithContext(ctx).Delete(&channelConfigRow{}, id)
 	if res.Error != nil {
 		fail(c, http.StatusInternalServerError, "delete channel config failed")
 		return
@@ -817,6 +1064,7 @@ func (s *Server) v1DeleteChannelConfig(c *gin.Context) {
 		fail(c, http.StatusNotFound, "channel config not found")
 		return
 	}
+	_ = s.db.WithContext(ctx).Where("config_id = ?", id).Delete(&channelConfigSyncLogRow{}).Error
 	c.JSON(http.StatusOK, gin.H{"deleted": id})
 }
 
@@ -984,149 +1232,6 @@ func (s *Server) v1ChannelConfigQuotaReset(c *gin.Context) {
 	}
 	s.writeAudit(c, "v1_channel_config_quota_reset", strconv.FormatUint(id, 10), "reset channel config quota")
 	c.JSON(http.StatusOK, gin.H{"ok": true, "id": id})
-}
-
-func (s *Server) v1ChannelConfigsVolcBalance(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"configured":        false,
-		"available_balance": 0.0,
-		"currency":          "CNY",
-		"message":           "请先配置火山引擎主账号凭证后查询实时余额",
-	})
-}
-
-func (s *Server) v1TestChannel(c *gin.Context) {
-	if s.relay == nil {
-		fail(c, http.StatusServiceUnavailable, "relay not configured")
-		return
-	}
-	id, ok := parseUintIDParam(c, "id")
-	if !ok {
-		return
-	}
-	var ch relay.Channel
-	if err := s.readOnly().WithContext(c.Request.Context()).First(&ch, id).Error; err != nil {
-		fail(c, http.StatusNotFound, "channel not found")
-		return
-	}
-	var req struct {
-		Model         string         `json:"model"`
-		ForwardRuleID *uint64        `json:"forward_rule_id"`
-		SubChannelID  *uint64        `json:"sub_channel_id"`
-		Scenario      string         `json:"scenario"`
-		CustomBody    map[string]any `json:"custom_body"`
-	}
-	_ = c.ShouldBindJSON(&req)
-
-	targetModel := strings.TrimSpace(req.Model)
-	if targetModel != "" {
-		if resolved, _ := s.resolveCanonicalChannelModels(c.Request.Context(), []string{targetModel}); len(resolved) > 0 {
-			targetModel = resolved[0]
-		}
-	}
-	if targetModel == "" {
-		for item := range strings.SplitSeq(ch.Models, ",") {
-			if m := strings.TrimSpace(item); m != "" {
-				targetModel = m
-				break
-			}
-		}
-	}
-	if targetModel == "" {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"err_msg": "channel has no models configured",
-			"latency": 0,
-		})
-		return
-	}
-
-	metaMap := s.loadV1ChannelMetaMap()
-	meta := metaMap[ch.ID]
-	chCopy := ch
-	if req.SubChannelID != nil && *req.SubChannelID > 0 {
-		if subCfg, found := s.findV1ChannelConfig(*req.SubChannelID); found {
-			if subCfg.BaseURL != "" {
-				chCopy.BaseURL = subCfg.BaseURL
-			}
-			if subCfg.APIKeyEnc != "" {
-				chCopy.CredentialEnc = subCfg.APIKeyEnc
-			}
-			if subCfg.ProviderType != "" {
-				chCopy.Provider = mapTkeProviderToRelay(subCfg.ProviderType)
-			}
-		}
-	} else if primary, _ := s.resolveV1SubChannels(meta.PresetID, meta.Config); primary != nil {
-		if chCopy.BaseURL == "" || chCopy.BaseURL == "https://api.openai.com" {
-			if primary.BaseURL != "" {
-				chCopy.BaseURL = primary.BaseURL
-			}
-		}
-		if primary.APIKeyEnc != "" {
-			chCopy.CredentialEnc = primary.APIKeyEnc
-		}
-	}
-
-	var matchedRule gin.H
-	entryPath := "/v1/chat/completions"
-	if req.ForwardRuleID != nil && *req.ForwardRuleID > 0 {
-		var fr forward.ForwardRule
-		if err := s.readOnly().WithContext(c.Request.Context()).First(&fr, *req.ForwardRuleID).Error; err == nil {
-			matchedRule = gin.H{
-				"id":        fr.ID,
-				"eid":       fr.EID,
-				"name":      fr.Name,
-				"rule_type": fr.RuleType,
-				"category":  fr.Category,
-			}
-			var cfg struct {
-				PathAccept []string `json:"path_accept"`
-			}
-			if json.Unmarshal([]byte(fr.ConfigJSON), &cfg) == nil && len(cfg.PathAccept) > 0 && strings.TrimSpace(cfg.PathAccept[0]) != "" {
-				entryPath = cfg.PathAccept[0]
-			}
-		}
-	}
-
-	res := s.relay.TestChannel(c.Request.Context(), &chCopy, targetModel)
-	upstreamModel := chCopy.UpstreamModel(targetModel)
-	targetURL := strings.TrimRight(chCopy.BaseURL, "/") + "/chat/completions"
-	reqData := gin.H{
-		"url":        targetURL,
-		"model":      upstreamModel,
-		"messages":   []gin.H{{"role": "user", "content": "ping"}},
-		"max_tokens": 16,
-	}
-	if len(req.CustomBody) > 0 {
-		reqData["custom_body"] = req.CustomBody
-	}
-	curlCmd := fmt.Sprintf(
-		`curl -X POST %q -H "Content-Type: application/json" -H "Authorization: Bearer sk-****" -d '{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":16}'`,
-		targetURL, upstreamModel,
-	)
-
-	c.JSON(http.StatusOK, gin.H{
-		"success":    res.OK,
-		"err_msg":    res.Message,
-		"latency":    res.LatencyMs,
-		"status":     res.Status,
-		"entry_path": entryPath,
-		"scenario":   cmp.Or(strings.TrimSpace(req.Scenario), "default"),
-		"matched_rule": func() any {
-			if matchedRule == nil {
-				return nil
-			}
-			return matchedRule
-		}(),
-		"request_data": reqData,
-		"response_data": gin.H{
-			"ok":         res.OK,
-			"status":     res.Status,
-			"latency_ms": res.LatencyMs,
-			"message":    res.Message,
-		},
-		"curl_command": curlCmd,
-	})
 }
 
 func (s *Server) v1SimulateChannelBilling(c *gin.Context) {

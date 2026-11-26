@@ -18,12 +18,16 @@ import (
 
 // ClassificationItem 描述模型厂商或模型分类筛选项（对应 /api/v1/model-providers 与 /api/v1/model-types）。
 type ClassificationItem struct {
-	ID        uint64 `json:"id"`
-	Name      string `json:"name"`
-	NameEn    string `json:"name_en,omitempty"`
-	Logo      string `json:"logo,omitempty"`
-	SortOrder int    `json:"sort_order"`
-	IsActive  int8   `json:"is_active"`
+	ID              uint64 `json:"id"`
+	Name            string `json:"name"`
+	NameEn          string `json:"name_en,omitempty"`
+	Logo            string `json:"logo,omitempty"`
+	SortOrder       int    `json:"sort_order"`
+	IsActive        int8   `json:"is_active"`
+	IsSystem        int8   `json:"is_system"`
+	Remark          string `json:"remark,omitempty"`
+	DefaultFeatures string `json:"default_features,omitempty"`
+	ModelCount      int64  `json:"model_count"`
 }
 
 // MarketplaceModel 是 ModelMarketplace.tsx 消费的模型卡片 DTO。
@@ -47,6 +51,8 @@ type MarketplaceModel struct {
 	Description           string             `json:"description"`
 	DescriptionEn         string             `json:"description_en,omitempty"`
 	ModelDescription      string             `json:"model_description,omitempty"`
+	FeatureAttributes     string             `json:"feature_attributes,omitempty"`
+	FeatureKeys           []string           `json:"feature_keys,omitempty"`
 	SiteDiscount          decimal.Decimal    `json:"site_discount"`
 	SiteDiscountEnabled   int8               `json:"site_discount_enabled"`
 	GlobalDiscount        decimal.Decimal    `json:"global_discount"`
@@ -69,8 +75,8 @@ type providerProfile struct {
 }
 
 var standardProviderProfiles = []providerProfile{
-	{ID: 1, Name: "字节火山", NameEn: "Volcengine", Logo: "doubao", Aliases: []string{"volcengine", "modelark", "ark", "doubao", "seedance", "seedream", "bytedance", "字节", "火山"}, SortRank: 100},
-	{ID: 2, Name: "OpenAI", NameEn: "OpenAI", Logo: "openai", Aliases: []string{"openai", "gpt-", "o1", "o3", "o4", "sora", "dall-e", "whisper", "tts-"}, SortRank: 95},
+	{ID: 1, Name: "字节火山", NameEn: "Volcengine", Logo: "doubao", Aliases: []string{"volcengine", "modelark", "ark", "doubao", "seedance", "seedream", "seed-tts", "bytedance", "字节", "火山"}, SortRank: 100},
+	{ID: 2, Name: "OpenAI", NameEn: "OpenAI", Logo: "openai", Aliases: []string{"openai", "gpt-", "o1", "o3", "o4", "sora", "dall-e", "whisper", "tts-", "text-embedding"}, SortRank: 95},
 	{ID: 3, Name: "Anthropic", NameEn: "Anthropic", Logo: "claude", Aliases: []string{"anthropic", "claude"}, SortRank: 90},
 	{ID: 4, Name: "Google", NameEn: "Google", Logo: "gemini", Aliases: []string{"google", "gemini", "veo", "imagen", "gemma"}, SortRank: 85},
 	{ID: 5, Name: "DeepSeek", NameEn: "DeepSeek", Logo: "deepseek", Aliases: []string{"deepseek"}, SortRank: 80},
@@ -84,27 +90,51 @@ var standardProviderProfiles = []providerProfile{
 }
 
 type typeProfile struct {
-	ID       uint64
-	Name     string
-	NameEn   string
-	Logo     string
-	Aliases  []string
-	SortRank int
+	ID              uint64
+	Name            string
+	NameEn          string
+	Logo            string
+	Aliases         []string
+	SortRank        int
+	DefaultFeatures string
 }
 
 var standardTypeProfiles = []typeProfile{
-	{ID: 1, Name: "聊天", NameEn: "Chat", Logo: "", Aliases: []string{"chat", "llm", "text", "reasoning", "聊天", "对话"}, SortRank: 100},
-	{ID: 2, Name: "视频", NameEn: "Video", Logo: "", Aliases: []string{"video", "视频"}, SortRank: 90},
-	{ID: 3, Name: "图片", NameEn: "Image", Logo: "", Aliases: []string{"image", "img", "picture", "图片", "图像"}, SortRank: 80},
-	{ID: 4, Name: "音频", NameEn: "Audio", Logo: "", Aliases: []string{"audio", "speech", "tts", "stt", "music", "音频", "语音"}, SortRank: 70},
-	{ID: 5, Name: "向量", NameEn: "Embedding", Logo: "", Aliases: []string{"embed", "vector", "向量", "嵌入"}, SortRank: 60},
-	{ID: 6, Name: "排序", NameEn: "Rerank", Logo: "", Aliases: []string{"rerank", "排序", "重排"}, SortRank: 50},
+	{
+		ID: 1, Name: "聊天", NameEn: "Chat", Logo: "", Aliases: []string{"chat", "llm", "text", "reasoning", "聊天", "对话"}, SortRank: 100,
+		DefaultFeatures: `["理解图片","理解音频","理解视频","理解文件","输入-文字输入","输入-语音输入","输入-视频输入","输出-文字输出"]`,
+	},
+	{
+		ID: 2, Name: "视频", NameEn: "Video", Logo: "", Aliases: []string{"video", "视频"}, SortRank: 90,
+		DefaultFeatures: `["全能参考生视频","文生视频","图生视频","首尾帧生视频","编辑视频","延长视频","对口型"]`,
+	},
+	{
+		ID: 3, Name: "图片", NameEn: "Image", Logo: "", Aliases: []string{"image", "img", "picture", "图片", "图像"}, SortRank: 80,
+		DefaultFeatures: `["文生图","图文生图","多图文生图","蒙版","坐标框","放大图片"]`,
+	},
+	{
+		ID: 4, Name: "音频", NameEn: "Audio", Logo: "", Aliases: []string{"audio", "speech", "tts", "stt", "music", "音频", "语音"}, SortRank: 70,
+		DefaultFeatures: `["语音合成","音频生成"]`,
+	},
+	{
+		ID: 5, Name: "向量", NameEn: "Embedding", Logo: "", Aliases: []string{"embed", "vector", "向量", "嵌入"}, SortRank: 60,
+		DefaultFeatures: `["文本向量","多模态向量"]`,
+	},
+	{
+		ID: 6, Name: "排序", NameEn: "Rerank", Logo: "", Aliases: []string{"rerank", "排序", "重排"}, SortRank: 50,
+		DefaultFeatures: `["文本重排","多模态重排"]`,
+	},
+	{
+		ID: 7, Name: "封装", NameEn: "Encapsulation", Logo: "", Aliases: []string{"encapsulation", "mediakit", "tool", "封装", "画质增强", "字幕擦除"}, SortRank: 40,
+		DefaultFeatures: `["视频画质增强","视频字幕擦除","图像画质增强","图像背景移除"]`,
+	},
 }
 
 // StandardProviders 返回标准厂商列表（供管理端筛选与模型编辑器使用）。
 func StandardProviders() []ClassificationItem {
 	out := make([]ClassificationItem, 0, len(standardProviderProfiles))
 	for _, p := range standardProviderProfiles {
+		isSys := int8(1)
 		out = append(out, ClassificationItem{
 			ID:        p.ID,
 			Name:      p.Name,
@@ -112,25 +142,54 @@ func StandardProviders() []ClassificationItem {
 			Logo:      p.Logo,
 			SortOrder: p.SortRank,
 			IsActive:  1,
+			IsSystem:  isSys,
 		})
 	}
 	return out
 }
 
-// StandardModelTypes 返回标准模型模态分类列表。
+// StandardModelTypes 返回标准模型模态分类列表（含 tkeapi 二级功能默认属性）。
 func StandardModelTypes() []ClassificationItem {
 	out := make([]ClassificationItem, 0, len(standardTypeProfiles))
 	for _, t := range standardTypeProfiles {
 		out = append(out, ClassificationItem{
-			ID:        t.ID,
-			Name:      t.Name,
-			NameEn:    t.NameEn,
-			Logo:      t.Logo,
-			SortOrder: t.SortRank,
-			IsActive:  1,
+			ID:              t.ID,
+			Name:            t.Name,
+			NameEn:          t.NameEn,
+			Logo:            t.Logo,
+			SortOrder:       t.SortRank,
+			IsActive:        1,
+			IsSystem:        1,
+			DefaultFeatures: t.DefaultFeatures,
 		})
 	}
 	return out
+}
+
+// ParseFeatureAttributes 解析模型或类型保存的 JSON 二级功能标签列表。
+func ParseFeatureAttributes(raw string) []string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "[]" {
+		return []string{}
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(trimmed), &list); err != nil {
+		return []string{}
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if t := strings.TrimSpace(item); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// InferModelProviderAndType 根据模型名称与上游线索推断官方服务商、模型类型与默认二级功能属性。
+func InferModelProviderAndType(rawVendor, rawCategory, model string) (providerID uint64, providerName string, typeID uint64, typeName string, defaultFeatures string) {
+	prov := resolveProvider(rawVendor, model)
+	tp := resolveType(rawCategory, "", "", model)
+	return prov.ID, prov.Name, tp.ID, tp.Name, tp.DefaultFeatures
 }
 
 func resolveProvider(rawHint, model string) providerProfile {
@@ -147,13 +206,23 @@ func resolveProvider(rawHint, model string) providerProfile {
 
 func resolveType(rawCategory, billingType, billingRule, model string) typeProfile {
 	combined := strings.ToLower(strings.TrimSpace(rawCategory) + " " + strings.TrimSpace(billingRule) + " " + strings.TrimSpace(model))
+	if strings.Contains(combined, "enhance-video") ||
+		strings.Contains(combined, "erase-video-subtitle") ||
+		strings.Contains(combined, "volc_image_enhance") ||
+		strings.Contains(combined, "volc_image_remove_bg") ||
+		strings.Contains(combined, "enhance-image") ||
+		strings.Contains(combined, "remove-image-background") ||
+		strings.Contains(combined, "封装") {
+		return standardTypeProfiles[6]
+	}
 	if billingType == pricing.BillingTypeDuration ||
 		strings.Contains(combined, "video") ||
 		strings.Contains(combined, "seedance") ||
 		strings.Contains(combined, "kling") ||
 		strings.Contains(combined, "vidu") ||
 		strings.Contains(combined, "sora") ||
-		strings.Contains(combined, "veo") {
+		strings.Contains(combined, "veo") ||
+		strings.Contains(combined, "hailuo") {
 		return standardTypeProfiles[1]
 	}
 	if strings.Contains(combined, "image") ||
@@ -162,7 +231,10 @@ func resolveType(rawCategory, billingType, billingRule, model string) typeProfil
 		strings.Contains(combined, "gpt_billing") ||
 		strings.Contains(combined, "per_image") ||
 		strings.Contains(combined, "midjourney") ||
-		strings.Contains(combined, "flux") {
+		strings.Contains(combined, "flux") ||
+		strings.Contains(combined, "imagen") ||
+		strings.Contains(combined, "hunyuan-image") ||
+		strings.Contains(combined, "wanx") {
 		return standardTypeProfiles[2]
 	}
 	if strings.Contains(combined, "audio") ||
@@ -173,7 +245,7 @@ func resolveType(rawCategory, billingType, billingRule, model string) typeProfil
 		strings.Contains(combined, "suno") {
 		return standardTypeProfiles[3]
 	}
-	if strings.Contains(combined, "embed") {
+	if strings.Contains(combined, "embed") || strings.Contains(combined, "bge-") {
 		return standardTypeProfiles[4]
 	}
 	if strings.Contains(combined, "rerank") {

@@ -68,6 +68,10 @@ interface ModelSelectorProps {
   includeModel?: (model: ModelSelectorModel) => boolean;
   /** 传入后列表按页显示。不传则一次列出当前筛选结果。 */
   pageSize?: number;
+  /** 变更时强制重新拉取模型库列表 */
+  refreshKey?: number;
+  /** 标题栏右侧额外操作区 */
+  headerExtra?: React.ReactNode;
 }
 
 const ModelSelector: React.FC<ModelSelectorProps> = ({
@@ -79,6 +83,8 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   title = '选择模型',
   includeModel,
   pageSize,
+  refreshKey = 0,
+  headerExtra,
 }) => {
   // ── 组件内部数据加载 ──
   const [availableModels, setAvailableModels] = useState<ModelSelectorModel[]>([]);
@@ -114,7 +120,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     };
     fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refreshKey]);
 
   // ── 筛选状态 ──
   const [modelSearch, setModelSearch] = useState('');
@@ -272,9 +278,10 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   return (
     <div style={{ animation: 'fadeIn 0.2s' }}>
       {/* 标题和操作栏 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 8, flexWrap: 'wrap' }}>
         <Title level={4} style={{ margin: 0 }}>{title}</Title>
-        <Space>
+        <Space wrap>
+          {headerExtra}
           <Input.Search
             placeholder="搜索模型名称或ID"
             value={modelSearch}

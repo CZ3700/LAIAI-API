@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -65,6 +66,7 @@ type Server struct {
 	forwardResolver     *forward.Resolver
 	taskService         *task.Service
 	settingsCache       settingsCache
+	upstreamHTTP        *http.Client
 	arkHTTPClient       *http.Client
 	arkOpenAIOverride   string
 	arkPollOverride     time.Duration
@@ -173,6 +175,11 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 	s.notify.EnableWake()
 
 	r.GET("/healthz", s.healthz)
+	r.GET("/v1/balance", echoTraceHeaders(), s.getTokenBalance)
+	r.GET("/v1/user/balance", echoTraceHeaders(), s.getUserBalance)
+	r.GET("/v1/models", echoTraceHeaders(), s.listPricedModels)
+	r.GET("/v1beta/models", echoTraceHeaders(), s.listPricedModels)
+	r.GET("/api/v3/models", echoTraceHeaders(), s.listPricedModels)
 
 	api := r.Group("/api")
 	api.Use(bodyLimit(controlPlaneBodyLimit)) // 控制面体上限（审查 M2）
@@ -349,26 +356,51 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		// 客户端可观测性头透传（DevEx 承诺）：x-trace-id / x-user-id / x-agent-name 原样回显到响应头，
 		// 客户端据此把自己的 trace 与我方 X-Request-Id 对齐。中间件挂在 relay 路由组，不动各 handler。
 		rg := r.Group("", echoTraceHeaders())
-		rg.GET("/v1/models", s.listPricedModels)
 		rg.POST("/v1/chat/completions", rl.HandleChatCompletions)
-		// 国内与各厂商原生兼容入站端点：火山方舟 /api/v3、Anthropic /v1/messages、Google Gemini /v1beta/models
+		// 国内与各厂商原生兼容入站端点：火山方舟 /api/v3、Anthropic /v1/messages、Google Gemini /v1 & /v1beta
 		rg.POST("/api/v3/chat/completions", rl.HandleChatCompletions)
+		rg.POST("/api/v3/responses", rl.HandleResponses)
+		rg.POST("/api/v3/images/generations", rl.HandleImages)
+		rg.POST("/api/v3/tts/unidirectional", rl.HandleAudioSpeech)
+		rg.POST("/api/v3/tts/unidirectional/sse", rl.HandleAudioSpeech)
+		rg.POST("/api/v3/embeddings/multimodal", rl.HandleEmbeddings)
 		rg.POST("/v1/messages", rl.HandleAnthropicMessages)
 		rg.POST("/api/compatible/v1/messages", rl.HandleAnthropicMessages)
 		rg.POST("/anthropic/v1/messages", rl.HandleAnthropicMessages)
 		rg.POST("/v1beta/models/*action", rl.HandleGeminiNative)
+		rg.POST("/v1/interactions", rl.HandleGeminiNative)
+		rg.POST("/v1beta/interactions", rl.HandleGeminiNative)
 		// OpenAI Responses 原生入站（Responses SDK / Codex 把 base 指到本网关即用任意 chat 上游）：
 		// ingress 转 OpenAI canonical → 复用未改动 HandleChatCompletions → egress 转回 Responses 形态（§3.2）。
 		rg.POST("/v1/responses", rl.HandleResponses)
 		rg.POST("/v1/embeddings", rl.HandleEmbeddings)
+		rg.POST("/compatible-mode/v1/embeddings", rl.HandleEmbeddings)
 		rg.POST("/v1/rerank", rl.HandleRerank) // 重排序（WS-1，RAG；Jina/SiliconFlow/Cohere/Qwen）
+		rg.POST("/compatible-api/v1/reranks", rl.HandleRerank)
+		rg.POST("/api/v1/services/rerank/text-rerank/text-rerank", rl.HandleRerank)
 		rg.POST("/v1/images/generations", rl.HandleImages)
+		rg.POST("/v1/images/omni-image", rl.HandleImages)
+		rg.POST("/v1/images/multi-image2image", rl.HandleImages)
+		rg.POST("/v1/wand/hunyuan-image/v3-generation", rl.HandleImages)
+		rg.POST("/v1/wand/hunyuan-image/v35-generation", rl.HandleImages)
+		rg.POST("/api/v1/services/aigc/multimodal-generation/generation", rl.HandleImages)
+		rg.POST("/api/v1/tools-sync/enhance-image", rl.HandleImages)
+		rg.POST("/api/v1/tools-sync/remove-image-background", rl.HandleImages)
 		rg.POST("/v1/images/edits", rl.HandleImageEdits)                 // 图生图编辑（D1，multipart，按张计价）
 		rg.POST("/v1/images/variations", rl.HandleImageVariations)       // 图像变体（D1，multipart）
 		rg.POST("/v1/audio/speech", rl.HandleAudioSpeech)                // TTS（gap P2-F，按字符计价）
 		rg.POST("/v1/audio/transcriptions", rl.HandleAudioTranscription) // STT（gap P2-F，按次固定价）
 		rg.POST("/v1/audio/translations", rl.HandleAudioTranslation)     // STT 翻译到英文（D1，同转写计价）
 		rg.GET("/v1/realtime", rl.HandleRealtime)                        // Realtime WS 网关（§3.9；OpenAI/Azure，token 实时计费）
+
+		// Handle Google /v1/models/{model}:generateContent without colliding with static GET /v1/models
+		r.NoRoute(echoTraceHeaders(), func(c *gin.Context) {
+			if c.Request.Method == http.MethodPost && strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
+				rl.HandleGeminiNative(c)
+				return
+			}
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		})
 
 		// 异步任务（Seedance 类视频生成，设计 §4.4 Task API）
 		ts := opts.TaskService
@@ -422,6 +454,8 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		vg.POST("/api/v1/tools/enhance-video", ts.HandleMediaKitNativeCreate)
 		vg.POST("/api/v1/tools/enhance-video-fast", ts.HandleMediaKitNativeCreate)
 		vg.POST("/api/v1/tools/enhance-video-generative", ts.HandleMediaKitNativeCreate)
+		vg.POST("/api/v1/tools/erase-video-subtitle", ts.HandleMediaKitNativeCreate)
+		vg.POST("/api/v1/tools/erase-video-subtitle-pro", ts.HandleMediaKitNativeCreate)
 		// OpenAI 视频标准兼容入口（/v1/video/generations + /v1/videos + /v1/tasks/:id）
 		vg.POST("/v1/video/generations", ts.HandleCreate)
 		vg.GET("/v1/video/generations/:id", ts.HandleGet)

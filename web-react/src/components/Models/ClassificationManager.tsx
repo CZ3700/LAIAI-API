@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, Table, Button, Space, Form, Input, InputNumber, Switch, message, Popconfirm, Tag } from 'antd';
+import { Modal, Table, Button, Space, Form, Input, InputNumber, Switch, message, Popconfirm, Tag, Select } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
@@ -16,6 +16,8 @@ interface ClassificationItem {
   is_active: number | boolean;
   is_system?: number;
   logo?: string;
+  default_features?: string;
+  remark?: string;
   model_count?: number;
 }
 
@@ -70,6 +72,8 @@ const ClassificationManager: React.FC<ClassificationManagerProps> = ({
         sort_order: record.sort_order ?? 0,
         is_active: checked ? 1 : 0,
         logo: record.logo || '',
+        default_features: record.default_features,
+        remark: record.remark,
       };
       await request.put(`${apiPath}/${record.id}`, payload);
       setItems(prev => prev.map(item => (item.id === record.id ? { ...item, is_active: checked } : item)));
@@ -95,7 +99,20 @@ const ClassificationManager: React.FC<ClassificationManagerProps> = ({
 
   const handleEdit = (item: ClassificationItem) => {
     setEditingItem(item);
-    form.setFieldsValue({ ...item, logo: item.logo || undefined });
+    let parsedFeatures: string[] = [];
+    if (item.default_features) {
+      try {
+        const parsed = JSON.parse(item.default_features);
+        if (Array.isArray(parsed)) parsedFeatures = parsed.filter((v) => typeof v === 'string');
+      } catch {
+        parsedFeatures = [];
+      }
+    }
+    form.setFieldsValue({
+      ...item,
+      logo: item.logo || undefined,
+      default_features_list: parsedFeatures,
+    });
     setIsEditModalVisible(true);
   };
 
@@ -112,10 +129,18 @@ const ClassificationManager: React.FC<ClassificationManagerProps> = ({
 
   const handleSave = async (values: any) => {
     try {
-      const payload = {
-        ...values,
+      const { default_features_list, ...rest } = values;
+      const payload: Record<string, any> = {
+        ...rest,
         is_active: values.is_active ? 1 : 0,
       };
+      if (type === 'type') {
+        if (editingItem?.is_system === 1 && editingItem.default_features) {
+          payload.default_features = editingItem.default_features;
+        } else if (Array.isArray(default_features_list)) {
+          payload.default_features = JSON.stringify(default_features_list);
+        }
+      }
       if (editingItem) {
         await request.put(`${apiPath}/${editingItem.id}`, payload);
       } else {
@@ -268,34 +293,43 @@ const ClassificationManager: React.FC<ClassificationManagerProps> = ({
           <Form.Item name="is_active" label={t('common.status')} valuePropName="checked">
             <Switch />
           </Form.Item>
-          {type === 'type' && editingItem?.name === '音频' && (
-            <Form.Item label="二级功能属性">
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                {['语音合成', '音频生成'].map((label) => (
-                  <Tag key={label} style={{ margin: 0, padding: '4px 12px', fontSize: 13, lineHeight: '22px' }}>
-                    {label}
-                  </Tag>
-                ))}
-              </div>
-              <div style={{ marginTop: 8, color: 'var(--text-secondary)', fontSize: 12 }}>
-                系统预制，不可修改。模型编辑时可从中勾选。
-              </div>
-            </Form.Item>
-          )}
-          {type === 'type' && editingItem?.name === '视频' && (
-            <Form.Item label="二级功能属性">
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                {['全能参考生视频', '文生视频', '图生视频', '首尾帧生视频', '编辑视频', '延长视频', '对口型'].map((label) => (
-                  <Tag key={label} style={{ margin: 0, padding: '4px 12px', fontSize: 13, lineHeight: '22px' }}>
-                    {label}
-                  </Tag>
-                ))}
-              </div>
-              <div style={{ marginTop: 8, color: 'var(--text-secondary)', fontSize: 12 }}>
-                系统预制，不可修改。模型编辑时可从中勾选。
-              </div>
-            </Form.Item>
-          )}
+          {type === 'type' && (() => {
+            let presetTags: string[] = [];
+            if (editingItem?.default_features) {
+              try {
+                const parsed = JSON.parse(editingItem.default_features);
+                if (Array.isArray(parsed)) presetTags = parsed.filter((v) => typeof v === 'string');
+              } catch {
+                presetTags = [];
+              }
+            }
+            if (editingItem?.is_system === 1 && presetTags.length > 0) {
+              return (
+                <Form.Item label="二级功能默认属性">
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                    {presetTags.map((label) => (
+                      <Tag key={label} style={{ margin: 0, padding: '4px 12px', fontSize: 13, lineHeight: '22px' }}>
+                        {label}
+                      </Tag>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 8, color: 'var(--text-secondary)', fontSize: 12 }}>
+                    系统预制，不可修改。模型编辑时可从中勾选或自定义补充。
+                  </div>
+                </Form.Item>
+              );
+            }
+            return (
+              <Form.Item name="default_features_list" label="二级功能默认属性">
+                <Select
+                  mode="tags"
+                  tokenSeparators={[',']}
+                  placeholder="输入二级功能属性标签后回车添加，如：文生图"
+                  style={{ width: '100%' }}
+                />
+              </Form.Item>
+            );
+          })()}
         </Form>
       </Modal>
     </>

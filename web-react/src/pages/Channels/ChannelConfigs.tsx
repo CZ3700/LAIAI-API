@@ -760,8 +760,11 @@ const ChannelConfigs: React.FC = () => {
       if (!silent) message.warning('请先填写端点基础地址');
       return;
     }
-    if (!apiKey && !upstreamAccessToken && !activeConfig?.id) {
-      if (!silent) message.warning('请先填写请求鉴权密钥或系统访问令牌');
+    const cleanToken = upstreamAccessToken && !upstreamAccessToken.startsWith('••••') && !upstreamAccessToken.startsWith('****')
+      ? upstreamAccessToken.trim()
+      : '';
+    if ((cleanToken && !upstreamUserId) || (!cleanToken && upstreamUserId)) {
+      if (!silent) message.warning('使用系统访问令牌拉取私有分组时，请同时填写 NewAPI 用户 ID 和系统访问令牌');
       return;
     }
     setFetchingGroups(true);

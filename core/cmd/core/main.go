@@ -178,6 +178,17 @@ func runCore(log *slog.Logger) (code int) {
 	})
 
 	jobs.goRun(func(ctx context.Context) {
+		periodic(ctx, time.Minute, func(ctx context.Context) {
+			if !leaderLease.IsLeader() {
+				return
+			}
+			if synced := apiSrv.SyncUpstreamChannelRates(ctx); synced > 0 {
+				log.Info("upstream channel rates synced", "count", synced)
+			}
+		})
+	})
+
+	jobs.goRun(func(ctx context.Context) {
 		periodic(ctx, time.Hour, func(ctx context.Context) {
 			if !leaderLease.IsLeader() {
 				return

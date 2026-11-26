@@ -3459,9 +3459,31 @@ const Models: React.FC = () => {
                                   }
                                   return (
                                     <div style={{ marginTop: 24, padding: '16px', background: isLight ? '#fff' : 'rgba(255,255,255,0.02)', borderRadius: 8, border: isLight ? '1px solid #e5e4e7' : '1px solid #303030' }}>
-                                      <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                      <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                                         <Text strong>二级功能属性选择</Text>
-                                        <Text type="secondary" style={{ fontSize: 12 }}>支持自定义输入添加</Text>
+                                        <Space size={8}>
+                                          {options.length > 0 && (
+                                            <>
+                                              <Button
+                                                type="link"
+                                                size="small"
+                                                style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                                                onClick={() => form.setFieldsValue({ feature_attributes: options.map(o => o.value) })}
+                                              >
+                                                全选默认
+                                              </Button>
+                                              <Button
+                                                type="link"
+                                                size="small"
+                                                style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                                                onClick={() => form.setFieldsValue({ feature_attributes: [] })}
+                                              >
+                                                清空
+                                              </Button>
+                                            </>
+                                          )}
+                                          <Text type="secondary" style={{ fontSize: 12 }}>支持自定义输入添加</Text>
+                                        </Space>
                                       </div>
                                       <Form.Item name="feature_attributes" style={{ marginBottom: 0 }}>
                                         <FeatureTagsSelect options={options.map(o => o.value)} />

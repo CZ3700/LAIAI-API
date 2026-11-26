@@ -66,6 +66,7 @@ func (s *Server) registerV1CompatRoutes(r *gin.Engine) {
 			org.GET("/tokens", s.v1ListTokens)
 			org.POST("/tokens", s.requireStepUpForKeys(), s.v1CreateToken)
 			org.PUT("/tokens/:id", s.v1UpdateToken)
+			org.POST("/tokens/:id/reset-usage", s.v1ResetTokenUsage)
 			org.DELETE("/tokens/:id", s.v1DeleteToken)
 			org.POST("/tokens/:id/reveal", s.v1ForbidTokenReveal)
 
@@ -114,6 +115,8 @@ func (s *Server) registerV1CompatRoutes(r *gin.Engine) {
 
 		admin.GET("/channels", s.v1ListChannels)
 		admin.POST("/channels", s.v1CreateChannel)
+		admin.POST("/channels/probe-models", s.v1ProbeChannelModels)
+		admin.POST("/channels/import-probed-models", s.v1ImportProbedModels)
 		admin.PUT("/channels/:id", s.v1UpdateChannel)
 		admin.DELETE("/channels/:id", s.v1DeleteChannel)
 		admin.POST("/channels/:id/test", s.v1TestChannel)
@@ -129,9 +132,9 @@ func (s *Server) registerV1CompatRoutes(r *gin.Engine) {
 		admin.POST("/channel-configs/:id/copy", s.v1CopyChannelConfig)
 		admin.POST("/channel-configs/:id/quota/reset", s.v1ChannelConfigQuotaReset)
 		admin.POST("/channel-configs/volc-balance", s.v1ChannelConfigsVolcBalance)
-		admin.GET("/channel-configs/:id/sync-logs", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"data": []any{}}) })
-		admin.POST("/channel-configs/:id/sync-rate", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"synced": true}) })
-		admin.POST("/channel-configs/upstream-groups", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"groups": []any{}}) })
+		admin.GET("/channel-configs/:id/sync-logs", s.v1ListChannelConfigSyncLogs)
+		admin.POST("/channel-configs/:id/sync-rate", s.v1TriggerChannelConfigSyncRate)
+		admin.POST("/channel-configs/upstream-groups", s.v1FetchChannelConfigUpstreamGroups)
 		admin.GET("/channel-configs/providers", s.v1ChannelConfigProviders)
 		admin.POST("/channel-configs/providers", s.v1SaveChannelConfigProvider)
 		admin.PUT("/channel-configs/providers/:id", s.v1SaveChannelConfigProvider)
@@ -226,6 +229,7 @@ func (s *Server) registerV1CompatRoutes(r *gin.Engine) {
 		admin.PUT("/plugins/docs-api/docs/:id/default-expanded", s.v1AdminSetDocExpanded)
 		admin.POST("/plugins/docs-api/docs/import-default", s.v1AdminImportDefaultDocs)
 		admin.POST("/plugins/docs-api/docs/clear-all", s.v1AdminClearAllDocs)
+		admin.POST("/plugins/docs-api/docs/translate", s.v1AdminTranslateDoc)
 	}
 }
 
@@ -928,6 +932,28 @@ func (s *Server) v1UpdateToken(c *gin.Context) {
 	}
 	_ = s.db.WithContext(ctx).Where("id = ? AND org_id = ?", id, claims.OrgID).First(&k).Error
 	c.JSON(http.StatusOK, s.formatV1Token(k))
+}
+
+func (s *Server) v1ResetTokenUsage(c *gin.Context) {
+	claims := mustClaims(c)
+	id, ok := parseUintIDParam(c, "id")
+	if !ok {
+		return
+	}
+	ctx := c.Request.Context()
+	res := s.db.WithContext(ctx).Model(&identity.APIKey{}).
+		Where("id = ? AND org_id = ?", id, claims.OrgID).
+		Update("used_amount", decimal.Zero)
+	if res.Error != nil {
+		fail(c, http.StatusInternalServerError, "reset token usage failed")
+		return
+	}
+	if res.RowsAffected == 0 {
+		fail(c, http.StatusNotFound, "token not found")
+		return
+	}
+	s.writeAudit(c, "v1_token_reset_usage", strconv.FormatUint(id, 10), "reset token used_amount")
+	c.JSON(http.StatusOK, gin.H{"message": "已清零令牌已用额度", "used_quota": 0.0})
 }
 
 func (s *Server) v1DeleteToken(c *gin.Context) {

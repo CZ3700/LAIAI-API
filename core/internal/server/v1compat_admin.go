@@ -1,11 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"net/http"
 	"slices"
 	"strconv"
@@ -50,13 +53,111 @@ func modelNumericID(model string) uint64 {
 
 func (s *Server) loadClassifications(settingKey string, defaults []v1compat.ClassificationItem) []v1compat.ClassificationItem {
 	raw := s.getSetting(settingKey)
-	if strings.TrimSpace(raw) != "" {
-		var list []v1compat.ClassificationItem
-		if err := json.Unmarshal([]byte(raw), &list); err == nil && len(list) > 0 {
-			return list
+	if strings.TrimSpace(raw) == "" {
+		return slices.Clone(defaults)
+	}
+	var list []v1compat.ClassificationItem
+	if err := json.Unmarshal([]byte(raw), &list); err != nil || len(list) == 0 {
+		return slices.Clone(defaults)
+	}
+	defByID := make(map[uint64]v1compat.ClassificationItem, len(defaults))
+	defByName := make(map[string]v1compat.ClassificationItem, len(defaults))
+	seenID := make(map[uint64]bool, len(list))
+	seenName := make(map[string]bool, len(list))
+	for _, d := range defaults {
+		defByID[d.ID] = d
+		defByName[d.Name] = d
+	}
+	for i := range list {
+		seenID[list[i].ID] = true
+		seenName[list[i].Name] = true
+		def, ok := defByID[list[i].ID]
+		if !ok {
+			def, ok = defByName[list[i].Name]
+		}
+		if ok {
+			if def.IsSystem == 1 && def.DefaultFeatures != "" {
+				list[i].DefaultFeatures = def.DefaultFeatures
+				list[i].IsSystem = 1
+			} else if list[i].DefaultFeatures == "" && def.DefaultFeatures != "" {
+				list[i].DefaultFeatures = def.DefaultFeatures
+			}
+			if list[i].IsSystem == 0 && def.IsSystem != 0 {
+				list[i].IsSystem = def.IsSystem
+			}
+			if list[i].NameEn == "" && def.NameEn != "" {
+				list[i].NameEn = def.NameEn
+			}
+			if list[i].Logo == "" && def.Logo != "" {
+				list[i].Logo = def.Logo
+			}
 		}
 	}
-	return slices.Clone(defaults)
+	for _, d := range defaults {
+		if d.IsSystem == 1 && !seenID[d.ID] && !seenName[d.Name] {
+			list = append(list, d)
+		}
+	}
+	return list
+}
+
+type modelClassificationCountInput struct {
+	Model         string
+	Name          string
+	ProviderID    uint64
+	APIProviderID uint64
+	TypeID        uint64
+}
+
+func (s *Server) loadAllModelClassificationInputs(c *gin.Context) []modelClassificationCountInput {
+	ctx := c.Request.Context()
+	rdb := s.readOnly().WithContext(ctx)
+	var bindings []pricing.ModelRuleBinding
+	_ = rdb.Select("model, display_name").Find(&bindings).Error
+	var prices []relay.ModelPrice
+	_ = rdb.Select("model").Find(&prices).Error
+	var metas []ModelMeta
+	_ = rdb.Select("model, vendor, category").Find(&metas).Error
+	metaMap := make(map[string]ModelMeta, len(metas))
+	for _, m := range metas {
+		metaMap[m.Model] = m
+	}
+	seen := make(map[string]struct{}, len(bindings)+len(prices))
+	extMap := s.loadV1ModelExtMap()
+	out := make([]modelClassificationCountInput, 0, len(bindings)+len(prices))
+	addModel := func(modelName, displayName string) {
+		if _, ok := seen[modelName]; ok {
+			return
+		}
+		seen[modelName] = struct{}{}
+		ext := extMap[modelName]
+		meta := metaMap[modelName]
+		pid, _, tid, _, _ := v1compat.InferModelProviderAndType(meta.Vendor, meta.Category, modelName)
+		if ext.ProviderID > 0 {
+			pid = ext.ProviderID
+		}
+		if ext.TypeID > 0 {
+			tid = ext.TypeID
+		}
+		apid := ext.APIProviderID
+		if apid == 0 {
+			apid = pid
+		}
+		out = append(out, modelClassificationCountInput{
+			Model:         modelName,
+			Name:          cmp.Or(displayName, modelName),
+			ProviderID:    pid,
+			APIProviderID: apid,
+			TypeID:        tid,
+		})
+	}
+	for _, b := range bindings {
+		addModel(b.Model, b.DisplayName)
+	}
+	for _, p := range prices {
+		addModel(p.Model, p.Model)
+	}
+	return out
 }
 
 func (s *Server) listModelProvidersData() []v1compat.ClassificationItem {
@@ -72,24 +173,53 @@ func (s *Server) listModelTypesData() []v1compat.ClassificationItem {
 }
 
 func (s *Server) v1ModelProviders(c *gin.Context) {
-	c.JSON(http.StatusOK, s.listModelProvidersData())
+	items := s.listModelProvidersData()
+	models := s.loadAllModelClassificationInputs(c)
+	counts := map[uint64]int64{}
+	for _, m := range models {
+		counts[m.ProviderID]++
+	}
+	for i := range items {
+		items[i].ModelCount = counts[items[i].ID]
+	}
+	c.JSON(http.StatusOK, items)
 }
 
 func (s *Server) v1ModelAPIProviders(c *gin.Context) {
-	c.JSON(http.StatusOK, s.listModelAPIProvidersData())
+	items := s.listModelAPIProvidersData()
+	models := s.loadAllModelClassificationInputs(c)
+	counts := map[uint64]int64{}
+	for _, m := range models {
+		counts[m.APIProviderID]++
+	}
+	for i := range items {
+		items[i].ModelCount = counts[items[i].ID]
+	}
+	c.JSON(http.StatusOK, items)
 }
 
 func (s *Server) v1ModelTypes(c *gin.Context) {
-	c.JSON(http.StatusOK, s.listModelTypesData())
+	items := s.listModelTypesData()
+	models := s.loadAllModelClassificationInputs(c)
+	counts := map[uint64]int64{}
+	for _, m := range models {
+		counts[m.TypeID]++
+	}
+	for i := range items {
+		items[i].ModelCount = counts[items[i].ID]
+	}
+	c.JSON(http.StatusOK, items)
 }
 
 func (s *Server) handleSaveClassification(c *gin.Context, settingKey string, defaults []v1compat.ClassificationItem) {
 	var req struct {
-		Name      string `json:"name" binding:"required"`
-		NameEn    string `json:"name_en"`
-		Logo      string `json:"logo"`
-		SortOrder int    `json:"sort_order"`
-		IsActive  *int8  `json:"is_active"`
+		Name            string  `json:"name" binding:"required"`
+		NameEn          string  `json:"name_en"`
+		Logo            string  `json:"logo"`
+		SortOrder       int     `json:"sort_order"`
+		IsActive        *int8   `json:"is_active"`
+		Remark          *string `json:"remark"`
+		DefaultFeatures *string `json:"default_features"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "name is required")
@@ -104,11 +234,19 @@ func (s *Server) handleSaveClassification(c *gin.Context, settingKey string, def
 		if id, err := strconv.ParseUint(idRaw, 10, 64); err == nil {
 			for i := range list {
 				if list[i].ID == id {
-					list[i].Name = strings.TrimSpace(req.Name)
+					if list[i].IsSystem == 0 {
+						list[i].Name = strings.TrimSpace(req.Name)
+					}
 					list[i].NameEn = strings.TrimSpace(req.NameEn)
 					list[i].Logo = strings.TrimSpace(req.Logo)
 					list[i].SortOrder = req.SortOrder
 					list[i].IsActive = active
+					if req.Remark != nil {
+						list[i].Remark = strings.TrimSpace(*req.Remark)
+					}
+					if req.DefaultFeatures != nil && list[i].IsSystem == 0 {
+						list[i].DefaultFeatures = strings.TrimSpace(*req.DefaultFeatures)
+					}
 					b, _ := json.Marshal(list)
 					_ = s.upsertRawSetting(settingKey, string(b))
 					c.JSON(http.StatusOK, list[i])
@@ -131,6 +269,12 @@ func (s *Server) handleSaveClassification(c *gin.Context, settingKey string, def
 		SortOrder: req.SortOrder,
 		IsActive:  active,
 	}
+	if req.Remark != nil {
+		item.Remark = strings.TrimSpace(*req.Remark)
+	}
+	if req.DefaultFeatures != nil {
+		item.DefaultFeatures = strings.TrimSpace(*req.DefaultFeatures)
+	}
 	list = append(list, item)
 	b, _ := json.Marshal(list)
 	_ = s.upsertRawSetting(settingKey, string(b))
@@ -143,6 +287,12 @@ func (s *Server) handleDeleteClassification(c *gin.Context, settingKey string, d
 		return
 	}
 	list := s.loadClassifications(settingKey, defaults)
+	for _, it := range list {
+		if it.ID == id && it.IsSystem == 1 {
+			fail(c, http.StatusBadRequest, "系统预制分类不可删除")
+			return
+		}
+	}
 	next := slices.DeleteFunc(list, func(it v1compat.ClassificationItem) bool { return it.ID == id })
 	b, _ := json.Marshal(next)
 	_ = s.upsertRawSetting(settingKey, string(b))
@@ -172,26 +322,53 @@ func (s *Server) v1ClassificationsStats(c *gin.Context) {
 	providers := s.listModelProvidersData()
 	apiProviders := s.listModelAPIProvidersData()
 	types := s.listModelTypesData()
+	models := s.loadAllModelClassificationInputs(c)
 
-	var bindingCount int64
-	_ = s.readOnly().WithContext(c.Request.Context()).Model(&pricing.ModelRuleBinding{}).Count(&bindingCount).Error
+	provCounts := map[uint64]int64{}
+	apiProvCounts := map[uint64]int64{}
+	typeCounts := map[uint64]int64{}
+	var unProv, unAPIProv, unType int64
+	for _, m := range models {
+		if m.ProviderID > 0 {
+			provCounts[m.ProviderID]++
+		} else {
+			unProv++
+		}
+		if m.APIProviderID > 0 {
+			apiProvCounts[m.APIProviderID]++
+		} else {
+			unAPIProv++
+		}
+		if m.TypeID > 0 {
+			typeCounts[m.TypeID]++
+		} else {
+			unType++
+		}
+	}
 
-	toStats := func(items []v1compat.ClassificationItem) []gin.H {
+	toStats := func(items []v1compat.ClassificationItem, counts map[uint64]int64) []gin.H {
 		out := make([]gin.H, 0, len(items))
 		for _, it := range items {
-			out = append(out, gin.H{"id": it.ID, "name": it.Name, "name_en": it.NameEn, "logo": it.Logo, "count": 0})
+			out = append(out, gin.H{
+				"id":        it.ID,
+				"name":      it.Name,
+				"name_en":   it.NameEn,
+				"logo":      it.Logo,
+				"is_system": it.IsSystem,
+				"count":     counts[it.ID],
+			})
 		}
 		return out
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"providers":                  toStats(providers),
-		"api_providers":              toStats(apiProviders),
-		"types":                      toStats(types),
-		"unclassified_providers":     0,
-		"unclassified_api_providers": 0,
-		"unclassified_types":         0,
+		"providers":                  toStats(providers, provCounts),
+		"api_providers":              toStats(apiProviders, apiProvCounts),
+		"types":                      toStats(types, typeCounts),
+		"unclassified_providers":     unProv,
+		"unclassified_api_providers": unAPIProv,
+		"unclassified_types":         unType,
 		"source_counts": gin.H{
-			"custom":  bindingCount,
+			"custom":  int64(len(models)),
 			"library": 0,
 		},
 	})
@@ -367,6 +544,11 @@ func (s *Server) v1AdminListModels(c *gin.Context) {
 	}
 
 	extMap := s.loadV1ModelExtMap()
+	typesList := s.listModelTypesData()
+	typeNameByID := make(map[uint64]string, len(typesList))
+	for _, tp := range typesList {
+		typeNameByID[tp.ID] = tp.Name
+	}
 	out := make([]gin.H, 0, len(names))
 	for _, modelName := range names {
 		b, hasB := bindingMap[modelName]
@@ -412,6 +594,21 @@ func (s *Server) v1AdminListModels(c *gin.Context) {
 
 		numID := modelNumericID(modelName)
 		ext := extMap[modelName]
+		inferredProvID, _, inferredTypeID, inferredTypeName, _ := v1compat.InferModelProviderAndType(meta.Vendor, meta.Category, modelName)
+		provID := ext.ProviderID
+		if provID == 0 {
+			provID = inferredProvID
+		}
+		apiProvID := ext.APIProviderID
+		if apiProvID == 0 {
+			apiProvID = provID
+		}
+		typeID := ext.TypeID
+		if typeID == 0 {
+			typeID = inferredTypeID
+		}
+		typeName := cmp.Or(typeNameByID[typeID], inferredTypeName, "聊天")
+		featAttrs := cmp.Or(ext.FeatureAttributes, "[]")
 		fwdJSON := b.ForwardRuleIDs
 		if strings.TrimSpace(fwdJSON) == "" {
 			fwdJSON = "[]"
@@ -443,14 +640,16 @@ func (s *Server) v1AdminListModels(c *gin.Context) {
 			"model_id_alias":          b.ModelAlias,
 			"name":                    displayName,
 			"model_alias":             b.ModelAlias,
-			"provider_id":             ext.ProviderID,
-			"api_provider_id":         ext.APIProviderID,
-			"type_id":                 ext.TypeID,
+			"provider_id":             provID,
+			"api_provider_id":         apiProvID,
+			"type_id":                 typeID,
+			"type_name":               typeName,
 			"vendor":                  meta.Vendor,
-			"category":                meta.Category,
+			"category":                cmp.Or(meta.Category, typeName),
 			"description":             meta.Description,
 			"remark":                  ext.Remark,
-			"feature_attributes":      cmp.Or(ext.FeatureAttributes, "[]"),
+			"feature_attributes":      featAttrs,
+			"feature_keys":            v1compat.ParseFeatureAttributes(featAttrs),
 			"group_ratios":            cmp.Or(ext.GroupRatios, "{}"),
 			"context_length":          meta.ContextLength,
 			"logo":                    meta.Icon,
@@ -487,16 +686,16 @@ func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 	var req struct {
 		Model                 string           `json:"model"`
 		ModelID               string           `json:"model_id"`
-		OriginalID            string           `json:"original_id"`
+		OriginalID            *string          `json:"original_id"`
 		Name                  string           `json:"name"`
 		ModelAlias            string           `json:"model_alias"`
 		ModelIDAlias          string           `json:"model_id_alias"`
 		Vendor                string           `json:"vendor"`
 		Category              string           `json:"category"`
 		Description           string           `json:"description"`
-		Remark                string           `json:"remark"`
-		FeatureAttributes     string           `json:"feature_attributes"`
-		GroupRatios           string           `json:"group_ratios"`
+		Remark                *string          `json:"remark"`
+		FeatureAttributes     *string          `json:"feature_attributes"`
+		GroupRatios           *string          `json:"group_ratios"`
 		ContextLength         int              `json:"context_length"`
 		Icon                  string           `json:"icon"`
 		Logo                  string           `json:"logo"`
@@ -697,17 +896,17 @@ func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 	if req.TypeID > 0 {
 		ext.TypeID = req.TypeID
 	}
-	if req.OriginalID != "" {
-		ext.OriginalID = strings.TrimSpace(req.OriginalID)
+	if req.OriginalID != nil {
+		ext.OriginalID = strings.TrimSpace(*req.OriginalID)
 	}
-	if req.Remark != "" {
-		ext.Remark = strings.TrimSpace(req.Remark)
+	if req.Remark != nil {
+		ext.Remark = strings.TrimSpace(*req.Remark)
 	}
-	if req.FeatureAttributes != "" {
-		ext.FeatureAttributes = req.FeatureAttributes
+	if req.FeatureAttributes != nil {
+		ext.FeatureAttributes = cmp.Or(strings.TrimSpace(*req.FeatureAttributes), "[]")
 	}
-	if req.GroupRatios != "" {
-		ext.GroupRatios = req.GroupRatios
+	if req.GroupRatios != nil {
+		ext.GroupRatios = cmp.Or(strings.TrimSpace(*req.GroupRatios), "{}")
 	}
 	s.saveV1ModelExt(model, ext)
 
@@ -1041,4 +1240,106 @@ func (s *Server) v1AdminClearAllDocs(c *gin.Context) {
 	}
 	s.writeAudit(c, "doc_clear_all", "all", "cleared all docs")
 	c.JSON(http.StatusOK, gin.H{"message": "cleared"})
+}
+
+func (s *Server) v1AdminTranslateDoc(c *gin.Context) {
+	var req struct {
+		Text   string `json:"text"`
+		Title  string `json:"title"`
+		ToLang string `json:"to_lang"`
+		Target string `json:"target_lang"`
+		Model  string `json:"model"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid translate request")
+		return
+	}
+	sourceText := cmp.Or(strings.TrimSpace(req.Text), strings.TrimSpace(req.Title))
+	if sourceText == "" {
+		fail(c, http.StatusBadRequest, "text is required")
+		return
+	}
+	toLang := cmp.Or(strings.TrimSpace(req.ToLang), strings.TrimSpace(req.Target), "en")
+	ctx := c.Request.Context()
+
+	var channels []relay.Channel
+	_ = s.readOnly().WithContext(ctx).Where("status = 1 AND owner_org_id = 0").Order("priority DESC, id DESC").Find(&channels).Error
+	var chosenCh *relay.Channel
+	var chosenModel, cred string
+	for i := range channels {
+		ch := &channels[i]
+		if ch.BaseURL == "" {
+			continue
+		}
+		plain := s.decryptConfigSecret(ch.CredentialEnc)
+		if plain == "" || plain == "placeholder-key" {
+			continue
+		}
+		if req.Model != "" && ch.ServesModel(req.Model) {
+			chosenCh = ch
+			chosenModel = ch.UpstreamModel(req.Model)
+			cred = plain
+			break
+		}
+		if chosenCh == nil {
+			for m := range strings.SplitSeq(ch.Models, ",") {
+				if trimmed := strings.TrimSpace(m); trimmed != "" {
+					chosenCh = ch
+					chosenModel = ch.UpstreamModel(trimmed)
+					cred = plain
+					break
+				}
+			}
+		}
+	}
+	if chosenCh == nil {
+		fail(c, http.StatusBadRequest, "请先配置至少一个可用的上游对话渠道与模型后再使用 AI 翻译")
+		return
+	}
+
+	targetURL := strings.TrimRight(chosenCh.BaseURL, "/") + "/v1/chat/completions"
+	if strings.HasSuffix(strings.TrimRight(chosenCh.BaseURL, "/"), "/v1") {
+		targetURL = strings.TrimRight(chosenCh.BaseURL, "/") + "/chat/completions"
+	}
+	bodyMap := map[string]any{
+		"model": chosenModel,
+		"messages": []map[string]string{
+			{"role": "system", "content": "Translate the provided Markdown documentation cleanly into target language " + toLang + ". Preserve Markdown formatting, code blocks, URLs, and {{baseUrl}} variables verbatim. Output only the translation."},
+			{"role": "user", "content": sourceText},
+		},
+		"temperature": 0.2,
+	}
+	b, _ := json.Marshal(bodyMap)
+	upCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	upReq, err := http.NewRequestWithContext(upCtx, http.MethodPost, targetURL, bytes.NewReader(b))
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	upReq.Header.Set("Content-Type", "application/json")
+	upReq.Header.Set("Authorization", "Bearer "+cred)
+	resp, err := s.upstreamHTTPClient().Do(upReq)
+	if err != nil {
+		fail(c, http.StatusBadGateway, "AI 翻译请求失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		fail(c, http.StatusBadGateway, fmt.Sprintf("AI 翻译上游返回 HTTP %d", resp.StatusCode))
+		return
+	}
+	var parsed struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBytes, &parsed); err != nil || len(parsed.Choices) == 0 {
+		fail(c, http.StatusBadGateway, "AI 翻译响应解析失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"translated": strings.TrimSpace(parsed.Choices[0].Message.Content)})
 }
