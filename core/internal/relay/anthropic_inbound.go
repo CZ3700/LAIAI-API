@@ -254,6 +254,7 @@ func anthropicSystemToOpenAI(sys any) any {
 // anthropicAssistantToOpenAI：assistant 块数组（text + tool_use）→ 一条 OpenAI assistant 消息。
 func anthropicAssistantToOpenAI(blocks []any) []map[string]any {
 	var textParts []string
+	var thinkingBlocks []any
 	var toolCalls []map[string]any
 	var contentParts []any // 多模态/带 cache_control 时用
 	hasImage := false
@@ -264,6 +265,8 @@ func anthropicAssistantToOpenAI(blocks []any) []map[string]any {
 			continue
 		}
 		switch b["type"] {
+		case "thinking", "redacted_thinking":
+			thinkingBlocks = append(thinkingBlocks, b)
 		case "text":
 			if t, ok := b["text"].(string); ok {
 				textParts = append(textParts, t)
@@ -302,6 +305,9 @@ func anthropicAssistantToOpenAI(blocks []any) []map[string]any {
 	}
 	if len(toolCalls) > 0 {
 		msg["tool_calls"] = toolCalls
+	}
+	if len(thinkingBlocks) > 0 {
+		msg["_thinking_blocks"] = thinkingBlocks
 	}
 	return []map[string]any{msg}
 }
@@ -605,9 +611,11 @@ func openaiRespToAnthropic(raw []byte) ([]byte, bool) {
 		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"` // 思考内容（批 A 保真闭环）
-				ToolCalls        []struct {
+				Content           string   `json:"content"`
+				ReasoningContent  string   `json:"reasoning_content"`   // 思考内容（批 A 保真闭环）
+				ThinkingSignature string   `json:"_thinking_signature"` // Anthropic 原生 thinking signature
+				RedactedThinking  []string `json:"_redacted_thinking"`  // Anthropic 原生 redacted_thinking
+				ToolCalls         []struct {
 					ID       string `json:"id"`
 					Function struct {
 						Name      string `json:"name"`
@@ -631,11 +639,23 @@ func openaiRespToAnthropic(raw []byte) ([]byte, bool) {
 	}
 	ch := resp.Choices[0]
 	var content []any
-	// 思考内容还原（批 A 保真闭环）：reasoning_content 作为可见 text 块前置——原生 Anthropic 客户端
-	// 无标准 reasoning 字段，用 text 块保证思考不静默丢（恢复批 A 前可见性）。不用 thinking 块：
-	// 那需要有效 signature 才能多轮回传，往返 signature 保真是独立专项。
+	// 思考内容还原（批 A 保真闭环）：当上游携带 Anthropic 原生 signature 时以 thinking 块无损透传；
+	// 其余 OpenAI/DeepSeek 形态无 signature 时按可见 text 块前置（保持批 A 前可见性与多轮兼容）。
 	if ch.Message.ReasoningContent != "" {
-		content = append(content, map[string]any{"type": "text", "text": ch.Message.ReasoningContent})
+		if ch.Message.ThinkingSignature != "" {
+			content = append(content, map[string]any{
+				"type":      "thinking",
+				"thinking":  ch.Message.ReasoningContent,
+				"signature": ch.Message.ThinkingSignature,
+			})
+		} else {
+			content = append(content, map[string]any{"type": "text", "text": ch.Message.ReasoningContent})
+		}
+	}
+	for _, rd := range ch.Message.RedactedThinking {
+		if rd != "" {
+			content = append(content, map[string]any{"type": "redacted_thinking", "data": rd})
+		}
 	}
 	if ch.Message.Content != "" {
 		content = append(content, map[string]any{"type": "text", "text": ch.Message.Content})
@@ -689,6 +709,9 @@ type anthropicSSE struct {
 	started    bool
 	id         string
 	model      string
+	thinkMode  bool
+	thinkOpen  bool
+	thinkIndex int
 	textOpen   bool
 	textIndex  int
 	toolBlock  map[int]int // OpenAI tool index → Anthropic content-block index
@@ -716,9 +739,12 @@ func (s *anthropicSSE) handleChunk(w sseFlusher, data string) {
 		Model   string `json:"model"`
 		Choices []struct {
 			Delta struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"` // 思考增量（批 A 保真闭环）
-				ToolCalls        []struct {
+				Content           string `json:"content"`
+				ReasoningContent  string `json:"reasoning_content"`   // 思考增量（批 A 保真闭环）
+				ThinkingStart     bool   `json:"_thinking_start"`     // 上游 Anthropic thinking 块起始标记
+				ThinkingSignature string `json:"_thinking_signature"` // 上游 Anthropic signature_delta
+				RedactedThinking  string `json:"_redacted_thinking"`  // 上游 Anthropic redacted_thinking 密文
+				ToolCalls         []struct {
 					Index    int    `json:"index"`
 					ID       string `json:"id"`
 					Function struct {
@@ -765,19 +791,70 @@ func (s *anthropicSSE) handleChunk(w sseFlusher, data string) {
 		}
 	}
 	for _, choice := range ck.Choices {
-		// 思考增量还原（批 A 保真闭环）：作为可见 text_delta 流出（原生 Anthropic 无标准 reasoning
-		// 增量字段；用 text 避免 thinking 块的 signature 往返问题，恢复批 A 前可见性）。
+		if choice.Delta.ThinkingStart {
+			s.thinkMode = true
+		}
+		// 思考增量还原：若上游确认为 Anthropic thinking 块则保真为 thinking_delta/signature_delta，
+		// 否则作为可见 text_delta 流出以维持非 Anthropic 上游的可见性兼容。
 		if choice.Delta.ReasoningContent != "" {
-			if !s.textOpen {
-				s.openText(w)
+			if s.thinkMode {
+				if !s.thinkOpen {
+					if s.textOpen {
+						s.closeBlock(w, s.textIndex)
+						s.textOpen = false
+					}
+					s.openThinking(w)
+				}
+				writeSSE(w, "content_block_delta", map[string]any{
+					"type": "content_block_delta", "index": s.thinkIndex,
+					"delta": map[string]any{"type": "thinking_delta", "thinking": choice.Delta.ReasoningContent},
+				})
+			} else {
+				if !s.textOpen {
+					s.openText(w)
+				}
+				writeSSE(w, "content_block_delta", map[string]any{
+					"type": "content_block_delta", "index": s.textIndex,
+					"delta": map[string]any{"type": "text_delta", "text": choice.Delta.ReasoningContent},
+				})
+			}
+		}
+		if choice.Delta.ThinkingSignature != "" {
+			if !s.thinkOpen {
+				if s.textOpen {
+					s.closeBlock(w, s.textIndex)
+					s.textOpen = false
+				}
+				s.openThinking(w)
 			}
 			writeSSE(w, "content_block_delta", map[string]any{
-				"type": "content_block_delta", "index": s.textIndex,
-				"delta": map[string]any{"type": "text_delta", "text": choice.Delta.ReasoningContent},
+				"type": "content_block_delta", "index": s.thinkIndex,
+				"delta": map[string]any{"type": "signature_delta", "signature": choice.Delta.ThinkingSignature},
 			})
+		}
+		if choice.Delta.RedactedThinking != "" {
+			if s.thinkOpen {
+				s.closeBlock(w, s.thinkIndex)
+				s.thinkOpen = false
+			}
+			if s.textOpen {
+				s.closeBlock(w, s.textIndex)
+				s.textOpen = false
+			}
+			bi := s.nextIndex
+			s.nextIndex++
+			writeSSE(w, "content_block_start", map[string]any{
+				"type": "content_block_start", "index": bi,
+				"content_block": map[string]any{"type": "redacted_thinking", "data": choice.Delta.RedactedThinking},
+			})
+			s.closeBlock(w, bi)
 		}
 		// 文本增量
 		if choice.Delta.Content != "" {
+			if s.thinkOpen {
+				s.closeBlock(w, s.thinkIndex)
+				s.thinkOpen = false
+			}
 			if !s.textOpen {
 				s.openText(w)
 			}
@@ -790,6 +867,10 @@ func (s *anthropicSSE) handleChunk(w sseFlusher, data string) {
 		for _, tc := range choice.Delta.ToolCalls {
 			bi, exists := s.toolBlock[tc.Index]
 			if !exists { // 首次见此工具：开 tool_use 块
+				if s.thinkOpen {
+					s.closeBlock(w, s.thinkIndex)
+					s.thinkOpen = false
+				}
 				if s.textOpen { // 先闭文本块（Anthropic 块需严格闭合）
 					s.closeBlock(w, s.textIndex)
 					s.textOpen = false
@@ -833,6 +914,16 @@ func (s *anthropicSSE) start(w sseFlusher) {
 	})
 }
 
+func (s *anthropicSSE) openThinking(w sseFlusher) {
+	s.thinkOpen = true
+	s.thinkIndex = s.nextIndex
+	s.nextIndex++
+	writeSSE(w, "content_block_start", map[string]any{
+		"type": "content_block_start", "index": s.thinkIndex,
+		"content_block": map[string]any{"type": "thinking", "thinking": ""},
+	})
+}
+
 func (s *anthropicSSE) openText(w sseFlusher) {
 	s.textOpen = true
 	s.textIndex = s.nextIndex
@@ -854,6 +945,10 @@ func (s *anthropicSSE) finishStream(w sseFlusher) {
 	}
 	if !s.started {
 		s.start(w) // 空流兜底
+	}
+	if s.thinkOpen {
+		s.closeBlock(w, s.thinkIndex)
+		s.thinkOpen = false
 	}
 	if s.textOpen {
 		s.closeBlock(w, s.textIndex)

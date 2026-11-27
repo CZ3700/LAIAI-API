@@ -78,11 +78,15 @@ var settingDefaults = map[string]string{
 	// —— 模型级限流（gap #2，relay allowModelRate 消费）——
 	"model_rate_limit_enabled": "false", // 开关
 	"model_rate_limit_rpm":     "0",     // 每 (org, model) 每分钟请求上限；0=不限
+	"model_rate_limit_tpm":     "0",     // 每 (org, model) 每分钟 Token 上限；0=不限
 	// —— 二次验证（gap #4，requireStepUpForKeys 消费）——
 	"require_stepup_for_keys": "false", // 开启则创建 API Key 需 step-up 再认证（默认关，零摩擦）
-	// —— 旧日志清理（gap P2-C，RunLogRetention 每小时消费；0/空=永久保留）——
-	"log_retention_days":       "",  // 调用日志保留天数；空=回退到 env 默认（INVOCATION_RETENTION_DAYS）
-	"audit_log_retention_days": "0", // 审计日志保留天数；0=永久保留（审计默认不删，合规优先）
+	// —— 旧日志清理与错峰维护调度（RunDailyMaintenance / DailySchedule 消费；0=不清理）——
+	"log_retention_days":       "",   // 调用日志保留/清理天数；空=回退到 env 默认（INVOCATION_RETENTION_DAYS）
+	"log_row_retention_days":   "0",  // 调用日志行保留天数（超期迁入 invocations_archive）；0=不归档
+	"error_log_retention_days": "0",  // 超期错误记录保留天数（hot+archive）；0=不清理
+	"audit_log_retention_days": "0",  // 审计日志保留天数；0=永久保留（审计默认不删，合规优先）
+	"task_log_retention_days":  "30", // 终态异步任务记录保留天数；0=不清理
 	// —— OAuth（oauthStart/Callback 消费）——
 	"github_client_id":     "",
 	"github_client_secret": "",

@@ -89,7 +89,7 @@ CREATE TABLE api_keys (
     monthly_quota_limit REAL NOT NULL DEFAULT -1, monthly_quota_used REAL NOT NULL DEFAULT 0,
     last_reset_day TEXT NOT NULL DEFAULT '', last_reset_week TEXT NOT NULL DEFAULT '', last_reset_month TEXT NOT NULL DEFAULT '',
     model_limits TEXT NOT NULL DEFAULT '', allow_ips TEXT NOT NULL DEFAULT '',
-    rps_limit INTEGER NOT NULL DEFAULT 0, rpm_limit INTEGER NOT NULL DEFAULT 0, route_policy TEXT NOT NULL DEFAULT '',
+    rps_limit INTEGER NOT NULL DEFAULT 0, rpm_limit INTEGER NOT NULL DEFAULT 0, tpm_limit INTEGER NOT NULL DEFAULT 0, route_policy TEXT NOT NULL DEFAULT '',
     high_availability INTEGER NOT NULL DEFAULT 1,
     last_used_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

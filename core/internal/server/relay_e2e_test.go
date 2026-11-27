@@ -72,6 +72,7 @@ CREATE TABLE channels (
     owner_org_id INTEGER NOT NULL DEFAULT 0,
     suggest_disable_reason TEXT NOT NULL DEFAULT '', suggest_disabled_at DATETIME,
     status INTEGER NOT NULL DEFAULT 1,
+    thinking_to_content INTEGER NOT NULL DEFAULT 0,
     category_id INTEGER NOT NULL DEFAULT 0,
     upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1,
     config_cid TEXT NOT NULL DEFAULT '',
@@ -233,6 +234,28 @@ CREATE TABLE invocations (
     forward_rule_eid TEXT NOT NULL DEFAULT '', billing_rule_pid TEXT NOT NULL DEFAULT '',
     upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE invocations_archive (
+    id INTEGER PRIMARY KEY,
+    org_id INTEGER NOT NULL, user_id INTEGER, api_key_id INTEGER NOT NULL DEFAULT 0,
+    request_id TEXT NOT NULL UNIQUE, model TEXT NOT NULL,
+    modality TEXT NOT NULL DEFAULT '',
+    channel_id INTEGER NOT NULL DEFAULT 0, provider TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL, status_code INTEGER NOT NULL DEFAULT 0,
+    is_stream INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd NUMERIC NOT NULL DEFAULT 0, usage_source TEXT NOT NULL DEFAULT '',
+    frt_ms INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0,
+    upstream_request_id TEXT NOT NULL DEFAULT '', error_brief TEXT NOT NULL DEFAULT '',
+    payload_object_key TEXT NOT NULL DEFAULT '',
+    client_ip TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', referer TEXT NOT NULL DEFAULT '',
+    finish_reason TEXT NOT NULL DEFAULT '', protocol TEXT NOT NULL DEFAULT '',
+    cached_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    upstream_error_code TEXT NOT NULL DEFAULT '',
+    forward_rule_eid TEXT NOT NULL DEFAULT '', billing_rule_pid TEXT NOT NULL DEFAULT '',
+    upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE usage_daily_stats (
     stat_date TEXT NOT NULL,

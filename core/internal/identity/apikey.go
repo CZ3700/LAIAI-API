@@ -56,6 +56,7 @@ type APIKey struct {
 	AllowIPs          string          `gorm:"column:allow_ips"`    // IP 白名单，逗号/换行分隔，支持 CIDR，空=不限
 	RPSLimit          int             `gorm:"column:rps_limit"`    // key 级每秒请求上限，0=不限
 	RPMLimit          int             `gorm:"column:rpm_limit"`    // key 级每分钟请求上限，0=不限
+	TPMLimit          int             `gorm:"column:tpm_limit"`    // key 级每分钟 Token 上限，0=不限
 	RoutePolicy       string          `gorm:"column:route_policy"` // key 级路由策略，空=order 默认
 	HighAvailability  int8            `gorm:"column:high_availability"`
 	LastUsedAt        *time.Time      `gorm:"column:last_used_at"`
@@ -202,6 +203,7 @@ type IssueKeyInput struct {
 	AllowIPs          string          // IP 白名单
 	RPSLimit          int             // key 级每秒请求上限，0=不限
 	RPMLimit          int             // key 级每分钟请求上限，0=不限
+	TPMLimit          int             // key 级每分钟 Token 上限，0=不限
 	RoutePolicy       string          // key 级路由策略，调用方先过白名单校验
 	HighAvailability  *int8           // nil 默认为 1
 	MaxKeys           int             // org 活跃 Key 上限（entitlements），0=不限
@@ -282,6 +284,7 @@ func issueKeyTx(tx *gorm.DB, in IssueKeyInput) (string, *APIKey, error) {
 		AllowIPs:          in.AllowIPs,
 		RPSLimit:          max(0, in.RPSLimit),
 		RPMLimit:          max(0, in.RPMLimit),
+		TPMLimit:          max(0, in.TPMLimit),
 		RoutePolicy:       in.RoutePolicy,
 		HighAvailability:  ha,
 	}

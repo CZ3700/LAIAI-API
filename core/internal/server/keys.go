@@ -29,6 +29,7 @@ type createKeyReq struct {
 	AllowIPs          string   `json:"allow_ips"`           // IP 白名单（逗号/换行），空=不限
 	RPSLimit          int      `json:"rps_limit"`           // key 级每秒请求上限，0=不限
 	RPMLimit          int      `json:"rpm_limit"`           // key 级每分钟请求上限，0=不限
+	TPMLimit          int      `json:"tpm_limit"`           // key 级每分钟 Token 上限，0=不限
 	RoutePolicy       string   `json:"route_policy"`        // key 级路由策略：''|order|latency|throughput|price
 	HighAvailability  *int8    `json:"high_availability"`   // 高可用开关，默认 1
 }
@@ -55,8 +56,8 @@ func (s *Server) createKey(c *gin.Context) {
 			return
 		}
 	}
-	if req.RPSLimit < 0 || req.RPMLimit < 0 {
-		fail(c, http.StatusBadRequest, "rps_limit and rpm_limit must be non-negative")
+	if req.RPSLimit < 0 || req.RPMLimit < 0 || req.TPMLimit < 0 {
+		fail(c, http.StatusBadRequest, "rps_limit, rpm_limit and tpm_limit must be non-negative")
 		return
 	}
 	if !relay.ValidRoutePolicy(req.RoutePolicy) {
@@ -92,6 +93,7 @@ func (s *Server) createKey(c *gin.Context) {
 			AllowIPs:          req.AllowIPs,
 			RPSLimit:          req.RPSLimit,
 			RPMLimit:          req.RPMLimit,
+			TPMLimit:          req.TPMLimit,
 			RoutePolicy:       req.RoutePolicy,
 			HighAvailability:  req.HighAvailability,
 			MaxKeys:           ent.MaxAPIKeys,
@@ -145,6 +147,7 @@ func (s *Server) listKeys(c *gin.Context) {
 			"allow_ips":           k.AllowIPs,
 			"rps_limit":           k.RPSLimit,
 			"rpm_limit":           k.RPMLimit,
+			"tpm_limit":           k.TPMLimit,
 			"route_policy":        k.RoutePolicy,
 			"high_availability":   k.HighAvailability,
 		})

@@ -116,14 +116,20 @@ func anthropicRequestBody(req map[string]any, stream bool) (map[string]any, erro
 				messages = append(messages, map[string]any{"role": "user", "content": []any{block}})
 			case "assistant":
 				tcs, _ := m["tool_calls"].([]any)
-				if len(tcs) == 0 {
+				thinkingBlocks, _ := m["_thinking_blocks"].([]any)
+				if len(tcs) == 0 && len(thinkingBlocks) == 0 {
 					// assistant 历史也可能带多模态 content（多轮视觉回放）→ 同 user 转 Claude 块
 					messages = append(messages, map[string]any{"role": role, "content": anthropicContent(m["content"])})
 					continue
 				}
 				var blocks []any
+				blocks = append(blocks, thinkingBlocks...)
 				if s, ok := m["content"].(string); ok && s != "" {
 					blocks = append(blocks, map[string]any{"type": "text", "text": s})
+				} else if len(tcs) == 0 {
+					if arr, ok := anthropicContent(m["content"]).([]any); ok {
+						blocks = append(blocks, arr...)
+					}
 				}
 				for _, rtc := range tcs {
 					tc, ok := rtc.(map[string]any)
@@ -268,14 +274,22 @@ func anthropicRequestBody(req map[string]any, stream bool) (map[string]any, erro
 		out["stream"] = true
 	}
 
-	// 扩展思考（reasoning）：Claude 原生 thinking 配置透传。Claude 强制 max_tokens > budget_tokens，
-	// 故按需上调 max_tokens 防上游 400。OpenAI 的 reasoning_effort 不透传（Claude 不识别该字段，会拒）。
+	// 扩展思考（reasoning）：Claude 原生 thinking 配置透传；若经推理后缀注入或无 thinking 时按 suffix budget 启用。
 	if th, ok := req["thinking"].(map[string]any); ok {
 		out["thinking"] = th
 		if bt, ok := th["budget_tokens"].(float64); ok && bt > 0 && maxTokens <= bt {
 			bumped := bt + float64(defaultMaxTokens)
 			if bumped > float64(maxOutputTokensCeiling) {
 				bumped = float64(maxOutputTokensCeiling) // 与 hold 口径一致钳上限
+			}
+			out["max_tokens"] = bumped
+		}
+	} else if sb, ok := req["_suffix_thinking_budget"].(int64); ok && sb > 0 {
+		out["thinking"] = map[string]any{"type": "enabled", "budget_tokens": float64(sb)}
+		if float64(sb) >= maxTokens {
+			bumped := float64(sb) + float64(defaultMaxTokens)
+			if bumped > float64(maxOutputTokensCeiling) {
+				bumped = float64(maxOutputTokensCeiling)
 			}
 			out["max_tokens"] = bumped
 		}
@@ -398,12 +412,14 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 		ID      string `json:"id"`
 		Model   string `json:"model"`
 		Content []struct {
-			Type     string          `json:"type"`
-			Text     string          `json:"text"`
-			Thinking string          `json:"thinking"` // 扩展思考块（A-2 转换保真）
-			ID       string          `json:"id"`
-			Name     string          `json:"name"`
-			Input    json.RawMessage `json:"input"`
+			Type      string          `json:"type"`
+			Text      string          `json:"text"`
+			Thinking  string          `json:"thinking"`  // 扩展思考块（A-2 转换保真）
+			Signature string          `json:"signature"` // thinking signature for multi-turn roundtrip
+			Data      string          `json:"data"`      // redacted_thinking opaque data
+			ID        string          `json:"id"`
+			Name      string          `json:"name"`
+			Input     json.RawMessage `json:"input"`
 		} `json:"content"`
 		StopReason string         `json:"stop_reason"`
 		Usage      anthropicUsage `json:"usage"`
@@ -415,6 +431,8 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 	}
 	var text strings.Builder
 	var reasoning strings.Builder // 扩展思考内容 → reasoning_content（A-2）
+	var thinkingSig string
+	var redactedThinking []string
 	var toolCalls []gin.H
 	jsonEmu := false
 	for _, block := range resp.Content {
@@ -422,7 +440,14 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 		case "text":
 			text.WriteString(block.Text)
 		case "thinking":
-			reasoning.WriteString(block.Thinking) // redacted_thinking（加密）无明文，自然跳过
+			reasoning.WriteString(block.Thinking)
+			if block.Signature != "" {
+				thinkingSig = block.Signature
+			}
+		case "redacted_thinking":
+			if block.Data != "" {
+				redactedThinking = append(redactedThinking, block.Data)
+			}
 		case "tool_use":
 			args := string(block.Input)
 			if args == "" {
@@ -448,6 +473,14 @@ func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, er
 	message := gin.H{"role": "assistant", "content": text.String()}
 	if reasoning.Len() > 0 {
 		message["reasoning_content"] = reasoning.String() // OpenAI 兼容推理字段（DeepSeek/OpenRouter 同名）
+	}
+	if ingressProtocol(c) == "anthropic" {
+		if thinkingSig != "" {
+			message["_thinking_signature"] = thinkingSig
+		}
+		if len(redactedThinking) > 0 {
+			message["_redacted_thinking"] = redactedThinking
+		}
 	}
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
@@ -512,6 +545,7 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 	toolIdxByBlock := map[int]int{}
 	toolCount := 0
 	jsonEmuBlocks := map[int]bool{} // response_format json_schema 模拟：哨兵工具块 → 重写为 content 流
+	isAnthropicIngress := ingressProtocol(c) == "anthropic"
 	err := pumpLines(c.Request.Context(), body, func(line string) {
 		data, ok := strings.CutPrefix(line, "data: ")
 		if !ok {
@@ -527,11 +561,13 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 				Type string `json:"type"`
 				ID   string `json:"id"`
 				Name string `json:"name"`
+				Data string `json:"data"` // redacted_thinking 密文块
 			} `json:"content_block"`
 			Delta struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
-				Thinking    string `json:"thinking"` // thinking_delta 增量（A-2）
+				Thinking    string `json:"thinking"`     // thinking_delta 增量（A-2）
+				Signature   string `json:"signature"`    // signature_delta 签名
 				PartialJSON string `json:"partial_json"`
 				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
@@ -548,7 +584,18 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 			emit(gin.H{"object": "chat.completion.chunk",
 				"choices": []gin.H{{"index": 0, "delta": gin.H{"role": "assistant"}}}})
 		case "content_block_start":
-			if ev.ContentBlock.Type == "tool_use" {
+			switch ev.ContentBlock.Type {
+			case "thinking":
+				if isAnthropicIngress {
+					emit(gin.H{"object": "chat.completion.chunk",
+						"choices": []gin.H{{"index": 0, "delta": gin.H{"_thinking_start": true}}}})
+				}
+			case "redacted_thinking":
+				if isAnthropicIngress && ev.ContentBlock.Data != "" {
+					emit(gin.H{"object": "chat.completion.chunk",
+						"choices": []gin.H{{"index": 0, "delta": gin.H{"_redacted_thinking": ev.ContentBlock.Data}}}})
+				}
+			case "tool_use":
 				if ev.ContentBlock.Name == anthropicJSONEmuTool {
 					jsonEmuBlocks[ev.Index] = true // 哨兵：不发 tool_call 起始帧，input 将作为 content 流出
 					break
@@ -573,6 +620,11 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 				if ev.Delta.Thinking != "" {
 					emit(gin.H{"object": "chat.completion.chunk",
 						"choices": []gin.H{{"index": 0, "delta": gin.H{"reasoning_content": ev.Delta.Thinking}}}})
+				}
+			case "signature_delta":
+				if isAnthropicIngress && ev.Delta.Signature != "" {
+					emit(gin.H{"object": "chat.completion.chunk",
+						"choices": []gin.H{{"index": 0, "delta": gin.H{"_thinking_signature": ev.Delta.Signature}}}})
 				}
 			case "input_json_delta":
 				if jsonEmuBlocks[ev.Index] {

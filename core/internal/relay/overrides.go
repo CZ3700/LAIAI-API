@@ -117,6 +117,19 @@ func OverrideKeys(s string) []string {
 
 // applyParamOverride：返回应用 override 后的请求体。无 override（或解析失败——写入时已校验，
 // 此处防御）时原样返回**同一个 map**（零拷贝零开销）；有 override 时返回副本，原 map 不动。
+func applyParamOverrideChannel(req map[string]any, ch *Channel) map[string]any {
+	if ch != nil && ch.compiled != nil {
+		if len(ch.compiled.paramOverride) == 0 {
+			return req
+		}
+		return applyParamOverrideMap(req, ch.compiled.paramOverride)
+	}
+	if ch == nil {
+		return req
+	}
+	return applyParamOverride(req, ch.ParamOverride)
+}
+
 func applyParamOverride(req map[string]any, overrideJSON string) map[string]any {
 	if strings.TrimSpace(overrideJSON) == "" {
 		return req
@@ -125,6 +138,10 @@ func applyParamOverride(req map[string]any, overrideJSON string) map[string]any 
 	if json.Unmarshal([]byte(overrideJSON), &override) != nil || len(override) == 0 {
 		return req
 	}
+	return applyParamOverrideMap(req, override)
+}
+
+func applyParamOverrideMap(req, override map[string]any) map[string]any {
 	merged := maps.Clone(req)
 	for k, v := range override {
 		if protectedParamKeys[k] {
@@ -221,6 +238,30 @@ func applyHeaderOverrideForMode(upReq *http.Request, overrideJSON, credential st
 		extra = map[string]bool{"Content-Type": true}
 	}
 	applyHeaderOverrideGuarded(upReq, overrideJSON, credential, extra)
+}
+
+func applyHeaderOverrideChannel(upReq *http.Request, ch *Channel, credential string) {
+	if ch == nil {
+		return
+	}
+	if ch.compiled != nil {
+		for _, op := range ch.compiled.headerOverrides {
+			if forbiddenHeaderKeys[op.canon] {
+				continue
+			}
+			if op.del {
+				upReq.Header.Del(op.key)
+				continue
+			}
+			val := op.tmpl
+			if op.hasCredRef {
+				val = strings.ReplaceAll(val, credentialPlaceholder, credential)
+			}
+			upReq.Header.Set(op.key, val)
+		}
+		return
+	}
+	applyHeaderOverrideGuarded(upReq, ch.HeaderOverride, credential, nil)
 }
 
 func applyHeaderOverrideGuarded(upReq *http.Request, overrideJSON, credential string, extraForbidden map[string]bool) {

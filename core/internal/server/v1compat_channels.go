@@ -274,6 +274,7 @@ func (s *Server) formatV1TkeChannel(ch relay.Channel, meta v1ChannelMeta) gin.H 
 		"priority":            ch.Priority,
 		"weight":              ch.Weight,
 		"status":              ch.Status,
+		"thinking_to_content": ch.ThinkingToContent == 1,
 		"quota_limit":         -1,
 		"quota_used":          0,
 		"daily_quota_limit":   -1,
@@ -307,6 +308,7 @@ func (s *Server) v1CreateChannel(c *gin.Context) {
 		ExcludeUserGroups []string          `json:"exclude_user_groups"`
 		Config            json.RawMessage   `json:"config"`
 		Status            *int8             `json:"status"`
+		ThinkingToContent bool              `json:"thinking_to_content"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid channel request")
@@ -373,6 +375,10 @@ func (s *Server) v1CreateChannel(c *gin.Context) {
 	}
 
 	canonicalModels, rawModelMids := s.resolveCanonicalChannelModels(c.Request.Context(), req.Models)
+	var thinkingToContent int8
+	if req.ThinkingToContent {
+		thinkingToContent = 1
+	}
 	ch := relay.Channel{
 		Name:               strings.TrimSpace(req.Name),
 		Provider:           provider,
@@ -383,6 +389,7 @@ func (s *Server) v1CreateChannel(c *gin.Context) {
 		Priority:           req.Priority,
 		Weight:             weight,
 		MaxConcurrentTasks: 3,
+		ThinkingToContent:  thinkingToContent,
 		CategoryID:         catID,
 		UpstreamCostRatio:  rateDec,
 		Status:             status,
@@ -436,6 +443,7 @@ func (s *Server) v1UpdateChannel(c *gin.Context) {
 		ExcludeUserGroups *[]string          `json:"exclude_user_groups"`
 		Config            json.RawMessage    `json:"config"`
 		Status            *int8              `json:"status"`
+		ThinkingToContent *bool              `json:"thinking_to_content"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid request body")
@@ -489,6 +497,9 @@ func (s *Server) v1UpdateChannel(c *gin.Context) {
 	}
 	if req.Status != nil {
 		updates["status"] = *req.Status
+	}
+	if req.ThinkingToContent != nil {
+		updates["thinking_to_content"] = b2i8(*req.ThinkingToContent)
 	}
 	if len(updates) > 0 {
 		if err := s.db.WithContext(c.Request.Context()).Model(&relay.Channel{}).Where("id = ?", id).Updates(updates).Error; err != nil {

@@ -53,6 +53,10 @@ func resolveRoutePolicy(c *gin.Context, key *identity.APIKey) string {
 // orgID（0044 BYOK）：隔离谓词与虚拟顶层在 tierForAttempt 内强制；0=只平台渠道。
 // pref（provider preference，设计 §4.4）：only/ignore 先过滤候选集，显式 order 优先于 policy。
 func (r *Relay) pickSnapshotPolicy(channels []Channel, model string, attempt int, exclude map[uint64]bool, policy string, orgID uint64, pref *providerPref) (*Channel, error) {
+	return r.pickSnapshotPolicyWithAffinity(channels, model, attempt, exclude, policy, orgID, pref, 0)
+}
+
+func (r *Relay) pickSnapshotPolicyWithAffinity(channels []Channel, model string, attempt int, exclude map[uint64]bool, policy string, orgID uint64, pref *providerPref, stickyChannelID uint64) (*Channel, error) {
 	channels = pref.filterChannels(channels) // nil pref 零拷贝原样返回
 	tier, err := tierForAttempt(channels, model, attempt, exclude, orgID)
 	if err != nil {
@@ -61,6 +65,13 @@ func (r *Relay) pickSnapshotPolicy(channels []Channel, model string, attempt int
 	if pref != nil && len(pref.order) > 0 {
 		if ch := pickByPrefOrder(tier, pref, r.healthFactor); ch != nil {
 			return ch, nil
+		}
+	}
+	if attempt == 0 && stickyChannelID != 0 {
+		for _, ch := range tier {
+			if ch.ID == stickyChannelID {
+				return ch, nil
+			}
 		}
 	}
 	if policy == "" {

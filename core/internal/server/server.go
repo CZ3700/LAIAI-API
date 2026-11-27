@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -69,6 +71,10 @@ type Server struct {
 	arkHTTPClient       *http.Client
 	arkOpenAIOverride   string
 	arkPollOverride     time.Duration
+	maintenanceRunning  atomic.Bool
+	dailySyncTracker    invocation.DailySyncTracker
+	scheduleMu          sync.Mutex
+	scheduleCh          chan struct{}
 }
 
 // readOnly 返回只读副本句柄（规模化：分析/用量/排行/公开价目等重读卸载到副本）；未配副本回退主库。
@@ -123,6 +129,7 @@ func NewWithServer(db *gorm.DB, opts Options) (*gin.Engine, *Server) {
 		log:                 log,
 		now:                 time.Now,
 		invRetentionDefault: opts.InvocationRetentionDays,
+		scheduleCh:          make(chan struct{}),
 	}
 	// 邮件走「settings 热配优先 + env 回退」包装：admin 后台填 SMTP 即生效，无需重启/改 env。
 	s.mailer = &settingsMailer{s: s, env: opts.Mailer}

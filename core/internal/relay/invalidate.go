@@ -40,6 +40,7 @@ func (r *Relay) applyInvalidate(kind, key string) {
 		r.ratios.invalidateAll()
 	case KindChannel:
 		r.channels.invalidate()
+		r.aff.clearLocal()
 	case KindForwardRule:
 		if r.Forward != nil {
 			r.Forward.Invalidate()
@@ -52,6 +53,7 @@ func (r *Relay) applyInvalidate(kind, key string) {
 		r.prices.invalidateAll()
 		r.ratios.invalidateAll()
 		r.channels.invalidate()
+		r.aff.clearLocal()
 		if r.Forward != nil {
 			r.Forward.Invalidate()
 		}

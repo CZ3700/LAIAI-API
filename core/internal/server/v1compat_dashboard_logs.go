@@ -51,12 +51,8 @@ func (s *Server) v1TkeDashboard(c *gin.Context) {
 	}
 
 	sinceDate := startDay.Format("2006-01-02")
-	var periodRows []invocation.Invocation
-	pq := rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", sinceDate)
-	if !isAdmin {
-		pq = pq.Where("org_id = ?", claims.OrgID)
-	}
-	_ = pq.Select("model, status, prompt_tokens, completion_tokens, cost_usd, frt_ms, duration_ms, created_at").Find(&periodRows).Error
+	todayStr := now.Format("2006-01-02")
+	yestStr := now.AddDate(0, 0, -1).Format("2006-01-02")
 
 	var totalReq, totalTok int64
 	totalCost := decimal.Zero
@@ -65,6 +61,39 @@ func (s *Server) v1TkeDashboard(c *gin.Context) {
 	modelCnt := map[string]int64{}
 	modelTok := map[string]int64{}
 	modelCost := map[string]decimal.Decimal{}
+
+	// Historical days (< today) read usage_daily_stats first when rows exist so archived hot rows
+	// remain reflected; recent/un-synced slice queries invocations.
+	var histRows []invocation.UsageDailyStat
+	if sinceDate < todayStr {
+		hq := rdb.Model(&invocation.UsageDailyStat{}).Where("stat_date >= ? AND stat_date < ?", sinceDate, todayStr)
+		if !isAdmin {
+			hq = hq.Where("org_id = ?", claims.OrgID)
+		}
+		_ = hq.Find(&histRows).Error
+	}
+	invSince := sinceDate
+	if len(histRows) > 0 {
+		for _, hr := range histRows {
+			totalReq += hr.RequestCount
+			tok := hr.PromptTokens + hr.CompletionTokens
+			totalTok += tok
+			totalCost = totalCost.Add(hr.CostUSD)
+			dailyReq[hr.StatDate] += hr.RequestCount
+			dailyCost[hr.StatDate] = dailyCost[hr.StatDate].Add(hr.CostUSD)
+			modelCnt[hr.Model] += hr.RequestCount
+			modelTok[hr.Model] += tok
+			modelCost[hr.Model] = modelCost[hr.Model].Add(hr.CostUSD)
+		}
+		invSince = todayStr
+	}
+
+	var periodRows []invocation.Invocation
+	pq := rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", invSince)
+	if !isAdmin {
+		pq = pq.Where("org_id = ?", claims.OrgID)
+	}
+	_ = pq.Select("model, status, prompt_tokens, completion_tokens, cost_usd, frt_ms, duration_ms, created_at").Find(&periodRows).Error
 
 	for _, r := range periodRows {
 		totalReq++
@@ -78,9 +107,6 @@ func (s *Server) v1TkeDashboard(c *gin.Context) {
 		modelTok[r.Model] += tok
 		modelCost[r.Model] = modelCost[r.Model].Add(r.CostUSD)
 	}
-
-	todayStr := now.Format("2006-01-02")
-	yestStr := now.AddDate(0, 0, -1).Format("2006-01-02")
 	var twoDayRows []invocation.Invocation
 	tdq := rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", yestStr)
 	if !isAdmin {
@@ -246,13 +272,8 @@ func (s *Server) v1Models30d(c *gin.Context) {
 	if d, err := strconv.Atoi(c.Query("days")); err == nil && d >= 1 && d <= 90 {
 		days = d
 	}
+	todayStr := s.now().UTC().Format("2006-01-02")
 	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
-	var rows []invocation.Invocation
-	q := rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", since)
-	if !isAdmin {
-		q = q.Where("org_id = ?", claims.OrgID)
-	}
-	_ = q.Select("model, prompt_tokens, completion_tokens, cost_usd, created_at").Find(&rows).Error
 
 	type mAgg struct {
 		count  int64
@@ -262,22 +283,47 @@ func (s *Server) v1Models30d(c *gin.Context) {
 	byModel := map[string]*mAgg{}
 	type dmKey struct{ day, model string }
 	byDayModel := map[dmKey]*mAgg{}
-
-	for _, r := range rows {
-		tok := r.PromptTokens + r.CompletionTokens
-		if byModel[r.Model] == nil {
-			byModel[r.Model] = &mAgg{}
+	addSample := func(day, model string, count, tokens int64, cost decimal.Decimal) {
+		if byModel[model] == nil {
+			byModel[model] = &mAgg{}
 		}
-		byModel[r.Model].count++
-		byModel[r.Model].tokens += tok
-		byModel[r.Model].cost = byModel[r.Model].cost.Add(r.CostUSD)
+		byModel[model].count += count
+		byModel[model].tokens += tokens
+		byModel[model].cost = byModel[model].cost.Add(cost)
 
-		k := dmKey{day: r.CreatedAt.UTC().Format("2006-01-02"), model: r.Model}
+		k := dmKey{day: day, model: model}
 		if byDayModel[k] == nil {
 			byDayModel[k] = &mAgg{}
 		}
-		byDayModel[k].count++
-		byDayModel[k].cost = byDayModel[k].cost.Add(r.CostUSD)
+		byDayModel[k].count += count
+		byDayModel[k].cost = byDayModel[k].cost.Add(cost)
+	}
+
+	var histRows []invocation.UsageDailyStat
+	if since < todayStr {
+		hq := rdb.Model(&invocation.UsageDailyStat{}).Where("stat_date >= ? AND stat_date < ?", since, todayStr)
+		if !isAdmin {
+			hq = hq.Where("org_id = ?", claims.OrgID)
+		}
+		_ = hq.Find(&histRows).Error
+	}
+	invSince := since
+	if len(histRows) > 0 {
+		for _, hr := range histRows {
+			addSample(hr.StatDate, hr.Model, hr.RequestCount, hr.PromptTokens+hr.CompletionTokens, hr.CostUSD)
+		}
+		invSince = todayStr
+	}
+
+	var rows []invocation.Invocation
+	q := rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", invSince)
+	if !isAdmin {
+		q = q.Where("org_id = ?", claims.OrgID)
+	}
+	_ = q.Select("model, prompt_tokens, completion_tokens, cost_usd, created_at").Find(&rows).Error
+
+	for _, r := range rows {
+		addSample(r.CreatedAt.UTC().Format("2006-01-02"), r.Model, 1, r.PromptTokens+r.CompletionTokens, r.CostUSD)
 	}
 
 	top := make([]gin.H, 0, len(byModel))

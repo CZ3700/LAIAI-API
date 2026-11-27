@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 	_ "time/tzdata"
@@ -160,19 +161,22 @@ func runCore(log *slog.Logger) (code int) {
 	})
 
 	jobs.goRun(func(ctx context.Context) {
-		periodic(ctx, 5*time.Minute, func(ctx context.Context) {
-			if !leaderLease.IsLeader() {
-				return
+		runStartupLeaderInit(ctx, leaderLease, log, func(ctx context.Context) {
+			stuckCutoff := time.Now().UTC().Add(-15 * time.Minute)
+			if n, err := ledger.SweepStuckHolds(db.WithContext(ctx), "usage", stuckCutoff, 500); err != nil {
+				log.Error("startup stuck hold sweep failed", "err", err)
+			} else if n > 0 {
+				log.Warn("startup released stuck relay holds", "count", n)
 			}
-			if checked, credited, err := apiSrv.ReconcileTopups(ctx, 2*time.Minute, 200); err != nil {
-				log.Error("topup reconcile failed", "err", err)
-			} else if credited > 0 {
-				log.Warn("topup reconcile credited orphans", "checked", checked, "credited", credited)
+			if n, err := apiSrv.BackfillDailyUsageStats(ctx); err != nil {
+				log.Warn("startup daily stats backfill failed", "err", err)
+			} else if n > 0 {
+				log.Info("startup daily stats backfilled", "rows", n)
 			}
-			if sum, err := apiSrv.SyncArkMonitor(ctx); err != nil {
-				log.Warn("ark monitor sync failed", "err", err)
-			} else if sum != nil && (sum.TasksUpserted > 0 || sum.BillsReconciled > 0 || sum.EndpointsFused > 0 || sum.EndpointsRecovered > 0) {
-				log.Info("ark monitor synced", "accounts", sum.AccountsProcessed, "tasks", sum.TasksUpserted, "reconciled", sum.BillsReconciled, "fused", sum.EndpointsFused, "recovered", sum.EndpointsRecovered)
+			if arkDel, syncDel, obDel, err := apiSrv.CleanupStorageAndPluginLogs(ctx); err != nil {
+				log.Warn("startup storage cleanup failed", "err", err)
+			} else if arkDel > 0 || syncDel > 0 || obDel > 0 {
+				log.Info("startup storage cleanup done", "ark_assets", arkDel, "sync_logs", syncDel, "outbox", obDel)
 			}
 		})
 	})
@@ -185,6 +189,53 @@ func runCore(log *slog.Logger) (code int) {
 			if synced := apiSrv.SyncUpstreamChannelRates(ctx); synced > 0 {
 				log.Info("upstream channel rates synced", "count", synced)
 			}
+			if sum, err := apiSrv.SyncArkMonitor(ctx); err != nil {
+				log.Warn("ark monitor sync failed", "err", err)
+			} else if sum != nil && (sum.TasksUpserted > 0 || sum.BillsReconciled > 0 || sum.EndpointsFused > 0 || sum.EndpointsRecovered > 0) {
+				log.Info("ark monitor synced", "accounts", sum.AccountsProcessed, "tasks", sum.TasksUpserted, "reconciled", sum.BillsReconciled, "fused", sum.EndpointsFused, "recovered", sum.EndpointsRecovered)
+			}
+		})
+	})
+
+	jobs.goRun(func(ctx context.Context) {
+		periodic(ctx, 5*time.Minute, func(ctx context.Context) {
+			if !leaderLease.IsLeader() {
+				return
+			}
+			if checked, credited, err := apiSrv.ReconcileTopups(ctx, 2*time.Minute, 200); err != nil {
+				log.Error("topup reconcile failed", "err", err)
+			} else if credited > 0 {
+				log.Warn("topup reconcile credited orphans", "checked", checked, "credited", credited)
+			}
+			if n, err := apiSrv.ExpireStaleTopups(ctx, 24*time.Hour, 500); err != nil {
+				log.Error("topup expire sweep failed", "err", err)
+			} else if n > 0 {
+				log.Info("topup orders expired", "count", n)
+			}
+		})
+	})
+
+	jobs.goRun(func(ctx context.Context) {
+		periodic(ctx, 10*time.Minute, func(ctx context.Context) {
+			if !leaderLease.IsLeader() {
+				return
+			}
+			stuckCutoff := time.Now().UTC().Add(-15 * time.Minute)
+			if n, err := ledger.SweepStuckHolds(db.WithContext(ctx), "usage", stuckCutoff, 500); err != nil {
+				log.Error("stuck hold sweep failed", "err", err)
+			} else if n > 0 {
+				log.Warn("released stuck relay holds", "count", n)
+			}
+			if drifts, err := ledger.CheckDrift(db.WithContext(ctx)); err != nil {
+				log.Error("ledger drift check failed", "err", err)
+			} else {
+				for _, d := range drifts {
+					log.Error("LEDGER DRIFT DETECTED — manual reconcile needed",
+						"account", d.AccountID, "org", d.OrgID, "type", d.Type,
+						"posted_stored", d.PostedStored.String(), "posted_derived", d.PostedDerived.String(), "posted_drift", d.PostedDrift().String(),
+						"held_stored", d.HeldStored.String(), "held_derived", d.HeldDerived.String(), "held_drift", d.HeldDrift().String())
+				}
+			}
 		})
 	})
 
@@ -194,6 +245,56 @@ func runCore(log *slog.Logger) (code int) {
 				return
 			}
 			runHourlyMaintenance(ctx, db, apiSrv, log)
+		})
+	})
+
+	var dailyScheduleMu sync.Mutex
+	jobs.goRun(func(ctx context.Context) {
+		runDailyScheduledTask(ctx, apiSrv, leaderLease, &dailyScheduleMu, log, "DailyStatsSync", server.LogCleanupSettings.SafeDailyStatsHM, func(ctx context.Context) {
+			if n, err := apiSrv.SyncDailyUsageStats(ctx, false); err != nil {
+				log.Warn("daily stats sync failed", "err", err)
+			} else if n > 0 {
+				log.Info("daily stats synced", "rows", n)
+			}
+		})
+	})
+	jobs.goRun(func(ctx context.Context) {
+		runDailyScheduledTask(ctx, apiSrv, leaderLease, &dailyScheduleMu, log, "LogContentCleanup", server.LogCleanupSettings.SafeCleanHM, func(ctx context.Context) {
+			cfg := apiSrv.LoadLogCleanupSettings()
+			if n, err := apiSrv.CleanupLogContent(ctx, cfg.LogRetentionDays); err != nil {
+				log.Warn("log content cleanup failed", "err", err)
+			} else if n > 0 {
+				log.Info("log content cleaned", "rows", n, "retention_days", cfg.LogRetentionDays)
+			}
+		})
+	})
+	jobs.goRun(func(ctx context.Context) {
+		runDailyScheduledTask(ctx, apiSrv, leaderLease, &dailyScheduleMu, log, "LogRowArchive", server.LogCleanupSettings.SafeArchiveHM, func(ctx context.Context) {
+			cfg := apiSrv.LoadLogCleanupSettings()
+			if n, err := apiSrv.ArchiveOldLogs(ctx, cfg.LogRowRetentionDays); err != nil {
+				log.Warn("log row archive failed", "err", err)
+			} else if n > 0 {
+				log.Info("log rows archived", "rows", n, "row_retention_days", cfg.LogRowRetentionDays)
+			}
+		})
+	})
+	jobs.goRun(func(ctx context.Context) {
+		runDailyScheduledTask(ctx, apiSrv, leaderLease, &dailyScheduleMu, log, "ErrorLogsCleanup", server.LogCleanupSettings.SafeErrorCleanHM, func(ctx context.Context) {
+			cfg := apiSrv.LoadLogCleanupSettings()
+			if h, a, tk, err := apiSrv.CleanupErrorLogs(ctx, cfg.ErrorLogRetentionDays); err != nil {
+				log.Warn("error logs cleanup failed", "err", err)
+			} else if h > 0 || a > 0 || tk > 0 {
+				log.Info("error logs cleaned", "invocations", h, "archive", a, "tasks", tk, "retention_days", cfg.ErrorLogRetentionDays)
+			}
+		})
+	})
+	jobs.goRun(func(ctx context.Context) {
+		runDailyScheduledTask(ctx, apiSrv, leaderLease, &dailyScheduleMu, log, "StorageAndPluginCleanup", server.LogCleanupSettings.SafeStorageCleanHM, func(ctx context.Context) {
+			if arkDel, syncDel, obDel, err := apiSrv.CleanupStorageAndPluginLogs(ctx); err != nil {
+				log.Warn("storage cleanup failed", "err", err)
+			} else if arkDel > 0 || syncDel > 0 || obDel > 0 {
+				log.Info("storage and plugin cleanup done", "ark_assets", arkDel, "sync_logs", syncDel, "outbox", obDel)
+			}
 		})
 	})
 

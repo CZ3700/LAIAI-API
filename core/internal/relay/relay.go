@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -47,6 +48,10 @@ const (
 	// task/video 等非本包数据面路由挂 MaxBytesReader 时复用同一上限（指令 P0-2）。
 	MaxRequestBodySize = maxRequestBodySize
 )
+
+// StreamDisconnectGrace caps how long an active upstream SSE stream may keep draining
+// after client disconnect to capture trailing usage chunks before cancellation.
+var StreamDisconnectGrace = 3 * time.Second
 
 type Relay struct {
 	DB      *gorm.DB
@@ -93,8 +98,10 @@ type Relay struct {
 	// nil（单实例/未配 Redis）→ 退化为下面的进程内窗口。Redis 出错一律 fail-open（绝不因
 	// 限流基础设施抖动挡住付费流量，P2-2 用户体验红线）。
 	rate         rateCounter
+	tpm          tpmCounter
 	rateMu       sync.Mutex
 	rateWindows  map[string]*rateWindow
+	tpmWindows   map[string]*tpmWindow
 	rateLastEvic time.Time
 	ratePolMu    sync.Mutex
 	ratePolAt    time.Time
@@ -112,6 +119,7 @@ type Relay struct {
 	byokRatio  decimal.Decimal
 	byokLoaded bool
 	rateRPM    int
+	rateTPM    int
 
 	// 热读缓存（WS-2）：极少变、读极热的运营配置。命中即把每请求 DB 读从 ~5 降到 0。
 	// 失效=本地写后同步 invalidate + 跨实例 Redis pub/sub（invalidate.go）；TTL 兜底。
@@ -123,6 +131,7 @@ type Relay struct {
 	Forward      *forward.Resolver                       // 数据驱动转发规则解析器（15s）
 	invRedis     *redis.Client                           // 跨实例失效 pub/sub（nil = 单实例 TTL 兜底）
 	invStop      chan struct{}
+	aff          affinityStore                           // Prompt-Cache / 会话粘性路由存储
 }
 
 // ratioKey：倍率缓存键（org × model 的最终倍率，含一层+二层合并）。
@@ -221,6 +230,7 @@ func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Lo
 		breakerStates: map[uint64]*breakerState{},
 		suggested:     map[uint64]bool{},
 		rateWindows:   map[string]*rateWindow{},
+		tpmWindows:    map[string]*tpmWindow{},
 		// 热读缓存 TTL：渠道快照短(8s，禁用/重启用要较快跟随)；价目/倍率长(45s，纯运营低频改)。
 		channels:     newSnapCache[[]Channel](8*time.Second, now),
 		prices:       newTTLCache[string, *ModelPrice](45*time.Second, now),
@@ -228,6 +238,7 @@ func New(db *gorm.DB, kr *crypto.Keyring, rec *invocation.Recorder, log *slog.Lo
 		ratios:       newTTLCache[ratioKey, decimal.Decimal](45*time.Second, now),
 		Forward:      forward.NewResolver(15 * time.Second),
 	}
+	r.aff.init(now)
 	r.rehydrateSuggested() // 启动回填禁用建议内存 set（对抗 review：重启后成功请求才能清陈旧建议）
 	return r
 }
@@ -434,6 +445,102 @@ func (r *Relay) pickRelayChannel(_ context.Context, key *identity.APIKey, channe
 	return r.pickSnapshotPolicy(channels, model, attempt, exclude, policy, key.OrgID, pref)
 }
 
+func (r *Relay) pickRelayChannelWithAffinity(_ context.Context, key *identity.APIKey, channels []Channel, model string, attempt int, exclude map[uint64]bool, policy string, pref *providerPref, stickyChannelID uint64) (*Channel, error) {
+	if key == nil {
+		return nil, ErrNoChannel
+	}
+	return r.pickSnapshotPolicyWithAffinity(channels, model, attempt, exclude, policy, key.OrgID, pref, stickyChannelID)
+}
+
+func (r *Relay) needsReasoningSuffixFallback(model string) bool {
+	base, _, ok := splitReasoningSuffix(model)
+	if !ok {
+		return false
+	}
+	chs, err := r.cachedChannels()
+	if err != nil {
+		return false
+	}
+	for i := range chs {
+		if chs[i].ServesModel(model) {
+			return false
+		}
+	}
+	for i := range chs {
+		if chs[i].ServesModel(base) {
+			return true
+		}
+	}
+	if _, bRule := r.cachedBillingRule(base); bRule != nil {
+		return true
+	}
+	_, err = r.cachedPrice(base)
+	return err == nil
+}
+
+func isAnthropicLikeChannel(ch *Channel, upstreamModel string) bool {
+	if ch == nil {
+		return false
+	}
+	if ch.Provider == "anthropic" || ch.Converter == ConverterToAnthropic {
+		return true
+	}
+	return ch.Provider == "vertex" && strings.Contains(strings.ToLower(upstreamModel), "claude")
+}
+
+func stripInternalMsgFields(req map[string]any) map[string]any {
+	rawMsgs, ok := req["messages"].([]any)
+	if !ok {
+		return req
+	}
+	hasInternal := false
+	for _, rm := range rawMsgs {
+		if m, ok := rm.(map[string]any); ok {
+			if _, exists := m["_thinking_blocks"]; exists {
+				hasInternal = true
+				break
+			}
+		}
+	}
+	if !hasInternal {
+		return req
+	}
+	clonedReq := maps.Clone(req)
+	clonedMsgs := make([]any, len(rawMsgs))
+	for i, rm := range rawMsgs {
+		if m, ok := rm.(map[string]any); ok {
+			if _, exists := m["_thinking_blocks"]; exists {
+				mc := maps.Clone(m)
+				delete(mc, "_thinking_blocks")
+				clonedMsgs[i] = mc
+				continue
+			}
+		}
+		clonedMsgs[i] = rm
+	}
+	clonedReq["messages"] = clonedMsgs
+	return clonedReq
+}
+
+func prepareAttemptRequest(req map[string]any, ch *Channel, upstreamModel string, suffixBudget int64) map[string]any {
+	base := applyParamOverrideChannel(req, ch)
+	if isAnthropicLikeChannel(ch, upstreamModel) {
+		if suffixBudget > 0 {
+			cp := maps.Clone(base)
+			cp["_suffix_thinking_budget"] = suffixBudget
+			return cp
+		}
+		return base
+	}
+	cleaned := stripInternalMsgFields(base)
+	if _, hasSB := cleaned["_suffix_thinking_budget"]; hasSB {
+		cp := maps.Clone(cleaned)
+		delete(cp, "_suffix_thinking_budget")
+		return cp
+	}
+	return cleaned
+}
+
 func (r *Relay) AllowModelRate(orgID uint64, model string) (ok bool, rpm int) {
 	return r.allowModelRate(orgID, model)
 }
@@ -633,6 +740,15 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 		relayErr(c, http.StatusBadRequest, "model is required")
 		return
 	}
+	sessionID := strings.TrimSpace(c.GetHeader("X-Session-Id"))
+	suffixEffort := ""
+	if r.needsReasoningSuffixFallback(model) {
+		if base, effort, ok := splitReasoningSuffix(model); ok {
+			model = base
+			suffixEffort = effort
+			req["model"] = base
+		}
+	}
 	routePolicy := resolveRoutePolicy(c, key)                                                // 路由策略（0043）：X-LAIAI-Route 头 > key 默认 > order
 	if code, msg, ok := r.gateRelayKey(c.Request.Context(), key, c.ClientIP(), model); !ok { // Key 精细管控（0012）
 		relayErr(c, code, msg)
@@ -661,7 +777,11 @@ func (r *Relay) HandleChatCompletions(c *gin.Context) {
 			req["model"] = m
 			r.Log.Warn("model fallback: trying next model", "model", m, "chain_pos", i)
 		}
-		if r.serveChatModel(c, key, inv, finish, req, body, m, stream, routePolicy, pref, i, i == len(chain)-1) == chatDone {
+		iterSuffix := ""
+		if i == 0 {
+			iterSuffix = suffixEffort
+		}
+		if r.serveChatModel(c, key, inv, finish, req, body, m, stream, routePolicy, pref, i, i == len(chain)-1, sessionID, iterSuffix) == chatDone {
 			return
 		}
 	}
@@ -713,7 +833,7 @@ const (
 // serveChatModel：单模型的完整服务周期（估算→hold→quota 预留→换渠道重试→回传→结算），
 // 由 HandleChatCompletions 提取（模型级 fallback 链按模型重入）。last=false 时"此路不通"
 // 类失败不写响应、返回 chatNextModel——返回前 hold 已释放、quota 预留由 defer 退还。
-func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invocation.Invocation, finish func(string, int, string), req map[string]any, body []byte, model string, stream bool, routePolicy string, pref *providerPref, chainIdx int, last bool) chatOutcome {
+func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invocation.Invocation, finish func(string, int, string), req map[string]any, body []byte, model string, stream bool, routePolicy string, pref *providerPref, chainIdx int, last bool, sessionID, suffixEffort string) chatOutcome {
 	maxTokens := int64(defaultMaxTokens)
 	if v := requestedMaxOutput(req); v > 0 { // 同时识别 max_tokens 与 max_completion_tokens（P0-2）
 		maxTokens = v
@@ -730,6 +850,11 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 			req[f] = float64(maxOutputTokensCeiling)
 		}
 	}
+	var suffixBudget int64
+	if suffixEffort != "" {
+		applyReasoningEffort(req, suffixEffort)
+		suffixBudget = reasoningEffortBudget(suffixEffort)
+	}
 	// 扩展思考（Anthropic thinking）：thinking token 计入 output 计费，anthropic 适配器会把上游
 	// max_tokens 上调到 budget+4096。hold 必须同口径计入，否则低余额可借 overage 把 org 余额刷负
 	// （与下方 n 倍同类资金红线）。对非 anthropic 渠道无害（只多冻结、settle 按真实 usage 退差）。
@@ -740,6 +865,13 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 				if maxTokens > maxOutputTokensCeiling {
 					maxTokens = maxOutputTokensCeiling
 				}
+			}
+		}
+	} else if suffixBudget > 0 {
+		if want := suffixBudget + int64(defaultMaxTokens); want > maxTokens {
+			maxTokens = want
+			if maxTokens > maxOutputTokensCeiling {
+				maxTokens = maxOutputTokensCeiling
 			}
 		}
 	}
@@ -816,6 +948,21 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 
 	// 4. Hold：按 tiktoken 估算输入 + max_tokens 上限 冻结（整个重试周期只 hold 一次）
 	estIn := CountChatTokens(req, len(body))
+	tpmEpoch, tpmOK := r.reserveTPM(c.Request.Context(), key.ID, key.TPMLimit, key.OrgID, model, estIn)
+	if !tpmOK {
+		if !last {
+			return chatNextModel
+		}
+		finish(invocation.StatusUpstreamError, http.StatusTooManyRequests, "tpm limit exceeded")
+		relayErr(c, http.StatusTooManyRequests, "token rate limit exceeded, slow down")
+		return chatDone
+	}
+	tpmSettled := false
+	defer func() {
+		if !tpmSettled {
+			r.reconcileTPM(context.Background(), tpmEpoch, key.ID, key.TPMLimit, key.OrgID, model, -estIn)
+		}
+	}()
 	// Anthropic 写缓存溢价（1h=2x 输入价，结算点 CacheWriteSurcharge 补收）必须进 hold，否则带
 	// cache_control 的大 prompt 结算必超 hold、借 AllowNegative overage 刷负余额（对抗 review
 	// CONFIRMED，与 thinking budget 同类红线）。检测走原始 body 字节（覆盖块/工具/system 任何形态；
@@ -897,17 +1044,28 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	// 渠道快照取一次（8s 缓存），3 次重试复用同一份；exclude 走内存（WS-2 #1 读瓶颈消除）。
 	channelSnap, snapErr := r.cachedChannels()
 	breaker := r.newBreakerPicker() // 熔断闸（breaker.go）：open 渠道硬摘除；全被挡则降级放行
+	origReqCtx := c.Request.Context()
+	affKey := computeAffinityKey(sessionID, key.ID, model, req)
+	var stickyID uint64
+	if affKey != "" {
+		stickyID, _ = r.aff.get(origReqCtx, affKey)
+	}
+	var streamGraceCtx context.Context
+	cleanupStreamGrace := func() {}
+	defer func() {
+		cleanupStreamGrace()
+	}()
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if snapErr != nil {
 			break // 快照加载失败：当作无渠道，落循环后失败处理
 		}
 		var pickErr error
-		ch, pickErr = r.pickRelayChannel(c.Request.Context(), key, channelSnap, model, attempt, exclude, routePolicy, pref)
+		ch, pickErr = r.pickRelayChannelWithAffinity(origReqCtx, key, channelSnap, model, attempt, exclude, routePolicy, pref, stickyID)
 		if pickErr != nil {
 			if !breaker.reopen(exclude) {
 				break // 无渠道可用：落到循环后的失败处理
 			}
-			ch, pickErr = r.pickRelayChannel(c.Request.Context(), key, channelSnap, model, attempt, exclude, routePolicy, pref)
+			ch, pickErr = r.pickRelayChannelWithAffinity(origReqCtx, key, channelSnap, model, attempt, exclude, routePolicy, pref, stickyID)
 			if pickErr != nil {
 				break
 			}
@@ -938,11 +1096,26 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 		}
 		// 模型映射（0009）：每次 attempt 按当前渠道覆盖写，无跨渠道残留；
 		// 计费/记录/对外响应仍用对外名（inv.Model / price 已定）。
-		req["model"] = ch.UpstreamModel(model)
+		upModel := ch.UpstreamModel(model)
+		req["model"] = upModel
+		attemptReq := prepareAttemptRequest(req, ch, upModel, suffixBudget)
+		reqCtx := origReqCtx
+		if stream {
+			cleanupStreamGrace()
+			gCtx, gCancel := context.WithCancel(context.Background())
+			stopWatch := context.AfterFunc(origReqCtx, func() {
+				time.AfterFunc(StreamDisconnectGrace, gCancel)
+			})
+			streamGraceCtx = gCtx
+			cleanupStreamGrace = func() {
+				stopWatch()
+				gCancel()
+			}
+			reqCtx = streamGraceCtx
+		}
 		// 渠道级 param override（0033，指令 §3.4）：在**本 attempt 的副本**上深合并（无 override
 		// 零拷贝返回原 map）——换渠道重试各用各的 override，绝不残留。资金钳制键受保护（overrides.go）。
-		upReq, ad, err := buildForwardAwareRequest(c.Request.Context(), ch, fwd, credential,
-			applyParamOverride(req, ch.ParamOverride), stream)
+		upReq, ad, err := buildForwardAwareRequest(reqCtx, ch, fwd, credential, attemptReq, stream)
 		lastAd = ad
 		if err != nil {
 			r.release(hold.ID)
@@ -952,12 +1125,12 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 		}
 		// 渠道级 header override（0033）：adapter 默认头之后应用（运营优先级最高），
 		// {{credential}} 占位符注入解密凭证——自定义认证头不需要明文 key 进配置。
-		applyHeaderOverride(upReq, ch.HeaderOverride, credential)
+		applyHeaderOverrideChannel(upReq, ch, credential)
 		resp, err = r.clientFor(ch).Do(upReq)
 		if err != nil {
 			// 下游客户端断连/超时（ctx 取消）不是渠道故障——绝不喂健康分/熔断（对抗 review CONFIRMED：
 			// 否则客户端批量中止可硬熔断健康渠道），且换渠道重试也是继续对已死 ctx 打水漂，直接终止。
-			if c.Request.Context().Err() != nil {
+			if origReqCtx.Err() != nil {
 				r.release(hold.ID)
 				finish(invocation.StatusUpstreamError, 499, "client disconnected")
 				return chatDone
@@ -965,6 +1138,7 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 			r.Log.Warn("upstream unreachable", "channel", ch.ID, "attempt", attempt, "err", err)
 			r.observe(ch.ID, false)     // 健康分：网络不可达 = 渠道可靠性失败
 			r.breakerNote(ch.ID, false) // 熔断：不可达计一次
+			r.aff.evictChannel(context.Background(), ch.ID)
 			exclude[ch.ID] = true
 			lastStatus, lastBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream unreachable"}}`)
 			resp = nil
@@ -974,13 +1148,17 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 			break // 成功
 		}
 		// 非 2xx：分类 → 禁用/重试决策
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-		resp.Body.Close()
+		errReader := wrapCompressedBody(resp)
+		errBody, _ := io.ReadAll(io.LimitReader(errReader, maxErrorBodyBytes))
+		errReader.Close()
 		r.breakerNote(ch.ID, resp.StatusCode < 500) // 熔断口径：仅 5xx 计失败（<500=渠道活着）
 		disp := classifyUpstreamError(ch.Provider, resp.StatusCode, errBody)
 		inv.UpstreamErrorCode = upstreamErrorCode(disp.Reason, errBody) // 排障闭环（0045）：白名单枚举，末次为准
 		if healthPenalty(disp, resp.StatusCode) {
 			r.observe(ch.ID, false) // 健康分：仅渠道整体可靠性失败（5xx/429/硬故障）；渠道特有 4xx 不计
+		}
+		if disp.DisableChannel || resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+			r.aff.evictChannel(context.Background(), ch.ID)
 		}
 		// 不记原始上游错误体（审查 M-5）：可能回显请求片段/org 标识/prompt 碎片，
 		// 违反"操作日志禁 payload/PII"红线。只记分类后的 reason。
@@ -1021,7 +1199,8 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 		c.Data(lastStatus, "application/json", lastBody)
 		return chatDone
 	}
-	defer resp.Body.Close()
+	rawBody := wrapCompressedBody(resp)
+	defer rawBody.Close()
 	ad := lastAd
 	if ad == nil {
 		ad = adapterForChannel(ch)
@@ -1030,6 +1209,7 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	// 上游响应校验（部署冒烟暴露）：200 但 content-type 非 JSON/SSE（如中转站返回 HTML 首页）
 	// 判为上游异常——不透传垃圾、不误计费成 success。渠道级开关可放宽。
 	if ch.EnforcesStrictResponse() && !IsLLMContentType(resp.Header.Get("Content-Type")) {
+		r.aff.evictChannel(context.Background(), ch.ID)
 		r.release(hold.ID)
 		r.Log.Warn("upstream returned non-LLM content-type, rejecting",
 			"channel", ch.ID, "content_type", resp.Header.Get("Content-Type"))
@@ -1047,7 +1227,7 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	} else if rid := resp.Header.Get("request-id"); rid != "" {
 		inv.UpstreamRequestID = rid
 	}
-	respBody := &firstByteReader{inner: resp.Body, onFirst: func() {
+	respBody := &firstByteReader{inner: rawBody, onFirst: func() {
 		inv.FRTMs = int(r.Now().Sub(attemptStart).Milliseconds())
 	}}
 
@@ -1055,6 +1235,9 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	r.enableChannelIfDisabled(ch) // 内含 clearSuggestDisable（B-2 撤销建议）
 	r.resetKeyFailures(credID)    // 该 key 一次成功 → 清其失败计数（0034 Multi-key）
 	r.breakerNote(ch.ID, true)    // 熔断：成功即闭合（半开探活成功走这里恢复全量）
+	if affKey != "" {
+		r.aff.bind(origReqCtx, affKey, ch.ID)
+	}
 
 	// 7. 响应回传（adapter 转换）+ usage 抽取 + capture
 	// 对外 model 名存 context：上游响应不含 model 名的 adapter（bedrock Converse）回显时读它，
@@ -1066,10 +1249,27 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	var u usage
 	var outBytes int
 	var streamErr error
+	var ttc *thinkingToContentWriter
+	origWriter := c.Writer
+	if ch.ThinkingToContent == 1 {
+		ttc = &thinkingToContentWriter{ResponseWriter: origWriter, stream: stream}
+		c.Writer = ttc
+	}
 	if stream {
-		u, outBytes, streamErr = ad.pipeSSE(c, respBody)
+		if streamGraceCtx != nil {
+			origReq := c.Request
+			c.Request = origReq.WithContext(streamGraceCtx)
+			u, outBytes, streamErr = ad.pipeSSE(c, respBody)
+			c.Request = origReq
+		} else {
+			u, outBytes, streamErr = ad.pipeSSE(c, respBody)
+		}
 	} else {
 		u, outBytes, streamErr = ad.pipeJSON(c, respBody)
+	}
+	if ttc != nil {
+		ttc.finalize()
+		c.Writer = origWriter
 	}
 	inv.UsageSource = invocation.UsageSourceUpstream
 	// 第三档兜底（**按字段独立判定**）：上游缺某项 usage 就按估算补（宁可少收不多收）。
@@ -1111,8 +1311,10 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 			reason += " byok×" + byok.String()
 		}
 	}
+	settleCtx, cancelSettle := context.WithTimeout(context.WithoutCancel(origReqCtx), 15*time.Second)
+	defer cancelSettle()
 	var overage = decimal.Zero
-	if err := r.DB.Transaction(func(tx *gorm.DB) error {
+	if err := r.DB.WithContext(settleCtx).Transaction(func(tx *gorm.DB) error {
 		var err error
 		overage, err = ledger.SettleHoldExact(tx, hold.ID, actual, "usage", model, reason)
 		return err
@@ -1134,8 +1336,10 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 	inv.UpstreamErrorCode = ""
 	// 预留→实际对账（P0-3）：used_amount 已 +holdAmount，这里 +(actual-hold) 使其落到真实 actual；
 	// 标记 settled 让上面的退还 defer 不再触发。已交付的部分 token 照实计费（actual），不退。
-	_ = identity.AddKeyUsageSigned(r.DB, key.ID, actual.Sub(holdAmount))
+	_ = identity.AddKeyUsageSigned(r.DB.WithContext(settleCtx), key.ID, actual.Sub(holdAmount))
 	quotaSettled = true
+	r.reconcileTPM(settleCtx, tpmEpoch, key.ID, key.TPMLimit, key.OrgID, model, (u.PromptTokens+u.CompletionTokens)-estIn)
+	tpmSettled = true
 	// P1-5：流中途 stall/读错误 → 已发 200 头的截断流，照实计费但**不可记为 success**。
 	// 已开始写响应，绝不换模型（设计 §4.4）。
 	if streamErr != nil {
@@ -1159,6 +1363,7 @@ func (r *Relay) release(holdID uint64) {
 // disableChannel 异步禁用渠道（知识库 §2.2）。一次成功请求会自动重启用（见 enableChannelIfDisabled）。
 // 用独立 goroutine + 新 context，不依赖已可能结束的请求 context。
 func (r *Relay) disableChannel(channelID uint64, reason string) {
+	r.aff.evictChannel(context.Background(), channelID)
 	go func() {
 		if err := r.DB.Model(&Channel{}).Where("id = ? AND status = 1", channelID).
 			Update("status", 2).Error; err != nil { // 2 = auto-disabled
@@ -1211,6 +1416,7 @@ func (r *Relay) cachedChannels() ([]Channel, error) {
 		}
 		for i := range chs {
 			chs[i].Credentials = byChannel[chs[i].ID]
+			chs[i].compile()
 		}
 		return chs, nil
 	})

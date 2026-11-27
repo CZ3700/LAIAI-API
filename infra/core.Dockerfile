@@ -16,16 +16,16 @@ COPY core/go.mod core/go.sum ./core/
 RUN cd core && go mod download
 COPY core/ ./core/
 RUN cd core && \
-    go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/core ./cmd/core && \
-    go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/migrate ./cmd/migrate && \
-    go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/schema-doctor ./cmd/schema-doctor && \
-    go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/backfill-funds ./cmd/backfill-funds
+    go build -tags=sonic -trimpath -buildvcs=false -ldflags="-s -w" -o /out/core ./cmd/core && \
+    go build -tags=sonic -trimpath -buildvcs=false -ldflags="-s -w" -o /out/migrate ./cmd/migrate && \
+    go build -tags=sonic -trimpath -buildvcs=false -ldflags="-s -w" -o /out/schema-doctor ./cmd/schema-doctor && \
+    go build -tags=sonic -trimpath -buildvcs=false -ldflags="-s -w" -o /out/smoke ./cmd/smoke
 
 FROM ${ALPINE_IMAGE}
 RUN apk add --no-cache ca-certificates tzdata ffmpeg clamav-scanner && \
     adduser -D -u 10001 laiai && \
     install -d -m 0700 -o laiai -g laiai /var/lib/laiai/video-media
-COPY --from=builder /out/core /out/migrate /out/schema-doctor /out/backfill-funds /app/
+COPY --from=builder /out/core /out/migrate /out/schema-doctor /out/smoke /app/
 COPY migrations/ /app/migrations/
 COPY infra/entrypoint.sh /app/entrypoint.sh
 COPY infra/freshclam.conf /app/freshclam.conf

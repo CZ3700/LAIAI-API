@@ -47,13 +47,13 @@ ark-query-recovery-compat: ## Linux host: four persisted-query recovery binary h
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_ark_query_recovery_compat.py
 	sh scripts/ark-query-recovery-compat.sh --output "$${QUERY_RECOVERY_REPORT_DIR}" --compiler "$${QUERY_RECOVERY_COMPILER:-host}"
 
-test: toolchain-check ## 全部测试（纯 Go sqlite，无 CGO）
-	cd core && go test ./... -count=1
-	cd relay && go test ./... -count=1
+test: toolchain-check ## 全部测试（纯 Go sqlite，无 CGO，启用 sonic JSON）
+	cd core && go test -tags=sonic ./... -count=1
+	cd relay && go test -tags=sonic ./... -count=1
 
 build: toolchain-check ## 编译检查（不产出二进制）
-	cd core && go build ./...
-	cd relay && go build ./...
+	cd core && go build -tags=sonic ./...
+	cd relay && go build -tags=sonic ./...
 
 web: ## Console 类型检查 + 构建（需要 Node 20+）
 	cd web && npm run build

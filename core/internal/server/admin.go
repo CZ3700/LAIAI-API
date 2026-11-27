@@ -219,6 +219,7 @@ type channelReq struct {
 	ModelSyncEnabled   bool              `json:"model_sync_enabled"`   // opt-in 周期自动检测上游模型（0037）
 	CategoryID         uint64            `json:"category_id"`          // 渠道分类 ID（0160，0=未分组）
 	UpstreamCostRatio  *decimal.Decimal  `json:"upstream_cost_ratio"`  // 上游进货成本倍率（0160，默认 1）
+	ThinkingToContent  bool              `json:"thinking_to_content"`  // 将 reasoning_content 折叠为 <think> 文本
 }
 
 // validateAdvancedFields：converter 枚举 + upstream_path 组合 + advanced_custom 的 SSRF base_url 校验。
@@ -360,6 +361,7 @@ func (s *Server) adminCreateChannel(c *gin.Context) {
 		CredentialMode: credMode,
 		Converter:      strings.TrimSpace(req.Converter), UpstreamPath: strings.TrimSpace(req.UpstreamPath),
 		ModelSyncEnabled:  b2i8(req.ModelSyncEnabled),
+		ThinkingToContent: b2i8(req.ThinkingToContent),
 		Status:            1,
 		CategoryID:        req.CategoryID,
 		UpstreamCostRatio: upstreamRatio,
@@ -401,6 +403,7 @@ type updateChannelReq struct {
 	Weight             *int               `json:"weight"`
 	Priority           *int               `json:"priority"`
 	StrictResponse     *bool              `json:"strict_response"`
+	ThinkingToContent  *bool              `json:"thinking_to_content"`
 	ModelMapping       *map[string]string `json:"model_mapping"`        // 指针区分"不改"与"清空"
 	Proxy              *string            `json:"proxy"`                // 指针区分"不改"与"清空代理"
 	ParamOverride      *string            `json:"param_override"`       // 指针区分"不改"与"清空"（0033）
@@ -445,11 +448,10 @@ func (s *Server) adminUpdateChannel(c *gin.Context) {
 		updates["priority"] = *req.Priority
 	}
 	if req.StrictResponse != nil {
-		if *req.StrictResponse {
-			updates["strict_response"] = 1
-		} else {
-			updates["strict_response"] = 0
-		}
+		updates["strict_response"] = b2i8(*req.StrictResponse)
+	}
+	if req.ThinkingToContent != nil {
+		updates["thinking_to_content"] = b2i8(*req.ThinkingToContent)
 	}
 	if req.ModelMapping != nil {
 		mapping, ok := marshalMapping(*req.ModelMapping)
@@ -636,6 +638,7 @@ func (s *Server) adminListChannels(c *gin.Context) {
 			"weight": ch.Weight, "priority": ch.Priority,
 			"max_concurrent_tasks": ch.MaxConcurrentTasks,
 			"strict_response":      ch.EnforcesStrictResponse(),
+			"thinking_to_content":  ch.ThinkingToContent == 1,
 			"model_mapping":        ch.ModelMapping, "calls": total, "status": ch.Status,
 			"success_rate": successRate, "avg_latency_ms": q.AvgDuration, "errors": q.Errors,
 			"proxy": ch.Proxy,

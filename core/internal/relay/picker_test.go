@@ -24,6 +24,7 @@ CREATE TABLE channels (
     owner_org_id INTEGER NOT NULL DEFAULT 0,
     suggest_disable_reason TEXT NOT NULL DEFAULT '', suggest_disabled_at DATETIME,
     status INTEGER NOT NULL DEFAULT 1,
+    thinking_to_content INTEGER NOT NULL DEFAULT 0,
     category_id INTEGER NOT NULL DEFAULT 0,
     upstream_cost_ratio NUMERIC NOT NULL DEFAULT 1,
     config_cid TEXT NOT NULL DEFAULT '',

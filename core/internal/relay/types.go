@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math/rand/v2"
+	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -44,6 +46,7 @@ type Channel struct {
 	SuggestDisableReason string          `gorm:"column:suggest_disable_reason"` // 禁用建议原因（0047 B-2，硬故障，空=无建议）
 	SuggestDisabledAt    *time.Time      `gorm:"column:suggest_disabled_at"`    // 建议产生时间（成功请求即清）
 	Status               int8            `gorm:"column:status"`
+	ThinkingToContent    int8            `gorm:"column:thinking_to_content"`
 	CategoryID           uint64          `gorm:"column:category_id"`
 	UpstreamCostRatio    decimal.Decimal `gorm:"column:upstream_cost_ratio"`
 	ConfigCID            string          `gorm:"column:config_cid"`
@@ -55,6 +58,96 @@ type Channel struct {
 	// Credentials：该渠道的启用 key 列表（非持久列；快照/选择器按需填充，0034 Multi-key）。
 	// 空 = 回退 CredentialEnc 单 key（legacy）。调用方只读，绝不原地改。
 	Credentials []ChannelCredential `gorm:"-"`
+	compiled    *compiledChannel    `gorm:"-"`
+}
+
+type patternMapping struct {
+	prefix string
+	re     *regexp.Regexp
+	target string
+}
+
+type headerOverrideOp struct {
+	key        string
+	canon      string
+	del        bool
+	tmpl       string
+	hasCredRef bool
+}
+
+type compiledChannel struct {
+	modelSet        map[string]struct{}
+	exactMap        map[string]string
+	patternMaps     []patternMapping
+	rawMapping      map[string]string
+	paramOverride   map[string]any
+	headerOverrides []headerOverrideOp
+}
+
+// compile pre-parses Models, ModelMapping, ParamOverride, and HeaderOverride once at snapshot load
+// so hot relay requests avoid repeating JSON unmarshals and regex compilations.
+func (c *Channel) compile() {
+	if c == nil {
+		return
+	}
+	cc := &compiledChannel{
+		modelSet: make(map[string]struct{}),
+	}
+	for item := range strings.SplitSeq(c.Models, ",") {
+		if m := strings.TrimSpace(item); m != "" {
+			cc.modelSet[m] = struct{}{}
+		}
+	}
+	if strings.TrimSpace(c.ModelMapping) != "" {
+		var m map[string]string
+		if json.Unmarshal([]byte(c.ModelMapping), &m) == nil && len(m) > 0 {
+			cc.rawMapping = m
+			cc.exactMap = make(map[string]string, len(m))
+			for k, v := range m {
+				if v == "" {
+					continue
+				}
+				if expr, ok := strings.CutPrefix(k, "re:"); ok {
+					if re, err := regexp.Compile(expr); err == nil {
+						cc.patternMaps = append(cc.patternMaps, patternMapping{re: re, target: v})
+						continue
+					}
+				} else if prefix, ok := strings.CutSuffix(k, "*"); ok && prefix != "" {
+					cc.patternMaps = append(cc.patternMaps, patternMapping{prefix: prefix, target: v})
+					continue
+				}
+				cc.exactMap[k] = v
+			}
+		}
+	}
+	if strings.TrimSpace(c.ParamOverride) != "" {
+		var po map[string]any
+		if json.Unmarshal([]byte(c.ParamOverride), &po) == nil && len(po) > 0 {
+			cc.paramOverride = po
+		}
+	}
+	if strings.TrimSpace(c.HeaderOverride) != "" {
+		var ho map[string]any
+		if json.Unmarshal([]byte(c.HeaderOverride), &ho) == nil && len(ho) > 0 {
+			ops := make([]headerOverrideOp, 0, len(ho))
+			for k, v := range ho {
+				canon := http.CanonicalHeaderKey(k)
+				switch sv := v.(type) {
+				case nil:
+					ops = append(ops, headerOverrideOp{key: k, canon: canon, del: true})
+				case string:
+					ops = append(ops, headerOverrideOp{
+						key:        k,
+						canon:      canon,
+						tmpl:       sv,
+						hasCredRef: strings.Contains(sv, credentialPlaceholder),
+					})
+				}
+			}
+			cc.headerOverrides = ops
+		}
+	}
+	c.compiled = cc
 }
 
 // upstreamURL：base_url + 端点路径。upstream_path 非空（0036 advanced_custom）覆盖 adapter
@@ -74,6 +167,20 @@ func (c *Channel) upstreamURL(defaultPath string) string {
 // UpstreamModel 返回该渠道上游实际使用的模型名（无映射/解析失败 → 原名）。
 // 计费、调用记录、对外响应一律用对外名；映射只影响上游请求体。
 func (c *Channel) UpstreamModel(model string) string {
+	if c.compiled != nil {
+		if v, ok := c.compiled.exactMap[model]; ok && v != "" {
+			return v
+		}
+		for _, pm := range c.compiled.patternMaps {
+			if pm.prefix != "" && strings.HasPrefix(model, pm.prefix) {
+				return pm.target
+			}
+			if pm.re != nil && pm.re.MatchString(model) {
+				return pm.target
+			}
+		}
+		return model
+	}
 	if c.ModelMapping == "" {
 		return model
 	}
@@ -90,6 +197,9 @@ func (c *Channel) UpstreamModel(model string) string {
 // MappingPairs 解析 model_mapping（对外名→上游名）；空/非法 → nil。
 // 模型同步 diff 用：channels.models 存对外名，上游 /models 返回上游原名，需按此表对齐两轴。
 func (c *Channel) MappingPairs() map[string]string {
+	if c.compiled != nil && c.compiled.rawMapping != nil {
+		return c.compiled.rawMapping
+	}
 	if c.ModelMapping == "" {
 		return nil
 	}
@@ -143,7 +253,11 @@ func IsLLMContentType(ct string) bool {
 func (Channel) TableName() string { return "channels" }
 
 func (c *Channel) ServesModel(model string) bool {
-	for _, m := range strings.Split(c.Models, ",") {
+	if c.compiled != nil {
+		_, ok := c.compiled.modelSet[model]
+		return ok
+	}
+	for m := range strings.SplitSeq(c.Models, ",") {
 		if strings.TrimSpace(m) == model {
 			return true
 		}

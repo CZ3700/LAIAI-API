@@ -93,8 +93,8 @@ func TestPGFullMigrationsRulesChannelAndLedgerFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrate.Up failed: %v", err)
 	}
-	if len(ran) != 5 {
-		t.Fatalf("ran migrations = %v, want 5", ran)
+	if len(ran) != 6 {
+		t.Fatalf("ran migrations = %v, want 6", ran)
 	}
 	ran2, err := migrate.Up(db, fsys)
 	if err != nil || len(ran2) != 0 {

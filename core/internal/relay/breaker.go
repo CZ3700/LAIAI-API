@@ -14,7 +14,10 @@ package relay
 //   - 失败：网络不可达（Do 错误，含客户端超时）、上游 5xx（含 529/overloaded）
 //   - 成功：收到任何 <500 的上游响应（400/401/429 说明渠道活着，是分类器的事）
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 const (
 	breakerThreshold   = 5                // 连续可靠性失败 N 次 → open
@@ -54,13 +57,14 @@ func (r *Relay) breakerAllow(channelID uint64) bool {
 // ok=false（不可达/5xx）→ 计数，达阈值或半开探活失败 → open 进入/重回冷却。
 func (r *Relay) breakerNote(channelID uint64, ok bool) {
 	now := r.Now()
+	evict := false
 	r.breakerMu.Lock()
-	defer r.breakerMu.Unlock()
 	if r.breakerStates == nil {
 		r.breakerStates = map[uint64]*breakerState{} // 懒初始化（兼容不经 New 构造的测试实例）
 	}
 	if ok {
 		delete(r.breakerStates, channelID) // 任何一次成功 → 全清（closed）
+		r.breakerMu.Unlock()
 		return
 	}
 	st := r.breakerStates[channelID]
@@ -71,11 +75,18 @@ func (r *Relay) breakerNote(channelID uint64, ok bool) {
 	if !st.openUntil.IsZero() && !now.Before(st.openUntil.Add(-breakerCooldown)) {
 		// open/半开期间的失败（探活失败或残余在途请求失败）→ 重回冷却
 		st.openUntil, st.probing = now.Add(breakerCooldown), false
+		r.breakerMu.Unlock()
+		r.aff.evictChannel(context.Background(), channelID)
 		return
 	}
 	st.fails++
 	if st.fails >= breakerThreshold {
 		st.openUntil, st.probing = now.Add(breakerCooldown), false
+		evict = true
+	}
+	r.breakerMu.Unlock()
+	if evict {
+		r.aff.evictChannel(context.Background(), channelID)
 	}
 }
 

@@ -820,6 +820,7 @@ func (s *Server) formatV1Token(k identity.APIKey, availableBalance decimal.Decim
 		"allowed_ips":                 k.AllowIPs,
 		"rps_limit":                   k.RPSLimit,
 		"rpm_limit":                   k.RPMLimit,
+		"tpm_limit":                   k.TPMLimit,
 		"route_policy":                k.RoutePolicy,
 		"billing_rule":                cmp.Or(k.RoutePolicy, "order"),
 		"high_availability":           k.HighAvailability,
@@ -864,6 +865,7 @@ func (s *Server) v1CreateToken(c *gin.Context) {
 		AllowIPs          string          `json:"allow_ips"`
 		RPSLimit          int             `json:"rps_limit"`
 		RPMLimit          int             `json:"rpm_limit"`
+		TPMLimit          int             `json:"tpm_limit"`
 		RoutePolicy       string          `json:"route_policy"`
 		HighAvailability  *int8           `json:"high_availability"`
 	}
@@ -887,8 +889,8 @@ func (s *Server) v1CreateToken(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid period quota limit")
 		return
 	}
-	if req.RPSLimit < 0 || req.RPMLimit < 0 {
-		fail(c, http.StatusBadRequest, "rps_limit and rpm_limit must be non-negative")
+	if req.RPSLimit < 0 || req.RPMLimit < 0 || req.TPMLimit < 0 {
+		fail(c, http.StatusBadRequest, "rps_limit, rpm_limit and tpm_limit must be non-negative")
 		return
 	}
 	if !relay.ValidRoutePolicy(req.RoutePolicy) {
@@ -943,6 +945,7 @@ func (s *Server) v1CreateToken(c *gin.Context) {
 			AllowIPs:          allowIPs,
 			RPSLimit:          req.RPSLimit,
 			RPMLimit:          req.RPMLimit,
+			TPMLimit:          req.TPMLimit,
 			RoutePolicy:       req.RoutePolicy,
 			HighAvailability:  req.HighAvailability,
 			MaxKeys:           ent.MaxAPIKeys,
@@ -982,6 +985,7 @@ func (s *Server) v1UpdateToken(c *gin.Context) {
 		AllowedIPs        *string          `json:"allowed_ips"`
 		RPSLimit          *int             `json:"rps_limit"`
 		RPMLimit          *int             `json:"rpm_limit"`
+		TPMLimit          *int             `json:"tpm_limit"`
 		RoutePolicy       *string          `json:"route_policy"`
 		HighAvailability  *int8            `json:"high_availability"`
 	}
@@ -1088,6 +1092,13 @@ func (s *Server) v1UpdateToken(c *gin.Context) {
 			return
 		}
 		updates["rpm_limit"] = *req.RPMLimit
+	}
+	if req.TPMLimit != nil {
+		if *req.TPMLimit < 0 {
+			fail(c, http.StatusBadRequest, "tpm_limit must be non-negative")
+			return
+		}
+		updates["tpm_limit"] = *req.TPMLimit
 	}
 	if req.RoutePolicy != nil {
 		if !relay.ValidRoutePolicy(*req.RoutePolicy) {

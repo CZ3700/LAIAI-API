@@ -2,6 +2,7 @@ package server
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -85,7 +86,10 @@ func (s *Server) buildFullSettingsPayload() map[string]any {
 			"channel_disable_threshold": s.getSetting("channel_disable_threshold"),
 			"model_rate_limit_enabled":  s.getBoolSetting("model_rate_limit_enabled"),
 			"model_rate_limit_rpm":      s.getSetting("model_rate_limit_rpm"),
+			"model_rate_limit_tpm":      s.getSetting("model_rate_limit_tpm"),
 		},
+		"log_cleanup": s.LoadLogCleanupSettings(),
+		"server_time": s.now().UTC().Format("2006-01-02 15:04:05"),
 	}
 
 	if raw := s.getSetting(v1FullSettingsKey); strings.TrimSpace(raw) != "" {
@@ -175,10 +179,36 @@ func (s *Server) v1AdminPostFullSettings(c *gin.Context) {
 			syncCore("currency_display_enabled", map[bool]string{true: "true", false: "false"}[strings.EqualFold(v, "CNY")])
 		}
 	}
+	if rel, ok := req["relay"].(map[string]any); ok {
+		if v, ok := rel["model_rate_limit_enabled"].(bool); ok {
+			syncCore("model_rate_limit_enabled", map[bool]string{true: "true", false: "false"}[v])
+		}
+		if v, exists := rel["model_rate_limit_rpm"]; exists && v != nil {
+			syncCore("model_rate_limit_rpm", strings.TrimSpace(anyString(v)))
+		}
+		if v, exists := rel["model_rate_limit_tpm"]; exists && v != nil {
+			syncCore("model_rate_limit_tpm", strings.TrimSpace(anyString(v)))
+		}
+	}
+	if lcRaw, ok := req["log_cleanup"]; ok {
+		if rawBytes, err := json.Marshal(lcRaw); err == nil {
+			var parsed LogCleanupSettings
+			if json.Unmarshal(rawBytes, &parsed) == nil {
+				syncCore("log_retention_days", strconv.Itoa(parsed.LogRetentionDays))
+				syncCore("log_row_retention_days", strconv.Itoa(parsed.LogRowRetentionDays))
+				syncCore("error_log_retention_days", strconv.Itoa(parsed.ErrorLogRetentionDays))
+			}
+			syncCore(v1LogCleanupSettingKey, string(rawBytes))
+		}
+		s.notifyScheduleChanged()
+	} else if _, hasSite := req["site"]; hasSite {
+		s.notifyScheduleChanged()
+	}
 
 	if b, err := json.Marshal(current); err == nil {
 		syncCore(v1FullSettingsKey, string(b))
 	}
+	s.invalidateSettingsCache()
 	s.writeAudit(c, "settings_update", "v1_full_settings", "updated full site settings")
 	c.JSON(http.StatusOK, s.buildFullSettingsPayload())
 }
@@ -262,17 +292,61 @@ func (s *Server) v1SettingsDatabaseVerify(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "message": "数据库连接正常"})
 }
 
-func (s *Server) v1SettingsTriggerMaintenance(c *gin.Context) {
-	inv, aud, err := s.RunLogRetention(c.Request.Context())
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "maintenance failed")
-		return
+func anyString(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case float64:
+		return strconv.FormatInt(int64(x), 10)
+	case int:
+		return strconv.Itoa(x)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	default:
+		return ""
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "invocations_purged": inv, "audit_logs_purged": aud})
+}
+
+func (s *Server) v1SettingsTriggerMaintenance(c *gin.Context) {
+	s.writeAudit(c, "settings_trigger_maintenance", "system", "triggered daily maintenance pipeline")
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		_, _, _ = s.RunDailyMaintenance(ctx)
+	}()
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"ok":      true,
+		"message": "全量系统日常维护任务已在后台触发执行",
+	})
 }
 
 func (s *Server) v1SettingsUsageStatsSync(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"ok": true, "message": "统计同步已完成"})
+	startDate := strings.TrimSpace(c.Query("start_date"))
+	endDate := strings.TrimSpace(c.Query("end_date"))
+	if startDate == "" || endDate == "" {
+		var body struct {
+			StartDate string `json:"start_date"`
+			EndDate   string `json:"end_date"`
+		}
+		if c.ShouldBindJSON(&body) == nil {
+			startDate = cmp.Or(startDate, strings.TrimSpace(body.StartDate))
+			endDate = cmp.Or(endDate, strings.TrimSpace(body.EndDate))
+		}
+	}
+	s.writeAudit(c, "settings_usage_stats_sync", "usage_daily_stats", "triggered manual usage stats sync")
+	go func(sd, ed string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		if _, err := s.ManualSyncUsageStats(ctx, sd, ed); err != nil {
+			s.Log().Warn("manual usage stats sync failed", "start_date", sd, "end_date", ed, "err", err)
+		}
+	}(startDate, endDate)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"ok":      true,
+		"message": "手动同步任务已在后台异步启动，请在后台查看日志",
+	})
 }
 
 func (s *Server) v1AdminListPlugins(c *gin.Context) {
