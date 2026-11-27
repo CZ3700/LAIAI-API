@@ -410,7 +410,14 @@ func (s *Server) v1CreateChannel(c *gin.Context) {
 		ExcludeUserGroups: req.ExcludeUserGroups,
 		Config:            req.Config,
 	}
-	s.saveV1ChannelMeta(ch.ID, meta)
+	if err := s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		return updateV1ChannelMeta(tx, ch.ID, func(current *v1ChannelMeta) { *current = meta })
+	}); err != nil {
+		s.Log().Error("save channel metadata", "channel", ch.ID, "err", err)
+		fail(c, http.StatusInternalServerError, "save channel metadata failed")
+		return
+	}
+	s.invalidateSettingsCache()
 	s.invalidateCache(relay.KindChannel, "")
 	s.writeAudit(c, "v1_channel_create", strconv.FormatUint(ch.ID, 10), "created channel "+ch.Name)
 	c.JSON(http.StatusCreated, gin.H{"data": s.formatV1TkeChannel(ch, meta)})
@@ -508,29 +515,38 @@ func (s *Server) v1UpdateChannel(c *gin.Context) {
 		}
 	}
 
-	metaMap := s.loadV1ChannelMetaMap()
-	meta := metaMap[id]
-	if req.Models != nil {
-		meta.ModelMids = updatedModelMids
+	var meta v1ChannelMeta
+	if err := s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		return updateV1ChannelMeta(tx, id, func(current *v1ChannelMeta) {
+			if req.Models != nil {
+				current.ModelMids = updatedModelMids
+			}
+			if req.ProviderType != nil {
+				current.RawProviderType = strings.TrimSpace(*req.ProviderType)
+			}
+			if req.PresetID != nil {
+				current.PresetID = req.PresetID
+			}
+			if req.SortOrder != nil {
+				current.SortOrder = *req.SortOrder
+			}
+			if req.UserGroups != nil {
+				current.UserGroups = *req.UserGroups
+			}
+			if req.ExcludeUserGroups != nil {
+				current.ExcludeUserGroups = *req.ExcludeUserGroups
+			}
+			if len(req.Config) > 0 {
+				current.Config = req.Config
+			}
+			meta = *current
+		})
+	}); err != nil {
+		s.Log().Error("update channel metadata", "channel", id, "err", err)
+		fail(c, http.StatusInternalServerError, "update channel metadata failed")
+		return
 	}
-	if req.ProviderType != nil {
-		meta.RawProviderType = strings.TrimSpace(*req.ProviderType)
-	}
-	if req.PresetID != nil {
-		meta.PresetID = req.PresetID
-	}
-	if req.SortOrder != nil {
-		meta.SortOrder = *req.SortOrder
-	}
-	if req.UserGroups != nil {
-		meta.UserGroups = *req.UserGroups
-	}
-	if req.ExcludeUserGroups != nil {
-		meta.ExcludeUserGroups = *req.ExcludeUserGroups
-	}
-	if len(req.Config) > 0 {
-		meta.Config = req.Config
-	}
+	s.invalidateSettingsCache()
 	primary, subs := s.resolveV1SubChannels(meta.PresetID, meta.Config)
 	if len(subs) > 0 {
 		s.syncChannelSubCredentials(c.Request.Context(), id, subs)
@@ -550,7 +566,6 @@ func (s *Server) v1UpdateChannel(c *gin.Context) {
 			_ = s.db.WithContext(c.Request.Context()).Model(&relay.Channel{}).Where("id = ?", id).Updates(subUp).Error
 		}
 	}
-	s.saveV1ChannelMeta(id, meta)
 
 	_ = s.db.WithContext(c.Request.Context()).Where("id = ?", id).First(&ch).Error
 	s.invalidateCache(relay.KindChannel, "")
@@ -562,10 +577,23 @@ func (s *Server) v1DeleteChannel(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := s.db.WithContext(c.Request.Context()).Where("id = ?", id).Delete(&relay.Channel{}).Error; err != nil {
+	if err := s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("channel_id = ?", id).Delete(&relay.ChannelCredential{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&relay.Channel{}, id).Error; err != nil {
+			return err
+		}
+		return updateSettingJSON(tx, v1SettingChannelMeta, map[uint64]v1ChannelMeta{}, func(m *map[uint64]v1ChannelMeta) error {
+			delete(*m, id)
+			return nil
+		})
+	}); err != nil {
+		s.Log().Error("delete channel", "channel", id, "err", err)
 		fail(c, http.StatusInternalServerError, "delete channel failed")
 		return
 	}
+	s.invalidateSettingsCache()
 	s.invalidateCache(relay.KindChannel, "")
 	c.JSON(http.StatusOK, gin.H{"deleted": id})
 }
@@ -1132,10 +1160,6 @@ func (s *Server) v1ChannelConfigProviders(c *gin.Context) {
 }
 
 func (s *Server) v1SaveChannelConfigProvider(c *gin.Context) {
-	var list []forward.ChannelCategory
-	if raw := s.getSetting(v1SettingChannelProviders); strings.TrimSpace(raw) != "" {
-		_ = json.Unmarshal([]byte(raw), &list)
-	}
 	var req struct {
 		Name      string `json:"name" binding:"required"`
 		SortOrder int    `json:"sort_order"`
@@ -1145,34 +1169,33 @@ func (s *Server) v1SaveChannelConfigProvider(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "name is required")
 		return
 	}
-	idParam := strings.TrimSpace(c.Param("id"))
-	if idParam != "" {
-		id, err := strconv.ParseUint(idParam, 10, 64)
-		if err == nil {
-			for i := range list {
-				if list[i].ID == id {
-					list[i].Name = strings.TrimSpace(req.Name)
-					list[i].SortOrder = req.SortOrder
-					list[i].IsActive = req.IsActive
-					b, _ := json.Marshal(list)
-					_ = s.upsertRawSetting(v1SettingChannelProviders, string(b))
-					c.JSON(http.StatusOK, list[i])
-					return
+	id, _ := strconv.ParseUint(strings.TrimSpace(c.Param("id")), 10, 64)
+	item := forward.ChannelCategory{Name: strings.TrimSpace(req.Name), SortOrder: req.SortOrder, IsActive: req.IsActive}
+	status := http.StatusCreated
+	err := s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		return updateSettingJSON(tx, v1SettingChannelProviders, []forward.ChannelCategory{}, func(list *[]forward.ChannelCategory) error {
+			var maxID uint64
+			for i, existing := range *list {
+				if id != 0 && existing.ID == id {
+					item.ID = id
+					(*list)[i] = item
+					status = http.StatusOK
+					return nil
 				}
+				maxID = max(maxID, existing.ID)
 			}
-		}
+			item.ID = maxID + 1
+			*list = append(*list, item)
+			return nil
+		})
+	})
+	if err != nil {
+		s.Log().Error("save channel provider", "err", err)
+		fail(c, http.StatusInternalServerError, "save channel provider failed")
+		return
 	}
-	var maxID uint64
-	for _, it := range list {
-		if it.ID > maxID {
-			maxID = it.ID
-		}
-	}
-	item := forward.ChannelCategory{ID: maxID + 1, Name: strings.TrimSpace(req.Name), SortOrder: req.SortOrder, IsActive: req.IsActive}
-	list = append(list, item)
-	b, _ := json.Marshal(list)
-	_ = s.upsertRawSetting(v1SettingChannelProviders, string(b))
-	c.JSON(http.StatusCreated, item)
+	s.invalidateSettingsCache()
+	c.JSON(status, item)
 }
 
 func (s *Server) v1ListUpstreams(c *gin.Context) {
@@ -1217,12 +1240,16 @@ func (s *Server) loadV1ChannelMetaMap() map[uint64]v1ChannelMeta {
 	return out
 }
 
-func (s *Server) saveV1ChannelMeta(id uint64, meta v1ChannelMeta) {
-	m := s.loadV1ChannelMetaMap()
-	m[id] = meta
-	if b, err := json.Marshal(m); err == nil {
-		_ = s.upsertRawSetting(v1SettingChannelMeta, string(b))
-	}
+func updateV1ChannelMeta(tx *gorm.DB, id uint64, update func(*v1ChannelMeta)) error {
+	return updateSettingJSON(tx, v1SettingChannelMeta, map[uint64]v1ChannelMeta{}, func(m *map[uint64]v1ChannelMeta) error {
+		if *m == nil {
+			*m = make(map[uint64]v1ChannelMeta)
+		}
+		meta := (*m)[id]
+		update(&meta)
+		(*m)[id] = meta
+		return nil
+	})
 }
 
 func (s *Server) upsertRawSetting(name, val string) error {

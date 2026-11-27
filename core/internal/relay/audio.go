@@ -133,7 +133,8 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 	if ferr {
 		return
 	}
-	defer resp.Body.Close()
+	responseBody := wrapCompressedBody(resp)
+	defer responseBody.Close()
 	if rid := resp.Header.Get("x-request-id"); rid != "" {
 		inv.UpstreamRequestID = rid
 	}
@@ -144,7 +145,7 @@ func (r *Relay) HandleAudioSpeech(c *gin.Context) {
 	if ct == "" {
 		ct = "audio/mpeg"
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := readResponseBody(responseBody, maxJSONResponseBytes)
 	if err != nil {
 		r.release(hold.ID)
 		finish(invocation.StatusUpstreamError, http.StatusBadGateway, "upstream response body unreadable")
@@ -258,12 +259,13 @@ func (r *Relay) sttHandler(c *gin.Context, suffix string) {
 	if ferr {
 		return
 	}
-	defer resp.Body.Close()
+	responseBody := wrapCompressedBody(resp)
+	defer responseBody.Close()
 	if rid := resp.Header.Get("x-request-id"); rid != "" {
 		inv.UpstreamRequestID = rid
 	}
 	inv.FRTMs = int(r.Now().Sub(t0).Milliseconds())
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := readResponseBody(responseBody, maxJSONResponseBytes)
 	if err != nil {
 		r.release(hold.ID)
 		finish(invocation.StatusUpstreamError, http.StatusBadGateway, "upstream response body unreadable")

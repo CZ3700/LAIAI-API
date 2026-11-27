@@ -33,26 +33,22 @@ func (s *Server) v1TkeDashboard(c *gin.Context) {
 	rdb := s.readOnly().WithContext(ctx)
 	isAdmin := s.callerIsAdmin(c) && !strings.EqualFold(c.Query("scope"), "self")
 
-	now := s.now().UTC()
-	startDay := now
-	endDay := now
-	if raw := strings.TrimSpace(c.Query("start_date")); raw != "" {
-		if t, err := time.Parse("2006-01-02", raw); err == nil {
-			startDay = t.UTC()
-		}
+	loc := s.siteLocation()
+	now := s.now().In(loc)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	startDay, endDay := today, today
+	if t, err := time.ParseInLocation("2006-01-02", c.Query("start_date"), loc); err == nil {
+		startDay = t
 	}
-	if raw := strings.TrimSpace(c.Query("end_date")); raw != "" {
-		if t, err := time.Parse("2006-01-02", raw); err == nil {
-			endDay = t.UTC()
-		}
+	if t, err := time.ParseInLocation("2006-01-02", c.Query("end_date"), loc); err == nil {
+		endDay = t
 	}
 	if endDay.Before(startDay) {
 		endDay = startDay
 	}
-
-	sinceDate := startDay.Format("2006-01-02")
-	todayStr := now.Format("2006-01-02")
-	yestStr := now.AddDate(0, 0, -1).Format("2006-01-02")
+	if endDay.After(startDay.AddDate(0, 0, 89)) {
+		endDay = startDay.AddDate(0, 0, 89)
+	}
 
 	var totalReq, totalTok int64
 	totalCost := decimal.Zero
@@ -62,79 +58,36 @@ func (s *Server) v1TkeDashboard(c *gin.Context) {
 	modelTok := map[string]int64{}
 	modelCost := map[string]decimal.Decimal{}
 
-	// Historical days (< today) read usage_daily_stats first when rows exist so archived hot rows
-	// remain reflected; recent/un-synced slice queries invocations.
-	var histRows []invocation.UsageDailyStat
-	if sinceDate < todayStr {
-		hq := rdb.Model(&invocation.UsageDailyStat{}).Where("stat_date >= ? AND stat_date < ?", sinceDate, todayStr)
-		if !isAdmin {
-			hq = hq.Where("org_id = ?", claims.OrgID)
-		}
-		_ = hq.Find(&histRows).Error
+	samples, err := dashboardUsage(rdb, isAdmin, claims.OrgID, startDay, endDay, today)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "query dashboard usage failed")
+		return
 	}
-	invSince := sinceDate
-	if len(histRows) > 0 {
-		for _, hr := range histRows {
-			totalReq += hr.RequestCount
-			tok := hr.PromptTokens + hr.CompletionTokens
-			totalTok += tok
-			totalCost = totalCost.Add(hr.CostUSD)
-			dailyReq[hr.StatDate] += hr.RequestCount
-			dailyCost[hr.StatDate] = dailyCost[hr.StatDate].Add(hr.CostUSD)
-			modelCnt[hr.Model] += hr.RequestCount
-			modelTok[hr.Model] += tok
-			modelCost[hr.Model] = modelCost[hr.Model].Add(hr.CostUSD)
-		}
-		invSince = todayStr
+	for _, sample := range samples {
+		totalReq += sample.Requests
+		totalTok += sample.Tokens
+		totalCost = totalCost.Add(sample.Cost)
+		dailyReq[sample.Day] += sample.Requests
+		dailyCost[sample.Day] = dailyCost[sample.Day].Add(sample.Cost)
+		modelCnt[sample.Model] += sample.Requests
+		modelTok[sample.Model] += sample.Tokens
+		modelCost[sample.Model] = modelCost[sample.Model].Add(sample.Cost)
 	}
-
-	var periodRows []invocation.Invocation
-	pq := rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", invSince)
-	if !isAdmin {
-		pq = pq.Where("org_id = ?", claims.OrgID)
+	type dayTotal struct {
+		Requests, Tokens, ActiveKeys int64
+		Cost                         decimal.Decimal
 	}
-	_ = pq.Select("model, status, prompt_tokens, completion_tokens, cost_usd, frt_ms, duration_ms, created_at").Find(&periodRows).Error
-
-	for _, r := range periodRows {
-		totalReq++
-		tok := r.PromptTokens + r.CompletionTokens
-		totalTok += tok
-		totalCost = totalCost.Add(r.CostUSD)
-		day := r.CreatedAt.UTC().Format("2006-01-02")
-		dailyReq[day]++
-		dailyCost[day] = dailyCost[day].Add(r.CostUSD)
-		modelCnt[r.Model]++
-		modelTok[r.Model] += tok
-		modelCost[r.Model] = modelCost[r.Model].Add(r.CostUSD)
-	}
-	var twoDayRows []invocation.Invocation
-	tdq := rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", yestStr)
-	if !isAdmin {
-		tdq = tdq.Where("org_id = ?", claims.OrgID)
-	}
-	_ = tdq.Select("api_key_id, prompt_tokens, completion_tokens, cost_usd, created_at").Find(&twoDayRows).Error
-
-	var todayReq, todayTok, yestReq, yestTok int64
-	todayCost, yestCost := decimal.Zero, decimal.Zero
-	todayKeys, yestKeys := map[uint64]struct{}{}, map[uint64]struct{}{}
-	for _, r := range twoDayRows {
-		d := r.CreatedAt.UTC().Format("2006-01-02")
-		tok := r.PromptTokens + r.CompletionTokens
-		switch d {
-		case todayStr:
-			todayReq++
-			todayTok += tok
-			todayCost = todayCost.Add(r.CostUSD)
-			if r.APIKeyID > 0 {
-				todayKeys[r.APIKeyID] = struct{}{}
-			}
-		case yestStr:
-			yestReq++
-			yestTok += tok
-			yestCost = yestCost.Add(r.CostUSD)
-			if r.APIKeyID > 0 {
-				yestKeys[r.APIKeyID] = struct{}{}
-			}
+	var todayUsage, yesterdayUsage dayTotal
+	for _, day := range []struct {
+		start time.Time
+		total *dayTotal
+	}{{today, &todayUsage}, {today.AddDate(0, 0, -1), &yesterdayUsage}} {
+		if err := dashboardLogScope(rdb, isAdmin, claims.OrgID).
+			Where("created_at >= ? AND created_at < ?", day.start.UTC(), day.start.AddDate(0, 0, 1).UTC()).
+			Select("COUNT(*) AS requests, COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens, COALESCE(SUM(cost_usd), 0) AS cost, COUNT(DISTINCT NULLIF(api_key_id, 0)) AS active_keys").
+			Scan(day.total).Error; err != nil {
+			fail(c, http.StatusInternalServerError, "query dashboard usage failed")
+			return
 		}
 	}
 
@@ -182,10 +135,9 @@ func (s *Server) v1TkeDashboard(c *gin.Context) {
 		modelStats = modelStats[:15]
 	}
 
-	daysCount := max(1, min(90, int(endDay.Sub(startDay).Hours()/24)+1))
-	trends := make([]gin.H, 0, daysCount)
-	for i := range daysCount {
-		d := startDay.AddDate(0, 0, i).Format("2006-01-02")
+	trends := make([]gin.H, 0, 90)
+	for day := startDay; !day.After(endDay); day = day.AddDate(0, 0, 1) {
+		d := day.Format("2006-01-02")
 		trends = append(trends, gin.H{
 			"date":     d,
 			"requests": dailyReq[d],
@@ -194,8 +146,8 @@ func (s *Server) v1TkeDashboard(c *gin.Context) {
 	}
 
 	var totalUsers, totalChannels, totalTokensCount int64
-	_ = rdb.Model(&identity.User{}).Count(&totalUsers).Error
 	if isAdmin {
+		_ = rdb.Model(&identity.User{}).Count(&totalUsers).Error
 		_ = rdb.Model(&relay.Channel{}).Count(&totalChannels).Error
 		_ = rdb.Model(&identity.APIKey{}).Where("status = 1").Count(&totalTokensCount).Error
 	} else {
@@ -209,14 +161,14 @@ func (s *Server) v1TkeDashboard(c *gin.Context) {
 		"total_users":             totalUsers,
 		"total_channels":          totalChannels,
 		"total_api_tokens":        totalTokensCount,
-		"today_requests":          todayReq,
-		"today_tokens":            todayTok,
-		"today_cost":              decFloat(todayCost),
-		"today_active_tokens":     len(todayKeys),
-		"yesterday_requests":      yestReq,
-		"yesterday_tokens":        yestTok,
-		"yesterday_cost":          decFloat(yestCost),
-		"yesterday_active_tokens": len(yestKeys),
+		"today_requests":          todayUsage.Requests,
+		"today_tokens":            todayUsage.Tokens,
+		"today_cost":              decFloat(todayUsage.Cost),
+		"today_active_tokens":     todayUsage.ActiveKeys,
+		"yesterday_requests":      yesterdayUsage.Requests,
+		"yesterday_tokens":        yesterdayUsage.Tokens,
+		"yesterday_cost":          decFloat(yesterdayUsage.Cost),
+		"yesterday_active_tokens": yesterdayUsage.ActiveKeys,
 		"recent_logs":             recentOut,
 		"model_stats":             modelStats,
 		"daily_trends":            trends,
@@ -224,17 +176,71 @@ func (s *Server) v1TkeDashboard(c *gin.Context) {
 	})
 }
 
+type dashboardUsageSample struct {
+	Day, Model       string
+	Requests, Tokens int64
+	Cost             decimal.Decimal
+}
+
+func dashboardLogScope(db *gorm.DB, isAdmin bool, orgID uint64) *gorm.DB {
+	q := invocation.WithArchive(db)
+	if !isAdmin {
+		q = q.Where("org_id = ?", orgID)
+	}
+	return q
+}
+
+func dashboardUsage(db *gorm.DB, isAdmin bool, orgID uint64, start, end, today time.Time) ([]dashboardUsageSample, error) {
+	var samples []dashboardUsageSample
+	if start.Before(today) {
+		histEnd := end.AddDate(0, 0, 1)
+		if today.Before(histEnd) {
+			histEnd = today
+		}
+		q := db.Model(&invocation.UsageDailyStat{}).Where("stat_date >= ? AND stat_date < ?", start.Format("2006-01-02"), histEnd.Format("2006-01-02"))
+		if !isAdmin {
+			q = q.Where("org_id = ?", orgID)
+		}
+		if err := q.Select("CAST(stat_date AS TEXT) AS day, model, SUM(request_count) AS requests, SUM(prompt_tokens + completion_tokens) AS tokens, SUM(cost_usd) AS cost").
+			Group("stat_date, model").Scan(&samples).Error; err != nil {
+			return nil, err
+		}
+	}
+	synced := make(map[string]bool)
+	for _, sample := range samples {
+		synced[sample.Day] = true
+	}
+	for day := start; !day.After(end) && !day.After(today); day = day.AddDate(0, 0, 1) {
+		date := day.Format("2006-01-02")
+		if synced[date] {
+			continue
+		}
+		var daySamples []dashboardUsageSample
+		if err := dashboardLogScope(db, isAdmin, orgID).
+			Where("created_at >= ? AND created_at < ?", day.UTC(), day.AddDate(0, 0, 1).UTC()).
+			Select("model, COUNT(*) AS requests, SUM(prompt_tokens + completion_tokens) AS tokens, SUM(cost_usd) AS cost").
+			Group("model").Scan(&daySamples).Error; err != nil {
+			return nil, err
+		}
+		for i := range daySamples {
+			daySamples[i].Day = date
+		}
+		samples = append(samples, daySamples...)
+	}
+	return samples, nil
+}
+
 func (s *Server) computeLiveMetrics(c *gin.Context, isAdmin bool, orgID uint64) gin.H {
 	rdb := s.readOnly().WithContext(c.Request.Context())
-	since := s.now().UTC().Add(-60 * time.Second).Format("2006-01-02 15:04:05")
-	var rpm int64
-	var tpm int64
+	since := s.now().UTC().Add(-60 * time.Second)
+	var live struct{ RPM, TPM int64 }
 	q := rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", since)
 	if !isAdmin {
 		q = q.Where("org_id = ?", orgID)
 	}
-	_ = q.Count(&rpm).Error
-	_ = q.Select("COALESCE(SUM(prompt_tokens + completion_tokens), 0)").Scan(&tpm).Error
+	if err := q.Select("COUNT(*) AS rpm, COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tpm").Scan(&live).Error; err != nil {
+		s.Log().Warn("query live usage", "err", err)
+	}
 
 	var pendingTasks int64
 	tq := rdb.Model(&task.Task{}).Where("status IN ?", []string{"queued", "pending", "submitted", "running"})
@@ -244,9 +250,9 @@ func (s *Server) computeLiveMetrics(c *gin.Context, isAdmin bool, orgID uint64) 
 	_ = tq.Count(&pendingTasks).Error
 
 	return gin.H{
-		"qps":           float64(rpm) / 60.0,
-		"rpm":           rpm,
-		"tpm":           tpm,
+		"qps":           float64(live.RPM) / 60.0,
+		"rpm":           live.RPM,
+		"tpm":           live.TPM,
 		"task":          pendingTasks,
 		"pending_tasks": pendingTasks,
 	}
@@ -272,8 +278,9 @@ func (s *Server) v1Models30d(c *gin.Context) {
 	if d, err := strconv.Atoi(c.Query("days")); err == nil && d >= 1 && d <= 90 {
 		days = d
 	}
-	todayStr := s.now().UTC().Format("2006-01-02")
-	since := s.now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
+	loc := s.siteLocation()
+	now := s.now().In(loc)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 
 	type mAgg struct {
 		count  int64
@@ -299,31 +306,13 @@ func (s *Server) v1Models30d(c *gin.Context) {
 		byDayModel[k].cost = byDayModel[k].cost.Add(cost)
 	}
 
-	var histRows []invocation.UsageDailyStat
-	if since < todayStr {
-		hq := rdb.Model(&invocation.UsageDailyStat{}).Where("stat_date >= ? AND stat_date < ?", since, todayStr)
-		if !isAdmin {
-			hq = hq.Where("org_id = ?", claims.OrgID)
-		}
-		_ = hq.Find(&histRows).Error
+	samples, err := dashboardUsage(rdb, isAdmin, claims.OrgID, today.AddDate(0, 0, -days+1), today, today)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "query model usage failed")
+		return
 	}
-	invSince := since
-	if len(histRows) > 0 {
-		for _, hr := range histRows {
-			addSample(hr.StatDate, hr.Model, hr.RequestCount, hr.PromptTokens+hr.CompletionTokens, hr.CostUSD)
-		}
-		invSince = todayStr
-	}
-
-	var rows []invocation.Invocation
-	q := rdb.Model(&invocation.Invocation{}).Where("created_at >= ?", invSince)
-	if !isAdmin {
-		q = q.Where("org_id = ?", claims.OrgID)
-	}
-	_ = q.Select("model, prompt_tokens, completion_tokens, cost_usd, created_at").Find(&rows).Error
-
-	for _, r := range rows {
-		addSample(r.CreatedAt.UTC().Format("2006-01-02"), r.Model, 1, r.PromptTokens+r.CompletionTokens, r.CostUSD)
+	for _, sample := range samples {
+		addSample(sample.Day, sample.Model, sample.Requests, sample.Tokens, sample.Cost)
 	}
 
 	top := make([]gin.H, 0, len(byModel))
@@ -375,7 +364,7 @@ func (s *Server) v1ListLogs(c *gin.Context) {
 
 	q := s.applyV1LogFilters(c, isAdmin, claims.OrgID)
 	var total int64
-	if err := q.Count(&total).Error; err != nil {
+	if err := q.Session(&gorm.Session{}).Count(&total).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "query logs failed")
 		return
 	}
@@ -420,7 +409,7 @@ func (s *Server) v1ListLogs(c *gin.Context) {
 }
 
 func (s *Server) applyV1LogFilters(c *gin.Context, isAdmin bool, orgID uint64) *gorm.DB {
-	q := s.readOnly().WithContext(c.Request.Context()).Model(&invocation.Invocation{})
+	q := invocation.WithArchive(s.readOnly().WithContext(c.Request.Context()))
 	if !isAdmin {
 		q = q.Where("org_id = ?", orgID)
 	} else if rawOrg := strings.TrimSpace(c.Query("org_id")); rawOrg != "" {
@@ -605,7 +594,7 @@ func (s *Server) v1LogDetail(c *gin.Context) {
 	}
 	isAdmin := s.callerIsAdmin(c)
 	var inv invocation.Invocation
-	q := s.readOnly().WithContext(c.Request.Context()).Where("id = ?", id)
+	q := invocation.WithArchive(s.readOnly().WithContext(c.Request.Context())).Where("id = ?", id)
 	if !isAdmin {
 		q = q.Where("org_id = ?", claims.OrgID)
 	}
@@ -628,7 +617,10 @@ func (s *Server) v1ExportLogs(c *gin.Context) {
 	claims := mustClaims(c)
 	isAdmin := s.callerIsAdmin(c) && !strings.EqualFold(c.Query("scope"), "self")
 	var rows []invocation.Invocation
-	_ = s.applyV1LogFilters(c, isAdmin, claims.OrgID).Order("id DESC").Limit(5000).Find(&rows).Error
+	if err := s.applyV1LogFilters(c, isAdmin, claims.OrgID).Order("id DESC").Limit(5000).Find(&rows).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "export logs failed")
+		return
+	}
 
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="logs.csv"`)

@@ -372,60 +372,57 @@ func (s *Server) handleSaveClassification(c *gin.Context, settingKey string, def
 		fail(c, http.StatusBadRequest, "name is required")
 		return
 	}
-	list := s.loadClassifications(settingKey, defaults)
 	active := int8(1)
 	if req.IsActive != nil && *req.IsActive == 0 {
 		active = 0
 	}
-	if idRaw := strings.TrimSpace(c.Param("id")); idRaw != "" {
-		if id, err := strconv.ParseUint(idRaw, 10, 64); err == nil {
-			for i := range list {
-				if list[i].ID == id {
-					if list[i].IsSystem == 0 {
-						list[i].Name = strings.TrimSpace(req.Name)
-					}
-					list[i].NameEn = strings.TrimSpace(req.NameEn)
-					list[i].Logo = strings.TrimSpace(req.Logo)
-					list[i].SortOrder = req.SortOrder
-					list[i].IsActive = active
-					if req.Remark != nil {
-						list[i].Remark = strings.TrimSpace(*req.Remark)
-					}
-					if req.DefaultFeatures != nil && list[i].IsSystem == 0 {
-						list[i].DefaultFeatures = strings.TrimSpace(*req.DefaultFeatures)
-					}
-					b, _ := json.Marshal(list)
-					_ = s.upsertRawSetting(settingKey, string(b))
-					c.JSON(http.StatusOK, list[i])
-					return
+	id, _ := strconv.ParseUint(strings.TrimSpace(c.Param("id")), 10, 64)
+	var item v1compat.ClassificationItem
+	status := http.StatusCreated
+	err := s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		return updateSettingJSON(tx, settingKey, defaults, func(list *[]v1compat.ClassificationItem) error {
+			maxID := uint64(0)
+			index := -1
+			for i, existing := range *list {
+				maxID = max(maxID, existing.ID)
+				if id != 0 && existing.ID == id {
+					index = i
 				}
 			}
-		}
+			if index >= 0 {
+				item = (*list)[index]
+				status = http.StatusOK
+			} else {
+				item.ID = maxID + 1
+			}
+			if item.IsSystem == 0 {
+				item.Name = strings.TrimSpace(req.Name)
+				if req.DefaultFeatures != nil {
+					item.DefaultFeatures = strings.TrimSpace(*req.DefaultFeatures)
+				}
+			}
+			item.NameEn = strings.TrimSpace(req.NameEn)
+			item.Logo = strings.TrimSpace(req.Logo)
+			item.SortOrder = req.SortOrder
+			item.IsActive = active
+			if req.Remark != nil {
+				item.Remark = strings.TrimSpace(*req.Remark)
+			}
+			if index >= 0 {
+				(*list)[index] = item
+			} else {
+				*list = append(*list, item)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		s.Log().Error("save model classification", "setting", settingKey, "err", err)
+		fail(c, http.StatusInternalServerError, "save classification failed")
+		return
 	}
-	var maxID uint64
-	for _, it := range list {
-		if it.ID > maxID {
-			maxID = it.ID
-		}
-	}
-	item := v1compat.ClassificationItem{
-		ID:        maxID + 1,
-		Name:      strings.TrimSpace(req.Name),
-		NameEn:    strings.TrimSpace(req.NameEn),
-		Logo:      strings.TrimSpace(req.Logo),
-		SortOrder: req.SortOrder,
-		IsActive:  active,
-	}
-	if req.Remark != nil {
-		item.Remark = strings.TrimSpace(*req.Remark)
-	}
-	if req.DefaultFeatures != nil {
-		item.DefaultFeatures = strings.TrimSpace(*req.DefaultFeatures)
-	}
-	list = append(list, item)
-	b, _ := json.Marshal(list)
-	_ = s.upsertRawSetting(settingKey, string(b))
-	c.JSON(http.StatusCreated, item)
+	s.invalidateSettingsCache()
+	c.JSON(status, item)
 }
 
 func (s *Server) handleDeleteClassification(c *gin.Context, settingKey string, defaults []v1compat.ClassificationItem) {
@@ -433,51 +430,46 @@ func (s *Server) handleDeleteClassification(c *gin.Context, settingKey string, d
 	if !ok {
 		return
 	}
-	list := s.loadClassifications(settingKey, defaults)
-	for _, it := range list {
-		if it.ID == id && it.IsSystem == 1 {
-			fail(c, http.StatusBadRequest, "系统预制分类不可删除")
-			return
-		}
-	}
-	next := slices.DeleteFunc(list, func(it v1compat.ClassificationItem) bool { return it.ID == id })
-	b, _ := json.Marshal(next)
-	_ = s.upsertRawSetting(settingKey, string(b))
-
-	extMap := s.loadV1ModelExtMap()
-	extChanged := false
-	for modelName, ext := range extMap {
-		rowUpdated := false
-		switch settingKey {
-		case v1KeyModelProviders:
-			if ext.ProviderID == id {
-				ext.ProviderID = 0
-				ext.ProviderSet = true
-				rowUpdated = true
+	system := errors.New("system classification cannot be deleted")
+	err := s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := updateSettingJSON(tx, settingKey, defaults, func(list *[]v1compat.ClassificationItem) error {
+			for _, item := range *list {
+				if item.ID == id && item.IsSystem == 1 {
+					return system
+				}
 			}
-		case v1KeyModelAPIProviders:
-			if ext.APIProviderID == id {
-				ext.APIProviderID = 0
-				ext.APIProviderSet = true
-				rowUpdated = true
+			*list = slices.DeleteFunc(*list, func(item v1compat.ClassificationItem) bool { return item.ID == id })
+			return nil
+		}); err != nil {
+			return err
+		}
+		return updateSettingJSON(tx, v1KeyModelExt, map[string]v1ModelExt{}, func(m *map[string]v1ModelExt) error {
+			for name, ext := range *m {
+				switch {
+				case settingKey == v1KeyModelProviders && ext.ProviderID == id:
+					ext.ProviderID, ext.ProviderSet = 0, true
+				case settingKey == v1KeyModelAPIProviders && ext.APIProviderID == id:
+					ext.APIProviderID, ext.APIProviderSet = 0, true
+				case settingKey == v1KeyModelTypes && ext.TypeID == id:
+					ext.TypeID, ext.TypeSet = 0, true
+				default:
+					continue
+				}
+				(*m)[name] = ext
 			}
-		case v1KeyModelTypes:
-			if ext.TypeID == id {
-				ext.TypeID = 0
-				ext.TypeSet = true
-				rowUpdated = true
-			}
-		}
-		if rowUpdated {
-			extMap[modelName] = ext
-			extChanged = true
-		}
+			return nil
+		})
+	})
+	if errors.Is(err, system) {
+		fail(c, http.StatusBadRequest, system.Error())
+		return
 	}
-	if extChanged {
-		if extBytes, err := json.Marshal(extMap); err == nil {
-			_ = s.upsertRawSetting(v1KeyModelExt, string(extBytes))
-		}
+	if err != nil {
+		s.Log().Error("delete model classification", "setting", settingKey, "err", err)
+		fail(c, http.StatusInternalServerError, "delete classification failed")
+		return
 	}
+	s.invalidateSettingsCache()
 	c.JSON(http.StatusOK, gin.H{"deleted": id})
 }
 
@@ -592,12 +584,16 @@ func (s *Server) loadV1ModelExtMap() map[string]v1ModelExt {
 	return out
 }
 
-func (s *Server) saveV1ModelExt(model string, ext v1ModelExt) {
-	m := s.loadV1ModelExtMap()
-	m[model] = ext
-	if b, err := json.Marshal(m); err == nil {
-		_ = s.upsertRawSetting(v1KeyModelExt, string(b))
-	}
+func (s *Server) updateV1ModelExt(tx *gorm.DB, model string, update func(*v1ModelExt)) error {
+	return updateSettingJSON(tx, v1KeyModelExt, map[string]v1ModelExt{}, func(m *map[string]v1ModelExt) error {
+		if *m == nil {
+			*m = make(map[string]v1ModelExt)
+		}
+		ext := (*m)[model]
+		update(&ext)
+		(*m)[model] = ext
+		return nil
+	})
 }
 
 func (s *Server) resolveModelNameByParam(c *gin.Context) string {
@@ -1156,40 +1152,42 @@ func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 			IsActive:              isActive,
 			SortOrder:             sortOrder,
 		}
-		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "model"}}, UpdateAll: true}).Create(&binding).Error
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "model"}}, UpdateAll: true}).Create(&binding).Error; err != nil {
+			return err
+		}
+		return s.updateV1ModelExt(tx, model, func(ext *v1ModelExt) {
+			if _, ok := rawFields["provider_id"]; ok {
+				ext.ProviderSet = true
+				ext.ProviderID = derefUint64(req.ProviderID)
+			}
+			if _, ok := rawFields["api_provider_id"]; ok {
+				ext.APIProviderSet = true
+				ext.APIProviderID = derefUint64(req.APIProviderID)
+			}
+			if _, ok := rawFields["type_id"]; ok {
+				ext.TypeSet = true
+				ext.TypeID = derefUint64(req.TypeID)
+			}
+			if req.OriginalID != nil {
+				ext.OriginalID = strings.TrimSpace(*req.OriginalID)
+			}
+			if req.Remark != nil {
+				ext.Remark = strings.TrimSpace(*req.Remark)
+			}
+			if req.FeatureAttributes != nil {
+				ext.FeatureAttributes = cmp.Or(strings.TrimSpace(*req.FeatureAttributes), "[]")
+			}
+			if req.GroupRatios != nil {
+				ext.GroupRatios = cmp.Or(strings.TrimSpace(*req.GroupRatios), "{}")
+			}
+		})
 	})
 	if err != nil {
+		s.Log().Error("save model", "model", model, "err", err)
 		fail(c, http.StatusInternalServerError, "save model failed")
 		return
 	}
-
-	extMap := s.loadV1ModelExtMap()
-	ext := extMap[model]
-	if _, ok := rawFields["provider_id"]; ok {
-		ext.ProviderSet = true
-		ext.ProviderID = derefUint64(req.ProviderID)
-	}
-	if _, ok := rawFields["api_provider_id"]; ok {
-		ext.APIProviderSet = true
-		ext.APIProviderID = derefUint64(req.APIProviderID)
-	}
-	if _, ok := rawFields["type_id"]; ok {
-		ext.TypeSet = true
-		ext.TypeID = derefUint64(req.TypeID)
-	}
-	if req.OriginalID != nil {
-		ext.OriginalID = strings.TrimSpace(*req.OriginalID)
-	}
-	if req.Remark != nil {
-		ext.Remark = strings.TrimSpace(*req.Remark)
-	}
-	if req.FeatureAttributes != nil {
-		ext.FeatureAttributes = cmp.Or(strings.TrimSpace(*req.FeatureAttributes), "[]")
-	}
-	if req.GroupRatios != nil {
-		ext.GroupRatios = cmp.Or(strings.TrimSpace(*req.GroupRatios), "{}")
-	}
-	s.saveV1ModelExt(model, ext)
+	s.invalidateSettingsCache()
 
 	s.writeAudit(c, "v1_model_upsert", model, "saved model metadata & rule binding")
 	s.invalidateCache(relay.KindPrice, model)
@@ -1208,20 +1206,24 @@ func (s *Server) v1AdminDeleteModel(c *gin.Context) {
 		if err := tx.Where("model = ?", model).Delete(&pricing.ModelRuleBinding{}).Error; err != nil && !v1compat.IsMissingTable(err) {
 			return err
 		}
-		_ = tx.Where("model = ?", model).Delete(&ModelMeta{}).Error
-		return tx.Where("model = ?", model).Delete(&relay.ModelPrice{}).Error
+		if err := tx.Where("model = ?", model).Delete(&ModelMeta{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("model = ?", model).Delete(&relay.ModelPrice{}).Error; err != nil {
+			return err
+		}
+		return updateSettingJSON(tx, v1KeyModelExt, map[string]v1ModelExt{}, func(m *map[string]v1ModelExt) error {
+			delete(*m, model)
+			return nil
+		})
 	})
 	if err != nil {
+		s.Log().Error("delete model", "model", model, "err", err)
 		fail(c, http.StatusInternalServerError, "delete model failed")
 		return
 	}
-	extMap := s.loadV1ModelExtMap()
-	if _, ok := extMap[model]; ok {
-		delete(extMap, model)
-		if b, err := json.Marshal(extMap); err == nil {
-			_ = s.upsertRawSetting(v1KeyModelExt, string(b))
-		}
-	}
+	s.invalidateSettingsCache()
+
 	s.writeAudit(c, "v1_model_delete", model, "deleted model binding and price")
 	s.invalidateCache(relay.KindPrice, model)
 	s.invalidateCache(relay.KindForwardRule, model)
@@ -1277,16 +1279,20 @@ func (s *Server) v1ModelCopy(c *gin.Context) {
 				return err
 			}
 		}
-		return nil
+		return updateSettingJSON(tx, v1KeyModelExt, map[string]v1ModelExt{}, func(m *map[string]v1ModelExt) error {
+			if ext, ok := (*m)[srcModel]; ok {
+				ext.Mid = ""
+				(*m)[newModel] = ext
+			}
+			return nil
+		})
 	}); err != nil {
-		fail(c, http.StatusConflict, "target model already exists")
+		s.Log().Error("copy model", "model", srcModel, "err", err)
+		fail(c, http.StatusConflict, "could not copy model")
 		return
 	}
-	extMap := s.loadV1ModelExtMap()
-	if srcExt, ok := extMap[srcModel]; ok {
-		srcExt.Mid = ""
-		s.saveV1ModelExt(newModel, srcExt)
-	}
+	s.invalidateSettingsCache()
+
 	c.JSON(http.StatusCreated, gin.H{"id": modelNumericID(newModel), "model": newModel})
 }
 

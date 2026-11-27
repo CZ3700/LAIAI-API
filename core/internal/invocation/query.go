@@ -212,7 +212,7 @@ func validateQuery(scope QueryScope, filter QueryFilter, page, pageSize int) err
 }
 
 func queryPredicate(tx *gorm.DB, scope QueryScope, filter QueryFilter) *gorm.DB {
-	q := tx.Model(&Invocation{}).Where("created_at >= ? AND created_at < ?", filter.Since.UTC(), filter.Until.UTC())
+	q := WithArchive(tx).Where("created_at >= ? AND created_at < ?", filter.Since.UTC(), filter.Until.UTC())
 	if scope.kind == 1 {
 		q = q.Where("org_id = ?", scope.orgID)
 	} else if filter.OrgID != 0 {

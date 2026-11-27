@@ -314,11 +314,6 @@ func runCore(log *slog.Logger) (code int) {
 }
 
 func runHourlyMaintenance(ctx context.Context, db *gorm.DB, apiSrv *server.Server, log *slog.Logger) {
-	if inv, aud, err := apiSrv.RunLogRetention(ctx); err != nil {
-		log.Error("log retention purge failed", "err", err)
-	} else if inv > 0 || aud > 0 {
-		log.Info("log retention purged", "invocations", inv, "audit_logs", aud)
-	}
 	if ctx.Err() != nil {
 		return
 	}

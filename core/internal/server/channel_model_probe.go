@@ -19,6 +19,7 @@ import (
 	"github.com/laiai/laiai-next/core/internal/relay"
 	"github.com/laiai/laiai-next/core/internal/server/v1compat"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -608,33 +609,39 @@ func (s *Server) v1ImportProbedModels(c *gin.Context) {
 	}
 
 	if req.ChannelID != nil && *req.ChannelID > 0 {
-		var ch relay.Channel
-		if err := s.db.WithContext(ctx).First(&ch, *req.ChannelID).Error; err == nil {
-			existingModels := make([]string, 0, 16)
+		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			var ch relay.Channel
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&ch, *req.ChannelID).Error; err != nil {
+				return err
+			}
+			mergedNames := make([]string, 0, 16)
 			for item := range strings.SplitSeq(ch.Models, ",") {
-				if t := strings.TrimSpace(item); t != "" {
-					existingModels = append(existingModels, t)
+				if name := strings.TrimSpace(item); name != "" {
+					mergedNames = append(mergedNames, name)
 				}
 			}
-			mergedNames := slices.Clone(existingModels)
 			for _, name := range importedNames {
 				if !slices.Contains(mergedNames, name) {
 					mergedNames = append(mergedNames, name)
 				}
 			}
-			_ = s.db.WithContext(ctx).Model(&relay.Channel{}).Where("id = ?", ch.ID).Update("models", joinTrim(mergedNames)).Error
-
-			metaMap := s.loadV1ChannelMetaMap()
-			meta := metaMap[ch.ID]
-			mergedMids := slices.Clone(meta.ModelMids)
-			for _, mid := range importedMids {
-				if !slices.Contains(mergedMids, mid) {
-					mergedMids = append(mergedMids, mid)
-				}
+			if err := tx.Model(&ch).Update("models", joinTrim(mergedNames)).Error; err != nil {
+				return err
 			}
-			meta.ModelMids = mergedMids
-			s.saveV1ChannelMeta(ch.ID, meta)
+			return updateV1ChannelMeta(tx, ch.ID, func(meta *v1ChannelMeta) {
+				for _, mid := range importedMids {
+					if !slices.Contains(meta.ModelMids, mid) {
+						meta.ModelMids = append(meta.ModelMids, mid)
+					}
+				}
+			})
+		})
+		if err != nil {
+			s.Log().Error("link imported models to channel", "channel", *req.ChannelID, "err", err)
+			fail(c, http.StatusInternalServerError, "link imported channel models failed")
+			return
 		}
+		s.invalidateSettingsCache()
 	}
 
 	s.writeAudit(c, "v1_models_import_probed", strconv.Itoa(importedCount), "imported probed upstream models")

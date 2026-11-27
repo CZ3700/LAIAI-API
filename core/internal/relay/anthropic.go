@@ -404,7 +404,7 @@ func mapStopReason(r string) string {
 }
 
 func (anthropicAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error) {
-	raw, err := io.ReadAll(body)
+	raw, err := readResponseBody(body, maxJSONResponseBytes)
 	if err != nil {
 		return usage{}, 0, fmt.Errorf("%w: %v", errStreamReadFail, err)
 	}
@@ -566,8 +566,8 @@ func (anthropicAdapter) pipeSSE(c *gin.Context, body io.Reader) (usage, int, err
 			Delta struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
-				Thinking    string `json:"thinking"`     // thinking_delta 增量（A-2）
-				Signature   string `json:"signature"`    // signature_delta 签名
+				Thinking    string `json:"thinking"`  // thinking_delta 增量（A-2）
+				Signature   string `json:"signature"` // signature_delta 签名
 				PartialJSON string `json:"partial_json"`
 				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`

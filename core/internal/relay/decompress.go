@@ -3,6 +3,7 @@ package relay
 import (
 	"compress/flate"
 	"compress/gzip"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -51,7 +52,7 @@ func wrapCompressedBody(resp *http.Response) io.ReadCloser {
 	enc := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
 	switch enc {
 	case "zstd":
-		dec, err := zstd.NewReader(resp.Body)
+		dec, err := zstd.NewReader(resp.Body, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(32<<20))
 		if err != nil {
 			return resp.Body
 		}
@@ -74,4 +75,17 @@ func wrapCompressedBody(resp *http.Response) io.ReadCloser {
 	default:
 		return resp.Body
 	}
+}
+
+const maxJSONResponseBytes = 64 << 20
+
+func readResponseBody(body io.Reader, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, errors.New("upstream response body exceeds limit")
+	}
+	return raw, nil
 }

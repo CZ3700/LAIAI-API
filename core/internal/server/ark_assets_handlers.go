@@ -144,7 +144,8 @@ func (s *Server) handleArkAssetProxy(c *gin.Context) {
 
 	client, projectName, err := s.arkClientForNamespace(pluginNS)
 	if err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+		s.Log().Warn("load Ark asset credentials", "namespace", pluginNS, "err", err)
+		fail(c, http.StatusBadRequest, "asset credentials are unavailable")
 		return
 	}
 
@@ -209,7 +210,8 @@ func (s *Server) handleArkAssetProxy(c *gin.Context) {
 		if code < 400 || code >= 600 {
 			code = http.StatusBadGateway
 		}
-		fail(c, code, cerr.Error())
+		s.Log().Warn("Ark asset request failed", "action", action, "status", status)
+		fail(c, code, "upstream asset request failed")
 		return
 	}
 
@@ -287,13 +289,10 @@ func emptyArkListEnvelope(action, version string) map[string]any {
 }
 
 func filterArkListEnvelope(parsed map[string]any, owned map[string]struct{}) {
-	res, ok := parsed["Result"].(map[string]any)
-	if !ok {
-		return
-	}
-	items, ok := res["Items"].([]any)
-	if !ok {
-		return
+	res, _ := parsed["Result"].(map[string]any)
+	items, _ := res["Items"].([]any)
+	if items == nil {
+		items, _ = res["List"].([]any)
 	}
 	filtered := make([]any, 0, len(items))
 	for _, entry := range items {
@@ -305,12 +304,14 @@ func filterArkListEnvelope(parsed map[string]any, owned map[string]struct{}) {
 		if id == "" {
 			id, _ = m["assetId"].(string)
 		}
+		if id == "" {
+			id, _ = m["groupId"].(string)
+		}
 		if _, ok := owned[id]; ok {
 			filtered = append(filtered, entry)
 		}
 	}
-	res["Items"] = filtered
-	res["TotalCount"] = len(filtered)
+	parsed["Result"] = map[string]any{"Items": filtered, "TotalCount": len(filtered)}
 }
 
 // handleUpstreamAssetProxy handles POST /v1/plugin/:rid/assets?Action=...&Version=...
@@ -324,11 +325,12 @@ func (s *Server) handleUpstreamAssetProxy(c *gin.Context) {
 	rid := strings.TrimSpace(c.Param("rid"))
 	action := cmp.Or(strings.TrimSpace(c.Query("Action")), strings.TrimSpace(c.Query("action")))
 	version := cmp.Or(strings.TrimSpace(c.Query("Version")), strings.TrimSpace(c.Query("version")), ark.DefaultArkAPIVersion)
-	if action == "" {
-		fail(c, http.StatusBadRequest, "缺少必需参数 Action")
+	if !allowedArkAssetActions[action] {
+		fail(c, http.StatusBadRequest, "unsupported Ark asset action")
 		return
 	}
-	if !s.isAdminUserID(c, userID) && !s.ensurePositiveOrgBalance(c, key.OrgID) {
+	isAdmin := s.isAdminUserID(c, userID)
+	if !isAdmin && !s.ensurePositiveOrgBalance(c, key.OrgID) {
 		return
 	}
 
@@ -349,6 +351,55 @@ func (s *Server) handleUpstreamAssetProxy(c *gin.Context) {
 	}
 	if body == nil {
 		body = map[string]any{}
+	}
+
+	ctx := c.Request.Context()
+	pluginNS := ark.BindingNS(binding.ID)
+	requestDB := s.db.WithContext(ctx)
+	bodyID, _ := body["Id"].(string)
+	bodyGroupID, _ := body["GroupId"].(string)
+	var ownedSet map[string]struct{}
+	if !isAdmin {
+		var table, column, id string
+		switch action {
+		case "GetAsset", "UpdateAsset", "DeleteAsset":
+			table, column, id = "plugin_assets", "asset_id", bodyID
+		case "GetAssetGroup", "UpdateAssetGroup", "DeleteAssetGroup":
+			if strings.TrimSpace(bodyID) == strings.TrimSpace(binding.GroupID) {
+				fail(c, http.StatusForbidden, "asset group is managed by the system")
+				return
+			}
+			table, column, id = "plugin_asset_groups", "group_id", bodyID
+		case "CreateAsset":
+			if strings.TrimSpace(bodyGroupID) != "" {
+				table, column, id = "plugin_asset_groups", "group_id", bodyGroupID
+			}
+		case "ListAssets":
+			ownedSet = s.loadOwnedIDs("plugin_assets", "asset_id", key.OrgID, pluginNS)
+		case "ListAssetGroups":
+			ownedSet = s.loadOwnedIDs("plugin_asset_groups", "group_id", key.OrgID, pluginNS)
+		}
+		if table != "" {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				fail(c, http.StatusBadRequest, "asset or group ID is required")
+				return
+			}
+			var count int64
+			if err := requestDB.Table(table).Where("org_id = ? AND plugin_ns = ? AND "+column+" = ?", key.OrgID, pluginNS, id).Count(&count).Error; err != nil {
+				s.Log().Error("check upstream asset ownership", "binding", binding.ID, "err", err)
+				fail(c, http.StatusInternalServerError, "asset ownership check failed")
+				return
+			}
+			if count == 0 {
+				fail(c, http.StatusForbidden, "asset or group is outside this organization")
+				return
+			}
+		}
+		if ownedSet != nil && len(ownedSet) == 0 {
+			c.JSON(http.StatusOK, emptyArkListEnvelope(action, version))
+			return
+		}
 	}
 
 	var cfgRow channelConfigRow
@@ -375,27 +426,32 @@ func (s *Server) handleUpstreamAssetProxy(c *gin.Context) {
 	}
 
 	if action == "CreateAsset" {
-		if rawGid, _ := body["GroupId"].(string); strings.TrimSpace(rawGid) == "" {
+		if strings.TrimSpace(bodyGroupID) == "" {
 			if strings.TrimSpace(binding.GroupID) == "" {
-				rawG, _, gerr := ark.CallUpstreamActionRaw(c.Request.Context(), s.arkHTTPClient, proxyBase, bearerKey,
+				rawGroup, status, err := ark.CallUpstreamActionRaw(ctx, s.arkHTTPClient, proxyBase, bearerKey,
 					"CreateAssetGroup", version, map[string]any{
-						"Name":        "laiai_upstream_auto_group",
-						"Description": "由火山视频转素材ID自动创建的素材组",
-						"GroupType":   "AIGC",
+						"Name":      "laiai_upstream_auto_group",
+						"GroupType": "AIGC",
 					}, 10*time.Millisecond)
-				if gerr == nil {
-					var gm map[string]any
-					if json.Unmarshal(rawG, &gm) == nil {
-						if newGID := ark.ExtractResultField(gm, "Id"); newGID != "" {
-							binding.GroupID = newGID
-							_ = s.db.Model(&ark.UpstreamAssetBinding{}).Where("id = ?", binding.ID).Update("group_id", newGID).Error
-						}
-					}
+				var group map[string]any
+				if err != nil || status < 200 || status >= 300 || json.Unmarshal(rawGroup, &group) != nil {
+					s.Log().Warn("create default upstream asset group", "binding", binding.ID, "status", status)
+					fail(c, http.StatusBadGateway, "upstream asset group creation failed")
+					return
+				}
+				binding.GroupID = ark.ExtractResultField(group, "Id")
+				if binding.GroupID == "" {
+					fail(c, http.StatusBadGateway, "upstream asset group response missing ID")
+					return
+				}
+				if err := requestDB.Model(&ark.UpstreamAssetBinding{}).Where("id = ?", binding.ID).Update("group_id", binding.GroupID).Error; err != nil {
+					s.Log().Error("save default upstream asset group", "binding", binding.ID, "err", err)
+					fail(c, http.StatusInternalServerError, "could not save upstream asset group")
+					return
 				}
 			}
-			if strings.TrimSpace(binding.GroupID) != "" {
-				body["GroupId"] = binding.GroupID
-			}
+			bodyGroupID = binding.GroupID
+			body["GroupId"] = bodyGroupID
 		}
 		if rawName, ok := body["Name"].(string); ok {
 			body["Name"] = ark.ClampCreateAssetName(rawName)
@@ -408,43 +464,67 @@ func (s *Server) handleUpstreamAssetProxy(c *gin.Context) {
 	rawResp, statusCode, cerr := ark.CallUpstreamActionRaw(
 		c.Request.Context(), s.arkHTTPClient, proxyBase, bearerKey, action, version, body, 10*time.Millisecond,
 	)
-	if cerr != nil {
-		fail(c, http.StatusBadGateway, cerr.Error())
+	if cerr != nil || statusCode < 200 || statusCode >= 300 {
+		s.Log().Warn("upstream asset request failed", "action", action, "binding", binding.ID, "status", statusCode)
+		if statusCode < 400 || statusCode >= 600 {
+			statusCode = http.StatusBadGateway
+		}
+		fail(c, statusCode, "upstream asset request failed")
 		return
 	}
 
-	pluginNS := ark.BindingNS(binding.ID)
 	var parsed map[string]any
-	if statusCode >= 200 && statusCode < 300 && json.Unmarshal(rawResp, &parsed) == nil {
-		if action == "CreateAsset" {
-			if aid := ark.ExtractResultField(parsed, "Id"); aid != "" {
-				urlVal, _ := body["URL"].(string)
-				at, _ := body["AssetType"].(string)
-				_ = s.db.Create(&ark.PluginAsset{
-					OrgID:           key.OrgID,
-					UserID:          userID,
-					AssetType:       cmp.Or(strings.ToLower(at), "image"),
-					Source:          ark.SourceUpstreamRelay,
-					Status:          "approved",
-					FileName:        ark.DeriveCreateAssetName(urlVal, cmp.Or(at, "Image")),
-					FileURL:         urlVal,
-					AssetID:         aid,
-					GroupID:         binding.GroupID,
-					Category:        "API转换素材",
-					PluginNS:        pluginNS,
-					StorageProvider: "tos",
-				}).Error
-			}
-		} else if action == "DeleteAsset" {
-			if delID, _ := body["Id"].(string); strings.TrimSpace(delID) != "" {
-				_ = s.db.Where("asset_id = ? AND plugin_ns = ? AND source = ?",
-					strings.TrimSpace(delID), pluginNS, ark.SourceUpstreamRelay).Delete(&ark.PluginAsset{}).Error
-			}
-		}
+	if err := json.Unmarshal(rawResp, &parsed); err != nil || parsed == nil {
+		fail(c, http.StatusBadGateway, "invalid upstream asset response")
+		return
+	}
+	if meta, ok := parsed["ResponseMetadata"].(map[string]any); ok && meta["Error"] != nil {
+		fail(c, http.StatusBadGateway, "upstream asset request failed")
+		return
 	}
 
-	if statusCode == 0 {
-		statusCode = http.StatusOK
+	if ownedSet != nil {
+		filterArkListEnvelope(parsed, ownedSet)
+		c.JSON(statusCode, parsed)
+		return
+	}
+
+	var saveErr error
+	switch action {
+	case "CreateAsset":
+		if aid := ark.ExtractResultField(parsed, "Id"); aid != "" {
+			urlVal, _ := body["URL"].(string)
+			at, _ := body["AssetType"].(string)
+			saveErr = requestDB.Create(&ark.PluginAsset{
+				OrgID: key.OrgID, UserID: userID, AssetID: aid, GroupID: bodyGroupID,
+				AssetType: cmp.Or(strings.ToLower(at), "image"), Source: ark.SourceUpstreamRelay,
+				Status: "approved", FileName: ark.DeriveCreateAssetName(urlVal, cmp.Or(at, "Image")),
+				FileURL: urlVal, Category: "API", PluginNS: pluginNS, StorageProvider: "tos",
+			}).Error
+		}
+	case "CreateAssetGroup":
+		if gid := ark.ExtractResultField(parsed, "Id"); gid != "" {
+			name, _ := body["Name"].(string)
+			description, _ := body["Description"].(string)
+			saveErr = requestDB.Create(&ark.PluginAssetGroup{
+				OrgID: key.OrgID, UserID: userID, GroupID: gid, Name: name, Description: description, PluginNS: pluginNS,
+			}).Error
+		}
+	case "DeleteAsset", "DeleteAssetGroup":
+		scope := requestDB.Where("plugin_ns = ?", pluginNS)
+		if !isAdmin {
+			scope = scope.Where("org_id = ?", key.OrgID)
+		}
+		if action == "DeleteAsset" {
+			saveErr = scope.Where("asset_id = ?", strings.TrimSpace(bodyID)).Delete(&ark.PluginAsset{}).Error
+		} else {
+			saveErr = scope.Where("group_id = ?", strings.TrimSpace(bodyID)).Delete(&ark.PluginAssetGroup{}).Error
+		}
+	}
+	if saveErr != nil {
+		s.Log().Error("persist upstream asset action", "action", action, "binding", binding.ID, "err", saveErr)
+		fail(c, http.StatusInternalServerError, "could not save upstream asset changes")
+		return
 	}
 	c.Data(statusCode, "application/json", rawResp)
 }

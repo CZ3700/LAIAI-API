@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -135,80 +136,102 @@ func (s *Server) v1AdminPostFullSettings(c *gin.Context) {
 		return
 	}
 
-	current := map[string]any{}
-	if raw := s.getSetting(v1FullSettingsKey); strings.TrimSpace(raw) != "" {
-		_ = json.Unmarshal([]byte(raw), &current)
-	}
-	for k, v := range req {
-		current[k] = v
-	}
-
-	syncCore := func(key, val string) {
-		_ = s.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "name"}},
-			DoUpdates: clause.AssignmentColumns([]string{"value"}),
-		}).Create(&Setting{Name: key, Value: val}).Error
-	}
-	if site, ok := req["site"].(map[string]any); ok {
-		if v, ok := site["name"].(string); ok && strings.TrimSpace(v) != "" {
-			syncCore("site_name", strings.TrimSpace(v))
-		}
-		if v, ok := site["admin_path"].(string); ok && strings.TrimSpace(v) != "" {
-			syncCore("admin_path", strings.Trim(strings.TrimSpace(v), "/"))
-		}
-		if v, ok := site["copyright"].(string); ok {
-			syncCore("footer_text", v)
-		}
-		if v, ok := site["support_email"].(string); ok {
-			syncCore("support_email", strings.TrimSpace(v))
-		}
-		if v, ok := site["maintenance"].(bool); ok {
-			syncCore("maintenance_mode", map[bool]string{true: "true", false: "false"}[v])
-		}
-	}
-	if reg, ok := req["registration"].(map[string]any); ok {
-		if v, ok := reg["enable_email_registration"].(bool); ok {
-			syncCore("register_enabled", map[bool]string{true: "true", false: "false"}[v])
-		}
-		if v, ok := reg["email_verification_enabled"].(bool); ok {
-			syncCore("email_verification_enabled", map[bool]string{true: "true", false: "false"}[v])
-		}
-	}
-	if cur, ok := req["currency"].(map[string]any); ok {
-		if v, ok := cur["default_currency"].(string); ok {
-			syncCore("currency_display_enabled", map[bool]string{true: "true", false: "false"}[strings.EqualFold(v, "CNY")])
-		}
-	}
-	if rel, ok := req["relay"].(map[string]any); ok {
-		if v, ok := rel["model_rate_limit_enabled"].(bool); ok {
-			syncCore("model_rate_limit_enabled", map[bool]string{true: "true", false: "false"}[v])
-		}
-		if v, exists := rel["model_rate_limit_rpm"]; exists && v != nil {
-			syncCore("model_rate_limit_rpm", strings.TrimSpace(anyString(v)))
-		}
-		if v, exists := rel["model_rate_limit_tpm"]; exists && v != nil {
-			syncCore("model_rate_limit_tpm", strings.TrimSpace(anyString(v)))
-		}
-	}
-	if lcRaw, ok := req["log_cleanup"]; ok {
-		if rawBytes, err := json.Marshal(lcRaw); err == nil {
-			var parsed LogCleanupSettings
-			if json.Unmarshal(rawBytes, &parsed) == nil {
-				syncCore("log_retention_days", strconv.Itoa(parsed.LogRetentionDays))
-				syncCore("log_row_retention_days", strconv.Itoa(parsed.LogRowRetentionDays))
-				syncCore("error_log_retention_days", strconv.Itoa(parsed.ErrorLogRetentionDays))
+	err := s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var mergedLogCleanup any
+		if err := updateSettingJSON(tx, v1FullSettingsKey, map[string]any{}, func(current *map[string]any) error {
+			if *current == nil {
+				*current = make(map[string]any)
 			}
-			syncCore(v1LogCleanupSettingKey, string(rawBytes))
+			for key, value := range req {
+				patch, isObject := value.(map[string]any)
+				prior, hasObject := (*current)[key].(map[string]any)
+				if isObject && hasObject {
+					for field, value := range patch {
+						prior[field] = value
+					}
+				} else {
+					(*current)[key] = value
+				}
+			}
+			mergedLogCleanup = (*current)["log_cleanup"]
+			return nil
+		}); err != nil {
+			return err
 		}
-		s.notifyScheduleChanged()
-	} else if _, hasSite := req["site"]; hasSite {
-		s.notifyScheduleChanged()
-	}
-
-	if b, err := json.Marshal(current); err == nil {
-		syncCore(v1FullSettingsKey, string(b))
+		var writeErr error
+		syncCore := func(key, val string) {
+			if writeErr == nil {
+				writeErr = tx.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "name"}},
+					DoUpdates: clause.AssignmentColumns([]string{"value"}),
+				}).Create(&Setting{Name: key, Value: val}).Error
+			}
+		}
+		if site, ok := req["site"].(map[string]any); ok {
+			if v, ok := site["name"].(string); ok && strings.TrimSpace(v) != "" {
+				syncCore("site_name", strings.TrimSpace(v))
+			}
+			if v, ok := site["admin_path"].(string); ok && strings.TrimSpace(v) != "" {
+				syncCore("admin_path", strings.Trim(strings.TrimSpace(v), "/"))
+			}
+			if v, ok := site["copyright"].(string); ok {
+				syncCore("footer_text", v)
+			}
+			if v, ok := site["support_email"].(string); ok {
+				syncCore("support_email", strings.TrimSpace(v))
+			}
+			if v, ok := site["maintenance"].(bool); ok {
+				syncCore("maintenance_mode", map[bool]string{true: "true", false: "false"}[v])
+			}
+		}
+		if reg, ok := req["registration"].(map[string]any); ok {
+			if v, ok := reg["enable_email_registration"].(bool); ok {
+				syncCore("register_enabled", map[bool]string{true: "true", false: "false"}[v])
+			}
+			if v, ok := reg["email_verification_enabled"].(bool); ok {
+				syncCore("email_verification_enabled", map[bool]string{true: "true", false: "false"}[v])
+			}
+		}
+		if cur, ok := req["currency"].(map[string]any); ok {
+			if v, ok := cur["default_currency"].(string); ok {
+				syncCore("currency_display_enabled", map[bool]string{true: "true", false: "false"}[strings.EqualFold(v, "CNY")])
+			}
+		}
+		if rel, ok := req["relay"].(map[string]any); ok {
+			if v, ok := rel["model_rate_limit_enabled"].(bool); ok {
+				syncCore("model_rate_limit_enabled", map[bool]string{true: "true", false: "false"}[v])
+			}
+			if v, exists := rel["model_rate_limit_rpm"]; exists && v != nil {
+				syncCore("model_rate_limit_rpm", strings.TrimSpace(anyString(v)))
+			}
+			if v, exists := rel["model_rate_limit_tpm"]; exists && v != nil {
+				syncCore("model_rate_limit_tpm", strings.TrimSpace(anyString(v)))
+			}
+		}
+		if _, ok := req["log_cleanup"]; ok {
+			if rawBytes, err := json.Marshal(mergedLogCleanup); err == nil {
+				var parsed LogCleanupSettings
+				if json.Unmarshal(rawBytes, &parsed) == nil {
+					syncCore("log_retention_days", strconv.Itoa(parsed.LogRetentionDays))
+					syncCore("log_row_retention_days", strconv.Itoa(parsed.LogRowRetentionDays))
+					syncCore("error_log_retention_days", strconv.Itoa(parsed.ErrorLogRetentionDays))
+				}
+				syncCore(v1LogCleanupSettingKey, string(rawBytes))
+			}
+		}
+		return writeErr
+	})
+	if err != nil {
+		s.Log().Error("save site settings", "err", err)
+		fail(c, http.StatusInternalServerError, "save site settings failed")
+		return
 	}
 	s.invalidateSettingsCache()
+	if _, logSettings := req["log_cleanup"]; logSettings {
+		s.notifyScheduleChanged()
+	} else if _, siteSettings := req["site"]; siteSettings {
+		s.notifyScheduleChanged()
+	}
 	s.writeAudit(c, "settings_update", "v1_full_settings", "updated full site settings")
 	c.JSON(http.StatusOK, s.buildFullSettingsPayload())
 }

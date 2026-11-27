@@ -7,6 +7,7 @@ import { useThemeStore } from './theme';
 
 interface SettingsState {
   settings: AllSettings | null;
+  initialSettingsLoaded: boolean;
   fetchSettings: (force?: boolean) => Promise<void>;
   updateStoreSettings: (settings: AllSettings) => void;
 }
@@ -42,6 +43,7 @@ let _fetchingPromise: Promise<void> | null = null;
 
 const useSettingsStore = create<SettingsState>((set, get) => ({
   settings: null,
+  initialSettingsLoaded: false,
   fetchSettings: async (force = false) => {
     if (!force && get().settings) return;
     if (_fetchingPromise) return _fetchingPromise;
@@ -54,13 +56,14 @@ const useSettingsStore = create<SettingsState>((set, get) => ({
         console.error('Failed to fetch settings:', error);
       } finally {
         _fetchingPromise = null;
+        set({ initialSettingsLoaded: true });
       }
     })();
     return _fetchingPromise;
   },
   updateStoreSettings: (settings) => {
     applySiteSettings(settings.site);
-    set({ settings });
+    set({ settings, initialSettingsLoaded: true });
   },
 }));
 

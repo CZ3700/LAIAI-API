@@ -194,7 +194,8 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 	if aborted {
 		return
 	}
-	defer resp.Body.Close()
+	responseBody := wrapCompressedBody(resp)
+	defer responseBody.Close()
 
 	if ch.EnforcesStrictResponse() && !IsLLMContentType(resp.Header.Get("Content-Type")) {
 		r.release(hold.ID)
@@ -205,7 +206,7 @@ func (r *Relay) HandleEmbeddings(c *gin.Context) {
 	if rid := resp.Header.Get("x-request-id"); rid != "" {
 		inv.UpstreamRequestID = rid
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := readResponseBody(responseBody, maxJSONResponseBytes)
 	if err != nil {
 		r.release(hold.ID)
 		relayErr(c, http.StatusBadGateway, "upstream read failed")

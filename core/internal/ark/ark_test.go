@@ -15,6 +15,8 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"go.uber.org/goleak"
 )
 
 func openArkTestDB(t *testing.T) *gorm.DB {
@@ -23,6 +25,12 @@ func openArkTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	ddls := []string{
 		`CREATE TABLE organizations (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT, name TEXT, credit_shards INTEGER NOT NULL DEFAULT 1)`,
 		`CREATE TABLE ledger_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, type TEXT NOT NULL, shard INTEGER NOT NULL DEFAULT 0, posted_balance NUMERIC NOT NULL DEFAULT 0, held_amount NUMERIC NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id, type, shard))`,
@@ -123,6 +131,8 @@ func TestPlanArkWalletAntiPhantomRefund(t *testing.T) {
 }
 
 func TestRateLimitRetryAndMetaFingerprintReuse(t *testing.T) {
+	ignore := goleak.IgnoreCurrent()
+	t.Cleanup(func() { goleak.VerifyNone(t, ignore) })
 	db := openArkTestDB(t)
 	kr := testKeyring(t)
 

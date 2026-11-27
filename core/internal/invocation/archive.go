@@ -93,6 +93,16 @@ func toArchiveRow(inv Invocation, now time.Time) InvocationArchive {
 	}
 }
 
+// WithArchive exposes the same invocation metadata from the hot and archive tables.
+func WithArchive(db *gorm.DB) *gorm.DB {
+	if db.Dialector.Name() == "sqlite" && !db.Migrator().HasTable(&InvocationArchive{}) {
+		return db.Model(&Invocation{})
+	}
+	return db.Model(&Invocation{}).Table("(SELECT " + invocationColumns + " FROM invocations UNION ALL SELECT " + invocationColumns + " FROM invocations_archive) AS invocations")
+}
+
+const invocationColumns = "id, org_id, user_id, api_key_id, request_id, model, modality, channel_id, provider, status, status_code, is_stream, attempts, prompt_tokens, completion_tokens, cost_usd, usage_source, frt_ms, duration_ms, upstream_request_id, error_brief, payload_object_key, finish_reason, protocol, cached_tokens, reasoning_tokens, upstream_error_code, client_ip, user_agent, referer, forward_rule_eid, billing_rule_pid, upstream_cost_ratio, created_at"
+
 // CleanupInvocationContent clears heavy detail text fields on old invocations in small batches
 // while preserving token, billing, model, and status metadata.
 func CleanupInvocationContent(ctx context.Context, db *gorm.DB, cutoff time.Time, batch int) (int64, error) {
@@ -162,32 +172,34 @@ func CleanupExpiredErrorLogs(ctx context.Context, db *gorm.DB, cutoff time.Time,
 
 func deleteExpiredErrorsFromTable(ctx context.Context, db *gorm.DB, table string, model any, cutoff time.Time, batch int) (int64, error) {
 	var total int64
-	for {
-		if ctx.Err() != nil {
-			return total, ctx.Err()
-		}
-		var ids []uint64
-		err := db.WithContext(ctx).Table(table).
-			Where("created_at < ? AND (status_code NOT IN (200, 0) OR (status_code = 0 AND status <> ?))", cutoff, StatusSuccess).
-			Order("id ASC").Limit(batch).Pluck("id", &ids).Error
-		if err != nil {
-			return total, fmt.Errorf("invocation: query expired errors from %s: %w", table, err)
-		}
-		if len(ids) == 0 {
-			return total, nil
-		}
-		res := db.WithContext(ctx).Where("id IN ?", ids).Delete(model)
-		if res.Error != nil {
-			return total, fmt.Errorf("invocation: delete expired errors from %s: %w", table, res.Error)
-		}
-		total += res.RowsAffected
-		if len(ids) < batch {
-			return total, nil
-		}
-		if err := sleepWithContext(ctx, 20*time.Millisecond); err != nil {
-			return total, err
+	for _, predicate := range []string{"status_code NOT IN (200, 0)", "status_code = 0 AND status <> 'success'"} {
+		for {
+			if ctx.Err() != nil {
+				return total, ctx.Err()
+			}
+			var ids []uint64
+			if err := db.WithContext(ctx).Table(table).
+				Where("created_at < ?", cutoff).Where(predicate).
+				Order("created_at ASC, id ASC").Limit(batch).Pluck("id", &ids).Error; err != nil {
+				return total, fmt.Errorf("invocation: query expired errors from %s: %w", table, err)
+			}
+			if len(ids) == 0 {
+				break
+			}
+			res := db.WithContext(ctx).Where("id IN ?", ids).Where(predicate).Delete(model)
+			if res.Error != nil {
+				return total, fmt.Errorf("invocation: delete expired errors from %s: %w", table, res.Error)
+			}
+			total += res.RowsAffected
+			if len(ids) < batch {
+				break
+			}
+			if err := sleepWithContext(ctx, 20*time.Millisecond); err != nil {
+				return total, err
+			}
 		}
 	}
+	return total, nil
 }
 
 // ArchiveOldInvocations moves cold rows older than (rowDays + 2) days from invocations
@@ -202,7 +214,8 @@ func ArchiveOldInvocations(ctx context.Context, db *gorm.DB, loc *time.Location,
 	if _, err := SyncDailyStatsAt(ctx, db, loc, now, false, nil); err != nil {
 		return 0, fmt.Errorf("invocation: pre-archive daily sync: %w", err)
 	}
-	cutoff := now.UTC().AddDate(0, 0, -(rowDays + 2))
+	local := now.In(resolveSyncLoc(loc))
+	cutoff := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, local.Location()).AddDate(0, 0, -(rowDays + 2)).UTC()
 	var total int64
 	for {
 		if ctx.Err() != nil {

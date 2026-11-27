@@ -251,6 +251,10 @@ func (s *Service) prepareCascadeSubmit(
 	resMul := fwd.LookupResMul(targetRes)
 	skipS2 := isDraft || !fwd.IsResEnhanceEnabled(targetRes) || strings.EqualFold(baseRes, targetRes)
 
+	if !skipS2 && fwd.CascadeEngine == "tencent" {
+		return nil, in, errors.New("Tencent MPS cascade enhancement is unavailable")
+	}
+
 	mode, s2Path, s2Model := fwd.ResolveVolcEnhanceTarget(targetRes)
 	var fps int64
 	if f, ok := anyFloat64(firstAnyNonNil(in.Params["fps"], in.Params["framespersecond"])); ok && f > 0 {
@@ -445,6 +449,11 @@ func (s *Service) pollCascadeTask(
 		return
 	}
 
+	if cm.Engine == "tencent" {
+		s.settleFailure(t, "Tencent MPS cascade enhancement is unavailable", false)
+		return
+	}
+
 	// Stage 2: 轮询超分通道
 	timeoutSecs := int64(cmp.Or(cm.S2TimeoutMins, uint64(10))) * 60
 	if cm.S2SubmittedAt > 0 && s.Now().Unix()-cm.S2SubmittedAt > timeoutSecs {
@@ -474,7 +483,7 @@ func (s *Service) pollCascadeTask(
 		return
 	}
 	s2Fwd := buildCascadeS2Forward(cm)
-	ad := s.stage2Adaptor(cm.Engine)
+	ad := volcMediaEnhanceTask{}
 	upReq, err := buildTaskQueryRequest(ctx, ad, s2Ch, s2Fwd, s2Cred, cm.S2TaskID)
 	if err != nil {
 		return
@@ -513,8 +522,13 @@ func (s *Service) submitCascadeStage2(
 	if cm == nil || cm.S1VideoURL == "" {
 		return
 	}
+	if cm.Engine == "tencent" {
+		s.settleFailure(t, "Tencent MPS cascade enhancement is unavailable", false)
+		return
+	}
+
 	s2Model := cmp.Or(cm.S2Model, "vve-sd")
-	s2Ch, err := s.pickStage2Channel(s2Model, cm.Engine)
+	s2Ch, err := s.pickStage2Channel(s2Model)
 	if err != nil {
 		s.settleFailure(t, "cascade stage2 channel unavailable", false)
 		return
@@ -530,7 +544,7 @@ func (s *Service) submitCascadeStage2(
 		return
 	}
 	s2Fwd := buildCascadeS2Forward(cm)
-	ad := s.stage2Adaptor(cm.Engine)
+	ad := volcMediaEnhanceTask{}
 	params := map[string]any{
 		"video_url":  cm.S1VideoURL,
 		"mode":       cmp.Or(cm.EnhanceMode, "standard"),
@@ -574,13 +588,9 @@ func (s *Service) submitCascadeStage2(
 	_ = fwd
 }
 
-func (s *Service) pickStage2Channel(s2Model, engine string) (*relay.Channel, error) {
+func (s *Service) pickStage2Channel(s2Model string) (*relay.Channel, error) {
 	candidates := []string{s2Model}
-	if engine == "tencent" {
-		candidates = append(candidates, "tencent-mps-enhance", "tencent_mps")
-	} else {
-		candidates = append(candidates, "volcengine_media_enhance", "vve-sd", "vve-ft", "vve-pf", "vve-gt")
-	}
+	candidates = append(candidates, "volcengine_media_enhance", "vve-sd", "vve-ft", "vve-pf", "vve-gt")
 	for _, m := range candidates {
 		if m == "" {
 			continue
@@ -590,11 +600,7 @@ func (s *Service) pickStage2Channel(s2Model, engine string) (*relay.Channel, err
 		}
 	}
 	var fallback relay.Channel
-	providerFilter := "volcengine_media_enhance"
-	if engine == "tencent" {
-		providerFilter = "tencent_mps"
-	}
-	if err := s.DB.Where("provider = ? AND status = 1 AND owner_org_id = 0", providerFilter).
+	if err := s.DB.Where("provider = ? AND status = 1 AND owner_org_id = 0", "volcengine_media_enhance").
 		Order("priority DESC, id ASC").First(&fallback).Error; err == nil {
 		return &fallback, nil
 	}
@@ -602,25 +608,12 @@ func (s *Service) pickStage2Channel(s2Model, engine string) (*relay.Channel, err
 }
 
 func buildCascadeS2Forward(cm *cascadeTaskMeta) *forward.ResolvedForward {
-	if cm.Engine == "tencent" {
-		return &forward.ResolvedForward{
-			TargetType:   "volcengine_media_enhance",
-			UpstreamPath: cmp.Or(cm.S2UpstreamPath, "/"),
-			PollPath:     "/",
-			AuthType:     forward.AuthBearer,
-		}
-	}
 	return &forward.ResolvedForward{
 		TargetType:   "volcengine_media_enhance",
 		UpstreamPath: cmp.Or(cm.S2UpstreamPath, "/api/v1/tools/enhance-video"),
 		PollPath:     "/api/v1/tasks/${task_id}",
 		AuthType:     forward.AuthBearer,
 	}
-}
-
-func (s *Service) stage2Adaptor(engine string) Adaptor {
-	_ = engine
-	return volcMediaEnhanceTask{}
 }
 
 func (s *Service) resolveChannelCredential(ch *relay.Channel, credID uint64) (string, bool) {

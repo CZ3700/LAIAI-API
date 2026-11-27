@@ -370,7 +370,7 @@ func renderGeminiPart(p geminiPart, text, reasoning *strings.Builder) {
 }
 
 func (geminiAdapter) pipeJSON(c *gin.Context, body io.Reader) (usage, int, error) {
-	raw, err := io.ReadAll(body)
+	raw, err := readResponseBody(body, maxJSONResponseBytes)
 	if err != nil {
 		return usage{}, 0, fmt.Errorf("%w: %v", errStreamReadFail, err)
 	}

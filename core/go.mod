@@ -12,6 +12,7 @@ require (
 	github.com/pkoukk/tiktoken-go-loader v0.0.2
 	github.com/redis/go-redis/v9 v9.7.3
 	github.com/shopspring/decimal v1.4.0
+	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sync v0.25.0
 	golang.org/x/time v0.15.0

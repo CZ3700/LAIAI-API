@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"go.uber.org/goleak"
 )
 
 var testShutdownBudgets = shutdownBudgets{total: 2 * time.Second, http: 50 * time.Millisecond, recorder: 100 * time.Millisecond}
@@ -34,6 +36,7 @@ func await(t *testing.T, c <-chan struct{}) {
 }
 
 func TestShutdownWaitsForCompleteJobAndHandlerBeforeRecorder(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	jobs := newMainJobs()
 	requests := newDrainTracker()
 	requestCtx, cancelRequests := context.WithCancel(context.Background())

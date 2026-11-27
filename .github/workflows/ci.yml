@@ -38,6 +38,10 @@ jobs:
         env:
           GOPROXY: https://proxy.golang.org,direct
 
+      - name: Go race detector
+        if: ${{ !cancelled() }}
+        run: go test -tags=sonic -race ./core/... ./relay/...
+
   web:
     runs-on: ubuntu-latest
     steps:

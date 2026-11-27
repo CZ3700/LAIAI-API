@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -168,8 +167,8 @@ func (r *Relay) fetchModelsWithOwners(ctx context.Context, cl *http.Client, base
 	if err != nil {
 		return nil, nil, "", 0, fmt.Errorf("unreachable")
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	reader := wrapCompressedBody(resp)
+	defer reader.Close()
 	gateway = strings.TrimSpace(resp.Header.Get("Server"))
 	if via := resp.Header.Get("Via"); via != "" {
 		gateway = strings.TrimSpace(gateway + " " + via)
@@ -179,6 +178,10 @@ func (r *Relay) fetchModelsWithOwners(ctx context.Context, cl *http.Client, base
 	}
 	if !IsLLMContentType(resp.Header.Get("Content-Type")) {
 		return nil, nil, gateway, resp.StatusCode, fmt.Errorf("non-JSON (wrong path?)")
+	}
+	body, err := readResponseBody(reader, 1<<20)
+	if err != nil {
+		return nil, nil, gateway, resp.StatusCode, err
 	}
 	models, owners, perr := parseModelListWithOwners(family, body)
 	if perr != nil {

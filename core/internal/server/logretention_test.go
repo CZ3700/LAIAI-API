@@ -3,110 +3,22 @@ package server
 import (
 	"context"
 	"testing"
-
-	"gorm.io/gorm"
 )
 
-// 旧日志清理：按 ext_settings 保留期删旧留新；调用日志(DATETIME) 与 审计日志(unix ms) 各自独立。
-func TestRunLogRetention(t *testing.T) {
-	srv, db := setupRelayServer(t)
-	mustExecLogSchema(t, db) // 0139 起保留清理覆盖视频/访问日志族，测试库需同构表
-	db.Exec(`INSERT INTO invocations (org_id,api_key_id,request_id,model,status,created_at) VALUES
-		(1,1,'old1','m','success','2000-01-01 00:00:00'),
-		(1,1,'new1','m','success', CURRENT_TIMESTAMP)`)
-	db.Exec(`INSERT INTO audit_logs (actor,action,target,detail,ip,created_at) VALUES
-		('a','old','','d','', 1000),
-		('a','new','','d','', 9000000000000000)`)
-
-	// 未配置（默认）→ 不删任何（invRetentionDefault=0，audit 默认 0）
-	inv, aud, err := srv.srv.RunLogRetention(context.Background())
-	if err != nil || inv != 0 || aud != 0 {
-		t.Fatalf("default retention deleted inv=%d aud=%d err=%v, want 0/0", inv, aud, err)
-	}
-
-	// 配置 7 天保留 → 删两条旧记录，留两条新记录
-	db.Exec(`INSERT INTO ext_settings (name,value) VALUES ('log_retention_days','7'),('audit_log_retention_days','7')`)
-	inv, aud, err = srv.srv.RunLogRetention(context.Background())
-	if err != nil || inv != 1 || aud != 1 {
-		t.Fatalf("retention deleted inv=%d aud=%d err=%v, want 1/1", inv, aud, err)
-	}
-	var invLeft, auditLeft int64
-	db.Raw("SELECT COUNT(*) FROM invocations").Scan(&invLeft)
-	db.Raw("SELECT COUNT(*) FROM audit_logs").Scan(&auditLeft)
-	if invLeft != 1 || auditLeft != 1 {
-		t.Fatalf("after purge inv=%d audit=%d, want 1/1 (recent kept)", invLeft, auditLeft)
-	}
-	// 幂等：再跑一次旧记录已无 → 删 0
-	inv, aud, _ = srv.srv.RunLogRetention(context.Background())
-	if inv != 0 || aud != 0 {
-		t.Fatalf("second run deleted inv=%d aud=%d, want 0/0", inv, aud)
-	}
-}
-
-// 任务表保留期清理（默认 30 天）：只删已终态且 finish_at 早于保留期的任务，queued 任务永不删。
-func TestRunLogRetentionTasksTable(t *testing.T) {
-	srv, db := setupRelayServer(t)
-	if err := db.Exec(`INSERT INTO tasks (task_id, org_id, api_key_id, model, channel_id, provider, status, hold_id, finished_at) VALUES
-		('t-old-ok', 1, 1, 'm', 1, 'openai', 'succeeded', 1, '2000-01-01 00:00:00'),
-		('t-old-fail', 1, 1, 'm', 1, 'openai', 'failed', 2, '2000-01-01 00:00:00'),
-		('t-old-queued', 1, 1, 'm', 1, 'openai', 'queued', 3, '2000-01-01 00:00:00'),
-		('t-new-ok', 1, 1, 'm', 1, 'openai', 'succeeded', 4, CURRENT_TIMESTAMP)`).Error; err != nil {
-		t.Fatalf("insert tasks: %v", err)
-	}
-
-	db.Exec(`INSERT INTO ext_settings (name,value) VALUES ('task_log_retention_days','7')`)
-	if _, _, err := srv.srv.RunLogRetention(context.Background()); err != nil {
+func TestLogContentRetentionPreservesInvocationRow(t *testing.T) {
+	fixture, db := setupRelayServer(t)
+	if err := db.Exec("INSERT INTO invocations (org_id, api_key_id, request_id, model, status, created_at) VALUES (1, 1, 'retained', 'm', 'success', '2000-01-01 00:00:00')").Error; err != nil {
 		t.Fatal(err)
 	}
-	var oldGone int64
-	db.Raw("SELECT COUNT(*) FROM tasks WHERE task_id IN ('t-old-ok','t-old-fail')").Scan(&oldGone)
-	if oldGone != 0 {
-		t.Fatalf("old terminal tasks survived: %d", oldGone)
+	if _, err := fixture.srv.CleanupLogContent(context.Background(), 7); err != nil {
+		t.Fatal(err)
 	}
-	var kept int64
-	db.Raw("SELECT COUNT(*) FROM tasks WHERE task_id IN ('t-old-queued','t-new-ok')").Scan(&kept)
-	if kept != 2 {
-		t.Fatalf("queued/recent tasks kept = %d, want 2", kept)
+	var n int64
+	if err := db.Raw("SELECT COUNT(*) FROM invocations WHERE request_id = 'retained'").Scan(&n).Error; err != nil || n != 1 {
+		t.Fatalf("retained invocation count = %d, err = %v", n, err)
 	}
 }
 
-func mustExecLogSchema(t *testing.T, db *gorm.DB) {
-	t.Helper()
-	if err := db.Exec(`CREATE TABLE IF NOT EXISTS tasks (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		task_id TEXT,
-		org_id INTEGER DEFAULT 1,
-		model TEXT DEFAULT '',
-		status TEXT DEFAULT 'queued',
-		finished_at DATETIME
-	)`).Error; err != nil {
-		t.Fatalf("schema exec: %v", err)
-	}
-}
-
-// log_retention_days 空 → 回退到启动期 env 默认（invRetentionDefault）。
-func TestLogRetentionEnvFallback(t *testing.T) {
-	srv, db := setupRelayServer(t)
-	mustExecLogSchema(t, db)
-	srv.srv.invRetentionDefault = 7 // 模拟 env INVOCATION_RETENTION_DAYS=7
-	db.Exec(`INSERT INTO invocations (org_id,api_key_id,request_id,model,status,created_at) VALUES
-		(1,1,'old1','m','success','2000-01-01 00:00:00')`)
-	// log_retention_days 未配置（默认空）→ 用回退默认 7 → 删旧
-	inv, _, err := srv.srv.RunLogRetention(context.Background())
-	if err != nil || inv != 1 {
-		t.Fatalf("env-fallback retention inv=%d err=%v, want 1", inv, err)
-	}
-	// 显式设 0 覆盖 env → 关闭清理
-	db.Exec(`INSERT INTO invocations (org_id,api_key_id,request_id,model,status,created_at) VALUES
-		(1,1,'old2','m','success','2000-01-01 00:00:00')`)
-	db.Exec(`INSERT INTO ext_settings (name,value) VALUES ('log_retention_days','0')`)
-	inv, _, _ = srv.srv.RunLogRetention(context.Background())
-	if inv != 0 {
-		t.Fatalf("explicit 0 should disable cleanup, got inv=%d", inv)
-	}
-}
-
-// 日志统计一览：总行数 + 最旧 + 生效保留期。
 func TestAdminLogStats(t *testing.T) {
 	srv, db := setupRelayServer(t)
 	db.Exec(`INSERT INTO invocations (org_id,api_key_id,request_id,model,status,created_at) VALUES

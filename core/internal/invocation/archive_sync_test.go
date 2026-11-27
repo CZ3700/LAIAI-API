@@ -29,7 +29,7 @@ func TestDailyStatsSyncContentErrorAndArchivePipeline(t *testing.T) {
 			Status: StatusUpstreamError, StatusCode: http.StatusBadGateway,
 			PromptTokens: 10, CompletionTokens: 0, CostUSD: decimal.Zero,
 			ErrorBrief: "bad gateway",
-			CreatedAt: now.AddDate(0, 0, -40),
+			CreatedAt:  now.AddDate(0, 0, -40),
 		},
 		{
 			OrgID: 1, APIKeyID: 10, RequestID: "recent-ok", Model: "gpt-4o",
@@ -78,4 +78,19 @@ func TestDailyStatsSyncContentErrorAndArchivePipeline(t *testing.T) {
 	if err != nil || hotDel != 0 || archDel != 1 {
 		t.Fatalf("CleanupExpiredErrorLogs = (hot=%d, arch=%d, err=%v), want 0/1", hotDel, archDel, err)
 	}
+	day := seed[0].CreatedAt.In(loc).Format("2006-01-02")
+	if _, err := ManualSyncUsageStats(ctx, db, loc, now, day, day); err != nil {
+		t.Fatal(err)
+	}
+	var stat UsageDailyStat
+	if err := db.Where("stat_date = ? AND model = ?", day, "gpt-4o").Take(&stat).Error; err != nil || stat.RequestCount != 2 {
+		t.Fatalf("retained rollup count = %d, err = %v", stat.RequestCount, err)
+	}
+	logs, err := QueryLogs(ctx, db, OrganizationQueryScope(1), QueryFilter{
+		Since: seed[0].CreatedAt.Add(-time.Hour), Until: seed[0].CreatedAt.Add(time.Hour), Timezone: "UTC",
+	}, 1, 20)
+	if err != nil || len(logs.Items) != 1 || logs.Items[0].RequestID != "old-ok" {
+		t.Fatalf("archived log query = %+v, err = %v", logs, err)
+	}
+
 }

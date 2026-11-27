@@ -131,7 +131,7 @@ type Relay struct {
 	Forward      *forward.Resolver                       // 数据驱动转发规则解析器（15s）
 	invRedis     *redis.Client                           // 跨实例失效 pub/sub（nil = 单实例 TTL 兜底）
 	invStop      chan struct{}
-	aff          affinityStore                           // Prompt-Cache / 会话粘性路由存储
+	aff          affinityStore // Prompt-Cache / 会话粘性路由存储
 }
 
 // ratioKey：倍率缓存键（org × model 的最终倍率，含一层+二层合并）。
@@ -1173,6 +1173,11 @@ func (r *Relay) serveChatModel(c *gin.Context, key *identity.APIKey, inv *invoca
 		}
 		lastStatus, lastBody = resp.StatusCode, errBody
 		resp = nil
+		if origReqCtx.Err() != nil {
+			r.release(hold.ID)
+			finish(invocation.StatusUpstreamError, 499, "client disconnected")
+			return chatDone
+		}
 		if !disp.Retryable {
 			break // 400/408/504/524 等：重试无意义，直接透传
 		}

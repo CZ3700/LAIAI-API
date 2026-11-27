@@ -7,7 +7,6 @@ import (
 	"math"
 	"net/http"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -512,8 +511,11 @@ func SyncAllAccounts(
 	if err := db.WithContext(ctx).Order("id ASC").Find(&accounts).Error; err != nil {
 		return summary, err
 	}
-	nonce := strconv.FormatInt(time.Now().UnixNano(), 10)
-	billPeriod := time.Now().In(cstZone).Format("2006-01")
+	now := time.Now()
+	nonce := strconv.FormatInt(now.UnixNano(), 10)
+	local := now.In(cstZone)
+	month := time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, local.Location())
+	billPeriods := []string{month.AddDate(0, -1, 0).Format("2006-01"), month.Format("2006-01")}
 
 	for _, acc := range accounts {
 		var bindings []EndpointBinding
@@ -556,29 +558,64 @@ func SyncAllAccounts(
 			if strings.TrimSpace(apiKey) == "" {
 				continue
 			}
-			remoteTasks, perr := arkClient.PullEndpointVideoTasks(ctx, openAIOverride, apiKey, b.EndpointID, 1, 50)
-			if perr != nil {
-				allPullOK = false
-				continue
+			const pageSize = 50
+			bindingOK := true
+			seen := make(map[string]struct{})
+			for page := 1; ; page++ {
+				remoteTasks, err := arkClient.PullEndpointVideoTasks(ctx, openAIOverride, apiKey, b.EndpointID, page, pageSize)
+				if err != nil {
+					bindingOK = false
+					break
+				}
+				fresh := 0
+				for _, rt := range remoteTasks {
+					if _, visited := seen[rt.TaskID]; visited || rt.TaskID == "" {
+						continue
+					}
+					seen[rt.TaskID] = struct{}{}
+					fresh++
+					if err := upsertPulledVideoTask(db.WithContext(ctx), acc.ID, b.EndpointID, rt); err != nil {
+						bindingOK = false
+					} else {
+						summary.TasksUpserted++
+					}
+				}
+				if len(remoteTasks) < pageSize {
+					break
+				}
+				if fresh == 0 {
+					bindingOK = false
+					break
+				}
 			}
-			summary.BindingsSynced++
-			for _, rt := range remoteTasks {
-				if rt.TaskID == "" {
-					continue
-				}
-				if uerr := upsertPulledVideoTask(db.WithContext(ctx), acc.ID, b.EndpointID, rt); uerr == nil {
-					summary.TasksUpserted++
-				}
+			if bindingOK {
+				summary.BindingsSynced++
+			} else {
+				allPullOK = false
 			}
 		}
 
-		// 2. 拉取主账号分账账单做 1:1 精准对账（非 0 或有待核销任务时）
-		if bills, _, berr := arkClient.ListSplitBillDetail(ctx, billPeriod, 100, 0); berr == nil && len(bills) > 0 {
-			_ = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-				n, rerr := ReconcileBillsTx(tx, acc.ID, bills)
-				summary.BillsReconciled += n
-				return rerr
-			})
+		for _, period := range billPeriods {
+			const limit = 100
+			for offset := 0; ; {
+				bills, total, err := arkClient.ListSplitBillDetail(ctx, period, limit, offset)
+				if err != nil || len(bills) == 0 {
+					break
+				}
+				var matched int
+				if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+					var err error
+					matched, err = ReconcileBillsTx(tx, acc.ID, bills)
+					return err
+				}); err != nil {
+					break
+				}
+				summary.BillsReconciled += matched
+				offset += len(bills)
+				if total > 0 && offset >= total || total == 0 && len(bills) < limit {
+					break
+				}
+			}
 		}
 
 		// 如果该账号有接入点拉取失败，跳过入账以免误退款（与 tkeapi 2026-07-27 一致）
@@ -678,7 +715,5 @@ func upsertPulledVideoTask(db *gorm.DB, accountID uint64, endpointID string, rt 
 		SyncedAt:    time.Now().UTC(),
 		RawResponse: cmp.Or(rt.RawJSON, "{}"),
 	}
-	// 同 created_time 升序排布保证确定性
-	sort.Slice([]int{}, func(i, j int) bool { return false })
 	return db.Create(&row).Error
 }

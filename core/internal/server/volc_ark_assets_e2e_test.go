@@ -267,12 +267,31 @@ func TestAssetConvertAndUpstreamRelayE2E(t *testing.T) {
 	}
 	_ = json.Unmarshal(wUarBind.Body.Bytes(), &uarResp)
 
+	bindingPath := "/v1/plugin/" + uarResp.Data.RID + "/assets?Action="
+	unsupported := doAPIKeyReq(t, f, http.MethodPost, bindingPath+"UnsupportedAction", "Authorization", "Bearer "+apiKeyA, map[string]any{})
+	if unsupported.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported binding action = %d: %s", unsupported.Code, unsupported.Body)
+	}
+	unowned := doAPIKeyReq(t, f, http.MethodPost, bindingPath+"DeleteAsset", "Authorization", "Bearer "+apiKeyA, map[string]any{"Id": "unowned"})
+	if unowned.Code != http.StatusForbidden {
+		t.Fatalf("unowned binding asset delete = %d: %s", unowned.Code, unowned.Body)
+	}
 	// Test direct proxy endpoint POST /v1/plugin/:rid/assets
 	wProxy := doAPIKeyReq(t, f, http.MethodPost, "/v1/plugin/"+uarResp.Data.RID+"/assets?Action=CreateAsset&Version=2024-01-01", "Authorization", "Bearer "+apiKeyA, map[string]any{
 		"URL": mockSrv.URL + "/media/hero.png", "AssetType": "Image",
 	})
 	if wProxy.Code != http.StatusOK || !strings.Contains(wProxy.Body.String(), "asset-e2e-") {
 		t.Fatalf("upstream_asset_proxy expected 200 with asset ID, got %d %s", wProxy.Code, wProxy.Body.String())
+	}
+
+	var createdAsset map[string]any
+	if err := json.Unmarshal(wProxy.Body.Bytes(), &createdAsset); err != nil {
+		t.Fatal(err)
+	}
+	otherOrgDelete := doAPIKeyReq(t, f, http.MethodPost, bindingPath+"DeleteAsset", "Authorization", "Bearer "+apiKeyB,
+		map[string]any{"Id": ark.ExtractResultField(createdAsset, "Id")})
+	if otherOrgDelete.Code != http.StatusForbidden {
+		t.Fatalf("cross-organization binding asset delete = %d: %s", otherOrgDelete.Code, otherOrgDelete.Body)
 	}
 
 	// Generate forward rule from binding

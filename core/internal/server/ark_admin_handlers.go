@@ -99,7 +99,8 @@ func (s *Server) v1ArkAccountsCreate(c *gin.Context) {
 		Remark:        strings.TrimSpace(req.Remark),
 	}
 	if err := s.db.WithContext(c.Request.Context()).Create(&row).Error; err != nil {
-		fail(c, http.StatusBadRequest, "create ark account failed: "+err.Error())
+		s.Log().Error("create ark account failed", "err", err)
+		fail(c, http.StatusBadRequest, "create ark account failed")
 		return
 	}
 	s.writeAudit(c, "ark_account_create", strconv.FormatUint(row.ID, 10), row.Name)
@@ -204,7 +205,8 @@ func (s *Server) v1ArkAccountsBalance(c *gin.Context) {
 	}, s.arkHTTPClient)
 	info, err := cl.QueryBalanceDetail(c.Request.Context())
 	if err != nil {
-		fail(c, http.StatusBadGateway, err.Error())
+		s.Log().Warn("Ark upstream request failed")
+		fail(c, http.StatusBadGateway, "Ark upstream request failed")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"configured": true, "balance": info, "currency": "CNY"})
@@ -267,7 +269,8 @@ func (s *Server) v1ArkBindingsCreate(c *gin.Context) {
 		Remark:     strings.TrimSpace(req.Remark),
 	}
 	if err := s.db.WithContext(c.Request.Context()).Create(&row).Error; err != nil {
-		fail(c, http.StatusBadRequest, "create endpoint binding failed: "+err.Error())
+		s.Log().Error("create endpoint binding failed", "err", err)
+		fail(c, http.StatusBadRequest, "create endpoint binding failed")
 		return
 	}
 	s.writeAudit(c, "ark_binding_create", strconv.FormatUint(row.ID, 10), row.EndpointID)
@@ -432,7 +435,8 @@ func (s *Server) v1ArkTasksList(c *gin.Context) {
 func (s *Server) v1ArkMonitorSync(c *gin.Context) {
 	sum, err := s.SyncArkMonitor(c.Request.Context())
 	if err != nil {
-		fail(c, http.StatusInternalServerError, "ark monitor sync failed: "+err.Error())
+		s.Log().Error("ark monitor sync failed", "err", err)
+		fail(c, http.StatusInternalServerError, "ark monitor sync failed")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "summary": sum})
@@ -509,7 +513,8 @@ func (s *Server) v1UpstreamAssetBindingsCreate(c *gin.Context) {
 		Remark:          strings.TrimSpace(req.Remark),
 	}
 	if err := s.db.WithContext(c.Request.Context()).Create(&row).Error; err != nil {
-		fail(c, http.StatusBadRequest, "create upstream asset binding failed: "+err.Error())
+		s.Log().Error("create upstream asset binding failed", "err", err)
+		fail(c, http.StatusBadRequest, "create upstream asset binding failed")
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": row})
@@ -765,7 +770,8 @@ func (s *Server) v1AssetsAdminModerationResult(c *gin.Context) {
 	}
 	raw, err := cl.GetModerationResult(c.Request.Context(), req.ID, cmp.Or(req.Type, "asset_id"))
 	if err != nil {
-		fail(c, http.StatusBadGateway, err.Error())
+		s.Log().Warn("Ark upstream request failed")
+		fail(c, http.StatusBadGateway, "Ark upstream request failed")
 		return
 	}
 	var parsed any

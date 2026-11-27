@@ -289,25 +289,9 @@ func (s *Server) upstreamHTTPClient() *http.Client {
 	if s.db != nil {
 		allowPrivate = relay.AllowPrivateFromDB(s.db)
 	}
-	// Honors outbound HTTP_PROXY/HTTPS_PROXY when configured; otherwise enforces direct SSRF dial guard.
-	transport := &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
-		TLSHandshakeTimeout: 10 * time.Second,
-	}
+	// The dial guard must see the resolved target, including on redirects.
 	cl := relay.NewGuardedClient(20*time.Second, allowPrivate)
-	if baseTr, ok := cl.Transport.(*http.Transport); ok && baseTr != nil {
-		hasEnvProxy := false
-		if req, err := http.NewRequest(http.MethodGet, "https://example.com", nil); err == nil {
-			if p, perr := http.ProxyFromEnvironment(req); perr == nil && p != nil {
-				hasEnvProxy = true
-			}
-		}
-		if hasEnvProxy {
-			cl.Transport = transport
-		} else {
-			baseTr.TLSHandshakeTimeout = 10 * time.Second
-		}
-	}
+	cl.Transport.(*http.Transport).TLSHandshakeTimeout = 10 * time.Second
 	origCheck := cl.CheckRedirect
 	cl.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if err := s.validateUpstreamTargetURL(req.URL.String()); err != nil {

@@ -180,7 +180,8 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 	if aborted {
 		return
 	}
-	defer resp.Body.Close()
+	responseBody := wrapCompressedBody(resp)
+	defer responseBody.Close()
 
 	if ch.EnforcesStrictResponse() && !IsLLMContentType(resp.Header.Get("Content-Type")) {
 		r.release(hold.ID)
@@ -191,7 +192,7 @@ func (r *Relay) imageMultipartHandler(c *gin.Context, suffix string) {
 	if rid := resp.Header.Get("x-request-id"); rid != "" {
 		inv.UpstreamRequestID = rid
 	}
-	raw, rerr := io.ReadAll(resp.Body)
+	raw, rerr := readResponseBody(responseBody, maxJSONResponseBytes)
 	if rerr != nil {
 		r.release(hold.ID)
 		relayErr(c, http.StatusBadGateway, "upstream read failed")

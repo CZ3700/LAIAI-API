@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -39,12 +38,6 @@ func (s *Server) adminLogStats(c *gin.Context) {
 	})
 }
 
-// 旧日志清理（gap P2-C，运营可热配）。两类日志各自独立保留期：
-//   - log_retention_days       → invocations（调用日志，created_at 是 DATETIME）
-//   - audit_log_retention_days → audit_logs（审计日志，created_at 是 unix 毫秒 BIGINT）
-// ext_settings 优先（admin 可不重启热改）；invocations 未配置时回退到启动期 env 默认
-// （向后兼容旧的 INVOCATION_RETENTION_DAYS）。各自 <=0 表示「永久保留，不清理」。
-
 // retentionDaysSetting：读某保留期设置，非法/空 → 回退 fallback。
 func (s *Server) retentionDaysSetting(key string, fallback int) int {
 	if v := s.getSetting(key); v != "" {
@@ -53,39 +46,6 @@ func (s *Server) retentionDaysSetting(key string, fallback int) int {
 		}
 	}
 	return fallback
-}
-
-// RunLogRetention：按运营可配的保留期清理旧日志。后台维护循环每 tick 调一次（事务外，无死锁风险）。
-// 批量删除避免长事务锁表。返回各自删除行数；任一类出错即返回（另一类已删的计数保留）。
-func (s *Server) RunLogRetention(ctx context.Context) (invDeleted, auditDeleted int64, err error) {
-	if d := s.retentionDaysSetting("log_retention_days", s.invRetentionDefault); d > 0 {
-		cutoff := s.now().UTC().AddDate(0, 0, -d)
-		invDeleted, err = invocation.PurgeOlderThan(s.db.WithContext(ctx), cutoff, 1000)
-		if err != nil {
-			return invDeleted, auditDeleted, err
-		}
-	}
-	if d := s.retentionDaysSetting("audit_log_retention_days", 0); d > 0 {
-		cutoffMs := s.now().UTC().AddDate(0, 0, -d).UnixMilli()
-		auditDeleted, err = purgeAuditLogsOlderThan(s.db.WithContext(ctx), cutoffMs, 1000)
-		if err != nil {
-			return invDeleted, auditDeleted, err
-		}
-	}
-	// 终态 task 行按任务日志保留期清理（仅清理已结束任务）。
-	if d := s.retentionDaysSetting("task_log_retention_days", 30); d > 0 {
-		cutoff := s.now().UTC().AddDate(0, 0, -d)
-		for _, status := range []string{task.StatusSucceeded, task.StatusFailed, task.StatusCancelled} {
-			n, err := purgeRowsOlderThan(s.db.WithContext(ctx), "tasks", "id", "finished_at", cutoff, 1000, status)
-			if err != nil {
-				return invDeleted, auditDeleted, err
-			}
-			if n > 0 {
-				s.Log().Info("log retention purged", "table", "tasks", "status", status, "rows", n)
-			}
-		}
-	}
-	return invDeleted, auditDeleted, nil
 }
 
 // purgeRowsOlderThan：批量删除某表时间列早于 cutoff 的行（先选 PK 再删，

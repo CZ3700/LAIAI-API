@@ -14,12 +14,15 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/laiai/laiai-next/core/internal/crypto"
 	"github.com/laiai/laiai-next/core/internal/forward"
+	"github.com/laiai/laiai-next/core/internal/relay"
 	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -229,12 +232,17 @@ func contentRangeTotal(cr string) string {
 
 // FetchMetaFingerprint 通过 Range=bytes=0-0 获取对象元数据指纹（SHA256(bareURL|len|ETag|Last-Modified)）。
 // 仅对公网安全 URL（或显式 allowPrivate 场景）发探测，失败时返回空串降级到 L2 URL 匹配。
+var publicMediaProbeClient = relay.NewGuardedMediaClient(10*time.Second, false)
+
 func FetchMetaFingerprint(ctx context.Context, httpClient *http.Client, rawURL string, allowPrivate bool) string {
 	if !allowPrivate && !isSafePublicMediaURL(rawURL) {
 		return ""
 	}
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
+		httpClient = publicMediaProbeClient
+		if allowPrivate {
+			httpClient = relay.NewGuardedMediaClient(10*time.Second, true)
+		}
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -282,8 +290,9 @@ func FetchMetaFingerprint(ctx context.Context, httpClient *http.Client, rawURL s
 // LookupCachedConvertedAsset 按 tkeapi L1/L2 规则查找缓存的方舟素材 ID：
 // 1. 若 metaFP 非空且命中则返回；若 metaFP 非空但未命中，**跳过** URL 匹配（防止同 URL 内容被覆盖误复用）；
 // 2. 仅当 metaFP 为空时降级按 file_url 精确匹配。
-func LookupCachedConvertedAsset(db *gorm.DB, rawURL, pluginNS, source, metaFP string) string {
+func LookupCachedConvertedAsset(db *gorm.DB, orgID uint64, rawURL, pluginNS, source, metaFP string) string {
 	var row PluginAsset
+	db = db.Where("org_id = ?", orgID)
 	if metaFP != "" {
 		if err := db.Select("asset_id").
 			Where("meta_fingerprint = ? AND source = ? AND plugin_ns = ? AND asset_id <> ''", metaFP, source, pluginNS).
@@ -451,9 +460,34 @@ func loadExtSettingMap(db *gorm.DB, prefix string) map[string]string {
 	return out
 }
 
-func saveExtSetting(db *gorm.DB, name, value string) {
-	_ = db.Table("ext_settings").Where("name = ?", name).Delete(map[string]any{}).Error
-	_ = db.Table("ext_settings").Create(map[string]any{"name": name, "value": value}).Error
+func saveExtSetting(db *gorm.DB, name, value string) error {
+	return db.Table("ext_settings").Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "name"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value"}),
+	}).Create(map[string]any{"name": name, "value": value}).Error
+}
+
+type conversionGroup struct {
+	mu sync.Mutex
+	id string
+}
+
+// resolve returns the current group, creating a replacement if it is missing or stale.
+func (g *conversionGroup) resolve(ctx context.Context, stale string, create func(context.Context) (string, error)) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.id != "" && g.id != stale {
+		return g.id, nil
+	}
+	groupID, err := create(ctx)
+	if err != nil {
+		return "", err
+	}
+	if groupID == "" {
+		return "", errors.New("asset group response missing ID")
+	}
+	g.id = groupID
+	return groupID, nil
 }
 
 func decryptIfSealed(keyring *crypto.Keyring, raw string) (string, error) {
@@ -500,24 +534,30 @@ func convertViaPluginConfig(
 		client.rateRetryScale = opts.PollInterval
 	}
 
-	groupID := clientCfg.GroupID
-	if groupID == "" {
-		gid, gerr := client.CreateAssetGroup(ctx, "laiai_auto_generated_group", "由 laiai 系统自动创建的转换素材专用群组")
-		if gerr != nil {
-			return nil, fmt.Errorf("自动创建素材组失败: %w", gerr)
+	group := conversionGroup{id: clientCfg.GroupID}
+	createGroup := func(ctx context.Context) (string, error) {
+		gid, err := client.CreateAssetGroup(ctx, "laiai_auto_generated_group", "laiai conversion assets")
+		if err != nil {
+			return "", err
 		}
-		groupID = gid
-		saveExtSetting(db, "plugin_cfg:"+ns+":volc_group_id", gid)
+		if gid == "" {
+			return "", errors.New("asset group response missing ID")
+		}
+		return gid, saveExtSetting(db.WithContext(ctx), "plugin_cfg:"+ns+":volc_group_id", gid)
 	}
 
 	return convertTargetsConcurrent(ctx, db, httpClient, opts, targets, body, ns, SourceRelayConvert, func(gctx context.Context, tgt MediaConvertTarget) (string, error) {
+		groupID, err := group.resolve(gctx, "", createGroup)
+		if err != nil {
+			return "", err
+		}
 		aid, cerr := client.CreateAsset(gctx, groupID, tgt.URL, tgt.AssetType, "", opts.AssetModeration)
 		if cerr != nil && IsGroupNotFoundErr(cerr.Error()) {
-			if newGID, gerr := client.CreateAssetGroup(gctx, "laiai_auto_generated_group", "自动重建素材组"); gerr == nil {
-				groupID = newGID
-				saveExtSetting(db, "plugin_cfg:"+ns+":volc_group_id", newGID)
-				aid, cerr = client.CreateAsset(gctx, newGID, tgt.URL, tgt.AssetType, "", opts.AssetModeration)
+			newGID, err := group.resolve(gctx, groupID, createGroup)
+			if err != nil {
+				return "", err
 			}
+			aid, cerr = client.CreateAsset(gctx, newGID, tgt.URL, tgt.AssetType, "", opts.AssetModeration)
 		}
 		if cerr != nil {
 			return "", cerr
@@ -628,43 +668,42 @@ func buildBindingCreateAssetFn(
 		}
 	}
 
-	if strings.TrimSpace(binding.GroupID) == "" {
-		res, cerr := callUpstreamAssetAction(ctx, httpClient, proxyBase, bearerKey, "CreateAssetGroup", map[string]any{
-			"Name":        fmt.Sprintf("laiai_uar_%d", binding.ID),
-			"Description": "火山视频转素材ID自动建组",
-			"GroupType":   "AIGC",
+	group := conversionGroup{id: strings.TrimSpace(binding.GroupID)}
+	bindingID := binding.ID
+	createGroup := func(ctx context.Context) (string, error) {
+		res, err := callUpstreamAssetAction(ctx, httpClient, proxyBase, bearerKey, "CreateAssetGroup", map[string]any{
+			"Name":      fmt.Sprintf("laiai_uar_%d", bindingID),
+			"GroupType": "AIGC",
 		})
-		if cerr != nil {
-			return nil, fmt.Errorf("创建上游素材组失败: %w", cerr)
+		if err != nil {
+			return "", err
 		}
 		gid := extractResultID(res)
 		if gid == "" {
-			return nil, errors.New("创建上游素材组响应缺少 Id")
+			return "", errors.New("asset group response missing ID")
 		}
-		binding.GroupID = gid
-		_ = db.Model(&UpstreamAssetBinding{}).Where("id = ?", binding.ID).Update("group_id", gid).Error
+		return gid, db.WithContext(ctx).Model(&UpstreamAssetBinding{}).Where("id = ?", bindingID).Update("group_id", gid).Error
 	}
 
 	return func(gctx context.Context, tgt MediaConvertTarget) (string, error) {
+		groupID, err := group.resolve(gctx, "", createGroup)
+		if err != nil {
+			return "", err
+		}
 		createReq := map[string]any{
 			"URL":       tgt.URL,
 			"AssetType": tgt.AssetType,
 			"Name":      DeriveCreateAssetName(tgt.URL, tgt.AssetType),
-			"GroupId":   binding.GroupID,
+			"GroupId":   groupID,
 		}
 		res, cerr := callUpstreamAssetAction(gctx, httpClient, proxyBase, bearerKey, "CreateAsset", createReq)
 		if cerr != nil && IsGroupNotFoundErr(cerr.Error()) {
-			if gr, gerr := callUpstreamAssetAction(gctx, httpClient, proxyBase, bearerKey, "CreateAssetGroup", map[string]any{
-				"Name":      fmt.Sprintf("laiai_uar_%d", binding.ID),
-				"GroupType": "AIGC",
-			}); gerr == nil {
-				if newGID := extractResultID(gr); newGID != "" {
-					binding.GroupID = newGID
-					_ = db.Model(&UpstreamAssetBinding{}).Where("id = ?", binding.ID).Update("group_id", newGID).Error
-					createReq["GroupId"] = newGID
-					res, cerr = callUpstreamAssetAction(gctx, httpClient, proxyBase, bearerKey, "CreateAsset", createReq)
-				}
+			newGID, err := group.resolve(gctx, groupID, createGroup)
+			if err != nil {
+				return "", err
 			}
+			createReq["GroupId"] = newGID
+			res, cerr = callUpstreamAssetAction(gctx, httpClient, proxyBase, bearerKey, "CreateAsset", createReq)
 		}
 		if cerr != nil {
 			return "", cerr
@@ -711,14 +750,14 @@ func convertTargetsConcurrent(
 	}
 	results := make([]resolvedItem, len(targets))
 	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
 	for i, tgt := range targets {
-		i, tgt := i, tgt
 		g.Go(func() error {
 			if !isHTTPMediaURL(tgt.URL) {
 				return fmt.Errorf("暂不支持非 HTTP(S) 媒体地址转换: %s", tgt.AssetType)
 			}
 			fp := FetchMetaFingerprint(gctx, httpClient, tgt.URL, opts.AllowPrivateFetch)
-			if cachedAID := LookupCachedConvertedAsset(db, tgt.URL, pluginNS, source, fp); cachedAID != "" {
+			if cachedAID := LookupCachedConvertedAsset(db.WithContext(gctx), opts.OrgID, tgt.URL, pluginNS, source, fp); cachedAID != "" {
 				results[i] = resolvedItem{tgt: tgt, assetID: cachedAID, cached: true}
 				return nil
 			}
@@ -726,7 +765,7 @@ func convertTargetsConcurrent(
 			if err != nil {
 				return err
 			}
-			_ = db.Create(&PluginAsset{
+			if err := db.WithContext(gctx).Create(&PluginAsset{
 				OrgID:           opts.OrgID,
 				UserID:          opts.UserID,
 				AssetType:       strings.ToLower(tgt.AssetType),
@@ -739,7 +778,9 @@ func convertTargetsConcurrent(
 				MetaFingerprint: fp,
 				PluginNS:        pluginNS,
 				StorageProvider: "tos",
-			}).Error
+			}).Error; err != nil {
+				return fmt.Errorf("save converted asset: %w", err)
+			}
 			results[i] = resolvedItem{tgt: tgt, assetID: aid, cached: false}
 			return nil
 		})

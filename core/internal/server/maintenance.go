@@ -258,7 +258,14 @@ func (s *Server) CleanupErrorLogs(ctx context.Context, days int) (invHot, invArc
 		return 0, 0, 0, nil
 	}
 	cutoff := s.now().UTC().AddDate(0, 0, -days)
-	invHot, invArch, err = invocation.CleanupExpiredErrorLogs(ctx, s.db, cutoff, 5000)
+	local := s.now().In(s.siteLocation())
+	// Keep the entire rolling synchronization window, including its first day.
+	rollupStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, local.Location()).AddDate(0, 0, -3)
+	invCutoff := cutoff
+	if rollupStart.Before(invCutoff) {
+		invCutoff = rollupStart.UTC()
+	}
+	invHot, invArch, err = invocation.CleanupExpiredErrorLogs(ctx, s.db, invCutoff, 5000)
 	if err != nil {
 		return invHot, invArch, 0, err
 	}
@@ -342,17 +349,20 @@ func (s *Server) RunDailyMaintenance(ctx context.Context) (MaintenanceSummary, b
 	var err error
 	sum.DailyStatsRows, err = s.SyncDailyUsageStats(ctx, true)
 	recordErr("daily_stats_sync", err)
+	statsSynced := err == nil
 
 	cfg := s.LoadLogCleanupSettings()
 
 	sum.ContentCleaned, err = s.CleanupLogContent(ctx, cfg.LogRetentionDays)
 	recordErr("log_content_cleanup", err)
 
-	sum.InvErrorsDeleted, sum.ArchErrorsDeleted, sum.TaskErrorsDeleted, err = s.CleanupErrorLogs(ctx, cfg.ErrorLogRetentionDays)
-	recordErr("error_logs_cleanup", err)
+	if statsSynced {
+		sum.InvErrorsDeleted, sum.ArchErrorsDeleted, sum.TaskErrorsDeleted, err = s.CleanupErrorLogs(ctx, cfg.ErrorLogRetentionDays)
+		recordErr("error_logs_cleanup", err)
 
-	sum.ArchivedRows, err = s.ArchiveOldLogs(ctx, cfg.LogRowRetentionDays)
-	recordErr("log_row_archive", err)
+		sum.ArchivedRows, err = s.ArchiveOldLogs(ctx, cfg.LogRowRetentionDays)
+		recordErr("log_row_archive", err)
+	}
 
 	sum.ArkAssetsDeleted, sum.SyncLogsDeleted, sum.OutboxPurged, err = s.CleanupStorageAndPluginLogs(ctx)
 	recordErr("storage_and_plugin_cleanup", err)

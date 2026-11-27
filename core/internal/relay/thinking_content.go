@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,8 +20,7 @@ type thinkingToContentWriter struct {
 	buf         bytes.Buffer
 	sseStarted  bool
 	pending     bytes.Buffer
-	inThink     bool
-	thinkClosed bool
+	openChoices map[int]bool
 }
 
 func (w *thinkingToContentWriter) Status() int {
@@ -68,12 +68,19 @@ func (w *thinkingToContentWriter) pumpSSE() {
 			return
 		}
 		trimmed := strings.TrimRight(line, "\r\n")
-		data, ok := strings.CutPrefix(trimmed, "data: ")
+		data, ok := strings.CutPrefix(trimmed, "data:")
+		data = strings.TrimPrefix(data, " ")
 		if !ok || data == "" || data == "[DONE]" {
-			if data == "[DONE]" && w.inThink && !w.thinkClosed {
-				w.emitSyntheticContentChunk("</think>\n\n")
-				w.thinkClosed = true
-				w.inThink = false
+			if data == "[DONE]" {
+				indexes := make([]int, 0, len(w.openChoices))
+				for index := range w.openChoices {
+					indexes = append(indexes, index)
+				}
+				slices.Sort(indexes)
+				for _, index := range indexes {
+					w.emitSyntheticContentChunk(index, "</think>\n\n")
+				}
+				clear(w.openChoices)
 			}
 			_, _ = w.ResponseWriter.WriteString(line)
 			continue
@@ -93,11 +100,11 @@ func marshalRawJSON(v any) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
-func (w *thinkingToContentWriter) emitSyntheticContentChunk(text string) {
+func (w *thinkingToContentWriter) emitSyntheticContentChunk(index int, text string) {
 	chunk, _ := marshalRawJSON(map[string]any{
 		"object": "chat.completion.chunk",
 		"choices": []map[string]any{{
-			"index": 0,
+			"index": index,
 			"delta": map[string]any{"content": text},
 		}},
 	})
@@ -114,7 +121,7 @@ func (w *thinkingToContentWriter) transformSSEChunk(data string) string {
 		return data
 	}
 	modified := false
-	for _, rc := range choices {
+	for position, rc := range choices {
 		ch, ok := rc.(map[string]any)
 		if !ok {
 			continue
@@ -142,19 +149,28 @@ func (w *thinkingToContentWriter) transformSSEChunk(data string) string {
 		hasTool := delta != nil && delta["tool_calls"] != nil
 		fin, _ := ch["finish_reason"].(string)
 
+		index := position
+		if number, ok := ch["index"].(float64); ok {
+			index = int(number)
+		}
 		var outText strings.Builder
 		if reasoning != "" {
-			if !w.inThink {
+			if !w.openChoices[index] {
 				outText.WriteString("<think>")
-				w.inThink = true
-				w.thinkClosed = false
+				if w.openChoices == nil {
+					w.openChoices = make(map[int]bool)
+				}
+				w.openChoices[index] = true
 			}
 			outText.WriteString(reasoning)
 		}
-		if (hasContent || hasTool || fin != "") && w.inThink && !w.thinkClosed {
+		if (hasContent || hasTool || fin != "") && w.openChoices[index] {
 			outText.WriteString("</think>\n\n")
-			w.thinkClosed = true
-			w.inThink = false
+			delete(w.openChoices, index)
+			if delta == nil {
+				delta = make(map[string]any)
+				ch["delta"] = delta
+			}
 		}
 		if hasContent {
 			outText.WriteString(content)

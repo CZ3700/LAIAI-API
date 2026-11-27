@@ -120,20 +120,12 @@ func SyncDailyStatsRange(ctx context.Context, db *gorm.DB, loc *time.Location, s
 		return 0, nil
 	}
 
-	earliest, hasMin, err := earliestInvocationTime(ctx, db)
-	if err != nil {
-		return 0, err
-	}
 	var totalUpserted int64
 	for cur := start; cur.Before(end); cur = cur.AddDate(0, 0, 1) {
 		if ctx.Err() != nil {
 			return totalUpserted, ctx.Err()
 		}
 		dayEnd := cur.AddDate(0, 0, 1)
-		// Never overwrite historical stats with zero if raw hot rows for that day were already archived.
-		if !hasMin || !dayEnd.After(earliest) {
-			continue
-		}
 		n, err := syncSingleDayStats(ctx, db, cur, cur.UTC(), dayEnd.UTC())
 		if err != nil {
 			return totalUpserted, err
@@ -161,7 +153,7 @@ func syncSingleDayStats(ctx context.Context, db *gorm.DB, localDay time.Time, st
 		CostUSD          decimal.Decimal `gorm:"column:cost_usd"`
 	}
 	var aggs []aggRow
-	err := db.WithContext(ctx).Model(&Invocation{}).
+	err := WithArchive(db.WithContext(ctx)).
 		Select(`org_id, model, COUNT(*) AS request_count,
 			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS success_count,
 			COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
@@ -194,13 +186,21 @@ func syncSingleDayStats(ctx context.Context, db *gorm.DB, localDay time.Time, st
 			CostUSD:          r.CostUSD,
 		})
 	}
-	if err := db.WithContext(ctx).Clauses(clause.OnConflict{
+	conflict := clause.OnConflict{
 		Columns: []clause.Column{{Name: "stat_date"}, {Name: "org_id"}, {Name: "model"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"request_count", "success_count", "prompt_tokens",
 			"completion_tokens", "cached_tokens", "reasoning_tokens", "cost_usd",
 		}),
-	}).Create(&stats).Error; err != nil {
+	}
+	// Retention can remove expired error rows after rollup. A partial source
+	// must not replace the complete historical rollup.
+	if db.Dialector.Name() != "mysql" {
+		conflict.Where = clause.Where{Exprs: []clause.Expression{clause.Expr{
+			SQL: "excluded.request_count >= usage_daily_stats.request_count",
+		}}}
+	}
+	if err := db.WithContext(ctx).Clauses(conflict).Create(&stats).Error; err != nil {
 		return 0, fmt.Errorf("invocation: sync upsert day %s: %w", statDate, err)
 	}
 	return int64(len(stats)), nil
@@ -208,7 +208,7 @@ func syncSingleDayStats(ctx context.Context, db *gorm.DB, localDay time.Time, st
 
 func earliestInvocationTime(ctx context.Context, db *gorm.DB) (time.Time, bool, error) {
 	var first Invocation
-	err := db.WithContext(ctx).Select("created_at").Order("created_at ASC, id ASC").Limit(1).Take(&first).Error
+	err := WithArchive(db.WithContext(ctx)).Select("created_at").Order("created_at ASC, id ASC").Limit(1).Take(&first).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return time.Time{}, false, nil
 	}

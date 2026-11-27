@@ -73,7 +73,7 @@ const RequireAuth: React.FC<{ children: React.ReactElement; admin?: boolean; adm
 };
 
 const App: React.FC = () => {
-  const { settings, fetchSettings } = useSettingsStore();
+  const { settings, initialSettingsLoaded, fetchSettings } = useSettingsStore();
   useEffect(() => {
     void fetchSettings();
   }, [fetchSettings]);
@@ -167,7 +167,7 @@ const App: React.FC = () => {
           <Route path={`/${adminPath}/about`} element={<SystemAbout />} />
         </Route>
 
-        <Route path="*" element={<Navigate to="/home/models" replace />} />
+        <Route path="*" element={initialSettingsLoaded ? <Navigate to="/home/models" replace /> : <Loading />} />
       </Routes>
     </Suspense>
   );

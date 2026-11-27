@@ -24,6 +24,31 @@ type Setting struct {
 
 func (Setting) TableName() string { return "ext_settings" }
 
+// updateSettingJSON serializes read-modify-write across processes. Inserting a
+// placeholder inside the transaction also locks the first update of a new key.
+func updateSettingJSON[T any](tx *gorm.DB, key string, initial T, update func(*T) error) error {
+	row := Setting{Name: key}
+	if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "name"}}, DoNothing: true}).Create(&row).Error; err != nil {
+		return err
+	}
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Take(&row, "name = ?", key).Error; err != nil {
+		return err
+	}
+	if strings.TrimSpace(row.Value) != "" {
+		if err := json.Unmarshal([]byte(row.Value), &initial); err != nil {
+			return err
+		}
+	}
+	if err := update(&initial); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(initial)
+	if err != nil {
+		return err
+	}
+	return tx.Model(&row).Update("value", string(raw)).Error
+}
+
 // 已知设置键（公开/admin 共用），含默认值。adminSetSettings 只接受这里登记的键，
 // 所以「前端表单/引擎用到的每个键」都必须在此登记，否则保存会被当未知键拒绝。
 var settingDefaults = map[string]string{
