@@ -1405,6 +1405,7 @@
     "already_listed_confirm": "该模型已上架，确定再上一份？",
     "from_library": "来自模型仓库",
     "add_model": "添加模型",
+    "reset_filters": "重置筛选",
     "edit_model": "编辑模型",
     "model_name": "名称",
     "model_id": "模型 ID",

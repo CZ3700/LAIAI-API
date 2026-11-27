@@ -1405,6 +1405,7 @@
     "already_listed_confirm": "This model is already listed. List another copy?",
     "from_library": "From repository",
     "add_model": "Add Model",
+    "reset_filters": "Reset Filters",
     "edit_model": "Edit Model",
     "model_name": "Name",
     "model_id": "Model ID",

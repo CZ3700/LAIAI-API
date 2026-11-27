@@ -107,7 +107,7 @@ const ResizableHeaderCell = (props: any) => {
           right: 0,
           top: 0,
           bottom: 0,
-          width: 8,
+          width: 6,
           cursor: 'col-resize',
           zIndex: 100,
           userSelect: 'none'
@@ -682,16 +682,38 @@ const Models: React.FC = () => {
         request.get('/forward-rules') as Promise<any>,
         request.get('/billing-rules') as Promise<any>
       ]);
-      setAllProviders(Array.isArray(provResp) ? provResp.filter(p => p.is_active) : []);
-      setAllApiProviders(Array.isArray(apiProvResp) ? apiProvResp.filter(p => p.is_active) : []);
-      setAllTypes(Array.isArray(typeResp) ? typeResp.filter(t => t.is_active) : []);
+      const activeProviders = Array.isArray(provResp) ? provResp.filter(p => p.is_active) : [];
+      const activeApiProviders = Array.isArray(apiProvResp) ? apiProvResp.filter(p => p.is_active) : [];
+      const activeTypes = Array.isArray(typeResp) ? typeResp.filter(t => t.is_active) : [];
+      setAllProviders(activeProviders);
+      setAllApiProviders(activeApiProviders);
+      setAllTypes(activeTypes);
       setAllForwardRules(Array.isArray(rules) ? rules.filter(r => r.is_active) : []);
       setAllBillingRules(Array.isArray(brs) ? brs.filter(b => b.is_active === 1) : []);
+      return { providers: activeProviders, apiProviders: activeApiProviders, types: activeTypes };
     } catch (e) {
       console.error(e);
+      return null;
     } finally {
       setClassificationsReady(true);
     }
+  };
+
+  const handleClassificationUpdate = async (kind: 'provider' | 'api_provider' | 'type') => {
+    const fresh = await fetchAllClassifications();
+    if (fresh) {
+      if (kind === 'provider' && selectedProvider != null && selectedProvider > 0 && !fresh.providers.some((p: any) => p.id === selectedProvider)) {
+        setSelectedProvider(null);
+      }
+      if (kind === 'api_provider' && selectedApiProvider != null && selectedApiProvider > 0 && !fresh.apiProviders.some((p: any) => p.id === selectedApiProvider)) {
+        setSelectedApiProvider(null);
+      }
+      if (kind === 'type' && selectedType != null && selectedType > 0 && !fresh.types.some((tp: any) => tp.id === selectedType)) {
+        setSelectedType(null);
+      }
+    }
+    fetchClassificationsStats();
+    fetchModels();
   };
 
   useEffect(() => {
@@ -883,10 +905,16 @@ const Models: React.FC = () => {
       hydratedEditKeyRef.current = key;
       hydrateModelEditor(found);
     } else {
+      if (selectedProvider !== null || selectedApiProvider !== null || selectedType !== null) {
+        setSelectedProvider(null);
+        setSelectedApiProvider(null);
+        setSelectedType(null);
+        return;
+      }
       message.error('未找到指定模型');
       handleCloseEditor();
     }
-  }, [routeEditId, models, loading, classificationsReady, isLibraryEditRoute, isEditRoute, sourceFilter, searchParams]);
+  }, [routeEditId, models, loading, classificationsReady, isLibraryEditRoute, isEditRoute, sourceFilter, searchParams, selectedProvider, selectedApiProvider, selectedType]);
 
   const isFromLibrary = (record: ModelModel) =>
     typeof record.library_mid === 'string' && record.library_mid.trim() !== '';
@@ -1380,23 +1408,23 @@ const Models: React.FC = () => {
   };
 
   const getProviderName = (id?: number) => {
-    const p = providersStats.find(p => p.id === id);
+    const p = providersStats.find(p => p.id === id) || allProviders.find(p => p.id === id);
     return p ? localizeClassificationName(p, i18n.language, t) : null;
   };
 
   const getApiProviderName = (id?: number) => {
-    const p = apiProvidersStats.find(p => p.id === id);
+    const p = apiProvidersStats.find(p => p.id === id) || allApiProviders.find(p => p.id === id);
     return p ? localizeClassificationName(p, i18n.language, t) : null;
   };
 
   const getTypeName = (id?: number) => {
-    const item = typesStats.find(tp => tp.id === id);
+    const item = typesStats.find(tp => tp.id === id) || allTypes.find(tp => tp.id === id);
     return item ? localizeClassificationName(item, i18n.language, t) : null;
   };
 
   const colWidths = isLibrary
-    ? [100, 200, 240, 130, 250, 80, 128]
-    : [100, 200, 240, 130, 250, 80, 80, 128];
+    ? [100, 200, 240, 130, 250, 96, 128]
+    : [100, 200, 240, 130, 250, 96, 104, 128];
   const currentWidthsRef = useRef([...colWidths]);
   const libraryLayoutRef = useRef(isLibrary);
   if (libraryLayoutRef.current !== isLibrary) {
@@ -1452,6 +1480,7 @@ const Models: React.FC = () => {
         target.closest('.resizable-trigger') ||
         target.closest('.ant-select') ||
         target.closest('.ant-table-filter-trigger') ||
+        target.closest('.ant-table-column-sorters') ||
         target.closest('.ant-typography-edit') ||
         target.closest('.ant-typography-editable-single-line') ||
         target.closest('.model-remark-text') ||
@@ -1815,9 +1844,11 @@ const Models: React.FC = () => {
       title: '页面排序',
       dataIndex: 'sort_order',
       key: 'sort_order',
-      width: 80,
+      width: 96,
       align: 'center' as const,
-      sorter: (a: ModelModel, b: ModelModel) => (a.sort_order || 0) - (b.sort_order || 0),
+      sorter: true,
+      sortDirections: ['descend', 'ascend'] as ('descend' | 'ascend')[],
+      sortOrder: sortType === 'order_desc' ? ('descend' as const) : sortType === 'order_asc' ? ('ascend' as const) : null,
       render: (val: number, record: ModelModel) => {
         const order = record.sort_order ?? 0;
         return (
@@ -1854,7 +1885,7 @@ const Models: React.FC = () => {
       title: '模型状态',
       dataIndex: 'is_active',
       key: 'is_active',
-      width: 90,
+      width: 104,
       filterDropdown: ({ setSelectedKeys, confirm }: any) => (
         <div style={{ padding: 8 }}>
           <Radio.Group 
@@ -2018,6 +2049,11 @@ const Models: React.FC = () => {
         if (diff !== 0) return diff;
         return b.id - a.id;
       }
+      if (sortType === 'order_asc') {
+        const diff = (a.sort_order ?? 0) - (b.sort_order ?? 0);
+        if (diff !== 0) return diff;
+        return a.id - b.id;
+      }
       if (sortType === 'name_desc') {
         return (b.name || '').localeCompare(a.name || '', 'zh', { sensitivity: 'base', numeric: true });
       }
@@ -2131,6 +2167,31 @@ const Models: React.FC = () => {
     setCurrentPage(1);
   }, [tableBillingTypeFilter, tableStatusFilter, showGroupsOnly]);
 
+  const hasActiveFilters =
+    selectedProvider !== null ||
+    selectedApiProvider !== null ||
+    selectedType !== null ||
+    searchKeyword.trim() !== '' ||
+    tableBillingTypeFilter !== 'all' ||
+    (!isLibrary && tableStatusFilter !== 'all');
+
+  const resetAllFilters = () => {
+    setSelectedProvider(null);
+    setSelectedApiProvider(null);
+    setSelectedType(null);
+    setSearchKeyword('');
+    setTableBillingTypeFilter('all');
+    setTableStatusFilter('all');
+    setCurrentPage(1);
+  };
+
+  const handleHeaderTableChange = (_pagination: any, _filters: any, sorter: any) => {
+    if (sorter && sorter.columnKey === 'sort_order') {
+      setRecentlyAddedId(null);
+      setSortType(sorter.order === 'ascend' ? 'order_asc' : 'order_desc');
+    }
+  };
+
   // 防御性校准：当数据被删除或过滤导致总页数变小，且 currentPage 大于最大页数时，自动校准页码
   useEffect(() => {
     const maxPage = Math.ceil(totalCount / pageSize);
@@ -2194,15 +2255,15 @@ const Models: React.FC = () => {
           overflow: hidden !important;
         }
         .compact-table .col-idx-5 {
-          width: var(--col-width-5, 80px) !important;
-          min-width: var(--col-width-5, 80px) !important;
-          max-width: var(--col-width-5, 80px) !important;
+          width: var(--col-width-5, 96px) !important;
+          min-width: var(--col-width-5, 96px) !important;
+          max-width: var(--col-width-5, 96px) !important;
           overflow: hidden !important;
         }
         .compact-table .col-idx-6 {
-          width: var(--col-width-6, 80px) !important;
-          min-width: var(--col-width-6, 80px) !important;
-          max-width: var(--col-width-6, 80px) !important;
+          width: var(--col-width-6, 104px) !important;
+          min-width: var(--col-width-6, 104px) !important;
+          max-width: var(--col-width-6, 104px) !important;
           overflow: hidden !important;
         }
         .compact-table .col-idx-7 {
@@ -2288,6 +2349,11 @@ const Models: React.FC = () => {
               onChange={e => setSearchKeyword(e.target.value)}
               style={{ width: 240 }}
             />
+            {hasActiveFilters && (
+              <Button icon={<CloseOutlined />} onClick={resetAllFilters}>
+                {t('models.reset_filters', '重置筛选')}
+              </Button>
+            )}
             {auxiliaryCurrencies.length > 0 && (
               <Select 
                 value={selectedCurrencyCode} 
@@ -2721,9 +2787,9 @@ const Models: React.FC = () => {
           >
             <div style={{ minWidth: 'var(--table-scroll-x, 1170px)', display: 'flex', flexDirection: 'column', gap: 0 }}>
               {loading ? (
-                <Table className="compact-table" dataSource={[]} columns={resizableColumns} loading rowKey="id" tableLayout="fixed" />
+                <Table className="compact-table" dataSource={[]} columns={resizableColumns} loading rowKey="id" tableLayout="fixed" onChange={handleHeaderTableChange} />
               ) : displayGroups.length === 0 ? (
-                <Table className="compact-table" dataSource={[]} columns={resizableColumns} rowKey="id" tableLayout="fixed" />
+                <Table className="compact-table" dataSource={[]} columns={resizableColumns} rowKey="id" tableLayout="fixed" onChange={handleHeaderTableChange} />
               ) : (
                 <>
                   {displayGroups.length > 0 && (
@@ -2733,6 +2799,7 @@ const Models: React.FC = () => {
                         dataSource={[]}
                         columns={resizableColumns}
                         components={tableComponents}
+                        onChange={handleHeaderTableChange}
                         rowKey="id"
                         size="small"
                         tableLayout="fixed"
@@ -3809,30 +3876,21 @@ const Models: React.FC = () => {
         type="api_provider"
         visible={isApiProviderManagerVisible}
         onClose={() => setIsApiProviderManagerVisible(false)}
-        onUpdate={() => {
-          fetchAllClassifications();
-          fetchClassificationsStats();
-        }}
+        onUpdate={() => handleClassificationUpdate('api_provider')}
       />
 
       <ClassificationManager
         type="provider"
         visible={isProviderManagerVisible}
         onClose={() => setIsProviderManagerVisible(false)}
-        onUpdate={() => {
-          fetchAllClassifications();
-          fetchClassificationsStats();
-        }}
+        onUpdate={() => handleClassificationUpdate('provider')}
       />
       
       <ClassificationManager
         type="type"
         visible={isTypeManagerVisible}
         onClose={() => setIsTypeManagerVisible(false)}
-        onUpdate={() => {
-          fetchAllClassifications();
-          fetchClassificationsStats();
-        }}
+        onUpdate={() => handleClassificationUpdate('type')}
       />
     </Card>
   );

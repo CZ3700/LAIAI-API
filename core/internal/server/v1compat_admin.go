@@ -34,8 +34,11 @@ const (
 
 type v1ModelExt struct {
 	ProviderID        uint64 `json:"provider_id,omitempty"`
+	ProviderSet       bool   `json:"provider_set,omitempty"`
 	APIProviderID     uint64 `json:"api_provider_id,omitempty"`
+	APIProviderSet    bool   `json:"api_provider_set,omitempty"`
 	TypeID            uint64 `json:"type_id,omitempty"`
+	TypeSet           bool   `json:"type_set,omitempty"`
 	OriginalID        string `json:"original_id,omitempty"`
 	Mid               string `json:"mid,omitempty"`
 	Remark            string `json:"remark,omitempty"`
@@ -49,6 +52,148 @@ func modelNumericID(model string) uint64 {
 		return 1
 	}
 	return id
+}
+
+func derefUint64(p *uint64) uint64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func sortClassifications(items []v1compat.ClassificationItem) []v1compat.ClassificationItem {
+	sorted := slices.Clone(items)
+	slices.SortFunc(sorted, func(a, b v1compat.ClassificationItem) int {
+		if c := cmp.Compare(b.SortOrder, a.SortOrder); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+	return sorted
+}
+
+func activeClassifications(items []v1compat.ClassificationItem) ([]v1compat.ClassificationItem, map[uint64]bool) {
+	sorted := sortClassifications(items)
+	active := make([]v1compat.ClassificationItem, 0, len(sorted))
+	validIDs := make(map[uint64]bool, len(sorted))
+	for _, it := range sorted {
+		if it.IsActive == 1 {
+			active = append(active, it)
+			validIDs[it.ID] = true
+		}
+	}
+	return active, validIDs
+}
+
+func isLibraryModelSource(source string) bool {
+	s := strings.TrimSpace(source)
+	return strings.EqualFold(s, "library") || strings.EqualFold(s, "system")
+}
+
+type classificationFilterQuery struct {
+	ProviderID    *uint64
+	APIProviderID *uint64
+	TypeID        *uint64
+	Source        string
+	Keyword       string
+	IsActive      *int8
+	PageSize      int
+}
+
+func parseOptionalClassID(c *gin.Context, key string) *uint64 {
+	raw, exists := c.GetQuery(key)
+	if !exists {
+		return nil
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	if trimmed == "0" || trimmed == "-1" {
+		zero := uint64(0)
+		return &zero
+	}
+	id, err := strconv.ParseUint(trimmed, 10, 64)
+	if err != nil {
+		invalid := ^uint64(0)
+		return &invalid
+	}
+	return &id
+}
+
+func parseClassificationQuery(c *gin.Context) classificationFilterQuery {
+	q := classificationFilterQuery{
+		ProviderID:    parseOptionalClassID(c, "provider_id"),
+		APIProviderID: parseOptionalClassID(c, "api_provider_id"),
+		TypeID:        parseOptionalClassID(c, "type_id"),
+		Source:        strings.TrimSpace(c.Query("source")),
+		Keyword:       strings.TrimSpace(c.Query("keyword")),
+	}
+	if activeRaw := strings.TrimSpace(c.Query("is_active")); activeRaw != "" {
+		switch strings.ToLower(activeRaw) {
+		case "1", "true", "active":
+			v := int8(1)
+			q.IsActive = &v
+		case "0", "false", "disabled":
+			v := int8(0)
+			q.IsActive = &v
+		}
+	}
+	if psRaw := strings.TrimSpace(c.Query("page_size")); psRaw != "" {
+		if ps, err := strconv.Atoi(psRaw); err == nil && ps > 0 {
+			q.PageSize = min(ps, 10000)
+		}
+	}
+	return q
+}
+
+func matchesClassFilter(val uint64, filter *uint64) bool {
+	return filter == nil || val == *filter
+}
+
+func resolveModelClassificationIDs(
+	ext v1ModelExt,
+	meta ModelMeta,
+	modelName string,
+	validProv, validAPIProv, validType map[uint64]bool,
+) (provID, apiProvID, typeID uint64, inferredTypeName string) {
+	inferredProvID, _, inferredTypeID, inferredTypeName, _ := v1compat.InferModelProviderAndType(meta.Vendor, meta.Category, modelName)
+	switch {
+	case ext.ProviderSet:
+		provID = ext.ProviderID
+	case ext.ProviderID > 0:
+		provID = ext.ProviderID
+	default:
+		provID = inferredProvID
+	}
+	if provID > 0 && validProv != nil && !validProv[provID] {
+		provID = 0
+	}
+
+	switch {
+	case ext.APIProviderSet:
+		apiProvID = ext.APIProviderID
+	case ext.APIProviderID > 0:
+		apiProvID = ext.APIProviderID
+	default:
+		apiProvID = provID
+	}
+	if apiProvID > 0 && validAPIProv != nil && !validAPIProv[apiProvID] {
+		apiProvID = 0
+	}
+
+	switch {
+	case ext.TypeSet:
+		typeID = ext.TypeID
+	case ext.TypeID > 0:
+		typeID = ext.TypeID
+	default:
+		typeID = inferredTypeID
+	}
+	if typeID > 0 && validType != nil && !validType[typeID] {
+		typeID = 0
+	}
+	return provID, apiProvID, typeID, inferredTypeName
 }
 
 func (s *Server) loadClassifications(settingKey string, defaults []v1compat.ClassificationItem) []v1compat.ClassificationItem {
@@ -107,13 +252,14 @@ type modelClassificationCountInput struct {
 	ProviderID    uint64
 	APIProviderID uint64
 	TypeID        uint64
+	IsListed      bool
 }
 
 func (s *Server) loadAllModelClassificationInputs(c *gin.Context) []modelClassificationCountInput {
 	ctx := c.Request.Context()
 	rdb := s.readOnly().WithContext(ctx)
 	var bindings []pricing.ModelRuleBinding
-	_ = rdb.Select("model, display_name").Find(&bindings).Error
+	_ = rdb.Select("model, display_name, is_listed").Find(&bindings).Error
 	var prices []relay.ModelPrice
 	_ = rdb.Select("model").Find(&prices).Error
 	var metas []ModelMeta
@@ -122,40 +268,35 @@ func (s *Server) loadAllModelClassificationInputs(c *gin.Context) []modelClassif
 	for _, m := range metas {
 		metaMap[m.Model] = m
 	}
+	_, validProv := activeClassifications(s.listModelProvidersData())
+	_, validAPIProv := activeClassifications(s.listModelAPIProvidersData())
+	_, validType := activeClassifications(s.listModelTypesData())
+
 	seen := make(map[string]struct{}, len(bindings)+len(prices))
 	extMap := s.loadV1ModelExtMap()
 	out := make([]modelClassificationCountInput, 0, len(bindings)+len(prices))
-	addModel := func(modelName, displayName string) {
+	addModel := func(modelName, displayName string, isListed bool) {
 		if _, ok := seen[modelName]; ok {
 			return
 		}
 		seen[modelName] = struct{}{}
 		ext := extMap[modelName]
 		meta := metaMap[modelName]
-		pid, _, tid, _, _ := v1compat.InferModelProviderAndType(meta.Vendor, meta.Category, modelName)
-		if ext.ProviderID > 0 {
-			pid = ext.ProviderID
-		}
-		if ext.TypeID > 0 {
-			tid = ext.TypeID
-		}
-		apid := ext.APIProviderID
-		if apid == 0 {
-			apid = pid
-		}
+		pid, apid, tid, _ := resolveModelClassificationIDs(ext, meta, modelName, validProv, validAPIProv, validType)
 		out = append(out, modelClassificationCountInput{
 			Model:         modelName,
 			Name:          cmp.Or(displayName, modelName),
 			ProviderID:    pid,
 			APIProviderID: apid,
 			TypeID:        tid,
+			IsListed:      isListed,
 		})
 	}
 	for _, b := range bindings {
-		addModel(b.Model, b.DisplayName)
+		addModel(b.Model, b.DisplayName, b.IsListed == 1)
 	}
 	for _, p := range prices {
-		addModel(p.Model, p.Model)
+		addModel(p.Model, p.Model, true)
 	}
 	return out
 }
@@ -173,11 +314,13 @@ func (s *Server) listModelTypesData() []v1compat.ClassificationItem {
 }
 
 func (s *Server) v1ModelProviders(c *gin.Context) {
-	items := s.listModelProvidersData()
+	items := sortClassifications(s.listModelProvidersData())
 	models := s.loadAllModelClassificationInputs(c)
 	counts := map[uint64]int64{}
 	for _, m := range models {
-		counts[m.ProviderID]++
+		if m.IsListed {
+			counts[m.ProviderID]++
+		}
 	}
 	for i := range items {
 		items[i].ModelCount = counts[items[i].ID]
@@ -186,11 +329,13 @@ func (s *Server) v1ModelProviders(c *gin.Context) {
 }
 
 func (s *Server) v1ModelAPIProviders(c *gin.Context) {
-	items := s.listModelAPIProvidersData()
+	items := sortClassifications(s.listModelAPIProvidersData())
 	models := s.loadAllModelClassificationInputs(c)
 	counts := map[uint64]int64{}
 	for _, m := range models {
-		counts[m.APIProviderID]++
+		if m.IsListed {
+			counts[m.APIProviderID]++
+		}
 	}
 	for i := range items {
 		items[i].ModelCount = counts[items[i].ID]
@@ -199,11 +344,13 @@ func (s *Server) v1ModelAPIProviders(c *gin.Context) {
 }
 
 func (s *Server) v1ModelTypes(c *gin.Context) {
-	items := s.listModelTypesData()
+	items := sortClassifications(s.listModelTypesData())
 	models := s.loadAllModelClassificationInputs(c)
 	counts := map[uint64]int64{}
 	for _, m := range models {
-		counts[m.TypeID]++
+		if m.IsListed {
+			counts[m.TypeID]++
+		}
 	}
 	for i := range items {
 		items[i].ModelCount = counts[items[i].ID]
@@ -296,6 +443,41 @@ func (s *Server) handleDeleteClassification(c *gin.Context, settingKey string, d
 	next := slices.DeleteFunc(list, func(it v1compat.ClassificationItem) bool { return it.ID == id })
 	b, _ := json.Marshal(next)
 	_ = s.upsertRawSetting(settingKey, string(b))
+
+	extMap := s.loadV1ModelExtMap()
+	extChanged := false
+	for modelName, ext := range extMap {
+		rowUpdated := false
+		switch settingKey {
+		case v1KeyModelProviders:
+			if ext.ProviderID == id {
+				ext.ProviderID = 0
+				ext.ProviderSet = true
+				rowUpdated = true
+			}
+		case v1KeyModelAPIProviders:
+			if ext.APIProviderID == id {
+				ext.APIProviderID = 0
+				ext.APIProviderSet = true
+				rowUpdated = true
+			}
+		case v1KeyModelTypes:
+			if ext.TypeID == id {
+				ext.TypeID = 0
+				ext.TypeSet = true
+				rowUpdated = true
+			}
+		}
+		if rowUpdated {
+			extMap[modelName] = ext
+			extChanged = true
+		}
+	}
+	if extChanged {
+		if extBytes, err := json.Marshal(extMap); err == nil {
+			_ = s.upsertRawSetting(v1KeyModelExt, string(extBytes))
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"deleted": id})
 }
 
@@ -319,30 +501,57 @@ func (s *Server) v1DeleteModelType(c *gin.Context) {
 }
 
 func (s *Server) v1ClassificationsStats(c *gin.Context) {
-	providers := s.listModelProvidersData()
-	apiProviders := s.listModelAPIProvidersData()
-	types := s.listModelTypesData()
+	q := parseClassificationQuery(c)
+	providers, _ := activeClassifications(s.listModelProvidersData())
+	apiProviders, _ := activeClassifications(s.listModelAPIProvidersData())
+	types, _ := activeClassifications(s.listModelTypesData())
 	models := s.loadAllModelClassificationInputs(c)
 
+	var customCount, libraryCount int64
 	provCounts := map[uint64]int64{}
 	apiProvCounts := map[uint64]int64{}
 	typeCounts := map[uint64]int64{}
 	var unProv, unAPIProv, unType int64
+	wantListed := !isLibraryModelSource(q.Source)
+
 	for _, m := range models {
-		if m.ProviderID > 0 {
-			provCounts[m.ProviderID]++
-		} else {
-			unProv++
+		matchProv := matchesClassFilter(m.ProviderID, q.ProviderID)
+		matchAPIProv := matchesClassFilter(m.APIProviderID, q.APIProviderID)
+		matchType := matchesClassFilter(m.TypeID, q.TypeID)
+
+		if matchProv && matchAPIProv && matchType {
+			if m.IsListed {
+				customCount++
+			} else {
+				libraryCount++
+			}
 		}
-		if m.APIProviderID > 0 {
-			apiProvCounts[m.APIProviderID]++
-		} else {
-			unAPIProv++
+
+		if m.IsListed != wantListed {
+			continue
 		}
-		if m.TypeID > 0 {
-			typeCounts[m.TypeID]++
-		} else {
-			unType++
+
+		// 交叉统计：每个维度排除自身条件，仅保留另外两个维度的已选筛选
+		if matchAPIProv && matchType {
+			if m.ProviderID > 0 {
+				provCounts[m.ProviderID]++
+			} else {
+				unProv++
+			}
+		}
+		if matchProv && matchType {
+			if m.APIProviderID > 0 {
+				apiProvCounts[m.APIProviderID]++
+			} else {
+				unAPIProv++
+			}
+		}
+		if matchProv && matchAPIProv {
+			if m.TypeID > 0 {
+				typeCounts[m.TypeID]++
+			} else {
+				unType++
+			}
 		}
 	}
 
@@ -368,8 +577,8 @@ func (s *Server) v1ClassificationsStats(c *gin.Context) {
 		"unclassified_api_providers": unAPIProv,
 		"unclassified_types":         unType,
 		"source_counts": gin.H{
-			"custom":  int64(len(models)),
-			"library": 0,
+			"custom":  customCount,
+			"library": libraryCount,
 		},
 	})
 }
@@ -494,6 +703,7 @@ func (s *Server) v1ListForwardRules(c *gin.Context) {
 func (s *Server) v1AdminListModels(c *gin.Context) {
 	ctx := c.Request.Context()
 	rdb := s.readOnly().WithContext(ctx)
+	q := parseClassificationQuery(c)
 
 	var bindings []pricing.ModelRuleBinding
 	if err := rdb.Order("sort_order DESC, model ASC").Find(&bindings).Error; err != nil && !v1compat.IsMissingTable(err) {
@@ -544,34 +754,21 @@ func (s *Server) v1AdminListModels(c *gin.Context) {
 	}
 
 	extMap := s.loadV1ModelExtMap()
-	typesList := s.listModelTypesData()
+	_, validProv := activeClassifications(s.listModelProvidersData())
+	_, validAPIProv := activeClassifications(s.listModelAPIProvidersData())
+	typesList, validType := activeClassifications(s.listModelTypesData())
 	typeNameByID := make(map[uint64]string, len(typesList))
 	for _, tp := range typesList {
 		typeNameByID[tp.ID] = tp.Name
 	}
+
+	wantListed := !isLibraryModelSource(q.Source)
+	kwLower := strings.ToLower(q.Keyword)
 	out := make([]gin.H, 0, len(names))
 	for _, modelName := range names {
 		b, hasB := bindingMap[modelName]
 		p := priceMap[modelName]
 		meta := metaMap[modelName]
-
-		fwdIDs := []uint64{}
-		fwdNames := []string{}
-		if hasB {
-			fwdIDs = v1compat.ParseRuleIDList(b.ForwardRuleIDs)
-			for _, fid := range fwdIDs {
-				if fr, ok := frMap[fid]; ok {
-					fwdNames = append(fwdNames, fmt.Sprintf("%s (%s)", fr.Name, fr.EID))
-				}
-			}
-		}
-		var brName, brPID string
-		if hasB && b.BillingRuleID > 0 {
-			if br, ok := brMap[b.BillingRuleID]; ok {
-				brName = br.Name
-				brPID = br.PID
-			}
-		}
 
 		displayName := modelName
 		isListed := true
@@ -592,21 +789,51 @@ func (s *Server) v1AdminListModels(c *gin.Context) {
 			siteDiscEn = b.SiteDiscountEnabled == 1
 		}
 
-		numID := modelNumericID(modelName)
+		if isListed != wantListed {
+			continue
+		}
+		if q.IsActive != nil && b2i8(isActive) != *q.IsActive {
+			continue
+		}
+
 		ext := extMap[modelName]
-		inferredProvID, _, inferredTypeID, inferredTypeName, _ := v1compat.InferModelProviderAndType(meta.Vendor, meta.Category, modelName)
-		provID := ext.ProviderID
-		if provID == 0 {
-			provID = inferredProvID
+		provID, apiProvID, typeID, inferredTypeName := resolveModelClassificationIDs(ext, meta, modelName, validProv, validAPIProv, validType)
+		if !matchesClassFilter(provID, q.ProviderID) || !matchesClassFilter(apiProvID, q.APIProviderID) || !matchesClassFilter(typeID, q.TypeID) {
+			continue
 		}
-		apiProvID := ext.APIProviderID
-		if apiProvID == 0 {
-			apiProvID = provID
+
+		numID := modelNumericID(modelName)
+		mid := cmp.Or(ext.Mid, "m-"+strconv.FormatUint(numID, 10))
+		origID := cmp.Or(ext.OriginalID, modelName)
+		if kwLower != "" {
+			if !strings.Contains(strings.ToLower(modelName), kwLower) &&
+				!strings.Contains(strings.ToLower(displayName), kwLower) &&
+				!strings.Contains(strings.ToLower(b.ModelAlias), kwLower) &&
+				!strings.Contains(strings.ToLower(mid), kwLower) &&
+				!strings.Contains(strings.ToLower(ext.Remark), kwLower) &&
+				!strings.Contains(strings.ToLower(origID), kwLower) {
+				continue
+			}
 		}
-		typeID := ext.TypeID
-		if typeID == 0 {
-			typeID = inferredTypeID
+
+		fwdIDs := []uint64{}
+		fwdNames := []string{}
+		if hasB {
+			fwdIDs = v1compat.ParseRuleIDList(b.ForwardRuleIDs)
+			for _, fid := range fwdIDs {
+				if fr, ok := frMap[fid]; ok {
+					fwdNames = append(fwdNames, fmt.Sprintf("%s (%s)", fr.Name, fr.EID))
+				}
+			}
 		}
+		var brName, brPID string
+		if hasB && b.BillingRuleID > 0 {
+			if br, ok := brMap[b.BillingRuleID]; ok {
+				brName = br.Name
+				brPID = br.PID
+			}
+		}
+
 		typeName := cmp.Or(typeNameByID[typeID], inferredTypeName, "聊天")
 		featAttrs := cmp.Or(ext.FeatureAttributes, "[]")
 		fwdJSON := b.ForwardRuleIDs
@@ -631,12 +858,12 @@ func (s *Server) v1AdminListModels(c *gin.Context) {
 			}
 		}
 
-		out = append(out, gin.H{
+		row := gin.H{
 			"id":                      numID,
-			"mid":                     cmp.Or(ext.Mid, "m-"+strconv.FormatUint(numID, 10)),
+			"mid":                     mid,
 			"model":                   modelName,
 			"model_id":                modelName,
-			"original_id":             cmp.Or(ext.OriginalID, modelName),
+			"original_id":             origID,
 			"model_id_alias":          b.ModelAlias,
 			"name":                    displayName,
 			"model_alias":             b.ModelAlias,
@@ -676,13 +903,31 @@ func (s *Server) v1AdminListModels(c *gin.Context) {
 			"is_active":               map[bool]int{true: 1, false: 0}[isActive],
 			"sort_order":              sortOrder,
 			"created_at":              b.CreatedAt,
-		})
+		}
+		if !isListed {
+			row["library_kind"] = "unlisted"
+		}
+		out = append(out, row)
 	}
-	c.JSON(http.StatusOK, gin.H{"data": out})
+	total := len(out)
+	if q.PageSize > 0 && len(out) > q.PageSize {
+		out = out[:q.PageSize]
+	}
+	c.JSON(http.StatusOK, gin.H{"data": out, "total": total})
 }
 
 func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 	ctx := c.Request.Context()
+	rawBody, readErr := io.ReadAll(c.Request.Body)
+	if readErr != nil || len(bytes.TrimSpace(rawBody)) == 0 {
+		fail(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &rawFields); err != nil {
+		fail(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
 	var req struct {
 		Model                 string           `json:"model"`
 		ModelID               string           `json:"model_id"`
@@ -699,9 +944,9 @@ func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 		ContextLength         int              `json:"context_length"`
 		Icon                  string           `json:"icon"`
 		Logo                  string           `json:"logo"`
-		ProviderID            uint64           `json:"provider_id"`
-		APIProviderID         uint64           `json:"api_provider_id"`
-		TypeID                uint64           `json:"type_id"`
+		ProviderID            *uint64          `json:"provider_id"`
+		APIProviderID         *uint64          `json:"api_provider_id"`
+		TypeID                *uint64          `json:"type_id"`
 		BillingRuleID         uint64           `json:"billing_rule_id"`
 		ForwardRuleIDsRaw     json.RawMessage  `json:"forward_rule_ids"`
 		PreDeduction          *decimal.Decimal `json:"pre_deduction"`
@@ -719,7 +964,7 @@ func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 		IsActive              *flexBool        `json:"is_active"`
 		SortOrder             int              `json:"sort_order"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := json.Unmarshal(rawBody, &req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -761,6 +1006,16 @@ func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 
 	var existingB pricing.ModelRuleBinding
 	_ = db.Where("model = ?", model).First(&existingB).Error
+	var existingMeta ModelMeta
+	_ = db.Where("model = ?", model).First(&existingMeta).Error
+
+	_, hasVendorField := rawFields["vendor"]
+	_, hasCategoryField := rawFields["category"]
+	_, hasDescField := rawFields["description"]
+	_, hasContextLenField := rawFields["context_length"]
+	_, hasLogoField := rawFields["logo"]
+	_, hasIconField := rawFields["icon"]
+	_, hasSortOrderField := rawFields["sort_order"]
 
 	err := db.Transaction(func(tx *gorm.DB) error {
 		dVal := func(p *decimal.Decimal) decimal.Decimal {
@@ -795,13 +1050,32 @@ func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 				return err
 			}
 		}
-		icon := cmp.Or(strings.TrimSpace(req.Logo), strings.TrimSpace(req.Icon))
+		vendor := existingMeta.Vendor
+		if hasVendorField {
+			vendor = strings.TrimSpace(req.Vendor)
+		}
+		category := existingMeta.Category
+		if hasCategoryField {
+			category = strings.TrimSpace(req.Category)
+		}
+		description := existingMeta.Description
+		if hasDescField {
+			description = strings.TrimSpace(req.Description)
+		}
+		contextLength := existingMeta.ContextLength
+		if hasContextLenField {
+			contextLength = max(0, req.ContextLength)
+		}
+		icon := existingMeta.Icon
+		if hasLogoField || hasIconField {
+			icon = cmp.Or(strings.TrimSpace(req.Logo), strings.TrimSpace(req.Icon))
+		}
 		meta := ModelMeta{
 			Model:         model,
-			Vendor:        strings.TrimSpace(req.Vendor),
-			Category:      strings.TrimSpace(req.Category),
-			Description:   strings.TrimSpace(req.Description),
-			ContextLength: max(0, req.ContextLength),
+			Vendor:        vendor,
+			Category:      category,
+			Description:   description,
+			ContextLength: contextLength,
 			Icon:          icon,
 			UpdatedAt:     s.now().UnixMilli(),
 		}
@@ -861,6 +1135,10 @@ func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 		if req.DiscountSchedule != nil {
 			discSched = *req.DiscountSchedule
 		}
+		sortOrder := existingB.SortOrder
+		if hasSortOrderField {
+			sortOrder = req.SortOrder
+		}
 		binding := pricing.ModelRuleBinding{
 			Model:                 model,
 			DisplayName:           cmp.Or(strings.TrimSpace(req.Name), existingB.DisplayName, model),
@@ -876,7 +1154,7 @@ func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 			DiscountSchedule:      discSched,
 			IsListed:              isListed,
 			IsActive:              isActive,
-			SortOrder:             req.SortOrder,
+			SortOrder:             sortOrder,
 		}
 		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "model"}}, UpdateAll: true}).Create(&binding).Error
 	})
@@ -887,14 +1165,17 @@ func (s *Server) v1AdminUpsertModel(c *gin.Context) {
 
 	extMap := s.loadV1ModelExtMap()
 	ext := extMap[model]
-	if req.ProviderID > 0 {
-		ext.ProviderID = req.ProviderID
+	if _, ok := rawFields["provider_id"]; ok {
+		ext.ProviderSet = true
+		ext.ProviderID = derefUint64(req.ProviderID)
 	}
-	if req.APIProviderID > 0 {
-		ext.APIProviderID = req.APIProviderID
+	if _, ok := rawFields["api_provider_id"]; ok {
+		ext.APIProviderSet = true
+		ext.APIProviderID = derefUint64(req.APIProviderID)
 	}
-	if req.TypeID > 0 {
-		ext.TypeID = req.TypeID
+	if _, ok := rawFields["type_id"]; ok {
+		ext.TypeSet = true
+		ext.TypeID = derefUint64(req.TypeID)
 	}
 	if req.OriginalID != nil {
 		ext.OriginalID = strings.TrimSpace(*req.OriginalID)
@@ -934,6 +1215,13 @@ func (s *Server) v1AdminDeleteModel(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "delete model failed")
 		return
 	}
+	extMap := s.loadV1ModelExtMap()
+	if _, ok := extMap[model]; ok {
+		delete(extMap, model)
+		if b, err := json.Marshal(extMap); err == nil {
+			_ = s.upsertRawSetting(v1KeyModelExt, string(b))
+		}
+	}
 	s.writeAudit(c, "v1_model_delete", model, "deleted model binding and price")
 	s.invalidateCache(relay.KindPrice, model)
 	s.invalidateCache(relay.KindForwardRule, model)
@@ -962,16 +1250,42 @@ func (s *Server) v1ModelCopy(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&req)
 	newModel := cmp.Or(strings.TrimSpace(req.Name), srcModel+"-copy")
+	ctx := c.Request.Context()
 	var src pricing.ModelRuleBinding
-	if err := s.db.WithContext(c.Request.Context()).Where("model = ?", srcModel).First(&src).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("model = ?", srcModel).First(&src).Error; err != nil {
 		fail(c, http.StatusNotFound, "source model not found")
 		return
 	}
 	src.Model = newModel
 	src.DisplayName = cmp.Or(strings.TrimSpace(req.Name), src.DisplayName+" (Copy)")
-	if err := s.db.WithContext(c.Request.Context()).Create(&src).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&src).Error; err != nil {
+			return err
+		}
+		var srcMeta ModelMeta
+		if tx.Where("model = ?", srcModel).First(&srcMeta).Error == nil {
+			srcMeta.Model = newModel
+			srcMeta.UpdatedAt = s.now().UnixMilli()
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "model"}}, UpdateAll: true}).Create(&srcMeta).Error; err != nil {
+				return err
+			}
+		}
+		var srcPrice relay.ModelPrice
+		if tx.Where("model = ?", srcModel).First(&srcPrice).Error == nil {
+			srcPrice.Model = newModel
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "model"}}, UpdateAll: true}).Create(&srcPrice).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		fail(c, http.StatusConflict, "target model already exists")
 		return
+	}
+	extMap := s.loadV1ModelExtMap()
+	if srcExt, ok := extMap[srcModel]; ok {
+		srcExt.Mid = ""
+		s.saveV1ModelExt(newModel, srcExt)
 	}
 	c.JSON(http.StatusCreated, gin.H{"id": modelNumericID(newModel), "model": newModel})
 }

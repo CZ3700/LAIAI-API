@@ -103,7 +103,7 @@ const ClassificationFilter: React.FC<ClassificationFilterProps> = ({
         {items.map(item => (
           <div
             key={item.id}
-            onClick={() => onSelect(item.id)}
+            onClick={() => onSelect(selectedValue === item.id ? null : item.id)}
             style={{ 
               padding: compact ? '1px 6px' : '3px 7px', 
               borderRadius: compact ? 11 : 14,

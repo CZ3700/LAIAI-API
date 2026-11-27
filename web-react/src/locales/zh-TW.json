@@ -1405,6 +1405,7 @@
     "already_listed_confirm": "該模型已上架，確定再上一份？",
     "from_library": "來自模型倉庫",
     "add_model": "添加模型",
+    "reset_filters": "重置篩選",
     "edit_model": "編輯模型",
     "model_name": "名稱",
     "model_id": "模型 ID",

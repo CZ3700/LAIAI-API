@@ -756,3 +756,197 @@ func TestV1TokenTkeapiParityAndTaskLogFilters(t *testing.T) {
 		t.Fatalf("unexpected hydrated task log row: %+v", gotTL)
 	}
 }
+
+func TestV1ModelsClassificationFilterAndCrossStats(t *testing.T) {
+	f, _, _, _, _ := setupStage2Server(t)
+
+	// Ensure preset billing/forward rules exist for valid FK creation if needed, or create models directly without rule IDs.
+	modelsToCreate := []map[string]any{
+		{
+			"name":            "Filter Test OpenAI Chat",
+			"model_id":        "filter-openai-chat",
+			"provider_id":     2, // OpenAI
+			"api_provider_id": 2, // OpenAI
+			"type_id":         1, // 聊天
+			"sort_order":      30,
+			"description":     "openai desc",
+			"is_listed":       true,
+			"is_active":       true,
+		},
+		{
+			"name":            "Filter Test Seedance Video",
+			"model_id":        "filter-volc-video",
+			"provider_id":     1, // 字节火山
+			"api_provider_id": 6, // 阿里百炼 (cross api provider)
+			"type_id":         2, // 视频
+			"sort_order":      20,
+			"is_listed":       true,
+			"is_active":       true,
+		},
+		{
+			"name":            "Filter Test ClaudeViaOpenAI",
+			"model_id":        "filter-claude-cross",
+			"provider_id":     3, // Anthropic
+			"api_provider_id": 2, // OpenAI
+			"type_id":         1, // 聊天
+			"sort_order":      10,
+			"is_listed":       true,
+			"is_active":       true,
+		},
+		{
+			"name":            "Filter Test Unclassified",
+			"model_id":        "filter-unclassified-mod",
+			"provider_id":     nil,
+			"api_provider_id": 0,
+			"type_id":         3, // 图片
+			"sort_order":      5,
+			"is_listed":       true,
+			"is_active":       true,
+		},
+	}
+
+	idByModel := map[string]string{}
+	for _, payload := range modelsToCreate {
+		w := adminDo(t, f, http.MethodPost, "/api/v1/models", payload, true)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST /api/v1/models failed status=%d body=%s", w.Code, w.Body.String())
+		}
+		var out struct {
+			ID    uint64 `json:"id"`
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode create model resp: %v", err)
+		}
+		idByModel[out.Model] = strconv.FormatUint(out.ID, 10)
+	}
+
+	fetchModels := func(query string) []map[string]any {
+		w := adminDo(t, f, http.MethodGet, "/api/v1/models"+query, nil, true)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/models%s status=%d body=%s", query, w.Code, w.Body.String())
+		}
+		var body struct {
+			Data []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode models resp: %v", err)
+		}
+		return body.Data
+	}
+	assertModelsContainExact := func(rows []map[string]any, expected ...string) {
+		t.Helper()
+		got := make([]string, 0, len(rows))
+		for _, r := range rows {
+			got = append(got, r["model_id"].(string))
+		}
+		if len(got) != len(expected) {
+			t.Fatalf("expected %v, got %v", expected, got)
+		}
+		wantSet := map[string]bool{}
+		for _, e := range expected {
+			wantSet[e] = true
+		}
+		for _, g := range got {
+			if !wantSet[g] {
+				t.Fatalf("expected %v, got unexpected %v", expected, got)
+			}
+		}
+	}
+
+	// 1. Single & combined classification filters + unclassified (0 / -1)
+	assertModelsContainExact(fetchModels("?source=custom&provider_id=2"), "filter-openai-chat")
+	assertModelsContainExact(fetchModels("?source=custom&api_provider_id=2"), "filter-openai-chat", "filter-claude-cross")
+	assertModelsContainExact(fetchModels("?source=custom&type_id=1"), "filter-openai-chat", "filter-claude-cross")
+	assertModelsContainExact(fetchModels("?source=custom&provider_id=3&api_provider_id=2&type_id=1"), "filter-claude-cross")
+	assertModelsContainExact(fetchModels("?source=custom&provider_id=0"), "filter-unclassified-mod")
+	assertModelsContainExact(fetchModels("?source=custom&api_provider_id=0"), "filter-unclassified-mod")
+
+	// 2. Unlist -> source=custom vs source=library + library_kind -> relist
+	volcID := idByModel["filter-volc-video"]
+	if w := adminDo(t, f, http.MethodPost, "/api/v1/models/"+volcID+"/unlist", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("unlist failed: %d %s", w.Code, w.Body.String())
+	}
+	assertModelsContainExact(fetchModels("?source=custom&provider_id=1"))
+	libRows := fetchModels("?source=library&provider_id=1")
+	assertModelsContainExact(libRows, "filter-volc-video")
+	if libRows[0]["library_kind"] != "unlisted" {
+		t.Fatalf("expected unlisted library_kind=unlisted, got %v", libRows[0]["library_kind"])
+	}
+
+	// Check stats while one model is unlisted
+	fetchStats := func(query string) map[string]any {
+		w := adminDo(t, f, http.MethodGet, "/api/v1/classifications/stats"+query, nil, true)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/classifications/stats%s status=%d body=%s", query, w.Code, w.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode stats resp: %v", err)
+		}
+		return out
+	}
+	statCountByID := func(arr any, targetID int64) int64 {
+		for _, raw := range arr.([]any) {
+			m := raw.(map[string]any)
+			if int64(m["id"].(float64)) == targetID {
+				return int64(m["count"].(float64))
+			}
+		}
+		return -1
+	}
+
+	statsAll := fetchStats("?source=custom")
+	srcCounts := statsAll["source_counts"].(map[string]any)
+	if int64(srcCounts["custom"].(float64)) != 3 || int64(srcCounts["library"].(float64)) != 1 {
+		t.Fatalf("unexpected source_counts: %+v", srcCounts)
+	}
+	if int64(statsAll["unclassified_providers"].(float64)) != 1 || int64(statsAll["unclassified_api_providers"].(float64)) != 1 {
+		t.Fatalf("unexpected unclassified counts: %+v", statsAll)
+	}
+
+	// Cross-faceted stats with api_provider_id=2 selected:
+	// - providers excludes own filter -> OpenAI=1, Anthropic=1, others=0
+	// - api_providers excludes own filter -> OpenAI=2 (cross models), unclassified=1
+	// - types excludes own filter -> Chat(1)=2, Image(3)=0
+	statsCross := fetchStats("?source=custom&api_provider_id=2")
+	if c := statCountByID(statsCross["providers"], 2); c != 1 {
+		t.Fatalf("expected providers[OpenAI]=1 under api_provider_id=2, got %d", c)
+	}
+	if c := statCountByID(statsCross["providers"], 3); c != 1 {
+		t.Fatalf("expected providers[Anthropic]=1 under api_provider_id=2, got %d", c)
+	}
+	if c := statCountByID(statsCross["types"], 1); c != 2 {
+		t.Fatalf("expected types[Chat]=2 under api_provider_id=2, got %d", c)
+	}
+	if c := statCountByID(statsCross["types"], 3); c != 0 {
+		t.Fatalf("expected types[Image]=0 under api_provider_id=2, got %d", c)
+	}
+	if c := statCountByID(statsCross["api_providers"], 2); c != 2 {
+		t.Fatalf("expected api_providers[OpenAI]=2 (self dimension excluded), got %d", c)
+	}
+
+	// Relist back
+	if w := adminDo(t, f, http.MethodPost, "/api/v1/models/"+volcID+"/relist", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("relist failed: %d %s", w.Code, w.Body.String())
+	}
+	assertModelsContainExact(fetchModels("?source=custom&provider_id=1"), "filter-volc-video")
+
+	// 3. Partial update preserves classifications, description, sort_order; clearing provider/api_provider moves model to unclassified (0)
+	openaiID := idByModel["filter-openai-chat"]
+	if w := adminDo(t, f, http.MethodPut, "/api/v1/models/"+openaiID, map[string]any{"remark": "keep-attrs"}, true); w.Code != http.StatusOK {
+		t.Fatalf("partial PUT failed: %d %s", w.Code, w.Body.String())
+	}
+	kept := fetchModels("?source=custom&provider_id=2&api_provider_id=2")
+	assertModelsContainExact(kept, "filter-openai-chat")
+	if kept[0]["remark"] != "keep-attrs" || kept[0]["description"] != "openai desc" || int(kept[0]["sort_order"].(float64)) != 30 {
+		t.Fatalf("partial PUT lost fields: %+v", kept[0])
+	}
+
+	if w := adminDo(t, f, http.MethodPut, "/api/v1/models/"+openaiID, map[string]any{"provider_id": nil, "api_provider_id": 0}, true); w.Code != http.StatusOK {
+		t.Fatalf("clear provider PUT failed: %d %s", w.Code, w.Body.String())
+	}
+	assertModelsContainExact(fetchModels("?source=custom&provider_id=2"))
+	assertModelsContainExact(fetchModels("?source=custom&provider_id=0"), "filter-openai-chat", "filter-unclassified-mod")
+	assertModelsContainExact(fetchModels("?source=custom&api_provider_id=0"), "filter-openai-chat", "filter-unclassified-mod")
+}
