@@ -4,11 +4,13 @@ import {
   Badge,
   Button,
   ConfigProvider,
+  Divider,
   Drawer,
   Dropdown,
   Layout,
   List,
   Menu,
+  Popover,
   Select,
   Space,
   Tag,
@@ -92,6 +94,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
   const [switchingOrg, setSwitchingOrg] = useState(false);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [announceOpen, setAnnounceOpen] = useState(false);
+  const [userPopoverOpen, setUserPopoverOpen] = useState(false);
 
   const adminPath = settings?.site?.admin_path || localStorage.getItem('laiai_admin_path') || 'admin';
   const siteTitle = settings?.site?.title || settings?.site?.name || 'LAIAI';
@@ -438,6 +441,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
         <Header
           style={{
             height: 60,
+            lineHeight: 'normal',
             padding: '0 20px',
             background: antdToken.colorBgContainer,
             borderBottom: `1px solid ${antdToken.colorBorderSecondary}`,
@@ -503,42 +507,129 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ mode }) => {
               <Button type="text" icon={<GlobalOutlined />} />
             </Dropdown>
 
-            <Dropdown
+            <Popover
+              open={userPopoverOpen}
+              onOpenChange={setUserPopoverOpen}
+              trigger="click"
               placement="bottomRight"
-              menu={{
-                items: [
-                  {
-                    key: 'profile',
-                    icon: <UserOutlined />,
-                    label: `${user?.username || user?.email || 'User'}`,
-                    onClick: () => navigate('/profile'),
-                  },
-                  {
-                    key: 'wallet',
-                    icon: <WalletOutlined />,
-                    label: t('menu.wallet_ledger', '钱包流水'),
-                    onClick: () => navigate('/wallet'),
-                  },
-                  { type: 'divider' },
-                  {
-                    key: 'logout',
-                    icon: <LogoutOutlined />,
-                    danger: true,
-                    label: t('menu.logout', '退出登录'),
-                    onClick: handleLogout,
-                  },
-                ],
-              }}
+              arrow={false}
+              content={
+                <div style={{ width: 260, padding: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingBottom: 10 }}>
+                    <Avatar
+                      size={44}
+                      src={user?.avatar || undefined}
+                      style={{ backgroundColor: accent.background, color: accent.color, fontWeight: 600, flexShrink: 0 }}
+                    >
+                      {(user?.nickname || user?.username || user?.email || 'U').slice(0, 1).toUpperCase()}
+                    </Avatar>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <Typography.Text strong style={{ fontSize: 15, maxWidth: 132 }} ellipsis>
+                          {user?.nickname || user?.username || user?.email || 'User'}
+                        </Typography.Text>
+                        <Tag color={isAdmin ? 'blue' : 'default'} style={{ margin: 0, fontSize: 11, lineHeight: '18px' }}>
+                          {user?.plat_role === 'superadmin'
+                            ? t('menu.role_superadmin', '超级管理员')
+                            : isAdmin
+                              ? t('menu.role_admin', '管理员')
+                              : t('menu.role_member', '普通用户')}
+                        </Tag>
+                      </div>
+                      {user?.email && user.email !== (user?.nickname || user?.username) && (
+                        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }} ellipsis>
+                          {user.email}
+                        </Typography.Text>
+                      )}
+                      <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+                        UID: {user?.uid || user?.id || '-'}
+                      </Typography.Text>
+                    </div>
+                  </div>
+                  <Divider style={{ margin: '4px 0 6px' }} />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <Button
+                      type="text"
+                      block
+                      icon={<UserOutlined />}
+                      style={{ justifyContent: 'flex-start' }}
+                      onClick={() => {
+                        setUserPopoverOpen(false);
+                        navigate('/profile');
+                      }}
+                    >
+                      {t('menu.profile_settings', '账号详情与设置')}
+                    </Button>
+                    {mode === 'user' && (
+                      <Button
+                        type="text"
+                        block
+                        icon={<WalletOutlined />}
+                        style={{ justifyContent: 'flex-start' }}
+                        onClick={() => {
+                          setUserPopoverOpen(false);
+                          navigate('/wallet');
+                        }}
+                      >
+                        {t('menu.wallet_ledger', '钱包流水')}
+                      </Button>
+                    )}
+                    {isAdmin && (
+                      <Button
+                        type="text"
+                        block
+                        icon={<ControlOutlined />}
+                        style={{ justifyContent: 'flex-start' }}
+                        onClick={() => {
+                          setUserPopoverOpen(false);
+                          navigate(mode === 'admin' ? '/dashboard' : `${adminBase}/dashboard`);
+                        }}
+                      >
+                        {mode === 'admin'
+                          ? t('menu.back_user_console', '返回用户控制台')
+                          : t('menu.enter_admin', '进入管理后台')}
+                      </Button>
+                    )}
+                    <Divider style={{ margin: '6px 0' }} />
+                    <Button
+                      type="text"
+                      danger
+                      block
+                      icon={<LogoutOutlined />}
+                      style={{ justifyContent: 'flex-start' }}
+                      onClick={() => {
+                        setUserPopoverOpen(false);
+                        handleLogout();
+                      }}
+                    >
+                      {t('menu.logout', '退出登录')}
+                    </Button>
+                  </div>
+                </div>
+              }
             >
-              <Space style={{ cursor: 'pointer', padding: '4px 8px', borderRadius: 8, maxWidth: 168 }}>
-                <Avatar size={28} style={{ backgroundColor: accent.background, color: accent.color, flexShrink: 0 }}>
-                  {(user?.username || user?.email || 'U').slice(0, 1).toUpperCase()}
+              <div
+                role="button"
+                tabIndex={0}
+                aria-label="User details"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: 3,
+                  borderRadius: '50%',
+                  cursor: 'pointer',
+                }}
+              >
+                <Avatar
+                  size={32}
+                  src={user?.avatar || undefined}
+                  style={{ backgroundColor: accent.background, color: accent.color, fontWeight: 600, flexShrink: 0 }}
+                >
+                  {(user?.nickname || user?.username || user?.email || 'U').slice(0, 1).toUpperCase()}
                 </Avatar>
-                <Typography.Text style={{ fontSize: 13, maxWidth: 108 }} ellipsis>
-                  {user?.username || user?.email || 'User'}
-                </Typography.Text>
-              </Space>
-            </Dropdown>
+              </div>
+            </Popover>
           </Space>
         </Header>
 

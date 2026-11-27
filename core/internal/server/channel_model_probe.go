@@ -40,72 +40,6 @@ type probedUpstreamModelDTO struct {
 	ExistingMid            string   `json:"existing_mid,omitempty"`
 }
 
-type newapiPricingModelEntry struct {
-	ModelName              string   `json:"model_name"`
-	VendorID               int64    `json:"vendor_id"`
-	QuotaType              int      `json:"quota_type"`
-	ModelRatio             float64  `json:"model_ratio"`
-	CompletionRatio        float64  `json:"completion_ratio"`
-	ModelPrice             float64  `json:"model_price"`
-	SupportedEndpointTypes []string `json:"supported_endpoint_types"`
-}
-
-func (s *Server) fetchNewAPIPricingModels(ctx context.Context, baseURL, apiKey string) ([]newapiPricingModelEntry, map[int64]string, string, error) {
-	origin := NormalizeNewAPIOrigin(baseURL)
-	if origin == "" {
-		return nil, nil, "", fmt.Errorf("base_url is required")
-	}
-	if relay.IsMetadataURL(origin) {
-		return nil, nil, "", fmt.Errorf("metadata URL blocked")
-	}
-	if s.upstreamHTTP == nil {
-		if err := s.validateUpstreamTargetURL(origin); err != nil {
-			return nil, nil, "", fmt.Errorf("upstream URL rejected: %w", err)
-		}
-	}
-	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, origin+"/api/pricing", nil)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "LAIAI-Gateway/2.0")
-	if k := strings.TrimSpace(apiKey); k != "" && !isMaskedSecret(k) {
-		req.Header.Set("Authorization", "Bearer "+k)
-	}
-	resp, err := s.upstreamHTTPClient().Do(req)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, nil, "", fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	var parsed struct {
-		Success *bool `json:"success"`
-		Vendors []struct {
-			ID   int64  `json:"id"`
-			Name string `json:"name"`
-		} `json:"vendors"`
-		Data []newapiPricingModelEntry `json:"data"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, nil, "", err
-	}
-	if parsed.Success != nil && !*parsed.Success {
-		return nil, nil, "", fmt.Errorf("upstream /api/pricing returned success=false")
-	}
-	vendors := make(map[int64]string, len(parsed.Vendors))
-	for _, v := range parsed.Vendors {
-		if v.ID != 0 && strings.TrimSpace(v.Name) != "" {
-			vendors[v.ID] = strings.TrimSpace(v.Name)
-		}
-	}
-	return parsed.Data, vendors, origin, nil
-}
-
 func (s *Server) matchDefaultRulesForModel(ctx context.Context, modelID, typeName string, billingRules []pricing.BillingRule, forwardRules []forward.ForwardRule) (uint64, uint64) {
 	lowerModel := strings.ToLower(strings.TrimSpace(modelID))
 
@@ -217,22 +151,11 @@ func (s *Server) resolveProbeTargets(ctx context.Context, req struct {
 	APIKey        string   `json:"api_key"`
 	ProviderType  string   `json:"provider_type"`
 }) []probeTargetSpec {
-	targets := make([]probeTargetSpec, 0, 4)
-	if base := strings.TrimSpace(req.BaseURL); base != "" {
-		k := strings.TrimSpace(req.APIKey)
-		if isMaskedSecret(k) {
-			k = ""
-		}
-		targets = append(targets, probeTargetSpec{
-			BaseURL:      base,
-			APIKey:       k,
-			ProviderType: cmp.Or(strings.TrimSpace(req.ProviderType), "openai"),
-		})
-	}
+	savedTargets := make([]probeTargetSpec, 0, 4)
 	if req.PresetID != nil && *req.PresetID > 0 {
 		var row channelConfigRow
 		if err := s.db.WithContext(ctx).First(&row, *req.PresetID).Error; err == nil && strings.TrimSpace(row.BaseURL) != "" {
-			targets = append(targets, probeTargetSpec{
+			savedTargets = append(savedTargets, probeTargetSpec{
 				BaseURL:      row.BaseURL,
 				APIKey:       s.decryptConfigSecret(row.APIKeyEnc),
 				ProviderType: cmp.Or(row.ProviderType, "openai"),
@@ -245,7 +168,7 @@ func (s *Server) resolveProbeTargets(ctx context.Context, req struct {
 		if err := s.db.WithContext(ctx).Where("id IN ?", req.SubChannelIDs).Order("priority DESC, id ASC").Find(&rows).Error; err == nil {
 			for _, row := range rows {
 				if strings.TrimSpace(row.BaseURL) != "" {
-					targets = append(targets, probeTargetSpec{
+					savedTargets = append(savedTargets, probeTargetSpec{
 						BaseURL:      row.BaseURL,
 						APIKey:       s.decryptConfigSecret(row.APIKeyEnc),
 						ProviderType: cmp.Or(row.ProviderType, "openai"),
@@ -255,14 +178,14 @@ func (s *Server) resolveProbeTargets(ctx context.Context, req struct {
 			}
 		}
 	}
-	if len(targets) == 0 && req.ChannelID > 0 {
+	if len(savedTargets) == 0 && req.ChannelID > 0 {
 		var ch relay.Channel
 		if err := s.db.WithContext(ctx).First(&ch, req.ChannelID).Error; err == nil {
 			meta := s.loadV1ChannelMetaMap()[ch.ID]
 			primary, subs := s.resolveV1SubChannels(meta.PresetID, meta.Config)
 			for _, sub := range subs {
 				if strings.TrimSpace(sub.BaseURL) != "" {
-					targets = append(targets, probeTargetSpec{
+					savedTargets = append(savedTargets, probeTargetSpec{
 						BaseURL:      sub.BaseURL,
 						APIKey:       s.decryptConfigSecret(sub.APIKeyEnc),
 						ProviderType: cmp.Or(sub.ProviderType, ch.Provider),
@@ -270,16 +193,16 @@ func (s *Server) resolveProbeTargets(ctx context.Context, req struct {
 					})
 				}
 			}
-			if len(targets) == 0 && primary != nil && strings.TrimSpace(primary.BaseURL) != "" {
-				targets = append(targets, probeTargetSpec{
+			if len(savedTargets) == 0 && primary != nil && strings.TrimSpace(primary.BaseURL) != "" {
+				savedTargets = append(savedTargets, probeTargetSpec{
 					BaseURL:      primary.BaseURL,
 					APIKey:       s.decryptConfigSecret(primary.APIKeyEnc),
 					ProviderType: cmp.Or(primary.ProviderType, ch.Provider),
 					System:       primary.UpstreamSystem,
 				})
 			}
-			if len(targets) == 0 && strings.TrimSpace(ch.BaseURL) != "" {
-				targets = append(targets, probeTargetSpec{
+			if len(savedTargets) == 0 && strings.TrimSpace(ch.BaseURL) != "" {
+				savedTargets = append(savedTargets, probeTargetSpec{
 					BaseURL:      ch.BaseURL,
 					APIKey:       s.decryptConfigSecret(ch.CredentialEnc),
 					ProviderType: ch.Provider,
@@ -287,7 +210,57 @@ func (s *Server) resolveProbeTargets(ctx context.Context, req struct {
 			}
 		}
 	}
-	return targets
+
+	customBase := strings.TrimSpace(req.BaseURL)
+	customKey := strings.TrimSpace(req.APIKey)
+	if isMaskedSecret(customKey) || customKey == "placeholder-key" {
+		customKey = ""
+	}
+	if customKey != "" {
+		base := customBase
+		if base == "" && len(savedTargets) > 0 {
+			base = savedTargets[0].BaseURL
+		}
+		if base != "" {
+			return []probeTargetSpec{{
+				BaseURL:      base,
+				APIKey:       customKey,
+				ProviderType: cmp.Or(strings.TrimSpace(req.ProviderType), "openai"),
+			}}
+		}
+	}
+	if len(savedTargets) > 0 {
+		if customBase != "" && (len(savedTargets) == 1 || NormalizeNewAPIOrigin(customBase) != NormalizeNewAPIOrigin(savedTargets[0].BaseURL)) {
+			savedTargets[0].BaseURL = customBase
+		}
+		return savedTargets
+	}
+	if customBase != "" {
+		return []probeTargetSpec{{
+			BaseURL:      customBase,
+			APIKey:       "",
+			ProviderType: cmp.Or(strings.TrimSpace(req.ProviderType), "openai"),
+		}}
+	}
+	return nil
+}
+
+func detectedModelsSource(detectedURL string) string {
+	u := strings.ToLower(strings.TrimSpace(detectedURL))
+	switch {
+	case strings.HasSuffix(u, "/api/v1"):
+		return "/api/v1/models"
+	case strings.HasSuffix(u, "/api/v3"):
+		return "/api/v3/models"
+	case strings.HasSuffix(u, "/v1beta"):
+		return "/v1beta/models"
+	case strings.HasSuffix(u, "/openai/v1"):
+		return "/openai/v1/models"
+	case strings.HasSuffix(u, "/v1"):
+		return "/v1/models"
+	default:
+		return "/models"
+	}
 }
 
 func (s *Server) v1ProbeChannelModels(c *gin.Context) {
@@ -311,7 +284,6 @@ func (s *Server) v1ProbeChannelModels(c *gin.Context) {
 	}
 
 	discoveredOrder := make([]string, 0, 64)
-	pricingHints := map[string]newapiPricingModelEntry{}
 	vendorHints := map[string]string{}
 	seen := map[string]bool{}
 	detectedURL := ""
@@ -323,53 +295,38 @@ func (s *Server) v1ProbeChannelModels(c *gin.Context) {
 			lastErr = "禁止探测内网元数据地址"
 			continue
 		}
-		if strings.TrimSpace(target.APIKey) != "" && target.APIKey != "placeholder-key" {
-			pr := s.relay.ProbeChannel(ctx, target.APIKey, target.BaseURL, mapTkeProviderToRelay(target.ProviderType), s.upstreamHTTP == nil)
-			if pr != nil && pr.OK && len(pr.Models) > 0 {
-				if detectedURL == "" {
-					detectedURL = pr.DetectedBaseURL
-				}
-				sources = append(sources, "/models")
-				for _, m := range pr.Models {
-					m = strings.TrimSpace(m)
-					if m != "" && !seen[m] {
-						seen[m] = true
-						discoveredOrder = append(discoveredOrder, m)
-					}
-				}
-			} else if pr != nil && pr.Message != "" {
-				lastErr = pr.Message
-			}
+		probeKey := strings.TrimSpace(target.APIKey)
+		if probeKey == "placeholder-key" {
+			probeKey = ""
 		}
-
-		if entries, vendors, origin, err := s.fetchNewAPIPricingModels(ctx, target.BaseURL, target.APIKey); err == nil && len(entries) > 0 {
+		pr := s.relay.ProbeChannel(ctx, probeKey, target.BaseURL, mapTkeProviderToRelay(target.ProviderType), s.upstreamHTTP == nil)
+		if pr != nil && pr.OK && len(pr.Models) > 0 {
 			if detectedURL == "" {
-				detectedURL = origin + "/api/pricing"
+				detectedURL = pr.DetectedBaseURL + "/models"
 			}
-			sources = append(sources, "/api/pricing")
-			for _, e := range entries {
-				m := strings.TrimSpace(e.ModelName)
+			sources = append(sources, detectedModelsSource(pr.DetectedBaseURL))
+			for _, m := range pr.Models {
+				m = strings.TrimSpace(m)
 				if m == "" {
 					continue
-				}
-				pricingHints[m] = e
-				if vName := vendors[e.VendorID]; vName != "" {
-					vendorHints[m] = vName
 				}
 				if !seen[m] {
 					seen[m] = true
 					discoveredOrder = append(discoveredOrder, m)
 				}
+				if owner := strings.TrimSpace(pr.ModelOwners[m]); owner != "" && vendorHints[m] == "" {
+					vendorHints[m] = owner
+				}
 			}
-		} else if err != nil && len(discoveredOrder) == 0 {
-			lastErr = err.Error()
+		} else if pr != nil && pr.Message != "" {
+			lastErr = pr.Message
 		}
 	}
 
 	if len(discoveredOrder) == 0 {
 		c.JSON(http.StatusOK, gin.H{
 			"success":        false,
-			"message":        cmp.Or(lastErr, "未能从上游获取到模型列表，请检查地址与鉴权密钥"),
+			"message":        cmp.Or(lastErr, "未能通过 /v1/models 探测到可用模型，请检查 Base URL 与该渠道 API Key 权限"),
 			"data":           []probedUpstreamModelDTO{},
 			"total":          0,
 			"new_count":      0,
@@ -407,20 +364,6 @@ func (s *Server) v1ProbeChannelModels(c *gin.Context) {
 		vName := vendorHints[m]
 		pID, pName, tID, tName, defFeatJSON := v1compat.InferModelProviderAndType(vName, "", m)
 		bID, fID := s.matchDefaultRulesForModel(ctx, m, tName, billingRules, forwardRules)
-		var inUSD, outUSD, fixedUSD float64
-		if hint, ok := pricingHints[m]; ok {
-			if hint.QuotaType == 1 && hint.ModelPrice > 0 {
-				fixedUSD = hint.ModelPrice
-			} else if hint.ModelRatio > 0 {
-				// NewAPI: 1 ratio = $2 / 1M input tokens (500,000 tokens/$ * ratio)
-				inUSD = hint.ModelRatio * 2.0
-				compRatio := hint.CompletionRatio
-				if compRatio <= 0 {
-					compRatio = 1
-				}
-				outUSD = inUSD * compRatio
-			}
-		}
 		existingMid, exists := existingMap[m]
 		if exists {
 			existingCount++
@@ -438,9 +381,6 @@ func (s *Server) v1ProbeChannelModels(c *gin.Context) {
 			DefaultFeatures:        v1compat.ParseFeatureAttributes(defFeatJSON),
 			SuggestedBillingRuleID: bID,
 			SuggestedForwardRuleID: fID,
-			InputUSDPer1M:          inUSD,
-			OutputUSDPer1M:         outUSD,
-			FixedUSD:               fixedUSD,
 			Exists:                 exists,
 			ExistingMid:            existingMid,
 		})

@@ -6203,7 +6203,7 @@ const Channels: React.FC = () => {
             </Col>
             <Col xs={24} md={9}>
               <Input.Password
-                placeholder={t('channels.probe_key_placeholder', 'API Key (NewAPI 公开 /api/pricing 可留空)')}
+                placeholder={t('channels.probe_key_placeholder', 'API Key（留空则复用所选上游渠道密钥，探测 /v1/models）')}
                 value={probeCustomKey}
                 onChange={(e) => setProbeCustomKey(e.target.value)}
               />

@@ -77,8 +77,22 @@ func TestUpstreamNewAPISyncProbeImportBalanceAndDocsE2E(t *testing.T) {
 				"usable_group": {"default": "默认分组", "Claude-Official": "Claude 官方分组", "Deepseek-Official": "DeepSeek 官方分组"},
 				"vendors": [{"id": -1014, "name": "Anthropic"}, {"id": 2, "name": "ByteDance"}],
 				"data": [
+					{"model_name": "plaza-only-unusable-model", "vendor_id": -1014, "quota_type": 0, "model_ratio": 1.0, "completion_ratio": 2},
 					{"model_name": "claude-sonnet-4-5-mock", "vendor_id": -1014, "quota_type": 0, "model_ratio": 1.5, "completion_ratio": 5},
 					{"model_name": "doubao-seedance-2-0-mock", "vendor_id": 2, "quota_type": 1, "model_price": 0.4}
+				]
+			}`))
+		case "/v1/models":
+			if r.Header.Get("Authorization") != "Bearer sk-upstream-key" {
+				http.Error(w, `{"error":{"message":"unauthorized"}}`, http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"object": "list",
+				"data": [
+					{"id": "claude-sonnet-4-5-mock", "object": "model", "owned_by": "Anthropic"},
+					{"id": "doubao-seedance-2-0-mock", "object": "model", "owned_by": "ByteDance"}
 				]
 			}`))
 		case "/api/user/self/groups":
@@ -174,16 +188,25 @@ func TestUpstreamNewAPISyncProbeImportBalanceAndDocsE2E(t *testing.T) {
 		t.Fatalf("expected >=2 sync logs (save + manual), got %d", len(logItems))
 	}
 
-	// 5. Probe models from upstream -> import into Models -> create channel -> bind & test.
+	// 5. Probe models from upstream (/models only, excluding /api/pricing) -> import into Models -> create channel -> bind & test.
 	wProbe, probeOut := f.do(t, http.MethodPost, "/api/v1/channels/probe-models", adminTok, map[string]any{
 		"preset_id": cfgID,
 	})
 	if wProbe.Code != http.StatusOK || probeOut["success"] != true {
 		t.Fatalf("probe-models = %d body=%s", wProbe.Code, wProbe.Body.String())
 	}
+	probeSrc, _ := probeOut["source"].(string)
+	if !strings.Contains(probeSrc, "/v1/models") || strings.Contains(probeSrc, "/api/pricing") {
+		t.Fatalf("expected /v1/models source without /api/pricing, got %q", probeSrc)
+	}
 	probedList := probeOut["data"].([]any)
 	if len(probedList) != 2 {
 		t.Fatalf("expected 2 probed models, got %d", len(probedList))
+	}
+	for _, item := range probedList {
+		if m, _ := item.(map[string]any); m["model_id"] == "plaza-only-unusable-model" {
+			t.Fatalf("model probe must ignore /api/pricing-only models: %v", m)
+		}
 	}
 
 	wCh, chOut := f.do(t, http.MethodPost, "/api/v1/channels", adminTok, map[string]any{

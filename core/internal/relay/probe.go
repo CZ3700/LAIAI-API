@@ -12,12 +12,13 @@ import (
 
 // ProbeResult：渠道探测结果（admin 上货前自检）。
 type ProbeResult struct {
-	OK              bool           `json:"ok"`
-	DetectedBaseURL string         `json:"detected_base_url"`
-	Models          []string       `json:"models"`
-	Tried           []ProbeAttempt `json:"tried"`
-	Gateway         string         `json:"gateway"` // 上游网关线索（server/via 头）
-	Message         string         `json:"message"`
+	OK              bool              `json:"ok"`
+	DetectedBaseURL string            `json:"detected_base_url"`
+	Models          []string          `json:"models"`
+	ModelOwners     map[string]string `json:"model_owners,omitempty"`
+	Tried           []ProbeAttempt    `json:"tried"`
+	Gateway         string            `json:"gateway"` // 上游网关线索（server/via 头）
+	Message         string            `json:"message"`
 }
 
 // ProbeAttempt：单个候选 base_url 的尝试结果。
@@ -47,14 +48,13 @@ func candidateBaseURLs(raw string) []string {
 		raw = "https://" + raw
 	}
 	raw = strings.TrimRight(raw, "/")
-	if strings.Contains(raw, "/v1") || strings.Contains(raw, "/v1beta") {
+	if strings.Contains(raw, "/v1") || strings.Contains(raw, "/v1beta") || strings.Contains(raw, "/api/v3") {
 		return []string{raw}
 	}
-	cands := []string{raw + "/v1"}
-	if !strings.HasSuffix(raw, "/api") { // 用户已给到 /api 时首个候选即 /api/v1，不再拼出 /api/api/v1
-		cands = append(cands, raw+"/api/v1")
+	if strings.HasSuffix(raw, "/api") { // 用户已给到 /api 时首候选即 /api/v1，不拼出 /api/api/v1
+		return []string{raw + "/v1", raw + "/v3", raw, raw + "/openai/v1"}
 	}
-	return append(cands, raw, raw+"/openai/v1")
+	return []string{raw + "/v1", raw + "/api/v1", raw + "/api/v3", raw + "/v1beta", raw, raw + "/openai/v1"}
 }
 
 // probeFamily：把渠道 provider 归一到协议族（anthropic/gemini/openai），决定 /models 的
@@ -87,7 +87,7 @@ func (r *Relay) ProbeChannel(ctx context.Context, apiKey, rawURL, provider strin
 	family := probeFamily(provider)
 	for _, base := range candidates {
 		attempt := ProbeAttempt{BaseURL: base}
-		models, gw, status, err := r.fetchModels(ctx, cl, base, apiKey, family)
+		models, owners, gw, status, err := r.fetchModelsWithOwners(ctx, cl, base, apiKey, family)
 		attempt.Status = status
 		if err != nil {
 			attempt.Note = err.Error()
@@ -100,6 +100,7 @@ func (r *Relay) ProbeChannel(ctx context.Context, apiKey, rawURL, provider strin
 		res.OK = true
 		res.DetectedBaseURL = base
 		res.Models = models
+		res.ModelOwners = owners
 		res.Gateway = gw
 		return res
 	}
@@ -135,30 +136,37 @@ func (r *Relay) probeExisting(ctx context.Context, ch *Channel, guarded bool) *P
 
 // fetchModels：GET {base}/models 拉模型列表，按协议族选鉴权头与响应解析（P2-10）：
 //
-//	openai    Authorization: Bearer；解析 {data:[{id}]}
+//	openai    Authorization: Bearer；解析 {data:[{id,owned_by}]}
 //	anthropic x-api-key + anthropic-version；解析 {data:[{id}]}
 //	gemini    ?key= 查询参数；解析 {models:[{name:"models/x"}]}（去 models/ 前缀）
 func (r *Relay) fetchModels(ctx context.Context, cl *http.Client, base, apiKey, family string) (models []string, gateway string, status int, err error) {
+	models, _, gateway, status, err = r.fetchModelsWithOwners(ctx, cl, base, apiKey, family)
+	return models, gateway, status, err
+}
+
+func (r *Relay) fetchModelsWithOwners(ctx context.Context, cl *http.Client, base, apiKey, family string) (models []string, owners map[string]string, gateway string, status int, err error) {
 	ctx, cancel := context.WithTimeout(ctx, probePerCandidateTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, nil, "", 0, err
 	}
-	switch family {
-	case "anthropic":
-		req.Header.Set("x-api-key", apiKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
-	case "gemini":
-		q := req.URL.Query()
-		q.Set("key", apiKey)
-		req.URL.RawQuery = q.Encode()
-	default:
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+	if key := strings.TrimSpace(apiKey); key != "" {
+		switch family {
+		case "anthropic":
+			req.Header.Set("x-api-key", key)
+			req.Header.Set("anthropic-version", "2023-06-01")
+		case "gemini":
+			q := req.URL.Query()
+			q.Set("key", key)
+			req.URL.RawQuery = q.Encode()
+		default:
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
 	}
 	resp, err := cl.Do(req)
 	if err != nil {
-		return nil, "", 0, fmt.Errorf("unreachable")
+		return nil, nil, "", 0, fmt.Errorf("unreachable")
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -167,24 +175,38 @@ func (r *Relay) fetchModels(ctx context.Context, cl *http.Client, base, apiKey, 
 		gateway = strings.TrimSpace(gateway + " " + via)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, gateway, resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, nil, gateway, resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	if !IsLLMContentType(resp.Header.Get("Content-Type")) {
-		return nil, gateway, resp.StatusCode, fmt.Errorf("non-JSON (wrong path?)")
+		return nil, nil, gateway, resp.StatusCode, fmt.Errorf("non-JSON (wrong path?)")
 	}
-	models, perr := parseModelList(family, body)
+	models, owners, perr := parseModelListWithOwners(family, body)
 	if perr != nil {
-		return nil, gateway, resp.StatusCode, perr
+		return nil, nil, gateway, resp.StatusCode, perr
 	}
 	if len(models) == 0 {
-		return nil, gateway, resp.StatusCode, fmt.Errorf("empty model list")
+		return nil, nil, gateway, resp.StatusCode, fmt.Errorf("empty model list")
 	}
-	return models, gateway, resp.StatusCode, nil
+	return models, owners, gateway, resp.StatusCode, nil
+}
+
+func isGenericModelOwner(owner string) bool {
+	switch strings.ToLower(strings.TrimSpace(owner)) {
+	case "custom", "system", "user", "new-api", "one-api", "openai-internal", "organization-owner":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseModelList 按协议族解析 /models 响应。gemini 形如 {models:[{name:"models/x"}]}，
 // 其余形如 {data:[{id:"x"}]}。
 func parseModelList(family string, body []byte) ([]string, error) {
+	models, _, err := parseModelListWithOwners(family, body)
+	return models, err
+}
+
+func parseModelListWithOwners(family string, body []byte) ([]string, map[string]string, error) {
 	var models []string
 	if family == "gemini" {
 		var parsed struct {
@@ -193,27 +215,32 @@ func parseModelList(family string, body []byte) ([]string, error) {
 			} `json:"models"`
 		}
 		if err := json.Unmarshal(body, &parsed); err != nil {
-			return nil, fmt.Errorf("unparseable model list")
+			return nil, nil, fmt.Errorf("unparseable model list")
 		}
 		for _, m := range parsed.Models {
 			if id := strings.TrimPrefix(m.Name, "models/"); id != "" {
 				models = append(models, id)
 			}
 		}
-		return models, nil
+		return models, nil, nil
 	}
 	var parsed struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("unparseable model list")
+		return nil, nil, fmt.Errorf("unparseable model list")
 	}
+	owners := make(map[string]string)
 	for _, m := range parsed.Data {
 		if m.ID != "" {
 			models = append(models, m.ID)
+			if ob := strings.TrimSpace(m.OwnedBy); ob != "" && !isGenericModelOwner(ob) {
+				owners[m.ID] = ob
+			}
 		}
 	}
-	return models, nil
+	return models, owners, nil
 }
